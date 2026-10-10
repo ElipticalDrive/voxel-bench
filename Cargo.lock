@@ -1701,22 +1701,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-bitmask"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "pollster",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "gpu-clipmap"
 version = "0.1.0"
 dependencies = [
@@ -1822,23 +1806,6 @@ dependencies = [
  "mr-core",
  "mr-gpu",
  "mr-mesh",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "gpu-sdf"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "crossbeam-channel",
- "glam",
- "mr-components",
- "mr-core",
- "mr-gpu",
  "rayon",
  "serde",
  "tracing",
@@ -2481,7 +2448,6 @@ dependencies = [
  "cpu-voxelspace",
  "crossbeam-channel",
  "gpu-beam",
- "gpu-bitmask",
  "gpu-clipmap",
  "gpu-compute",
  "gpu-dda",
@@ -2489,7 +2455,6 @@ dependencies = [
  "gpu-frag-hybrid",
  "gpu-pathtrace",
  "gpu-rtx",
- "gpu-sdf",
  "gpu-splat",
  "gpu-svo-dag",
  "gpu-tree64",

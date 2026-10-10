@@ -94,11 +94,9 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
     shadow rays) the five GPU ones; shading direct (30 combinations).
 - **Legacy renderers** (not yet split into components): cpu-reference (stays a
   monolith on purpose), cpu-raster, cpu-simd, cpu-simd-loc (4), cpu-voxelspace,
-  cpu-discover, cpu-cluster, gpu-dda (still in the registry; plans use the composition),
-  gpu-dda-lod, gpu-hybrid,
+  cpu-discover, cpu-cluster, gpu-dda-lod, gpu-hybrid,
   gpu-frag-dda, gpu-discover, gpu-rtx(-bricks), gpu-tree64, gpu-svo-dag, gpu-clipmap,
-  gpu-beam, gpu-bitmask and gpu-sdf (both covered by compositions), gpu-splat,
-  gpu-voxelspace, gpu-pathtrace, and the gpu-compose alias.
+  gpu-beam, gpu-splat, gpu-voxelspace, gpu-pathtrace.
 - **Verification:** zero warnings in both builds, 41 unit tests and 3 GPU end-to-end
   tests pass.
 - **Tools:**
@@ -186,11 +184,22 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
      their compositions match them, and update the plans.
    - **Still open:** the discovery components (`quadtree`, `cluster`) as raster
      visibility; a candidate for its own step.
-4. **Next:** port the remaining unique pieces: tree64 and SVO-DAG (storages with tree-descent
-   walks), clipmap (storage), the beam prepass (a visibility stage), path tracing
-   (shading), LOD (in the storage interface, for gpu-dda-lod), hardware RT as a back end
-   (gpu-rtx), splats and voxelspace (their own representations), cpu-raster,
-   cpu-simd-loc layouts, the hybrid / fragment-DDA renderers.
+4. **Current:** port the remaining unique pieces (the user, 2026-10-10: "we remove
+   technical debt"). Sub-steps, each verified, committed and pushed on its own:
+   - 4a. ~~Retire what compositions already cover~~: gpu-dda (plain), gpu-sdf,
+     gpu-bitmask, the gpu-compose alias (done).
+   - 4b. tree64 as a storage with its tree-descent walk (gpu-tree64).
+   - 4c. SVO-DAG as a storage (gpu-svo-dag).
+   - 4d. clipmap as a storage (gpu-clipmap).
+   - 4e. the beam prepass as a visibility stage (gpu-beam).
+   - 4f. path tracing as a shading component (gpu-pathtrace).
+   - 4g. LOD in the storage interface (gpu-dda-lod).
+   - 4h. hardware RT as a back end (gpu-rtx, gpu-rtx-bricks).
+   - 4i. fragment-shader dispatch and the hybrid G-buffer (gpu-frag-dda, gpu-hybrid).
+   - 4j. CPU: cpu-simd, cpu-simd-loc layouts and tiles, cpu-raster.
+   - 4k. discovery as raster / CPU visibility (gpu-discover, cpu-discover, cpu-cluster).
+   - 4l. their own representations: voxelspace (gpu, cpu) and splats.
+   cpu-reference stays a monolith on purpose.
 5. Remove the legacy section and the monolith crates.
 
 Also wanted, sized for single steps:
@@ -414,6 +423,13 @@ earlier if meshes become more urgent; 7c depends on 6′.
   did) costs ~1 dB on naive / cubes against the reference; the unclamped cell (the
   former gpu-raster's `fract`) is used for texels, the clamped one only for the
   exposure-merge block lookup.
+
+### 2026-10-10: phase 4a (retire covered renderers)
+- Retired gpu-sdf, gpu-bitmask, the plain gpu-dda entry and the gpu-compose alias; their
+  exact compositions (`distance + sphere`, `rows + rowrun`, `bricks + refloor`) match them
+  (phase 1 results). The gpu-dda crate now holds only gpu-dda-lod (until 4g).
+- The distance-field test moved into `storage/distance`. GUI tests and `scale_curve`
+  use compositions (`RENDERER=gpu-compute:prefix+refloor`).
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

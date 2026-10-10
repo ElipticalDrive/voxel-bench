@@ -18,7 +18,6 @@ pub fn build(d: &DenseChunk) -> Vec<u32> {
 /// of the chunk; 0 for solid cells. Separable: rows, then max-min passes along z and y.
 pub fn chebyshev_df(chunk: &DenseChunk) -> Vec<u8> {
     const INF: i32 = 64;
-    let n = 32usize;
     let mut a = vec![INF; CHUNK_VOLUME];
     // x: 1D distance to the nearest solid in the row.
     for y in 0..32 {
@@ -71,6 +70,26 @@ pub fn chebyshev_df(chunk: &DenseChunk) -> Vec<u8> {
     };
     let a = pass(&a, 2);
     let a = pass(&a, 1);
-    let _ = n;
     a.into_iter().map(|d| d.min(32) as u8).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mr_core::BlockId;
+
+    #[test]
+    fn distance_field_matches_brute_force() {
+        let mut c = DenseChunk::filled(BlockId::AIR);
+        for p in [IVec3::new(3, 4, 5), IVec3::new(20, 30, 1), IVec3::new(31, 0, 31), IVec3::new(10, 10, 10)] {
+            c.set(p, BlockId(1));
+        }
+        let solids: Vec<IVec3> = (0..CHUNK_VOLUME).map(mr_core::chunk::cell_of_index).filter(|p| c.get(*p).is_solid()).collect();
+        let df = chebyshev_df(&c);
+        for i in (0..CHUNK_VOLUME).step_by(37) {
+            let p = mr_core::chunk::cell_of_index(i);
+            let want = solids.iter().map(|s| (*s - p).abs().max_element()).min().unwrap().min(32);
+            assert_eq!(df[i] as i32, want, "{p}");
+        }
+    }
 }

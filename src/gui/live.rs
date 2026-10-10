@@ -1356,7 +1356,7 @@ mod tests {
             view_radius = 3
             isolation = "thread"
             [[renderer]]
-            name = "gpu-dda"
+            compose = { backend = "gpu-compute" }
             [[renderer]]
             compose = { backend = "gpu-raster" }
             [[renderer]]
@@ -1509,18 +1509,14 @@ mod demo {
 mod scale_curve {
     use super::*;
 
-    /// Prints quality vs render scale for a renderer: `RENDERER=gpu-dda cargo test
+    /// Prints quality vs render scale for a renderer: `RENDERER=gpu-compute:bricks+refloor cargo test
     /// --release --bin multirenderer scale_curve -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn scale_curve() {
-        let renderer = std::env::var("RENDERER").unwrap_or("gpu-dda".into());
-        let plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/terrain.toml")), &[
-            "run.isolation=\"thread\"".into(),
-            format!("renderer=[{{name=\"{renderer}\"}}]"),
-            "run.resolution=[1280,720]".into(),
-        ])
-        .unwrap();
+        let renderer = std::env::var("RENDERER").unwrap_or("gpu-compute:bricks+refloor".into());
+        let mut plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/terrain.toml")), &["run.isolation=\"thread\"".into(), "run.resolution=[1280,720]".into()]).unwrap();
+        plan.renderers = vec![RendererSpec::from_cli(&renderer).unwrap()];
         let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0 };
         let live = LiveHandle::start(plan, control, || {});
         let wait = |f: &dyn Fn(&Shared) -> bool| {

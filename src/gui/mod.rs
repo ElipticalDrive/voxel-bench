@@ -1468,7 +1468,7 @@ mod tests {
             view_radius = 3
             isolation = "thread"
             [[renderer]]
-            name = "gpu-dda"
+            compose = { backend = "gpu-compute" }
             [[renderer]]
             compose = { backend = "gpu-raster" }
             "#,

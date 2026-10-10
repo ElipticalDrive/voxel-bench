@@ -26,13 +26,6 @@ pub fn entry() -> RendererEntry {
     RendererEntry { info, create: |p, w| Ok(Box::new(GpuCompose::new(p, w)?)) }
 }
 
-/// The step-6′ name, kept so older plans and reports still run (listed as legacy).
-pub fn entry_legacy() -> RendererEntry {
-    RendererEntry {
-        info: || RendererInfo { name: "gpu-compose".into(), description: "Legacy name of the gpu-compute back end (storage / visibility chosen by options)".into(), ..info() },
-        create: |p, w| Ok(Box::new(GpuCompose::new(p, w)?)),
-    }
-}
 
 fn info() -> RendererInfo {
     RendererInfo {

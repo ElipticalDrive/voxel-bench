@@ -1,5 +1,7 @@
-//! GPU compute ray caster: one thread per pixel walks a three-level DDA (chunk, 4^3
-//! brick, voxel) through the shared GPU voxel world, with ray-traced shadows.
+//! gpu-dda-lod: a GPU compute ray caster over level-of-detail chunks. One thread per pixel
+//! walks a three-level DDA (chunk, 4^3 brick, voxel) through the shared GPU voxel world,
+//! with ray-traced shadows. (Plain gpu-dda is the composition
+//! `gpu-compute: bricks + refloor`.)
 
 use std::time::Instant;
 
@@ -10,10 +12,6 @@ use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite};
 use mr_gpu::voxels::{DDA_OCCLUSION_WGSL, Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
 use serde::Deserialize;
-
-pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, w| Ok(Box::new(GpuDda::new(p, w, false)?)) }
-}
 
 /// The same ray caster consuming LOD chunks: beyond the full-resolution region each
 /// streamed LOD level doubles the cell size, so view distance grows geometrically.
@@ -31,16 +29,6 @@ pub fn entry_lod() -> RendererEntry {
     }
 }
 
-fn info() -> RendererInfo {
-    RendererInfo {
-        name: "gpu-dda".into(),
-        description: "Compute-shader ray caster: hashed chunk table, 4^3 brick occupancy skipping, ray-traced shadows".into(),
-        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "wgpu".into(), "meshes".into()],
-        modes: vec![RenderMode::Unlit, RenderMode::Lit],
-        max_lod: 0,
-        params: params(),
-    }
-}
 
 fn params() -> Vec<ParamSpec> {
     vec![
