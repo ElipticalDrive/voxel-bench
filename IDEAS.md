@@ -882,6 +882,40 @@ unlit + mesh. In the GUI, make lighting and meshes two latching buttons.
     path (hardware RT has it free).
 - *GUI.* Two latching toggles, **Lit** and **Meshes**, replacing the Lit/Unlit buttons.
 
+**Result (implemented: mesh mode core, PLAN step 7, plus gpu-raster as the first
+renderer, 7b).**
+- *Modes.* A pass mode is lighting plus meshes: `unlit`, `lit`, `unlit+meshes`,
+  `lit+meshes` (`PassMode` in mr-core). Renderers keep receiving `RenderMode`, plus
+  `FrameRequest.meshes`.
+- *Opting in.* Renderers declare support with the `meshes` tag and receive geometry
+  through `Renderer::update_meshes`, which does nothing by default. None of the 34
+  renderers without mesh support needed a change. Benchmarks skip them in `+meshes`
+  passes; the GUI draws their voxels and labels the tile "(no meshes)".
+- *Scene.* `scene.meshes`: procedural box, sphere and torus with per-vertex sRGB
+  colours, scattered copies (`count`, `spread`), and spin / orbit / bob animation, all
+  deterministic in the frame index. Geometry is sent once; instances are sent whenever
+  they change.
+- *Semantics* (documented in `mr_core::mesh`):
+  - interpolated sRGB vertex colours, with perspective-correct barycentrics;
+  - flat normals on the side facing the viewer;
+  - voxels and meshes occlude each other by distance;
+  - lit uses the voxel lighting model, with voxels shadowing meshes;
+  - **meshes cast no shadows yet**, neither on voxels nor on each other. That is a
+    simplification of the proposal above, so the reference and every renderer agree
+    now; mesh shadows are 7d.
+- *Reference.* Two-sided f64 Möller–Trumbore against world-space triangles with
+  bounding-sphere culling; the nearest mesh hit in front of the voxel hit wins.
+- *GPU.* `mr_gpu::meshes` is shared mesh drawing for rasterisers: per frame, the CPU
+  writes camera-relative triangles, which are drawn into the renderer's depth buffer
+  with fill, depth-pre-pass and equal-depth pipelines. gpu-raster uses it. The ray
+  casters (7c) can reuse it for "raster meshes first, rays capped at mesh depth".
+- *Measured* (plans/meshes.toml, the voxel Cornell box with a tumbling torus, spheres
+  orbiting the pillar and 12 bobbing boxes, 5,520 triangles, 1080p):
+  - gpu-raster: unlit 63.4 dB (64.4 without meshes), lit 71.1 dB (72.7); GPU time
+    0.21 → 0.23 ms lit, so meshes cost about 1 dB of edge pixels and almost no time;
+  - in the live GUI end-to-end test, a probe in `lit+meshes` scored gpu-raster 60.9 dB
+    and gpu-dda (no mesh support) 29.7 dB.
+
 ---
 
 ## Suggested order

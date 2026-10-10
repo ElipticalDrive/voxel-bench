@@ -23,8 +23,8 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 ## How to verify and measure
 
 - Builds, zero warnings: `cargo build` and `cargo build --release`.
-- Unit tests: `cargo test -q --workspace` (32).
-- GPU end-to-end tests: `cargo test -q --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve`.
+- Unit tests: `cargo test -q --workspace` (36).
+- GPU end-to-end tests: `cargo test -q --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve` (3, including mesh mode).
 - One renderer against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{name="gpu-dda"}]' -s output.dir=\"target/check\"`
   - Options go in `options={...}`.
@@ -129,8 +129,8 @@ Further steps:
 | # | Step | Time | vs. the 2½ h stretch | Notes |
 |---|---|---|---|---|
 | 6′ | ~~**Storage + traversal slice** of §12~~ | done | | Done 2026-10-09: `gpu-compose` with storages bricks/hier/prefix and traversals refloor/incremental. |
-| 7 | **Mesh mode, core** (§13): mode flags and capabilities, mesh world updates and IPC, plan animation, triangle support in cpu-reference, GUI latching toggles, tuner filtering | 3–4 h | ~1½ | Nothing renders meshes yet except the reference. |
-| 7b | Meshes in the raster renderers (gpu-raster first) | 0.5–1 h each | ~¼ each | Same depth buffer. |
+| 7 | ~~**Mesh mode, core** (§13)~~ | done | | Done 2026-10-09: PassMode, `meshes` tag, `update_meshes`, scene meshes with animation, reference triangles, GUI toggles. The tuner tunes knobs within a lane and doesn't pick renderers, so it needs no filter. IDEAS §13 "Result". |
+| 7b | Meshes in the raster renderers (gpu-raster ~~first~~ done) | 0.5–1 h each | ~¼ each | `mr_gpu::meshes` makes each further raster renderer a few lines (gpu-raster-naive, gpu-cubes, gpu-visbuffer, gpu-discover's raster). |
 | 7c | Mesh compositing module for ray casters (raster meshes first, rays capped at mesh depth) | 1.5–2.5 h | ~¾ | Gives every GPU ray caster on the slice mesh support at once. |
 | 7d | Meshes shadowing voxels | 2–4 h | ~1–1½ | Later and optional; needs a mesh BVH in the shadow path. |
 
@@ -148,7 +148,7 @@ Further steps:
 first. Steps 1–4 change the inside of single components, so modularity wouldn't make them
 cheaper, and step 1 tells us what the storage/traversal interface must offer.
 
-**Order:** ~~1~~ → ~~6′~~ → ~~2~~ → ~~3~~ → ~~4~~ → ~~2b~~ (done) → 7 → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
+**Order:** ~~1~~ → ~~6′~~ → ~~2~~ → ~~3~~ → ~~4~~ → ~~2b~~ → ~~7~~ (done) → 7c → 7b (more renderers) → 5 → rest of 6. Transparent cubes are the other remaining big feature; the user wants them later. → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
 earlier if meshes become more urgent; 7c depends on 6′.
 
 ## Progress log
@@ -230,6 +230,18 @@ earlier if meshes become more urgent; 7c depends on 6′.
 - **Finding:** T-junctions dominate the quality cost of merging; growing silhouettes
   bleeds more than it fixes.
 
+### 2026-10-09 (later): step 7
+- **Mesh mode:**
+  - `PassMode` with `+meshes` modes, the `meshes` tag, `Renderer::update_meshes`, IPC v3;
+  - scene meshes (shapes, copies, animation);
+  - triangles in cpu-reference;
+  - `mr_gpu::meshes` and gpu-raster support;
+  - GUI Lit and Meshes toggles (L, N);
+  - plans/meshes.toml;
+  - tests, including a live end-to-end mesh test.
+- **Simplification:** meshes cast no shadows yet (7d), so every renderer can match the
+  reference now.
+
 ## Future additions (backlog by category)
 
 A menu to choose from, not a commitment. The user will add their own; ideas the user
@@ -283,13 +295,15 @@ voices also go into IDEAS.md with analysis.
 - Max-height mipmaps and temporal ray start distances (IDEAS §4).
 
 ### Lighting and shading
-- Mesh mode (IDEAS §13): animated polygons with the voxel scene.
+- ~~Mesh mode (IDEAS §13)~~: core done (step 7). Next: mesh shadows (7d), more renderers
+  (7b, 7c), skinned or textured meshes.
 - Baked or propagated flood-fill light (Minecraft-style) on the quality/speed curve
   against ray-traced shadows.
 - Ambient occlusion: per-vertex voxel AO versus ray-traced AO.
 - Soft shadows from area lights; coloured light propagation.
-- Transparent and translucent blocks (glass, water, leaves with alpha), which every
-  renderer would need to handle.
+- **Transparent and translucent blocks** (glass, water, leaves with alpha), which every
+  renderer would need to handle. The user named this the other remaining big feature,
+  to tackle at a later date (2026-10-09).
 - Volumetric fog and god rays through the voxel grid.
 - Reflections (screen-space versus ray-traced) for water and glossy blocks.
 

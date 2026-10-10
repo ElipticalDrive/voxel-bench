@@ -46,7 +46,7 @@ GUI. It has five areas:
 
 Keys: **F5** starts or restarts the live session. **WASD**, **Space** and **Shift** fly
 (**Ctrl** for 5× speed). Right-drag, left-drag or the arrow keys look, and the mouse
-wheel changes speed. **L** toggles lit/unlit. **F** switches between following the plan's
+wheel changes speed. **L** toggles lit/unlit, **N** toggles meshes. **F** switches between following the plan's
 camera path and free flight. **P** plays or pauses the scene clock, **[ ]** scrubs it, and
 **R** resets it. **E** enters edit mode: click to remove a block, Ctrl+click to place one.
 **G** drops a light at the camera. **C** runs a comparison. **1–9**, **Tab** and **Esc**
@@ -55,6 +55,21 @@ leaves). **Z** draws exactly one frame pixel per screen pixel, snapped to the ph
 pixel grid and cropped rather than scaled. **M** sets the render resolution to the
 tile's exact pixel size and restarts the session, so F11, 1 and M together give native
 display resolution. **O** hides the overlays. The ❓ Keys tab lists everything.
+
+### Mesh mode
+
+Scenes can contain animated triangle meshes (`scene.meshes`: box, sphere and torus with
+vertex colours, scattered copies, and spin / orbit / bob animation; see
+`plans/meshes.toml`). A pass mode is lighting plus meshes: `run.modes` takes `unlit`,
+`lit`, `unlit+meshes` and `lit+meshes`, and the GUI has latching **Lit** and **Meshes**
+toggles.
+- *Who draws meshes:* renderers with the `meshes` tag (`multirenderer list`), currently
+  `cpu-reference` and `gpu-raster`. Others are skipped in `+meshes` benchmark passes and
+  labelled "(no meshes)" in the GUI.
+- *Semantics* (see `mr_core::mesh`): meshes and voxels occlude each other, lit meshes
+  are shadowed by voxels, and meshes cast no shadows yet.
+- *For renderer authors:* GPU rasterisers can use `mr_gpu::meshes`, CPU renderers
+  `cpu_reference::mesh`.
 
 ### Knobs, hot swaps, quality probes and auto-tuning
 
