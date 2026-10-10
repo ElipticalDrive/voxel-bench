@@ -92,13 +92,15 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   - cpu: storages bricks, hier, prefix, u8, bits, palette, brickmajor, morton;
     visibility refloor, incremental; shading direct (16 combinations);
   - cpu-raster: geometry greedy, naive; visibility raster; shading direct (2);
+  - gpu-discover: storage (the nine GPU ones); visibility quadtree; shading direct (9);
+  - cpu-discover: storage (the eight CPU ones); visibility quadtree, cluster; shading
+    direct (16);
   - gpu-raster: geometry greedy, naive, cubes; visibility raster, visbuffer, gbuffer;
     storage (for shadow rays) the eight GPU ones; shading direct (72 combinations);
   - gpu-rt: geometry greedy, naive, boxes; visibility rayquery; shading direct,
     pathtrace (6 combinations).
 - **Legacy renderers** (not yet split into components): cpu-reference (stays a
   monolith on purpose), cpu-voxelspace,
-  cpu-discover, cpu-cluster, gpu-discover,
   gpu-splat, gpu-voxelspace.
 - **Verification:** zero warnings in both builds, 40 unit tests and 3 GPU end-to-end
   tests pass.
@@ -202,7 +204,8 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
      `dispatch`, raster visibility `gbuffer`; retired gpu-frag-dda, gpu-hybrid).
    - 4j. ~~CPU: cpu-simd, cpu-simd-loc layouts and tiles, cpu-raster~~ (done: storages
      brickmajor / morton, cpu knob `schedule`, back end `cpu-raster`).
-   - 4k. discovery as raster / CPU visibility (gpu-discover, cpu-discover, cpu-cluster).
+   - 4k. ~~discovery~~ (done: back ends `gpu-discover` and `cpu-discover`, visibility
+     `quadtree` / `cluster`, over the composed storage).
    - 4l. their own representations: voxelspace (gpu, cpu) and splats.
    cpu-reference stays a monolith on purpose.
 5. Remove the legacy section and the monolith crates.
@@ -582,6 +585,32 @@ earlier if meshes become more urgent; 7c depends on 6′.
   12.0); naive on the CPU is new (12.4 / 10.4 fps).
 - **Retired:** cpu-simd and the presets cpu-simd-brickmajor / -morton /
   -tiles / -best (the cpu-simd and cpu-simd-loc crates).
+
+### 2026-10-10: phase 4k (discovery as components)
+- **Design:** discovery (the user's idea) replaces both geometry and raster visibility, so
+  it gets its own back ends rather than a slot on gpu-raster. The discovery machinery is
+  kept whole (all knobs, events, incremental mode, merge, painter order, audit, views
+  tiles / rays / churn / overdraw / quads / clusters / kinds); only its access to the
+  world became the composed storage.
+- **`backends/gpu-discover`** (slots storage, visibility `quadtree`, shading): rays,
+  exposure tests and lit shadow rays read the composed storage (group 2) with the
+  refloor walk (`ctrace` replaces the pool `trace`; `block_at` goes through `s_top` /
+  `s_block`), and fragments shade through `shade_hit`. Works over every GPU storage,
+  including tree64 / svo_dag / clipmap (no voxel pool then).
+- **`backends/cpu-discover`** (slots storage, visibility `quadtree` / `cluster`,
+  shading): `grid.rs` (a copy of cpu-simd's grid and DDA) became a `World` trait over the
+  components' `Grid<R>` with the refloor packet walk, one store per CPU storage; the
+  discovery and cluster code is unchanged. cpu-cluster is `cpu-discover: … + cluster`;
+  the `algorithm` knob is now `visibility` (old name still accepted).
+- **Results** (terrain, interleaved repeats): identical rays per pixel, face-set sizes,
+  images and audits to the three former renderers in every configuration measured
+  (gpu-discover plain / incremental / audit; cpu quadtree and cluster). gpu-discover GPU
+  time equal unlit, −4% lit (shadow rays take the composed walk); over `prefix` −8–10%,
+  over `tree64` +25% (exposure tests descend the tree). cpu-discover discovery time
+  equal (41.4 vs 41.3 ms quadtree, 95.8 vs 95.6 cluster); over `hier` −7%, cluster over
+  `prefix` −4%. All views checked visually.
+- **Retired:** the gpu-discover, cpu-discover and cpu-cluster renderers (their crates
+  moved to `backends/`).
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

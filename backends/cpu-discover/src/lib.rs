@@ -1,5 +1,9 @@
-//! `cpu-discover`: self-directed (non screen-space) visibility ray casting on the CPU,
-//! pipelined with a GPU rasteriser.
+//! CPU-discover back end: self-directed (non screen-space) visibility ray casting on the
+//! CPU, pipelined with a GPU rasteriser. Assembled from components (IDEAS §12): the CPU
+//! **storage** discovery rays walk (any CPU representation, refloor walk; see `grid`), the
+//! **visibility** component (`quadtree` below, or `cluster`, the user's face-cluster
+//! design of IDEAS §10; was the cpu-cluster renderer) and **shading** `direct` (the GPU
+//! raster's lit model; its shadow rays walk the GPU voxel pool).
 //!
 //! Instead of one ray per pixel, an adaptive screen-space quadtree of CPU rays decides
 //! where to look so that it casts as few rays as possible while still discovering every
@@ -32,6 +36,7 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use discover::{Output, Settings, State, cast};
+use mr_components::{Slot, components};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::{DDA_OCCLUSION_WGSL, Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
@@ -40,29 +45,28 @@ use rayon::prelude::*;
 use serde::Deserialize;
 
 pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, w| Ok(Box::new(CpuDiscover::new(p, w, false)?)) }
+    RendererEntry { info, create: |p, w| Ok(Box::new(CpuDiscover::new(p, w)?)) }
 }
 
-/// The same renderer with face-cluster discovery (IDEAS §10) as its default algorithm.
-pub fn entry_cluster() -> RendererEntry {
-    RendererEntry {
-        info: || RendererInfo {
-            name: "cpu-cluster".into(),
-            description: "Face-cluster discovery (the user's design, IDEAS §10): seed rays on a coarse-to-fine pixel lattice; from each hit, a flood fill over coplanar exposed faces confirmed by corner rays (each lattice point cast once); confirmed faces cover their screen area; GPU rasterises the found faces".into(),
-            tags: vec!["cpu".into(), "gpu".into(), "raster".into(), "raycast".into(), "hybrid".into(), "discovery".into(), "wgpu".into()],
-            modes: vec![RenderMode::Unlit, RenderMode::Lit],
-            max_lod: 0,
-            params: params(),
-        },
-        create: |p, w| Ok(Box::new(CpuDiscover::new(p, w, true)?)),
+const BACKEND: &str = "cpu-discover";
+
+/// Checks that `name` is a `slot` component with a cpu-discover implementation.
+fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
+    match mr_components::unavailable(BACKEND, slot, name) {
+        None => Ok(name.to_string()),
+        Some(why) => anyhow::bail!(why),
     }
+}
+
+fn names(slot: Slot) -> Vec<&'static str> {
+    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| c.name).collect()
 }
 
 fn info() -> RendererInfo {
     RendererInfo {
         name: "cpu-discover".into(),
-        description: "Self-directed visibility: CPU adaptive-quadtree rays discover the visible face set (temporal, pipelined one frame ahead), GPU rasterises only those faces; lit mode adds ray-traced shadows".into(),
-        tags: vec!["cpu".into(), "gpu".into(), "raster".into(), "raycast".into(), "hybrid".into(), "wgpu".into()],
+        description: "CPU-discover back end (CPU storage, quadtree or cluster visibility, shading). Self-directed visibility: CPU rays (adaptive quadtree, or face clusters) discover the visible face set (temporal, pipelined one frame ahead), GPU rasterises only those faces; lit mode adds ray-traced shadows".into(),
+        tags: vec!["cpu".into(), "gpu".into(), "raster".into(), "raycast".into(), "hybrid".into(), "discovery".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         params: params(),
@@ -71,7 +75,9 @@ fn info() -> RendererInfo {
 
 fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::choice("algorithm", "quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (IDEAS §10). Default: quadtree for cpu-discover, cluster for cpu-cluster", &["quadtree", "cluster"], "quadtree", true),
+        ParamSpec::choice("storage", "Storage component: the CPU representation discovery rays walk (refloor)", &names(Slot::Storage), "bricks", false),
+        ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (IDEAS §10; was cpu-cluster)", &names(Slot::Visibility), "quadtree", true),
+        ParamSpec::choice("shading", "Shading component", &names(Slot::Shading), "direct", false),
         ParamSpec::int("seed_step", "Cluster: coarsest seed lattice spacing (px, rounded to a power of two)", 1, 256, 16, true),
         ParamSpec::choice("sky", "Cluster: corners = a lattice cell at spacing <= sky_tile is sky when all four corner seeds miss; sparse = one missed seed covers its cell (cheaper; thin things may take a few frames to appear)", &["corners", "sparse"], "corners", true),
         ParamSpec::choice("view", "image: the rendered scene. Cluster discovery only: clusters = one colour per cluster found this pass; kinds = confirmed faces (all corners visible) green, faces with an occluded corner yellow, faces carried over from earlier passes grey", &["image", "clusters", "kinds"], "image", true),
@@ -99,7 +105,11 @@ fn params() -> Vec<ParamSpec> {
 #[serde(default, deny_unknown_fields)]
 struct Options {
     adapter: Option<String>,
-    algorithm: Option<String>,
+    storage: String,
+    /// `algorithm` is its name from before the component split.
+    #[serde(alias = "algorithm")]
+    visibility: String,
+    shading: String,
     seed_step: u32,
     sky: String,
     view: String,
@@ -126,7 +136,9 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             adapter: None,
-            algorithm: None,
+            storage: "bricks".into(),
+            visibility: "quadtree".into(),
+            shading: "direct".into(),
             seed_step: 16,
             sky: "corners".into(),
             view: "image".into(),
@@ -156,13 +168,13 @@ impl Options {
         Settings {
             tile: self.tile.max(1),
             face_criterion: self.criterion == "face",
-            sky_tile: self.sky_tile.unwrap_or(if self.algorithm.as_deref() == Some("cluster") { 16 } else { 8 }),
+            sky_tile: self.sky_tile.unwrap_or(if self.visibility == "cluster" { 16 } else { 8 }),
             keep_frames: self.keep_frames,
             max_footprint: self.max_footprint,
             margin: self.margin,
             dilate: self.dilate,
             dilate_below: self.dilate_below,
-            cluster: self.algorithm.as_deref() == Some("cluster"),
+            cluster: self.visibility == "cluster",
             seed_step: self.seed_step,
             sky_sparse: self.sky == "sparse",
         }
@@ -251,10 +263,11 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
 }
 
 impl CpuDiscover {
-    pub fn new(p: InitParams, waker: Waker, cluster: bool) -> anyhow::Result<Self> {
-        let mut opts: Options = p.options()?;
-        let algo = opts.algorithm.get_or_insert_with(|| if cluster { "cluster" } else { "quadtree" }.into());
-        anyhow::ensure!(["quadtree", "cluster"].contains(&algo.as_str()), "algorithm must be `quadtree` or `cluster`, not `{algo}`");
+    pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
+        let opts: Options = p.options()?;
+        let storage = check(Slot::Storage, &opts.storage)?;
+        check(Slot::Visibility, &opts.visibility)?;
+        check(Slot::Shading, &opts.shading)?;
         let gpu = Gpu::new(GpuRequest {
             experimental: false,
             adapter: opts.adapter.as_deref(),
@@ -341,7 +354,7 @@ impl CpuDiscover {
             ring: FrameRing::new(&gpu, p.width, p.height, fif, waker.clone()),
             gpu,
             world,
-            cpu: grid::CpuWorld::default(),
+            cpu: grid::CpuWorld::new(&storage)?,
             opts,
             pool,
             state: Some(State::default()),
@@ -429,7 +442,7 @@ impl Renderer for CpuDiscover {
             None => {
                 let st = self.state.take().unwrap_or_default();
                 let g = grid.clone();
-                self.pool.install(|| discover::discover(st, &g, &c, w, h, &settings))
+                self.pool.install(|| discover::discover(st, &*g, &c, w, h, &settings))
             }
         };
         let wait_ms = start.elapsed().as_secs_f64() * 1e3;
@@ -470,7 +483,7 @@ impl Renderer for CpuDiscover {
         // 3. Optional audit against a full per-pixel cast of the camera actually drawn.
         let audit = if self.opts.audit {
             let t = Instant::now();
-            let (px, faces, hit) = self.audit(&grid, &out.state.s, &c);
+            let (px, faces, hit) = self.audit(&*grid, &out.state.s, &c);
             Some((px, faces, hit, t.elapsed().as_secs_f64() * 1e3))
         } else {
             None
@@ -489,7 +502,7 @@ impl Renderer for CpuDiscover {
             let (tx, rx) = channel();
             let g = grid.clone();
             self.pool.spawn(move || {
-                let _ = tx.send(discover::discover(st, &g, &next_cam, w, h, &settings));
+                let _ = tx.send(discover::discover(st, &*g, &next_cam, w, h, &settings));
             });
             self.pending = Some(rx);
         }
@@ -598,7 +611,7 @@ impl Renderer for CpuDiscover {
             ("build_ms".into(), out.phase_ms[2] as f64),
             ("tiles_accepted".into(), out.tiles_accepted as f64),
             ("discovery_ms".into(), out.ms as f64),
-            ("algorithm_cluster".into(), self.opts.algorithm.as_deref().map_or(0.0, |a| (a == "cluster") as u32 as f64)),
+            ("algorithm_cluster".into(), (self.opts.visibility == "cluster") as u32 as f64),
             ("wait_ms".into(), wait_ms),
         ];
         if let Some((px, faces, hit, ms)) = audit {
@@ -622,7 +635,7 @@ impl Renderer for CpuDiscover {
         let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
         match name {
             "tile" => self.opts.tile = int(32),
-            "algorithm" => self.opts.algorithm = Some(value.as_str().unwrap_or("quadtree").to_string()),
+            "algorithm" | "visibility" => self.opts.visibility = check(Slot::Visibility, value.as_str().unwrap_or("quadtree"))?,
             "seed_step" => self.opts.seed_step = int(16),
             "sky" => self.opts.sky = value.as_str().unwrap_or("corners").to_string(),
             "view" => self.opts.view = value.as_str().unwrap_or("image").to_string(),

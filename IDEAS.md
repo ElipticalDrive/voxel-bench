@@ -718,6 +718,12 @@ slow. Good pairings are fast and bad pairings are slow, without odd architecture
 
 ---
 
+*Components (2026-10-10, PLAN phase 4k).* Discovery is now two back ends, `gpu-discover`
+(visibility `quadtree`) and `cpu-discover` (visibility `quadtree` or `cluster`), over any
+storage of their side: the same discovery, now combinable with prefix, hier, tree64 and
+the rest. Same rays, faces and images as before; quadtree discovery over `prefix` is
+8–10% faster on the GPU, over `hier` 7% faster on the CPU.
+
 ## 10. Face-cluster discovery
 
 **Idea (user).**

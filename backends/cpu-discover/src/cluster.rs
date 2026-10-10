@@ -349,7 +349,7 @@ mod tests {
             }
         }
         d.0[cell_index(IVec3::new(20, 8, 18))] = BlockId(2);
-        let mut w = CpuWorld::default();
+        let mut w = CpuWorld::new("bricks").unwrap();
         w.apply(&[WorldUpdate::ChunkLoad { key: ChunkKey { pos: IVec3::ZERO, lod: 0 }, data: ChunkData::Dense(Arc::new(d)) }]);
         w.snapshot()
     }
@@ -366,13 +366,13 @@ mod tests {
         for (pos, target) in [([16.0, 6.0, 2.0], [16.0, 6.0, 24.0]), ([3.0, 12.0, 4.0], [18.0, 4.0, 20.0]), ([28.5, 2.5, 9.0], [10.0, 8.0, 22.0])] {
             let cam = Camera::look_at(DVec3::from_array(pos), DVec3::from_array(target), 70.0);
             for step in [16, 4] {
-                let out = discover(State::default(), &grid, &cam, w, h, &settings(step));
+                let out = discover(State::default(), &*grid, &cam, w, h, &settings(step));
                 let rays = Rays::new(&cam, w, h, 0.0);
                 let (bmin, bmax) = grid.bounds_rel(rays.cb);
                 let mut missing = 0;
                 for y in 0..h {
                     for x in 0..w {
-                        if let Some((k, _, _)) = cast(&grid, &rays, bmin, bmax, x as f32 + 0.5, y as f32 + 0.5) {
+                        if let Some((k, _, _)) = cast(&*grid, &rays, bmin, bmax, x as f32 + 0.5, y as f32 + 0.5) {
                             if !out.state.s.contains_key(&k) {
                                 missing += 1;
                             }
