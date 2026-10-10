@@ -625,6 +625,31 @@ idea address its measured costs:
 
 On the CPU this maps onto rayon with a Morton-sorted work vector per level.
 
+**Result (PLAN step 3, gpu-discover).** Measured before changing anything (terrain
+flight, full re-discovery, 1080p): rays 0.92 ms, classify 1.00 ms, clear/survive 0.24
+ms, raster 0.15 ms. The deep levels (2-px and 1-px tiles) dominate.
+- *Morton order: no gain.* Level 0 was enumerated along a Z-curve, and queue appends
+  were made order-preserving (a workgroup prefix sum instead of a local atomic), so deep
+  levels inherit the locality. GPU time was unchanged within noise (3.07 vs 3.04 ms
+  full, 3.69 vs 3.61 ms incremental, same run). Kept as the `morton` knob, off by
+  default; the ordered appends stay because they make the face list's order
+  deterministic.
+- *Why: the passes, not the order.* Per level, rays cost 1.2–2.9 ns each, against 0.45
+  ns per pixel for gpu-dda including shading. Level 0's 33k rays take 0.095 ms, about the
+  same as level 1's 97k. Each level pass lasts at least as long as its slowest ray plus
+  the gap between dependent passes, which adds up to roughly 0.6 ms of a 1.9 ms frame.
+  This is the "barriers between levels" cost. A persistent kernel (step 3b) is what would
+  remove it.
+- *What did pay: inline small footprints.* The footprint pass gave each accepted tile a
+  64-thread workgroup, but deep tiles have 1–4 cells. Footprints of up to `inline_fp`
+  (8) cells are now expanded by the classifying thread:
+  - level-2 jobs: 38k → 4.6k;
+  - level-2 classify: −31%;
+  - edits: full 1.72 → 1.35 ms, incremental 1.90 → 1.58 ms;
+  - images identical.
+
+  At 32 cells the single threads diverge and level 1 slows down, so 8 is the default.
+
 ---
 
 ## 9. A modular renderer library with no performance penalty

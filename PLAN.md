@@ -118,8 +118,8 @@ sit at the high end.
 | 1b | ~~The same on the GPU~~ | done | | Absorbed into 6′: `gpu-compose storage=prefix`. |
 | 2 | ~~**Event-driven discovery** in gpu-discover~~ | done | | Done 2026-10-09: static frames 17× cheaper; pure pans need the face-id raster after all (pixel sampling); exact change areas. IDEAS §3 "Result 2". |
 | 2b | **Incremental greedy merge** of the discovered set (re-merge only changed chunks) | 1.5–2.5 h | ~¾ | Worth it once 2 makes the set stable. |
-| 3 | **Morton-ordered breadth-first work queues** in gpu-discover (§8) | 1–1.5 h | ~½ | Attacks the measured ray incoherence. |
-| 3b | Persistent kernel with work stealing | 2–3 h | ~1 | Riskier: driver and forward-progress caveats. |
+| 3 | ~~**Morton-ordered breadth-first work queues**~~ | done | | Done 2026-10-09: no gain from ordering (the cost is per-level pass latency); inlining small footprints gave −17–21% on edits. IDEAS §8 "Result". |
+| 3b | Persistent kernel with work stealing | 2–3 h | ~1 | Riskier: driver and forward-progress caveats. Now the measured bottleneck: ~0.6 ms of a 1.9 ms frame is per-level pass latency. |
 | 4 | **Back-to-front order without depth testing** (§11), as a gpu-discover knob | 0.5–1 h | ~¼ | One measured experiment. |
 | 5 | **Face-cluster discovery prototype** (§10), CPU, clip-space fixed point (§7), sparse sky pass, far-field consolidation | 3–5 h | 1½–2 | A new renderer; needs careful completeness tests. |
 | 6 | **Modular library, first step** (§9): swappable storage + traversal with per-query conversions, for a few ray casters | 3–6 h | 1½–2½ | The full library takes several sessions. |
@@ -148,7 +148,7 @@ Further steps:
 first. Steps 1–4 change the inside of single components, so modularity wouldn't make them
 cheaper, and step 1 tells us what the storage/traversal interface must offer.
 
-**Order:** ~~1~~ → ~~6′~~ → ~~2~~ (done) → 3 → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
+**Order:** ~~1~~ → ~~6′~~ → ~~2~~ → ~~3~~ (done) → 4 → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
 earlier if meshes become more urgent; 7c depends on 6′.
 
 ## Progress log
@@ -208,6 +208,15 @@ earlier if meshes become more urgent; 7c depends on 6′.
 - **Views:** `view = tiles | rays | churn`; counters `frame_kind`, `frames_*_pct`,
   `faces_new`, `faces_dropped`.
 - **Findings:** see IDEAS §3 "Result 2".
+
+### 2026-10-09 (later): step 3
+- **gpu-discover:**
+  - `inline_fp` (small footprints expanded inline; level-2 jobs 38k → 4.6k);
+  - `morton` (Z-curve level 0, off: no gain);
+  - order-preserving appends;
+  - counters `jobs_L*` and `rays_L*`.
+- **Finding:** deep levels are bound by each pass's slowest ray and the gaps between
+  passes (~0.6 ms per frame), not by ray order. This points at 3b.
 
 ## Future additions (backlog by category)
 
