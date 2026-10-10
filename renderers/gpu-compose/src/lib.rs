@@ -21,6 +21,7 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
+use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, wgpu};
 use serde::Deserialize;
@@ -63,7 +64,7 @@ fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu-compose".into(),
         description: "Composable compute ray caster: storage (bricks, prefix) x traversal (refloor, incremental) chosen by knobs and fused into one shader".into(),
-        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "modular".into(), "wgpu".into()],
+        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "modular".into(), "wgpu".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         params: params(),
@@ -159,7 +160,7 @@ impl Composition {
              const EXACT: bool = {};\n\
              const VIEW_STEPS: bool = {};\n\
              const LEVEL_MASK: u32 = (S_LEVELS & {:#x}u) | 0x21u;\n\
-             {store}\n{trav}\n{}",
+             {MESH_COMPOSITE_WGSL}\n{store}\n{trav}\n{}",
             st.aux_words.max(1),
             self.exact,
             self.steps_view,
@@ -202,6 +203,8 @@ struct CameraUniform {
 pub struct GpuCompose {
     gpu: Gpu,
     world: VoxelWorld,
+    /// Mesh mode: meshes rasterised first, rays capped at their depth.
+    meshes: MeshComposite,
     comp: Composition,
     /// Composition the pipeline was built from (rebuilt lazily when knobs change it).
     built: Composition,
@@ -250,9 +253,11 @@ impl GpuCompose {
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
                 max_steps: opts.max_steps,
-                visibility: wgpu::ShaderStages::COMPUTE,
+                // Fragment too: the mesh raster pass shades with voxel shadow rays.
+                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
             },
         )?;
+        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height);
         let compute = wgpu::ShaderStages::COMPUTE;
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("compose camera"),
@@ -286,7 +291,7 @@ impl GpuCompose {
         });
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("compose"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout2)],
+            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout2), Some(meshes.layout())],
             immediate_size: 0,
         });
         let pipeline = Self::pipeline(&gpu, &pipeline_layout, &comp)?;
@@ -308,6 +313,7 @@ impl GpuCompose {
         Ok(Self {
             gpu,
             world,
+            meshes,
             built: comp.clone(),
             comp,
             pipeline,
@@ -364,6 +370,11 @@ impl GpuCompose {
 }
 
 impl Renderer for GpuCompose {
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        self.meshes.meshes.apply(update);
+        Ok(())
+    }
+
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let changed = self.world.apply(&self.gpu, updates);
         let unit = self.aux_bytes();
@@ -415,15 +426,20 @@ impl Renderer for GpuCompose {
             }));
         }
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
+        // With meshes, the mesh pass carries the frame's begin timestamp.
+        let meshes_on = self.meshes.active(req.meshes);
+        let ts = if meshes_on { self.ring.render_timestamps(ticket, true, false) } else { None };
+        self.meshes.encode(&self.gpu, &mut enc, c, self.width as f32 / self.height as f32, req.mode, req.meshes, &world_bg, ts);
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("compose"),
-                timestamp_writes: self.ring.compute_timestamps(ticket, true, true),
+                timestamp_writes: self.ring.compute_timestamps(ticket, !meshes_on, true),
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind0, &[]);
             pass.set_bind_group(1, &world_bg, &[]);
             pass.set_bind_group(2, self.bind2.as_ref(), &[]);
+            pass.set_bind_group(3, self.meshes.bind_group(), &[]);
             pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
         }
         let stats = FrameStats {
@@ -467,6 +483,7 @@ impl Renderer for GpuCompose {
         self.width = width;
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
+        self.meshes.resize(&self.gpu, width, height);
         self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output);
         self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
         Ok(())

@@ -18,8 +18,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sy = (1.0 - 2.0 * (f32(gid.y) + 0.5) / f32(cam.height)) * cam.tan_half_fov;
     let d = normalize(cam.forward + sx * cam.right + sy * cam.up);
     let o = cam.origin;
-    let h = trace_bm(o, d, vp.max_dist);
+    // Mesh mode: rays end at the mesh surface; a voxel in front of it still wins.
+    let mt = mesh_t(gid.xy, d, cam.forward);
+    let h = trace_bm(o, d, min(vp.max_dist, mt));
     var color = unpack4x8unorm(cam.sky);
+    if (!h.hit && mt < 1e29) { color = mesh_color(gid.xy); }
     if (h.hit) {
         let face = face_entered(h.axis, d[h.axis] > 0.0);
         let p = o + d * h.t;

@@ -23,7 +23,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let d = normalize(cam.forward + sx * cam.right + sy * cam.up);
     let o = cam.origin;
     ct_iters = 0u;
-    let h = ctrace(o, d, vp.max_dist);
+    // Mesh mode: rays end at the mesh surface; a voxel in front of it still wins.
+    let mt = mesh_t(gid.xy, d, cam.forward);
+    let h = ctrace(o, d, min(vp.max_dist, mt));
     if (VIEW_STEPS) {
         // Primary-ray loop iterations: red = low 8 bits, green = high bits (exact counts
         // for analysis), blue = a log-scale brightness for viewing.
@@ -33,6 +35,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     var color = unpack4x8unorm(cam.sky);
+    if (!h.hit && mt < 1e29) { color = mesh_color(gid.xy); }
     if (h.hit) {
         let face = face_entered(h.axis, d[h.axis] > 0.0);
         let p = o + d * h.t;

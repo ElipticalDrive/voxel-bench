@@ -10,6 +10,7 @@ use bytemuck::{Pod, Zeroable};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::{DDA_OCCLUSION_WGSL, Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
+use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
 use serde::Deserialize;
 
@@ -21,7 +22,7 @@ fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu-beam".into(),
         description: "gpu-dda with a per-tile beam prepass: rays start at the distance their tile's cone is provably empty (chunk level)".into(),
-        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "beam".into(), "wgpu".into()],
+        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "beam".into(), "wgpu".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         params: params(),
@@ -76,6 +77,7 @@ struct CameraUniform {
 pub struct GpuBeam {
     gpu: Gpu,
     world: VoxelWorld,
+    meshes: MeshComposite,
     pipeline: wgpu::ComputePipeline,
     prepass: wgpu::ComputePipeline,
     beam_buf: wgpu::Buffer,
@@ -117,10 +119,12 @@ impl GpuBeam {
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
                 max_steps: opts.max_steps,
-                visibility: wgpu::ShaderStages::COMPUTE,
+                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
             },
         )?;
-        let source = shader_source(DDA_OCCLUSION_WGSL, include_str!("beam.wgsl"));
+        // Mesh mode: meshes rasterised first (shaded with voxel shadows), rays capped at their depth.
+        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height);
+        let source = shader_source(DDA_OCCLUSION_WGSL, &format!("{MESH_COMPOSITE_WGSL}\n{}", include_str!("beam.wgsl")));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("beam"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("beam camera"),
@@ -157,7 +161,7 @@ impl GpuBeam {
         });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("beam"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout())],
+            bind_group_layouts: &[Some(&layout0), Some(world.layout()), None, Some(meshes.layout())],
             immediate_size: 0,
         });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -198,7 +202,8 @@ impl GpuBeam {
         });
         let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &beam_buf, &stats_buf);
         let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone());
-        Ok(Self { gpu, world, pipeline, prepass, beam_buf, stats_buf, stats_read, stats_state: Arc::new(AtomicU32::new(0)), avg_skip: 0.0, tile: opts.tile.clamp(1, 64), layout0, camera_buf, output, bind0, ring, width: p.width, height: p.height, depth: opts.frames_in_flight.max(1), waker })
+        Ok(Self {
+            meshes, gpu, world, pipeline, prepass, beam_buf, stats_buf, stats_read, stats_state: Arc::new(AtomicU32::new(0)), avg_skip: 0.0, tile: opts.tile.clamp(1, 64), layout0, camera_buf, output, bind0, ring, width: p.width, height: p.height, depth: opts.frames_in_flight.max(1), waker })
     }
 
     /// One f32 per tile at the smallest tile size (1 px), so any `tile` fits.
@@ -227,6 +232,11 @@ impl GpuBeam {
 }
 
 impl Renderer for GpuBeam {
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        self.meshes.meshes.apply(update);
+        Ok(())
+    }
+
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         self.world.apply(&self.gpu, updates);
         Ok(())
@@ -266,6 +276,10 @@ impl Renderer for GpuBeam {
         }
         let copy_stats = self.tile > 1 && self.stats_state.load(Ordering::Acquire) == 0;
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
+        // With meshes, the mesh pass carries the frame's begin timestamp.
+        let meshes_on = self.meshes.active(req.meshes);
+        let ts = if meshes_on { self.ring.render_timestamps(ticket, true, false) } else { None };
+        self.meshes.encode(&self.gpu, &mut enc, c, self.width as f32 / self.height as f32, req.mode, req.meshes, &world_bg, ts);
         if self.tile > 1 {
             enc.clear_buffer(&self.stats_buf, 0, None);
         } else {
@@ -274,10 +288,11 @@ impl Renderer for GpuBeam {
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("beam"),
-                timestamp_writes: self.ring.compute_timestamps(ticket, true, true),
+                timestamp_writes: self.ring.compute_timestamps(ticket, !meshes_on, true),
             });
             pass.set_bind_group(0, &self.bind0, &[]);
             pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(3, self.meshes.bind_group(), &[]);
             if self.tile > 1 {
                 pass.set_pipeline(&self.prepass);
                 pass.dispatch_workgroups(self.width.div_ceil(self.tile).div_ceil(8), self.height.div_ceil(self.tile).div_ceil(8), 1);
@@ -324,6 +339,7 @@ impl Renderer for GpuBeam {
         self.width = width;
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
+        self.meshes.resize(&self.gpu, width, height);
         self.beam_buf = Self::beam_buf(&self.gpu, width, height);
         self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam_buf, &self.stats_buf);
         self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());

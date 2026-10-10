@@ -155,8 +155,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let tc = gid.xy / cam.tile;
         tmin = beam[tc.y * cam.tiles_x + tc.x];
     }
-    let h = trace_from(o, d, vp.max_dist, tmin);
+    // Mesh mode: rays end at the mesh surface; a voxel in front of it still wins.
+    let mt = mesh_t(gid.xy, d, cam.forward);
+    let h = trace_from(o, d, min(vp.max_dist, mt), tmin);
     var color = unpack4x8unorm(cam.sky);
+    if (!h.hit && mt < 1e29) { color = mesh_color(gid.xy); }
     if (h.hit) {
         let face = face_entered(h.axis, d[h.axis] > 0.0);
         let p = o + d * h.t;

@@ -16,6 +16,7 @@ use mr_core::chunk::cell_index;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, UNIFORM_BIT, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
+use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, wgpu};
 use serde::Deserialize;
 
@@ -24,7 +25,7 @@ pub fn entry() -> RendererEntry {
         info: || RendererInfo {
             name: "gpu-sdf".into(),
             description: "Distance-field marching: per-voxel Chebyshev distance to the nearest solid lets rays leap whole empty cubes".into(),
-            tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "distance-field".into(), "wgpu".into()],
+            tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "distance-field".into(), "wgpu".into(), "meshes".into()],
             modes: vec![RenderMode::Unlit, RenderMode::Lit],
             max_lod: 0,
             params: params(),
@@ -141,6 +142,7 @@ pub fn chebyshev_df(chunk: &DenseChunk) -> Vec<u8> {
 pub struct GpuSdf {
     gpu: Gpu,
     world: VoxelWorld,
+    meshes: MeshComposite,
     opts: Options,
     pipeline: wgpu::ComputePipeline,
     layout0: wgpu::BindGroupLayout,
@@ -188,10 +190,12 @@ impl GpuSdf {
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
                 max_steps: opts.max_steps,
-                visibility: wgpu::ShaderStages::COMPUTE,
+                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
             },
         )?;
-        let source = shader_source("", include_str!("sdf.wgsl"));
+        // Mesh mode: meshes rasterised first (shaded with voxel shadows), rays capped at their depth.
+        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height);
+        let source = shader_source("", &format!("{MESH_COMPOSITE_WGSL}\n{}", include_str!("sdf.wgsl")));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("sdf"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let e = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty, count: None };
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -211,7 +215,7 @@ impl GpuSdf {
         });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sdf"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout())],
+            bind_group_layouts: &[Some(&layout0), Some(world.layout()), None, Some(meshes.layout())],
             immediate_size: 0,
         });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -231,6 +235,7 @@ impl GpuSdf {
         let dist = GrowableBuffer::new(&gpu, "distance field", 64 * DF_BYTES, opts.pool_mb as u64 * 1024 * 1024 / 2, wgpu::BufferUsages::STORAGE);
         let depth = opts.frames_in_flight.max(1);
         Ok(Self {
+            meshes,
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
             ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()),
             gpu,
@@ -302,6 +307,11 @@ impl GpuSdf {
 }
 
 impl Renderer for GpuSdf {
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        self.meshes.meshes.apply(update);
+        Ok(())
+    }
+
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         self.dirty.extend(self.world.apply(&self.gpu, updates));
         Ok(())
@@ -342,11 +352,16 @@ impl Renderer for GpuSdf {
             }));
         }
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
+        // With meshes, the mesh pass carries the frame's begin timestamp.
+        let meshes_on = self.meshes.active(req.meshes);
+        let ts = if meshes_on { self.ring.render_timestamps(ticket, true, false) } else { None };
+        self.meshes.encode(&self.gpu, &mut enc, c, self.width as f32 / self.height as f32, req.mode, req.meshes, &world_bg, ts);
         {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sdf"), timestamp_writes: self.ring.compute_timestamps(ticket, true, true) });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sdf"), timestamp_writes: self.ring.compute_timestamps(ticket, !meshes_on, true) });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, self.bind0.as_ref().unwrap(), &[]);
             pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(3, self.meshes.bind_group(), &[]);
             pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
         }
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: vec![("fields_started".into(), started as f64), ("fields_uploaded".into(), uploaded as f64), ("fields_pending".into(), self.in_progress as f64)] };
@@ -375,6 +390,7 @@ impl Renderer for GpuSdf {
         self.width = width;
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
+        self.meshes.resize(&self.gpu, width, height);
         self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
         self.bind0 = None;
         Ok(())

@@ -8,6 +8,7 @@ use bytemuck::{Pod, Zeroable};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
+use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
 use glam::IVec3;
 use serde::Deserialize;
@@ -23,7 +24,7 @@ fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu-bitmask".into(),
         description: "Compute ray caster with per-chunk x-row occupancy bitmasks: bit-scan jumps over empty row runs, ids fetched only on hits".into(),
-        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "bitmask".into(), "wgpu".into()],
+        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "bitmask".into(), "wgpu".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         params: params(),
@@ -75,6 +76,7 @@ struct CameraUniform {
 pub struct GpuBitmask {
     gpu: Gpu,
     world: VoxelWorld,
+    meshes: MeshComposite,
     pipeline: wgpu::ComputePipeline,
     layout0: wgpu::BindGroupLayout,
     layout2: wgpu::BindGroupLayout,
@@ -113,10 +115,12 @@ impl GpuBitmask {
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
                 max_steps: opts.max_steps,
-                visibility: wgpu::ShaderStages::COMPUTE,
+                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
             },
         )?;
-        let source = shader_source("", include_str!("bitmask.wgsl"));
+        // Mesh mode: meshes rasterised first (shaded with voxel shadows), rays capped at their depth.
+        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height);
+        let source = shader_source("", &format!("{MESH_COMPOSITE_WGSL}\n{}", include_str!("bitmask.wgsl")));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("bitmask"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bitmask camera"),
@@ -150,7 +154,7 @@ impl GpuBitmask {
         });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("bitmask"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout2)],
+            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout2), Some(meshes.layout())],
             immediate_size: 0,
         });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -171,7 +175,8 @@ impl GpuBitmask {
         let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output);
         let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone());
         let (rows_buf, bind2) = Self::rows(&gpu, &layout2, 64);
-        Ok(Self { gpu, world, pipeline, layout0, layout2, rows_buf, rows_slots: 64, bind2, camera_buf, output, bind0, ring, width: p.width, height: p.height, depth: opts.frames_in_flight.max(1), waker })
+        Ok(Self {
+            meshes, gpu, world, pipeline, layout0, layout2, rows_buf, rows_slots: 64, bind2, camera_buf, output, bind0, ring, width: p.width, height: p.height, depth: opts.frames_in_flight.max(1), waker })
     }
 
     fn rows(gpu: &Gpu, layout: &wgpu::BindGroupLayout, slots: u32) -> (wgpu::Buffer, wgpu::BindGroup) {
@@ -217,6 +222,11 @@ impl GpuBitmask {
 }
 
 impl Renderer for GpuBitmask {
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        self.meshes.meshes.apply(update);
+        Ok(())
+    }
+
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let changed = self.world.apply(&self.gpu, updates);
         // Only changed chunks can hold newly allocated slots. If one lies beyond the row
@@ -261,14 +271,19 @@ impl Renderer for GpuBitmask {
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
+        // With meshes, the mesh pass carries the frame's begin timestamp.
+        let meshes_on = self.meshes.active(req.meshes);
+        let ts = if meshes_on { self.ring.render_timestamps(ticket, true, false) } else { None };
+        self.meshes.encode(&self.gpu, &mut enc, c, self.width as f32 / self.height as f32, req.mode, req.meshes, &world_bg, ts);
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("bitmask"),
-                timestamp_writes: self.ring.compute_timestamps(ticket, true, true),
+                timestamp_writes: self.ring.compute_timestamps(ticket, !meshes_on, true),
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind0, &[]);
             pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(3, self.meshes.bind_group(), &[]);
             pass.set_bind_group(2, &self.bind2, &[]);
             pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
         }
@@ -302,6 +317,7 @@ impl Renderer for GpuBitmask {
         self.width = width;
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
+        self.meshes.resize(&self.gpu, width, height);
         self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output);
         self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
         Ok(())

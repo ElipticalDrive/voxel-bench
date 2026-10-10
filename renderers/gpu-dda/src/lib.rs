@@ -6,6 +6,7 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
+use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite};
 use mr_gpu::voxels::{DDA_OCCLUSION_WGSL, Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
 use serde::Deserialize;
@@ -21,7 +22,7 @@ pub fn entry_lod() -> RendererEntry {
         info: || RendererInfo {
             name: "gpu-dda-lod".into(),
             description: "gpu-dda with level-of-detail chunks: cells 2x, 4x, 8x ... coarser with distance (needs run.max_lod or a per-renderer max_lod)".into(),
-            tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "lod".into(), "wgpu".into()],
+            tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "lod".into(), "wgpu".into(), "meshes".into()],
             modes: vec![RenderMode::Unlit, RenderMode::Lit],
             max_lod: 6,
             params: params(),
@@ -34,7 +35,7 @@ fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu-dda".into(),
         description: "Compute-shader ray caster: hashed chunk table, 4^3 brick occupancy skipping, ray-traced shadows".into(),
-        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "wgpu".into()],
+        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "wgpu".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         params: params(),
@@ -86,6 +87,8 @@ struct CameraUniform {
 pub struct GpuDda {
     gpu: Gpu,
     world: VoxelWorld,
+    /// Mesh mode: meshes rasterised first, rays capped at their depth.
+    meshes: MeshComposite,
     pipeline: wgpu::ComputePipeline,
     layout0: wgpu::BindGroupLayout,
     camera_buf: wgpu::Buffer,
@@ -119,10 +122,12 @@ impl GpuDda {
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
                 max_steps: opts.max_steps,
-                visibility: wgpu::ShaderStages::COMPUTE,
+                // Fragment too: the mesh raster pass shades with voxel shadow rays.
+                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
             },
         )?;
-        let source = shader_source(DDA_OCCLUSION_WGSL, include_str!("dda.wgsl"));
+        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height);
+        let source = shader_source(DDA_OCCLUSION_WGSL, &format!("{MESH_COMPOSITE_WGSL}\n{}", include_str!("dda.wgsl")));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("dda"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("dda camera"),
@@ -147,7 +152,7 @@ impl GpuDda {
         });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("dda"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout())],
+            bind_group_layouts: &[Some(&layout0), Some(world.layout()), None, Some(meshes.layout())],
             immediate_size: 0,
         });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -167,7 +172,7 @@ impl GpuDda {
         let output = mr_gpu::output_texture(&gpu, p.width, p.height);
         let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output);
         let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone());
-        Ok(Self { gpu, world, pipeline, layout0, camera_buf, output, bind0, ring, width: p.width, height: p.height, depth: opts.frames_in_flight.max(1), waker })
+        Ok(Self { gpu, world, meshes, pipeline, layout0, camera_buf, output, bind0, ring, width: p.width, height: p.height, depth: opts.frames_in_flight.max(1), waker })
     }
 
     fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture) -> wgpu::BindGroup {
@@ -186,6 +191,11 @@ impl GpuDda {
 impl Renderer for GpuDda {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         self.world.apply(&self.gpu, updates);
+        Ok(())
+    }
+
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        self.meshes.meshes.apply(update);
         Ok(())
     }
 
@@ -210,14 +220,19 @@ impl Renderer for GpuDda {
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
+        // With meshes, the mesh pass carries the frame's begin timestamp.
+        let meshes_on = self.meshes.active(req.meshes);
+        let ts = if meshes_on { self.ring.render_timestamps(ticket, true, false) } else { None };
+        self.meshes.encode(&self.gpu, &mut enc, c, self.width as f32 / self.height as f32, req.mode, req.meshes, &world_bg, ts);
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("dda"),
-                timestamp_writes: self.ring.compute_timestamps(ticket, true, true),
+                timestamp_writes: self.ring.compute_timestamps(ticket, !meshes_on, true),
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind0, &[]);
             pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(3, self.meshes.bind_group(), &[]);
             pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
         }
         let stats = FrameStats {
@@ -250,6 +265,7 @@ impl Renderer for GpuDda {
         self.width = width;
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
+        self.meshes.resize(&self.gpu, width, height);
         self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output);
         self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
         Ok(())
