@@ -1,9 +1,13 @@
-//! CPU builder of the `prefix` storage's per-slot words (layout in `store_prefix.wgsl`).
+//! Storage `prefix` (IDEAS §1, the user's structure): Morton-ordered 4^3 occupancy masks
+//! plus a popcount prefix per slot; every aligned 2..16 cube's emptiness is one compare.
+//! CPU builder of the per-slot words (layout in `gpu.wgsl`).
 
 use mr_core::DenseChunk;
 
+pub const GPU_WGSL: &str = include_str!("gpu.wgsl");
+
 /// u32 words per slot: 512 masks as (lo, hi) pairs, then 513 u16 prefixes in pairs.
-pub const PREFIX_WORDS: usize = 1024 + 257;
+pub const AUX_WORDS: usize = 1024 + 257;
 
 /// Coordinate `axis` (0 = x, 1 = y, 2 = z) of a 3-bit-per-axis Morton index.
 const fn unmorton3(m: usize, axis: usize) -> usize {
@@ -34,7 +38,7 @@ const BIT_OFFSET: [usize; 64] = {
 
 /// One pass in Morton order: masks and prefixes come out together (as in cpu-simd-mem).
 pub fn build(d: &DenseChunk) -> Vec<u32> {
-    let mut words = vec![0u32; PREFIX_WORDS];
+    let mut words = vec![0u32; AUX_WORDS];
     let mut sum = 0u32;
     for (m, &base) in BRICK_BASE.iter().enumerate() {
         let mut w = 0u64;

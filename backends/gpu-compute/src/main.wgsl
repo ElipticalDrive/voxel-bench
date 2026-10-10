@@ -1,5 +1,6 @@
-// gpu-compose: one compute thread per pixel. `ctrace` comes from the chosen traversal
-// module, which reaches the world only through the chosen storage module.
+// GPU-compute back end: one compute thread per pixel. `ctrace` comes from the chosen
+// visibility component, which reaches the world only through the chosen storage
+// component; `shade_hit` comes from the chosen shading component.
 
 struct Camera {
     forward: vec3<f32>, tan_half_fov: f32,
@@ -36,14 +37,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     var color = unpack4x8unorm(cam.sky);
     if (!h.hit && mt < 1e29) { color = mesh_color(gid.xy); }
-    if (h.hit) {
-        let face = face_entered(h.axis, d[h.axis] > 0.0);
-        let p = o + d * h.t;
-        let texel = surface_texel(h.block, face, p - vec3<f32>(h.cell));
-        // A branch, not `select`: select evaluates both sides, so unlit pixels would pay for
-        // lighting and shadow rays whenever the compiler doesn't turn it into a branch.
-        color = texel;
-        if (cam.mode == 1u) { color = shade_lit(texel, p, face_normal(face)); }
-    }
+    if (h.hit) { color = shade_hit(h, o, d, cam.mode == 1u); }
     textureStore(out_tex, vec2<i32>(gid.xy), color);
 }

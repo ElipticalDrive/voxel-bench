@@ -1,24 +1,18 @@
-//! Composable GPU ray caster (IDEAS §9/§12, PLAN step 6′): the world's **storage** and the
-//! ray's **traversal** are separate WGSL modules behind a small interface, chosen by knobs
-//! and pasted into one shader before compilation, so the compiler optimises across them
-//! and the split costs nothing at run time.
+//! GPU-compute back end: assembles a renderer from components (`mr-components`, IDEAS
+//! §12): a **storage**, a **visibility** walk and a **shading** component, each a WGSL module
+//! from `components/`, pasted into one compute shader before compilation, so the compiler
+//! optimises across them and the split costs nothing at run time.
 //!
-//! * Storage (`store_*.wgsl`): `S_LEVELS`, `s_occupied(slot, level, c)`, `s_probe(slot, l)`,
-//!   `s_block(slot, l)`. `bricks` is the shared pool + 4^3 brick bits; `hier` adds an 8^3
-//!   region summary per slot; `prefix` adds the user's Morton masks + popcount prefix per
-//!   slot (`prefix.rs`). Side data lives in `aux`, indexed like the pool.
-//! * Traversal (`trav_*.wgsl`): `ctrace(o, d, max_t) -> Hit`, written only against the
-//!   storage interface and the shared chunk table. `refloor` is gpu-dda's walk;
-//!   `incremental` is the per-level DDA from cpu-simd-mem.
-//!
-//! Shadow rays use the same composed walk. `bricks` + `refloor` is gpu-dda's algorithm on
-//! gpu-dda's data, so comparing the two measures the cost of the split.
-
-mod prefix;
+//! Storages answer the interface in `mr_components::storage`; optional fast-path queries the
+//! chosen storage lacks get generic fallbacks, so every storage works with every
+//! visibility component. Shadow rays use the same composed walk. Per-slot side data lives
+//! in `aux`, indexed like the shared pool. Meshes (mesh mode) are composited by
+//! `mr_gpu::meshes::MeshComposite`.
 
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
+use mr_components::{Slot, components, storage, visibility};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite};
@@ -26,87 +20,24 @@ use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shado
 use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, wgpu};
 use serde::Deserialize;
 
-/// A storage module: its WGSL, plus optional per-slot side data in the `aux` buffer
-/// (indexed like the shared pool), built on the CPU for each dense chunk.
-///
-/// Every storage answers the required queries (`S_LEVELS`, `s_occupied`, `s_probe`,
-/// `s_block`). Optional queries (`OPTIONAL_QUERIES`) are fast paths: a storage lists the
-/// ones it implements in `provides`, and the assembler appends a generic fallback from
-/// `defaults.wgsl` for the rest, so every storage works with every traversal.
-struct Storage {
-    name: &'static str,
-    wgsl: &'static str,
-    provides: &'static [&'static str],
-    /// u32 words per slot (0 = no side data) and their builder.
-    aux_words: usize,
-    build: fn(&DenseChunk) -> Vec<u32>,
-}
-
-const STORAGES: &[Storage] = &[
-    Storage { name: "bricks", wgsl: include_str!("store_bricks.wgsl"), provides: &[], aux_words: 0, build: |_| Vec::new() },
-    Storage { name: "hier", wgsl: include_str!("store_hier.wgsl"), provides: &[], aux_words: 2, build: hier_summary },
-    Storage { name: "prefix", wgsl: include_str!("store_prefix.wgsl"), provides: &[], aux_words: prefix::PREFIX_WORDS, build: prefix::build },
-    Storage { name: "distance", wgsl: include_str!("store_distance.wgsl"), provides: &["s_dist"], aux_words: CHUNK_VOLUME / 4, build: distance_field },
-    Storage { name: "rows", wgsl: include_str!("store_rows.wgsl"), provides: &["s_row"], aux_words: 1024, build: occupancy_rows },
-];
-
-/// Optional storage queries with a generic fallback in `defaults.wgsl` (`//@name`).
-const OPTIONAL_QUERIES: &[&str] = &["s_dist", "s_row"];
-
-/// The fallback WGSL of every optional query `st` does not provide.
-fn fallbacks(st: &Storage) -> String {
-    let src = include_str!("defaults.wgsl");
-    let mut out = String::new();
-    for q in OPTIONAL_QUERIES.iter().filter(|q| !st.provides.contains(q)) {
-        let start = src.find(&format!("//@{q}\n")).expect("fallback missing");
-        let rest = &src[start..];
-        let end = rest[3..].find("//@").map_or(rest.len(), |e| e + 3);
-        out += &rest[..end];
-    }
-    out
-}
-
-/// `distance`: gpu-sdf's Chebyshev distance field, packed four u8 per word.
-fn distance_field(d: &DenseChunk) -> Vec<u32> {
-    bytemuck::cast_slice(&gpu_sdf::chebyshev_df(d)).to_vec()
-}
-
-/// `rows`: gpu-bitmask's occupancy rows (row y * 32 + z, bit x).
-fn occupancy_rows(d: &DenseChunk) -> Vec<u32> {
-    let mut rows = vec![0u32; 1024];
-    for (i, b) in d.0.iter().enumerate() {
-        rows[i >> 5] |= (b.is_solid() as u32) << (i & 31);
-    }
-    rows
-}
-
-/// `hier`: one bit per 8^3 region (index `x | z << 2 | y << 4`, as cpu-simd-hier).
-fn hier_summary(d: &DenseChunk) -> Vec<u32> {
-    // Dense order is x + 32 z + 1024 y: the region index is bits 3-4 of each coordinate.
-    // Branch-free (solidity is unpredictable in mixed chunks).
-    let mut bits = 0u64;
-    for (i, b) in d.0.iter().enumerate() {
-        let r = (i >> 3) & 3 | ((i >> 8) & 3) << 2 | ((i >> 13) & 3) << 4;
-        bits |= (b.is_solid() as u64) << r;
-    }
-    vec![bits as u32, (bits >> 32) as u32]
-}
-const TRAVERSALS: &[(&str, &str)] = &[
-    ("refloor", include_str!("trav_refloor.wgsl")),
-    ("incremental", include_str!("trav_incremental.wgsl")),
-    ("sphere", include_str!("trav_sphere.wgsl")),
-    ("rowrun", include_str!("trav_rowrun.wgsl")),
-];
 const CHUNK_BYTES: u64 = CHUNK_VOLUME as u64 * 2;
 
 pub fn entry() -> RendererEntry {
     RendererEntry { info, create: |p, w| Ok(Box::new(GpuCompose::new(p, w)?)) }
 }
 
+/// The step-6′ name, kept so older plans and reports still run (listed as legacy).
+pub fn entry_legacy() -> RendererEntry {
+    RendererEntry {
+        info: || RendererInfo { name: "gpu-compose".into(), description: "Legacy name of the gpu-compute back end (storage / visibility chosen by options)".into(), ..info() },
+        create: |p, w| Ok(Box::new(GpuCompose::new(p, w)?)),
+    }
+}
+
 fn info() -> RendererInfo {
     RendererInfo {
-        name: "gpu-compose".into(),
-        description: "Composable compute ray caster: storage (bricks, prefix) x traversal (refloor, incremental) chosen by knobs and fused into one shader".into(),
+        name: "gpu-compute".into(),
+        description: "GPU-compute back end: renders a composition of components (storage, visibility, shading) fused into one compute shader".into(),
         tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "modular".into(), "wgpu".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
@@ -114,18 +45,19 @@ fn info() -> RendererInfo {
     }
 }
 
-fn names(list: &[(&'static str, &str)]) -> Vec<&'static str> {
-    list.iter().map(|(n, _)| *n).collect()
+fn names(slot: Slot) -> Vec<&'static str> {
+    components(slot).filter(|c| c.backends.contains(&"gpu-compute")).map(|c| c.name).collect()
 }
 
-fn storage_names() -> Vec<&'static str> {
-    STORAGES.iter().map(|s| s.name).collect()
+fn describe(slot: Slot) -> String {
+    components(slot).filter(|c| c.backends.contains(&"gpu-compute")).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
 }
 
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
-        ParamSpec::choice("storage", "World storage module. bricks: the shared u16 pool with 4^3 brick bits (levels 1, 4). hier: bricks + one bit per 8^3 region (levels 1, 4, 8). prefix: Morton occupancy masks + popcount prefix (levels 1, 2, 4, 8, 16). distance: per-voxel Chebyshev distance field (from gpu-sdf; fast s_dist). rows: 32x32 occupancy rows per chunk (from gpu-bitmask; fast s_row)", &storage_names(), "bricks", false),
-        ParamSpec::choice("traversal", "Ray walk module. refloor: probe for the largest empty cube, step out, re-floor (gpu-dda). incremental: hierarchical DDA keeping per-level exit times, moving between levels incrementally. sphere: Chebyshev sphere tracing on s_dist (gpu-sdf). rowrun: refloor plus bit-scan jumps across empty row runs on s_row (gpu-bitmask). Every storage works with every traversal; missing fast paths use generic fallbacks", &names(TRAVERSALS), "refloor", true),
+        ParamSpec::choice("storage", &format!("Storage component. {}", describe(Slot::Storage)), &names(Slot::Storage), "bricks", false),
+        ParamSpec::choice("visibility", &format!("Visibility component (any storage works with any; missing fast paths use generic fallbacks). {}", describe(Slot::Visibility)), &names(Slot::Visibility), "refloor", true),
+        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names(Slot::Shading), "direct", true),
         ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true),
     ];
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
@@ -146,7 +78,10 @@ fn params() -> Vec<ParamSpec> {
 struct Options {
     adapter: Option<String>,
     storage: String,
-    traversal: String,
+    /// `traversal` is the step-6′ name of this option.
+    #[serde(alias = "traversal")]
+    visibility: String,
+    shading: String,
     exact: bool,
     skip2: bool,
     skip4: bool,
@@ -164,7 +99,8 @@ impl Default for Options {
         Self {
             adapter: None,
             storage: "bricks".into(),
-            traversal: "refloor".into(),
+            visibility: "refloor".into(),
+            shading: "direct".into(),
             exact: true,
             skip2: true,
             skip4: true,
@@ -182,8 +118,9 @@ impl Default for Options {
 /// The compile-time part of a composition: everything baked into the shader.
 #[derive(Clone, PartialEq, Debug)]
 struct Composition {
-    storage: usize,
-    traversal: usize,
+    storage: String,
+    visibility: String,
+    shading: String,
     exact: bool,
     /// Levels allowed by the skip knobs (bit k = 2^k cubes).
     levels: u32,
@@ -192,27 +129,43 @@ struct Composition {
 }
 
 impl Composition {
+    fn storage(&self) -> storage::GpuStorage {
+        storage::gpu(&self.storage).expect("validated")
+    }
+
     fn source(&self) -> String {
-        let st = &STORAGES[self.storage];
-        let (sname, store) = (st.name, st.wgsl);
-        let (tname, trav) = TRAVERSALS[self.traversal];
+        let st = self.storage();
+        let vis = visibility::gpu_wgsl(&self.visibility).expect("validated");
+        let shade = mr_components::shading::gpu_wgsl(&self.shading).expect("validated");
         let own = format!(
-            "// Composition: storage = {sname}, traversal = {tname}\n\
+            "// Composition: storage = {}, visibility = {}, shading = {}\n\
              @group(2) @binding(0) var<storage, read> aux: array<u32>;\n\
              const AUX_WORDS: u32 = {}u;\n\
              const EXACT: bool = {};\n\
              const VIEW_STEPS: bool = {};\n\
              const LEVEL_MASK: u32 = (S_LEVELS & {:#x}u) | 0x21u;\n\
-             {MESH_COMPOSITE_WGSL}\n{store}\n{}\n{trav}\n{}",
+             {MESH_COMPOSITE_WGSL}\n{}\n{}\n{vis}\n{shade}\n{}",
+            self.storage,
+            self.visibility,
+            self.shading,
             st.aux_words.max(1),
             self.exact,
             self.steps_view,
             self.levels,
-            fallbacks(st),
+            st.wgsl,
+            storage::fallbacks(st.provides),
             include_str!("main.wgsl"),
         );
         let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
         shader_source(occlusion, &own)
+    }
+}
+
+/// Checks that `name` is a `slot` component with a gpu-compute implementation.
+fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
+    match mr_components::unavailable("gpu-compute", slot, name) {
+        None => Ok(name.to_string()),
+        Some(why) => anyhow::bail!(why),
     }
 }
 
@@ -222,10 +175,6 @@ fn parse_view(s: &str) -> anyhow::Result<bool> {
         "steps" => Ok(true),
         _ => anyhow::bail!("view must be `image` or `steps`, got `{s}`"),
     }
-}
-
-fn pick(list: &[(&str, &str)], name: &str, what: &str) -> anyhow::Result<usize> {
-    list.iter().position(|(n, _)| *n == name).ok_or_else(|| anyhow::anyhow!("unknown {what} `{name}` (have: {})", list.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")))
 }
 
 #[repr(C)]
@@ -273,8 +222,9 @@ impl GpuCompose {
     pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         let comp = Composition {
-            storage: STORAGES.iter().position(|s| s.name == opts.storage).ok_or_else(|| anyhow::anyhow!("unknown storage `{}` (have: {})", opts.storage, storage_names().join(", ")))?,
-            traversal: pick(TRAVERSALS, &opts.traversal, "traversal")?,
+            storage: check(Slot::Storage, &opts.storage)?,
+            visibility: check(Slot::Visibility, &opts.visibility)?,
+            shading: check(Slot::Shading, &opts.shading)?,
             exact: opts.exact,
             steps_view: parse_view(&opts.view)?,
             levels: [opts.skip2, opts.skip4, opts.skip8, opts.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)),
@@ -341,7 +291,7 @@ impl GpuCompose {
         let pipeline = Self::pipeline(&gpu, &pipeline_layout, &comp)?;
         // Side data covers the same slots as the pool, up to the same limit.
         let max_slots = (opts.pool_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1);
-        let aux_bytes = STORAGES[comp.storage].aux_words as u64 * 4;
+        let aux_bytes = comp.storage().aux_words as u64 * 4;
         let aux = GrowableBuffer::new(&gpu, "compose aux", 256, (max_slots * aux_bytes).max(256), wgpu::BufferUsages::STORAGE);
         let camera_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
@@ -353,7 +303,7 @@ impl GpuCompose {
         let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output);
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
-        tracing::info!("gpu-compose: storage {}, traversal {}", STORAGES[comp.storage].name, TRAVERSALS[comp.traversal].0);
+        tracing::info!("gpu-compute: storage {}, visibility {}, shading {}", comp.storage, comp.visibility, comp.shading);
         Ok(Self {
             gpu,
             world,
@@ -409,7 +359,7 @@ impl GpuCompose {
 
     /// Bytes of side data per pool slot for the chosen storage (0 = none).
     fn aux_bytes(&self) -> u64 {
-        STORAGES[self.comp.storage].aux_words as u64 * 4
+        self.comp.storage().aux_words as u64 * 4
     }
 }
 
@@ -428,7 +378,7 @@ impl Renderer for GpuCompose {
             if self.aux.reserve(&self.gpu, self.world.pool_slots() as u64 * unit)? {
                 self.bind2 = None;
             }
-            let build = STORAGES[self.comp.storage].build;
+            let build = self.comp.storage().build;
             for pos in changed {
                 if let (Some(slot), Some(ChunkData::Dense(d))) = (self.world.slot_of(pos), self.world.chunk(pos)) {
                     self.gpu.queue.write_buffer(self.aux.buffer(), slot as u64 * unit, bytemuck::cast_slice(&build(d)));
@@ -503,7 +453,8 @@ impl Renderer for GpuCompose {
         match name {
             "shadows" => self.world.cfg.shadows.set(value)?,
             "max_steps" => self.world.cfg.max_steps = value.as_i64().unwrap_or(2048) as u32,
-            "traversal" => self.comp.traversal = pick(TRAVERSALS, value.as_str().unwrap_or(""), "traversal")?,
+            "visibility" | "traversal" => self.comp.visibility = check(Slot::Visibility, value.as_str().unwrap_or(""))?,
+            "shading" => self.comp.shading = check(Slot::Shading, value.as_str().unwrap_or(""))?,
             "view" => self.comp.steps_view = parse_view(value.as_str().unwrap_or(""))?,
             "exact" => self.comp.exact = value.as_bool().unwrap_or(true),
             "skip2" | "skip4" | "skip8" | "skip16" => {

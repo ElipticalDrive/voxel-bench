@@ -1,5 +1,5 @@
 [package]
-name = "gpu-compose"
+name = "gpu-compute"
 version.workspace = true
 edition.workspace = true
 
@@ -13,4 +13,4 @@ bytemuck.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 mr-gpu.workspace = true
-gpu-sdf.workspace = true
+mr-components.workspace = true

@@ -1715,13 +1715,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-compose"
+name = "gpu-compute"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
  "glam",
- "gpu-sdf",
+ "mr-components",
  "mr-core",
  "mr-gpu",
  "pollster",
@@ -1869,6 +1869,7 @@ dependencies = [
  "bytemuck",
  "crossbeam-channel",
  "glam",
+ "mr-components",
  "mr-core",
  "mr-gpu",
  "rayon",
@@ -2461,6 +2462,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mr-components"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "mr-core",
+ "serde",
+]
+
+[[package]]
 name = "mr-core"
 version = "0.1.0"
 dependencies = [
@@ -2520,7 +2531,7 @@ dependencies = [
  "gpu-beam",
  "gpu-bitmask",
  "gpu-clipmap",
- "gpu-compose",
+ "gpu-compute",
  "gpu-cubes",
  "gpu-dda",
  "gpu-discover",

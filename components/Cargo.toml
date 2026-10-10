@@ -1,0 +1,10 @@
+[package]
+name = "mr-components"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mr-core.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+serde.workspace = true
