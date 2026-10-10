@@ -30,12 +30,13 @@ struct Params {
     keep: u32, criterion: u32, sky_tile: u32, max_fp: u32,   // criterion: 0 plane, 1 face
     table_mask: u32, list_cap: u32, chunk_mask: u32, chunk_probe: u32,
     queue_cap: u32, parity: u32, strict: u32, still: u32,   // still: rotation / world-change-only frame
-    closure_px: u32, closure_box: i32, block_faces: u32, _p2: u32,
+    closure_px: u32, closure_box: i32, block_faces: u32, inline_fp: u32,  // inline_fp: footprints up to this many cells expand in `classify`
     incr: u32, refresh: u32, par_k: f32, changed: u32,   // par_k = f_px * |camera move| / near; changed: tile mask non-empty
     full: u32, r_max: u32, need_off: u32, par_thresh: f32,
     prev_forward: vec3<f32>, prev_tan: f32,               // previous camera, for sky reprojection
     prev_right: vec3<f32>, has_prev: u32,
     prev_up: vec3<f32>, keep_out: u32,                    // keep for faces outside the frustum (incremental)
+    morton: u32, morton_side: u32, _q0: u32, _q1: u32,     // level 0 enumerated along a Z-curve over a morton_side^2 grid
 }
 
 struct Level { level: u32, size: u32, in_off: u32, out_off: u32, parity: u32, cap: u32, list_cap: u32, _p: u32 }
@@ -96,6 +97,23 @@ const WHY_PARALLAX: u32 = 16u;
 const WHY_STRIP: u32 = 32u;
 const C_JOBS: u32 = 48u;     // + level: footprint jobs queued
 const JOB_CAP: u32 = 262144u;
+
+// Inverse of 2D Morton interleaving: (x, y) of Z-curve index i (x in the even bits).
+fn compact1(v: u32) -> u32 {
+    var x = v & 0x55555555u;
+    x = (x | (x >> 1u)) & 0x33333333u;
+    x = (x | (x >> 2u)) & 0x0f0f0f0fu;
+    x = (x | (x >> 4u)) & 0x00ff00ffu;
+    x = (x | (x >> 8u)) & 0x0000ffffu;
+    return x;
+}
+
+// Level-0 work item `i` as grid coordinates: row-major, or along a Z-curve so that a
+// wave's threads cover a compact square of the screen (rays then stay coherent).
+fn grid_of(i: u32, w: u32) -> vec2<u32> {
+    if (pr.morton != 0u) { return vec2<u32>(compact1(i), compact1(i >> 1u)); }
+    return vec2<u32>(i % w, i / w);
+}
 
 fn tid(wg: vec3<u32>, nwg: vec3<u32>, li: u32) -> u32 {
     return (wg.y * nwg.x + wg.x) * WG + li;
@@ -289,9 +307,10 @@ fn rays(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec3
     if (lv.level == 0u) {
         let n = (pr.cols + 1u) * (pr.rows + 1u);
         if (pr.incr == 0u && i == 0u) { atomicStore(&st[C_RAYS], n); }
-        if (i >= n) { return; }
-        let cx = i % (pr.cols + 1u);
-        let cy = i / (pr.cols + 1u);
+        let g = grid_of(i, pr.cols + 1u);
+        let cx = g.x;
+        let cy = g.y;
+        if (cx > pr.cols || cy > pr.rows) { return; }
         if (pr.incr != 0u) {
             // Only corners of tiles that need discovery.
             var any = false;
@@ -413,20 +432,32 @@ fn reject(t: vec2<u32>, s: u32, c: array<vec4<i32>, 4>) {
     if (!closure(t, s, c)) { split(t, s); }
 }
 
-var<workgroup> wg_tiles: atomic<u32>;
-var<workgroup> wg_rays: atomic<u32>;
 var<workgroup> wg_tbase: u32;
 var<workgroup> wg_rbase: u32;
+var<workgroup> wg_scan: array<u32, 256>;
+
+// Exclusive prefix sum of `v` over the workgroup's threads, in thread order (so appended
+// queue entries keep their parents' order); returns (offset, workgroup total).
+fn wg_prefix(li: u32, v: u32) -> vec2<u32> {
+    wg_scan[li] = v;
+    workgroupBarrier();
+    for (var d = 1u; d < 256u; d <<= 1u) {
+        var x = 0u;
+        if (li >= d) { x = wg_scan[li - d]; }
+        workgroupBarrier();
+        wg_scan[li] += x;
+        workgroupBarrier();
+    }
+    let incl = wg_scan[li];
+    let total = wg_scan[255];
+    workgroupBarrier();
+    return vec2<u32>(incl - v, total);
+}
 
 // Classification with workgroup-aggregated queue appends for splits (one global atomic
 // per workgroup and queue instead of one per tile).
 @compute @workgroup_size(256)
 fn classify(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
-    if (li == 0u) {
-        atomicStore(&wg_tiles, 0u);
-        atomicStore(&wg_rays, 0u);
-    }
-    workgroupBarrier();
     deferring = true;
     classify_tile(tid(wg, nwg, li));
     var kids: array<u32, 4>;
@@ -454,15 +485,14 @@ fn classify(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: 
             }
         }
     }
-    let tl = atomicAdd(&wg_tiles, nk);
-    let rl = atomicAdd(&wg_rays, nr);
-    workgroupBarrier();
+    let ts = wg_prefix(li, nk);
+    let rs = wg_prefix(li, nr);
     if (li == 0u) {
-        wg_tbase = atomicAdd(&st[C_TILES + lv.level + 1u], atomicLoad(&wg_tiles));
-        wg_rbase = atomicAdd(&st[C_RAYS + lv.level + 1u], atomicLoad(&wg_rays));
+        wg_tbase = atomicAdd(&st[C_TILES + lv.level + 1u], ts.y);
+        wg_rbase = atomicAdd(&st[C_RAYS + lv.level + 1u], rs.y);
     }
-    let tb = workgroupUniformLoad(&wg_tbase) + tl;
-    let rb = workgroupUniformLoad(&wg_rbase) + rl;
+    let tb = workgroupUniformLoad(&wg_tbase) + ts.x;
+    let rb = workgroupUniformLoad(&wg_rbase) + rs.x;
     for (var k = 0u; k < nk; k++) {
         if (tb + k < pr.queue_cap) { tileq[lv.out_off + tb + k] = kids[k]; } else { atomicAdd(&st[C_OVER], 1u); }
     }
@@ -475,9 +505,10 @@ fn classify_tile(i: u32) {
     let s = lv.size;
     var t: vec2<u32>;
     if (lv.level == 0u) {
-        if (i >= pr.cols * pr.rows) { return; }
-        if (pr.incr != 0u && need[pr.need_off + i] == 0u) { return; }
-        t = vec2<u32>(i % pr.cols, i / pr.cols) * pr.tile;
+        let g = grid_of(i, pr.cols);
+        if (g.x >= pr.cols || g.y >= pr.rows) { return; }
+        if (pr.incr != 0u && need[pr.need_off + g.y * pr.cols + g.x] == 0u) { return; }
+        t = g * pr.tile;
     } else {
         let n = min(atomicLoad(&st[C_TILES + lv.level]), pr.queue_cap);
         if (i >= n) { return; }
@@ -543,7 +574,32 @@ fn classify_tile(i: u32) {
     if (u32(nu * nv) > pr.max_fp) { atomicAdd(&st[C_FP_REJECT], 1u); reject(t, s, c); return; }
     var base = c[0].xyz + vp.cam_block;
     let cb = vp.cam_block;
-    // Footprints are expanded cooperatively (one workgroup per tile) in `footprint`.
+    let n = u32(nu * nv);
+    if (n <= pr.inline_fp) {
+        // Small footprints (most tiles at deep levels): expand here. A 64-thread workgroup
+        // per 1-4 cell job would leave nearly all of its threads idle.
+        for (var k = 0u; k < n && pr.strict != 0u; k++) {
+            var a = base;
+            a[ua] = a0.x + cb[ua] + i32(k % u32(nu));
+            a[va] = a0.y + cb[va] + i32(k / u32(nu));
+            if (exposed(a, face) == 0u) { atomicAdd(&st[C_FP_REJECT], 1u); reject(t, s, c); return; }
+        }
+        var added = 0u;
+        for (var k = 0u; k < n; k++) {
+            var a = base;
+            a[ua] = a0.x + cb[ua] + i32(k % u32(nu));
+            a[va] = a0.y + cb[va] + i32(k / u32(nu));
+            let b = exposed(a, face);
+            if (b != 0u) {
+                add_face(a, face, b);
+                added++;
+            }
+        }
+        atomicAdd(&st[C_FP_FACES], added);
+        atomicAdd(&st[C_ACC + lv.level], 1u);
+        return;
+    }
+    // Larger footprints are expanded cooperatively (one workgroup per tile) in `footprint`.
     let j = atomicAdd(&st[C_JOBS + lv.level], 1u);
     if (j < JOB_CAP) {
         jobs[2u * j] = vec4<i32>(base, i32(face));

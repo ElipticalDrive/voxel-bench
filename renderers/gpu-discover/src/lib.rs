@@ -81,6 +81,8 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("keep_frames", "Frames a face stays in S without being re-discovered", 1, 1000, 8, true),
         ParamSpec::int("max_footprint", "Max cells a coherent tile may add (larger footprints subdivide)", 1, 4096, 128, true),
         ParamSpec::bool("strict", "Plane criterion: every footprint cell must be an exposed face of that plane, else subdivide", true, true),
+        ParamSpec::int("inline_fp", "Footprints of up to this many cells are expanded by the classifying thread; larger ones get a cooperative 64-thread workgroup (0 = always cooperative)", 0, 4096, 8, true),
+        ParamSpec::bool("morton", "Enumerate level-0 tiles and rays along a Z-curve (waves cover compact screen squares; children keep their parents' order) instead of row by row. Measured: no difference; deep levels are bound by each pass's slowest ray, not by coherence", false, true),
         ParamSpec::int("closure_px", "Non-coherent tiles up to this size (px) whose corner hits fit a small box add all its exposed faces instead of splitting (0 = off)", 0, MAX_TILE as i64, 2, true),
         ParamSpec::int("closure_box", "Local-closure box size in cells per axis", 1, 8, 2, true),
         ParamSpec::bool("block_faces", "With each discovered face also add its block's other camera-facing exposed faces (closes raster-vs-ray edge cracks)", true, true),
@@ -113,6 +115,8 @@ struct Options {
     keep_frames: u32,
     max_footprint: u32,
     strict: bool,
+    inline_fp: u32,
+    morton: bool,
     closure_px: u32,
     closure_box: u32,
     block_faces: bool,
@@ -144,6 +148,8 @@ impl Default for Options {
             keep_frames: 8,
             max_footprint: 128,
             strict: true,
+            inline_fp: 8,
+            morton: false,
             closure_px: 2,
             closure_box: 2,
             block_faces: true,
@@ -217,7 +223,7 @@ struct Params {
     closure_px: u32,
     closure_box: i32,
     block_faces: u32,
-    _p1: u32,
+    inline_fp: u32,
     incr: u32,
     refresh: u32,
     par_k: f32,
@@ -232,6 +238,9 @@ struct Params {
     has_prev: u32,
     prev_up: [f32; 3],
     keep_out: u32,
+    morton: u32,
+    morton_side: u32,
+    _q: [u32; 2],
 }
 
 #[repr(C)]
@@ -927,6 +936,8 @@ impl GpuDiscover {
             out.push((format!("acc_L{l}_{}px", self.opts.tile >> l), w[16 + l] as f64));
             out.push((format!("sky_L{l}"), w[24 + l] as f64));
             out.push((format!("tiles_L{l}"), w[l] as f64));
+            out.push((format!("jobs_L{l}"), w[48 + l] as f64));
+            out.push((format!("rays_L{l}"), w[8 + l] as f64));
         }
         let prev_faces = w[STATS_WORDS as usize + 1 - self.last_parity] as f64;
         out.push(("faces_new".into(), w[44] as f64));
@@ -1199,7 +1210,7 @@ impl Renderer for GpuDiscover {
             closure_px: self.opts.closure_px,
             closure_box: self.opts.closure_box as i32,
             block_faces: self.opts.block_faces as u32,
-            _p1: 0,
+            inline_fp: self.opts.inline_fp,
             incr: self.opts.incremental as u32,
             refresh: self.opts.refresh,
             par_k: if moved.is_finite() { f_px * moved as f32 / c.near } else { 0.0 },
@@ -1214,6 +1225,9 @@ impl Renderer for GpuDiscover {
             has_prev: prev_cam.is_some() as u32,
             prev_up: prev_cam.map(|p| p.2).unwrap_or_default(),
             keep_out: self.opts.keep_frames.max(1),
+            morton: self.opts.morton as u32,
+            morton_side: (cols + 1).max(rows + 1).next_power_of_two(),
+            _q: [0; 2],
         };
         self.gpu.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&prm));
         let mut lvls = vec![LevelUniform::zeroed(); MAX_LEVELS + 1];
@@ -1331,6 +1345,9 @@ impl Renderer for GpuDiscover {
             pass.dispatch_workgroups_indirect(&self.args, aofs(64 + (1 - parity as u64) * 4));
         }
         mark(&mut enc, 1);
+        // Level-0 work items: the grid, or the Z-curve over its enclosing power-of-two square.
+        let morton = self.opts.morton;
+        let l0_items = |w: u32, h: u32| if morton { w.max(h).next_power_of_two().pow(2) } else { w * h };
         for l in 0..levels {
             {
                 let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover rays"), timestamp_writes: None });
@@ -1343,7 +1360,7 @@ impl Renderer for GpuDiscover {
                 pass.set_bind_group(1, &world_bg, &[]);
                 pass.set_pipeline(&self.pipe_rays);
                 if l == 0 {
-                    pass.dispatch_workgroups(((cols + 1) * (rows + 1)).div_ceil(256), 1, 1);
+                    pass.dispatch_workgroups(l0_items(cols + 1, rows + 1).div_ceil(256), 1, 1);
                 } else {
                     pass.dispatch_workgroups_indirect(&self.args, aofs(l as u64 * 8));
                 }
@@ -1355,7 +1372,7 @@ impl Renderer for GpuDiscover {
                 pass.set_bind_group(1, &world_bg, &[]);
                 pass.set_pipeline(&self.pipe_classify);
                 if l == 0 {
-                    pass.dispatch_workgroups((cols * rows).div_ceil(256), 1, 1);
+                    pass.dispatch_workgroups(l0_items(cols, rows).div_ceil(256), 1, 1);
                 } else {
                     pass.dispatch_workgroups_indirect(&self.args, aofs(l as u64 * 8 + 4));
                 }
@@ -1436,6 +1453,8 @@ impl Renderer for GpuDiscover {
             "keep_frames" => self.opts.keep_frames = int(8),
             "max_footprint" => self.opts.max_footprint = int(128),
             "strict" => self.opts.strict = value.as_bool().unwrap_or(true),
+            "inline_fp" => self.opts.inline_fp = int(8),
+            "morton" => self.opts.morton = value.as_bool().unwrap_or(true),
             "closure_px" => self.opts.closure_px = int(2),
             "closure_box" => self.opts.closure_box = int(2),
             "block_faces" => self.opts.block_faces = value.as_bool().unwrap_or(true),
