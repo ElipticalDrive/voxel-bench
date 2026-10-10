@@ -2574,6 +2574,7 @@ dependencies = [
  "egui_plot",
  "glam",
  "image",
+ "mr-components",
  "mr-core",
  "mr-ipc",
  "mr-worker",

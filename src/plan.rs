@@ -106,10 +106,17 @@ pub enum Isolation {
     Thread,
 }
 
+/// One renderer of a plan: either a composition of components (`compose`, IDEAS §12) or,
+/// for renderers not yet split into components, a legacy monolith by `name`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RendererSpec {
+    /// Renderer entry to run. For compositions this is derived (the back end's renderer).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// The components this renderer is assembled from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose: Option<mr_components::Composition>,
     /// Display label, to run the same renderer twice with different options.
     pub label: Option<String>,
     #[serde(default)]
@@ -120,15 +127,83 @@ pub struct RendererSpec {
     /// Overrides `run.max_lod` for this renderer (still capped by what it supports).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_lod: Option<u8>,
+    /// Cache of the composition's label (derived; not part of the plan).
+    #[serde(skip)]
+    pub compose_label: std::sync::OnceLock<String>,
 }
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), label: None, options: Default::default(), view_radius: None, max_lod: None }
+        Self { name: name.into(), compose: None, label: None, options: Default::default(), view_radius: None, max_lod: None, compose_label: Default::default() }
     }
 
+    /// A renderer assembled from components.
+    pub fn composed(c: mr_components::Composition) -> Self {
+        let mut s = Self::new("");
+        s.compose = Some(c);
+        s.resolve().expect("valid composition");
+        s
+    }
+
+    /// For compositions: checks them and sets `name` (the back end's renderer) and the
+    /// options that select the components.
+    pub fn resolve(&mut self) -> anyhow::Result<()> {
+        if let Some(c) = &self.compose {
+            let (name, opts) = c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?;
+            self.name = name.to_string();
+            for (k, v) in opts {
+                self.options.insert(k.into(), toml::Value::String(v));
+            }
+        }
+        if self.name.is_empty() {
+            bail!("a renderer needs `compose = {{ ... }}` or a `name`");
+        }
+        Ok(())
+    }
+
+    /// From the command line: `backend:storage+visibility[+shading]` for a composition,
+    /// otherwise a legacy renderer name.
+    pub fn from_cli(s: &str) -> anyhow::Result<Self> {
+        let Some((backend, rest)) = s.split_once(':') else { return Ok(Self::new(s)) };
+        let parts: Vec<&str> = rest.split('+').collect();
+        let mut c = mr_components::Composition { backend: backend.into(), ..Default::default() };
+        match parts.as_slice() {
+            [st, vis] => (c.storage, c.visibility) = (st.to_string(), vis.to_string()),
+            [st, vis, sh] => (c.storage, c.visibility, c.shading) = (st.to_string(), vis.to_string(), sh.to_string()),
+            _ => bail!("composition `{s}` should be backend:storage+visibility[+shading]"),
+        }
+        let mut spec = Self::new("");
+        spec.set_compose(c)?;
+        Ok(spec)
+    }
+
+    /// Replaces the composition (and the cached label) and re-resolves.
+    pub fn set_compose(&mut self, c: mr_components::Composition) -> anyhow::Result<()> {
+        self.compose = Some(c);
+        self.compose_label = Default::default();
+        self.resolve()
+    }
+
+    /// Options as the user sees them: without the keys a composition derives.
+    pub fn extra_options(&self) -> toml::Table {
+        let mut t = self.options.clone();
+        if self.compose.is_some() {
+            for k in ["storage", "visibility", "shading"] {
+                t.remove(k);
+            }
+        }
+        t
+    }
+
+    /// Display label: the explicit one, else the composition, else the renderer name.
     pub fn label(&self) -> &str {
-        self.label.as_deref().unwrap_or(&self.name)
+        if let Some(l) = &self.label {
+            return l;
+        }
+        match &self.compose {
+            Some(c) => self.compose_label.get_or_init(|| c.label()),
+            None => &self.name,
+        }
     }
 
     pub fn view_radius(&self, run: &RunSpec) -> u32 {
@@ -209,7 +284,10 @@ impl Plan {
         for o in overrides {
             apply_override(&mut table, o)?;
         }
-        let plan: Plan = table.try_into()?;
+        let mut plan: Plan = table.try_into()?;
+        for r in &mut plan.renderers {
+            r.resolve()?;
+        }
         if plan.run.frames == 0 {
             bail!("run.frames must be > 0");
         }
@@ -218,8 +296,19 @@ impl Plan {
 }
 
 impl Plan {
+    /// TOML of the plan. Compositions are written as their `compose` table only (the
+    /// derived renderer name and component options are left out).
     pub fn to_toml(&self) -> anyhow::Result<String> {
-        Ok(toml::to_string_pretty(self)?)
+        let mut p = self.clone();
+        for r in &mut p.renderers {
+            if r.compose.is_some() {
+                r.name.clear();
+                for k in ["storage", "visibility", "shading"] {
+                    r.options.remove(k);
+                }
+            }
+        }
+        Ok(toml::to_string_pretty(&p)?)
     }
 }
 
@@ -276,5 +365,27 @@ mod tests {
             let again = Plan::parse(&text, &[]).unwrap_or_else(|e| panic!("{}: {e:#}\n{text}", path.display()));
             assert_eq!(text, again.to_toml().unwrap(), "{}", path.display());
         }
+    }
+
+    /// Compositions resolve to their back end's renderer and component options, are
+    /// validated, and save as just the `compose` table.
+    #[test]
+    fn compositions() {
+        let text = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n\n[[renderer]]\ncompose = { storage = \"prefix\", visibility = \"incremental\" }\noptions = { exact = false }\n";
+        let p = Plan::parse(text, &[]).unwrap();
+        let r = &p.renderers[0];
+        assert_eq!(r.name, "gpu-compute");
+        assert_eq!(r.options.get("storage").and_then(|v| v.as_str()), Some("prefix"));
+        assert_eq!(r.options.get("visibility").and_then(|v| v.as_str()), Some("incremental"));
+        assert_eq!(r.label(), "gpu-compute: prefix + incremental");
+        let saved = p.to_toml().unwrap();
+        assert!(!saved.contains("name = \"gpu-compute\"") && saved.contains("compose") && !saved.contains("[renderer.options]\nstorage"), "{saved}");
+        assert_eq!(Plan::parse(&saved, &[]).unwrap().renderers[0].options, r.options);
+        // Unsupported combinations are rejected with the reason.
+        let bad = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"prefix\"");
+        assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("not available"));
+        let spec = RendererSpec::from_cli("gpu-compute:distance+sphere").unwrap();
+        assert_eq!(spec.options.get("storage").and_then(|v| v.as_str()), Some("distance"));
+        assert!(RendererSpec::from_cli("gpu-compute:nope+sphere").is_err());
     }
 }

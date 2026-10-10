@@ -102,6 +102,7 @@ egui_plot = "0.37"
 
 [dependencies]
 mr-core.workspace = true
+mr-components.workspace = true
 mr-world.workspace = true
 mr-ipc.workspace = true
 mr-worker.workspace = true

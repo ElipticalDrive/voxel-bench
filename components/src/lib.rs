@@ -83,8 +83,9 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Shading, name: "direct", description: "The reference lighting model: texel (unlit); ambient, sun and point lights with shadow rays through the same walk (lit).", backends: GPU, provides: &[], uses: &[] },
 ];
 
-/// A renderer as an assembly of components.
+/// A renderer as an assembly of components (missing fields take the defaults).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Composition {
     pub backend: String,
     pub storage: String,

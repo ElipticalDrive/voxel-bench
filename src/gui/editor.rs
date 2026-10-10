@@ -469,6 +469,80 @@ fn events(ui: &mut Ui, es: &mut Vec<EventSpec>, ctx: &EditorCtx) -> Changed {
     c
 }
 
+/// Whether `name` is a back end's renderer (shown through the composition chooser).
+fn is_backend_renderer(name: &str) -> bool {
+    mr_components::BACKENDS.iter().any(|b| b.renderer == Some(name))
+}
+
+/// The component chooser (IDEAS §12): back end, then one component per slot. Options that
+/// cannot run are shown disabled with the reason; pairings that run through a generic
+/// fallback get a note.
+fn composition(ui: &mut Ui, r: &mut RendererSpec) -> Changed {
+    use mr_components::{BACKENDS, Slot, components, unavailable};
+    let Some(mut comp) = r.compose.clone() else { return false };
+    let before = comp.clone();
+    ui.horizontal_wrapped(|ui| {
+        ComboBox::from_id_salt("backend")
+            .selected_text(&comp.backend)
+            .show_ui(ui, |ui| {
+                for b in BACKENDS {
+                    let ok = b.renderer.is_some();
+                    let resp = ui.add_enabled(ok, egui::Button::selectable(comp.backend == b.name, b.name));
+                    if ok {
+                        if resp.on_hover_text(b.description).clicked() {
+                            comp.backend = b.name.into();
+                        }
+                    } else {
+                        resp.on_disabled_hover_text(b.description);
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Back end the renderer runs on");
+        for slot in Slot::ALL {
+            ui.label(format!("{}:", slot.name()));
+            ComboBox::from_id_salt(slot.name())
+                .selected_text(comp.get(slot).to_string())
+                .show_ui(ui, |ui| {
+                    for c in components(slot) {
+                        let why = unavailable(&comp.backend, slot, c.name);
+                        let resp = ui.add_enabled(why.is_none(), egui::Button::selectable(comp.get(slot) == c.name, c.name));
+                        match why {
+                            None => {
+                                if resp.on_hover_text(c.description).clicked() {
+                                    comp.set(slot, c.name);
+                                }
+                            }
+                            Some(why) => {
+                                resp.on_disabled_hover_text(format!("{}\n\nUnavailable: {why}", c.description));
+                            }
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(components(slot).find(|c| c.name == comp.get(slot)).map_or("", |c| c.description));
+        }
+    });
+    if let Some(note) = mr_components::fallback_note(&comp) {
+        ui.weak(format!("ⓘ {note}"));
+    }
+    if comp != before {
+        // Switching back end: keep components that exist there, default the rest.
+        for slot in Slot::ALL {
+            if unavailable(&comp.backend, slot, comp.get(slot)).is_some() {
+                if let Some(c) = components(slot).find(|c| c.backends.contains(&comp.backend.as_str())) {
+                    comp.set(slot, c.name);
+                }
+            }
+        }
+        if let Err(e) = r.set_compose(comp) {
+            tracing::warn!("composition: {e:#}");
+        }
+        return true;
+    }
+    false
+}
+
 fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
     let mut c = false;
     ctx.option_text.resize_with(plan.renderers.len(), String::new);
@@ -477,15 +551,20 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
         ui.push_id(("renderer", i), |ui| {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    ComboBox::from_id_salt("name")
-                        .selected_text(&r.name)
-                        .show_ui(ui, |ui| {
-                            for info in ctx.infos {
-                                c |= ui.selectable_value(&mut r.name, info.name.clone(), &info.name).on_hover_text(&info.description).changed();
-                            }
-                        })
-                        .response
-                        .on_hover_text("Which renderer implementation to run");
+                    if r.compose.is_some() {
+                        ui.strong("🧩 composed").on_hover_text("Assembled from components (IDEAS §12): pick the back end and one component per slot below");
+                    } else {
+                        ui.weak("legacy:").on_hover_text("A monolithic renderer not yet split into components");
+                        ComboBox::from_id_salt("name")
+                            .selected_text(&r.name)
+                            .show_ui(ui, |ui| {
+                                for info in ctx.infos.iter().filter(|x| !is_backend_renderer(&x.name)) {
+                                    c |= ui.selectable_value(&mut r.name, info.name.clone(), &info.name).on_hover_text(&info.description).changed();
+                                }
+                            })
+                            .response
+                            .on_hover_text("Which legacy renderer to run");
+                    }
                     let mut label = r.label.clone().unwrap_or_default();
                     if ui.add(egui::TextEdit::singleline(&mut label).hint_text("label").desired_width(110.0)).on_hover_text("Name shown in views and reports; needed when the same renderer appears twice with different options").changed() {
                         r.label = (!label.is_empty()).then_some(label);
@@ -498,7 +577,9 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
                         *ctx.restart_lane = Some(i);
                     }
                 });
-                if let Some(info) = ctx.infos.iter().find(|x| x.name == r.name) {
+                if r.compose.is_some() {
+                    c |= composition(ui, r);
+                } else if let Some(info) = ctx.infos.iter().find(|x| x.name == r.name) {
                     let modes: Vec<_> = info.modes.iter().map(|m| m.name()).collect();
                     ui.weak(format!("[{}] {} — modes: {}", info.tags.join(", "), info.description, modes.join("/")));
                 }
@@ -521,14 +602,12 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
                     }
                 });
                 let text = &mut ctx.option_text[i];
-                ui.label("options (TOML, e.g. shadows = \"sun\")").on_hover_text("Renderer-specific settings. See the knob list in the Metrics tab (hover each for a description).");
+                ui.label("options (TOML, e.g. shadows = \"sun\")").on_hover_text("Further settings (knobs). See the knob list in the Metrics tab (hover each for a description).");
                 if ui.add(egui::TextEdit::multiline(text).code_editor().desired_rows(2).desired_width(f32::INFINITY)).on_hover_text("One `key = value` per line, applied as you type when valid").changed() {
-                    match text.parse::<toml::Table>() {
-                        Ok(t) => {
-                            r.options = t;
-                            c = true;
-                        }
-                        Err(_) => {}
+                    if let Ok(t) = text.parse::<toml::Table>() {
+                        r.options = t;
+                        let _ = r.resolve();
+                        c = true;
                     }
                 }
                 if text.parse::<toml::Table>().is_err() {
@@ -543,15 +622,22 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
         c = true;
     }
     ui.horizontal(|ui| {
-        ui.menu_button("+ renderer", |ui| {
-            for info in ctx.infos {
+        if ui.button("+ composed renderer").on_hover_text("Assemble a renderer from components: back end, storage, visibility, shading").clicked() {
+            plan.renderers.push(RendererSpec::composed(Default::default()));
+            ctx.option_text.push(String::new());
+            c = true;
+        }
+        ui.menu_button("+ legacy renderer", |ui| {
+            for info in ctx.infos.iter().filter(|x| !is_backend_renderer(&x.name)) {
                 if ui.button(&info.name).on_hover_text(&info.description).clicked() {
                     plan.renderers.push(RendererSpec::new(info.name.clone()));
                     ctx.option_text.push(String::new());
                     c = true;
                 }
             }
-        });
+        })
+        .response
+        .on_hover_text("Monolithic renderers not yet split into components");
     });
     c
 }

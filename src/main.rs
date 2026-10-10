@@ -88,9 +88,20 @@ fn main() -> anyhow::Result<()> {
         Cmd::Gui { plan } => gui::run(plan),
         Cmd::Worker { socket } => mr_worker::run(&socket),
         Cmd::List => {
-            for i in mr_worker::infos() {
+            println!("Renderers are assembled from components (plan: compose = {{ backend, storage, visibility, shading }};\nCLI: -r backend:storage+visibility[+shading]).\n\nBack ends:");
+            for b in mr_components::BACKENDS {
+                println!("  {:<12} {}{}", b.name, b.description, if b.renderer.is_none() { "  [not available yet]" } else { "" });
+            }
+            for slot in mr_components::Slot::ALL {
+                println!("\n{}:", slot.name());
+                for c in mr_components::components(slot) {
+                    println!("  {:<12} [{}] {}", c.name, c.backends.join(","), c.description);
+                }
+            }
+            println!("\nLegacy renderers (not yet split into components; -r name):");
+            for i in mr_worker::infos().into_iter().filter(|i| !mr_components::BACKENDS.iter().any(|b| b.renderer == Some(i.name.as_str()))) {
                 let modes: Vec<_> = i.modes.iter().map(|m| m.name()).collect();
-                println!("{:<16} [{}] modes={} max_lod={}\n    {}", i.name, i.tags.join(","), modes.join(","), i.max_lod, i.description);
+                println!("  {:<16} [{}] modes={} max_lod={}\n      {}", i.name, i.tags.join(","), modes.join(","), i.max_lod, i.description);
             }
             Ok(())
         }
@@ -133,7 +144,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::View { plan: path, renderers, overrides } => {
             let mut plan = Plan::load(&path, &overrides)?;
             if !renderers.is_empty() {
-                plan.renderers = renderers.into_iter().map(RendererSpec::new).collect();
+                plan.renderers = renderers.iter().map(|r| plan::RendererSpec::from_cli(r)).collect::<anyhow::Result<_>>()?;
             }
             if plan.run.streaming == Streaming::Complete {
                 // Keep the view responsive when flying fast.

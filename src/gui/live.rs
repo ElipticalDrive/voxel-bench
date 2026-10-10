@@ -369,6 +369,17 @@ struct Session {
     compare_seq: u64,
 }
 
+/// A component knob changed in the options: carry it into the composition, so restarts and
+/// the plan keep it.
+fn sync_compose(spec: &mut RendererSpec, knob: &str) {
+    let Some(slot) = mr_components::Slot::ALL.into_iter().find(|s| s.name() == knob) else { return };
+    let Some(v) = spec.options.get(knob).and_then(|v| v.as_str()).map(String::from) else { return };
+    if let Some(mut c) = spec.compose.clone() {
+        c.set(slot, &v);
+        let _ = spec.set_compose(c);
+    }
+}
+
 fn spawn_async(run: &RunSpec, spec: &RendererSpec, blocks: Arc<BlockRegistry>, env: Environment, res: [u32; 2]) -> Spawn {
     let (tx, rx) = crossbeam_channel::bounded(1);
     let (run, spec) = (run.clone(), spec.clone());
@@ -593,11 +604,13 @@ impl Session {
             }
             _ if spec.live => {
                 lane.run.spec.options.insert(name.into(), crate::gui::param_to_toml(&value));
+                sync_compose(&mut lane.run.spec, name);
                 lane.run.pending_params.push((name.to_string(), value));
             }
             _ => {
                 let mut new = lane.run.spec.clone();
                 new.options.insert(name.into(), crate::gui::param_to_toml(&value));
+                sync_compose(&mut new, name);
                 self.hot_swap(i, new);
             }
         }
