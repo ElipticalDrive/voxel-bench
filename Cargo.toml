@@ -1,0 +1,129 @@
+[package]
+name = "multirenderer"
+version = "0.1.0"
+edition = "2024"
+default-run = "multirenderer"
+
+[workspace]
+members = [
+    "crates/mr-core",
+    "crates/mr-world",
+    "crates/mr-ipc",
+    "crates/mr-worker",
+    "crates/mr-gpu",
+    "crates/mr-mesh",
+    "renderers/cpu-reference",
+    "renderers/cpu-raster",
+    "renderers/cpu-simd",
+    "renderers/gpu-dda",
+    "renderers/gpu-raster",
+    "renderers/gpu-rtx",
+    "renderers/gpu-tree64",
+    "renderers/gpu-sdf",
+    "renderers/cpu-simd-loc",
+    "renderers/cpu-discover",
+    "renderers/gpu-discover",
+    "renderers/cpu-simd-mem",
+    "renderers/cpu-voxelspace",
+    "renderers/gpu-cubes",
+    "renderers/gpu-bitmask",
+    "renderers/gpu-splat",
+    "renderers/gpu-voxelspace",
+    "renderers/gpu-raster-naive",
+    "renderers/gpu-beam",
+    "renderers/gpu-frag-hybrid",
+    "renderers/gpu-svo-dag",
+    "renderers/gpu-visbuffer",
+    "renderers/gpu-clipmap",
+    "renderers/gpu-pathtrace",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+mr-core = { path = "crates/mr-core" }
+mr-world = { path = "crates/mr-world" }
+mr-ipc = { path = "crates/mr-ipc" }
+mr-worker = { path = "crates/mr-worker" }
+mr-gpu = { path = "crates/mr-gpu" }
+mr-mesh = { path = "crates/mr-mesh" }
+cpu-reference = { path = "renderers/cpu-reference" }
+cpu-raster = { path = "renderers/cpu-raster" }
+cpu-simd = { path = "renderers/cpu-simd" }
+gpu-dda = { path = "renderers/gpu-dda" }
+gpu-raster = { path = "renderers/gpu-raster" }
+gpu-rtx = { path = "renderers/gpu-rtx" }
+gpu-tree64 = { path = "renderers/gpu-tree64" }
+gpu-sdf = { path = "renderers/gpu-sdf" }
+cpu-simd-loc = { path = "renderers/cpu-simd-loc" }
+cpu-discover = { path = "renderers/cpu-discover" }
+gpu-discover = { path = "renderers/gpu-discover" }
+cpu-simd-mem = { path = "renderers/cpu-simd-mem" }
+cpu-voxelspace = { path = "renderers/cpu-voxelspace" }
+gpu-cubes = { path = "renderers/gpu-cubes" }
+gpu-bitmask = { path = "renderers/gpu-bitmask" }
+gpu-splat = { path = "renderers/gpu-splat" }
+gpu-voxelspace = { path = "renderers/gpu-voxelspace" }
+gpu-raster-naive = { path = "renderers/gpu-raster-naive" }
+gpu-beam = { path = "renderers/gpu-beam" }
+gpu-frag-hybrid = { path = "renderers/gpu-frag-hybrid" }
+gpu-svo-dag = { path = "renderers/gpu-svo-dag" }
+gpu-visbuffer = { path = "renderers/gpu-visbuffer" }
+gpu-clipmap = { path = "renderers/gpu-clipmap" }
+gpu-pathtrace = { path = "renderers/gpu-pathtrace" }
+
+anyhow = "1"
+bytemuck = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
+glam = { version = "0.34", features = ["serde", "bytemuck"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+memmap2 = "0.9"
+pollster = "1"
+postcard = { version = "1", features = ["use-std"] }
+rayon = "1"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+softbuffer = "0.4"
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wgpu = "30"
+winit = "0.30"
+eframe = "0.36"
+egui = "0.36"
+egui_plot = "0.37"
+
+[dependencies]
+mr-core.workspace = true
+mr-world.workspace = true
+mr-ipc.workspace = true
+mr-worker.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+crossbeam-channel.workspace = true
+glam.workspace = true
+image.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+softbuffer.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+winit.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui_plot.workspace = true
+
+[profile.release]
+debug = "line-tables-only"
+codegen-units = 16
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

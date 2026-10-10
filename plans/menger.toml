@@ -1,0 +1,40 @@
+# Menger sponge (level 5, 243^3): deep occlusion, huge numbers of small faces and long
+# ray paths through holes. Worst case for meshing; interesting for ray traversal.
+name = "menger"
+
+[scene]
+generator = { type = "menger", level = 5 }
+camera = { type = "orbit", center = [121.5, 121.5, 121.5], radius = 330, height = 120, period = 600 }
+
+[run]
+frames = 300
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 12
+
+[[renderer]]
+name = "gpu-dda"
+
+[[renderer]]
+name = "gpu-raster"
+
+[[renderer]]
+name = "cpu-raster"
+
+[[renderer]]
+name = "gpu-rtx"
+
+[[renderer]]
+name = "gpu-rtx-bricks"
+
+[[renderer]]
+name = "gpu-tree64"
+
+[[renderer]]
+name = "cpu-simd"
+
+[[renderer]]
+name = "gpu-sdf"
+
+[output]
+compare = { every = 100 }

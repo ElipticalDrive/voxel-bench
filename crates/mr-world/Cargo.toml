@@ -1,0 +1,11 @@
+[package]
+name = "mr-world"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mr-core.workspace = true
+anyhow.workspace = true
+glam.workspace = true
+rayon.workspace = true
+serde.workspace = true

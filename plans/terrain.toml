@@ -1,0 +1,44 @@
+# The main "huge world" workload: a flight over infinite procedural terrain with caves,
+# trees and mountains, in both render modes, compared against the reference.
+name = "terrain-flight"
+
+[scene]
+generator = { type = "terrain", seed = 7 }
+camera = { type = "flythrough", points = [[0, 110, 0], [260, 140, 120], [520, 95, -80], [800, 170, 60], [1100, 120, 300]] }
+lights = [{ type = "scatter", count = 400, seed = 1, center = [550, 80, 100], extent = [600, 80, 300], on_surface = true, intensity = 25.0, radius = 18.0 }]
+events = [{ type = "animate_lights", amplitude = 1.5, period = 90 }]
+
+[run]
+frames = 600
+warmup = 30
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 16
+
+[[renderer]]
+name = "gpu-dda"
+
+[[renderer]]
+name = "gpu-raster"
+
+[[renderer]]
+name = "cpu-raster"
+
+[[renderer]]
+name = "gpu-rtx"
+
+[[renderer]]
+name = "gpu-rtx-bricks"
+
+[[renderer]]
+name = "gpu-tree64"
+
+[[renderer]]
+name = "cpu-simd"
+
+[[renderer]]
+name = "gpu-sdf"
+
+[output]
+compare = { every = 100 }
+save = { every = 300 }

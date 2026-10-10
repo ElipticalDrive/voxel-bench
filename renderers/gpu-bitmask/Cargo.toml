@@ -1,0 +1,16 @@
+[package]
+name = "gpu-bitmask"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mr-core.workspace = true
+anyhow.workspace = true
+glam.workspace = true
+serde.workspace = true
+tracing.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
+rayon.workspace = true
+wgpu.workspace = true
+mr-gpu.workspace = true

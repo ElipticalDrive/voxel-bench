@@ -1,0 +1,14 @@
+[package]
+name = "cpu-raster"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mr-core.workspace = true
+mr-mesh.workspace = true
+cpu-reference.workspace = true
+anyhow.workspace = true
+glam.workspace = true
+rayon.workspace = true
+serde.workspace = true
+tracing.workspace = true

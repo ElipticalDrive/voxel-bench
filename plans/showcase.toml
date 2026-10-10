@@ -1,0 +1,47 @@
+# Texture/UV sanity scene: every block type in a row plus debug-textured cubes.
+name = "showcase"
+
+[scene]
+generator = { type = "showcase" }
+camera = { type = "orbit", center = [20.0, 2.0, 0.0], radius = 26.0, height = 12.0, period = 120 }
+lights = [
+    { type = "point", position = [10.0, 4.0, 3.0], color = [1.0, 0.6, 0.3], intensity = 30.0, radius = 20.0 },
+    { type = "point", position = [30.0, 4.0, -3.0], color = [0.3, 0.6, 1.0], intensity = 30.0, radius = 20.0 },
+]
+
+[run]
+frames = 120
+warmup = 5
+resolution = [960, 540]
+modes = ["unlit", "lit"]
+view_radius = 4
+
+[[renderer]]
+name = "cpu-reference"
+
+[[renderer]]
+name = "gpu-dda"
+
+[[renderer]]
+name = "gpu-raster"
+
+[[renderer]]
+name = "cpu-raster"
+
+[[renderer]]
+name = "gpu-rtx"
+
+[[renderer]]
+name = "gpu-rtx-bricks"
+
+[[renderer]]
+name = "gpu-tree64"
+
+[[renderer]]
+name = "cpu-simd"
+
+[[renderer]]
+name = "gpu-sdf"
+
+[output]
+save = { every = 30 }

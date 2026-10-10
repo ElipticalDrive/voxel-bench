@@ -1,0 +1,14 @@
+[package]
+name = "mr-gpu"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mr-core.workspace = true
+anyhow.workspace = true
+pollster.workspace = true
+tracing.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+serde.workspace = true

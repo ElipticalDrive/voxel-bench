@@ -1,0 +1,43 @@
+# Fast straight flight across the terrain (~4 km in 600 frames) with a per-frame chunk
+# budget: measures streaming throughput, remeshing cost and pop-in (quality drops when a
+# renderer lags behind).
+name = "streaming"
+
+[scene]
+generator = { type = "terrain", seed = 21 }
+camera = { type = "line", from = [0, 150, 0], to = [4000, 150, 1000] }
+
+[run]
+frames = 600
+warmup = 0
+resolution = [1920, 1080]
+modes = ["unlit"]
+view_radius = 16
+streaming = { budget = 400 }
+
+[[renderer]]
+name = "gpu-dda"
+
+[[renderer]]
+name = "gpu-raster"
+
+[[renderer]]
+name = "cpu-raster"
+
+[[renderer]]
+name = "gpu-rtx"
+
+[[renderer]]
+name = "gpu-rtx-bricks"
+
+[[renderer]]
+name = "gpu-tree64"
+
+[[renderer]]
+name = "cpu-simd"
+
+[[renderer]]
+name = "gpu-sdf"
+
+[output]
+compare = { every = 100 }

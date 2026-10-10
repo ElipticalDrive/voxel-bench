@@ -1,0 +1,163 @@
+use std::sync::Arc;
+
+use glam::IVec3;
+use serde::{Deserialize, Serialize};
+
+use crate::{BlockId, BlockRegistry, Camera, ChunkData, ChunkKey, Environment, Light, ParamSpec, ParamValue, RenderMode};
+
+/// Static description of a renderer implementation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RendererInfo {
+    /// Unique name used in run plans, e.g. `gpu-dda`.
+    pub name: String,
+    pub description: String,
+    /// Free-form category tags (`cpu`, `gpu`, `raster`, `compute`, `raytrace`, ...).
+    pub tags: Vec<String>,
+    pub modes: Vec<RenderMode>,
+    /// Highest LOD level the renderer wants streamed. 0 means full-resolution chunks only.
+    pub max_lod: u8,
+    /// Knobs this renderer exposes (also its accepted `options` keys).
+    #[serde(default)]
+    pub params: Vec<ParamSpec>,
+}
+
+/// Everything a renderer receives at construction.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InitParams {
+    pub width: u32,
+    pub height: u32,
+    pub blocks: Arc<BlockRegistry>,
+    pub environment: Environment,
+    /// Chunks within this many chunks (Chebyshev, at each LOD level) of the camera are
+    /// streamed. Useful for sizing structures and the max ray distance.
+    pub view_radius_chunks: u32,
+    /// Highest LOD level the host streams to this renderer (each level covers the same
+    /// chunk radius at twice the cell size).
+    #[serde(default)]
+    pub max_lod: u8,
+    /// Renderer-specific options from the run plan, as a JSON object string.
+    pub options_json: String,
+}
+
+impl InitParams {
+    /// Parses the renderer-specific options into `T`; missing options use `T::default()`.
+    pub fn options<T: serde::de::DeserializeOwned + Default>(&self) -> anyhow::Result<T> {
+        if self.options_json.trim().is_empty() || self.options_json.trim() == "{}" {
+            return Ok(T::default());
+        }
+        Ok(serde_json::from_str(&self.options_json)?)
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockEdit {
+    pub pos: IVec3,
+    pub block: BlockId,
+}
+
+/// Incremental change to the renderer's view of the world. Updates arrive in order and
+/// are always delivered before the [`FrameRequest`] they precede.
+///
+/// Chunk semantics: a chunk that is not loaded is air. The host only sends `SetBlocks`
+/// for chunks the renderer currently holds; an edit that makes an absent chunk non-empty
+/// arrives as a `ChunkLoad`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum WorldUpdate {
+    ChunkLoad { key: ChunkKey, data: ChunkData },
+    ChunkUnload { key: ChunkKey },
+    SetBlocks(Vec<BlockEdit>),
+    LightUpsert(Vec<Light>),
+    LightRemove(Vec<u32>),
+    SetEnvironment(Environment),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FrameRequest {
+    pub frame_id: u64,
+    pub camera: Camera,
+    pub mode: RenderMode,
+    /// Whether the pixels must be delivered to the host. When false the renderer may
+    /// skip any read-back entirely.
+    pub readback: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FrameStats {
+    /// CPU time the renderer spent on this frame (render-thread work, excluding waiting).
+    pub cpu_ms: f32,
+    /// GPU execution time if measured (timestamp queries).
+    pub gpu_ms: Option<f32>,
+    /// Arbitrary per-frame counters (rays cast, triangles drawn, ...).
+    pub counters: Vec<(String, f64)>,
+}
+
+pub struct CompletedFrame<'a> {
+    pub frame_id: u64,
+    pub stats: FrameStats,
+    /// RGBA8 sRGB, top row first, tightly packed (`width * 4` bytes per row). Present
+    /// whenever the request asked for read-back.
+    pub pixels: Option<&'a [u8]>,
+}
+
+pub trait FrameSink {
+    fn complete(&mut self, frame: CompletedFrame<'_>);
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MemoryReport {
+    pub cpu_bytes: u64,
+    pub gpu_bytes: u64,
+}
+
+/// Lets a renderer's background threads (e.g. a GPU fence waiter) ask the worker to call
+/// [`Renderer::poll`] as soon as possible.
+#[derive(Clone)]
+pub struct Waker(Arc<dyn Fn() + Send + Sync>);
+
+impl Waker {
+    pub fn new(f: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    pub fn noop() -> Self {
+        Self::new(|| {})
+    }
+
+    pub fn wake(&self) {
+        (self.0)()
+    }
+}
+
+/// A renderer under test. Lives on a single thread inside a worker process, but may spawn
+/// whatever internal threads/GPU queues it likes.
+///
+/// Frames may complete asynchronously: `render` may return before the frame is done, and
+/// completes any number of earlier frames through the sink (in submission order).
+/// Asynchronous renderers must call the [`Waker`] they were created with when frames may
+/// have finished; the worker then calls `poll`. `flush` must block until every submitted
+/// frame has completed.
+pub trait Renderer {
+    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()>;
+    fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()>;
+    /// Changes a `live` parameter between frames. Values arrive already clamped to the
+    /// parameter's declared domain.
+    fn set_param(&mut self, name: &str, _value: &ParamValue) -> anyhow::Result<()> {
+        anyhow::bail!("parameter `{name}` cannot change while running")
+    }
+
+    /// Complete any finished frames without blocking.
+    fn poll(&mut self, _sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()>;
+    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()>;
+    fn memory(&self) -> MemoryReport {
+        MemoryReport::default()
+    }
+}
+
+/// How the worker discovers and constructs a renderer.
+pub struct RendererEntry {
+    pub info: fn() -> RendererInfo,
+    pub create: fn(InitParams, Waker) -> anyhow::Result<Box<dyn Renderer>>,
+}

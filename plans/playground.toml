@@ -1,0 +1,76 @@
+name = "playground"
+
+[scene]
+fov_deg = 70.0
+
+[scene.generator]
+type = "terrain"
+seed = 7
+caves = true
+trees = true
+
+[scene.environment]
+no_sun = false
+
+[[scene.lights]]
+type = "scatter"
+count = 150
+seed = 1
+center = [
+    0.0,
+    60.0,
+    0.0,
+]
+extent = [
+    150.0,
+    60.0,
+    150.0,
+]
+intensity = 20.0
+radius = 16.0
+on_surface = true
+
+[scene.camera]
+type = "orbit"
+center = [
+    0.0,
+    70.0,
+    0.0,
+]
+radius = 120.0
+height = 50.0
+period = 1200
+
+[[scene.events]]
+type = "animate_lights"
+amplitude = 1.5
+period = 90
+
+[run]
+frames = 300
+warmup = 10
+resolution = [
+    1280,
+    720,
+]
+modes = ["unlit"]
+view_radius = 10
+max_lod = 0
+in_flight = 2
+pacing = "max"
+parallel = false
+isolation = "process"
+launcher = []
+repeats = 1
+
+[run.streaming]
+budget = 512
+
+[[renderer]]
+name = "gpu-dda"
+
+[renderer.options]
+
+[output]
+window = false
+readback = "auto"

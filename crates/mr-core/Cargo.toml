@@ -1,0 +1,11 @@
+[package]
+name = "mr-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true

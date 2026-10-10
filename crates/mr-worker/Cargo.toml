@@ -1,0 +1,35 @@
+[package]
+name = "mr-worker"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mr-core.workspace = true
+mr-ipc.workspace = true
+cpu-reference.workspace = true
+cpu-raster.workspace = true
+cpu-simd.workspace = true
+gpu-dda.workspace = true
+gpu-raster.workspace = true
+gpu-rtx.workspace = true
+gpu-tree64.workspace = true
+gpu-sdf.workspace = true
+cpu-simd-loc.workspace = true
+cpu-discover.workspace = true
+gpu-discover.workspace = true
+cpu-simd-mem.workspace = true
+cpu-voxelspace.workspace = true
+gpu-cubes.workspace = true
+gpu-bitmask.workspace = true
+gpu-splat.workspace = true
+gpu-voxelspace.workspace = true
+gpu-raster-naive.workspace = true
+gpu-beam.workspace = true
+gpu-frag-hybrid.workspace = true
+gpu-svo-dag.workspace = true
+gpu-visbuffer.workspace = true
+gpu-clipmap.workspace = true
+gpu-pathtrace.workspace = true
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true

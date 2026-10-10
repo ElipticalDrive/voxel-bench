@@ -1,0 +1,40 @@
+# 192^3 cube of random blocks at 15% density: no coherence, maximal faces per block and
+# short, divergent rays. A deliberately hostile case.
+name = "random"
+
+[scene]
+generator = { type = "random", size = 192, density = 0.15, seed = 9 }
+camera = { type = "orbit", center = [0, 0, 0], radius = 180, height = 60, period = 300 }
+
+[run]
+frames = 300
+resolution = [1920, 1080]
+modes = ["unlit"]
+view_radius = 6
+
+[[renderer]]
+name = "gpu-dda"
+
+[[renderer]]
+name = "gpu-raster"
+
+[[renderer]]
+name = "cpu-raster"
+
+[[renderer]]
+name = "gpu-rtx"
+
+[[renderer]]
+name = "gpu-rtx-bricks"
+
+[[renderer]]
+name = "gpu-tree64"
+
+[[renderer]]
+name = "cpu-simd"
+
+[[renderer]]
+name = "gpu-sdf"
+
+[output]
+compare = { every = 100 }

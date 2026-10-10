@@ -1,0 +1,8 @@
+[package]
+name = "mr-mesh"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mr-core.workspace = true
+glam.workspace = true

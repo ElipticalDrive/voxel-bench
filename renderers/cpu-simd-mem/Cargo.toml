@@ -1,0 +1,14 @@
+[package]
+name = "cpu-simd-mem"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mr-core.workspace = true
+cpu-reference.workspace = true
+anyhow.workspace = true
+glam.workspace = true
+rayon.workspace = true
+serde.workspace = true
+tracing.workspace = true
+libc = "0.2"

@@ -1,0 +1,354 @@
+# MultiRenderer
+
+A test bench for voxel renderers. Many renderer implementations (CPU, GPU compute, raster,
+hybrid, anything) render the same scenes, each sandboxed in its own worker process, and are
+benchmarked and scored against reference images.
+
+The world is the simplest possible volume: an axis-aligned unit-cube lattice. Every cell is
+either air (fully transparent) or an opaque block with a 16x16 texture per face. Point
+lights occupy no volume and are invisible. Worlds are unbounded and streamed in 32³ chunks.
+
+## Quick start
+
+```sh
+cargo build --release
+./target/release/multirenderer                              # GUI (same as `gui [plan.toml]`)
+./target/release/multirenderer list                         # available renderers
+./target/release/multirenderer run plans/terrain.toml       # benchmark + compare + report
+./target/release/multirenderer run plans/showcase.toml -s output.window=true -s run.frames=600
+./target/release/multirenderer view plans/terrain.toml -r gpu-dda -r gpu-raster   # fly around
+./target/release/multirenderer diff a.png b.png --out diff.png
+```
+
+### GUI
+
+`multirenderer` with no arguments (or `multirenderer gui plans/terrain.toml`) opens the
+GUI. It has five areas:
+
+- **Workflow (left).** A form for every plan setting: world generator, camera path,
+  environment, lights, scripted events, renderers with their options, run settings and
+  benchmark outputs. A TOML tab lets you edit the raw plan. Open, save and Ctrl+S are in
+  the toolbar. "⌖ cam" buttons copy the live camera into positions and camera-path
+  points, which is a quick way to author fly-throughs.
+- **Viewport (centre).** Every renderer in the plan runs live, tiled side by side. Each
+  renders the latest camera as fast as it can (or up to the fps cap), independently of the
+  others. Frames are read back only at the display rate, so the numbers reflect the
+  renderer rather than the GUI.
+- **Metrics (right).** Live fps, frame interval, latency and CPU/GPU/update time (mean
+  and p99), renderer counters, process RSS, GPU memory and streaming progress, with
+  frame-time and GPU/CPU plots. Each renderer has ↻ to restart it with the options from
+  the editor, and ✖ to remove it.
+- **Compare (right).** Renders the exact current view on every renderer and the reference
+  renderer, then shows PSNR, MAE and bad-pixel % plus images and diff images.
+- **Benchmark (right).** Runs the full plan as a separate `multirenderer run` process,
+  streams its output, and shows the report table and an fps chart. It can also load
+  previous reports from `runs/`.
+
+Keys: **F5** starts or restarts the live session. **WASD**, **Space** and **Shift** fly
+(**Ctrl** for 5× speed). Right-drag, left-drag or the arrow keys look, and the mouse
+wheel changes speed. **L** toggles lit/unlit. **F** switches between following the plan's
+camera path and free flight. **P** plays or pauses the scene clock, **[ ]** scrubs it, and
+**R** resets it. **E** enters edit mode: click to remove a block, Ctrl+click to place one.
+**G** drops a light at the camera. **C** runs a comparison. **1–9**, **Tab** and **Esc**
+focus a renderer, cycle through them or show them all. **F11** switches to a fullscreen viewport (Esc
+leaves). **Z** draws exactly one frame pixel per screen pixel, snapped to the physical
+pixel grid and cropped rather than scaled. **M** sets the render resolution to the
+tile's exact pixel size and restarts the session, so F11, 1 and M together give native
+display resolution. **O** hides the overlays. The ❓ Keys tab lists everything.
+
+### Knobs, hot swaps, quality probes and auto-tuning
+
+Each renderer declares its **knobs** (`RendererInfo::params`): name, type, range, and
+whether it can change *live*. Every lane also has host knobs:
+
+- `host.render_scale`: render resolution relative to the plan's, as a live resize.
+- `host.view_radius`: streamed chunks.
+- `host.in_flight`: frames the host lets this renderer queue.
+
+The **Metrics → knobs** section shows them all as sliders, checkboxes and dropdowns.
+Live knobs apply between frames. Knobs marked ↻ need a restart, which is done as a
+**hot swap**: a replacement worker spawns, streams the world and renders three unseen
+warm-up frames, while the old one keeps rendering. Then it takes over in one step.
+Spawning is asynchronous, so a starting or restarting renderer never stalls the others.
+💾 copies a lane's current knob values back into the plan.
+
+**Quality probes** ("probe every N s" in the toolbar, or C) render the current view on
+every lane and on the reference at the same moment, without pausing anything. Each probe
+records PSNR, SSIM and **MS-SSIM** (multi-scale structural similarity), plotted over time.
+Lanes rendering at reduced scale are bilinearly upscaled (centre-aligned) before scoring,
+so resolution loss counts as quality loss.
+
+Which metric you tune against matters. These worlds have pixel-scale texture detail, so
+PSNR drops from about 59 dB to about 26 dB at *any* resolution change (even 0.98×) and
+then hardly moves. MS-SSIM degrades gracefully, and it is the tuner's default.
+
+**Auto-tune** (per lane) turns that lane's unlocked knobs (🔒 locks one) towards a goal:
+
+- **Goals:** *max quality @ fps*, *max fps @ quality floor*, or *max fps*. Constrained
+  goals are lexicographic: meet the constraint first, then optimise the other quantity.
+- **Algorithms:**
+  - *local search*: randomised hill climbing with per-knob adaptive steps, early abort of
+    collapsing trials, memory of rejected moves, and periodic re-measurement because the
+    scene drifts;
+  - *resolution controller*: the classic dynamic-resolution feedback loop on
+    `host.render_scale`, as a baseline;
+  - *bayesian*: Gaussian-process models of log-fps and quality over all unlocked knobs
+    (wide integer ranges are log-encoded). The acquisition is constrained expected
+    improvement: `P(fps ≥ target) × EI(quality)`, or the reverse for a quality floor. It
+    changes several knobs per trial, keeps a sliding window of observations so it can
+    follow a drifting scene, starts close to the current settings, and re-checks the best
+    configuration every few trials (`src/bayes.rs`).
+- **Quality metric:** MS-SSIM (default) or PSNR, in dB.
+- **Measurement:** fps is throughput over a window that starts after a settle time.
+  Quality comes from probes the tuner requests itself. Measurement pauses during hot
+  swaps and resizes. "May change ↻ knobs" lets it hot-swap.
+- **Noise:** each window is split into three sub-windows to estimate the fps standard
+  error. A change counts as an improvement only if it beats both the goal's margin and
+  two standard errors of the difference, so the tuner doesn't chase jitter.
+- **Explore → hold:** after *patience* trials without improvement (default 14; three
+  times that while the goal is still unmet), it applies the best configuration and only
+  re-measures it. If the goal is violated or the score degrades for three checks in a
+  row (the scene changed), it explores again from the best known point.
+- **Stopping** applies the best configuration found and logs what it restored in the
+  lane's events. The panel shows the best result, how it differs from the starting
+  knobs, and a plot of every knob's value over time.
+
+The tuner is pure logic in `src/tune.rs`, unit-tested against a synthetic renderer. Watch
+it on real terrain with:
+
+```sh
+LOCK=host.view_radius TARGET_FPS=900 SECONDS=60 ALGO=bayes \
+  cargo test --release --bin multirenderer tuner_demo -- --ignored --nocapture
+RENDERER=gpu-dda cargo test --release --bin multirenderer scale_curve -- --ignored --nocapture
+```
+
+`scale_curve` prints quality against render scale for a renderer under all three metrics.
+
+`view` (the minimal CLI viewer) controls: WASD/Space/Shift to move, Ctrl to boost, left-drag to look, mouse wheel
+to change speed, `L` to toggle lit/unlit, `P` to print the current camera as a plan
+snippet, and Esc to quit.
+
+Each `run` writes `runs/<timestamp>-<name>/` containing `plan.toml` (with the overrides
+used), `report.json` (every metric, including per-frame records), `summary.txt`, `logs/`
+(one per worker) and `frames/` (saved frames and diff images).
+
+## Architecture
+
+```
+multirenderer (host)                         worker process (one per renderer)
+├─ plan.rs     TOML run plans + -s overrides ├─ mr-worker: IPC loop, owns one Renderer
+├─ session.rs  frame loop, in-flight frames, │    └─ Box<dyn mr_core::Renderer>
+│              pacing, outputs               │
+├─ stream.rs   per-renderer chunk streaming ─┼─▶ Unix socket: Init / Updates / Render / Flush
+├─ worker.rs   spawn / handshake / logs      │◀─ Hello / Ready / FrameDone / Error
+├─ compare.rs  PSNR / MAE / bad-pixel %      │
+├─ report.rs   summaries, tables, JSON       └─ pixels: shared-memory slots (/dev/shm)
+└─ window.rs   live view (winit+softbuffer)
+crates/mr-core   shared vocabulary: camera, chunks, faces/UVs, lighting, Renderer trait
+crates/mr-world  generators, textures, authoritative world store, scripted scenes
+crates/mr-ipc    protocol messages, framing, shared-memory frame slots
+crates/mr-gpu    wgpu helpers: adapter choice, frame ring (readback/timestamps), GPU voxel world,
+                 lighting WGSL with a pluggable `occluded()` (DDA, ray query, tree, ...)
+crates/mr-mesh   greedy mesher and quad decoding shared by the raster and triangle-RT renderers
+renderers/*      one crate per renderer
+```
+
+- **Isolation.** By default every renderer runs in its own process: the host binary
+  re-executes itself as `multirenderer worker`. A crash, leak or GPU hang only takes down
+  that worker, and the run records the error and continues. `run.isolation = "thread"`
+  runs workers on host threads instead, for debugging or profiling in the IDE.
+  `run.launcher` prefixes the worker command (for example `systemd-run --user --scope -p
+  MemoryMax=8G`, `nice`, `taskset`, or a profiler).
+- **The renderer owns its data.** It receives an ordered stream of `WorldUpdate`s
+  (chunk loads and unloads, block edits, lights, environment) and builds whatever
+  structures it likes. Updates always arrive before the `FrameRequest` they precede, so
+  runs are deterministic.
+- **Asynchronous frames.** `render` may return before the frame is finished. Up to
+  `run.in_flight` frames are outstanding at once. GPU renderers wake the worker through a
+  `Waker` when work completes, so completion latency doesn't depend on polling.
+- **Streaming.** The host tracks what each renderer holds and streams chunks within
+  `run.view_radius` of the camera, nearest first. Either everything is delivered before
+  each frame (`streaming = "complete"`, deterministic) or there's a per-frame budget
+  (`streaming = { budget = N }`, realistic pop-in that shows up as lost quality).
+  World generation is done before timing starts.
+- **Measurement.** The host measures latency (Render sent to FrameDone received) and the
+  interval between frame completions. Renderers report CPU time, GPU timestamp time and
+  any counters they like. The report also includes init time, initial streaming load
+  time, peak RSS of the worker and the GPU memory the renderer reports.
+
+## Conventions every renderer must follow (`mr-core`)
+
+| What | Rule |
+|---|---|
+| Axes | Right-handed with +Y up. `yaw = 0` looks down −Z, positive yaw turns right. |
+| Primary rays | One ray through each pixel centre (`Camera::ray_dir`). Row 0 is the top row. |
+| Precision | Camera position is `f64`. Work relative to `Camera::split_position()`. |
+| Chunks | 32³ cells, index `x + 32*(z + 32*y)`. A chunk that isn't loaded is air. LOD `L` cells cover 2^L blocks. |
+| Face UVs | `Face::uv`: viewed from outside with +Y up, `u` points right and `v` points down. Nearest sampling via `texel_coord`. |
+| Unlit | Pixel = sRGB texel of the first face hit. Misses use the sky colour. **This is strict.** |
+| Lit | `albedo * (ambient + sun + Σ point lights)` with hard shadows and windowed inverse-square falloff (`lighting::attenuation`), then `encode_srgb`. **This is loose:** approximations are allowed and scored. |
+| Lights | Invisible. Looking straight at one shows nothing. |
+| Output | RGBA8 sRGB, top row first, tightly packed. |
+
+The `debug` block (in the `showcase` scene) has a white marker in the `u = 0, v = 0` corner
+of every face, so UV or orientation mistakes are obvious.
+
+## Run plans
+
+See `plans/` for complete examples. All keys are listed below.
+
+```toml
+name = "my-test"
+
+[scene]
+fov_deg = 70
+generator = { type = "terrain", seed = 7 }   # terrain|flat|menger|room|random|showcase|empty
+camera = { type = "flythrough", points = [[0,110,0],[260,140,120]] }
+                                   # static|orbit|line|flythrough|spin (see mr-world/scenario.rs)
+environment = { no_sun = true, ambient = [0.02,0.02,0.03], sky = [0,0,0], exposure = 1.0 }
+lights = [{ type = "scatter", count = 400, extent = [600,80,300], on_surface = true }]
+events = [{ type = "random_edits", count = 2000, radius = 40, block = "toggle" }]
+                                   # sphere|box|random_edits|animate_lights|sun_cycle
+
+[run]
+frames = 600            # measured frames; the camera path spans these
+warmup = 30
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 16        # chunks
+max_lod = 0            # LOD levels streamed (each covers view_radius chunks at 2x the cell size)
+in_flight = 2
+pacing = "max"          # or { fps = 60 }
+streaming = "complete"  # or { budget = 400 }
+parallel = false        # true: all renderers at once (side by side in the window)
+isolation = "process"   # or "thread"
+launcher = []
+repeats = 1             # >1: passes repeat round-robin; a median/spread table is added
+
+[[renderer]]
+name = "gpu-raster"
+label = "raster-sunshadow"         # optional; lets you run one renderer with several option sets
+options = { shadows = "sun" }      # renderer-specific
+view_radius = 8                    # optional per-renderer override of run.view_radius
+max_lod = 2                        # optional per-renderer override of run.max_lod
+
+[output]
+window = false
+readback = "auto"                  # auto|always|never
+save = { every = 100, diffs = true }
+compare = { reference = "cpu-reference", every = 100 }
+dir = "runs"
+```
+
+Every value can be overridden from the command line, for example
+`-s run.resolution=[3840,2160] -s 'renderer=[{name="gpu-dda"}]'`.
+
+## Renderers
+
+| Name | Category | Technique |
+|---|---|---|
+| `cpu-reference` | CPU ray casting | Multi-threaded f64 two-level DDA (chunk, then voxel), exact lighting with a shadow ray per light. Defines ground truth. |
+| `cpu-raster` | CPU software raster | Greedy meshes, then homogeneous clipping, tiled multithreaded edge-function rasterisation into a depth + visibility-ID buffer, then deferred shading from an exact per-pixel ray–plane hit, with CPU ray-traced shadows. Options: `tile_width`, `band_height`. |
+| `cpu-simd` | CPU ray casting | Speed-oriented CPU caster: f32 camera-relative multi-level DDA (chunk/brick/voxel) over a dense chunk grid, and lockstep ray packets compiled for scalar, AVX2 and AVX-512 (runtime-selected). Knobs: `packet`, `isa`, `threads`, `shadows`. |
+| `cpu-simd-prefix` | CPU ray casting | The user's hierarchy: Morton-ordered 4³ occupancy masks (bits Morton-ordered too) plus a popcount prefix array, so any aligned 2–16 cube's emptiness is one compare. The prefix doubles as a rank into compressed, solid-only block ids. Fewest steps of any variant (−31 to −51% vs u16) and 20% less world memory, but 3–9% behind `hier` per pixel: big steps cost more than unit steps in this traversal. Knob `traversal = "incremental-exact"` (on every `cpu-simd-*` variant) is the incremental-level hierarchical DDA; it brings prefix within 2% of hier on terrain (+13% for prefix) but loses on short rays. `skip2`…`skip16` choose the levels. |
+| `cpu-simd-u16/u8/bits/hier/palette` | CPU ray casting | cpu-simd generic over the world representation: u16 ids (control), u8 ids, 1-bit occupancy (one u64 per 4³ brick) with ids fetched on hit, `hier` (bits + 8³ region skips), and per-chunk palette compression (1–16-bit indices, 7× smaller on terrain). Knob `perf` adds hardware counters (cycles, instructions, cache and TLB misses per pixel). |
+| `cpu-simd-brickmajor/morton/tiles/best` | CPU ray casting | Locality and scheduling presets of one crate: chunk layout (`linear`/`brick`/`morton`), Morton/Hilbert screen tiles, tile packets, software `prefetch`, and per-thread hardware `counters`. Layout and prefetch don't help (not memory-bound); Morton-ordered 16 px tiles are best (+12–15% over cpu-simd, ~4% from fewer branch misses, the rest from codegen). |
+| `cpu-voxelspace` | CPU, 2.5D | Rayon port of gpu-voxelspace (one task per screen column); identical image, about half its speed. |
+| `gpu-dda` | GPU compute | One thread per pixel. A hashed chunk table, then 4³ brick occupancy bits, then voxels. Ray-traced shadows and a hashed world-space light grid. Options: `shadows` (all/sun/none), `pool_mb`, `max_steps`, `adapter`, `frames_in_flight`. |
+| `gpu-dda-lod` | GPU compute plus LOD | gpu-dda over level-of-detail chunks. At each step it uses the finest LOD whose streamed region contains the ray, and cells grow 2× per level with distance while textures still tile per block. Set `max_lod` (and usually a smaller `view_radius`) per renderer. |
+| `gpu-sdf` | GPU compute | Distance-field marching: every voxel stores its Chebyshev distance to the nearest solid in its chunk (separable CPU transform, computed asynchronously), so rays leap whole empty cubes. Chunks whose field is pending render with plain stepping. |
+| `gpu-tree64` | GPU compute | Sparse 64-tree per 64³ region: 4×4×4 child masks, popcount-packed children, compressed leaves holding only solid voxels, and uniform subtrees collapsed. The DDA skips the largest empty node. Options: `shadows`, `max_steps`, `nodes_mb`, `leaves_mb`. |
+| `gpu-raster` | GPU raster plus hybrid | Parallel incremental CPU greedy meshing into 8-byte quads. Vertex pulling, one `multi_draw_indirect`, per-chunk frustum and per-face-direction culling. Analytic per-pixel UVs. Lit mode traces shadow rays from the fragment shader through the voxel world, with a depth pre-pass. Options: `shadows`, `depth_prepass`, `merge` (`block`, or `exposure`: merge across block types with a per-fragment block lookup; −16% quads and −13% GPU time on menger, slightly slower on terrain), `quad_buffer_mb`, `pool_mb`, `adapter`. |
+| `gpu-rtx` | GPU hardware RT | RT cores via wgpu ray queries. Greedy-mesh triangles in one BLAS per chunk, and a TLAS of chunks rebuilt each frame relative to the camera block. Primary and shadow rays are hardware queries. Options: `shadows`, `cull` (back/front/none), `fast_build`. |
+| `gpu-rtx-bricks` | GPU hardware/software hybrid | The RT-core BVH covers one AABB per occupied 4³ brick, and a software DDA inside each candidate box reports hits with `rayQueryGenerateIntersection` (procedural geometry). Options: `shadows`, `pool_mb`, `fast_build`. |
+| `gpu-svo-dag` | GPU compute | Sparse voxel DAG: binary octree per chunk with inline leaves, identical subtrees deduplicated across all chunks by hash-consing (dedup ~3× on terrain). Stackless descent to the largest empty cell. 5–6× less GPU memory than gpu-tree64, up to 2× slower. Counters: `dag_nodes`, `dedup_ratio`. |
+| `gpu-bitmask` | GPU compute | DDA over per-chunk occupancy bitmasks (one u32 per 32-voxel row) using bit scans to skip empty runs; block ids fetched only on hits. Exact, but 5–15% slower than gpu-dda: brick skipping already covers most empty space. |
+| `gpu-beam` | GPU compute | gpu-dda plus a conservative per-tile beam pre-pass that starts every pixel ray at its tile's provably empty distance. Exact. Knob `tile` (1 = off). Finding: no win, because chunk-level skipping already makes empty space cheap. |
+| `gpu-clipmap` | GPU compute | Camera-centred toroidal 3D-texture ring buffer (R8/R16 block ids + brick occupancy + slot tags), traversed with `textureLoad` only: no hash table. Exact; 1.4–5× slower than gpu-dda and denser in memory. |
+| `gpu-frag-dda` | GPU fragment | gpu-dda's ray casting in a fragment shader on a full-screen triangle instead of compute, to compare dispatch paths. Often faster than compute here (needs confirming with repeats). |
+| `gpu-pathtrace` | GPU compute, GI | Path tracer: next-event estimation for sun and point lights, `bounces` cosine-weighted diffuse bounces, `spp`, and progressive accumulation while the view is still. `bounces = 0` reproduces gpu-dda's lit image exactly; with bounces it adds colour bleeding and indirect fill (and so differs from the reference by design). |
+| `gpu-raster-naive` | GPU raster | The Minecraft-style baseline: one instanced quad per exposed face, no greedy merging. `cull = false` emits all six faces of every block (worst case; exceeds buffer limits on terrain). 2.6–18× more faces than greedy meshing. |
+| `gpu-cubes` | GPU raster | One hardware-instanced 36-vertex cube per surface block (back faces culled by the hardware): the "every block is a mesh instance" approach. Same image as gpu-raster-naive at 4.5–7× its GPU time. |
+| `gpu-visbuffer` | GPU raster plus deferred | Visibility buffer: rasterise greedy meshes writing only a 32-bit quad id, then a compute pass reconstructs the hit by ray–plane intersection and shades once per pixel. 1.5–2.5× faster than gpu-raster when lighting with lots of overdraw. |
+| `gpu-hybrid` | GPU raster plus compute RT | Deferred: greedy-mesh G-buffer (albedo + position/face), then a compute pass traces shadow rays per pixel. Same image as gpu-raster. |
+| `gpu-discover` | GPU compute discovery + raster | Self-directed visibility discovery: adaptive screen quadtree of corner rays (coherent tiles accept all exposed faces on the hit plane, otherwise split, down to 1 px), a GPU hash set of discovered faces kept for `keep_frames`, then only those faces are rasterised. 0.05–0.34 rays/px, audit misses ≈0–1 px/frame. Not yet faster than rasterising everything: levels serialise and late rays are incoherent. Knobs: `tile`, `criterion` (plane/face), `sky_tile`, `keep_frames`, `jitter`, `audit`. `incremental = true` rasterises last frame's faces first and only re-discovers tiles that are uncovered (with a reprojected sky memory), near occlusion edges whose parallax may reveal something, in changed chunks, or due for refresh: −83% rays and −33% GPU time at walking speed with equal or better quality, but 13–19% slower for fast flight (see IDEAS.md §3). |
+| `cpu-discover` | CPU discovery + GPU raster | The same discovery idea with the quadtree on the CPU (cpu-simd's DDA, rayon), pipelined: frame N+1 is discovered while the GPU draws frame N, optionally for the extrapolated camera (`predict`). Synchronous (`pipelined = false`): 0.25 rays/px finds all but ~15 faces on terrain (PSNR 49.8). Pipelined: one frame of latency costs 0.1–0.3% of pixels when moving. CPU discovery (25–60 ms) is the bottleneck. |
+| `gpu-splat` | GPU compute, approximate | Software point splatting: every exposed block is a point, projected with 64-bit-free `atomicMin` depth then id passes, resolved by ray–cube intersection. Edges fatten (PSNR ~20–27 dB). |
+| `gpu-voxelspace` | GPU compute, 2.5D | The 1992 Comanche "Voxel Space" technique: one thread per screen column marches a heightmap front to back with a y-buffer. No overhangs, caves or trunks (PSNR ~15–36 dB), 27 MB of GPU memory. |
+
+GPU buffers (voxel pools, quad and geometry buffers, tree nodes) start small and grow on
+demand up to their `*_mb` option, so the reported GPU memory is what a renderer actually
+uses and several GPU renderers fit side by side in the live view. Set `MR_GPU_DEBUG=1`
+to enable wgpu debug labels and validation. They're off by default because Vulkan's
+debug-utils path crashes intermittently when several renderers share one process
+(`isolation = "thread"`).
+
+`gpu-rtx*` need a GPU with ray-query support (Vulkan `VK_KHR_ray_query`) and use
+wgpu's experimental ray-tracing API. Any wgpu validation error now fails a renderer
+instead of letting it report a frame rate for frames it never drew.
+
+GPU renderers pick the discrete GPU on hybrid laptops. Override this with
+`options = { adapter = "nvidia" }`, or set `WGPU_BACKEND` to choose the backend.
+
+### Adding a renderer
+
+Declare knobs in `RendererInfo::params` (`ParamSpec::int/float/bool/choice`, with the same
+names as your `options`). For each knob marked `live`, implement `Renderer::set_param`.
+The GUI and the tuner then pick them up automatically.
+
+
+1. Create the crate with `cargo new --lib renderers/my-renderer`, add it to the workspace
+   `members` and `[workspace.dependencies]`, and depend on `mr-core` (plus `mr-gpu` for
+   wgpu plumbing).
+2. Implement `mr_core::Renderer` and export `pub fn entry() -> RendererEntry`.
+3. Add it to `registry()` in `crates/mr-worker/src/lib.rs`.
+4. Run it with `multirenderer run plans/showcase.toml -s 'renderer=[{name="my-renderer"}]'`.
+
+Renderers that complete frames asynchronously must call the `Waker` they receive when
+work may have finished. `mr_gpu::FrameRing` does this for you.
+
+## Findings so far
+
+Measured on a Ryzen 9 9955HX and an RTX 5060 Laptop GPU. Numbers are 1080p on the
+terrain flight unless noted. They're indicative; see `run.repeats`.
+
+- **GPU time:**
+  - gpu-sdf has the cheapest traversal (0.9 ms, against 1.3 ms for gpu-dda), but is 2×
+    slower under heavy edits, because edited chunks fall back to plain stepping until
+    their field is recomputed.
+  - gpu-rtx traces fastest on the RT cores, but its BLAS rebuilds make it CPU-bound when
+    chunks stream or change.
+  - gpu-tree64 matches gpu-dda's speed with about 15% of its VRAM.
+- **LOD:** at the same far view distance (768 blocks), `gpu-dda-lod r6+2` uses 136 MB
+  of VRAM against 1037 MB at full resolution, and is faster. The quality loss is
+  concentrated in pixel-scale foliage at distance.
+- **CPU:**
+  - cpu-raster is the closest match to the reference (64–99 dB), but its cost scales
+    with face count (Menger sponge: 8 fps).
+  - cpu-simd is about 1.5× the reference; avoiding libm `floor` calls was the big win.
+    SIMD packets don't help, but **not** because of memory: hardware counters
+    (`cpu-simd-*` with `perf = true`) show ~80 cycles and ~220 instructions per DDA step at
+    IPC 2.6, with L2 misses costing ≤3% of the time. Shrinking the world data 7–16×
+    (bits, palette) leaves cycles per pixel unchanged. What helps is fewer steps:
+    `cpu-simd-hier` skips empty 8³ regions (20–34% fewer steps, up to +29% fps). The
+    next wins are fewer instructions per step (register spills, saturating float→int
+    casts, bounds checks in the hot loop).
+- **Metrics:** PSNR treats any resampling as a ~30 dB loss on this content; MS-SSIM is the
+  better tuning target across resolutions. With MS-SSIM the tuner keeps shadows and
+  lowers resolution; with PSNR it does the opposite.
+- **Benchmark noise:** GPU time for the same configuration has varied 1.7–3.0 ms between
+  separate runs (boost clocks and power state). Interleaved repeats keep the spread
+  within ±1%.
+
+## Ideas to explore next
+
+- Hardware RT with ray-tracing pipelines (closest-hit shaders) instead of ray queries.
+- A hierarchical (brick-level) beam pre-pass: the chunk-level one in `gpu-beam` saves nothing.
+- `gpu-discover`: seed refinement from the previous frame's face set (rasterise it to an ID buffer and only send rays where it is inconsistent), one persistent kernel for all levels.
+- A denoiser and jittered primary rays for `gpu-pathtrace`; emissive blocks.
+- Power-of-two slots and a uniform-chunk flag for `gpu-clipmap`.
+- Mesh shaders, GPU-driven culling (Hi-Z occlusion), and asynchronous or GPU meshing.
+- LOD for the rasteriser and the tree, and LOD that reflects edits.
+- Baked or propagated (flood-fill) lighting compared against ray-traced shadows on the
+  quality/speed curve.
+- An HDR output pipeline: renderers emitting linear float images.

@@ -1,0 +1,47 @@
+# Night scene lit only by thousands of point lights: stresses light culling and shadow rays.
+name = "many-lights"
+
+[scene]
+generator = { type = "terrain", seed = 11 }
+camera = { type = "line", from = [-150, 90, -150], to = [150, 70, 150], look_at = [0, 40, 0] }
+environment = { no_sun = true, ambient = [0.02, 0.02, 0.03], sky = [0.01, 0.01, 0.03] }
+lights = [{ type = "scatter", count = 4000, seed = 2, center = [0, 60, 0], extent = [250, 60, 250], on_surface = true, intensity = 12.0, radius = 14.0 }]
+events = [{ type = "animate_lights", amplitude = 2.0, period = 60 }]
+
+[run]
+frames = 300
+resolution = [1920, 1080]
+modes = ["lit"]
+view_radius = 12
+
+[[renderer]]
+name = "gpu-dda"
+
+[[renderer]]
+name = "gpu-raster"
+
+[[renderer]]
+name = "gpu-raster"
+label = "gpu-raster-sunshadow"
+options = { shadows = "sun" }
+
+[[renderer]]
+name = "cpu-raster"
+
+[[renderer]]
+name = "gpu-rtx"
+
+[[renderer]]
+name = "gpu-rtx-bricks"
+
+[[renderer]]
+name = "gpu-tree64"
+
+[[renderer]]
+name = "cpu-simd"
+
+[[renderer]]
+name = "gpu-sdf"
+
+[output]
+compare = { every = 100 }

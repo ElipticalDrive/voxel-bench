@@ -1,0 +1,11 @@
+[package]
+name = "mr-ipc"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mr-core.workspace = true
+anyhow.workspace = true
+memmap2.workspace = true
+postcard.workspace = true
+serde.workspace = true

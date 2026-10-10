@@ -1,0 +1,47 @@
+# Edit-heavy workload: thousands of block changes per frame around the camera, plus a
+# crater dug and a tower built mid-run. Exercises incremental updates (remeshing, GPU
+# chunk patching) and checks every renderer still agrees with the reference.
+name = "edits"
+
+[scene]
+generator = { type = "terrain", seed = 3 }
+camera = { type = "orbit", center = [0, 60, 0], radius = 70, height = 45, period = 400 }
+events = [
+    { type = "random_edits", every = 1, count = 2000, seed = 5, center = [0, 50, 0], radius = 40, block = "toggle" },
+    { type = "sphere", frame = 100, center = [20, 40, 20], radius = 18, block = "air" },
+    { type = "box", frame = 200, min = [-10, 30, -10], max = [-6, 140, -6], block = "bricks" },
+]
+
+[run]
+frames = 300
+warmup = 10
+resolution = [1280, 720]
+modes = ["unlit", "lit"]
+view_radius = 8
+
+[[renderer]]
+name = "gpu-dda"
+
+[[renderer]]
+name = "gpu-raster"
+
+[[renderer]]
+name = "cpu-raster"
+
+[[renderer]]
+name = "gpu-rtx"
+
+[[renderer]]
+name = "gpu-rtx-bricks"
+
+[[renderer]]
+name = "gpu-tree64"
+
+[[renderer]]
+name = "cpu-simd"
+
+[[renderer]]
+name = "gpu-sdf"
+
+[output]
+compare = { every = 50 }

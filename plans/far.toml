@@ -1,0 +1,43 @@
+# Long view distance over terrain: full-resolution streaming versus level of detail.
+# gpu-dda streams 24 chunks (768 blocks) at full resolution; the LOD variants reach the
+# same (or greater) distance with far fewer chunks, at coarser resolution far away.
+name = "far"
+
+[scene]
+generator = { type = "terrain", seed = 7 }
+camera = { type = "flythrough", points = [[0, 170, 0], [500, 200, 300], [1000, 170, -150], [1500, 210, 200]] }
+
+[run]
+frames = 400
+warmup = 20
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 24
+
+[[renderer]]
+name = "gpu-dda"
+
+[[renderer]]
+name = "gpu-dda-lod"
+label = "gpu-dda-lod r12+1"
+view_radius = 12
+max_lod = 1
+
+[[renderer]]
+name = "gpu-dda-lod"
+label = "gpu-dda-lod r6+2"
+view_radius = 6
+max_lod = 2
+
+[[renderer]]
+name = "gpu-dda-lod"
+label = "gpu-dda-lod r4+3"
+view_radius = 4
+max_lod = 3
+
+[[renderer]]
+name = "gpu-tree64"
+
+[output]
+compare = { every = 100 }
+save = { every = 200 }

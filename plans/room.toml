@@ -1,0 +1,45 @@
+# Voxel Cornell box: indoor lighting with a few coloured point lights and no sun.
+name = "room"
+
+[scene]
+generator = { type = "room", size = 48 }
+camera = { type = "static", position = [24, 24, 85], target = [24, 20, 20] }
+environment = { no_sun = true, ambient = [0.03, 0.03, 0.03] }
+lights = [
+    { type = "point", position = [24, 44, 24], color = [1.0, 0.95, 0.85], intensity = 400.0, radius = 70.0 },
+    { type = "point", position = [8, 6, 40], color = [1.0, 0.4, 0.2], intensity = 60.0, radius = 30.0 },
+]
+
+[run]
+frames = 200
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 4
+
+[[renderer]]
+name = "gpu-dda"
+
+[[renderer]]
+name = "gpu-raster"
+
+[[renderer]]
+name = "cpu-raster"
+
+[[renderer]]
+name = "gpu-rtx"
+
+[[renderer]]
+name = "gpu-rtx-bricks"
+
+[[renderer]]
+name = "gpu-tree64"
+
+[[renderer]]
+name = "cpu-simd"
+
+[[renderer]]
+name = "gpu-sdf"
+
+[output]
+compare = { every = 100 }
+save = { every = 0 }
