@@ -7,7 +7,8 @@ struct Camera {
     right: vec3<f32>, aspect: f32,
     up: vec3<f32>, mode: u32,      // 0 unlit, 1 lit
     origin: vec3<f32>, sky: u32,   // camera position relative to vp.cam_block; packed sRGB sky
-    width: u32, height: u32, _p0: u32, _p1: u32,
+    width: u32, height: u32, frame: u32, prev_count: u32,   // frame counter; samples accumulated so far
+    bounces: u32, spp: u32, _p0: u32, _p1: u32,             // pathtrace shading
 }
 
 @group(0) @binding(0) var<uniform> cam: Camera;
@@ -18,6 +19,8 @@ var<private> ct_iters: u32;
 // Prepass output (one start distance per tile) and statistics; see `prepass` components.
 @group(0) @binding(2) var<storage, read_write> beam: array<f32>;
 @group(0) @binding(3) var<storage, read_write> beam_stats: array<atomic<u32>, 2>;
+// Progressive accumulation for shading components that need it (pathtrace).
+@group(0) @binding(4) var<storage, read_write> accum: array<vec4<f32>>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -49,6 +52,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     var color = unpack4x8unorm(cam.sky);
     if (!h.hit && mt < 1e29) { color = mesh_color(gid.xy); }
-    if (h.hit) { color = shade_hit(h, o, d, cam.mode == 1u); }
+    if (h.hit) { color = shade_hit(h, o, d, cam.mode == 1u, gid.xy); }
     textureStore(out_tex, vec2<i32>(gid.xy), color);
 }

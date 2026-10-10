@@ -139,6 +139,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Geometry, name: "naive", description: "One quad per exposed block face, no merging (\"Minecraft-style\"). Knob: cull = false emits all six faces of every solid block.", backends: RASTER, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Geometry, name: "cubes", description: "One 36-vertex cube instance per surface block; the hardware back-face culls the hidden half. Knob: cull = false instances every solid block.", backends: RASTER, provides: &[], uses: &[] },
     // Shading.
+    ComponentInfo { slot: Slot::Shading, name: "pathtrace", description: "Diffuse path tracing (from gpu-pathtrace): NEE for sun and point lights, cosine-weighted bounces through the composed walk, progressive accumulation while the view is still. bounces = 0 reproduces direct. Knobs: bounces, spp, accumulate.", backends: GPU, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Shading, name: "direct", description: "The reference lighting model: texel (unlit); ambient, sun and point lights with shadow rays through the same walk (lit).", backends: ALL_ST, provides: &[], uses: &[] },
 ];
 

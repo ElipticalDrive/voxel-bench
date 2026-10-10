@@ -1749,22 +1749,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-pathtrace"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "pollster",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "gpu-rtx"
 version = "0.1.0"
 dependencies = [
@@ -2394,7 +2378,6 @@ dependencies = [
  "gpu-dda",
  "gpu-discover",
  "gpu-frag-hybrid",
- "gpu-pathtrace",
  "gpu-rtx",
  "gpu-splat",
  "gpu-voxelspace",

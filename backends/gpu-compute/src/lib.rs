@@ -54,6 +54,9 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names(Slot::Shading), "direct", true),
         ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &names(Slot::Prepass), "none", true),
         ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true),
+        ParamSpec::int("bounces", "pathtrace shading: diffuse indirect bounces (lit)", 0, 8, 1, true),
+        ParamSpec::int("spp", "pathtrace shading: paths per pixel per frame (lit)", 1, 64, 1, true),
+        ParamSpec::bool("accumulate", "pathtrace shading: average frames while camera and world are still", true, true),
         ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true),
     ];
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
@@ -80,6 +83,9 @@ struct Options {
     shading: String,
     prepass: String,
     tile: u32,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
     exact: bool,
     skip2: bool,
     skip4: bool,
@@ -101,6 +107,9 @@ impl Default for Options {
             shading: "direct".into(),
             prepass: "none".into(),
             tile: 8,
+            bounces: 1,
+            spp: 1,
+            accumulate: true,
             exact: true,
             skip2: true,
             skip4: true,
@@ -198,7 +207,31 @@ struct CameraUniform {
     sky: u32,
     width: u32,
     height: u32,
+    frame: u32,
+    prev_count: u32,
+    bounces: u32,
+    spp: u32,
     _pad: [u32; 2],
+}
+
+/// Progressive accumulation (pathtrace shading): samples averaged so far, reset when the
+/// view, the mode or the world changes.
+struct Accum {
+    buf: wgpu::Buffer,
+    count: u32,
+    frame: u32,
+    last: Option<(Camera, RenderMode)>,
+    accumulate: bool,
+    bounces: u32,
+    spp: u32,
+}
+
+impl Accum {
+    /// Full size only for shading that accumulates (a placeholder otherwise).
+    fn buffer(gpu: &Gpu, width: u32, height: u32, shading: &str) -> wgpu::Buffer {
+        let size = if shading == "pathtrace" { width as u64 * height as u64 * 16 } else { 16 };
+        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("accum"), size: size.max(16), usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
+    }
 }
 
 pub struct GpuCompose {
@@ -220,6 +253,7 @@ pub struct GpuCompose {
     bind0: wgpu::BindGroup,
     /// Prepass output: one f32 per tile (sized for 1-pixel tiles), and statistics.
     beam: Beam,
+    accum: Accum,
     /// The storage's own data (group 2).
     data: StorageData,
     ring: FrameRing,
@@ -281,6 +315,7 @@ impl GpuCompose {
             entries: &[
                 rw(2),
                 rw(3),
+                rw(4),
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: compute,
@@ -314,7 +349,8 @@ impl GpuCompose {
         });
         let output = mr_gpu::output_texture(&gpu, p.width, p.height);
         let beam = Beam::new(&gpu, p.width, p.height);
-        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &beam);
+        let accum = Accum { buf: Accum::buffer(&gpu, p.width, p.height, &comp.shading), count: 0, frame: 0, last: None, accumulate: opts.accumulate, bounces: opts.bounces.min(8), spp: opts.spp.clamp(1, 64) };
+        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &beam, &accum.buf);
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
         tracing::info!("gpu-compute: storage {}, visibility {}, shading {}", comp.storage, comp.visibility, comp.shading);
@@ -333,6 +369,7 @@ impl GpuCompose {
             output,
             bind0,
             beam,
+            accum,
             data,
             ring,
             width: p.width,
@@ -365,7 +402,7 @@ impl GpuCompose {
         Ok((pipeline, prepass))
     }
 
-    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, beam: &Beam) -> wgpu::BindGroup {
+    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, beam: &Beam, accum: &wgpu::Buffer) -> wgpu::BindGroup {
         let view = out.create_view(&Default::default());
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("compose camera"),
@@ -375,6 +412,7 @@ impl GpuCompose {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
                 wgpu::BindGroupEntry { binding: 2, resource: beam.tiles.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: beam.stats.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: accum.as_entire_binding() },
             ],
         })
     }
@@ -387,6 +425,9 @@ impl Renderer for GpuCompose {
     }
 
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        if !updates.is_empty() {
+            self.accum.count = 0;
+        }
         let changed = self.world.apply(&self.gpu, updates);
         self.data.update(&self.gpu, &self.world, &changed)
     }
@@ -394,12 +435,22 @@ impl Renderer for GpuCompose {
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         if self.comp != self.built {
             (self.pipeline, self.prepass) = Self::pipeline(&self.gpu, &self.pipeline_layout, &self.comp)?;
+            if self.comp.shading != self.built.shading {
+                self.accum.buf = Accum::buffer(&self.gpu, self.width, self.height, &self.comp.shading);
+                self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam, &self.accum.buf);
+            }
             self.built = self.comp.clone();
         }
         let ticket = self.ring.begin(&self.gpu, sink)?;
         let start = Instant::now();
         let c = &req.camera;
         let (_, frac) = c.split_position();
+        let a = &mut self.accum;
+        if !a.accumulate || a.last != Some((*c, req.mode)) || self.built.shading != "pathtrace" {
+            a.count = 0;
+        }
+        a.last = Some((*c, req.mode));
+        a.frame = a.frame.wrapping_add(1);
         let cam = CameraUniform {
             forward: c.forward().to_array(),
             tan_half_fov: (c.fov_y * 0.5).tan(),
@@ -411,8 +462,14 @@ impl Renderer for GpuCompose {
             sky: u32::from_le_bytes(encode_srgb(self.world.env.sky)),
             width: self.width,
             height: self.height,
+            frame: a.frame,
+            prev_count: a.count,
+            bounces: a.bounces,
+            spp: a.spp,
             _pad: [0; 2],
         };
+        a.count = a.count.saturating_add(a.spp);
+        let accumulated = a.count;
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         let bind2 = self.data.prepare(&self.gpu, &self.world, &self.layout2).clone();
@@ -456,6 +513,7 @@ impl Renderer for GpuCompose {
                 .into_iter()
                 .chain(self.data.counters())
                 .chain(self.prepass.is_some().then(|| ("avg_skip_blocks".to_string(), self.beam.avg_skip)))
+                .chain((self.built.shading == "pathtrace" && req.mode == RenderMode::Lit).then(|| ("accumulated_spp".to_string(), accumulated as f64)))
                 .collect(),
         };
         if copy_stats {
@@ -480,6 +538,9 @@ impl Renderer for GpuCompose {
             "shading" => self.comp.shading = check(Slot::Shading, value.as_str().unwrap_or(""))?,
             "prepass" => self.comp.prepass = check(Slot::Prepass, value.as_str().unwrap_or(""))?,
             "tile" => self.comp.tile = value.as_i64().unwrap_or(8).clamp(1, 64) as u32,
+            "bounces" => (self.accum.bounces, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(0, 8) as u32, 0),
+            "spp" => (self.accum.spp, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(1, 64) as u32, 0),
+            "accumulate" => self.accum.accumulate = value.as_bool().unwrap_or(true),
             "view" => self.comp.steps_view = parse_view(value.as_str().unwrap_or(""))?,
             "exact" => self.comp.exact = value.as_bool().unwrap_or(true),
             "skip2" | "skip4" | "skip8" | "skip16" => {
@@ -505,13 +566,15 @@ impl Renderer for GpuCompose {
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.meshes.resize(&self.gpu, width, height);
         self.beam = Beam::new(&self.gpu, width, height);
-        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam);
+        self.accum.buf = Accum::buffer(&self.gpu, width, height, &self.built.shading);
+        self.accum.count = 0;
+        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam, &self.accum.buf);
         self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
         Ok(())
     }
 
     fn memory(&self) -> MemoryReport {
-        MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + self.data.memory_bytes() + self.width as u64 * self.height as u64 * 4 }
+        MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + self.data.memory_bytes() + self.accum.buf.size() + self.beam.tiles.size() + self.width as u64 * self.height as u64 * 4 }
     }
 }
 

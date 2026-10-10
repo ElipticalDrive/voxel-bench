@@ -38,7 +38,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - `multirenderer list`: back ends, components by slot, legacy renderers.
 - One composition against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{compose={backend="gpu-compute",storage="prefix",visibility="refloor"}}]' -s output.dir=\"target/check\"`
-  - A legacy renderer: `{name="gpu-pathtrace"}`. Further knobs go in `options={...}`.
+  - A legacy renderer: `{name="gpu-rtx"}`. Further knobs go in `options={...}`.
   - CLI views: `-r gpu-compute:prefix+incremental`, `-r cpu:hier+refloor`,
     `-r gpu-raster:bricks+cubes+visbuffer` (the back end's slots in order).
   - Use `-s run.repeats=3` for interleaved repeats, `-s run.frames=N` (more frames
@@ -88,7 +88,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - **Available components:**
   - gpu-compute: storages bricks, hier, prefix, distance, rows, tree64, svo_dag,
     clipmap; prepass none, beam; visibility refloor, incremental, sphere, rowrun;
-    shading direct (64 combinations);
+    shading direct, pathtrace (128 combinations);
   - cpu: storages bricks, hier, prefix, u8, bits, palette; visibility refloor,
     incremental; shading direct (12 combinations);
   - gpu-raster: geometry greedy, naive, cubes; visibility raster, visbuffer; storage (for
@@ -97,7 +97,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   monolith on purpose), cpu-raster, cpu-simd, cpu-simd-loc (4), cpu-voxelspace,
   cpu-discover, cpu-cluster, gpu-dda-lod, gpu-hybrid,
   gpu-frag-dda, gpu-discover, gpu-rtx(-bricks),
-  gpu-splat, gpu-voxelspace, gpu-pathtrace.
+  gpu-splat, gpu-voxelspace.
 - **Verification:** zero warnings in both builds, 41 unit tests and 3 GPU end-to-end
   tests pass.
 - **Tools:**
@@ -193,7 +193,7 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
    - 4c. ~~SVO-DAG as a storage~~ (done; retired gpu-svo-dag).
    - 4d. ~~clipmap as a storage~~ (done; retired gpu-clipmap).
    - 4e. ~~the beam prepass as a stage~~ (done: slot `prepass`; retired gpu-beam).
-   - 4f. path tracing as a shading component (gpu-pathtrace).
+   - 4f. ~~path tracing as a shading component~~ (done; retired gpu-pathtrace).
    - 4g. LOD in the storage interface (gpu-dda-lod).
    - 4h. hardware RT as a back end (gpu-rtx, gpu-rtx-bricks).
    - 4i. fragment-shader dispatch and the hybrid G-buffer (gpu-frag-dda, gpu-hybrid).
@@ -496,6 +496,20 @@ earlier if meshes become more urgent; 7c depends on 6′.
   (bricks + refloor 0.85 / 1.20). Over tree64 it costs much more (1.85 vs 1.00 ms):
   64^3 top cells make the cone's box checks coarse and expensive.
 - **Retired:** gpu-beam. Avg skipped distance is the counter `avg_skip_blocks`.
+
+### 2026-10-10: phase 4f (path tracing as shading)
+- **Shading interface:** `shade_hit(h, o, d, lit, px)`; the pixel gives per-pixel state
+  (random sequence, accumulation). gpu-compute binds an accumulation buffer (group 0
+  binding 4, full size only while pathtrace is chosen) and passes frame, samples so far,
+  bounces and spp in its camera uniform; it resets the count when view, mode or world
+  change.
+- **`shading/pathtrace`** (gpu-compute only; on the raster back end overdraw would
+  corrupt the accumulation, visbuffer could host it later): bounce rays use the composed
+  walk, so path tracing works over every storage and walk.
+- **Results** (terrain, 2 interleaved repeats): same images as gpu-pathtrace (58.7 dB at
+  bounces = 0, 32.2 dB at 1 bounce, by design). GPU time 1.33 vs 1.43 ms (bounces 0) and
+  3.47 vs 3.69 ms (1 bounce): **6–7% faster**. Over svo_dag: 4.37 ms (1 bounce).
+- **Retired:** gpu-pathtrace.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

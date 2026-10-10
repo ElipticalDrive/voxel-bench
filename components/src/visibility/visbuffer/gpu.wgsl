@@ -21,5 +21,5 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let d = pixel_ray(vec2<f32>(gid.xy) + 0.5);
     let h = face_hit((id - 1u) >> 3u, (id - 1u) & 7u, d);
-    textureStore(out_tex, vec2<i32>(gid.xy), shade_hit(h, fr.cam_frac, d, fr.mode == 1u));
+    textureStore(out_tex, vec2<i32>(gid.xy), shade_hit(h, fr.cam_frac, d, fr.mode == 1u, gid.xy));
 }
