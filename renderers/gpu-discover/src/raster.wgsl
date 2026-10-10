@@ -92,3 +92,10 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
 fn fs_id(in: VOut) -> @location(0) u32 {
     return in.iid;
 }
+
+// `view = overdraw`: every rasterised fragment adds a constant (additive blending), so
+// brightness counts how many times each pixel was shaded.
+@fragment
+fn fs_overdraw(in: VOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.07, 0.05, 0.02, 1.0);
+}

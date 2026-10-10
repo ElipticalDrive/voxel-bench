@@ -66,6 +66,8 @@ struct Level { level: u32, size: u32, in_off: u32, out_off: u32, parity: u32, ca
 @group(0) @binding(22) var<storage, read_write> sky_cur: array<u32>;  // 1 = sky in this frame's final raster
 @group(0) @binding(23) var<storage, read> sky_prev: array<u32>;
 @group(0) @binding(24) var<storage, read_write> cast_frame: array<u32>; // per lattice point: frame its ray was last cast (`rays` view)
+@group(0) @binding(25) var<storage, read_write> hist: array<atomic<u32>>;  // painter order: bucket counts, then offsets
+@group(0) @binding(26) var<storage, read_write> sorted: array<vec4<u32>>;  // painter order: the face list, farthest first
 
 const WG: u32 = 256u;
 const NO_KEY: u32 = 0xffffffffu;
@@ -862,4 +864,55 @@ fn need_still(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg
     // so the round-robin refresh stays on.
     if (pr.refresh != 0u && i % pr.refresh == pr.frame % pr.refresh) { why |= WHY_REFRESH; }
     finish_need(i, why);
+}
+
+// ---- back-to-front order (`order = painter`, PLAN step 4) ----
+// Along any ray the voxel walk only moves away from the camera's cell on each axis, so the
+// Manhattan distance of a cell from the camera cell strictly increases along the ray: an
+// occluder always has a smaller distance. Drawing faces by decreasing distance is therefore
+// an exact painter's order, and since the key is a small integer, a counting sort does it.
+
+const SORT_BUCKETS: u32 = 2048u;
+
+fn sort_key(e: vec4<u32>) -> u32 {
+    let cp = cpos[e.x >> 18u];
+    let l = (e.x >> 3u) & 32767u;
+    let a = cp.xyz * 32 + vec3<i32>(i32(l & 31u), i32((l >> 5u) & 31u), i32(l >> 10u));
+    let d = abs(a - (vp.cam_block + vec3<i32>(floor(pr.origin))));
+    return min(u32(d.x + d.y + d.z), SORT_BUCKETS - 1u);
+}
+
+@compute @workgroup_size(256)
+fn sort_hist(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let i = tid(wg, nwg, li);
+    if (i >= min(atomicLoad(&lcount[pr.parity]), pr.list_cap)) { return; }
+    atomicAdd(&hist[sort_key(list[i])], 1u);
+}
+
+// One workgroup: turns bucket counts into start offsets, farthest bucket first.
+@compute @workgroup_size(256)
+fn sort_scan(@builtin(local_invocation_index) li: u32) {
+    // Each thread owns 8 buckets, counted from the far end.
+    var local: array<u32, 8>;
+    var sum = 0u;
+    for (var k = 0u; k < 8u; k++) {
+        let b = SORT_BUCKETS - 1u - (li * 8u + k);
+        local[k] = atomicLoad(&hist[b]);
+        sum += local[k];
+    }
+    let pre = wg_prefix(li, sum).x;
+    var run = pre;
+    for (var k = 0u; k < 8u; k++) {
+        let b = SORT_BUCKETS - 1u - (li * 8u + k);
+        atomicStore(&hist[b], run);
+        run += local[k];
+    }
+}
+
+@compute @workgroup_size(256)
+fn sort_scatter(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let i = tid(wg, nwg, li);
+    if (i >= min(atomicLoad(&lcount[pr.parity]), pr.list_cap)) { return; }
+    let e = list[i];
+    sorted[atomicAdd(&hist[sort_key(e)], 1u)] = e;
 }

@@ -92,8 +92,9 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("refresh", "Incremental: re-discover every Nth tile each frame regardless (0 = never)", 0, 1024, 16, true),
         ParamSpec::float("parallax_px", "Incremental: an occlusion edge needs discovery if the camera's translation can reveal more than this many pixels behind it", 0.05, 16.0, false, 0.5, true),
         ParamSpec::bool("events", "Incremental: classify frames by what changed. Unchanged camera and world: skip discovery and redraw (frame_kind 0). Rotation or world changes only: skip seen-marking and the parallax test (1). Translation: the full incremental passes (2). Edits mark only the edited blocks' screen tiles", true, true),
+        ParamSpec::choice("order", "Face drawing order. depth: any order, depth-tested (lit mode adds a depth pre-pass). painter: sorted back to front by Manhattan distance from the camera cell (an exact order for voxels; GPU counting sort), drawn without depth testing, so every fragment is shaded", &["depth", "painter"], "depth", true),
         ParamSpec::choice("still_holes", "Events, rotation-only frames: now = rasterise the old face list first and discover holes (faces that rotation moved onto a pixel centre) in the same frame; late = skip that raster and discover them next frame (cheaper, holes visible for one frame)", &["now", "late"], "now", true),
-        ParamSpec::choice("view", "image: the rendered scene. tiles: level-0 tiles tinted by why they were discovered this frame (white full, blue edited block / changed chunk, cyan entering strip (still_holes = late), red uncovered or hole, yellow parallax, green refresh; dark = skipped). rays: a dot per ray cast this frame. churn: faces new to the set this frame in red, carried-over faces grey", &["image", "tiles", "rays", "churn"], "image", true),
+        ParamSpec::choice("view", "image: the rendered scene. overdraw: fragments shaded per pixel (brighter = more; compare order = depth vs painter). tiles: level-0 tiles tinted by why they were discovered this frame (white full, blue edited block / changed chunk, cyan entering strip (still_holes = late), red uncovered or hole, yellow parallax, green refresh; dark = skipped). rays: a dot per ray cast this frame. churn: faces new to the set this frame in red, carried-over faces grey", &["image", "tiles", "rays", "churn", "overdraw"], "image", true),
         ParamSpec::int("reveal_tiles", "Incremental: largest reveal radius around an edge, in level-0 tiles", 1, 16, 4, true),
         ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true),
         shadows_param(),
@@ -127,6 +128,7 @@ struct Options {
     parallax_px: f32,
     reveal_tiles: u32,
     events: bool,
+    order: String,
     still_holes: String,
     view: String,
     audit: bool,
@@ -160,6 +162,7 @@ impl Default for Options {
             parallax_px: 0.5,
             reveal_tiles: 4,
             events: true,
+            order: "depth".into(),
             still_holes: "now".into(),
             view: "image".into(),
             audit: false,
@@ -287,6 +290,7 @@ fn view_code(v: &str) -> u32 {
         "churn" => 1,
         "tiles" => 2,
         "rays" => 3,
+        "overdraw" => 4,
         _ => 0,
     }
 }
@@ -350,6 +354,16 @@ pub struct GpuDiscover {
     pipe_need_final: wgpu::ComputePipeline,
     pipe_sky: wgpu::ComputePipeline,
     pipe_need_still: wgpu::ComputePipeline,
+    pipe_sort_hist: wgpu::ComputePipeline,
+    pipe_sort_scan: wgpu::ComputePipeline,
+    pipe_sort_scatter: wgpu::ComputePipeline,
+    pipe_paint: wgpu::RenderPipeline,
+    pipe_over_depth: wgpu::RenderPipeline,
+    pipe_over_paint: wgpu::RenderPipeline,
+    /// Painter order: bucket counts / offsets, and this frame's list sorted far to near.
+    hist: wgpu::Buffer,
+    sorted: wgpu::Buffer,
+    bind_sorted: wgpu::BindGroup,
     pipe_overlay: wgpu::RenderPipeline,
     layout_ov: wgpu::BindGroupLayout,
     overlay_buf: wgpu::Buffer,
@@ -538,6 +552,8 @@ impl GpuDiscover {
         disc_entries.push(buf(22, rw, c, false));
         disc_entries.push(buf(23, ro, c, false));
         disc_entries.push(buf(24, rw, c, false));
+        disc_entries.push(buf(25, rw, c, false));
+        disc_entries.push(buf(26, rw, c, false));
         let layout_disc = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("discover"), entries: &disc_entries });
         let layout_args = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("discover args"),
@@ -573,6 +589,9 @@ impl GpuDiscover {
         let pipe_need_final = compute(&pl_disc, &disc_mod, "need_final");
         let pipe_sky = compute(&pl_disc, &disc_mod, "sky_update");
         let pipe_need_still = compute(&pl_disc, &disc_mod, "need_still");
+        let pipe_sort_hist = compute(&pl_disc, &disc_mod, "sort_hist");
+        let pipe_sort_scan = compute(&pl_disc, &disc_mod, "sort_scan");
+        let pipe_sort_scatter = compute(&pl_disc, &disc_mod, "sort_scatter");
         // Diagnostic overlays (`view = tiles | rays`), alpha-blended over the image.
         let ov_mod = module("discover overlay", include_str!("overlay.wgsl").to_string());
         let f = wgpu::ShaderStages::FRAGMENT;
@@ -627,6 +646,29 @@ impl GpuDiscover {
         let pipe_fill = pipeline("fill", true, wgpu::CompareFunction::Greater, true);
         let pipe_depth = pipeline("depth prepass", true, wgpu::CompareFunction::Greater, false);
         let pipe_equal = pipeline("shade equal", false, wgpu::CompareFunction::Equal, true);
+        // Painter order: no depth test, but depth is still written (the last fragment is the
+        // nearest), since incremental mode reads it.
+        let pipe_paint = pipeline("painter", true, wgpu::CompareFunction::Always, true);
+        let overdraw = |label, compare| {
+            let targets = [Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                blend: Some(wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add }, alpha: wgpu::BlendComponent::OVER }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })];
+            dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pl_draw),
+                vertex: wgpu::VertexState { module: &draw_mod, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, front_face: wgpu::FrontFace::Ccw, cull_mode: Some(wgpu::Face::Back), ..Default::default() },
+                depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true), depth_compare: Some(compare), stencil: Default::default(), bias: Default::default() }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState { module: &draw_mod, entry_point: Some("fs_overdraw"), compilation_options: Default::default(), targets: &targets }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipe_over_depth = overdraw("overdraw depth", wgpu::CompareFunction::Greater);
+        let pipe_over_paint = overdraw("overdraw painter", wgpu::CompareFunction::Always);
         let id_targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL })];
         let pipe_id = dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("face ids"),
@@ -660,9 +702,20 @@ impl GpuDiscover {
         let keys = [0, 1].map(|_| storage(&gpu, "face set keys", table_cap as u64 * 4, none));
         let vals = [0, 1].map(|_| storage(&gpu, "face set frames", table_cap as u64 * 4, none));
         let lists = [0, 1].map(|_| storage(&gpu, "face lists", list_cap as u64 * 16, none));
+        let hist = storage(&gpu, "sort buckets", 2048 * 4, none);
+        let sorted = storage(&gpu, "sorted faces", list_cap as u64 * 16, none);
         let ctable = storage(&gpu, "chunk slot table", CHUNK_TABLE as u64 * 16, none);
         gpu.queue.write_buffer(&ctable, 0, bytemuck::cast_slice(&vec![[0i32, 0, 0, -1]; CHUNK_TABLE]));
         let cpos = storage(&gpu, "slot chunk positions", MAX_SLOTS as u64 * 16, none);
+        let bind_sorted = dev.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("discover draw sorted"),
+            layout: &layout_draw,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: sorted.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: cpos.as_entire_binding() },
+            ],
+        });
         let bind_args = dev.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("discover args"),
             layout: &layout_args,
@@ -711,6 +764,15 @@ impl GpuDiscover {
             pipe_need_final,
             pipe_sky,
             pipe_need_still,
+            pipe_sort_hist,
+            pipe_sort_scan,
+            pipe_sort_scatter,
+            pipe_paint,
+            pipe_over_depth,
+            pipe_over_paint,
+            hist,
+            sorted,
+            bind_sorted,
             pipe_overlay,
             layout_ov,
             overlay_buf,
@@ -773,7 +835,7 @@ impl GpuDiscover {
             fn res(b: &wgpu::Buffer) -> wgpu::BindingResource<'_> {
                 b.as_entire_binding()
             }
-            let bufs: [(u32, wgpu::BindingResource); 25] = [
+            let bufs: [(u32, wgpu::BindingResource); 27] = [
                 (0, res(&self.params_buf)),
                 (1, wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.level_buf, offset: 0, size: wgpu::BufferSize::new(32) })),
                 (2, res(&self.stats)),
@@ -799,6 +861,8 @@ impl GpuDiscover {
                 (22, res(&s.sky[par])),
                 (23, res(&s.sky[prev])),
                 (24, res(&s.cast_frame)),
+                (25, res(&self.hist)),
+                (26, res(&self.sorted)),
             ];
             let entries: Vec<_> = bufs.into_iter().map(|(binding, resource)| wgpu::BindGroupEntry { binding, resource }).collect();
             self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("discover"), layout: &self.layout_disc, entries: &entries })
@@ -959,12 +1023,14 @@ impl GpuDiscover {
     /// Rasterises list `parity` into the output (depth pre-pass + equal-depth shading in lit
     /// mode). `ts` = (begin, end) frame timestamps carried by these passes.
     fn encode_shade(&self, enc: &mut wgpu::CommandEncoder, parity: usize, world_bg: &wgpu::BindGroup, mode: RenderMode, ts: (bool, bool), ticket: mr_gpu::Ticket) {
-        let sky = encode_srgb(self.world.env.sky);
+        let painter = self.opts.order == "painter";
+        let overdraw = view_code(&self.opts.view) == 4;
+        let sky = if overdraw { [0, 0, 0, 255] } else { encode_srgb(self.world.env.sky) };
         let clear = wgpu::Color { r: sky[0] as f64 / 255.0, g: sky[1] as f64 / 255.0, b: sky[2] as f64 / 255.0, a: 1.0 };
         let out_view = self.sized.output.create_view(&Default::default());
-        let prepass = self.opts.depth_prepass && mode == RenderMode::Lit;
+        let prepass = self.opts.depth_prepass && mode == RenderMode::Lit && !painter && !overdraw;
         let draw_ofs = (72 + parity as u64 * 4) * 4;
-        let bind_draw = &self.bind_draw[parity];
+        let bind_draw = if painter { &self.bind_sorted } else { &self.bind_draw[parity] };
         if prepass {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("depth prepass"),
@@ -1006,7 +1072,13 @@ impl GpuDiscover {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(if prepass { &self.pipe_equal } else { &self.pipe_fill });
+        pass.set_pipeline(match (overdraw, painter, prepass) {
+            (true, true, _) => &self.pipe_over_paint,
+            (true, false, _) => &self.pipe_over_depth,
+            (false, true, _) => &self.pipe_paint,
+            (false, false, true) => &self.pipe_equal,
+            (false, false, false) => &self.pipe_fill,
+        });
         pass.set_bind_group(0, bind_draw, &[]);
         pass.set_bind_group(1, world_bg, &[]);
         pass.draw_indirect(&self.args, draw_ofs);
@@ -1397,6 +1469,19 @@ impl Renderer for GpuDiscover {
             pass.dispatch_workgroups(1, 1, 1);
         }
         mark(&mut enc, 2 + 2 * MAX_LEVELS as u32);
+        if self.opts.order == "painter" {
+            // Sort the list back to front (timed with the raster).
+            enc.clear_buffer(&self.hist, 0, None);
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("painter sort"), timestamp_writes: None });
+            pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
+            pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_pipeline(&self.pipe_sort_hist);
+            pass.dispatch_workgroups_indirect(&self.args, aofs(64 + parity as u64 * 4));
+            pass.set_pipeline(&self.pipe_sort_scan);
+            pass.dispatch_workgroups(1, 1, 1);
+            pass.set_pipeline(&self.pipe_sort_scatter);
+            pass.dispatch_workgroups_indirect(&self.args, aofs(64 + parity as u64 * 4));
+        }
         self.encode_shade(&mut enc, parity, &world_bg, req.mode, (false, true), ticket);
         mark(&mut enc, 3 + 2 * MAX_LEVELS as u32);
         if self.opts.incremental {
@@ -1470,6 +1555,11 @@ impl Renderer for GpuDiscover {
             "audit" => self.opts.audit = value.as_bool().unwrap_or(false),
             "events" => self.opts.events = value.as_bool().unwrap_or(true),
             "still_holes" => self.opts.still_holes = value.as_str().unwrap_or("now").into(),
+            "order" => {
+                // Drawing only: the face set is unaffected.
+                self.opts.order = value.as_str().unwrap_or("depth").into();
+                return Ok(());
+            }
             "view" => {
                 // Display only: no need to re-discover.
                 self.opts.view = value.as_str().unwrap_or("image").into();
