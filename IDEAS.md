@@ -401,6 +401,78 @@ would work like this:
 
 A stable set is also what makes an incremental greedy merge worthwhile, re-merging only
 chunks whose discovered faces changed.
+
+**Result 2: event-driven frames (implemented: `gpu-discover` knobs `events`,
+`still_holes`, `view`).** With `incremental` on, the host classifies each frame:
+
+| kind | when | work |
+|---|---|---|
+| static | camera pose identical, no world changes | no discovery; the last face list is redrawn |
+| still | camera only rotated, and/or the world changed | survive counts faces in view as seen; no seen-marking, no parallax test |
+| moving | camera translated | the incremental passes |
+| full | first frame, teleport (> 64 blocks), setting change | everything |
+
+Other changes made along the way:
+- *Change areas are exact.* Edits mark the screen tiles of the edited blocks (not their
+  32³ chunk), loads mark their chunk, and the areas go to the GPU as a per-tile mask
+  instead of a list capped at 64 rectangles.
+- *Fewer full frames.* Boxes behind or beside the camera used to force a full frame
+  whenever any corner was behind the camera. This also helps plain `incremental`.
+- *Holes are not sky.* After the raster, an uncovered pixel that was neither sky last
+  frame nor in a tile discovered this frame is a hole, not sky. Its tile is discovered
+  next frame, instead of the hole being remembered as sky forever.
+
+GPU ms, 1080p unlit, 200 frames (spin: 300), medians of 3 interleaved repeats, audit on:
+
+| scene | full re-discovery | incremental | events (`now`) | events (`late`) |
+|---|---|---|---|---|
+| room (static camera) | 0.599 | 0.599 | **0.035** | **0.035** |
+| room, lit, animated lights | – | 0.920 | **0.314** | – |
+| terrain spin (rotation only) | 2.196 | 1.229 | 1.200 | **0.915** (PSNR 42.6 vs 50.4) |
+| terrain flythrough | **2.075** | 2.444 | 2.442 | 2.450 |
+| streaming | **2.082** | 2.748 | 2.501 | 2.750 |
+| edits (orbit + edits) | **1.717** | 1.902 | 1.898 | 1.896 |
+
+Images were identical to plain incremental in every row except `late` on spin (PSNR and
+missed pixels in the table). The streaming difference between `now` and `late` is run
+noise: both run the same passes there.
+
+What it shows:
+- **A still camera is nearly free:** 17× less GPU time (0.6 → 0.035 ms), 3× with lit
+  shading and moving lights. In the GUI, where the camera often stops, this is the
+  common case.
+- **Pure rotation does not leave visibility alone on a pixel grid.** Geometric
+  visibility is unchanged, but pixel centres move, so a face too small to have been
+  sampled can land on one. Skipping hole detection (`late`) leaves 1-frame holes:
+  0.054% missed pixels and −8 dB. The face-id raster (`now`) is needed for exact
+  quality, and then a still frame costs about what a moving one does. Faces moving onto
+  pixel centres *in front of* known faces are caught only by the refresh, which
+  therefore stays on in still frames.
+- **Exact change areas cut work but not time.** Full frames went from 70% to 0%
+  (edits), 83% to 0% (streaming) and 23% to 0% (terrain). Tiles needing discovery went
+  from 98% to 71%, 92% to 40% and 57% to 41%. Rays per pixel fell 5–14%. But GPU time on
+  moving scenes barely changed: it is dominated by the fixed passes (face-id raster,
+  need passes, the final raster), not by rays. Full re-discovery stays 15–25% faster on
+  moving scenes.
+- *What the `tiles` view showed immediately:* in forward flight nearly every ground
+  tile is flagged by the parallax test, which is why incremental cannot win there. Also,
+  the round-robin refresh forms vertical stripes, because the tiles per row are a
+  multiple of 16.
+
+Diagnostic views (`view` knob, live):
+- `tiles`: why each tile was discovered (white full, blue edited block or changed
+  chunk, cyan entering strip, red uncovered or hole, yellow parallax, green refresh,
+  dark skipped);
+- `rays`: every ray cast this frame;
+- `churn`: faces new to the set this frame, in red.
+
+Counters: `frame_kind`, `frames_*_pct`, `faces_new`, `faces_dropped`.
+
+**What would cut moving-frame time next:**
+- fuse `mark` and `need_raw`, and read depth at quarter resolution for the edge test
+  (both already noted above);
+- a one-sided parallax test (reveals lie on the background side, along the motion);
+- skip the face-id raster on moving frames by reprojecting last frame's depth instead.
 ---
 
 ## 4. Skip space using last frame's ray distances plus world heuristics

@@ -89,6 +89,9 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   - the split costs nothing (bricks + refloor is 7–9% faster than gpu-dda);
   - the incremental traversal hits an unexplained 3.5–8× slowdown on NVIDIA only (AMD
     1.27×). See IDEAS §1 "Result 3".
+- **Event-driven discovery:** a still camera costs 0.035 ms instead of 0.6 (17×). Pure
+  rotation still needs hole detection, because pixel centres move. On moving scenes the
+  time is in fixed passes, not rays, so full re-discovery stays 15–25% faster there.
 - **Unlit GPU timings before 2026-10-09 were inflated.** Ten GPU shaders computed lighting
   and shadow rays in unlit mode (`select` evaluates both sides); fixed, −25–35% unlit.
 - **Greedy merge across block types** (`gpu-raster merge = "exposure"`) gives −16–18%
@@ -113,7 +116,7 @@ sit at the high end.
 |---|---|---|---|---|
 | 1 | ~~Prefix structure with an **incremental-level hierarchical DDA**, CPU~~ | done | | Done 2026-10-09 as the `traversal` knob on every `cpu-simd-*` variant. Mixed result; see IDEAS §1 "Result 2". |
 | 1b | ~~The same on the GPU~~ | done | | Absorbed into 6′: `gpu-compose storage=prefix`. |
-| 2 | **Event-driven discovery** in gpu-discover: skip when nothing changed, edge strips for pure pans, hysteresis for a stable set | 1–2 h | ~½ | Directly addresses the churning face count. |
+| 2 | ~~**Event-driven discovery** in gpu-discover~~ | done | | Done 2026-10-09: static frames 17× cheaper; pure pans need the face-id raster after all (pixel sampling); exact change areas. IDEAS §3 "Result 2". |
 | 2b | **Incremental greedy merge** of the discovered set (re-merge only changed chunks) | 1.5–2.5 h | ~¾ | Worth it once 2 makes the set stable. |
 | 3 | **Morton-ordered breadth-first work queues** in gpu-discover (§8) | 1–1.5 h | ~½ | Attacks the measured ray incoherence. |
 | 3b | Persistent kernel with work stealing | 2–3 h | ~1 | Riskier: driver and forward-progress caveats. |
@@ -145,7 +148,7 @@ Further steps:
 first. Steps 1–4 change the inside of single components, so modularity wouldn't make them
 cheaper, and step 1 tells us what the storage/traversal interface must offer.
 
-**Order:** ~~1~~ → ~~6′~~ (done) → 2 → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
+**Order:** ~~1~~ → ~~6′~~ → ~~2~~ (done) → 3 → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
 earlier if meshes become more urgent; 7c depends on 6′.
 
 ## Progress log
@@ -196,6 +199,15 @@ earlier if meshes become more urgent; 7c depends on 6′.
   frames (closes the gpu-frag-dda known issue).
 - **Open:** why incremental is slow on NVIDIA; LOD and the other ray casters as storages;
   rank-compressed ids for prefix on the GPU.
+
+### 2026-10-09 (later): step 2
+- **gpu-discover events:** frame kinds static / still / moving / full; `still_holes`
+  now|late; holes told apart from sky after the raster; edits mark only their blocks'
+  tiles (per-tile mask, no 64-rect cap); no forced full frames for boxes behind the
+  camera.
+- **Views:** `view = tiles | rays | churn`; counters `frame_kind`, `frames_*_pct`,
+  `faces_new`, `faces_dropped`.
+- **Findings:** see IDEAS §3 "Result 2".
 
 ## Future additions (backlog by category)
 
@@ -281,7 +293,15 @@ voices also go into IDEAS.md with analysis.
   viewport.
 - Saving screenshots and short frame captures from the GUI.
 - Per-renderer knob presets, saved and loaded.
-- Debug views: step-count heat maps, discovery tiles, face IDs, LOD levels.
+- Debug views (the user values these highly): done so far are gpu-compose `steps` and
+  gpu-discover `tiles` / `rays` / `churn`. Candidates:
+  - the hierarchy level each ray finished at (gpu-compose);
+  - chunk-cache misses per pixel;
+  - face ids;
+  - LOD levels;
+  - overdraw for the rasterisers;
+  - per-pixel shadow-ray cost in lit mode;
+  - the CPU renderers' step counts.
 
 ### Output and display
 - An HDR output pipeline (the panel supports it): linear float output from renderers,
