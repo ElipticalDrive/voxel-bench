@@ -452,7 +452,7 @@ What it shows:
   (edits), 83% to 0% (streaming) and 23% to 0% (terrain). Tiles needing discovery went
   from 98% to 71%, 92% to 40% and 57% to 41%. Rays per pixel fell 5–14%. But GPU time on
   moving scenes barely changed: it is dominated by the fixed passes (face-id raster,
-  need passes, the final raster), not by rays. Full re-discovery stays 15–25% faster on
+  need passes, the final raster), not by rays. Full re-discovery stays 10–24% faster on
   moving scenes.
 - *What the `tiles` view showed immediately:* in forward flight nearly every ground
   tile is flagged by the parallax test, which is why incremental cannot win there. Also,

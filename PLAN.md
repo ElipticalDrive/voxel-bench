@@ -91,7 +91,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
     1.27×). See IDEAS §1 "Result 3".
 - **Event-driven discovery:** a still camera costs 0.035 ms instead of 0.6 (17×). Pure
   rotation still needs hole detection, because pixel centres move. On moving scenes the
-  time is in fixed passes, not rays, so full re-discovery stays 15–25% faster there.
+  time is in fixed passes, not rays, so full re-discovery stays 10–24% faster there.
 - **Unlit GPU timings before 2026-10-09 were inflated.** Ten GPU shaders computed lighting
   and shadow rays in unlit mode (`select` evaluates both sides); fixed, −25–35% unlit.
 - **Greedy merge across block types** (`gpu-raster merge = "exposure"`) gives −16–18%
