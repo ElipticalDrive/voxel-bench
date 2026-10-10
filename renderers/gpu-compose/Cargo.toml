@@ -1,0 +1,15 @@
+[package]
+name = "gpu-compose"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mr-core.workspace = true
+anyhow.workspace = true
+glam.workspace = true
+serde.workspace = true
+tracing.workspace = true
+bytemuck.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+mr-gpu.workspace = true

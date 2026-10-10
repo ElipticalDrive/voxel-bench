@@ -1715,6 +1715,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpu-compose"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "glam",
+ "mr-core",
+ "mr-gpu",
+ "pollster",
+ "serde",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
 name = "gpu-cubes"
 version = "0.1.0"
 dependencies = [
@@ -2504,6 +2519,7 @@ dependencies = [
  "gpu-beam",
  "gpu-bitmask",
  "gpu-clipmap",
+ "gpu-compose",
  "gpu-cubes",
  "gpu-dda",
  "gpu-discover",

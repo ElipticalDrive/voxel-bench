@@ -36,6 +36,7 @@ members = [
     "renderers/gpu-visbuffer",
     "renderers/gpu-clipmap",
     "renderers/gpu-pathtrace",
+    "renderers/gpu-compose",
 ]
 
 [workspace.package]
@@ -73,6 +74,7 @@ gpu-svo-dag = { path = "renderers/gpu-svo-dag" }
 gpu-visbuffer = { path = "renderers/gpu-visbuffer" }
 gpu-clipmap = { path = "renderers/gpu-clipmap" }
 gpu-pathtrace = { path = "renderers/gpu-pathtrace" }
+gpu-compose = { path = "renderers/gpu-compose" }
 
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }

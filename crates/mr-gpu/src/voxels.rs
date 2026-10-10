@@ -361,6 +361,17 @@ impl VoxelWorld {
         self.chunks.get(&ChunkKey::of_block(p)).map(|c| c.get(local_of_block(p))).unwrap_or(BlockId::AIR)
     }
 
+    /// Pool slot of a dense LOD-0 chunk, for renderers keeping per-slot side data (indexed
+    /// like the pool).
+    pub fn slot_of(&self, pos: IVec3) -> Option<u32> {
+        self.slots.get(&ChunkKey::lod0(pos)).copied()
+    }
+
+    /// Pool slots currently allocated (side data must cover this many).
+    pub fn pool_slots(&self) -> u32 {
+        self.pool_slots
+    }
+
     /// Chunks held per LOD level.
     pub fn chunks_per_lod(&self) -> Vec<usize> {
         let mut v = vec![0; self.cfg.max_lod as usize + 1];
