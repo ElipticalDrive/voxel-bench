@@ -1,10 +1,11 @@
 //! Renderer components (IDEAS §12): instead of choosing a monolithic renderer, a renderer is
 //! assembled from one component per slot and run on a back end:
 //!
-//! `backend` × `storage` × `geometry` × `visibility` × `shading`
+//! `backend` × `storage` × `geometry` × `prepass` × `visibility` × `shading`
 //!
 //! Not every slot applies to every back end: `geometry` (storage turned into drawable faces)
-//! exists only on rasterising back ends, and is left empty elsewhere.
+//! exists only on rasterising back ends, `prepass` (a stage before the walk, e.g. beams)
+//! only on gpu-compute; slots a back end lacks are left empty.
 //!
 //! This crate is the single source of truth for what exists and what combines: component
 //! metadata, compatibility (used by the GUI to forbid unsupported combinations, by plan
@@ -20,6 +21,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod geometry;
+pub mod prepass;
 pub mod shading;
 pub mod storage;
 pub mod visibility;
@@ -28,21 +30,29 @@ pub mod visibility;
 pub enum Slot {
     Storage,
     Geometry,
+    Prepass,
     Visibility,
     Shading,
 }
 
 impl Slot {
-    /// In composition order (labels, the CLI form, the GUI chooser).
-    pub const ALL: [Slot; 4] = [Slot::Storage, Slot::Geometry, Slot::Visibility, Slot::Shading];
+    /// In composition order (labels, the GUI chooser).
+    pub const ALL: [Slot; 5] = [Slot::Storage, Slot::Geometry, Slot::Prepass, Slot::Visibility, Slot::Shading];
 
     pub fn name(self) -> &'static str {
         match self {
             Slot::Storage => "storage",
             Slot::Geometry => "geometry",
+            Slot::Prepass => "prepass",
             Slot::Visibility => "visibility",
             Slot::Shading => "shading",
         }
+    }
+
+    /// Slots that usually keep their default (`direct` shading, no prepass): left out of
+    /// labels while at the default, and last (optional) in the CLI form.
+    pub fn optional(self) -> bool {
+        matches!(self, Slot::Prepass | Slot::Shading)
     }
 }
 
@@ -66,10 +76,11 @@ impl BackendInfo {
 }
 
 const RAY_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Visibility, "refloor"), (Slot::Shading, "direct")];
+const COMPUTE_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Prepass, "none"), (Slot::Visibility, "refloor"), (Slot::Shading, "direct")];
 
 /// Every back end, including planned ones (shown disabled, with the reason).
 pub const BACKENDS: &[BackendInfo] = &[
-    BackendInfo { name: "gpu-compute", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("gpu-compute"), slots: RAY_SLOTS },
+    BackendInfo { name: "gpu-compute", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("gpu-compute"), slots: COMPUTE_SLOTS },
     BackendInfo { name: "cpu", description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops", renderer: Some("cpu"), slots: RAY_SLOTS },
     BackendInfo {
         name: "gpu-raster",
@@ -120,6 +131,9 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Visibility, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: GPU, provides: &[], uses: &["s_row"] },
     ComponentInfo { slot: Slot::Visibility, name: "raster", description: "Depth-tested rasterisation of the geometry; the fragment shader intersects the pixel's ray with the face plane and shades. Knob: depth_prepass (lit: shade once per pixel).", backends: RASTER, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "visbuffer", description: "Visibility buffer: the raster pass writes only a face id and depth; a compute pass reconstructs the hit and shades once per pixel, independent of overdraw.", backends: RASTER, provides: &[], uses: &[] },
+    // Prepass.
+    ComponentInfo { slot: Slot::Prepass, name: "none", description: "No prepass: every ray walks from the camera.", backends: GPU, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Prepass, name: "beam", description: "Conservative per-tile beam (from gpu-beam): one cone per tile marches top cells; rays start where their tile's cone is provably empty. Exact. Knob: tile (pixels, 1 = off).", backends: GPU, provides: &[], uses: &[] },
     // Geometry.
     ComponentInfo { slot: Slot::Geometry, name: "greedy", description: "Greedy quads (CPU, per chunk, incremental): coplanar exposed faces merged into rectangles. Knob: merge = block (same block only) or exposure (any block, looked up per fragment).", backends: RASTER, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Geometry, name: "naive", description: "One quad per exposed block face, no merging (\"Minecraft-style\"). Knob: cull = false emits all six faces of every solid block.", backends: RASTER, provides: &[], uses: &[] },
@@ -140,6 +154,8 @@ pub struct Composition {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub geometry: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prepass: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub visibility: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shading: String,
@@ -159,7 +175,7 @@ impl Default for Composition {
 impl Composition {
     /// The back end's default composition (empty slots if the back end is unknown).
     pub fn new(backend: &str) -> Self {
-        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), visibility: String::new(), shading: String::new() };
+        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), shading: String::new() };
         c.fill_defaults();
         c
     }
@@ -168,6 +184,7 @@ impl Composition {
         match slot {
             Slot::Storage => &self.storage,
             Slot::Geometry => &self.geometry,
+            Slot::Prepass => &self.prepass,
             Slot::Visibility => &self.visibility,
             Slot::Shading => &self.shading,
         }
@@ -177,6 +194,7 @@ impl Composition {
         let v = match slot {
             Slot::Storage => &mut self.storage,
             Slot::Geometry => &mut self.geometry,
+            Slot::Prepass => &mut self.prepass,
             Slot::Visibility => &mut self.visibility,
             Slot::Shading => &mut self.shading,
         };
@@ -212,10 +230,11 @@ impl Composition {
         }
     }
 
-    /// Short label: the back end's slots in order, `direct` shading left out, e.g.
-    /// `gpu-compute: prefix + incremental` or `gpu-raster: bricks + greedy + raster`.
+    /// Short label: the back end's slots in order, optional slots at their default left
+    /// out, e.g. `gpu-compute: prefix + incremental` or `gpu-raster: bricks + greedy + raster`.
     pub fn label(&self) -> String {
-        let parts: Vec<&str> = self.slots().filter(|&s| !(s == Slot::Shading && self.shading == "direct")).map(|s| self.get(s)).collect();
+        let b = backend(&self.backend);
+        let parts: Vec<&str> = self.slots().filter(|&s| !(s.optional() && b.and_then(|b| b.default_for(s)) == Some(self.get(s)))).map(|s| self.get(s)).collect();
         format!("{}: {}", self.backend, parts.join(" + "))
     }
 
@@ -292,6 +311,7 @@ mod tests {
                 Slot::Storage => storage::gpu(c.name).is_some_and(|g| g.provides == c.provides),
                 Slot::Visibility => visibility::gpu_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
+                Slot::Prepass => prepass::gpu_wgsl(c.name).is_some(),
                 Slot::Geometry => false,
             };
             assert!(ok, "{} `{}`", c.slot.name(), c.name);
@@ -302,6 +322,7 @@ mod tests {
                 Slot::Geometry => geometry::gpu(c.name).is_some(),
                 Slot::Visibility => visibility::raster_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
+                Slot::Prepass => false,
             };
             assert!(ok, "gpu-raster {} `{}`", c.slot.name(), c.name);
         }
@@ -333,13 +354,14 @@ mod tests {
         assert!(Composition { geometry: "greedy".into(), ..Default::default() }.validate().is_err());
         assert!(Composition { visibility: "raster".into(), ..Default::default() }.validate().is_err());
         assert!(Composition { backend: "gpu-rt".into(), ..Default::default() }.validate().is_err());
-        let mut raster = Composition { backend: "gpu-raster".into(), storage: String::new(), visibility: String::new(), shading: String::new(), geometry: "cubes".into() };
+        let mut raster = Composition { backend: "gpu-raster".into(), storage: String::new(), visibility: String::new(), shading: String::new(), prepass: String::new(), geometry: "cubes".into() };
         assert_eq!(raster.resolve().unwrap().0, "gpu-raster");
         assert_eq!(raster.label(), "gpu-raster: bricks + cubes + raster");
         let mut moved = Composition { storage: "rows".into(), visibility: "sphere".into(), ..Default::default() };
         moved.backend = "gpu-raster".into();
         moved.adapt_to_backend();
-        assert_eq!(moved, Composition { backend: "gpu-raster".into(), storage: "rows".into(), geometry: "greedy".into(), visibility: "raster".into(), shading: "direct".into() });
+        assert_eq!(moved, Composition { backend: "gpu-raster".into(), storage: "rows".into(), geometry: "greedy".into(), prepass: String::new(), visibility: "raster".into(), shading: "direct".into() });
+        assert_eq!(Composition { prepass: "beam".into(), ..Default::default() }.label(), "gpu-compute: bricks + beam + refloor");
         assert!(Composition { storage: "nope".into(), ..Default::default() }.validate().is_err());
         assert!(fallback_note(&Composition { storage: "bricks".into(), visibility: "sphere".into(), ..Default::default() }).is_some());
         assert!(fallback_note(&Composition { storage: "distance".into(), visibility: "sphere".into(), ..Default::default() }).is_none());

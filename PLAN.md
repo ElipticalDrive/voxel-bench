@@ -38,7 +38,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - `multirenderer list`: back ends, components by slot, legacy renderers.
 - One composition against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{compose={backend="gpu-compute",storage="prefix",visibility="refloor"}}]' -s output.dir=\"target/check\"`
-  - A legacy renderer: `{name="gpu-beam"}`. Further knobs go in `options={...}`.
+  - A legacy renderer: `{name="gpu-pathtrace"}`. Further knobs go in `options={...}`.
   - CLI views: `-r gpu-compute:prefix+incremental`, `-r cpu:hier+refloor`,
     `-r gpu-raster:bricks+cubes+visbuffer` (the back end's slots in order).
   - Use `-s run.repeats=3` for interleaved repeats, `-s run.frames=N` (more frames
@@ -87,8 +87,8 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
     disables combinations that can't run, with the reason.
 - **Available components:**
   - gpu-compute: storages bricks, hier, prefix, distance, rows, tree64, svo_dag,
-    clipmap; visibility refloor, incremental, sphere, rowrun; shading direct (32
-    combinations);
+    clipmap; prepass none, beam; visibility refloor, incremental, sphere, rowrun;
+    shading direct (64 combinations);
   - cpu: storages bricks, hier, prefix, u8, bits, palette; visibility refloor,
     incremental; shading direct (12 combinations);
   - gpu-raster: geometry greedy, naive, cubes; visibility raster, visbuffer; storage (for
@@ -97,7 +97,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   monolith on purpose), cpu-raster, cpu-simd, cpu-simd-loc (4), cpu-voxelspace,
   cpu-discover, cpu-cluster, gpu-dda-lod, gpu-hybrid,
   gpu-frag-dda, gpu-discover, gpu-rtx(-bricks),
-  gpu-beam, gpu-splat, gpu-voxelspace, gpu-pathtrace.
+  gpu-splat, gpu-voxelspace, gpu-pathtrace.
 - **Verification:** zero warnings in both builds, 41 unit tests and 3 GPU end-to-end
   tests pass.
 - **Tools:**
@@ -192,7 +192,7 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
    - 4b. ~~tree64 as a storage~~ (done; retired gpu-tree64).
    - 4c. ~~SVO-DAG as a storage~~ (done; retired gpu-svo-dag).
    - 4d. ~~clipmap as a storage~~ (done; retired gpu-clipmap).
-   - 4e. the beam prepass as a visibility stage (gpu-beam).
+   - 4e. ~~the beam prepass as a stage~~ (done: slot `prepass`; retired gpu-beam).
    - 4f. path tracing as a shading component (gpu-pathtrace).
    - 4g. LOD in the storage interface (gpu-dda-lod).
    - 4h. hardware RT as a back end (gpu-rtx, gpu-rtx-bricks).
@@ -483,6 +483,19 @@ earlier if meshes become more urgent; 7c depends on 6′.
   instead of on every texture access. A single run had suggested incremental beats
   refloor on the clipmap; the repeats say no (1.79 vs 1.40).
 - **Retired:** gpu-clipmap.
+
+### 2026-10-10: phase 4e (the beam prepass as a slot)
+- **A `prepass` slot** (gpu-compute only; `none` / `beam`): a stage before the walk with
+  its own compute entry point and `start_t(pixel)`. Rays start at `o + d * t0` and the
+  hit's t is shifted back, so the walks need no change. The beam is generalised from
+  32-block chunks to the storage's top cell (`s_top`), so it works over every storage.
+  `optional` slots (prepass, shading) are left out of labels at their default and come
+  last in the CLI form (`gpu-compute:bricks+refloor+direct+beam`).
+- **Results** (terrain, 2 interleaved repeats): `bricks + beam + refloor` 1.07 / 1.43 ms
+  vs gpu-beam 1.08 / 1.45: **matches**, same image. As before, beam is a net loss
+  (bricks + refloor 0.85 / 1.20). Over tree64 it costs much more (1.85 vs 1.00 ms):
+  64^3 top cells make the cone's box checks coarse and expensive.
+- **Retired:** gpu-beam. Avg skipped distance is the counter `avg_skip_blocks`.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

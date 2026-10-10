@@ -161,19 +161,24 @@ impl RendererSpec {
         Ok(())
     }
 
-    /// From the command line: `backend:slot+slot+...` for a composition, the back end's
-    /// slots in order with shading optional (`gpu-compute:prefix+incremental`,
-    /// `gpu-raster:bricks+greedy+visbuffer`), otherwise a legacy renderer name.
+    /// From the command line: `backend:slot+slot+...` for a composition: the back end's
+    /// required slots in order, then optionally shading and prepass
+    /// (`gpu-compute:prefix+incremental`, `gpu-compute:tree64+refloor+direct+beam`,
+    /// `gpu-raster:bricks+greedy+visbuffer`); otherwise a legacy renderer name.
     pub fn from_cli(s: &str) -> anyhow::Result<Self> {
+        use mr_components::Slot;
         let Some((backend, rest)) = s.split_once(':') else { return Ok(Self::new(s)) };
         let parts: Vec<&str> = rest.split('+').collect();
         let mut c = mr_components::Composition::new(backend);
-        let slots: Vec<mr_components::Slot> = c.slots().collect();
-        if slots.is_empty() || !(slots.len() - 1..=slots.len()).contains(&parts.len()) {
-            let form: Vec<&str> = slots.iter().map(|s| s.name()).collect();
-            bail!("composition `{s}` should be {backend}:{}[+shading]", form[..form.len().saturating_sub(1)].join("+"));
+        let all: Vec<Slot> = c.slots().collect();
+        let mut order: Vec<Slot> = all.iter().copied().filter(|s| !s.optional()).collect();
+        let required = order.len();
+        order.extend([Slot::Shading, Slot::Prepass].into_iter().filter(|s| all.contains(s)));
+        if all.is_empty() || !(required..=order.len()).contains(&parts.len()) {
+            let names = |sl: &[Slot]| sl.iter().map(|s| s.name()).collect::<Vec<_>>().join("+");
+            bail!("composition `{s}` should be {backend}:{}[+{}]", names(&order[..required]), names(&order[required..]));
         }
-        for (slot, name) in slots.into_iter().zip(parts) {
+        for (slot, name) in order.into_iter().zip(parts) {
             c.set(slot, name);
         }
         let mut spec = Self::new("");
@@ -399,6 +404,8 @@ mod tests {
         let spec = RendererSpec::from_cli("gpu-raster:hier+naive+visbuffer").unwrap();
         assert_eq!(spec.options.get("geometry").and_then(|v| v.as_str()), Some("naive"));
         assert!(RendererSpec::from_cli("gpu-raster:hier+naive").is_err());
+        let spec = RendererSpec::from_cli("gpu-compute:tree64+refloor+direct+beam").unwrap();
+        assert_eq!(spec.options.get("prepass").and_then(|v| v.as_str()), Some("beam"));
         let spec = RendererSpec::from_cli("gpu-compute:distance+sphere").unwrap();
         assert_eq!(spec.options.get("storage").and_then(|v| v.as_str()), Some("distance"));
         assert!(RendererSpec::from_cli("gpu-compute:nope+sphere").is_err());

@@ -15,6 +15,9 @@ struct Camera {
 var<private> ct_iters: u32;
 
 @group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
+// Prepass output (one start distance per tile) and statistics; see `prepass` components.
+@group(0) @binding(2) var<storage, read_write> beam: array<f32>;
+@group(0) @binding(3) var<storage, read_write> beam_stats: array<atomic<u32>, 2>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -26,7 +29,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     ct_iters = 0u;
     // Mesh mode: rays end at the mesh surface; a voxel in front of it still wins.
     let mt = mesh_t(gid.xy, d, cam.forward);
-    let h = ctrace(o, d, min(vp.max_dist, mt));
+    // The prepass may let the ray start further out (its tile's cone is empty up to
+    // there); the walk then starts at that point, and the hit's t is shifted back.
+    let t0 = start_t(gid.xy);
+    var h: Hit;
+    if (t0 > 0.0) {
+        h = ctrace(o + d * t0, d, min(vp.max_dist, mt) - t0);
+        h.t += t0;
+    } else {
+        h = ctrace(o, d, min(vp.max_dist, mt));
+    }
     if (VIEW_STEPS) {
         // Primary-ray loop iterations: red = low 8 bits, green = high bits (exact counts
         // for analysis), blue = a log-scale brightness for viewing.

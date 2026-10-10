@@ -18,7 +18,6 @@ backend-cpu.workspace = true
 cpu-voxelspace.workspace = true
 gpu-splat.workspace = true
 gpu-voxelspace.workspace = true
-gpu-beam.workspace = true
 gpu-frag-hybrid.workspace = true
 gpu-pathtrace.workspace = true
 gpu-compute.workspace = true

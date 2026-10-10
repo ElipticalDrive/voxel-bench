@@ -9,6 +9,8 @@
 //! (per-slot side data, or region blobs) is kept by `storage::gpu_data::StorageData`.
 //! Meshes (mesh mode) are composited by `mr_gpu::meshes::MeshComposite`.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
@@ -50,6 +52,8 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::choice("storage", &format!("Storage component. {}", describe(Slot::Storage)), &names(Slot::Storage), "bricks", false),
         ParamSpec::choice("visibility", &format!("Visibility component (any storage works with any; missing fast paths use generic fallbacks). {}", describe(Slot::Visibility)), &names(Slot::Visibility), "refloor", true),
         ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names(Slot::Shading), "direct", true),
+        ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &names(Slot::Prepass), "none", true),
+        ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true),
         ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true),
     ];
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
@@ -74,6 +78,8 @@ struct Options {
     #[serde(alias = "traversal")]
     visibility: String,
     shading: String,
+    prepass: String,
+    tile: u32,
     exact: bool,
     skip2: bool,
     skip4: bool,
@@ -93,6 +99,8 @@ impl Default for Options {
             storage: "bricks".into(),
             visibility: "refloor".into(),
             shading: "direct".into(),
+            prepass: "none".into(),
+            tile: 8,
             exact: true,
             skip2: true,
             skip4: true,
@@ -113,6 +121,9 @@ struct Composition {
     storage: String,
     visibility: String,
     shading: String,
+    prepass: String,
+    /// Prepass tile size in pixels (1 = the prepass is skipped).
+    tile: u32,
     exact: bool,
     /// Levels allowed by the skip knobs (bit k = 2^k cubes).
     levels: u32,
@@ -125,19 +136,28 @@ impl Composition {
         storage::gpu(&self.storage).expect("validated")
     }
 
+    /// The prepass in effect: a tile of 1 pixel turns it off.
+    fn prepass(&self) -> &str {
+        if self.tile <= 1 { "none" } else { &self.prepass }
+    }
+
     fn source(&self) -> String {
         let st = self.storage();
         let vis = visibility::gpu_wgsl(&self.visibility).expect("validated");
         let shade = mr_components::shading::gpu_wgsl(&self.shading).expect("validated");
+        let pre = mr_components::prepass::gpu_wgsl(self.prepass()).expect("validated");
         let own = format!(
-            "// Composition: storage = {}, visibility = {}, shading = {}\n\
+            "// Composition: storage = {}, prepass = {}, visibility = {}, shading = {}\n\
+             const PREPASS_TILE: u32 = {}u;\n\
              const EXACT: bool = {};\n\
              const VIEW_STEPS: bool = {};\n\
              const LEVEL_MASK: u32 = (S_LEVELS & {:#x}u) | 1u | (1u << S_TOP);\n\
-             {MESH_COMPOSITE_WGSL}\n{}\n{vis}\n{shade}\n{}",
+             {MESH_COMPOSITE_WGSL}\n{}\n{vis}\n{shade}\n{}\n{pre}",
             self.storage,
+            self.prepass(),
             self.visibility,
             self.shading,
+            self.tile.max(1),
             self.exact,
             self.steps_view,
             self.levels,
@@ -190,12 +210,16 @@ pub struct GpuCompose {
     /// Composition the pipeline was built from (rebuilt lazily when knobs change it).
     built: Composition,
     pipeline: wgpu::ComputePipeline,
+    /// The prepass component's own pass, if it has one.
+    prepass: Option<wgpu::ComputePipeline>,
     pipeline_layout: wgpu::PipelineLayout,
     layout0: wgpu::BindGroupLayout,
     layout2: wgpu::BindGroupLayout,
     camera_buf: wgpu::Buffer,
     output: wgpu::Texture,
     bind0: wgpu::BindGroup,
+    /// Prepass output: one f32 per tile (sized for 1-pixel tiles), and statistics.
+    beam: Beam,
     /// The storage's own data (group 2).
     data: StorageData,
     ring: FrameRing,
@@ -212,6 +236,8 @@ impl GpuCompose {
             storage: check(Slot::Storage, &opts.storage)?,
             visibility: check(Slot::Visibility, &opts.visibility)?,
             shading: check(Slot::Shading, &opts.shading)?,
+            prepass: check(Slot::Prepass, &opts.prepass)?,
+            tile: opts.tile.clamp(1, 64),
             exact: opts.exact,
             steps_view: parse_view(&opts.view)?,
             levels: [opts.skip2, opts.skip4, opts.skip8, opts.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)),
@@ -244,9 +270,17 @@ impl GpuCompose {
         let layout2 = gpu_data::layout(&gpu, &comp.storage(), compute | wgpu::ShaderStages::FRAGMENT);
         let occ = visibility::occlusion_wgsl(&comp.storage());
         let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Some(Occlusion { wgsl: &occ, layout: &layout2 }));
+        let rw = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: compute,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("compose camera"),
             entries: &[
+                rw(2),
+                rw(3),
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: compute,
@@ -270,7 +304,7 @@ impl GpuCompose {
             bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout2), Some(meshes.layout())],
             immediate_size: 0,
         });
-        let pipeline = Self::pipeline(&gpu, &pipeline_layout, &comp)?;
+        let (pipeline, prepass) = Self::pipeline(&gpu, &pipeline_layout, &comp)?;
         let data = StorageData::new(&gpu, comp.storage(), gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         let camera_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
@@ -279,7 +313,8 @@ impl GpuCompose {
             mapped_at_creation: false,
         });
         let output = mr_gpu::output_texture(&gpu, p.width, p.height);
-        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output);
+        let beam = Beam::new(&gpu, p.width, p.height);
+        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &beam);
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
         tracing::info!("gpu-compute: storage {}, visibility {}, shading {}", comp.storage, comp.visibility, comp.shading);
@@ -290,12 +325,14 @@ impl GpuCompose {
             built: comp.clone(),
             comp,
             pipeline,
+            prepass,
             pipeline_layout,
             layout0,
             layout2,
             camera_buf,
             output,
             bind0,
+            beam,
             data,
             ring,
             width: p.width,
@@ -305,25 +342,30 @@ impl GpuCompose {
         })
     }
 
-    fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, comp: &Composition) -> anyhow::Result<wgpu::ComputePipeline> {
+    /// The main pipeline and, if the prepass has one, its pass.
+    fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, comp: &Composition) -> anyhow::Result<(wgpu::ComputePipeline, Option<wgpu::ComputePipeline>)> {
         let source = comp.source();
         let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("compose"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-        let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("compose"),
-            layout: Some(layout),
-            module: &module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let entry = |name| {
+            gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(name),
+                layout: Some(layout),
+                module: &module,
+                entry_point: Some(name),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
+        let pipeline = entry("main");
+        let prepass = mr_components::prepass::has_pass(comp.prepass()).then(|| entry("prepass"));
         if let Some(e) = pollster::block_on(scope.pop()) {
             anyhow::bail!("compiling {comp:?}: {e}");
         }
-        Ok(pipeline)
+        Ok((pipeline, prepass))
     }
 
-    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture) -> wgpu::BindGroup {
+    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, beam: &Beam) -> wgpu::BindGroup {
         let view = out.create_view(&Default::default());
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("compose camera"),
@@ -331,6 +373,8 @@ impl GpuCompose {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: cam.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 2, resource: beam.tiles.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: beam.stats.as_entire_binding() },
             ],
         })
     }
@@ -349,7 +393,7 @@ impl Renderer for GpuCompose {
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         if self.comp != self.built {
-            self.pipeline = Self::pipeline(&self.gpu, &self.pipeline_layout, &self.comp)?;
+            (self.pipeline, self.prepass) = Self::pipeline(&self.gpu, &self.pipeline_layout, &self.comp)?;
             self.built = self.comp.clone();
         }
         let ticket = self.ring.begin(&self.gpu, sink)?;
@@ -374,14 +418,29 @@ impl Renderer for GpuCompose {
         let bind2 = self.data.prepare(&self.gpu, &self.world, &self.layout2).clone();
         self.meshes.meshes.set_occlusion_bind_group(&bind2);
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
-        // With meshes, the mesh pass carries the frame's begin timestamp.
+        // The first pass carries the frame's begin timestamp: meshes, else the prepass.
         let meshes_on = self.meshes.active(req.meshes);
         let ts = if meshes_on { self.ring.render_timestamps(ticket, true, false) } else { None };
         self.meshes.encode(&self.gpu, &mut enc, c, self.width as f32 / self.height as f32, req.mode, req.meshes, &world_bg, ts);
+        let copy_stats = self.beam.begin(&mut enc, self.prepass.is_some());
+        if let Some(pre) = &self.prepass {
+            let tile = self.comp.tile.max(1);
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("prepass"),
+                timestamp_writes: if meshes_on { None } else { self.ring.compute_timestamps(ticket, true, false) },
+            });
+            pass.set_pipeline(pre);
+            pass.set_bind_group(0, &self.bind0, &[]);
+            pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(2, &bind2, &[]);
+            pass.set_bind_group(3, self.meshes.bind_group(), &[]);
+            pass.dispatch_workgroups(self.width.div_ceil(tile).div_ceil(8), self.height.div_ceil(tile).div_ceil(8), 1);
+        }
+        let first = !meshes_on && self.prepass.is_none();
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("compose"),
-                timestamp_writes: self.ring.compute_timestamps(ticket, !meshes_on, true),
+                timestamp_writes: self.ring.compute_timestamps(ticket, first, true),
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind0, &[]);
@@ -393,9 +452,19 @@ impl Renderer for GpuCompose {
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
-            counters: [("dropped_chunks".to_string(), self.world.dropped_chunks() as f64)].into_iter().chain(self.data.counters()).collect(),
+            counters: [("dropped_chunks".to_string(), self.world.dropped_chunks() as f64)]
+                .into_iter()
+                .chain(self.data.counters())
+                .chain(self.prepass.is_some().then(|| ("avg_skip_blocks".to_string(), self.beam.avg_skip)))
+                .collect(),
         };
+        if copy_stats {
+            self.beam.copy(&mut enc);
+        }
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
+        if copy_stats {
+            self.beam.read();
+        }
         self.ring.poll(&self.gpu, sink, false)
     }
 
@@ -409,6 +478,8 @@ impl Renderer for GpuCompose {
             "max_steps" => self.world.cfg.max_steps = value.as_i64().unwrap_or(2048) as u32,
             "visibility" | "traversal" => self.comp.visibility = check(Slot::Visibility, value.as_str().unwrap_or(""))?,
             "shading" => self.comp.shading = check(Slot::Shading, value.as_str().unwrap_or(""))?,
+            "prepass" => self.comp.prepass = check(Slot::Prepass, value.as_str().unwrap_or(""))?,
+            "tile" => self.comp.tile = value.as_i64().unwrap_or(8).clamp(1, 64) as u32,
             "view" => self.comp.steps_view = parse_view(value.as_str().unwrap_or(""))?,
             "exact" => self.comp.exact = value.as_bool().unwrap_or(true),
             "skip2" | "skip4" | "skip8" | "skip16" => {
@@ -433,12 +504,66 @@ impl Renderer for GpuCompose {
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.meshes.resize(&self.gpu, width, height);
-        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output);
+        self.beam = Beam::new(&self.gpu, width, height);
+        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam);
         self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
         Ok(())
     }
 
     fn memory(&self) -> MemoryReport {
         MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + self.data.memory_bytes() + self.width as u64 * self.height as u64 * 4 }
+    }
+}
+
+/// The prepass's buffers: one f32 start distance per tile and the statistics (sum of
+/// skipped blocks, tiles), read back without blocking, a few frames late.
+struct Beam {
+    tiles: wgpu::Buffer,
+    stats: wgpu::Buffer,
+    read: wgpu::Buffer,
+    /// 0 idle, 1 mapping, 2 mapped.
+    state: Arc<AtomicU32>,
+    avg_skip: f64,
+}
+
+impl Beam {
+    fn new(gpu: &Gpu, width: u32, height: u32) -> Self {
+        let buf = |label, size: u64, usage| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
+        Self {
+            tiles: buf("beam tiles", (width as u64 * height as u64 * 4).max(16), wgpu::BufferUsages::STORAGE),
+            stats: buf("beam stats", 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST),
+            read: buf("beam stats readback", 16, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST),
+            state: Arc::new(AtomicU32::new(0)),
+            avg_skip: 0.0,
+        }
+    }
+
+    /// Takes in a finished readback and clears the sums for this frame. Returns whether
+    /// this frame's sums should be copied out.
+    fn begin(&mut self, enc: &mut wgpu::CommandEncoder, active: bool) -> bool {
+        if self.state.load(Ordering::Acquire) == 2 {
+            if let Ok(data) = self.read.slice(..).get_mapped_range() {
+                let v: &[u32] = bytemuck::cast_slice(&data[..8]);
+                if v[1] > 0 {
+                    self.avg_skip = v[0] as f64 / v[1] as f64;
+                }
+            }
+            self.read.unmap();
+            self.state.store(0, Ordering::Release);
+        }
+        if active {
+            enc.clear_buffer(&self.stats, 0, None);
+        }
+        active && self.state.load(Ordering::Acquire) == 0
+    }
+
+    fn copy(&self, enc: &mut wgpu::CommandEncoder) {
+        enc.copy_buffer_to_buffer(&self.stats, 0, &self.read, 0, 16);
+    }
+
+    fn read(&self) {
+        self.state.store(1, Ordering::Release);
+        let state = self.state.clone();
+        self.read.slice(..).map_async(wgpu::MapMode::Read, move |r| state.store(if r.is_ok() { 2 } else { 0 }, Ordering::Release));
     }
 }

@@ -59,10 +59,10 @@ display resolution. **O** hides the overlays. The ❓ Keys tab lists everything.
 ### Assembling renderers from components
 
 A renderer is assembled from components rather than picked from a list (IDEAS §12):
-**back end** × **storage** × **geometry** × **visibility** × **shading**. The pieces live
-in `components/`, one directory each (`storage/prefix/gpu.wgsl`, ...); back ends in
-`backends/`. Not every back end has every slot: `geometry` exists only on the raster back
-end.
+**back end** × **storage** × **geometry** × **prepass** × **visibility** × **shading**. The
+pieces live in `components/`, one directory each (`storage/prefix/gpu.wgsl`, ...); back
+ends in `backends/`. Not every back end has every slot: `geometry` exists only on the
+raster back end, `prepass` only on gpu-compute.
 
 ```toml
 [[renderer]]
@@ -74,8 +74,9 @@ compose = { backend = "gpu-compute", storage = "prefix", visibility = "increment
 compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", visibility = "visbuffer" }
 ```
 
-- *Command line:* the back end's slots in order, shading optional:
-  `-r gpu-compute:prefix+incremental`, `-r gpu-raster:bricks+greedy+visbuffer`.
+- *Command line:* the back end's required slots in order, then optionally shading and
+  prepass: `-r gpu-compute:prefix+incremental`, `-r gpu-raster:bricks+greedy+visbuffer`,
+  `-r gpu-compute:bricks+refloor+direct+beam`.
   `multirenderer list` shows back ends (with their slots and defaults) and components.
   Slots left out of a `compose` table take the back end's default.
 - *GUI:* each renderer has a back-end picker and one picker per slot. Combinations that
@@ -90,7 +91,11 @@ compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", visi
     incremental;
   - `gpu-raster`: geometry greedy, naive, cubes; visibility raster, visbuffer; storage
     (what lit-mode shadow rays walk, with refloor) bricks, hier, prefix, distance, rows, tree64, svo_dag, clipmap;
-  - all: shading `direct`.
+  - all: shading `direct`;
+  - gpu-compute also: prepass `none` or `beam` (was gpu-beam: one conservative cone per
+    tile marches top cells, rays start where it is provably empty; exact, knob `tile`;
+    matches the former renderer, and is still a net loss: chunk-level skipping already
+    makes empty space cheap).
 
   A hardware-RT back end follows. Renderers not yet split into components remain
   available as "legacy". The former cpu-simd-u16/u8/bits/hier/prefix/palette renderers
@@ -106,7 +111,7 @@ vertex colours, scattered copies, and spin / orbit / bob animation; see
 toggles.
 - *Who draws meshes:* renderers with the `meshes` tag (`multirenderer list`): currently
   `cpu-reference`, the `gpu-raster` back end (every composition; same depth buffer), and the ray casters
-  `gpu-compute` (every composition), `gpu-dda-lod` and `gpu-beam` (meshes are
+  `gpu-compute` (every composition) and `gpu-dda-lod` (meshes are
   rasterised first, rays stop at the mesh). Others are skipped in `+meshes` benchmark passes and
   labelled "(no meshes)" in the GUI.
 - *Semantics* (see `mr_core::mesh`): meshes and voxels occlude each other, lit meshes
@@ -320,7 +325,6 @@ Every value can be overridden from the command line, for example
 | `gpu-raster: … + greedy/naive/cubes + raster/visbuffer` *(back end; were gpu-raster, gpu-raster-naive, gpu-cubes, gpu-visbuffer)* | GPU raster plus hybrid | The `geometry` component meshes chunks on the CPU (parallel, incremental) into 8-byte instances: `greedy` quads (knob `merge` = `block`, or `exposure`: merge across block types with a per-pixel block lookup; −16% quads and −13% GPU time on menger, slightly slower on terrain), `naive` one quad per exposed face (2.6–18× more faces than greedy; `cull = false` emits every face), or `cubes` one 36-vertex instance per surface block. Vertex pulling, one `multi_draw_indirect`, per-chunk frustum and per-face-direction culling, analytic per-pixel UVs. `visibility` = `raster` (forward shading, `depth_prepass` in lit mode) or `visbuffer` (ids + depth, then one compute shading pass per pixel: 1.5–2.5× faster lit with lots of overdraw; halves lit time for cubes). Lit-mode shadow rays walk the composed `storage` with refloor (7–18% faster than the former fixed walk). Options: `shadows`, `max_steps`, `mesh_budget`, `quad_buffer_mb`, `pool_mb`, `adapter`. |
 | `gpu-rtx` | GPU hardware RT | RT cores via wgpu ray queries. Greedy-mesh triangles in one BLAS per chunk, and a TLAS of chunks rebuilt each frame relative to the camera block. Primary and shadow rays are hardware queries. Options: `shadows`, `cull` (back/front/none), `fast_build`. |
 | `gpu-rtx-bricks` | GPU hardware/software hybrid | The RT-core BVH covers one AABB per occupied 4³ brick, and a software DDA inside each candidate box reports hits with `rayQueryGenerateIntersection` (procedural geometry). Options: `shadows`, `pool_mb`, `fast_build`. |
-| `gpu-beam` | GPU compute | gpu-dda plus a conservative per-tile beam pre-pass that starts every pixel ray at its tile's provably empty distance. Exact. Knob `tile` (1 = off). Finding: no win, because chunk-level skipping already makes empty space cheap. |
 | `gpu-frag-dda` | GPU fragment | gpu-dda's ray casting in a fragment shader on a full-screen triangle instead of compute, to compare dispatch paths. Often faster than compute here (needs confirming with repeats). |
 | `gpu-pathtrace` | GPU compute, GI | Path tracer: next-event estimation for sun and point lights, `bounces` cosine-weighted diffuse bounces, `spp`, and progressive accumulation while the view is still. `bounces = 0` reproduces gpu-dda's lit image exactly; with bounces it adds colour bleeding and indirect fill (and so differs from the reference by design). |
 | `gpu-compute` *(back end; replaces gpu-dda, gpu-sdf, gpu-bitmask and gpu-compose)* | GPU compute, modular | Storage and traversal as separate WGSL modules behind one interface, fused into one shader per combination (so the split costs nothing at run time). Knobs: `storage` = `bricks` (the shared pool and 4³ brick bits), `hier` (bricks + an 8³ region summary), `prefix` (the user's Morton masks + popcount prefix), `distance` (per-voxel Chebyshev distance to the nearest solid, so `sphere` leaps whole empty cubes; was gpu-sdf) or `rows` (one u32 occupancy bitmask per 32-voxel row, so `rowrun` bit-scans empty runs; was gpu-bitmask, 5–15% slower than bricks + refloor) or `tree64` (was gpu-tree64: a sparse 64-tree per 64³ region, 4×4×4 child masks, popcount-packed children, compressed leaves, uniform subtrees collapsed; it owns its data instead of the voxel pool, so ~15% of the VRAM; within 5% of the former renderer's speed) or `svo_dag` (was gpu-svo-dag: per-chunk binary octrees with identical subtrees hash-consed into one global DAG, ~3× dedup on terrain, the smallest footprint; as fast as the former renderer) or `clipmap` (was gpu-clipmap: camera-centred toroidal 3D textures read with `textureLoad` only, no hash table; 36–39% faster than the former renderer because the slot wrap happens once per chunk instead of per access); every storage works with every traversal (`refloor`, `incremental`, `sphere`, `rowrun`) through generic fallbacks for missing fast paths; `visibility` (alias `traversal`) = `refloor` (gpu-dda's walk) or `incremental` (the per-level DDA from step 1), with `exact` and `skip2`…`skip16`; `view = "steps"` shows loop iterations per pixel. `bricks` + `refloor` is gpu-dda's algorithm and runs 7–9% faster (no LOD code); `prefix` + `refloor` is the fastest GPU ray walk on open scenes (−13% terrain, −23% edits). `incremental` is 3.5–8× slower on NVIDIA for reasons still unknown (1.3× on AMD). |

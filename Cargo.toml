@@ -23,7 +23,6 @@ members = [
     "renderers/cpu-voxelspace",
     "renderers/gpu-splat",
     "renderers/gpu-voxelspace",
-    "renderers/gpu-beam",
     "renderers/gpu-frag-hybrid",
     "renderers/gpu-pathtrace",
     "components",
@@ -55,7 +54,6 @@ backend-cpu = { path = "backends/cpu" }
 cpu-voxelspace = { path = "renderers/cpu-voxelspace" }
 gpu-splat = { path = "renderers/gpu-splat" }
 gpu-voxelspace = { path = "renderers/gpu-voxelspace" }
-gpu-beam = { path = "renderers/gpu-beam" }
 gpu-frag-hybrid = { path = "renderers/gpu-frag-hybrid" }
 gpu-pathtrace = { path = "renderers/gpu-pathtrace" }
 mr-components = { path = "components" }
