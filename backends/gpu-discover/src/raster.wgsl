@@ -1,5 +1,6 @@
 // gpu-discover raster: one instanced quad per discovered face (list built on the GPU).
-// Lit mode traces shadow rays from the fragment shader through the voxel world (group 1).
+// The shading component colours each fragment (`shade_hit`); lit-mode shadow rays walk the
+// composed storage (group 2).
 
 struct Frame {
     view_proj: mat4x4<f32>,
@@ -90,10 +91,6 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     if (abs(d[ax.x]) > 1e-6) {
         hit = fr.cam_frac + d * ((in.plane - fr.cam_frac[ax.x]) / d[ax.x]);
     }
-    var local = vec3<f32>(0.0);
-    local[ax.x] = select(0.0, 1.0, (face & 1u) == 0u);
-    local[ax.y] = fract(hit[ax.y]);
-    local[ax.z] = fract(hit[ax.z]);
     var block = in.info.y;
     if (in.run != 0u) {
         // Merged quad: take the block of the cell actually under this point (IDEAS §2), so
@@ -103,9 +100,17 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         let b = cell_block(cell + vp.cam_block);
         if (b != 0u) { block = b; }
     }
-    let texel = surface_texel(block, face, local);
-    var color = texel;
-    if (fr.mode != 0u) { color = shade_lit(texel, hit, face_normal(face)); }
+    // The hit as a ray caster reports it, for the shading component.
+    var h: Hit;
+    h.hit = true;
+    h.axis = ax.x;
+    h.lod = 0u;
+    h.block = block;
+    h.t = length(hit - fr.cam_frac);
+    if (abs(d[ax.x]) > 1e-6) { h.t = (in.plane - fr.cam_frac[ax.x]) / d[ax.x]; }
+    h.cell = vec3<i32>(floor(hit));
+    h.cell[ax.x] = i32(round(in.plane)) - select(0, 1, (face & 1u) == 0u);
+    var color = shade_hit(h, fr.cam_frac, d, fr.mode != 0u, vec2<u32>(in.pos.xy));
     if (fr.view == 2u) {
         // Quads: one colour per drawn instance (a face, or a merged run of faces).
         var h = in.iid * 0x9E3779B1u;
@@ -134,10 +139,10 @@ fn fs_overdraw(in: VOut) -> @location(0) vec4<f32> {
     return vec4<f32>(0.07, 0.05, 0.02, 1.0);
 }
 
-// Block id at absolute cell `a` (0 = air or not loaded).
+// Block id at absolute cell `a` (0 = air or not loaded), through the composed storage.
 fn cell_block(a: vec3<i32>) -> u32 {
-    let v = lookup_chunk(chunk_key(a >> vec3<u32>(5u), 0u));
+    let v = s_top(a >> vec3<u32>(S_TOP));
     if (v == EMPTY) { return 0u; }
     if ((v & UNIFORM_BIT) != 0u) { return v & 0xffffu; }
-    return voxel(v, a & vec3<i32>(31));
+    return s_block(v, a & vec3<i32>((1 << S_TOP) - 1));
 }

@@ -95,6 +95,12 @@ pub const BACKENDS: &[BackendInfo] = &[
         slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "rayquery"), (Slot::Shading, "direct")],
     },
     BackendInfo {
+        name: "gpu-discover",
+        description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
+        renderer: Some("gpu-discover"),
+        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Shading, "direct")],
+    },
+    BackendInfo {
         name: "cpu-raster",
         description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
         renderer: Some("cpu-raster"),
@@ -118,13 +124,14 @@ const GPU: &[&str] = &["gpu-compute"];
 const CPU: &[&str] = &["cpu"];
 const BOTH: &[&str] = &["gpu-compute", "cpu"];
 /// GPU storages: the ray walks, and the raster back end's shadow rays.
-const GPU_ST: &[&str] = &["gpu-compute", "gpu-raster"];
-const ALL_ST: &[&str] = &["gpu-compute", "cpu", "gpu-raster"];
+const GPU_ST: &[&str] = &["gpu-compute", "gpu-raster", "gpu-discover"];
+const ALL_ST: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-discover"];
 const RASTER: &[&str] = &["gpu-raster"];
 const RT: &[&str] = &["gpu-rt"];
 const RASTER_RT: &[&str] = &["gpu-raster", "gpu-rt", "cpu-raster"];
 const RASTERS: &[&str] = &["gpu-raster", "cpu-raster"];
-const SHADE_ALL: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-rt", "cpu-raster"];
+const SHADE_ALL: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-rt", "cpu-raster", "gpu-discover"];
+const DISCOVER: &[&str] = &["gpu-discover"];
 const COMPUTE_RT: &[&str] = &["gpu-compute", "gpu-rt"];
 
 pub const COMPONENTS: &[ComponentInfo] = &[
@@ -147,6 +154,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Visibility, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", backends: BOTH, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", backends: GPU, provides: &[], uses: &["s_dist"] },
     ComponentInfo { slot: Slot::Visibility, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: GPU, provides: &[], uses: &["s_row"] },
+    ComponentInfo { slot: Slot::Visibility, name: "quadtree", description: "Discovery (the user's idea, IDEAS §3): an adaptive screen-space quadtree of corner rays; coherent tiles add every exposed face of the hit plane in their footprint to a face set kept across frames, which is rasterised. Knobs: tile, criterion, incremental, events, merge, order, views tiles/rays/churn/overdraw/quads, ...", backends: DISCOVER, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "rayquery", description: "Hardware ray queries against the acceleration structure (RT cores) for primary, shadow and bounce rays. Knob: cull (triangle facing culled for primary rays).", backends: RT, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "raster", description: "Depth-tested rasterisation of the geometry; each pixel's ray is intersected with the face plane and shaded. gpu-raster: knob depth_prepass (lit: shade once per pixel). cpu-raster: edge functions into a visibility buffer, then deferred shading; knobs tile_width, band_height.", backends: RASTERS, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "gbuffer", description: "G-buffer (from gpu-hybrid): the raster pass writes the hit point, face and block; a compute pass rebuilds the hit and shades once per pixel. 20 bytes per pixel against visbuffer's 4, but no refetch.", backends: RASTER, provides: &[], uses: &[] },
@@ -376,6 +384,15 @@ mod tests {
         assert!(Composition { geometry: "greedy".into(), ..Default::default() }.validate().is_err());
         assert!(Composition { visibility: "raster".into(), ..Default::default() }.validate().is_err());
         assert!(Composition { backend: "gpu-rt".into(), ..Default::default() }.validate().is_err(), "storage does not apply on gpu-rt");
+        for c in COMPONENTS.iter().filter(|c| c.backends.contains(&"gpu-discover")) {
+            let ok = match c.slot {
+                Slot::Storage => storage::gpu(c.name).is_some(),
+                Slot::Visibility => c.name == "quadtree",
+                Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
+                _ => false,
+            };
+            assert!(ok, "gpu-discover {} `{}`", c.slot.name(), c.name);
+        }
         for c in COMPONENTS.iter().filter(|c| c.backends.contains(&"cpu-raster")) {
             let ok = match c.slot {
                 Slot::Geometry => geometry::gpu(c.name).is_some_and(|g| g.per_face),

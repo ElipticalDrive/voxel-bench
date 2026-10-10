@@ -1,4 +1,9 @@
-//! Self-directed visibility discovery, entirely on the GPU, rendered by rasterisation.
+//! GPU-discover back end: self-directed visibility discovery, entirely on the GPU,
+//! rendered by rasterisation. Assembled from components (IDEAS §12): the **storage**
+//! (discovery rays, exposure tests and lit-mode shadow rays all read the composed storage,
+//! group 2, and rays walk it with `refloor`), the **visibility** component `quadtree`
+//! (the discovery below) and the **shading** component (`direct`, via `shade_hit`). Was the
+//! gpu-discover renderer, which read the voxel pool only.
 //!
 //! Instead of one ray per pixel, an adaptive screen-space quadtree decides where to cast
 //! rays: rays at the corners of `tile`-pixel tiles (corners shared, deduplicated); a tile
@@ -49,7 +54,9 @@ use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
-use mr_gpu::voxels::{DDA_OCCLUSION_WGSL, Shadows, VoxelWorld, VoxelWorldConfig, hash3, shader_source, shadows_param};
+use mr_components::storage::gpu_data::{self, StorageData};
+use mr_components::{Slot, components, storage, visibility};
+use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
 use serde::Deserialize;
 
@@ -60,8 +67,8 @@ pub fn entry() -> RendererEntry {
 fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu-discover".into(),
-        description: "Self-directed visibility: GPU adaptive quadtree of corner rays discovers the visible block faces (coherent tiles add a whole plane footprint), faces kept in a GPU hash set across frames, then rasterised as one quad per face; no read-back".into(),
-        tags: vec!["gpu".into(), "raster".into(), "raytrace".into(), "hybrid".into(), "wgpu".into()],
+        description: "GPU-discover back end (storage, quadtree visibility, shading). Self-directed visibility: GPU adaptive quadtree of corner rays discovers the visible block faces (coherent tiles add a whole plane footprint), faces kept in a GPU hash set across frames, then rasterised as one quad per face; no read-back".into(),
+        tags: vec!["gpu".into(), "raster".into(), "raytrace".into(), "hybrid".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         params: params(),
@@ -73,8 +80,25 @@ const MAX_LEVELS: usize = 7;
 const MAX_SLOTS: usize = 1 << 14;
 const CHUNK_TABLE: usize = MAX_SLOTS * 4;
 
+const BACKEND: &str = "gpu-discover";
+
+/// Checks that `name` is a `slot` component with a gpu-discover implementation.
+fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
+    match mr_components::unavailable(BACKEND, slot, name) {
+        None => Ok(name.to_string()),
+        Some(why) => anyhow::bail!(why),
+    }
+}
+
+fn names(slot: Slot) -> Vec<&'static str> {
+    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| c.name).collect()
+}
+
 fn params() -> Vec<ParamSpec> {
     vec![
+        ParamSpec::choice("storage", "Storage component: what discovery rays, exposure tests and shadow rays read (refloor walk)", &names(Slot::Storage), "bricks", false),
+        ParamSpec::choice("visibility", "Visibility component", &names(Slot::Visibility), "quadtree", false),
+        ParamSpec::choice("shading", "Shading component", &names(Slot::Shading), "direct", false),
         ParamSpec::int("tile", "Initial tile size in pixels (power of two)", 2, MAX_TILE as i64, 8, true),
         ParamSpec::choice("criterion", "Tile coherence: all corners hit the same face plane, or the very same face", &["plane", "face"], "plane", true),
         ParamSpec::int("sky_tile", "Tiles whose corners all miss are accepted as sky at or below this size (px)", 1, MAX_TILE as i64, 4, true),
@@ -102,7 +126,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("max_steps", "DDA step limit", 32, 16384, 2048, true),
         ParamSpec::bool("depth_prepass", "Lit mode: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("max_faces", "Capacity of the face set S (faces)", 1 << 16, 1 << 24, 1 << 20, false),
-        ParamSpec::int("pool_mb", "Voxel pool limit (MiB)", 64, 6144, 1536, false),
+        ParamSpec::int("pool_mb", "Voxel pool limit (MiB); for region storages the limit of their own data", 64, 6144, 1536, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ]
 }
@@ -111,6 +135,9 @@ fn params() -> Vec<ParamSpec> {
 #[serde(default, deny_unknown_fields)]
 struct Options {
     adapter: Option<String>,
+    storage: String,
+    visibility: String,
+    shading: String,
     tile: u32,
     criterion: String,
     sky_tile: u32,
@@ -146,6 +173,9 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             adapter: None,
+            storage: "bricks".into(),
+            visibility: "quadtree".into(),
+            shading: "direct".into(),
             tile: 8,
             criterion: "plane".into(),
             sky_tile: 4,
@@ -344,6 +374,11 @@ struct Stage {
 pub struct GpuDiscover {
     gpu: Gpu,
     world: VoxelWorld,
+    /// The storage's own data (group 2 of the discovery and raster passes).
+    data: StorageData,
+    layout_st: wgpu::BindGroupLayout,
+    /// This frame's group 2 (set in `render`).
+    bind_st: Option<wgpu::BindGroup>,
     opts: Options,
     pipe_survive: wgpu::ComputePipeline,
     pipe_rays: wgpu::ComputePipeline,
@@ -501,6 +536,9 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
 impl GpuDiscover {
     pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
+        let st = storage::gpu(&check(Slot::Storage, &opts.storage)?).expect("validated");
+        check(Slot::Visibility, &opts.visibility)?;
+        let shading = check(Slot::Shading, &opts.shading)?;
         let gpu = Gpu::new(GpuRequest {
             experimental: false,
             adapter: opts.adapter.as_deref(),
@@ -514,7 +552,8 @@ impl GpuDiscover {
             p.environment,
             VoxelWorldConfig {
                 max_lod: 0,
-                upload_voxels: true,
+                // Region storages (tree64, ...) hold their own data instead of the voxel pool.
+                upload_voxels: matches!(st.kind, storage::Kind::Pool { .. }),
                 pool_mb: opts.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
@@ -524,9 +563,16 @@ impl GpuDiscover {
         )?;
         let dev = &gpu.device;
         let module = |label, src: String| dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(src.into()) });
-        let disc_mod = module("discover", shader_source(DDA_OCCLUSION_WGSL, include_str!("discover.wgsl")));
+        // Discovery and raster read the world through the composed storage, walked with
+        // refloor (rays and shadow rays).
+        let layout_st = gpu_data::layout(&gpu, &st, wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT);
+        let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
+        let walk = format!("var<private> ct_iters: u32;\nconst LOD: bool = false;\n{}\n{}", st.source(), visibility::gpu_wgsl("refloor").unwrap());
+        let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
+        let disc_mod = module("discover", shader_source(occlusion, &format!("{walk}\n{}", include_str!("discover.wgsl"))));
         let args_mod = module("discover args", include_str!("args.wgsl").to_string());
-        let draw_mod = module("discover raster", shader_source(DDA_OCCLUSION_WGSL, include_str!("raster.wgsl")));
+        let shade = mr_components::shading::gpu_wgsl(&shading).expect("validated");
+        let draw_mod = module("discover raster", shader_source(occlusion, &format!("{walk}\n{shade}\n{}", include_str!("raster.wgsl"))));
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {
             binding,
@@ -574,7 +620,7 @@ impl GpuDiscover {
             label: Some("discover draw"),
             entries: &[buf(0, uni, vf, false), buf(1, ro, wgpu::ShaderStages::VERTEX, false), buf(2, ro, wgpu::ShaderStages::VERTEX, false)],
         });
-        let pl_disc = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover"), bind_group_layouts: &[Some(&layout_disc), Some(world.layout())], immediate_size: 0 });
+        let pl_disc = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover"), bind_group_layouts: &[Some(&layout_disc), Some(world.layout()), Some(&layout_st)], immediate_size: 0 });
         let pl_args = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover args"), bind_group_layouts: &[Some(&layout_args)], immediate_size: 0 });
         let compute = |pl: &wgpu::PipelineLayout, m: &wgpu::ShaderModule, entry: &str| {
             dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -629,7 +675,7 @@ impl GpuDiscover {
             cache: None,
         });
 
-        let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover draw"), bind_group_layouts: &[Some(&layout_draw), Some(world.layout())], immediate_size: 0 });
+        let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover draw"), bind_group_layouts: &[Some(&layout_draw), Some(world.layout()), Some(&layout_st)], immediate_size: 0 });
         let pipeline = |label, write: bool, compare, fragment: bool| {
             let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
             dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -769,6 +815,9 @@ impl GpuDiscover {
         let depth = opts.frames_in_flight.max(1);
         let sized = make_sized(&gpu, p.width, p.height);
         Ok(Self {
+            data,
+            layout_st,
+            bind_st: None,
             ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()),
             sized,
             world,
@@ -1086,6 +1135,7 @@ impl GpuDiscover {
             pass.set_pipeline(&self.pipe_depth);
             pass.set_bind_group(0, bind_draw, &[]);
             pass.set_bind_group(1, world_bg, &[]);
+            pass.set_bind_group(2, self.bind_st.as_ref().expect("set in render"), &[]);
             pass.draw_indirect(&self.args, draw_ofs);
         }
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1120,6 +1170,7 @@ impl GpuDiscover {
         });
         pass.set_bind_group(0, bind_draw, &[]);
         pass.set_bind_group(1, world_bg, &[]);
+            pass.set_bind_group(2, self.bind_st.as_ref().expect("set in render"), &[]);
         pass.draw_indirect(&self.args, draw_ofs);
     }
 
@@ -1188,6 +1239,8 @@ impl GpuDiscover {
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
+        let storage_bg = self.data.prepare(&self.gpu, &self.world, &self.layout_st).clone();
+        self.bind_st = Some(storage_bg.clone());
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         self.encode_shade(&mut enc, parity, &world_bg, req.mode, (true, true), ticket);
         let tile = self.opts.tile;
@@ -1220,6 +1273,7 @@ impl Renderer for GpuDiscover {
             }
         }
         let changed = self.world.apply(&self.gpu, updates);
+        self.data.update(&self.gpu, &self.world, &changed)?;
         self.update_slots(changed);
         Ok(())
     }
@@ -1381,6 +1435,8 @@ impl Renderer for GpuDiscover {
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
+        let storage_bg = self.data.prepare(&self.gpu, &self.world, &self.layout_st).clone();
+        self.bind_st = Some(storage_bg.clone());
         if self.bind_disc.is_none() {
             self.bind_disc = Some(self.make_bind_disc());
         }
@@ -1414,6 +1470,7 @@ impl Renderer for GpuDiscover {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("still needs"), timestamp_writes: None });
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(2, &storage_bg, &[]);
             pass.set_pipeline(&self.pipe_need_still);
             pass.dispatch_workgroups((cols * rows).div_ceil(256), 1, 1);
         } else if self.opts.incremental {
@@ -1441,11 +1498,13 @@ impl Renderer for GpuDiscover {
                 pass.set_pipeline(&self.pipe_id);
                 pass.set_bind_group(0, &self.bind_draw[1 - parity], &[]);
                 pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(2, &storage_bg, &[]);
                 pass.draw_indirect(&self.args, aofs(72 + (1 - parity as u64) * 4));
             }
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("incremental needs"), timestamp_writes: None });
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(2, &storage_bg, &[]);
             if kind != FrameKind::Still {
                 // Still frames count faces in view as seen in `survive` instead.
                 pass.set_pipeline(&self.pipe_mark);
@@ -1460,6 +1519,7 @@ impl Renderer for GpuDiscover {
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("survive"), timestamp_writes: None });
             pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(2, &storage_bg, &[]);
             // Temporal survivors from last frame's list.
             pass.set_pipeline(&self.pipe_survive);
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
@@ -1479,6 +1539,7 @@ impl Renderer for GpuDiscover {
                 }
                 pass.set_bind_group(0, &bind_disc, &[lofs(l)]);
                 pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(2, &storage_bg, &[]);
                 pass.set_pipeline(&self.pipe_rays);
                 if l == 0 {
                     pass.dispatch_workgroups(l0_items(cols + 1, rows + 1).div_ceil(256), 1, 1);
@@ -1491,6 +1552,7 @@ impl Renderer for GpuDiscover {
                 let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover classify"), timestamp_writes: None });
                 pass.set_bind_group(0, &bind_disc, &[lofs(l)]);
                 pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(2, &storage_bg, &[]);
                 pass.set_pipeline(&self.pipe_classify);
                 if l == 0 {
                     pass.dispatch_workgroups(l0_items(cols, rows).div_ceil(256), 1, 1);
@@ -1523,6 +1585,7 @@ impl Renderer for GpuDiscover {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("row merge"), timestamp_writes: None });
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(2, &storage_bg, &[]);
             pass.set_pipeline(&self.pipe_merge);
             pass.dispatch_workgroups_indirect(&self.args, aofs(64 + parity as u64 * 4));
             pass.set_pipeline(&self.pipe_merge_args);
@@ -1535,6 +1598,7 @@ impl Renderer for GpuDiscover {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("painter sort"), timestamp_writes: None });
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(2, &storage_bg, &[]);
             pass.set_pipeline(&self.pipe_sort_hist);
             pass.dispatch_workgroups_indirect(&self.args, aofs(64 + parity as u64 * 4));
             pass.set_pipeline(&self.pipe_sort_scan);
@@ -1549,6 +1613,7 @@ impl Renderer for GpuDiscover {
             pass.set_pipeline(&self.pipe_sky);
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(2, &storage_bg, &[]);
             let g = (self.width * self.height).div_ceil(256);
             pass.dispatch_workgroups(g.min(32768), g.div_ceil(32768), 1);
         }
@@ -1559,6 +1624,7 @@ impl Renderer for GpuDiscover {
             pass.set_pipeline(&self.pipe_audit);
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(2, &storage_bg, &[]);
             let g = (self.width * self.height).div_ceil(256);
             pass.dispatch_workgroups(g.min(32768), g.div_ceil(32768), 1);
         }
@@ -1657,7 +1723,7 @@ impl Renderer for GpuDiscover {
     fn memory(&self) -> MemoryReport {
         let s = &self.sized;
         let set = (self.keys[0].size() + self.vals[0].size() + self.lists[0].size()) * 2 + self.jobs.size() + self.seen.size() + s.changed_tiles.size() + s.need.size() + self.width as u64 * self.height as u64 * 4;
-        let gpu = self.world.memory_bytes() + set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size() + self.width as u64 * self.height as u64 * 8;
+        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size() + self.width as u64 * self.height as u64 * 8;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
 }

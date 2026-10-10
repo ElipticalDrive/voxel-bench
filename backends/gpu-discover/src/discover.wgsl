@@ -132,11 +132,12 @@ fn ray_dir(q: vec2<u32>) -> vec3<f32> {
     return normalize(pr.forward + sx * pr.right + sy * pr.up);
 }
 
+// Block at absolute cell `a`, through the composed storage (group 2).
 fn block_at(a: vec3<i32>) -> u32 {
-    let v = lookup_chunk(chunk_key(a >> vec3<u32>(5u), 0u));
+    let v = s_top(a >> vec3<u32>(S_TOP));
     if (v == EMPTY) { return 0u; }
     if ((v & UNIFORM_BIT) != 0u) { return v & 0xffffu; }
-    return voxel(v, a & vec3<i32>(31));
+    return s_block(v, a & vec3<i32>((1 << S_TOP) - 1));
 }
 
 fn normal_i(face: u32) -> vec3<i32> {
@@ -145,19 +146,19 @@ fn normal_i(face: u32) -> vec3<i32> {
     return n;
 }
 
-// Chunk-table lookup cache for loops over neighbouring cells.
+// Top-cell lookup cache for loops over neighbouring cells.
 var<private> ck: vec3<i32> = vec3<i32>(0x7fffffff);
 var<private> cv: u32 = 0xffffffffu;
 
 fn block_at_cached(a: vec3<i32>) -> u32 {
-    let k = chunk_key(a >> vec3<u32>(5u), 0u);
+    let k = a >> vec3<u32>(S_TOP);
     if (any(k != ck)) {
         ck = k;
-        cv = lookup_chunk(k);
+        cv = s_top(k);
     }
     if (cv == EMPTY) { return 0u; }
     if ((cv & UNIFORM_BIT) != 0u) { return cv & 0xffffu; }
-    return voxel(cv, a & vec3<i32>(31));
+    return s_block(cv, a & vec3<i32>((1 << S_TOP) - 1));
 }
 
 fn exposed(a: vec3<i32>, face: u32) -> u32 {
@@ -291,7 +292,8 @@ fn survive(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: v
 // ---- ray casting at lattice points ----
 fn cast_ray(q: vec2<u32>) {
     let d = ray_dir(q);
-    let h = trace(pr.origin, d, vp.max_dist);
+    // The composed walk over the composed storage.
+    let h = ctrace(pr.origin, d, vp.max_dist);
     let idx = q.y * pr.lat_w + q.x;
     cast_frame[idx] = pr.frame;
     if (h.hit) {
@@ -685,7 +687,7 @@ fn audit(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec
     if (i >= pr.width * pr.height) { return; }
     let q = vec2<u32>(i % pr.width + pr.off_x, i / pr.width + pr.off_y);
     let d = ray_dir(q);
-    let h = trace(pr.origin, d, vp.max_dist);
+    let h = ctrace(pr.origin, d, vp.max_dist);
     if (!h.hit) { return; }
     atomicAdd(&st[C_AUDIT_HIT], 1u);
     let k = face_key(h.cell + vp.cam_block, face_entered(h.axis, d[h.axis] > 0.0));

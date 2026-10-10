@@ -522,6 +522,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-gpu-discover"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "glam",
+ "mr-components",
+ "mr-core",
+ "mr-gpu",
+ "pollster",
+ "serde",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
 name = "backend-gpu-raster"
 version = "0.1.0"
 dependencies = [
@@ -1692,21 +1708,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-discover"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "pollster",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "gpu-splat"
 version = "0.1.0"
 dependencies = [
@@ -2309,6 +2310,7 @@ dependencies = [
  "anyhow",
  "backend-cpu",
  "backend-cpu-raster",
+ "backend-gpu-discover",
  "backend-gpu-raster",
  "backend-gpu-rt",
  "cpu-discover",
@@ -2316,7 +2318,6 @@ dependencies = [
  "cpu-voxelspace",
  "crossbeam-channel",
  "gpu-compute",
- "gpu-discover",
  "gpu-splat",
  "gpu-voxelspace",
  "mr-core",
