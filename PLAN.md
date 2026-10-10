@@ -183,7 +183,19 @@ stage grid) are in the progress log below, with their measurements.
 
 ### Next: candidates (ask the user which)
 
-Sized for single steps:
+Recommended order (2026-10-10):
+1. **Run the overnight sweep** (`scripts/sweep.sh`; the user starts it) and read its
+   catalogue together. The first real "what is each renderer good at" answer. Expect
+   to fix whatever the full matrix shakes out: failures, incorrect frames, slow loads.
+2. **Diagnostic views everywhere the catalogue points:** e.g. per-pixel shadow-ray cost in
+   lit mode and overdraw for gpu-raster, to explain the catalogue's surprises (the user
+   values views).
+3. **Knob sweeps around the best compositions** (a sweep over a knob's range for the top
+   few per scenario), since knobs are only swept at defaults.
+4. Planner groundwork (IDEAS §14), once data exists: a first model predicting a
+   composition's fps from scene features, judged by leave-one-scenario-out error.
+
+Other candidates, sized for single steps:
 - ~~Colour scales (numeric legends) on the diagnostic views.~~ Done (2026-10-10).
 - ~~Lighting / meshes as stage components.~~ Done (2026-10-10).
 - ~~A plan sweep over all combinations (`compose = { storage = "*", ... }`).~~ Done
@@ -718,6 +730,34 @@ earlier if meshes become more urgent; 7c depends on 6′.
 - **Next for the data:** record measured scene features (loaded chunks, solid and surface
   fractions, camera speed, edits per frame) beside the plan spec, so the planner can
   generalise from scenario names to features (IDEAS §14).
+
+### 2026-10-10: scene features in the observations
+- **Why:** a planner (IDEAS §14) must generalise from the sweep's scenarios to scenes it
+  has not measured, so observations need properties of the scene, not only its name.
+  This was done before the first overnight sweep, so that data has them.
+- **`SceneFeatures`** (`src/features.rs`): renderer-independent, measured once per run
+  after world pre-generation (0.0–0.3 s), at `run.view_radius`:
+  - camera speed (blocks/frame) and turn rate (°/frame), mean and max;
+  - non-empty chunks at frame 0, and chunk loads per later frame (mean, max);
+  - at three sampled frames: non-empty chunk share, solid voxel share, and surface voxel
+    share (solid with an air neighbour, across chunk borders) in the chunk cube;
+  - a 32×18 ray grid per sampled frame: sky fraction and hit distance (mean, median);
+  - scripted edits per frame, lights (animated?), a moving sun, and mesh triangles.
+- **Plumbing:** `Observation.features` (version 2; version-1 files still read);
+  `run_plan` returns them; the catalogue prints them under each scenario heading and
+  adds them as CSV columns.
+- **Measured on the ten plans:** they separate the scenarios. Some examples:
+  - far: 69% sky, hits at 465 blocks, 35 loads/frame;
+  - streaming: 6.9 blocks/frame, 31 loads/frame;
+  - random: 16% sky, 1% surface;
+  - edits: 2,091 edits/frame;
+  - many-lights: 4,000 animated lights;
+  - meshes: 5,520 triangles.
+- **Verified:** new unit test (flat ground, static camera); 44 unit tests; the 3 GPU
+  end-to-end tests; zero warnings in both builds; a run → observations → catalogue check
+  on menger.
+- **Limits:** the features are measured at the run's view radius (per-renderer overrides
+  are not reflected) and from the plan's camera path, not from what a renderer streams.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

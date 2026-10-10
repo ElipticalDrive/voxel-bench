@@ -3,6 +3,7 @@
 
 mod bayes;
 mod compare;
+mod features;
 mod catalogue;
 mod gui;
 mod observe;
@@ -159,7 +160,7 @@ fn main() -> anyhow::Result<()> {
             let text = std::fs::read_to_string(&path)?;
             std::fs::write(run_dir.join("plan.toml"), format!("# overrides: {overrides:?}, unset: {unset:?}\n{text}"))?;
             tracing::info!("run directory {}", run_dir.display());
-            let reports = if plan.output.window {
+            let (reports, scene_features) = if plan.output.window {
                 let (p, d) = (plan.clone(), run_dir.clone());
                 window::run_with_window(&format!("multirenderer — {}", plan.name), move |ui| run_plan(&p, &d, Some(ui)))?
             } else {
@@ -173,7 +174,7 @@ fn main() -> anyhow::Result<()> {
             std::fs::write(run_dir.join("summary.txt"), &table)?;
             std::fs::write(run_dir.join("report.json"), serde_json::to_string_pretty(&reports)?)?;
             let run_name = run_dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            let n = observe::write(&run_dir.join("observations.jsonl"), &reports, &plan, &run_name, &observe::Machine::detect())?;
+            let n = observe::write(&run_dir.join("observations.jsonl"), &reports, &plan, &run_name, &observe::Machine::detect(), scene_features.as_ref())?;
             println!("report: {} ({n} observations)", run_dir.join("report.json").display());
             Ok(())
         }
@@ -295,7 +296,8 @@ impl Ctx<'_> {
     }
 }
 
-fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result<Vec<PassReport>> {
+/// Runs every pass of `plan`; returns the reports and the scene's measured features.
+fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result<(Vec<PassReport>, Option<features::SceneFeatures>)> {
     let infos = mr_worker::infos();
     for r in &plan.renderers {
         if !infos.iter().any(|i| i.name == r.name) {
@@ -330,6 +332,18 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         }
         tracing::info!("pre-generated {} chunks in {:.1}s", base.cached_chunks(), t.elapsed().as_secs_f32());
     }
+    // Renderer-independent properties of the scenario, stored with the observations.
+    let t = Instant::now();
+    let scene_features = match features::SceneFeatures::measure(&plan.scene, ctx.blocks.clone(), &mut base, run.frames, run.view_radius) {
+        Ok(f) => {
+            tracing::info!("scene features ({:.1}s): {}", t.elapsed().as_secs_f32(), f.describe());
+            Some(f)
+        }
+        Err(e) => {
+            tracing::warn!("scene features: {e:#}");
+            None
+        }
+    };
 
     let save = plan.output.save.clone().map(|s| (s, run_dir.join("frames")));
     let mut out = Outputs::new(ui, plan.output.readback, save, plan.output.compare.as_ref().map(|c| c.every), run.frames);
@@ -381,7 +395,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
                     batch.extend(ctx.pass(std::slice::from_ref(s), mode, &base, &mut out, None, run.warmup)?);
                     if out.ui.as_ref().is_some_and(|u| u.closed()) {
                         reports.extend(batch);
-                        return Ok(reports);
+                        return Ok((reports, scene_features));
                     }
                 }
             }
@@ -397,7 +411,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         }
         out.compare_every = plan.output.compare.as_ref().map(|c| c.every);
     }
-    Ok(reports)
+    Ok((reports, scene_features))
 }
 
 fn view(plan: &Plan, ui: UiHandle) -> anyhow::Result<()> {

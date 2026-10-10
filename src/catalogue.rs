@@ -45,6 +45,8 @@ pub struct Scenario {
     pub plan: String,
     pub mode: String,
     pub resolution: [u32; 2],
+    /// Measured scene features (from the first observation that has them).
+    pub features: Option<crate::features::SceneFeatures>,
     /// Fastest first; failures last.
     pub entries: Vec<Entry>,
 }
@@ -110,12 +112,19 @@ impl Catalogue {
         // Group by scenario, then by renderer.
         type Key = (String, String, String, [u32; 2]);
         let mut groups: BTreeMap<Key, BTreeMap<String, Vec<&Observation>>> = BTreeMap::new();
+        let mut features: BTreeMap<Key, crate::features::SceneFeatures> = BTreeMap::new();
         for o in obs {
             let label = if o.options.as_object().is_some_and(|m| !m.is_empty()) { format!("{} {}", o.label, o.options) } else { o.label.clone() };
-            groups.entry((o.machine.key(), o.plan.clone(), o.mode.clone(), o.resolution)).or_default().entry(label).or_default().push(o);
+            let key = (o.machine.key(), o.plan.clone(), o.mode.clone(), o.resolution);
+            if let Some(f) = &o.features {
+                features.entry(key.clone()).or_insert_with(|| f.clone());
+            }
+            groups.entry(key).or_default().entry(label).or_default().push(o);
         }
         let mut scenarios = vec![];
-        for ((machine, plan, mode, resolution), by_label) in groups {
+        for (key, by_label) in groups {
+            let features = features.get(&key).cloned();
+            let (machine, plan, mode, resolution) = key;
             let mut entries: Vec<Entry> = by_label
                 .into_iter()
                 .map(|(label, os)| {
@@ -147,7 +156,7 @@ impl Catalogue {
             }
             entries.sort_by(|a, b| a.error.is_some().cmp(&b.error.is_some()).then(b.valid.cmp(&a.valid)).then(b.fps.total_cmp(&a.fps)));
             let name = if multi { format!("{plan} [{mode}] @ {machine}") } else { format!("{plan} [{mode}]") };
-            scenarios.push(Scenario { name, machine, plan, mode, resolution, entries });
+            scenarios.push(Scenario { name, machine, plan, mode, resolution, features, entries });
         }
 
         // Per renderer.
@@ -279,7 +288,8 @@ impl Catalogue {
         }
         let _ = writeln!(s, "## Scenarios\n");
         for sc in &self.scenarios {
-            let _ = writeln!(s, "### {}\n\n{}×{}.\n\n| # | renderer | fps | rel | p99 ms | gpu ms | cpu ms | PSNR | bad % | GPU MB | RSS MB |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|", sc.name, sc.resolution[0], sc.resolution[1]);
+            let feats = sc.features.as_ref().map(|f| format!(" {}.", f.describe())).unwrap_or_default();
+            let _ = writeln!(s, "### {}\n\n{}×{}.{feats}\n\n| # | renderer | fps | rel | p99 ms | gpu ms | cpu ms | PSNR | bad % | GPU MB | RSS MB |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|", sc.name, sc.resolution[0], sc.resolution[1]);
             for (i, e) in sc.entries.iter().enumerate() {
                 if let Some(err) = &e.error {
                     let _ = writeln!(s, "| {} | {} | FAILED: {} | | | | | | | | |", i + 1, e.label, err.lines().next().unwrap_or("").replace('|', "/"));
@@ -309,19 +319,23 @@ impl Catalogue {
 
     /// One row per (scenario, renderer), for spreadsheets and scripts.
     pub fn csv(&self) -> String {
-        let mut s = String::from("machine,plan,mode,width,height,label,backend,storage,geometry,prepass,visibility,shading,meshes,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,bad_pct,gpu_mb,rss_mb,samples,error\n");
+        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,backend,storage,geometry,prepass,visibility,shading,meshes,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,bad_pct,gpu_mb,rss_mb,samples,error\n");
         let q = |x: &str| format!("\"{}\"", x.replace('"', "\"\""));
         for sc in &self.scenarios {
+            // The scenario's columns, including its measured features (empty if unknown).
+            let feats = match &sc.features {
+                Some(f) => format!(
+                    "{:.3},{:.3},{:.2},{:.5},{:.5},{:.3},{:.1},{:.2},{},{}",
+                    f.cam_speed, f.cam_turn_deg, f.chunk_loads, f.solid_fraction, f.surface_fraction, f.sky_fraction, f.hit_distance, f.edits, f.lights, f.mesh_triangles
+                ),
+                None => ",,,,,,,,,".into(),
+            };
+            let scenario = format!("{},{},{},{},{},{feats}", q(&sc.machine), q(&sc.plan), sc.mode, sc.resolution[0], sc.resolution[1]);
             for e in &sc.entries {
                 let c = e.composition.clone().unwrap_or_else(|| Composition { backend: String::new(), ..Composition::new("") });
                 let _ = writeln!(
                     s,
-                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{}",
-                    q(&sc.machine),
-                    q(&sc.plan),
-                    sc.mode,
-                    sc.resolution[0],
-                    sc.resolution[1],
+                    "{scenario},{},{},{},{},{},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{}",
                     q(&e.label),
                     c.backend,
                     c.storage,
@@ -362,6 +376,7 @@ mod tests {
             machine: Machine::default(),
             plan: plan.into(),
             scene: Default::default(),
+            features: None,
             resolution: [64, 64],
             view_radius: 4,
             frames: 10,

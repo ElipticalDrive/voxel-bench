@@ -9,11 +9,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::features::SceneFeatures;
 use crate::plan::Plan;
 use crate::report::PassReport;
 
-/// Bumped when fields change meaning.
-pub const VERSION: u32 = 1;
+/// Bumped when fields change meaning or are added (2: `features`).
+pub const VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
@@ -63,6 +64,9 @@ pub struct Observation {
     /// meshes) and how it was run.
     pub plan: String,
     pub scene: serde_json::Value,
+    /// Measured properties of the scenario (renderer-independent; absent before version 2).
+    #[serde(default)]
+    pub features: Option<SceneFeatures>,
     pub resolution: [u32; 2],
     pub view_radius: u32,
     pub frames: u32,
@@ -100,7 +104,7 @@ pub struct Observation {
 }
 
 impl Observation {
-    pub fn new(r: &PassReport, plan: &Plan, run: &str, machine: &Machine) -> Self {
+    pub fn new(r: &PassReport, plan: &Plan, run: &str, machine: &Machine, features: Option<&SceneFeatures>) -> Self {
         let mut sums: BTreeMap<String, (f64, u32)> = BTreeMap::new();
         for f in &r.per_frame {
             for (k, v) in &f.counters {
@@ -116,6 +120,7 @@ impl Observation {
             machine: machine.clone(),
             plan: plan.name.clone(),
             scene: serde_json::to_value(&plan.scene).unwrap_or_default(),
+            features: features.cloned(),
             resolution: r.resolution,
             view_radius: r.view_radius,
             frames: plan.run.frames,
@@ -150,11 +155,11 @@ impl Observation {
 }
 
 /// Writes the run's observations (every pass except the reference's) as JSON lines.
-pub fn write(path: &Path, reports: &[PassReport], plan: &Plan, run: &str, machine: &Machine) -> anyhow::Result<usize> {
+pub fn write(path: &Path, reports: &[PassReport], plan: &Plan, run: &str, machine: &Machine, features: Option<&SceneFeatures>) -> anyhow::Result<usize> {
     let mut text = String::new();
     let mut n = 0;
     for r in reports.iter().filter(|r| !r.label.ends_with("(ref)")) {
-        text += &serde_json::to_string(&Observation::new(r, plan, run, machine))?;
+        text += &serde_json::to_string(&Observation::new(r, plan, run, machine, features))?;
         text.push('\n');
         n += 1;
     }

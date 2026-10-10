@@ -376,14 +376,19 @@ compose = { backend = "*", storage = "*", geometry = "*", prepass = "*", visibil
 
 Every `run` writes `observations.jsonl` to its run directory: one record per renderer and
 pass, with the machine (CPU, threads, memory, GPU, driver), the scenario (the plan's name
-and scene, resolution, view radius, frames, streaming, mode), the composition and knobs,
+and scene, resolution, view radius, frames, streaming, mode), the scenario's **measured
+features** (`src/features.rs`, renderer-independent, measured once per run in well under
+a second: camera speed and turn rate; chunks at start and loads per frame; non-empty
+chunk, solid and surface fractions in range; sky fraction and hit distances from a ray
+grid; edits per frame; lights; mesh triangles), the composition and knobs,
 and the results (fps, frame-interval mean / p50 / p99, GPU / CPU ms, latency, init and
 load time, memory, PSNR mean / min, bad pixels, the renderer's counters averaged). They are
 the raw material for the catalogue, and later for a planner that learns this machine
 (IDEAS §14).
 
 `multirenderer catalogue <dirs…> [--out DIR] [--min-psnr 35]` reads any number of runs and
-writes `catalogue.md` and `catalogue.csv`. Per scenario (plan × mode) it ranks the renderers
+writes `catalogue.md` and `catalogue.csv` (the CSV carries the scene features as columns).
+Per scenario (plan × mode) it ranks the renderers
 by fps; renderers below the PSNR floor count as incorrect (ranked, never best). Per renderer
 it lists:
 - the geometric mean of its speed relative to each scenario's best;
