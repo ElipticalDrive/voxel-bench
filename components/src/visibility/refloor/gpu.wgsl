@@ -1,7 +1,9 @@
 // Traversal `refloor`: gpu-dda's walk without LOD. Each step asks the storage for the
 // largest empty aligned cube at the cell (`s_probe`; a whole top cell if it is absent),
 // steps to its exit and re-floors the position. Ignores the cell containing `o`, like the
-// reference.
+// reference. With `LOD` (a compile-time constant of the assembler, true when LOD chunks are
+// streamed), cells, top cells and probe results grow 2^lod with distance (`lod_of`, the
+// finest level whose streamed region contains the cell; gpu-dda-lod's scheme).
 
 fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
     var res: Hit;
@@ -24,33 +26,37 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
         axis = select(select(2u, 1u, tlo.y >= tlo.z), 0u, tlo.x >= tlo.y && tlo.x >= tlo.z);
     }
     var cached = vec3<i32>(0x7fffffff);
+    var cached_lod = 0u;
     var val = EMPTY;
     res.t = tnear;
     for (var i = 0u; i < vp.max_steps; i++) {
         ct_iters += 1u;
         let abs_cell = cell + vp.cam_block;
-        let key = abs_cell >> vec3<u32>(S_TOP);
-        if (any(key != cached)) {
+        var lod = 0u;
+        if (LOD) { lod = lod_of(abs_cell); }
+        let key = abs_cell >> vec3<u32>(S_TOP + lod);
+        if (any(key != cached) || lod != cached_lod) {
             cached = key;
-            val = s_top(key);
+            cached_lod = lod;
+            if (LOD) { val = s_top_lod(key, lod); } else { val = s_top(key); }
         }
-        var size = 1 << S_TOP;
+        var size = 1 << (S_TOP + lod);
         if (val != EMPTY) {
             var b = 0u;
             if ((val & UNIFORM_BIT) != 0u) {
                 b = val & 0xffffu;
-                size = 1;
+                size = 1 << lod;
             } else {
-                let p = s_probe(val, abs_cell & vec3<i32>((1 << S_TOP) - 1));
+                let p = s_probe(val, (abs_cell >> vec3<u32>(lod)) & vec3<i32>((1 << S_TOP) - 1));
                 b = p.x;
-                size = i32(p.y);
+                size = i32(p.y) << lod;
             }
             if (b != 0u && any(cell != start_cell)) {
                 res.hit = true;
                 res.cell = cell;
                 res.block = b;
                 res.axis = axis;
-                res.lod = 0u;
+                res.lod = lod;
                 return res;
             }
         }

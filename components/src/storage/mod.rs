@@ -6,6 +6,8 @@
 //!   tree64's 64^3 regions) and `s_top(key) -> handle` for the top cell `abs >> S_TOP`:
 //!   `EMPTY`, `UNIFORM_BIT | block` (uniform solid) or a handle for the queries below.
 //!   Pool storages get both from `pool_top.wgsl`, region storages from `region_top.wgsl`.
+//!   LOD (`s_top_lod(key, lod)`, cells 2^lod blocks wide) exists for pool storages only
+//!   (`S_HAS_LOD`); the others answer level 0.
 //! * required queries, `l` local to the top cell: `S_LEVELS` (levels k whose aligned 2^k
 //!   cubes `s_occupied` answers), `s_occupied(h, level, c)` (may say occupied for an empty
 //!   cube, never the reverse; exact at level 0), `s_probe(h, l) -> (block or 0, empty
@@ -70,13 +72,19 @@ pub struct GpuStorage {
 }
 
 impl GpuStorage {
+    /// Whether the storage holds LOD chunks (pool storages).
+    pub fn has_lod(&self) -> bool {
+        matches!(self.kind, Kind::Pool { .. })
+    }
+
     /// The storage's WGSL with its top level and the fallbacks it needs. Expects the back
     /// end to bind `aux` and `regions` (group 2, `gpu_data::layout`).
     pub fn source(&self) -> String {
+        const NO_LOD: &str = "const S_HAS_LOD: bool = false;\nfn s_top_lod(key: vec3<i32>, lod: u32) -> u32 { return s_top(key); }\n";
         let (top, aux_words) = match self.kind {
-            Kind::Pool { aux_words, .. } => (include_str!("pool_top.wgsl"), aux_words),
-            Kind::Region { .. } | Kind::Dag => (include_str!("region_top.wgsl"), 0),
-            Kind::Clipmap => ("", 0),
+            Kind::Pool { aux_words, .. } => (include_str!("pool_top.wgsl").to_string(), aux_words),
+            Kind::Region { .. } | Kind::Dag => (format!("{}{NO_LOD}", include_str!("region_top.wgsl")), 0),
+            Kind::Clipmap => (NO_LOD.to_string(), 0),
         };
         format!(
             "@group(2) @binding(0) var<storage, read> aux: array<u32>;\n\

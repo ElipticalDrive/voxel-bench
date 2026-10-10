@@ -136,13 +136,13 @@ impl StorageData {
             Kind::Pool { aux_words: 0, .. } => {}
             Kind::Pool { aux_words, build } => {
                 let unit = aux_words as u64 * 4;
-                // Keep the side data indexed like the pool: every changed dense chunk
-                // rewrites its slot (slots of unloaded chunks are simply no longer read).
+                // Keep the side data indexed like the pool: every changed dense chunk (at any
+                // LOD) rewrites its slot (slots of unloaded chunks are simply no longer read).
                 if self.aux.reserve(gpu, world.pool_slots() as u64 * unit)? {
                     self.bind = None;
                 }
-                for &pos in changed {
-                    if let (Some(slot), Some(ChunkData::Dense(d))) = (world.slot_of(pos), world.chunk(pos)) {
+                for &key in world.changed_keys() {
+                    if let (Some(slot), Some(ChunkData::Dense(d))) = world.slot_and_chunk(key) {
                         gpu.queue.write_buffer(self.aux.buffer(), slot as u64 * unit, bytemuck::cast_slice(&build(d)));
                     }
                 }

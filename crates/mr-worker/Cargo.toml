@@ -9,7 +9,6 @@ mr-ipc.workspace = true
 cpu-reference.workspace = true
 cpu-raster.workspace = true
 cpu-simd.workspace = true
-gpu-dda.workspace = true
 gpu-rtx.workspace = true
 cpu-simd-loc.workspace = true
 cpu-discover.workspace = true

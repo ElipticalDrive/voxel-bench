@@ -15,7 +15,6 @@ members = [
     "renderers/cpu-reference",
     "renderers/cpu-raster",
     "renderers/cpu-simd",
-    "renderers/gpu-dda",
     "renderers/gpu-rtx",
     "renderers/cpu-simd-loc",
     "renderers/cpu-discover",
@@ -44,7 +43,6 @@ mr-mesh = { path = "crates/mr-mesh" }
 cpu-reference = { path = "renderers/cpu-reference" }
 cpu-raster = { path = "renderers/cpu-raster" }
 cpu-simd = { path = "renderers/cpu-simd" }
-gpu-dda = { path = "renderers/gpu-dda" }
 gpu-rtx = { path = "renderers/gpu-rtx" }
 cpu-simd-loc = { path = "renderers/cpu-simd-loc" }
 cpu-discover = { path = "renderers/cpu-discover" }

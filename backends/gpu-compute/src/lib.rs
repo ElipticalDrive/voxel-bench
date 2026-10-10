@@ -32,9 +32,10 @@ fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu-compute".into(),
         description: "GPU-compute back end: renders a composition of components (storage, visibility, shading) fused into one compute shader".into(),
-        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "modular".into(), "wgpu".into(), "meshes".into()],
+        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "modular".into(), "wgpu".into(), "meshes".into(), "lod".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
-        max_lod: 0,
+        // LOD with pool storages and refloor (cells 2x coarser per level; was gpu-dda-lod).
+        max_lod: 6,
         params: params(),
     }
 }
@@ -138,6 +139,8 @@ struct Composition {
     levels: u32,
     /// `view = "steps"`: write iteration counts instead of colour.
     steps_view: bool,
+    /// LOD chunks are streamed and walked (fixed at creation).
+    lod: bool,
 }
 
 impl Composition {
@@ -158,6 +161,7 @@ impl Composition {
         let own = format!(
             "// Composition: storage = {}, prepass = {}, visibility = {}, shading = {}\n\
              const PREPASS_TILE: u32 = {}u;\n\
+             const LOD: bool = {};\n\
              const EXACT: bool = {};\n\
              const VIEW_STEPS: bool = {};\n\
              const LEVEL_MASK: u32 = (S_LEVELS & {:#x}u) | 1u | (1u << S_TOP);\n\
@@ -167,6 +171,7 @@ impl Composition {
             self.visibility,
             self.shading,
             self.tile.max(1),
+            self.lod,
             self.exact,
             self.steps_view,
             self.levels,
@@ -183,6 +188,19 @@ fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
     match mr_components::unavailable("gpu-compute", slot, name) {
         None => Ok(name.to_string()),
         Some(why) => anyhow::bail!(why),
+    }
+}
+
+/// Why LOD cannot run with this composition, if it can't.
+fn lod_blocker(c: &Composition) -> Option<String> {
+    if !c.storage().has_lod() {
+        Some(format!("storage `{}` holds level 0 only (LOD needs a pool storage: bricks, hier, prefix, distance, rows)", c.storage))
+    } else if c.visibility != "refloor" {
+        Some(format!("visibility `{}` has no LOD walk (refloor has)", c.visibility))
+    } else if c.prepass() != "none" {
+        Some(format!("prepass `{}` reads level 0 only", c.prepass()))
+    } else {
+        None
     }
 }
 
@@ -275,7 +293,17 @@ impl GpuCompose {
             exact: opts.exact,
             steps_view: parse_view(&opts.view)?,
             levels: [opts.skip2, opts.skip4, opts.skip8, opts.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)),
+            lod: false,
         };
+        let mut comp = comp;
+        if p.max_lod > 0 {
+            // LOD needs chunks at every level (pool storages), a walk that scales its cells
+            // (refloor) and no prepass (the beam reads level 0 only).
+            match lod_blocker(&comp) {
+                None => comp.lod = true,
+                Some(why) => tracing::warn!("gpu-compute: running without LOD (max_lod = {}): {why}", p.max_lod),
+            }
+        }
         let gpu = Gpu::new(GpuRequest {
             experimental: false,
             adapter: opts.adapter.as_deref(),
@@ -288,7 +316,7 @@ impl GpuCompose {
             &p.blocks,
             p.environment,
             VoxelWorldConfig {
-                max_lod: 0,
+                max_lod: if comp.lod { p.max_lod.min(6) } else { 0 },
                 // Region storages (tree64) hold their own data instead of the voxel pool.
                 upload_voxels: matches!(comp.storage().kind, storage::Kind::Pool { .. }),
                 pool_mb: opts.pool_mb,
@@ -302,7 +330,7 @@ impl GpuCompose {
         let compute = wgpu::ShaderStages::COMPUTE;
         // Fragment too: mesh shadows walk the composed storage.
         let layout2 = gpu_data::layout(&gpu, &comp.storage(), compute | wgpu::ShaderStages::FRAGMENT);
-        let occ = visibility::occlusion_wgsl(&comp.storage());
+        let occ = visibility::occlusion_wgsl(&comp.storage(), comp.lod);
         let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Some(Occlusion { wgsl: &occ, layout: &layout2 }));
         let rw = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -534,10 +562,19 @@ impl Renderer for GpuCompose {
         match name {
             "shadows" => self.world.cfg.shadows.set(value)?,
             "max_steps" => self.world.cfg.max_steps = value.as_i64().unwrap_or(2048) as u32,
-            "visibility" | "traversal" => self.comp.visibility = check(Slot::Visibility, value.as_str().unwrap_or(""))?,
+            "visibility" | "traversal" | "prepass" | "tile" => {
+                let mut c = self.comp.clone();
+                match name {
+                    "prepass" => c.prepass = check(Slot::Prepass, value.as_str().unwrap_or(""))?,
+                    "tile" => c.tile = value.as_i64().unwrap_or(8).clamp(1, 64) as u32,
+                    _ => c.visibility = check(Slot::Visibility, value.as_str().unwrap_or(""))?,
+                }
+                if let (true, Some(why)) = (c.lod, lod_blocker(&c)) {
+                    anyhow::bail!("this run streams LOD chunks: {why}");
+                }
+                self.comp = c;
+            }
             "shading" => self.comp.shading = check(Slot::Shading, value.as_str().unwrap_or(""))?,
-            "prepass" => self.comp.prepass = check(Slot::Prepass, value.as_str().unwrap_or(""))?,
-            "tile" => self.comp.tile = value.as_i64().unwrap_or(8).clamp(1, 64) as u32,
             "bounces" => (self.accum.bounces, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(0, 8) as u32, 0),
             "spp" => (self.accum.spp, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(1, 64) as u32, 0),
             "accumulate" => self.accum.accumulate = value.as_bool().unwrap_or(true),

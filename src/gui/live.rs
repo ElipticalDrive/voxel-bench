@@ -1360,7 +1360,8 @@ mod tests {
             [[renderer]]
             compose = { backend = "gpu-raster" }
             [[renderer]]
-            name = "gpu-dda-lod"
+            compose = { backend = "gpu-compute" }
+            label = "lod"
             view_radius = 2
             max_lod = 2
             "#,

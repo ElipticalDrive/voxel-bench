@@ -29,9 +29,17 @@ fn pt_cosine_dir(n: vec3<f32>) -> vec3<f32> {
     return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(0.0, 1.0 - u1)));
 }
 
-fn pt_albedo(h: Hit, o: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
+// The face texel at hit `h` (LOD cells: textures tile once per block).
+fn pt_texel(h: Hit, o: vec3<f32>, d: vec3<f32>) -> vec4<f32> {
     let face = face_entered(h.axis, d[h.axis] > 0.0);
-    let texel = surface_texel(h.block, face, o + d * h.t - vec3<f32>(h.cell));
+    let p = o + d * h.t;
+    var local = p - vec3<f32>(h.cell);
+    if (h.lod > 0u) { local = p - floor(p); }
+    return surface_texel(h.block, face, local);
+}
+
+fn pt_albedo(h: Hit, o: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
+    let texel = pt_texel(h, o, d);
     return vec3<f32>(srgb_to_linear(texel.r), srgb_to_linear(texel.g), srgb_to_linear(texel.b));
 }
 
@@ -64,10 +72,7 @@ fn pt_path(o0: vec3<f32>, d0: vec3<f32>, h0: Hit) -> vec3<f32> {
 }
 
 fn shade_hit(h: Hit, o: vec3<f32>, d: vec3<f32>, lit: bool, px: vec2<u32>) -> vec4<f32> {
-    if (!lit) {
-        let face = face_entered(h.axis, d[h.axis] > 0.0);
-        return surface_texel(h.block, face, o + d * h.t - vec3<f32>(h.cell));
-    }
+    if (!lit) { return pt_texel(h, o, d); }
     let idx = px.y * cam.width + px.x;
     pt_rng = pt_pcg(idx ^ pt_pcg(cam.frame * 0x9E3779B9u + 1u));
     var sum = vec3<f32>(0.0);

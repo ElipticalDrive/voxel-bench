@@ -282,6 +282,8 @@ pub struct VoxelWorld {
     pub env: Environment,
     pub cfg: VoxelWorldConfig,
     dropped_chunks: u64,
+    /// Every chunk key (all LODs) the last `apply` changed.
+    changed_keys: Vec<ChunkKey>,
 }
 
 impl VoxelWorld {
@@ -324,6 +326,7 @@ impl VoxelWorld {
             pool_slots,
             max_slots,
             chunks: HashMap::new(),
+            changed_keys: vec![],
             slots: HashMap::new(),
             bounds: None,
             bounds_dirty: false,
@@ -367,6 +370,17 @@ impl VoxelWorld {
         self.slots.get(&ChunkKey::lod0(pos)).copied()
     }
 
+    /// Every chunk key (all LODs) the last `apply` changed, for renderers keeping side
+    /// data per pool slot.
+    pub fn changed_keys(&self) -> &[ChunkKey] {
+        &self.changed_keys
+    }
+
+    /// Pool slot and data of a chunk at any LOD.
+    pub fn slot_and_chunk(&self, key: ChunkKey) -> (Option<u32>, Option<&ChunkData>) {
+        (self.slots.get(&key).copied(), self.chunks.get(&key))
+    }
+
     /// Pool slots currently allocated (side data must cover this many).
     pub fn pool_slots(&self) -> u32 {
         self.pool_slots
@@ -389,15 +403,18 @@ impl VoxelWorld {
     /// (loaded, unloaded or edited), for renderers keeping derived data (meshes).
     pub fn apply(&mut self, gpu: &Gpu, updates: Vec<WorldUpdate>) -> Vec<IVec3> {
         let mut changed = vec![];
+        self.changed_keys.clear();
         for u in updates {
             match u {
                 WorldUpdate::ChunkLoad { key, data } if key.lod <= self.cfg.max_lod => {
+                    self.changed_keys.push(key);
                     self.set_chunk(gpu, key, data);
                     if key.lod == 0 {
                         changed.push(key.pos);
                     }
                 }
                 WorldUpdate::ChunkUnload { key } if key.lod <= self.cfg.max_lod => {
+                    self.changed_keys.push(key);
                     self.set_chunk(gpu, key, ChunkData::Uniform(BlockId::AIR));
                     if key.lod == 0 {
                         changed.push(key.pos);
@@ -420,6 +437,7 @@ impl VoxelWorld {
                     }
                     for (pos, c) in touched {
                         self.set_chunk(gpu, ChunkKey::lod0(pos), c.compact());
+                        self.changed_keys.push(ChunkKey::lod0(pos));
                         changed.push(pos);
                     }
                 }

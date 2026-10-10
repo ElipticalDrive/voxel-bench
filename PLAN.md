@@ -95,7 +95,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
     shadow rays) the eight GPU ones; shading direct (48 combinations).
 - **Legacy renderers** (not yet split into components): cpu-reference (stays a
   monolith on purpose), cpu-raster, cpu-simd, cpu-simd-loc (4), cpu-voxelspace,
-  cpu-discover, cpu-cluster, gpu-dda-lod, gpu-hybrid,
+  cpu-discover, cpu-cluster, gpu-hybrid,
   gpu-frag-dda, gpu-discover, gpu-rtx(-bricks),
   gpu-splat, gpu-voxelspace.
 - **Verification:** zero warnings in both builds, 41 unit tests and 3 GPU end-to-end
@@ -194,7 +194,7 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
    - 4d. ~~clipmap as a storage~~ (done; retired gpu-clipmap).
    - 4e. ~~the beam prepass as a stage~~ (done: slot `prepass`; retired gpu-beam).
    - 4f. ~~path tracing as a shading component~~ (done; retired gpu-pathtrace).
-   - 4g. LOD in the storage interface (gpu-dda-lod).
+   - 4g. ~~LOD in the storage interface~~ (done; retired gpu-dda-lod and the gpu-dda crate).
    - 4h. hardware RT as a back end (gpu-rtx, gpu-rtx-bricks).
    - 4i. fragment-shader dispatch and the hybrid G-buffer (gpu-frag-dda, gpu-hybrid).
    - 4j. CPU: cpu-simd, cpu-simd-loc layouts and tiles, cpu-raster.
@@ -510,6 +510,23 @@ earlier if meshes become more urgent; 7c depends on 6′.
   bounces = 0, 32.2 dB at 1 bounce, by design). GPU time 1.33 vs 1.43 ms (bounces 0) and
   3.47 vs 3.69 ms (1 bounce): **6–7% faster**. Over svo_dag: 4.37 ms (1 bounce).
 - **Retired:** gpu-pathtrace.
+
+### 2026-10-10: phase 4g (LOD in the storage interface)
+- **Interface:** `s_top_lod(key, lod)` (pool storages: the chunk table at that LOD;
+  others: level 0 only, `S_HAS_LOD = false`). `refloor` walks LOD chunks when the
+  assembler sets the compile-time `LOD` (cells, top cells and probe sizes scaled by
+  2^lod; `lod_of` picks the level), so it costs nothing without LOD. Shading tiles
+  textures per block in LOD cells.
+- **`VoxelWorld::changed_keys`** reports LOD chunk changes too, so pool storages' side
+  data (prefix, hier, ...) covers LOD chunks.
+- **gpu-compute** declares max_lod 6. LOD runs with a pool storage + refloor + no prepass;
+  other compositions warn and run without (live switches that would break it are
+  refused).
+- **Results** (far.toml, 3 interleaved repeats): images identical to gpu-dda-lod (25.09
+  dB r12+1, 17.59 dB r4+3, also for prefix). GPU ms: bricks r4+3 1.71 vs 1.70, r12+1
+  1.19 vs 1.18 (unlit); lit 2.11 vs 2.09, 1.55 vs 1.53: **matches**. `prefix` with LOD
+  1.32 ms unlit (−22%), 1.61 lit (−23%).
+- **Retired:** gpu-dda-lod (the gpu-dda crate is gone).
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

@@ -1,6 +1,7 @@
 # Long view distance over terrain: full-resolution streaming versus level of detail.
-# gpu-dda streams 24 chunks (768 blocks) at full resolution; the LOD variants reach the
-# same (or greater) distance with far fewer chunks, at coarser resolution far away.
+# bricks + refloor streams 24 chunks (768 blocks) at full resolution; the LOD variants (a
+# per-renderer max_lod) reach the same (or greater) distance with far fewer chunks, at
+# coarser resolution far away.
 name = "far"
 
 [scene]
@@ -18,20 +19,20 @@ view_radius = 24
 compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
 
 [[renderer]]
-name = "gpu-dda-lod"
-label = "gpu-dda-lod r12+1"
+compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
+label = "lod r12+1"
 view_radius = 12
 max_lod = 1
 
 [[renderer]]
-name = "gpu-dda-lod"
-label = "gpu-dda-lod r6+2"
+compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
+label = "lod r6+2"
 view_radius = 6
 max_lod = 2
 
 [[renderer]]
-name = "gpu-dda-lod"
-label = "gpu-dda-lod r4+3"
+compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
+label = "lod r4+3"
 view_radius = 4
 max_lod = 3
 

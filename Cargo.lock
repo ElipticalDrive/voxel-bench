@@ -1701,22 +1701,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-dda"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "pollster",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "gpu-discover"
 version = "0.1.0"
 dependencies = [
@@ -2375,7 +2359,6 @@ dependencies = [
  "cpu-voxelspace",
  "crossbeam-channel",
  "gpu-compute",
- "gpu-dda",
  "gpu-discover",
  "gpu-frag-hybrid",
  "gpu-rtx",
