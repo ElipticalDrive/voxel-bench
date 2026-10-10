@@ -8,7 +8,8 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 
 - Repository: https://github.com/ElipticalDrive/voxel-bench (public, branch `main`),
   created 2026-10-09. Commits use the repo-local identity (GitHub noreply address).
-  Commit and push only when asked.
+  Commit and push freely whenever a chunk of work is done (nobody depends on this repo),
+  and mention it to the user.
 - The project is about exploring the problem space, not chasing speed. Slower techniques
   and negative results are findings too.
 - No subagents until the user re-enables them. Usage is self-metered.
