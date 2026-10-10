@@ -18,7 +18,8 @@
 //!
 //! Host side (`Kind`, managed by `gpu_data::StorageData`): pool storages read the shared
 //! voxel pool plus `aux_words` u32 of side data per pool slot; region storages own a blob
-//! of words per region in `aux`, found through the `regions` table.
+//! of words per region in `aux`, found through the `regions` table; the DAG storage keeps
+//! one global hash-consed node pool in `aux` with chunk roots in the `regions` table.
 
 pub mod bits;
 pub mod bricks;
@@ -31,6 +32,7 @@ pub mod hier;
 pub mod palette;
 pub mod prefix;
 pub mod rows;
+pub mod svo_dag;
 pub mod tree64;
 pub mod u8;
 
@@ -51,6 +53,8 @@ pub enum RegionBlob {
 pub enum Kind {
     Pool { aux_words: usize, build: fn(&DenseChunk) -> Vec<u32> },
     Region { shift: u32, build: fn(&dyn Fn(glam::IVec3) -> mr_core::BlockId) -> RegionBlob },
+    /// `svo_dag`: one global DAG shared by all chunks (top cell = chunk).
+    Dag,
 }
 
 /// Implementation details a GPU back end needs for a storage.
@@ -67,12 +71,13 @@ impl GpuStorage {
     pub fn source(&self) -> String {
         let (top, aux_words) = match self.kind {
             Kind::Pool { aux_words, .. } => (include_str!("pool_top.wgsl"), aux_words),
-            Kind::Region { .. } => (include_str!("region_top.wgsl"), 0),
+            Kind::Region { .. } | Kind::Dag => (include_str!("region_top.wgsl"), 0),
         };
         format!(
             "@group(2) @binding(0) var<storage, read> aux: array<u32>;\n\
              @group(2) @binding(1) var<storage, read> regions: array<vec4<u32>>;\n\
              @group(2) @binding(2) var<storage, read> aux4: array<vec4<u32>>;\n\
+             @group(2) @binding(3) var<uniform> region_head: vec4<u32>;\n\
              const AUX_WORDS: u32 = {}u;\n{top}\n{}\n{}",
             aux_words.max(1),
             self.wgsl,
@@ -92,6 +97,7 @@ pub fn gpu(name: &str) -> Option<GpuStorage> {
         "prefix" => pool(prefix::GPU_WGSL, &[], prefix::AUX_WORDS, prefix::build),
         "distance" => pool(distance::GPU_WGSL, &["s_dist"], distance::AUX_WORDS, distance::build),
         "rows" => pool(rows::GPU_WGSL, &["s_row"], rows::AUX_WORDS, rows::build),
+        "svo_dag" => GpuStorage { wgsl: svo_dag::GPU_WGSL, provides: &[], kind: Kind::Dag },
         "tree64" => GpuStorage { wgsl: tree64::GPU_WGSL, provides: &[], kind: Kind::Region { shift: 6, build: tree64::build } },
         _ => return None,
     })

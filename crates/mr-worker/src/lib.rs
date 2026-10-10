@@ -11,7 +11,7 @@ use mr_core::{CompletedFrame, FrameSink, Renderer, RendererEntry, RendererInfo, 
 use mr_ipc::{FrameSlots, HostMsg, MsgWriter, PROTOCOL_VERSION, WorkerMsg};
 
 pub fn registry() -> Vec<RendererEntry> {
-    vec![cpu_reference::entry(), cpu_raster::entry(), cpu_simd::entry(), gpu_dda::entry_lod(), gpu_rtx::entry_triangles(), gpu_rtx::entry_bricks(), cpu_simd_loc::entry_best(),  cpu_simd_loc::entry_tiles(),  cpu_simd_loc::entry_morton(), cpu_simd_loc::entry_brickmajor(), cpu_discover::entry(), cpu_discover::entry_cluster(), gpu_discover::entry(), backend_cpu::entry(), cpu_voxelspace::entry(), gpu_splat::entry(), gpu_voxelspace::entry(), gpu_beam::entry(), gpu_frag_hybrid::entry_hybrid(), gpu_frag_hybrid::entry(), gpu_svo_dag::entry(), gpu_clipmap::entry(), gpu_pathtrace::entry(), gpu_compute::entry(), backend_gpu_raster::entry()]
+    vec![cpu_reference::entry(), cpu_raster::entry(), cpu_simd::entry(), gpu_dda::entry_lod(), gpu_rtx::entry_triangles(), gpu_rtx::entry_bricks(), cpu_simd_loc::entry_best(),  cpu_simd_loc::entry_tiles(),  cpu_simd_loc::entry_morton(), cpu_simd_loc::entry_brickmajor(), cpu_discover::entry(), cpu_discover::entry_cluster(), gpu_discover::entry(), backend_cpu::entry(), cpu_voxelspace::entry(), gpu_splat::entry(), gpu_voxelspace::entry(), gpu_beam::entry(), gpu_frag_hybrid::entry_hybrid(), gpu_frag_hybrid::entry(), gpu_clipmap::entry(), gpu_pathtrace::entry(), gpu_compute::entry(), backend_gpu_raster::entry()]
 }
 
 pub fn infos() -> Vec<RendererInfo> {

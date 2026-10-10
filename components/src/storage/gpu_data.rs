@@ -7,6 +7,8 @@
 //!   2^`shift` region, built on the CPU (in parallel, for dirty regions only) and placed in
 //!   `aux`; `regions` is a hash table from region coordinates to the blob's word offset.
 //!   They need no voxel pool.
+//! * **The DAG storage** (`svo_dag`) keeps one global hash-consed node pool in `aux`
+//!   (append-only on the GPU too) and chunk roots in `regions`. No voxel pool either.
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,15 +19,17 @@ use mr_gpu::voxels::{VoxelWorld, hash3};
 use mr_gpu::{Gpu, GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 
+use super::svo_dag::Dag;
 use super::{GpuStorage, Kind, RegionBlob};
 
 const CHUNK_BYTES: u64 = CHUNK_VOLUME as u64 * 2;
 const EMPTY: u32 = 0xffff_ffff;
 const UNIFORM_BIT: u32 = 0x8000_0000;
 
-/// Bind group 2 of a GPU back end's pipelines: `aux` (binding 0), `regions` (binding 1) and
+/// Bind group 2 of a GPU back end's pipelines: `aux` (binding 0), `regions` (binding 1),
 /// `aux4`, the same buffer as `aux` seen as 16-byte words (binding 2; region blobs are
-/// 16-byte aligned, so 4-word records load in one access).
+/// 16-byte aligned, so 4-word records load in one access) and `region_head` (binding 3,
+/// uniform: the table's mask and longest probe).
 pub fn layout(gpu: &Gpu, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayout {
     let entry = |binding| wgpu::BindGroupLayoutEntry {
         binding,
@@ -33,7 +37,13 @@ pub fn layout(gpu: &Gpu, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayou
         ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
         count: None,
     };
-    gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("storage"), entries: &[entry(0), entry(1), entry(2)] })
+    let head = wgpu::BindGroupLayoutEntry {
+        binding: 3,
+        visibility,
+        ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+        count: None,
+    };
+    gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("storage"), entries: &[entry(0), entry(1), entry(2), head] })
 }
 
 struct Region {
@@ -47,6 +57,7 @@ pub struct StorageData {
     st: GpuStorage,
     aux: GrowableBuffer,
     regions_buf: wgpu::Buffer,
+    head_buf: wgpu::Buffer,
     bind: Option<wgpu::BindGroup>,
     // Region storages.
     alloc: RangeAlloc,
@@ -55,6 +66,7 @@ pub struct StorageData {
     table_dirty: bool,
     rebuilt: usize,
     overflowed: bool,
+    dag: Dag,
 }
 
 impl StorageData {
@@ -63,23 +75,27 @@ impl StorageData {
     pub fn new(gpu: &Gpu, st: GpuStorage, limit_mb: u32) -> Self {
         let max = match st.kind {
             Kind::Pool { aux_words, .. } => (limit_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1) * aux_words as u64 * 4,
-            Kind::Region { .. } => limit_mb as u64 * 1024 * 1024,
+            Kind::Region { .. } | Kind::Dag => limit_mb as u64 * 1024 * 1024,
         };
         let aux = GrowableBuffer::new(gpu, "storage aux", 1 << 16, max.max(256), wgpu::BufferUsages::STORAGE);
         let regions_buf = Self::table_buffer(gpu, 16 * 16);
+        let head_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("storage region head"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         // An empty table (mask 0, nothing found) until the first upload.
-        gpu.queue.write_buffer(&regions_buf, 0, bytemuck::cast_slice(&[[0u32, 0, 0, 0], [0, 0, 0, EMPTY]]));
+        gpu.queue.write_buffer(&regions_buf, 0, bytemuck::cast_slice(&[[0u32, 0, 0, EMPTY]]));
+        gpu.queue.write_buffer(&head_buf, 0, bytemuck::cast_slice(&[0u32; 4]));
         Self {
             alloc: RangeAlloc::new((aux.size() / 16) as u32),
             st,
             aux,
             regions_buf,
+            head_buf,
             bind: None,
             regions: HashMap::new(),
             dirty: HashSet::new(),
             table_dirty: true,
             rebuilt: 0,
             overflowed: false,
+            dag: Dag::default(),
         }
     }
 
@@ -116,6 +132,7 @@ impl StorageData {
                     self.dirty.insert(pos >> (shift - 5));
                 }
             }
+            Kind::Dag => self.dirty.extend(changed),
         }
         Ok(())
     }
@@ -123,11 +140,13 @@ impl StorageData {
     /// Rebuilds dirty regions, uploads the region table and returns the bind group.
     pub fn prepare(&mut self, gpu: &Gpu, world: &VoxelWorld, layout: &wgpu::BindGroupLayout) -> &wgpu::BindGroup {
         self.rebuilt = 0;
-        if let Kind::Region { shift, build } = self.st.kind {
-            self.rebuild(gpu, world, shift, build);
-            if self.table_dirty {
-                self.upload_table(gpu);
-            }
+        match self.st.kind {
+            Kind::Pool { .. } => {}
+            Kind::Region { shift, build } => self.rebuild(gpu, world, shift, build),
+            Kind::Dag => self.rebuild_dag(gpu, world),
+        }
+        if self.table_dirty && !self.needs_pool() {
+            self.upload_table(gpu);
         }
         if self.bind.is_none() {
             self.bind = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -137,6 +156,7 @@ impl StorageData {
                     wgpu::BindGroupEntry { binding: 0, resource: self.aux.buffer().as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: self.regions_buf.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 2, resource: self.aux.buffer().as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: self.head_buf.as_entire_binding() },
                 ],
             }));
         }
@@ -202,23 +222,56 @@ impl StorageData {
         }
     }
 
-    /// Open-addressing table: entry 0 is the header (mask, max probe), entries `1 + i` the
-    /// slots `(x, y, z, handle)`; must match `region_top.wgsl`.
+    fn rebuild_dag(&mut self, gpu: &Gpu, world: &VoxelWorld) {
+        let changed = self.dag.rebuild(&mut self.dirty, &|p| world.chunk(p));
+        if changed.is_empty() {
+            return;
+        }
+        self.rebuilt = changed.len();
+        self.table_dirty = true;
+        for c in changed {
+            match self.dag.roots.get(&c) {
+                // A uniform root is an inline block: LEAF == UNIFORM_BIT.
+                Some(&root) => self.regions.insert(c, Region { words: None, handle: root }),
+                None => self.regions.remove(&c),
+            };
+        }
+        // Append the new nodes (all of them after a garbage collection).
+        let n = self.dag.nodes.len();
+        match self.aux.reserve(gpu, n.max(1) as u64 * 32) {
+            Ok(true) => self.bind = None,
+            Ok(false) => {}
+            Err(e) => {
+                if !self.overflowed {
+                    tracing::error!("{e:#}; raise `pool_mb` (the storage limit)");
+                    self.overflowed = true;
+                }
+                return;
+            }
+        }
+        if self.dag.uploaded < n {
+            gpu.queue.write_buffer(self.aux.buffer(), self.dag.uploaded as u64 * 32, bytemuck::cast_slice(&self.dag.nodes[self.dag.uploaded..]));
+            self.dag.uploaded = n;
+        }
+    }
+
+    /// Open-addressing table of slots `(x, y, z, handle)`, with its mask and longest probe
+    /// in `head_buf`; must match `region_top.wgsl`.
     fn upload_table(&mut self, gpu: &Gpu) {
         let cap = (self.regions.len() * 2).next_power_of_two().max(16);
-        let mut table = vec![[0u32, 0, 0, EMPTY]; cap + 1];
+        let mut table = vec![[0u32, 0, 0, EMPTY]; cap];
         let mut probe = 0u32;
         for (r, reg) in &self.regions {
             let mut i = hash3(*r) as usize & (cap - 1);
             let mut n = 0;
-            while table[1 + i][3] != EMPTY {
+            while table[i][3] != EMPTY {
                 i = (i + 1) & (cap - 1);
                 n += 1;
             }
             probe = probe.max(n);
-            table[1 + i] = [r.x as u32, r.y as u32, r.z as u32, reg.handle];
+            table[i] = [r.x as u32, r.y as u32, r.z as u32, reg.handle];
         }
-        table[0] = [cap as u32 - 1, probe, 0, 0];
+        gpu.queue.write_buffer(&self.head_buf, 0, bytemuck::cast_slice(&[cap as u32 - 1, probe, 0, 0]));
         let bytes = (table.len() * 16) as u64;
         if bytes > self.regions_buf.size() {
             self.regions_buf = Self::table_buffer(gpu, bytes.next_power_of_two());
@@ -235,6 +288,7 @@ impl StorageData {
             Kind::Pool { aux_words: 0, .. } => 0,
             Kind::Pool { .. } => self.aux.size(),
             Kind::Region { .. } => self.regions.values().filter_map(|r| r.words).map(|(_, n)| n as u64 * 16).sum::<u64>() + self.regions_buf.size(),
+            Kind::Dag => self.dag.nodes.len() as u64 * 32 + self.regions_buf.size(),
         }
     }
 
@@ -243,6 +297,12 @@ impl StorageData {
         match self.st.kind {
             Kind::Pool { .. } => vec![],
             Kind::Region { .. } => vec![("regions".into(), self.regions.len() as f64), ("regions_rebuilt".into(), self.rebuilt as f64)],
+            Kind::Dag => vec![
+                ("chunks".into(), self.regions.len() as f64),
+                ("dag_nodes".into(), self.dag.nodes.len() as f64),
+                ("dedup_ratio".into(), self.dag.dedup_ratio()),
+                ("chunks_rebuilt".into(), self.rebuilt as f64),
+            ],
         }
     }
 }

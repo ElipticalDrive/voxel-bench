@@ -38,7 +38,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - `multirenderer list`: back ends, components by slot, legacy renderers.
 - One composition against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{compose={backend="gpu-compute",storage="prefix",visibility="refloor"}}]' -s output.dir=\"target/check\"`
-  - A legacy renderer: `{name="gpu-svo-dag"}`. Further knobs go in `options={...}`.
+  - A legacy renderer: `{name="gpu-clipmap"}`. Further knobs go in `options={...}`.
   - CLI views: `-r gpu-compute:prefix+incremental`, `-r cpu:hier+refloor`,
     `-r gpu-raster:bricks+cubes+visbuffer` (the back end's slots in order).
   - Use `-s run.repeats=3` for interleaved repeats, `-s run.frames=N` (more frames
@@ -86,16 +86,16 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
     slots take the back end's defaults). The GUI chooser shows the back end's slots and
     disables combinations that can't run, with the reason.
 - **Available components:**
-  - gpu-compute: storages bricks, hier, prefix, distance, rows, tree64; visibility
-    refloor, incremental, sphere, rowrun; shading direct (24 combinations);
+  - gpu-compute: storages bricks, hier, prefix, distance, rows, tree64, svo_dag;
+    visibility refloor, incremental, sphere, rowrun; shading direct (28 combinations);
   - cpu: storages bricks, hier, prefix, u8, bits, palette; visibility refloor,
     incremental; shading direct (12 combinations);
   - gpu-raster: geometry greedy, naive, cubes; visibility raster, visbuffer; storage (for
-    shadow rays) the six GPU ones; shading direct (36 combinations).
+    shadow rays) the seven GPU ones; shading direct (42 combinations).
 - **Legacy renderers** (not yet split into components): cpu-reference (stays a
   monolith on purpose), cpu-raster, cpu-simd, cpu-simd-loc (4), cpu-voxelspace,
   cpu-discover, cpu-cluster, gpu-dda-lod, gpu-hybrid,
-  gpu-frag-dda, gpu-discover, gpu-rtx(-bricks), gpu-svo-dag, gpu-clipmap,
+  gpu-frag-dda, gpu-discover, gpu-rtx(-bricks), gpu-clipmap,
   gpu-beam, gpu-splat, gpu-voxelspace, gpu-pathtrace.
 - **Verification:** zero warnings in both builds, 41 unit tests and 3 GPU end-to-end
   tests pass.
@@ -189,7 +189,7 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
    - 4a. ~~Retire what compositions already cover~~: gpu-dda (plain), gpu-sdf,
      gpu-bitmask, the gpu-compose alias (done).
    - 4b. ~~tree64 as a storage~~ (done; retired gpu-tree64).
-   - 4c. SVO-DAG as a storage (gpu-svo-dag).
+   - 4c. ~~SVO-DAG as a storage~~ (done; retired gpu-svo-dag).
    - 4d. clipmap as a storage (gpu-clipmap).
    - 4e. the beam prepass as a visibility stage (gpu-beam).
    - 4f. path tracing as a shading component (gpu-pathtrace).
@@ -440,7 +440,7 @@ earlier if meshes become more urgent; 7c depends on 6′.
   shared by gpu-compute and gpu-raster): *pool* storages (voxel pool + side data per
   slot, as before) and *region* storages (a blob per region built on the CPU, 16-byte
   aligned in `aux` with a vec4 view `aux4`, found through a hash table). Region storages
-  turn the voxel pool off.
+  turn the voxel pool off. (4c adds a third kind, `Dag`.)
 - **`storage/tree64`:** gpu-tree64's tree as a region storage (levels 0, 2, 4, 6); works
   with all four walks, as raster shadow storage, and with meshes.
 - **Mesh shadows through the composed storage:** `mr_gpu::meshes::Occlusion` lets the
@@ -455,6 +455,21 @@ earlier if meshes become more urgent; 7c depends on 6′.
   sphere 3.30, rowrun 4.12 ms (single runs; through fallbacks).
 - **Retired:** gpu-tree64. Plans use `storage = "tree64"`; the live mesh test's control
   lane without meshes is now the `cpu` back end.
+
+### 2026-10-10: phase 4c (SVO-DAG as a storage)
+- **A third storage kind, `Dag`:** one global hash-consed node pool in `aux`
+  (append-only, rebuilt at 2× growth), chunk roots in the region table. `storage/svo_dag`
+  holds the builder (moved from gpu-svo-dag) and the WGSL (levels 0-4).
+- **Found on the way:** the 5-7% gap of the tree storages came partly from the region
+  table's mask and probe length living in the table (a storage read per lookup). Moved
+  to a uniform (`region_head`, group 2 binding 3): svo_dag went from 0.97 to 0.92 ms
+  (gpu-svo-dag 0.91). tree64 stays at 1.00 vs 0.95 (64³ regions mean few lookups); its
+  remaining 5% is open. Removing the steps counter `ct_iters` from refloor changed nothing.
+- **Results** (terrain, 3 interleaved repeats): same image as gpu-svo-dag (59.9 / 58.7
+  dB); `svo_dag + refloor` 0.92 / 1.37 ms vs 0.91 / 1.36: **matches**. Meshes work
+  (71.3 / 73.5 dB). Single runs of other walks over svo_dag: incremental 2.96, sphere
+  4.31, rowrun 2.78 ms unlit.
+- **Retired:** gpu-svo-dag.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

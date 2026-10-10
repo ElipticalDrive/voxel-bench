@@ -1828,21 +1828,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-svo-dag"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "gpu-voxelspace"
 version = "0.1.0"
 dependencies = [
@@ -2446,7 +2431,6 @@ dependencies = [
  "gpu-pathtrace",
  "gpu-rtx",
  "gpu-splat",
- "gpu-svo-dag",
  "gpu-voxelspace",
  "mr-core",
  "mr-ipc",

@@ -20,7 +20,6 @@ gpu-splat.workspace = true
 gpu-voxelspace.workspace = true
 gpu-beam.workspace = true
 gpu-frag-hybrid.workspace = true
-gpu-svo-dag.workspace = true
 gpu-clipmap.workspace = true
 gpu-pathtrace.workspace = true
 gpu-compute.workspace = true
