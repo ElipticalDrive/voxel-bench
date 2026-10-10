@@ -120,7 +120,7 @@ sit at the high end.
 | 2b | **Incremental greedy merge** of the discovered set (re-merge only changed chunks) | 1.5–2.5 h | ~¾ | Worth it once 2 makes the set stable. |
 | 3 | ~~**Morton-ordered breadth-first work queues**~~ | done | | Done 2026-10-09: no gain from ordering (the cost is per-level pass latency); inlining small footprints gave −17–21% on edits. IDEAS §8 "Result". |
 | 3b | Persistent kernel with work stealing | 2–3 h | ~1 | Riskier: driver and forward-progress caveats. Now the measured bottleneck: ~0.6 ms of a 1.9 ms frame is per-level pass latency. |
-| 4 | **Back-to-front order without depth testing** (§11), as a gpu-discover knob | 0.5–1 h | ~¼ | One measured experiment. |
+| 4 | ~~**Back-to-front order without depth testing**~~ | done | | Done 2026-10-09: exact Manhattan-distance painter order; even or slightly worse, since overdraw is already 1.03. IDEAS §11 "Result". |
 | 5 | **Face-cluster discovery prototype** (§10), CPU, clip-space fixed point (§7), sparse sky pass, far-field consolidation | 3–5 h | 1½–2 | A new renderer; needs careful completeness tests. |
 | 6 | **Modular library, first step** (§9): swappable storage + traversal with per-query conversions, for a few ray casters | 3–6 h | 1½–2½ | The full library takes several sessions. |
 
@@ -148,7 +148,7 @@ Further steps:
 first. Steps 1–4 change the inside of single components, so modularity wouldn't make them
 cheaper, and step 1 tells us what the storage/traversal interface must offer.
 
-**Order:** ~~1~~ → ~~6′~~ → ~~2~~ → ~~3~~ (done) → 4 → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
+**Order:** ~~1~~ → ~~6′~~ → ~~2~~ → ~~3~~ → ~~4~~ (done) → 2b → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
 earlier if meshes become more urgent; 7c depends on 6′.
 
 ## Progress log
@@ -218,6 +218,12 @@ earlier if meshes become more urgent; 7c depends on 6′.
 - **Finding:** deep levels are bound by each pass's slowest ray and the gaps between
   passes (~0.6 ms per frame), not by ray order. This points at 3b.
 
+### 2026-10-09 (later): step 4
+- **gpu-discover:** `order = painter` (counting sort by Manhattan distance, no depth test)
+  and `view = overdraw`.
+- **Findings:** overdraw 1.03 for full discovery, so there's nothing to win; ~5 for
+  incremental on edits (kept unseen faces). See IDEAS §11 "Result".
+
 ## Future additions (backlog by category)
 
 A menu to choose from, not a commitment. The user will add their own; ideas the user
@@ -257,6 +263,10 @@ voices also go into IDEAS.md with analysis.
 - LOD for the rasterisers and trees, and LOD that reflects edits.
 
 ### Discovery line (IDEAS §3, §5, §7, §8, §10, §11)
+- Tune or adapt `keep_unseen`: the overdraw view shows incremental keeps ~2× the faces it
+  needs on occlusion-heavy scenes.
+- Cut moving-frame fixed cost: fuse `mark` and `need_raw`, quarter-resolution depth for
+  the edge test, a one-sided parallax test, a persistent kernel (3b) for level latency.
 - Event-driven discovery: skip when static, edge strips for pans, hysteresis.
 - Incremental greedy merge of the discovered face set.
 - Morton-ordered breadth-first queues; a persistent kernel.

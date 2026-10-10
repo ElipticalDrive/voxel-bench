@@ -730,6 +730,29 @@ back. The order only needs to be local; no global sort is needed.
   shaded. It pays off where depth-buffer bandwidth dominates, or when shading is cheap or
   deferred (a visibility buffer). It is worth one measured experiment.
 
+**Result (implemented: gpu-discover `order = painter`, view `overdraw`).**
+- *An exact order.* The Morton-XOR order above is not exact in general: the child order
+  depends on which side of each node's split planes the camera lies, which differs
+  between nodes. A simpler key is exact. Along any ray, the voxel walk only moves away
+  from the camera's cell on each axis, so a cell's Manhattan distance from the camera
+  cell strictly increases along the ray, and an occluder always has a smaller distance.
+  Drawing by decreasing distance is a correct painter's order, and since the key is a
+  small integer, a GPU counting sort does it (histogram, one-workgroup scan, scatter).
+  Images are identical to depth-tested drawing (same PSNR, zero missed pixels).
+- *Measured (terrain, full discovery):*
+  - overdraw is 1.03 fragments per covered pixel, because discovery yields almost
+    exactly the visible faces;
+  - unlit: the sort costs ~0.12 ms (raster 0.15 → 0.28 ms) and saves nothing;
+  - lit: painter is ~3% faster (2.15 vs 2.21 ms raster), from skipping the depth
+    pre-pass.
+- *With incremental mode it backfires.* The kept unseen faces raise overdraw to ~5 (p99
+  12) on edits, against 1.3 for full discovery. Lit painter is then 56% slower (4.36 vs
+  2.79 ms), because hidden faces get shaded with shadow rays. Depth order stays the
+  default.
+- *Side finding from the overdraw view:* incremental's `keep_unseen` (64 frames) keeps
+  many hidden faces in occlusion-heavy scenes. The depth pre-pass hides the cost in lit
+  mode, but the set is ~2× larger than needed (edits: 119k vs 57k faces).
+
 ---
 
 ## 12. The renderer's composition as a knob
