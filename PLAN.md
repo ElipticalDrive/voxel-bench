@@ -26,7 +26,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 ## How to verify and measure
 
 - Builds, zero warnings: `cargo build` and `cargo build --release`.
-- Unit tests: `cargo test -q --workspace` (37).
+- Unit tests: `cargo test -q --workspace` (39).
 - GPU end-to-end tests: `cargo test -q --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve` (3, including mesh mode).
 - One renderer against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{name="gpu-dda"}]' -s output.dir=\"target/check\"`
@@ -266,6 +266,25 @@ earlier if meshes become more urgent; 7c depends on 6′.
   composed ports are as fast as the originals.
 - **Next ports by yield:** tree64 / SVO-DAG, clipmap, the beam prepass, a path-tracing
   shading component, LOD.
+
+### 2026-10-10: component refactor, phase 1
+- **`components/` (mr-components):** storage (bricks, hier, prefix, distance, rows),
+  visibility (refloor, incremental, sphere, rowrun) and shading (direct), each a
+  directory with its WGSL and CPU builder. The crate also holds the metadata
+  (slot, back ends, provided / used queries), the compatibility rules and
+  `Composition`.
+- **`backends/gpu-compute`** (was gpu-compose; that name remains a legacy alias)
+  assembles shaders from the components. The distance-field builder moved from gpu-sdf
+  into its component.
+- **Plans** use `compose = { backend, storage, visibility, shading }`, validated and
+  resolved at load, and saved as the compose table only. CLI: `-r
+  backend:storage+visibility[+shading]`; `list` shows components by slot.
+- **GUI:** the component chooser. Back ends and components that cannot run are disabled
+  with the reason; fallback pairings get a note. Monoliths sit under "legacy".
+- **Tests:** the registry is consistent with its implementations; plan round trip; all
+  20 GPU combinations render like the originals.
+- **Next phases:** 2 CPU back end, 3 GPU-raster back end, 4 the remaining unique pieces,
+  5 remove the legacy section.
 
 ## Future additions (backlog by category)
 

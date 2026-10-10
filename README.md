@@ -56,6 +56,29 @@ pixel grid and cropped rather than scaled. **M** sets the render resolution to t
 tile's exact pixel size and restarts the session, so F11, 1 and M together give native
 display resolution. **O** hides the overlays. The ❓ Keys tab lists everything.
 
+### Assembling renderers from components
+
+A renderer is assembled from components rather than picked from a list (IDEAS §12):
+**back end** × **storage** × **visibility** × **shading**. The pieces live in
+`components/`, one directory each (`storage/prefix/gpu.wgsl`, ...); back ends in
+`backends/`.
+
+```toml
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "prefix", visibility = "incremental", shading = "direct" }
+```
+
+- *Command line:* `-r gpu-compute:prefix+incremental`. `multirenderer list` shows back
+  ends and components.
+- *GUI:* each renderer has a back-end picker and one picker per slot. Combinations that
+  cannot run are disabled, with the reason on hover.
+- *Mismatched pairings:* within a back end every storage works with every visibility
+  component. A fast path the storage lacks (e.g. `sphere` without `distance`) uses a
+  generic fallback: correct, but slower, and noted in the GUI.
+- *Today:* the `gpu-compute` back end, with 5 storages, 4 visibility components and 1
+  shading component. CPU, GPU-raster and hardware-RT back ends follow. Renderers not yet
+  split into components remain available as "legacy".
+
 ### Mesh mode
 
 Scenes can contain animated triangle meshes (`scene.meshes`: box, sphere and torus with

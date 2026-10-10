@@ -981,7 +981,23 @@ performance cost.
   traversals), clipmap (storage), the beam prepass (a visibility stage before any
   traversal), path tracing as a shading component, LOD in the storage interface.
 
-*Done on the GPU so far (gpu-compose).* Storages bricks, hier, prefix, distance, rows;
+*The user's target (2026-10-10):* no chooser of monolithic renderers at all. Renderer
+pieces are organised in files; a renderer is assembled by choosing a back end and one
+component per slot; the UI does not allow unsupported combinations. The monolith names
+may survive only as legacy entries while porting continues. Phases:
+1. Components crate, the GPU-compute back end, compositions in plans, CLI and GUI.
+   **Done:**
+   - `components/` (`mr-components`): one directory per piece, metadata, compatibility;
+   - `backends/gpu-compute`;
+   - `compose = { … }` in plans and `-r backend:storage+visibility` on the CLI;
+   - the GUI chooser with disabled options and reasons.
+2. The CPU back end (the same components on the CPU).
+3. The GPU-raster back end: geometry components, raster visibility, discovery, meshes.
+4. Port the remaining unique pieces: tree64, SVO-DAG, clipmap, beam, path tracing, LOD,
+   hardware RT as a back end, splats, voxelspace.
+5. Remove the legacy section and the monolith crates.
+
+*Done on the GPU so far (gpu-compose, now gpu-compute).* Storages bricks, hier, prefix, distance, rows;
 traversals refloor, incremental, sphere, rowrun. All 20 combinations render the
 reference image like the originals (58.8 dB on terrain). The fallbacks make odd
 pairings correct but slow: sphere without a distance field ~2 ms, rowrun with a
