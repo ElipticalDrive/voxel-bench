@@ -38,7 +38,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - `multirenderer list`: back ends, components by slot, legacy renderers.
 - One composition against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{compose={backend="gpu-compute",storage="prefix",visibility="refloor"}}]' -s output.dir=\"target/check\"`
-  - A legacy renderer: `{name="gpu-tree64"}`. Further knobs go in `options={...}`.
+  - A legacy renderer: `{name="gpu-svo-dag"}`. Further knobs go in `options={...}`.
   - CLI views: `-r gpu-compute:prefix+incremental`, `-r cpu:hier+refloor`,
     `-r gpu-raster:bricks+cubes+visbuffer` (the back end's slots in order).
   - Use `-s run.repeats=3` for interleaved repeats, `-s run.frames=N` (more frames
@@ -86,16 +86,16 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
     slots take the back end's defaults). The GUI chooser shows the back end's slots and
     disables combinations that can't run, with the reason.
 - **Available components:**
-  - gpu-compute: storages bricks, hier, prefix, distance, rows; visibility refloor,
-    incremental, sphere, rowrun; shading direct (20 combinations);
+  - gpu-compute: storages bricks, hier, prefix, distance, rows, tree64; visibility
+    refloor, incremental, sphere, rowrun; shading direct (24 combinations);
   - cpu: storages bricks, hier, prefix, u8, bits, palette; visibility refloor,
     incremental; shading direct (12 combinations);
   - gpu-raster: geometry greedy, naive, cubes; visibility raster, visbuffer; storage (for
-    shadow rays) the five GPU ones; shading direct (30 combinations).
+    shadow rays) the six GPU ones; shading direct (36 combinations).
 - **Legacy renderers** (not yet split into components): cpu-reference (stays a
   monolith on purpose), cpu-raster, cpu-simd, cpu-simd-loc (4), cpu-voxelspace,
   cpu-discover, cpu-cluster, gpu-dda-lod, gpu-hybrid,
-  gpu-frag-dda, gpu-discover, gpu-rtx(-bricks), gpu-tree64, gpu-svo-dag, gpu-clipmap,
+  gpu-frag-dda, gpu-discover, gpu-rtx(-bricks), gpu-svo-dag, gpu-clipmap,
   gpu-beam, gpu-splat, gpu-voxelspace, gpu-pathtrace.
 - **Verification:** zero warnings in both builds, 41 unit tests and 3 GPU end-to-end
   tests pass.
@@ -188,7 +188,7 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
    technical debt"). Sub-steps, each verified, committed and pushed on its own:
    - 4a. ~~Retire what compositions already cover~~: gpu-dda (plain), gpu-sdf,
      gpu-bitmask, the gpu-compose alias (done).
-   - 4b. tree64 as a storage with its tree-descent walk (gpu-tree64).
+   - 4b. ~~tree64 as a storage~~ (done; retired gpu-tree64).
    - 4c. SVO-DAG as a storage (gpu-svo-dag).
    - 4d. clipmap as a storage (gpu-clipmap).
    - 4e. the beam prepass as a visibility stage (gpu-beam).
@@ -430,6 +430,31 @@ earlier if meshes become more urgent; 7c depends on 6′.
   (phase 1 results). The gpu-dda crate now holds only gpu-dda-lod (until 4g).
 - The distance-field test moved into `storage/distance`. GUI tests and `scale_curve`
   use compositions (`RENDERER=gpu-compute:prefix+refloor`).
+
+### 2026-10-10: phase 4b (tree64 as a storage)
+- **Storage interface, top level:** a storage now defines its top cell (`S_TOP`, 5 for
+  chunks, 6 for 64^3 regions) and `s_top(key)`; the four walks, the raster block lookup
+  and the incremental LEVEL_MASK use it instead of the voxel world's chunk table.
+  `s_row` takes a 32-cell segment offset `x0`.
+- **Two host-side kinds** (`storage::Kind`, kept by `storage::gpu_data::StorageData`,
+  shared by gpu-compute and gpu-raster): *pool* storages (voxel pool + side data per
+  slot, as before) and *region* storages (a blob per region built on the CPU, 16-byte
+  aligned in `aux` with a vec4 view `aux4`, found through a hash table). Region storages
+  turn the voxel pool off.
+- **`storage/tree64`:** gpu-tree64's tree as a region storage (levels 0, 2, 4, 6); works
+  with all four walks, as raster shadow storage, and with meshes.
+- **Mesh shadows through the composed storage:** `mr_gpu::meshes::Occlusion` lets the
+  mesh pass use the back end's storage and refloor walk (bind group 2). Without it,
+  tree64 lit+meshes lost voxel shadows on meshes (57.8 dB); with it 73.5 dB like the rest.
+- **Results** (terrain, 3 interleaved repeats): same image as gpu-tree64 (59.9 / 58.7
+  dB). `tree64 + refloor` 1.00 ms unlit / 1.48 lit against 0.95 / 1.42 for the
+  monolith: **5% / 3.5% slower**, after making nodes one 16-byte load (was 15%) and a
+  dedicated probe loop. Not explained by max_steps; the rest is open (region table
+  header read, pointer arithmetic, ...). far.toml: 1.30 ms and 183 MB vs 2.11 ms and
+  1037 MB for bricks + refloor. Other walks over tree64 (unlit): incremental 1.73,
+  sphere 3.30, rowrun 4.12 ms (single runs; through fallbacks).
+- **Retired:** gpu-tree64. Plans use `storage = "tree64"`; the live mesh test's control
+  lane without meshes is now the `cpu` back end.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

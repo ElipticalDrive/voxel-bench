@@ -3,7 +3,8 @@
 // with per-axis exit times `tmax` and cell sizes in t `tdelta`. Steps, ascents and
 // descents are incremental; nothing is re-floored. With EXACT, exit times are recomputed
 // from the integer cell after each move (no float drift). LEVEL_MASK (bit k = 2^k cubes;
-// 0 and the chunk level 5 always set) comes from the storage's S_LEVELS and the skip knobs.
+// 0 and the top level S_TOP always set) comes from the storage's S_LEVELS and the skip
+// knobs.
 //
 // On NVIDIA (RTX 5060, 2026-10) this loop runs ~5x slower than `refloor` whenever the
 // ray's result is consumed, but only ~1.4x in `view = "steps"` and ~1.3x on AMD (RADV).
@@ -11,16 +12,16 @@
 // the loop, unbounded inner loops, a flattened one-test-per-iteration form, runaway rays,
 // `continue`, extra live state. Cause still open (see IDEAS §1).
 
-const TOP: u32 = 5u;
+const TOP: u32 = S_TOP;
 
 // Whether the level-`level` cube at absolute level coords `c` is occupied. `key`/`val`
-// cache the last chunk looked up.
+// cache the last top cell looked up.
 fn ic_occupied(level: u32, c: vec3<i32>, key: ptr<function, vec3<i32>>, val: ptr<function, u32>) -> bool {
     let shift = TOP - level;
     let ch = c >> vec3<u32>(shift);
     if (any(ch != *key)) {
         *key = ch;
-        *val = lookup_chunk(chunk_key(ch, 0u));
+        *val = s_top(ch);
     }
     let v = *val;
     if (v == EMPTY) { return false; }
@@ -142,7 +143,7 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
         if ((ic_val & UNIFORM_BIT) != 0u) {
             res.block = ic_val & 0xffffu;
         } else {
-            res.block = s_block(ic_val, c & vec3<i32>(31));
+            res.block = s_block(ic_val, c & vec3<i32>((1 << TOP) - 1));
         }
     }
     return res;

@@ -23,6 +23,17 @@ pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     })
 }
 
+/// Shadow rays through a composed storage for passes outside the main shader (meshes,
+/// raster shading): the storage (`GpuStorage::source`, bind group 2) walked with
+/// `refloor`, as `occluded()`.
+pub fn occlusion_wgsl(storage: &crate::storage::GpuStorage) -> String {
+    format!(
+        "var<private> ct_iters: u32;\n{}\n{}\nfn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool {{ return ctrace(p, d, max_t).hit; }}\n",
+        storage.source(),
+        include_str!("refloor/gpu.wgsl")
+    )
+}
+
 /// Visibility components of the gpu-raster back end.
 pub fn raster_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {

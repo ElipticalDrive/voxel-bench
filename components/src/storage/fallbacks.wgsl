@@ -15,11 +15,11 @@ fn s_dist(slot: u32, l: vec3<i32>) -> u32 {
 }
 
 //@s_row
-// Occupancy row along x from 32 voxel-level queries.
-fn s_row(slot: u32, y: i32, z: i32) -> u32 {
+// Occupancy of the 32 cells from x0 along x, from 32 voxel-level queries.
+fn s_row(slot: u32, x0: i32, y: i32, z: i32) -> u32 {
     var r = 0u;
     for (var x = 0; x < 32; x++) {
-        if (s_occupied(slot, 0u, vec3<i32>(x, y, z))) { r |= 1u << u32(x); }
+        if (s_occupied(slot, 0u, vec3<i32>(x0 + x, y, z))) { r |= 1u << u32(x); }
     }
     return r;
 }

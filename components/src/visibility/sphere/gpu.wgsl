@@ -1,5 +1,5 @@
 // Traversal `sphere` (from gpu-sdf): Chebyshev sphere tracing. In a cell at distance k
-// from the nearest solid (`s_dist`), the whole box cell +- (k - 1), clipped to the chunk,
+// from the nearest solid (`s_dist`), the whole box cell +- (k - 1), clipped to the top cell,
 // is empty, so the ray leaves it in one step. Fast with the `distance` storage; other
 // storages answer `s_dist` through the generic fallback.
 
@@ -29,19 +29,20 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
     for (var i = 0u; i < vp.max_steps; i++) {
         ct_iters += 1u;
         let abs_cell = cell + vp.cam_block;
-        let key = abs_cell >> vec3<u32>(5u);
+        let key = abs_cell >> vec3<u32>(S_TOP);
         if (any(key != cached)) {
             cached = key;
-            val = lookup_chunk(chunk_key(key, 0u));
+            val = s_top(key);
         }
-        let chunk_lo = (abs_cell & vec3<i32>(-32)) - vp.cam_block;
+        let top = 1 << S_TOP;
+        let chunk_lo = (abs_cell & vec3<i32>(-top)) - vp.cam_block;
         // The empty box the ray may cross in one step: [lo, hi).
         var lo = chunk_lo;
-        var hi = chunk_lo + vec3<i32>(32);
+        var hi = chunk_lo + vec3<i32>(top);
         if (val != EMPTY) {
             var b = 0u;
             var k = 0u;
-            let local = abs_cell & vec3<i32>(31);
+            let local = abs_cell & vec3<i32>(top - 1);
             if ((val & UNIFORM_BIT) != 0u) {
                 b = val & 0xffffu;
             } else {
@@ -57,7 +58,7 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
             }
             let r = i32(max(k, 1u)) - 1;
             lo = max(cell - vec3<i32>(r), chunk_lo);
-            hi = min(cell + vec3<i32>(r + 1), chunk_lo + vec3<i32>(32));
+            hi = min(cell + vec3<i32>(r + 1), chunk_lo + vec3<i32>(top));
         }
         let bound = select(lo, hi, stp > vec3<i32>(0));
         let tb = (vec3<f32>(bound) - o) * inv;

@@ -32,6 +32,14 @@ struct MeshFrame {
     mode: u32,
 }
 
+/// A renderer's own shadow-ray module for the mesh pass: WGSL defining `occluded()` (and
+/// whatever it needs), reading bind group 2 with `layout` (visible to the fragment stage).
+/// Without one, mesh shadows walk the voxel pool (`DDA_OCCLUSION_WGSL`).
+pub struct Occlusion<'a> {
+    pub wgsl: &'a str,
+    pub layout: &'a wgpu::BindGroupLayout,
+}
+
 #[derive(Copy, Clone, PartialEq)]
 pub enum MeshPass {
     Fill,
@@ -51,14 +59,18 @@ pub struct GpuMeshes {
     fill: wgpu::RenderPipeline,
     depth: wgpu::RenderPipeline,
     equal: wgpu::RenderPipeline,
+    /// With an [`Occlusion`]: its bind group 2, set by the renderer each frame.
+    occlusion_bg: Option<wgpu::BindGroup>,
 }
 
 impl GpuMeshes {
     /// `world` provides bind group 1 (lighting and shadow rays); its visibility must
-    /// include the fragment stage.
-    pub fn new(gpu: &Gpu, world: &VoxelWorld, color: wgpu::TextureFormat) -> Self {
+    /// include the fragment stage. `occlusion`: the renderer's own shadow rays (bind group
+    /// 2, see [`Self::set_occlusion_bind_group`]).
+    pub fn new(gpu: &Gpu, world: &VoxelWorld, color: wgpu::TextureFormat, occlusion: Option<Occlusion>) -> Self {
         let dev = &gpu.device;
-        let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("meshes"), source: wgpu::ShaderSource::Wgsl(shader_source(DDA_OCCLUSION_WGSL, include_str!("mesh.wgsl")).into()) });
+        let occ_src = occlusion.as_ref().map_or(DDA_OCCLUSION_WGSL, |o| o.wgsl);
+        let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("meshes"), source: wgpu::ShaderSource::Wgsl(shader_source(occ_src, include_str!("mesh.wgsl")).into()) });
         let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mesh frame"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -70,7 +82,7 @@ impl GpuMeshes {
         });
         let frame_buf = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh frame"), size: size_of::<MeshFrame>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let bind = dev.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("mesh frame"), layout: &layout0, entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() }] });
-        let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("meshes"), bind_group_layouts: &[Some(&layout0), Some(world.layout())], immediate_size: 0 });
+        let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("meshes"), bind_group_layouts: &[Some(&layout0), Some(world.layout()), occlusion.as_ref().map(|o| o.layout)], immediate_size: 0 });
         let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Float32x3];
         let pipeline = |label, write: bool, compare, fragment: bool| {
             let targets = [Some(wgpu::ColorTargetState { format: color, blend: None, write_mask: wgpu::ColorWrites::ALL })];
@@ -103,7 +115,14 @@ impl GpuMeshes {
             fill: pipeline("mesh fill", true, wgpu::CompareFunction::Greater, true),
             depth: pipeline("mesh depth", true, wgpu::CompareFunction::Greater, false),
             equal: pipeline("mesh equal", false, wgpu::CompareFunction::Equal, true),
+            occlusion_bg: None,
         }
+    }
+
+    /// The occlusion module's bind group 2 for the next draws (it may change when the
+    /// renderer's buffers grow).
+    pub fn set_occlusion_bind_group(&mut self, bg: &wgpu::BindGroup) {
+        self.occlusion_bg = Some(bg.clone());
     }
 
     pub fn apply(&mut self, u: MeshUpdate) {
@@ -173,6 +192,9 @@ impl GpuMeshes {
         });
         pass.set_bind_group(0, &self.bind, &[]);
         pass.set_bind_group(1, world_bg, &[]);
+        if let Some(bg) = &self.occlusion_bg {
+            pass.set_bind_group(2, bg, &[]);
+        }
         pass.set_vertex_buffer(0, self.vbuf.slice(..));
         pass.draw(0..self.vcount, 0..1);
     }
@@ -223,7 +245,7 @@ pub struct MeshComposite {
 }
 
 impl MeshComposite {
-    pub fn new(gpu: &Gpu, world: &VoxelWorld, width: u32, height: u32) -> Self {
+    pub fn new(gpu: &Gpu, world: &VoxelWorld, width: u32, height: u32, occlusion: Option<Occlusion>) -> Self {
         let dev = &gpu.device;
         let tex = |binding, sample_type| wgpu::BindGroupLayoutEntry {
             binding,
@@ -247,7 +269,7 @@ impl MeshComposite {
         let uniform = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh composite"), size: size_of::<CompUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let (color, depth) = Self::targets(gpu, width, height);
         let bind = Self::bind(gpu, &layout, &color, &depth, &uniform);
-        Self { meshes: GpuMeshes::new(gpu, world, wgpu::TextureFormat::Rgba8Unorm), layout, uniform, color, depth, bind }
+        Self { meshes: GpuMeshes::new(gpu, world, wgpu::TextureFormat::Rgba8Unorm, occlusion), layout, uniform, color, depth, bind }
     }
 
     fn targets(gpu: &Gpu, w: u32, h: u32) -> (wgpu::TextureView, wgpu::TextureView) {

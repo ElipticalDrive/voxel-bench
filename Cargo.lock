@@ -1843,21 +1843,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-tree64"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "gpu-voxelspace"
 version = "0.1.0"
 dependencies = [
@@ -2382,11 +2367,16 @@ dependencies = [
 name = "mr-components"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytemuck",
  "glam",
  "mr-core",
+ "mr-gpu",
  "mr-mesh",
+ "rayon",
  "serde",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]
@@ -2457,7 +2447,6 @@ dependencies = [
  "gpu-rtx",
  "gpu-splat",
  "gpu-svo-dag",
- "gpu-tree64",
  "gpu-voxelspace",
  "mr-core",
  "mr-ipc",

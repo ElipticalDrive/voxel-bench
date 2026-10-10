@@ -36,7 +36,7 @@ view_radius = 4
 max_lod = 3
 
 [[renderer]]
-name = "gpu-tree64"
+compose = { backend = "gpu-compute", storage = "tree64", visibility = "refloor" }
 
 [output]
 compare = { every = 100 }

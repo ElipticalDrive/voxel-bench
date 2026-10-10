@@ -1436,7 +1436,7 @@ mod tests {
     fn live_meshes_end_to_end() {
         let plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/meshes.toml")), &[
             "run.isolation=\"thread\"".into(),
-            "renderer=[{compose={backend=\"gpu-raster\"}},{name=\"gpu-tree64\"}]".into(),
+            "renderer=[{compose={backend=\"gpu-raster\"}},{compose={backend=\"cpu\"}}]".into(),
             "run.resolution=[480,270]".into(),
         ])
         .unwrap();
@@ -1448,9 +1448,9 @@ mod tests {
             let sh = live.shared.lock().unwrap();
             (sh.lanes[0].quality.back().unwrap().psnr, sh.lanes[1].quality.back().unwrap().psnr)
         };
-        println!("mesh mode probe: gpu-raster {with:.1} dB, gpu-tree64 (no meshes) {without:.1} dB");
+        println!("mesh mode probe: gpu-raster {with:.1} dB, cpu (no meshes) {without:.1} dB");
         assert!(with > 45.0, "gpu-raster with meshes vs reference: {with:.1} dB");
-        assert!(with > without + 5.0, "meshes should matter: gpu-raster {with:.1} dB, gpu-tree64 (no meshes) {without:.1} dB");
+        assert!(with > without + 5.0, "meshes should matter: gpu-raster {with:.1} dB, cpu (no meshes) {without:.1} dB");
         drop(live);
     }
 }

@@ -5,22 +5,21 @@
 //!
 //! Storages answer the interface in `mr_components::storage`; optional fast-path queries the
 //! chosen storage lacks get generic fallbacks, so every storage works with every
-//! visibility component. Shadow rays use the same composed walk. Per-slot side data lives
-//! in `aux`, indexed like the shared pool. Meshes (mesh mode) are composited by
-//! `mr_gpu::meshes::MeshComposite`.
+//! visibility component. Shadow rays use the same composed walk. The storage's own data
+//! (per-slot side data, or region blobs) is kept by `storage::gpu_data::StorageData`.
+//! Meshes (mesh mode) are composited by `mr_gpu::meshes::MeshComposite`.
 
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
+use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::{Slot, components, storage, visibility};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
-use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite};
+use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite, Occlusion};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
-use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, wgpu};
+use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
 use serde::Deserialize;
-
-const CHUNK_BYTES: u64 = CHUNK_VOLUME as u64 * 2;
 
 pub fn entry() -> RendererEntry {
     RendererEntry { info, create: |p, w| Ok(Box::new(GpuCompose::new(p, w)?)) }
@@ -60,7 +59,7 @@ fn params() -> Vec<ParamSpec> {
     p.extend([
         shadows_param(),
         ParamSpec::int("max_steps", "Loop iteration limit per ray", 32, 16384, 2048, true),
-        ParamSpec::int("pool_mb", "Voxel pool limit (MiB)", 64, 6144, 2048, false),
+        ParamSpec::int("pool_mb", "Voxel pool limit (MiB); for region storages (tree64) the limit of their own data", 64, 6144, 2048, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ]);
     p
@@ -132,21 +131,17 @@ impl Composition {
         let shade = mr_components::shading::gpu_wgsl(&self.shading).expect("validated");
         let own = format!(
             "// Composition: storage = {}, visibility = {}, shading = {}\n\
-             @group(2) @binding(0) var<storage, read> aux: array<u32>;\n\
-             const AUX_WORDS: u32 = {}u;\n\
              const EXACT: bool = {};\n\
              const VIEW_STEPS: bool = {};\n\
-             const LEVEL_MASK: u32 = (S_LEVELS & {:#x}u) | 0x21u;\n\
-             {MESH_COMPOSITE_WGSL}\n{}\n{}\n{vis}\n{shade}\n{}",
+             const LEVEL_MASK: u32 = (S_LEVELS & {:#x}u) | 1u | (1u << S_TOP);\n\
+             {MESH_COMPOSITE_WGSL}\n{}\n{vis}\n{shade}\n{}",
             self.storage,
             self.visibility,
             self.shading,
-            st.aux_words.max(1),
             self.exact,
             self.steps_view,
             self.levels,
-            st.wgsl,
-            storage::fallbacks(st.provides),
+            st.source(),
             include_str!("main.wgsl"),
         );
         let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
@@ -201,9 +196,8 @@ pub struct GpuCompose {
     camera_buf: wgpu::Buffer,
     output: wgpu::Texture,
     bind0: wgpu::BindGroup,
-    /// Per-slot storage data (`prefix`), or a placeholder.
-    aux: GrowableBuffer,
-    bind2: Option<wgpu::BindGroup>,
+    /// The storage's own data (group 2).
+    data: StorageData,
     ring: FrameRing,
     width: u32,
     height: u32,
@@ -235,7 +229,8 @@ impl GpuCompose {
             p.environment,
             VoxelWorldConfig {
                 max_lod: 0,
-                upload_voxels: true,
+                // Region storages (tree64) hold their own data instead of the voxel pool.
+                upload_voxels: matches!(comp.storage().kind, storage::Kind::Pool { .. }),
                 pool_mb: opts.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
@@ -244,8 +239,11 @@ impl GpuCompose {
                 visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
             },
         )?;
-        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height);
         let compute = wgpu::ShaderStages::COMPUTE;
+        // Fragment too: mesh shadows walk the composed storage.
+        let layout2 = gpu_data::layout(&gpu, compute | wgpu::ShaderStages::FRAGMENT);
+        let occ = visibility::occlusion_wgsl(&comp.storage());
+        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Some(Occlusion { wgsl: &occ, layout: &layout2 }));
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("compose camera"),
             entries: &[
@@ -267,25 +265,13 @@ impl GpuCompose {
                 },
             ],
         });
-        let layout2 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("compose storage"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: compute,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
-        });
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("compose"),
             bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout2), Some(meshes.layout())],
             immediate_size: 0,
         });
         let pipeline = Self::pipeline(&gpu, &pipeline_layout, &comp)?;
-        // Side data covers the same slots as the pool, up to the same limit.
-        let max_slots = (opts.pool_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1);
-        let aux_bytes = comp.storage().aux_words as u64 * 4;
-        let aux = GrowableBuffer::new(&gpu, "compose aux", 256, (max_slots * aux_bytes).max(256), wgpu::BufferUsages::STORAGE);
+        let data = StorageData::new(&gpu, comp.storage(), opts.pool_mb);
         let camera_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
             size: size_of::<CameraUniform>() as u64,
@@ -310,8 +296,7 @@ impl GpuCompose {
             camera_buf,
             output,
             bind0,
-            aux,
-            bind2: None,
+            data,
             ring,
             width: p.width,
             height: p.height,
@@ -349,11 +334,6 @@ impl GpuCompose {
             ],
         })
     }
-
-    /// Bytes of side data per pool slot for the chosen storage (0 = none).
-    fn aux_bytes(&self) -> u64 {
-        self.comp.storage().aux_words as u64 * 4
-    }
 }
 
 impl Renderer for GpuCompose {
@@ -364,21 +344,7 @@ impl Renderer for GpuCompose {
 
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let changed = self.world.apply(&self.gpu, updates);
-        let unit = self.aux_bytes();
-        if unit > 0 {
-            // Keep the side data indexed like the pool: every changed dense chunk rewrites
-            // its slot (slots of unloaded chunks are simply no longer referenced).
-            if self.aux.reserve(&self.gpu, self.world.pool_slots() as u64 * unit)? {
-                self.bind2 = None;
-            }
-            let build = self.comp.storage().build;
-            for pos in changed {
-                if let (Some(slot), Some(ChunkData::Dense(d))) = (self.world.slot_of(pos), self.world.chunk(pos)) {
-                    self.gpu.queue.write_buffer(self.aux.buffer(), slot as u64 * unit, bytemuck::cast_slice(&build(d)));
-                }
-            }
-        }
-        Ok(())
+        self.data.update(&self.gpu, &self.world, &changed)
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
@@ -405,13 +371,8 @@ impl Renderer for GpuCompose {
         };
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
-        if self.bind2.is_none() {
-            self.bind2 = Some(self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("compose storage"),
-                layout: &self.layout2,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.aux.buffer().as_entire_binding() }],
-            }));
-        }
+        let bind2 = self.data.prepare(&self.gpu, &self.world, &self.layout2).clone();
+        self.meshes.meshes.set_occlusion_bind_group(&bind2);
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         // With meshes, the mesh pass carries the frame's begin timestamp.
         let meshes_on = self.meshes.active(req.meshes);
@@ -425,14 +386,14 @@ impl Renderer for GpuCompose {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind0, &[]);
             pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, self.bind2.as_ref(), &[]);
+            pass.set_bind_group(2, &bind2, &[]);
             pass.set_bind_group(3, self.meshes.bind_group(), &[]);
             pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
         }
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
-            counters: vec![("dropped_chunks".into(), self.world.dropped_chunks() as f64)],
+            counters: [("dropped_chunks".to_string(), self.world.dropped_chunks() as f64)].into_iter().chain(self.data.counters()).collect(),
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
@@ -478,7 +439,6 @@ impl Renderer for GpuCompose {
     }
 
     fn memory(&self) -> MemoryReport {
-        let aux = if self.aux_bytes() > 0 { self.aux.size() } else { 0 };
-        MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + aux + self.width as u64 * self.height as u64 * 4 }
+        MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + self.data.memory_bytes() + self.width as u64 * self.height as u64 * 4 }
     }
 }

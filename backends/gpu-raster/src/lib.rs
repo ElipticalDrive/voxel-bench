@@ -19,17 +19,17 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_components::geometry::{GpuGeometry, Knobs, Merge};
+use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::{Slot, components, storage, visibility};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
-use mr_gpu::meshes::{GpuMeshes, MeshPass};
+use mr_gpu::meshes::{GpuMeshes, MeshPass, Occlusion};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
 
 const BACKEND: &str = "gpu-raster";
-const CHUNK_BYTES: u64 = CHUNK_VOLUME as u64 * 2;
 
 pub fn entry() -> RendererEntry {
     RendererEntry { info, create: |p, w| Ok(Box::new(GpuRasterBackend::new(p, w)?)) }
@@ -66,7 +66,7 @@ fn params() -> Vec<ParamSpec> {
         shadows_param(),
         ParamSpec::int("max_steps", "Shadow-ray step limit", 32, 16384, 2048, true),
         ParamSpec::int("mesh_budget", "Chunks remeshed per frame, nearest first (0 = all)", 0, 100000, 0, true),
-        ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB)", 64, 6144, 1536, false),
+        ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB); for region storages (tree64) the limit of their own data", 64, 6144, 1536, false),
         ParamSpec::int("quad_buffer_mb", "Instance buffer limit (MiB; grows on demand)", 16, 2040, 1024, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ]
@@ -157,16 +157,12 @@ impl Composition {
         let st = self.storage();
         let own = format!(
             "// Composition: storage = {}, geometry = {}, visibility = {}, shading = {}\n\
-             @group(2) @binding(0) var<storage, read> aux: array<u32>;\n\
-             const AUX_WORDS: u32 = {}u;\n\
-             {}\n{}\n{}\n{}\n{}\n{}\n{}",
+             {}\n{}\n{}\n{}\n{}\n{}",
             self.storage,
             self.geometry,
             self.visibility,
             self.shading,
-            st.aux_words.max(1),
-            st.wgsl,
-            storage::fallbacks(st.provides),
+            st.source(),
             visibility::gpu_wgsl("refloor").unwrap(),
             self.geometry().wgsl,
             include_str!("main.wgsl"),
@@ -249,9 +245,8 @@ pub struct GpuRasterBackend {
     chunk_buf: wgpu::Buffer,
     indirect: wgpu::Buffer,
     bind0: Option<wgpu::BindGroup>,
-    /// Per-slot storage data for the shadow walk (`prefix`, ...), or a placeholder.
-    aux: GrowableBuffer,
-    bind2: Option<wgpu::BindGroup>,
+    /// The storage's own data for the shadow walk (group 2).
+    data: StorageData,
     output: wgpu::Texture,
     depth: wgpu::TextureView,
     /// visbuffer: face ids.
@@ -304,7 +299,7 @@ impl Layouts {
             label: Some("raster frame"),
             entries: &[buf(0, wgpu::BufferBindingType::Uniform), buf(1, ro), buf(2, ro)],
         });
-        let aux = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("raster storage"), entries: &[buf(0, ro)] });
+        let aux = gpu_data::layout(gpu, all);
         let images = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("visbuffer images"),
             entries: &[
@@ -421,7 +416,8 @@ impl GpuRasterBackend {
             p.environment,
             VoxelWorldConfig {
                 max_lod: 0,
-                upload_voxels: true,
+                // Region storages (tree64) hold their own data instead of the voxel pool.
+                upload_voxels: matches!(comp.storage().kind, storage::Kind::Pool { .. }),
                 pool_mb: opts.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
@@ -452,10 +448,10 @@ impl GpuRasterBackend {
         let quad_buf = GrowableBuffer::new(&gpu, "quads", 1 << 20, quad_capacity as u64 * QUAD_BYTES, wgpu::BufferUsages::STORAGE);
         let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
-        // Side data covers the same slots as the pool, up to the same limit.
-        let max_slots = (opts.pool_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1);
-        let aux = GrowableBuffer::new(&gpu, "raster aux", 256, (max_slots * comp.storage().aux_words as u64 * 4).max(256), wgpu::BufferUsages::STORAGE);
-        let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm);
+        let data = StorageData::new(&gpu, comp.storage(), opts.pool_mb);
+        // Mesh shadows walk the composed storage too.
+        let occ = visibility::occlusion_wgsl(&comp.storage());
+        let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Some(Occlusion { wgsl: &occ, layout: &layouts.aux }));
         let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone());
         tracing::info!("gpu-raster: storage {}, geometry {}, visibility {}, shading {}", comp.storage, comp.geometry, comp.visibility, comp.shading);
         Ok(Self {
@@ -475,8 +471,7 @@ impl GpuRasterBackend {
             chunk_buf,
             indirect,
             bind0: None,
-            aux,
-            bind2: None,
+            data,
             meshes: HashMap::new(),
             dirty: HashSet::new(),
             alloc: RangeAlloc::new(((1 << 20) / QUAD_BYTES) as u32),
@@ -578,11 +573,6 @@ impl GpuRasterBackend {
         }
         n
     }
-
-    /// Bytes of side data per pool slot for the chosen storage (0 = none).
-    fn aux_bytes(&self) -> u64 {
-        self.comp.storage().aux_words as u64 * 4
-    }
 }
 
 /// Frustum planes (left, right, bottom, top, near) from a reverse-Z infinite projection.
@@ -601,18 +591,8 @@ fn aabb_visible(planes: &[Vec4; 5], min: Vec3, max: Vec3) -> bool {
 impl Renderer for GpuRasterBackend {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let changed = self.world.apply(&self.gpu, updates);
-        let unit = self.aux_bytes();
-        if unit > 0 && self.aux.reserve(&self.gpu, self.world.pool_slots() as u64 * unit)? {
-            self.bind2 = None;
-        }
-        let build = self.comp.storage().build;
+        self.data.update(&self.gpu, &self.world, &changed)?;
         for pos in changed {
-            // Shadow-walk side data, indexed like the pool.
-            if unit > 0 {
-                if let (Some(slot), Some(ChunkData::Dense(d))) = (self.world.slot_of(pos), self.world.chunk(pos)) {
-                    self.gpu.queue.write_buffer(self.aux.buffer(), slot as u64 * unit, bytemuck::cast_slice(&build(d)));
-                }
-            }
             self.dirty.insert(pos);
             for f in Face::ALL {
                 let nb = pos + f.normal();
@@ -722,14 +702,9 @@ impl Renderer for GpuRasterBackend {
                 ],
             }));
         }
-        if self.bind2.is_none() {
-            self.bind2 = Some(self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("raster storage"),
-                layout: &self.layouts.aux,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.aux.buffer().as_entire_binding() }],
-            }));
-        }
-        let (bind0, bind2) = (self.bind0.clone().unwrap(), self.bind2.clone().unwrap());
+        let bind2 = self.data.prepare(&self.gpu, &self.world, &self.layouts.aux).clone();
+        self.mesh.set_occlusion_bind_group(&bind2);
+        let bind0 = self.bind0.clone().unwrap();
         let clear = wgpu::Color { r: fu.sky[0] as f64, g: fu.sky[1] as f64, b: fu.sky[2] as f64, a: 1.0 };
         let out_view = self.output.create_view(&Default::default());
         let n = draws.len() as u32;
@@ -845,7 +820,10 @@ impl Renderer for GpuRasterBackend {
                 ("remeshed".into(), remeshed as f64),
                 ("mesh_ms".into(), mesh_ms),
                 ("mesh_triangles".into(), if req.meshes { self.mesh.triangles() as f64 } else { 0.0 }),
-            ],
+            ]
+            .into_iter()
+            .chain(self.data.counters())
+            .collect(),
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
@@ -899,8 +877,7 @@ impl Renderer for GpuRasterBackend {
     }
 
     fn memory(&self) -> MemoryReport {
-        let aux = if self.aux_bytes() > 0 { self.aux.size() } else { 0 };
-        let gpu = self.world.memory_bytes() + aux + self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size() + self.width as u64 * self.height as u64 * 12;
+        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size() + self.width as u64 * self.height as u64 * 12;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
 }

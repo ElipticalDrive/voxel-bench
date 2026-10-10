@@ -34,13 +34,13 @@ fn face_axes(face: u32) -> vec3<u32> {
 // Quads merged across block types carry this block id; the hit looks the block up.
 const LOOKUP_BLOCK: u32 = 0xffffu;
 
-// Block at a camera-relative cell, read from the voxel world.
+// Block at a camera-relative cell, read through the storage.
 fn block_at(rel_cell: vec3<i32>) -> u32 {
     let abs_cell = rel_cell + vp.cam_block;
-    let val = lookup_chunk(chunk_key(abs_cell >> vec3<u32>(5u), 0u));
-    if (val == EMPTY) { return 0u; }
-    if ((val & UNIFORM_BIT) != 0u) { return val & 0xffffu; }
-    return voxel(val, abs_cell & vec3<i32>(31));
+    let h = s_top(abs_cell >> vec3<u32>(S_TOP));
+    if (h == EMPTY) { return 0u; }
+    if ((h & UNIFORM_BIT) != 0u) { return h & 0xffffu; }
+    return s_block(h, abs_cell & vec3<i32>((1 << S_TOP) - 1));
 }
 
 // Minimum corner of instance `q`'s `face` (camera-block relative), on the face plane.

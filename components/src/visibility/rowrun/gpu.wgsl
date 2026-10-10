@@ -39,29 +39,31 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
     for (var i = 0u; i < vp.max_steps; i++) {
         ct_iters += 1u;
         let abs_cell = cell + vp.cam_block;
-        let key = abs_cell >> vec3<u32>(5u);
+        let key = abs_cell >> vec3<u32>(S_TOP);
         if (any(key != cached)) {
             cached = key;
-            val = lookup_chunk(chunk_key(key, 0u));
+            val = s_top(key);
         }
-        var size = 32;
+        var size = 1 << S_TOP;
         if (val != EMPTY) {
             var b = 0u;
             if ((val & UNIFORM_BIT) != 0u) {
                 b = val & 0xffffu;
                 size = 1;
             } else {
-                let local = abs_cell & vec3<i32>(31);
+                let local = abs_cell & vec3<i32>((1 << S_TOP) - 1);
                 let p = s_probe(val, local);
                 b = p.x;
                 size = i32(p.y);
                 if (b == 0u && size == 1 && x_major) {
                     // Row jump: x columns the ray crosses before leaving this (y, z) row.
-                    let row = s_row(val, local.y, local.z);
+                    // The 32-cell row segment holding the cell (a top cell may be wider).
+                    let x0 = local.x & ~31;
+                    let row = s_row(val, x0, local.y, local.z);
                     let bnd = cell + select(vec3<i32>(0), vec3<i32>(1), stp > vec3<i32>(0));
                     let tyz = (vec2<f32>(vec2<i32>(bnd.y, bnd.z)) - o.yz) * inv.yz;
                     let limit = min(min(tyz.x, tyz.y), tfar);
-                    let lo = cell.x - local.x;
+                    let lo = cell.x - (local.x - x0);
                     let hi = lo + 31;
                     var e = clamp(i32(floor(o.x + d.x * limit)), lo, hi);
                     if ((e - cell.x) * stp.x < 0) { e = cell.x; }
@@ -74,7 +76,7 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
                         if (n >= lo && n <= hi && tbx_exit(e, stp.x, o.x, inv.x) <= limit) { e = n; }
                     }
                     if (e != cell.x) {
-                        let lx = u32(local.x);
+                        let lx = u32(local.x - x0);
                         let le = u32(e - lo);
                         var tgt = e;
                         if (stp.x > 0) {

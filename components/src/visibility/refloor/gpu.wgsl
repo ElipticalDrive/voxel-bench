@@ -1,6 +1,7 @@
 // Traversal `refloor`: gpu-dda's walk without LOD. Each step asks the storage for the
-// largest empty aligned cube at the cell (`s_probe`), steps to its exit and re-floors the
-// position. Ignores the cell containing `o`, like the reference.
+// largest empty aligned cube at the cell (`s_probe`; a whole top cell if it is absent),
+// steps to its exit and re-floors the position. Ignores the cell containing `o`, like the
+// reference.
 
 fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
     var res: Hit;
@@ -28,19 +29,19 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
     for (var i = 0u; i < vp.max_steps; i++) {
         ct_iters += 1u;
         let abs_cell = cell + vp.cam_block;
-        let key = abs_cell >> vec3<u32>(5u);
+        let key = abs_cell >> vec3<u32>(S_TOP);
         if (any(key != cached)) {
             cached = key;
-            val = lookup_chunk(chunk_key(key, 0u));
+            val = s_top(key);
         }
-        var size = 32;
+        var size = 1 << S_TOP;
         if (val != EMPTY) {
             var b = 0u;
             if ((val & UNIFORM_BIT) != 0u) {
                 b = val & 0xffffu;
                 size = 1;
             } else {
-                let p = s_probe(val, abs_cell & vec3<i32>(31));
+                let p = s_probe(val, abs_cell & vec3<i32>((1 << S_TOP) - 1));
                 b = p.x;
                 size = i32(p.y);
             }

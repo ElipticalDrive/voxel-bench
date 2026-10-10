@@ -123,7 +123,7 @@ impl GpuBeam {
             },
         )?;
         // Mesh mode: meshes rasterised first (shaded with voxel shadows), rays capped at their depth.
-        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height);
+        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, None);
         let source = shader_source(DDA_OCCLUSION_WGSL, &format!("{MESH_COMPOSITE_WGSL}\n{}", include_str!("beam.wgsl")));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("beam"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

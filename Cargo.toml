@@ -17,7 +17,6 @@ members = [
     "renderers/cpu-simd",
     "renderers/gpu-dda",
     "renderers/gpu-rtx",
-    "renderers/gpu-tree64",
     "renderers/cpu-simd-loc",
     "renderers/cpu-discover",
     "renderers/gpu-discover",
@@ -51,7 +50,6 @@ cpu-raster = { path = "renderers/cpu-raster" }
 cpu-simd = { path = "renderers/cpu-simd" }
 gpu-dda = { path = "renderers/gpu-dda" }
 gpu-rtx = { path = "renderers/gpu-rtx" }
-gpu-tree64 = { path = "renderers/gpu-tree64" }
 cpu-simd-loc = { path = "renderers/cpu-simd-loc" }
 cpu-discover = { path = "renderers/cpu-discover" }
 gpu-discover = { path = "renderers/gpu-discover" }
