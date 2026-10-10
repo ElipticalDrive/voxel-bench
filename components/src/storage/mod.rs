@@ -25,6 +25,7 @@
 //! clipmap keeps toroidal 3D textures (group 2 bindings 4-7) and its own `s_top`.
 
 pub mod bits;
+pub mod brickmajor;
 pub mod bricks;
 pub mod clipmap;
 pub mod cpu;
@@ -33,6 +34,8 @@ mod cpu_tests;
 pub mod distance;
 pub mod gpu_data;
 pub mod hier;
+pub mod layout;
+pub mod morton;
 pub mod palette;
 pub mod prefix;
 pub mod rows;

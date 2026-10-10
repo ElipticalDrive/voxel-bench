@@ -507,6 +507,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-cpu-raster"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cpu-reference",
+ "glam",
+ "mr-components",
+ "mr-core",
+ "mr-mesh",
+ "rayon",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "backend-gpu-raster"
 version = "0.1.0"
 dependencies = [
@@ -884,52 +899,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "cpu-raster"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cpu-reference",
- "glam",
- "mr-core",
- "mr-mesh",
- "rayon",
- "serde",
- "tracing",
-]
-
-[[package]]
 name = "cpu-reference"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "glam",
- "mr-core",
- "rayon",
- "serde",
- "tracing",
-]
-
-[[package]]
-name = "cpu-simd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cpu-reference",
- "glam",
- "mr-core",
- "rayon",
- "serde",
- "tracing",
-]
-
-[[package]]
-name = "cpu-simd-loc"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cpu-reference",
- "glam",
- "libc",
  "mr-core",
  "rayon",
  "serde",
@@ -2334,13 +2308,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "backend-cpu",
+ "backend-cpu-raster",
  "backend-gpu-raster",
  "backend-gpu-rt",
  "cpu-discover",
- "cpu-raster",
  "cpu-reference",
- "cpu-simd",
- "cpu-simd-loc",
  "cpu-voxelspace",
  "crossbeam-channel",
  "gpu-compute",

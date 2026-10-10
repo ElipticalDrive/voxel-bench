@@ -131,6 +131,7 @@ mod tests {
             agree::<Hier, false, 0b111111>(seed);
             agree::<Prefix, false, 0b111111>(seed);
             agree::<Palette, false, 0b111111>(seed);
+            agree::<crate::storage::morton::Cpu, true, 0b111111>(seed);
             agree::<Hier, true, 0b111111>(seed);
             agree::<Prefix, true, 0b111111>(seed);
             // Level subsets (the `skip*` knobs).

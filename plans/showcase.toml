@@ -26,7 +26,7 @@ compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" 
 compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", visibility = "raster" }
 
 [[renderer]]
-name = "cpu-raster"
+compose = { backend = "cpu-raster", geometry = "greedy", visibility = "raster" }
 
 [[renderer]]
 compose = { backend = "gpu-rt", geometry = "greedy", visibility = "rayquery" }
@@ -38,7 +38,7 @@ compose = { backend = "gpu-rt", geometry = "boxes", visibility = "rayquery" }
 compose = { backend = "gpu-compute", storage = "tree64", visibility = "refloor" }
 
 [[renderer]]
-name = "cpu-simd"
+compose = { backend = "cpu", storage = "bricks", visibility = "refloor" }
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "distance", visibility = "sphere" }

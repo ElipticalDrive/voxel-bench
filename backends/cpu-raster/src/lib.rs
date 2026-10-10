@@ -1,7 +1,10 @@
-//! Software rasteriser on the CPU.
+//! CPU-raster back end: a software rasteriser on the CPU, assembled from components
+//! (`mr-components`, IDEAS §12): **geometry** (`greedy` or `naive` quads, meshed on the
+//! CPU), **visibility** `raster` (below), **shading** `direct` (here the reference
+//! scene's f64 model, with CPU ray-traced shadows). Was the cpu-raster renderer.
 //!
 //! Pipeline per frame:
-//! 1. incremental parallel greedy meshing (shared `mr-mesh`),
+//! 1. incremental parallel meshing by the geometry component,
 //! 2. per-chunk frustum culling and per-face-direction culling,
 //! 3. transform + homogeneous clipping of each quad, fan triangulation,
 //! 4. binning into screen tiles grouped in horizontal bands,
@@ -17,6 +20,8 @@ use cpu_reference::{Pool, Shadows, VoxelScene};
 use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
+use mr_components::geometry::{Knobs, MeshFn};
+use mr_components::{Slot, components};
 use mr_mesh::{FACE_AXES, Mesh, Quad};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -25,8 +30,8 @@ pub fn entry() -> RendererEntry {
     RendererEntry {
         info: || RendererInfo {
             name: "cpu-raster".into(),
-            description: "Software rasteriser: greedy meshes, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading".into(),
-            tags: vec!["cpu".into(), "raster".into(), "software".into(), "visibility-buffer".into()],
+            description: "CPU-raster back end: geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading".into(),
+            tags: vec!["cpu".into(), "raster".into(), "software".into(), "visibility-buffer".into(), "modular".into()],
             modes: vec![RenderMode::Unlit, RenderMode::Lit],
             max_lod: 0,
             params: params(),
@@ -44,16 +49,39 @@ struct Options {
     band_height: u32,
     threads: usize,
     shadows: Shadows,
+    geometry: String,
+    visibility: String,
+    shading: String,
+    merge: String,
+    cull: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { tile_width: 64, band_height: 16, threads: 0, shadows: Shadows::All }
+        Self { tile_width: 64, band_height: 16, threads: 0, shadows: Shadows::All, geometry: "greedy".into(), visibility: "raster".into(), shading: "direct".into(), merge: "block".into(), cull: true }
     }
+}
+
+const BACKEND: &str = "cpu-raster";
+
+/// Checks that `name` is a `slot` component with a cpu-raster implementation.
+fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
+    match mr_components::unavailable(BACKEND, slot, name) {
+        None => Ok(name.to_string()),
+        Some(why) => anyhow::bail!(why),
+    }
+}
+
+fn names(slot: Slot) -> Vec<&'static str> {
+    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| c.name).collect()
 }
 
 fn params() -> Vec<ParamSpec> {
     let mut p = cpu_reference::cpu_params();
+    p.push(ParamSpec::choice("geometry", "Geometry component (quads meshed on the CPU)", &names(Slot::Geometry), "greedy", true));
+    p.push(ParamSpec::choice("visibility", "Visibility component", &names(Slot::Visibility), "raster", false));
+    p.push(ParamSpec::choice("shading", "Shading component", &names(Slot::Shading), "direct", false));
+    p.push(ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours", true, true));
     p.push(ParamSpec::int("tile_width", "Raster tile width (pixels)", 8, 1024, 64, true));
     p.push(ParamSpec::int("band_height", "Raster band height (pixels); bands are the unit of parallelism", 1, 512, 16, true));
     p
@@ -74,6 +102,9 @@ pub struct CpuRaster {
     pool: Pool,
     meshes: HashMap<IVec3, Mesh>,
     dirty: HashSet<IVec3>,
+    /// The geometry component's mesher and knobs.
+    mesh: MeshFn,
+    knobs: Knobs,
     depth: Vec<f32>,
     ids: Vec<u32>,
     pixels: Vec<u8>,
@@ -85,6 +116,11 @@ impl CpuRaster {
         let opts: Options = p.options()?;
         let mut scene = VoxelScene::new(&p);
         scene.shadows = opts.shadows;
+        check(Slot::Visibility, &opts.visibility)?;
+        check(Slot::Shading, &opts.shading)?;
+        anyhow::ensure!(opts.merge == "block", "merge = `{}`: cpu-raster has no per-pixel block lookup (only `block`)", opts.merge);
+        let mesh = mesh_fn(&check(Slot::Geometry, &opts.geometry)?);
+        let knobs = Knobs { cull: opts.cull, ..Default::default() };
         Ok(Self {
             width: p.width,
             height: p.height,
@@ -93,6 +129,8 @@ impl CpuRaster {
             scene,
             meshes: HashMap::new(),
             dirty: HashSet::new(),
+            mesh,
+            knobs,
             depth: vec![0.0; n],
             ids: vec![0; n],
             pixels: vec![0; n * 4],
@@ -104,8 +142,11 @@ impl CpuRaster {
             return 0;
         }
         let dirty: Vec<IVec3> = self.dirty.drain().collect();
-        let scene = &self.scene;
-        let meshes: Vec<(IVec3, Option<Mesh>)> = dirty.par_iter().map(|&p| (p, mr_mesh::mesh_at(p, |q| scene.chunk(q), 0))).collect();
+        let (scene, mesh, knobs) = (&self.scene, self.mesh, self.knobs);
+        let meshes: Vec<(IVec3, Option<Mesh>)> = dirty
+            .par_iter()
+            .map(|&p| (p, scene.chunk(p).map(|c| mesh(c, Face::ALL.map(|f| scene.chunk(p + f.normal())), 0, knobs))))
+            .collect();
         for (p, m) in meshes {
             match m {
                 Some(m) if !m.quads.is_empty() => {
@@ -118,6 +159,11 @@ impl CpuRaster {
         }
         dirty.len()
     }
+}
+
+/// The CPU mesher of a geometry component (quads with per-face counts: greedy, naive).
+fn mesh_fn(name: &str) -> MeshFn {
+    mr_components::geometry::gpu(name).expect("validated").mesh
 }
 
 fn frustum_planes(m: Mat4) -> [Vec4; 5] {
@@ -363,6 +409,14 @@ impl Renderer for CpuRaster {
         match name {
             "tile_width" => self.opts.tile_width = value.as_i64().unwrap_or(64) as u32,
             "band_height" => self.opts.band_height = value.as_i64().unwrap_or(16) as u32,
+            "geometry" => {
+                self.mesh = mesh_fn(&check(Slot::Geometry, value.as_str().unwrap_or(""))?);
+                self.dirty.extend(self.meshes.keys().copied());
+            }
+            "cull" => {
+                self.knobs.cull = value.as_bool().unwrap_or(true);
+                self.dirty.extend(self.meshes.keys().copied());
+            }
             _ => anyhow::bail!("unknown parameter `{name}`"),
         }
         Ok(())

@@ -50,6 +50,8 @@ pub fn entry() -> RendererEntry {
                 "hier" => Box::new(CpuBackend::<Hier>::new(p)?),
                 "prefix" => Box::new(CpuBackend::<Prefix>::new(p)?),
                 "palette" => Box::new(CpuBackend::<Palette>::new(p)?),
+                "brickmajor" => Box::new(CpuBackend::<mr_components::storage::brickmajor::Cpu>::new(p)?),
+                "morton" => Box::new(CpuBackend::<mr_components::storage::morton::Cpu>::new(p)?),
                 s => anyhow::bail!("storage `{s}` has no CPU implementation"),
             })
         },
@@ -79,6 +81,9 @@ fn params() -> Vec<ParamSpec> {
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them. Fewer levels mean fewer failed ascent tests but smaller skips"), true, true));
     }
+    p.push(ParamSpec::choice("schedule", "Work split over the threads: image rows (packets along the row), or screen tiles along a space-filling curve (packets as 2x2 / 4x2 / 4x4 pixel blocks; from cpu-simd-tiles)", &["rows", "tiles"], "rows", true));
+    p.push(ParamSpec::choice("tile_order", "schedule = tiles: order tiles are handed out in", &["morton", "hilbert", "linear"], "morton", true));
+    p.push(ParamSpec::int("tile", "schedule = tiles: tile edge in pixels", 4, 256, 16, true));
     p.push(ParamSpec::bool("perf", "Hardware counters per frame (perf_event_open; cycles, instructions, cache misses per pixel)", false, true));
     p
 }
@@ -98,12 +103,15 @@ struct Options {
     skip4: bool,
     skip8: bool,
     skip16: bool,
+    schedule: String,
+    tile_order: String,
+    tile: u32,
     perf: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { threads: 0, shadows: Shadows::All, storage: "bricks".into(), visibility: "refloor".into(), shading: "direct".into(), exact: true, packet: "1".into(), isa: "auto".into(), skip2: true, skip4: true, skip8: true, skip16: true, perf: false }
+        Self { threads: 0, shadows: Shadows::All, storage: "bricks".into(), visibility: "refloor".into(), shading: "direct".into(), exact: true, packet: "1".into(), isa: "auto".into(), skip2: true, skip4: true, skip8: true, skip16: true, schedule: "rows".into(), tile_order: "morton".into(), tile: 16, perf: false }
     }
 }
 
@@ -116,6 +124,14 @@ enum Traversal {
     Incremental,
     /// `trace_incremental`, exit times recomputed from the integer cell (one multiply).
     IncrementalExact,
+}
+
+fn parse_schedule(s: &str) -> anyhow::Result<bool> {
+    match s {
+        "rows" => Ok(false),
+        "tiles" => Ok(true),
+        _ => anyhow::bail!("schedule must be rows or tiles, got `{s}`"),
+    }
 }
 
 fn traversal(visibility: &str, exact: bool) -> anyhow::Result<Traversal> {
@@ -281,6 +297,12 @@ pub struct CpuBackend<R> {
     /// `visibility` and `exact` knobs (folded into `scene.traversal`).
     visibility: String,
     exact: bool,
+    /// `schedule = tiles` and its tile order and size; `rects` is the work list (rebuilt
+    /// lazily when any of them or the size changes).
+    tiles: bool,
+    tile_order: TileOrder,
+    tile: u32,
+    rects: Vec<Rect>,
     pixels: Vec<u8>,
 }
 
@@ -296,6 +318,10 @@ impl<R: Repr> CpuBackend<R> {
         Ok(Self {
             visibility: o.visibility.clone(),
             exact: o.exact,
+            tiles: parse_schedule(&o.schedule)?,
+            tile_order: parse_order(&o.tile_order)?,
+            tile: o.tile.clamp(4, 256),
+            rects: vec![],
             perf: o.perf,
             counters: None,
             width: p.width,
@@ -322,86 +348,215 @@ impl<R: Repr> CpuBackend<R> {
     }
 }
 
-/// One image row, `N` pixels per packet. `#[inline(always)]` so each ISA wrapper below
-/// compiles its own copy with its target features.
+/// A screen rectangle `[x0, x1) x [y0, y1)`: an image row (`schedule = rows`) or a tile.
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct Rect {
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+}
+
+/// Output pixels, written by disjoint rectangles from several threads.
+#[derive(Copy, Clone)]
+struct OutPtr(*mut u8);
+// SAFETY: every pixel belongs to exactly one rectangle of a frame.
+unsafe impl Send for OutPtr {}
+unsafe impl Sync for OutPtr {}
+
+/// What every rectangle of a frame shares.
+struct Job<'a, R> {
+    scene: &'a Scene<R>,
+    cam: Camera,
+    w: u32,
+    h: u32,
+    mode: RenderMode,
+    packet: usize,
+    /// Packets as 2D pixel blocks (tiles) instead of runs along a row.
+    two_d: bool,
+    out: OutPtr,
+}
+
+/// The pixels of `r`, `N` rays per packet: `N` along a row, or with `two_d` a 1x1, 2x2,
+/// 4x2 or 4x4 block. `#[inline(always)]` so each ISA wrapper below compiles its own copy
+/// with its target features.
 #[inline(always)]
-fn render_row<R: Repr, const N: usize>(scene: &Scene<R>, cam: &Camera, y: u32, w: u32, h: u32, mode: RenderMode, row: &mut [u8]) -> RowWork {
+fn render_rect<R: Repr, const N: usize>(job: &Job<R>, r: Rect) -> RowWork {
+    let (scene, w, h, mode) = (job.scene, job.w, job.h, job.mode);
     let mut work = RowWork::default();
-    let (cam_block, o) = cam.split_position();
-    // Camera basis once per row (Camera::ray_dir recomputes sin/cos per call).
-    let (f, r, u) = (cam.forward(), cam.right(), cam.up());
-    let tan = (cam.fov_y * 0.5).tan();
+    let (cam_block, o) = job.cam.split_position();
+    // Camera basis once per rectangle (Camera::ray_dir recomputes sin/cos per call).
+    let (f, rt, u) = (job.cam.forward(), job.cam.right(), job.cam.up());
+    let tan = (job.cam.fov_y * 0.5).tan();
     let aspect = w as f32 / h as f32;
-    let sy = (1.0 - 2.0 * (y as f32 + 0.5) / h as f32) * tan;
-    let row_dir = f + sy * u;
     let (bmin, bmax) = scene.bounds_rel(cam_block);
     let sky = encode_srgb(scene.env.sky);
-    let mut x0 = 0;
-    while x0 < w {
-        let (mut dx, mut dy, mut dz) = ([f32::NAN; N], [0f32; N], [0f32; N]);
-        let mut dirs = [Vec3::ZERO; N];
-        for l in 0..N {
-            if x0 + (l as u32) < w {
-                let sx = (2.0 * ((x0 + l as u32) as f32 + 0.5) / w as f32 - 1.0) * tan * aspect;
-                let d = (row_dir + sx * r).normalize();
-                (dx[l], dy[l], dz[l]) = (d.x, d.y, d.z);
-                dirs[l] = d;
-            }
+    let (bw, bh) = if job.two_d {
+        match N {
+            1 => (1, 1),
+            4 => (2, 2),
+            8 => (4, 2),
+            _ => (4, 4),
         }
-        let mut hits = [None; N];
-        if scene.traversal == Traversal::Refloor {
-            work.lane_steps += trace_packet::<R, N>(&scene.grid, cam_block, o, &dx, &dy, &dz, 1e7, bmin, bmax, &mut hits) as u64 * N as u64;
-        } else {
+    } else {
+        (N as u32, 1)
+    };
+    let mut by = r.y0;
+    while by < r.y1 {
+        let mut bx = r.x0;
+        while bx < r.x1 {
+            let (mut dx, mut dy, mut dz) = ([f32::NAN; N], [0f32; N], [0f32; N]);
+            let mut dirs = [Vec3::ZERO; N];
+            let mut pix = [u32::MAX; N];
             for l in 0..N {
-                if !dx[l].is_nan() {
-                    let (hit, t) = match scene.traversal {
-                        Traversal::IncrementalExact => trace_incremental::<R, true>(&scene.grid, scene.levels, cam_block, o, dirs[l], 1e7, bmin, bmax),
-                        _ => trace_incremental::<R, false>(&scene.grid, scene.levels, cam_block, o, dirs[l], 1e7, bmin, bmax),
-                    };
-                    hits[l] = hit;
-                    // Occupancy tests: one per step and per descent, plus the first cell and
-                    // the ascent attempts.
-                    work.lane_steps += (t.steps + t.down + t.up + 1) as u64;
-                    work.steps += t.steps as u64;
-                    work.up += t.up as u64;
-                    work.down += t.down as u64;
+                let (x, y) = (bx + l as u32 % bw, by + l as u32 / bw);
+                if x < r.x1 && y < r.y1 {
+                    let sy = (1.0 - 2.0 * (y as f32 + 0.5) / h as f32) * tan;
+                    let sx = (2.0 * (x as f32 + 0.5) / w as f32 - 1.0) * tan * aspect;
+                    let d = (f + sy * u + sx * rt).normalize();
+                    (dx[l], dy[l], dz[l]) = (d.x, d.y, d.z);
+                    dirs[l] = d;
+                    pix[l] = y * w + x;
                 }
             }
-        }
-        for l in 0..N {
-            let x = x0 + l as u32;
-            if x >= w {
-                break;
+            let mut hits = [None; N];
+            if scene.traversal == Traversal::Refloor {
+                work.lane_steps += trace_packet::<R, N>(&scene.grid, cam_block, o, &dx, &dy, &dz, 1e7, bmin, bmax, &mut hits) as u64 * N as u64;
+            } else {
+                for l in 0..N {
+                    if !dx[l].is_nan() {
+                        let (hit, t) = match scene.traversal {
+                            Traversal::IncrementalExact => trace_incremental::<R, true>(&scene.grid, scene.levels, cam_block, o, dirs[l], 1e7, bmin, bmax),
+                            _ => trace_incremental::<R, false>(&scene.grid, scene.levels, cam_block, o, dirs[l], 1e7, bmin, bmax),
+                        };
+                        hits[l] = hit;
+                        // Occupancy tests: one per step and per descent, plus the first
+                        // cell and the ascent attempts.
+                        work.lane_steps += (t.steps + t.down + t.up + 1) as u64;
+                        work.steps += t.steps as u64;
+                        work.up += t.up as u64;
+                        work.down += t.down as u64;
+                    }
+                }
             }
-            let px = match &hits[l] {
-                Some(hit) => scene.shade(cam_block, o, dirs[l], hit, mode),
-                None => sky,
-            };
-            row[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&px);
+            for l in 0..N {
+                if pix[l] == u32::MAX {
+                    continue;
+                }
+                let px = match &hits[l] {
+                    Some(hit) => scene.shade(cam_block, o, dirs[l], hit, mode),
+                    None => sky,
+                };
+                // SAFETY: pix < w * h, and each pixel belongs to exactly one rectangle.
+                unsafe { std::ptr::copy_nonoverlapping(px.as_ptr(), job.out.0.add(pix[l] as usize * 4), 4) };
+            }
+            bx += bw;
         }
-        x0 += N as u32;
+        by += bh;
     }
     work
 }
 
 #[inline(always)]
-fn render_row_dyn<R: Repr>(scene: &Scene<R>, cam: &Camera, y: u32, w: u32, h: u32, mode: RenderMode, row: &mut [u8], packet: usize) -> RowWork {
-    match packet {
-        1 => render_row::<R, 1>(scene, cam, y, w, h, mode, row),
-        4 => render_row::<R, 4>(scene, cam, y, w, h, mode, row),
-        16 => render_row::<R, 16>(scene, cam, y, w, h, mode, row),
-        _ => render_row::<R, 8>(scene, cam, y, w, h, mode, row),
+fn render_rect_dyn<R: Repr>(job: &Job<R>, r: Rect) -> RowWork {
+    match job.packet {
+        1 => render_rect::<R, 1>(job, r),
+        4 => render_rect::<R, 4>(job, r),
+        16 => render_rect::<R, 16>(job, r),
+        _ => render_rect::<R, 8>(job, r),
     }
 }
 
 #[target_feature(enable = "avx2,fma")]
-fn render_row_avx2<R: Repr>(scene: &Scene<R>, cam: &Camera, y: u32, w: u32, h: u32, mode: RenderMode, row: &mut [u8], packet: usize) -> RowWork {
-    render_row_dyn(scene, cam, y, w, h, mode, row, packet)
+fn render_rect_avx2<R: Repr>(job: &Job<R>, r: Rect) -> RowWork {
+    render_rect_dyn(job, r)
 }
 
 #[target_feature(enable = "avx512f,avx512vl,avx512bw,avx2,fma")]
-fn render_row_avx512<R: Repr>(scene: &Scene<R>, cam: &Camera, y: u32, w: u32, h: u32, mode: RenderMode, row: &mut [u8], packet: usize) -> RowWork {
-    render_row_dyn(scene, cam, y, w, h, mode, row, packet)
+fn render_rect_avx512<R: Repr>(job: &Job<R>, r: Rect) -> RowWork {
+    render_rect_dyn(job, r)
+}
+
+fn render_rect_isa<R: Repr>(isa: Isa, job: &Job<R>, r: Rect) -> RowWork {
+    match isa {
+        // SAFETY: only selected when the CPU reports these features.
+        Isa::Avx512 => unsafe { render_rect_avx512(job, r) },
+        Isa::Avx2 => unsafe { render_rect_avx2(job, r) },
+        Isa::Scalar => render_rect_dyn(job, r),
+    }
+}
+
+// ------------------------------------------------------------------------- schedule
+
+/// Order screen tiles are handed to the threads in (`schedule = tiles`).
+#[derive(Copy, Clone, PartialEq, Debug)]
+enum TileOrder {
+    Linear,
+    Morton,
+    Hilbert,
+}
+
+fn parse_order(s: &str) -> anyhow::Result<TileOrder> {
+    Ok(match s {
+        "linear" => TileOrder::Linear,
+        "morton" => TileOrder::Morton,
+        "hilbert" => TileOrder::Hilbert,
+        _ => anyhow::bail!("tile_order must be linear, morton or hilbert, got `{s}`"),
+    })
+}
+
+fn morton2(x: u32, y: u32) -> u64 {
+    let mut r = 0u64;
+    for i in 0..16 {
+        r |= (((x >> i) & 1) as u64) << (2 * i) | (((y >> i) & 1) as u64) << (2 * i + 1);
+    }
+    r
+}
+
+/// Distance along a Hilbert curve on an `n` x `n` grid (`n` a power of two).
+fn hilbert(n: u32, mut x: u32, mut y: u32) -> u64 {
+    let mut d = 0u64;
+    let mut s = n / 2;
+    while s > 0 {
+        let rx = ((x & s) > 0) as u32;
+        let ry = ((y & s) > 0) as u32;
+        d += s as u64 * s as u64 * ((3 * rx) ^ ry) as u64;
+        if ry == 0 {
+            if rx == 1 {
+                x = s - 1 - (x & (s - 1)) + (x & !(s - 1));
+                y = s - 1 - (y & (s - 1)) + (y & !(s - 1));
+                x &= s - 1;
+                y &= s - 1;
+            }
+            std::mem::swap(&mut x, &mut y);
+        }
+        x &= s - 1;
+        y &= s - 1;
+        s /= 2;
+    }
+    d
+}
+
+/// The frame's work items: image rows, or `tile`-pixel tiles along a space-filling curve.
+fn rects(w: u32, h: u32, tiles: bool, tile: u32, order: TileOrder) -> Vec<Rect> {
+    if !tiles {
+        return (0..h).map(|y| Rect { x0: 0, y0: y, x1: w, y1: y + 1 }).collect();
+    }
+    let (tw, th) = (w.div_ceil(tile), h.div_ceil(tile));
+    let n = tw.max(th).next_power_of_two();
+    let mut v: Vec<(u64, Rect)> = Vec::with_capacity((tw * th) as usize);
+    for ty in 0..th {
+        for tx in 0..tw {
+            let key = match order {
+                TileOrder::Linear => (ty * tw + tx) as u64,
+                TileOrder::Morton => morton2(tx, ty),
+                TileOrder::Hilbert => hilbert(n, tx, ty),
+            };
+            v.push((key, Rect { x0: tx * tile, y0: ty * tile, x1: ((tx + 1) * tile).min(w), y1: ((ty + 1) * tile).min(h) }));
+        }
+    }
+    v.sort_by_key(|e| e.0);
+    v.into_iter().map(|e| e.1).collect()
 }
 
 impl<R: Repr> CpuBackend<R> {
@@ -512,17 +667,13 @@ impl<R: Repr> Renderer for CpuBackend<R> {
         if let Some(c) = counters {
             c.start();
         }
-        let work: RowWork = self.pool.pool.install(|| {
-            pixels.par_chunks_mut((w * 4) as usize).enumerate().map(|(y, row)| {
-                let y = y as u32;
-                match isa {
-                    // SAFETY: only selected when the CPU reports these features.
-                    Isa::Avx512 => unsafe { render_row_avx512(scene, &cam, y, w, h, mode, row, packet) },
-                    Isa::Avx2 => unsafe { render_row_avx2(scene, &cam, y, w, h, mode, row, packet) },
-                    Isa::Scalar => render_row_dyn(scene, &cam, y, w, h, mode, row, packet),
-                }
-            }).reduce(RowWork::default, |a, b| a + b)
-        });
+        if self.rects.is_empty() {
+            self.rects = rects(w, h, self.tiles, self.tile, self.tile_order);
+        }
+        let job = Job { scene, cam, w, h, mode, packet, two_d: self.tiles, out: OutPtr(pixels.as_mut_ptr()) };
+        let rect_list = &self.rects;
+        let work: RowWork = self.pool.pool.install(|| rect_list.par_iter().map(|&r| render_rect_isa(isa, &job, r)).reduce(RowWork::default, |a, b| a + b));
+        drop(job);
         let hw = counters.map(|c| c.stop());
         self.pixels = pixels;
         let px = (w * h) as f64;
@@ -585,6 +736,9 @@ impl<R: Repr> Renderer for CpuBackend<R> {
                 check(Slot::Shading, value.as_str().unwrap_or(""))?;
             }
             "packet" => self.packet = value.as_str().and_then(|s| s.parse().ok()).unwrap_or(8),
+            "schedule" => (self.tiles, self.rects) = (parse_schedule(value.as_str().unwrap_or(""))?, vec![]),
+            "tile_order" => (self.tile_order, self.rects) = (parse_order(value.as_str().unwrap_or(""))?, vec![]),
+            "tile" => (self.tile, self.rects) = (value.as_i64().unwrap_or(16).clamp(4, 256) as u32, vec![]),
             "isa" => {
                 self.isa_choice = value.as_str().unwrap_or("auto").to_string();
                 self.isa = detect(&self.isa_choice);
@@ -602,6 +756,7 @@ impl<R: Repr> Renderer for CpuBackend<R> {
         self.width = width;
         self.height = height;
         self.pixels = vec![0; (width * height * 4) as usize];
+        self.rects.clear();
         Ok(())
     }
 

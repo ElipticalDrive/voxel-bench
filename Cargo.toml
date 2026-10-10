@@ -13,9 +13,6 @@ members = [
     "crates/mr-gpu",
     "crates/mr-mesh",
     "renderers/cpu-reference",
-    "renderers/cpu-raster",
-    "renderers/cpu-simd",
-    "renderers/cpu-simd-loc",
     "renderers/cpu-discover",
     "renderers/gpu-discover",
     "renderers/cpu-voxelspace",
@@ -26,6 +23,7 @@ members = [
     "backends/cpu",
     "backends/gpu-raster",
     "backends/gpu-rt",
+    "backends/cpu-raster",
 ]
 
 [workspace.package]
@@ -40,9 +38,7 @@ mr-worker = { path = "crates/mr-worker" }
 mr-gpu = { path = "crates/mr-gpu" }
 mr-mesh = { path = "crates/mr-mesh" }
 cpu-reference = { path = "renderers/cpu-reference" }
-cpu-raster = { path = "renderers/cpu-raster" }
-cpu-simd = { path = "renderers/cpu-simd" }
-cpu-simd-loc = { path = "renderers/cpu-simd-loc" }
+backend-cpu-raster = { path = "backends/cpu-raster" }
 cpu-discover = { path = "renderers/cpu-discover" }
 gpu-discover = { path = "renderers/gpu-discover" }
 backend-cpu = { path = "backends/cpu" }

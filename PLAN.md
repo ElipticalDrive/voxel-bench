@@ -31,7 +31,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 ## How to verify and measure
 
 - Builds, zero warnings: `cargo build` and `cargo build --release`.
-- Unit tests: `cargo test -q --workspace` (41, including: the component registry
+- Unit tests: `cargo test -q --workspace` (40, including: the component registry
   matches its implementations; storages are exact; the CPU walks agree; every shipped
   plan loads).
 - GPU end-to-end tests: `cargo test -q --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve` (3, including mesh mode).
@@ -89,17 +89,18 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   - gpu-compute: storages bricks, hier, prefix, distance, rows, tree64, svo_dag,
     clipmap; prepass none, beam; visibility refloor, incremental, sphere, rowrun;
     shading direct, pathtrace (128 combinations);
-  - cpu: storages bricks, hier, prefix, u8, bits, palette; visibility refloor,
-    incremental; shading direct (12 combinations);
+  - cpu: storages bricks, hier, prefix, u8, bits, palette, brickmajor, morton;
+    visibility refloor, incremental; shading direct (16 combinations);
+  - cpu-raster: geometry greedy, naive; visibility raster; shading direct (2);
   - gpu-raster: geometry greedy, naive, cubes; visibility raster, visbuffer, gbuffer;
     storage (for shadow rays) the eight GPU ones; shading direct (72 combinations);
   - gpu-rt: geometry greedy, naive, boxes; visibility rayquery; shading direct,
     pathtrace (6 combinations).
 - **Legacy renderers** (not yet split into components): cpu-reference (stays a
-  monolith on purpose), cpu-raster, cpu-simd, cpu-simd-loc (4), cpu-voxelspace,
+  monolith on purpose), cpu-voxelspace,
   cpu-discover, cpu-cluster, gpu-discover,
   gpu-splat, gpu-voxelspace.
-- **Verification:** zero warnings in both builds, 41 unit tests and 3 GPU end-to-end
+- **Verification:** zero warnings in both builds, 40 unit tests and 3 GPU end-to-end
   tests pass.
 - **Tools:**
   - GUI with the component chooser, live knobs, hot swaps, quality probes and an
@@ -199,7 +200,8 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
    - 4h. ~~hardware RT as a back end~~ (done: `gpu-rt`; retired gpu-rtx, gpu-rtx-bricks).
    - 4i. ~~fragment-shader dispatch and the hybrid G-buffer~~ (done: gpu-compute knob
      `dispatch`, raster visibility `gbuffer`; retired gpu-frag-dda, gpu-hybrid).
-   - 4j. CPU: cpu-simd, cpu-simd-loc layouts and tiles, cpu-raster.
+   - 4j. ~~CPU: cpu-simd, cpu-simd-loc layouts and tiles, cpu-raster~~ (done: storages
+     brickmajor / morton, cpu knob `schedule`, back end `cpu-raster`).
    - 4k. discovery as raster / CPU visibility (gpu-discover, cpu-discover, cpu-cluster).
    - 4l. their own representations: voxelspace (gpu, cpu) and splats.
    cpu-reference stays a monolith on purpose.
@@ -559,6 +561,27 @@ earlier if meshes become more urgent; 7c depends on 6′.
   gpu-hybrid drew forward (0.28 ms), which `greedy + raster` covers (0.26); `gbuffer`
   always defers (0.36).
 - **Retired:** gpu-frag-dda, gpu-hybrid (the gpu-frag-hybrid crate).
+
+### 2026-10-10: phase 4j (CPU)
+- **cpu-simd** is `cpu: bricks + refloor` (identical image). The cpu back end's work
+  loop is now per rectangle: image rows, or with knob `schedule = tiles` screen tiles
+  along a Morton / Hilbert / linear curve with 2D packets (`tile_order`, `tile`; from
+  cpu-simd-tiles). Writing pixels through rectangles made plain rows 9% faster than
+  before (18.6 vs 17.0 fps unlit), so `cpu: bricks` now beats cpu-simd (17.3).
+- **Storages `brickmajor` and `morton`** (cpu-simd-loc's block-id layouts): one generic
+  `storage::layout`. Measured with the counters: L1d misses halve (0.53 vs 1.01 per
+  pixel) and instructions drop slightly, but IPC drops too (2.08 vs 2.19), so cycles do
+  not improve; they run 3–4% behind cpu-simd-brickmajor/morton and behind plain
+  `bricks`. The former +5% of those renderers was their own codegen, not the layout:
+  CPU traversal is not memory bound (as found before). Tiles: 19.3 vs 19.6 fps unlit
+  (−1.5%), 14.8 vs 15.2 lit. Software prefetch was not ported (measured: only adds
+  instructions).
+- **Back end `cpu-raster`** (the renderer's crate moved to `backends/cpu-raster`):
+  geometry greedy or naive (the geometry component's CPU mesher), visibility raster,
+  shading direct (the reference model). Same image and speed (15.6 / 12.3 fps vs 15.3 /
+  12.0); naive on the CPU is new (12.4 / 10.4 fps).
+- **Retired:** cpu-simd, cpu-simd-u16-era presets cpu-simd-brickmajor / -morton /
+  -tiles / -best (the cpu-simd and cpu-simd-loc crates).
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

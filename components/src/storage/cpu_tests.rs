@@ -134,6 +134,8 @@ mod tests {
             check_occupied::<Hier>(&d);
             check_occupied::<Prefix>(&d);
             check_occupied::<Palette>(&d);
+            check_occupied::<crate::storage::brickmajor::Cpu>(&d);
+            check_occupied::<crate::storage::morton::Cpu>(&d);
         }
     }
 
@@ -145,6 +147,8 @@ mod tests {
             check::<Bits>(&d);
             check::<Hier>(&d);
             check::<Palette>(&d);
+            check::<crate::storage::brickmajor::Cpu>(&d);
+            check::<crate::storage::morton::Cpu>(&d);
             if distinct < 255 {
                 check::<U8>(&d);
             }

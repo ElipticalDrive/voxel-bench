@@ -94,6 +94,12 @@ pub const BACKENDS: &[BackendInfo] = &[
         renderer: Some("gpu-rt"),
         slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "rayquery"), (Slot::Shading, "direct")],
     },
+    BackendInfo {
+        name: "cpu-raster",
+        description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
+        renderer: Some("cpu-raster"),
+        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct")],
+    },
 ];
 
 pub struct ComponentInfo {
@@ -116,8 +122,9 @@ const GPU_ST: &[&str] = &["gpu-compute", "gpu-raster"];
 const ALL_ST: &[&str] = &["gpu-compute", "cpu", "gpu-raster"];
 const RASTER: &[&str] = &["gpu-raster"];
 const RT: &[&str] = &["gpu-rt"];
-const RASTER_RT: &[&str] = &["gpu-raster", "gpu-rt"];
-const SHADE_ALL: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-rt"];
+const RASTER_RT: &[&str] = &["gpu-raster", "gpu-rt", "cpu-raster"];
+const RASTERS: &[&str] = &["gpu-raster", "cpu-raster"];
+const SHADE_ALL: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-rt", "cpu-raster"];
 const COMPUTE_RT: &[&str] = &["gpu-compute", "gpu-rt"];
 
 pub const COMPONENTS: &[ComponentInfo] = &[
@@ -130,6 +137,8 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Storage, name: "tree64", description: "Sparse 64-tree per 64^3 region (from gpu-tree64): 4x4x4 child masks, popcount-packed children, compressed leaves, uniform subtrees collapsed (levels 0, 2, 4, 6). Owns its data: no voxel pool, ~15% of its VRAM.", backends: GPU_ST, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "svo_dag", description: "Sparse voxel DAG (from gpu-svo-dag; Kampe et al. 2013): per-chunk binary octrees, identical subtrees shared across all chunks (~3x dedup on terrain). No voxel pool: the smallest GPU footprint.", backends: GPU_ST, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "clipmap", description: "Camera-centred toroidal 3D textures (from gpu-clipmap): block ids, 4^3 brick occupancy and slot tags, read with textureLoad only; no hash table, no voxel pool.", backends: GPU_ST, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "brickmajor", description: "bricks with each 4^3 brick's 64 ids contiguous (128 bytes; from cpu-simd-brickmajor): fewer L1/L2 misses per ray.", backends: CPU, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "morton", description: "bricks with ids in Morton (Z-)order over the chunk (from cpu-simd-morton): bricks contiguous and neighbouring bricks close.", backends: CPU, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "u8", description: "Brick mask plus a u8 id per voxel: half of bricks' footprint (32 KiB per chunk; at most 256 block types).", backends: CPU, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "bits", description: "One occupancy bit per voxel, brick-major (4 KiB per chunk); block ids read only at the hit.", backends: CPU, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "palette", description: "Per-chunk palette with indices packed at 1/2/4/8/16 bits (7x smaller than bricks on terrain).", backends: CPU, provides: &[], uses: &[] },
@@ -139,7 +148,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Visibility, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", backends: GPU, provides: &[], uses: &["s_dist"] },
     ComponentInfo { slot: Slot::Visibility, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: GPU, provides: &[], uses: &["s_row"] },
     ComponentInfo { slot: Slot::Visibility, name: "rayquery", description: "Hardware ray queries against the acceleration structure (RT cores) for primary, shadow and bounce rays. Knob: cull (triangle facing culled for primary rays).", backends: RT, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "raster", description: "Depth-tested rasterisation of the geometry; the fragment shader intersects the pixel's ray with the face plane and shades. Knob: depth_prepass (lit: shade once per pixel).", backends: RASTER, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "raster", description: "Depth-tested rasterisation of the geometry; each pixel's ray is intersected with the face plane and shaded. gpu-raster: knob depth_prepass (lit: shade once per pixel). cpu-raster: edge functions into a visibility buffer, then deferred shading; knobs tile_width, band_height.", backends: RASTERS, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "gbuffer", description: "G-buffer (from gpu-hybrid): the raster pass writes the hit point, face and block; a compute pass rebuilds the hit and shades once per pixel. 20 bytes per pixel against visbuffer's 4, but no refetch.", backends: RASTER, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "visbuffer", description: "Visibility buffer: the raster pass writes only a face id and depth; a compute pass reconstructs the hit and shades once per pixel, independent of overdraw.", backends: RASTER, provides: &[], uses: &[] },
     // Prepass.
@@ -367,6 +376,15 @@ mod tests {
         assert!(Composition { geometry: "greedy".into(), ..Default::default() }.validate().is_err());
         assert!(Composition { visibility: "raster".into(), ..Default::default() }.validate().is_err());
         assert!(Composition { backend: "gpu-rt".into(), ..Default::default() }.validate().is_err(), "storage does not apply on gpu-rt");
+        for c in COMPONENTS.iter().filter(|c| c.backends.contains(&"cpu-raster")) {
+            let ok = match c.slot {
+                Slot::Geometry => geometry::gpu(c.name).is_some_and(|g| g.per_face),
+                Slot::Visibility => c.name == "raster",
+                Slot::Shading => c.name == "direct",
+                _ => false,
+            };
+            assert!(ok, "cpu-raster {} `{}`", c.slot.name(), c.name);
+        }
         for c in COMPONENTS.iter().filter(|c| c.backends.contains(&"gpu-rt")) {
             let ok = match c.slot {
                 Slot::Geometry => geometry::rt(c.name).is_some(),
