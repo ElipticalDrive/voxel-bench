@@ -63,6 +63,7 @@ fn params() -> Vec<ParamSpec> {
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true));
     }
+    p.push(ParamSpec::choice("dispatch", "How pixels are run: `compute` (one compute thread per pixel) or `fragment` (a fragment shader over a full-screen triangle; was gpu-frag-dda)", &["compute", "fragment"], "compute", true));
     p.push(ParamSpec::choice("view", "image: the rendered scene. steps: primary-ray loop iterations per pixel (red = low 8 bits, green = high bits, blue = log-scale brightness)", &["image", "steps"], "image", true));
     p.extend([
         shadows_param(),
@@ -93,6 +94,7 @@ struct Options {
     skip8: bool,
     skip16: bool,
     view: String,
+    dispatch: String,
     shadows: Shadows,
     pool_mb: u32,
     max_steps: u32,
@@ -117,6 +119,7 @@ impl Default for Options {
             skip8: true,
             skip16: true,
             view: "image".into(),
+            dispatch: "compute".into(),
             shadows: Shadows::All,
             pool_mb: 2048,
             max_steps: 2048,
@@ -141,6 +144,8 @@ struct Composition {
     steps_view: bool,
     /// LOD chunks are streamed and walked (fixed at creation).
     lod: bool,
+    /// `dispatch = "fragment"`: pixels in a fragment shader over a full-screen triangle.
+    fragment: bool,
 }
 
 impl Composition {
@@ -204,6 +209,14 @@ fn lod_blocker(c: &Composition) -> Option<String> {
     }
 }
 
+fn parse_dispatch(s: &str) -> anyhow::Result<bool> {
+    match s {
+        "compute" => Ok(false),
+        "fragment" => Ok(true),
+        _ => anyhow::bail!("dispatch must be `compute` or `fragment`, got `{s}`"),
+    }
+}
+
 fn parse_view(s: &str) -> anyhow::Result<bool> {
     match s {
         "image" => Ok(false),
@@ -260,7 +273,7 @@ pub struct GpuCompose {
     comp: Composition,
     /// Composition the pipeline was built from (rebuilt lazily when knobs change it).
     built: Composition,
-    pipeline: wgpu::ComputePipeline,
+    pipeline: Main,
     /// The prepass component's own pass, if it has one.
     prepass: Option<wgpu::ComputePipeline>,
     pipeline_layout: wgpu::PipelineLayout,
@@ -269,6 +282,9 @@ pub struct GpuCompose {
     camera_buf: wgpu::Buffer,
     output: wgpu::Texture,
     bind0: wgpu::BindGroup,
+    /// Group 0 for `dispatch = "fragment"`: a 1x1 stand-in instead of the output texture.
+    bind0_frag: wgpu::BindGroup,
+    stand_in: wgpu::Texture,
     /// Prepass output: one f32 per tile (sized for 1-pixel tiles), and statistics.
     beam: Beam,
     accum: Accum,
@@ -294,6 +310,7 @@ impl GpuCompose {
             steps_view: parse_view(&opts.view)?,
             levels: [opts.skip2, opts.skip4, opts.skip8, opts.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)),
             lod: false,
+            fragment: parse_dispatch(&opts.dispatch)?,
         };
         let mut comp = comp;
         if p.max_lod > 0 {
@@ -328,13 +345,15 @@ impl GpuCompose {
             },
         )?;
         let compute = wgpu::ShaderStages::COMPUTE;
+        // Fragment too: `dispatch = "fragment"` runs the pixels in a fragment shader.
+        let pixel = compute | wgpu::ShaderStages::FRAGMENT;
         // Fragment too: mesh shadows walk the composed storage.
         let layout2 = gpu_data::layout(&gpu, &comp.storage(), compute | wgpu::ShaderStages::FRAGMENT);
         let occ = visibility::occlusion_wgsl(&comp.storage(), comp.lod);
         let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Some(Occlusion { wgsl: &occ, layout: &layout2 }));
         let rw = |binding| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: compute,
+            visibility: pixel,
             ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None },
             count: None,
         };
@@ -346,7 +365,7 @@ impl GpuCompose {
                 rw(4),
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: compute,
+                    visibility: pixel,
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
@@ -379,6 +398,8 @@ impl GpuCompose {
         let beam = Beam::new(&gpu, p.width, p.height);
         let accum = Accum { buf: Accum::buffer(&gpu, p.width, p.height, &comp.shading), count: 0, frame: 0, last: None, accumulate: opts.accumulate, bounces: opts.bounces.min(8), spp: opts.spp.clamp(1, 64) };
         let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &beam, &accum.buf);
+        let stand_in = mr_gpu::output_texture(&gpu, 1, 1);
+        let bind0_frag = Self::bind0(&gpu, &layout0, &camera_buf, &stand_in, &beam, &accum.buf);
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
         tracing::info!("gpu-compute: storage {}, visibility {}, shading {}", comp.storage, comp.visibility, comp.shading);
@@ -396,6 +417,8 @@ impl GpuCompose {
             camera_buf,
             output,
             bind0,
+            bind0_frag,
+            stand_in,
             beam,
             accum,
             data,
@@ -408,7 +431,7 @@ impl GpuCompose {
     }
 
     /// The main pipeline and, if the prepass has one, its pass.
-    fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, comp: &Composition) -> anyhow::Result<(wgpu::ComputePipeline, Option<wgpu::ComputePipeline>)> {
+    fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, comp: &Composition) -> anyhow::Result<(Main, Option<wgpu::ComputePipeline>)> {
         let source = comp.source();
         let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("compose"), source: wgpu::ShaderSource::Wgsl(source.into()) });
@@ -422,12 +445,32 @@ impl GpuCompose {
                 cache: None,
             })
         };
-        let pipeline = entry("main");
+        let pipeline = if comp.fragment {
+            let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+            Main::Fragment(gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("compose fragment"),
+                layout: Some(layout),
+                vertex: wgpu::VertexState { module: &module, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_full"), compilation_options: Default::default(), targets: &targets }),
+                multiview_mask: None,
+                cache: None,
+            }))
+        } else {
+            Main::Compute(entry("main"))
+        };
         let prepass = mr_components::prepass::has_pass(comp.prepass()).then(|| entry("prepass"));
         if let Some(e) = pollster::block_on(scope.pop()) {
             anyhow::bail!("compiling {comp:?}: {e}");
         }
         Ok((pipeline, prepass))
+    }
+
+    fn rebind(&mut self) {
+        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam, &self.accum.buf);
+        self.bind0_frag = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.stand_in, &self.beam, &self.accum.buf);
     }
 
     fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, beam: &Beam, accum: &wgpu::Buffer) -> wgpu::BindGroup {
@@ -465,7 +508,7 @@ impl Renderer for GpuCompose {
             (self.pipeline, self.prepass) = Self::pipeline(&self.gpu, &self.pipeline_layout, &self.comp)?;
             if self.comp.shading != self.built.shading {
                 self.accum.buf = Accum::buffer(&self.gpu, self.width, self.height, &self.comp.shading);
-                self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam, &self.accum.buf);
+                self.rebind();
             }
             self.built = self.comp.clone();
         }
@@ -522,17 +565,43 @@ impl Renderer for GpuCompose {
             pass.dispatch_workgroups(self.width.div_ceil(tile).div_ceil(8), self.height.div_ceil(tile).div_ceil(8), 1);
         }
         let first = !meshes_on && self.prepass.is_none();
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("compose"),
-                timestamp_writes: self.ring.compute_timestamps(ticket, first, true),
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind0, &[]);
-            pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &bind2, &[]);
-            pass.set_bind_group(3, self.meshes.bind_group(), &[]);
-            pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
+        match &self.pipeline {
+            Main::Compute(pipeline) => {
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("compose"),
+                    timestamp_writes: self.ring.compute_timestamps(ticket, first, true),
+                });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &self.bind0, &[]);
+                pass.set_bind_group(1, &world_bg, &[]);
+                pass.set_bind_group(2, &bind2, &[]);
+                pass.set_bind_group(3, self.meshes.bind_group(), &[]);
+                pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
+            }
+            Main::Fragment(pipeline) => {
+                let view = self.output.create_view(&Default::default());
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("compose fragment"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: self.ring.render_timestamps(ticket, first, true),
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(pipeline);
+                // The output is the colour attachment here, so group 0 binds a stand-in
+                // for the storage-texture output.
+                pass.set_bind_group(0, &self.bind0_frag, &[]);
+                pass.set_bind_group(1, &world_bg, &[]);
+                pass.set_bind_group(2, &bind2, &[]);
+                pass.set_bind_group(3, self.meshes.bind_group(), &[]);
+                pass.draw(0..3, 0..1);
+            }
         }
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
@@ -579,6 +648,7 @@ impl Renderer for GpuCompose {
             "spp" => (self.accum.spp, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(1, 64) as u32, 0),
             "accumulate" => self.accum.accumulate = value.as_bool().unwrap_or(true),
             "view" => self.comp.steps_view = parse_view(value.as_str().unwrap_or(""))?,
+            "dispatch" => self.comp.fragment = parse_dispatch(value.as_str().unwrap_or(""))?,
             "exact" => self.comp.exact = value.as_bool().unwrap_or(true),
             "skip2" | "skip4" | "skip8" | "skip16" => {
                 let bit = 1 << name[4..].parse::<u32>()?.trailing_zeros();
@@ -605,7 +675,7 @@ impl Renderer for GpuCompose {
         self.beam = Beam::new(&self.gpu, width, height);
         self.accum.buf = Accum::buffer(&self.gpu, width, height, &self.built.shading);
         self.accum.count = 0;
-        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam, &self.accum.buf);
+        self.rebind();
         self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
         Ok(())
     }
@@ -666,4 +736,10 @@ impl Beam {
         let state = self.state.clone();
         self.read.slice(..).map_async(wgpu::MapMode::Read, move |r| state.store(if r.is_ok() { 2 } else { 0 }, Ordering::Release));
     }
+}
+
+/// The per-pixel pipeline: compute, or a fragment shader over a full-screen triangle.
+enum Main {
+    Compute(wgpu::ComputePipeline),
+    Fragment(wgpu::RenderPipeline),
 }

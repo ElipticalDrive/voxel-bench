@@ -247,9 +247,11 @@ pub struct MeshComposite {
 impl MeshComposite {
     pub fn new(gpu: &Gpu, world: &VoxelWorld, width: u32, height: u32, occlusion: Option<Occlusion>) -> Self {
         let dev = &gpu.device;
+        // Fragment too: ray casters may run per pixel in a fragment shader.
+        let stages = wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT;
         let tex = |binding, sample_type| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
+            visibility: stages,
             ty: wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
             count: None,
         };
@@ -260,7 +262,7 @@ impl MeshComposite {
                 tex(1, wgpu::TextureSampleType::Depth),
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    visibility: stages,
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },

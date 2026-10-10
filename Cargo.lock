@@ -1733,23 +1733,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-frag-hybrid"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "mr-mesh",
- "pollster",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "gpu-splat"
 version = "0.1.0"
 dependencies = [
@@ -2362,7 +2345,6 @@ dependencies = [
  "crossbeam-channel",
  "gpu-compute",
  "gpu-discover",
- "gpu-frag-hybrid",
  "gpu-splat",
  "gpu-voxelspace",
  "mr-core",

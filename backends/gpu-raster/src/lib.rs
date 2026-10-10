@@ -5,7 +5,7 @@
 //!   incremental; `greedy`, `naive`, `cubes`), drawn with vertex pulling and one
 //!   multi-draw-indirect call after per-chunk frustum and per-face-direction culling;
 //! * **visibility** decides how the front face of each pixel is found and shaded:
-//!   `raster` (forward, with an optional depth pre-pass in lit mode) or `visbuffer` (ids,
+//!   `raster` (forward, with an optional depth pre-pass in lit mode), `gbuffer` or `visbuffer` (ids,
 //!   then one compute shading pass);
 //! * **shading** colours the hit (`shade_hit`, the same component as on the ray-walk back
 //!   ends), with lit-mode shadow rays walking the composed **storage** (refloor).
@@ -149,8 +149,13 @@ impl Composition {
         mr_components::geometry::gpu(&self.geometry).expect("validated")
     }
 
-    fn visbuffer(&self) -> bool {
-        self.visibility == "visbuffer"
+    /// Deferred visibility (ids or a G-buffer, then a compute shading pass).
+    fn deferred(&self) -> bool {
+        self.visibility == "visbuffer" || self.gbuffer()
+    }
+
+    fn gbuffer(&self) -> bool {
+        self.visibility == "gbuffer"
     }
 
     fn source(&self) -> String {
@@ -219,7 +224,9 @@ impl ChunkMesh {
 /// The pipelines of one composition.
 enum Pipelines {
     Raster { fill: wgpu::RenderPipeline, depth: wgpu::RenderPipeline, equal: wgpu::RenderPipeline },
-    Visbuffer { ids: wgpu::RenderPipeline, shade: wgpu::ComputePipeline },
+    /// visbuffer and gbuffer: the raster pass writes `ids` (and with `gbuffer` the hit point
+    /// first), then `shade` runs once per pixel.
+    Deferred { ids: wgpu::RenderPipeline, shade: wgpu::ComputePipeline },
 }
 
 struct Layouts {
@@ -250,8 +257,10 @@ pub struct GpuRasterBackend {
     data: StorageData,
     output: wgpu::Texture,
     depth: wgpu::TextureView,
-    /// visbuffer: face ids.
+    /// visbuffer: face ids; gbuffer: block ids.
     ids: wgpu::TextureView,
+    /// gbuffer: hit point and face (1x1 otherwise).
+    gpos: wgpu::TextureView,
     ring: FrameRing,
     meshes: HashMap<IVec3, ChunkMesh>,
     dirty: HashSet<IVec3>,
@@ -286,6 +295,12 @@ fn ids_view(gpu: &Gpu, w: u32, h: u32) -> wgpu::TextureView {
     target(gpu, "visibility ids", w, h, wgpu::TextureFormat::R32Uint, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
 }
 
+/// The G-buffer's hit points, full size only while `gbuffer` is chosen.
+fn gpos_view(gpu: &Gpu, w: u32, h: u32, used: bool) -> wgpu::TextureView {
+    let (w, h) = if used { (w, h) } else { (1, 1) };
+    target(gpu, "gbuffer points", w, h, wgpu::TextureFormat::Rgba32Float, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
+}
+
 impl Layouts {
     fn new(gpu: &Gpu, world: &VoxelWorld, st: &storage::GpuStorage) -> Self {
         let all = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
@@ -302,8 +317,14 @@ impl Layouts {
         });
         let aux = gpu_data::layout(gpu, st, all);
         let images = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("visbuffer images"),
+            label: Some("deferred images"),
             entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -328,7 +349,7 @@ impl Layouts {
             immediate_size: 0,
         });
         let shade = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("visbuffer shade"),
+            label: Some("deferred shade"),
             bind_group_layouts: &[Some(&frame), Some(world.layout()), Some(&aux), Some(&images)],
             immediate_size: 0,
         });
@@ -368,11 +389,38 @@ impl Pipelines {
         };
         use wgpu::CompareFunction::{Equal, Greater};
         use wgpu::TextureFormat::{R32Uint, Rgba8Unorm};
-        let p = if comp.visbuffer() {
-            Pipelines::Visbuffer {
-                ids: pipeline("visibility ids", R32Uint, true, Greater, true),
+        let p = if comp.deferred() {
+            let ids = if comp.gbuffer() {
+                let targets = [Some(wgpu::TextureFormat::Rgba32Float.into()), Some(R32Uint.into())];
+                gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("gbuffer"),
+                    layout: Some(&layouts.render),
+                    vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                    primitive: wgpu::PrimitiveState {
+                        topology: if geo.strip { wgpu::PrimitiveTopology::TriangleStrip } else { wgpu::PrimitiveTopology::TriangleList },
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: Some(wgpu::Face::Back),
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(Greater),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &targets }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            } else {
+                pipeline("visibility ids", R32Uint, true, Greater, true)
+            };
+            Pipelines::Deferred {
+                ids,
                 shade: gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("visbuffer shade"),
+                    label: Some("deferred shade"),
                     layout: Some(&layouts.shade),
                     module: &module,
                     entry_point: Some("shade"),
@@ -460,6 +508,7 @@ impl GpuRasterBackend {
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
             depth: depth_view(&gpu, p.width, p.height),
             ids: ids_view(&gpu, p.width, p.height),
+            gpos: gpos_view(&gpu, p.width, p.height, comp.gbuffer()),
             ring,
             world,
             opts,
@@ -616,6 +665,9 @@ impl Renderer for GpuRasterBackend {
             if self.comp.geometry != self.built.geometry {
                 self.remesh_all();
             }
+            if self.comp.gbuffer() != self.built.gbuffer() {
+                self.gpos = gpos_view(&self.gpu, self.width, self.height, self.comp.gbuffer());
+            }
             self.built = self.comp.clone();
         }
         let ticket = self.ring.begin(&self.gpu, sink)?;
@@ -757,18 +809,18 @@ impl Renderer for GpuRasterBackend {
                     self.mesh.draw(&mut pass, if prepass { MeshPass::Equal } else { MeshPass::Fill }, &world_bg);
                 }
             }
-            Pipelines::Visbuffer { ids, shade } => {
+            Pipelines::Deferred { ids, shade } => {
                 // Meshes are drawn after shading, depth-tested against the faces.
                 let meshes = req.meshes && self.mesh.triangles() > 0;
                 {
+                    let attach = |view| {
+                        Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })
+                    };
+                    let gbuffer = [attach(&self.gpos), attach(&self.ids)];
+                    let idbuffer = [attach(&self.ids)];
                     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("visibility ids"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &self.ids,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
-                        })],
+                        color_attachments: if self.comp.gbuffer() { &gbuffer } else { &idbuffer },
                         depth_stencil_attachment: depth_attachment(wgpu::LoadOp::Clear(0.0), if meshes { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard }),
                         timestamp_writes: self.ring.render_timestamps(ticket, true, false),
                         occlusion_query_set: None,
@@ -777,15 +829,16 @@ impl Renderer for GpuRasterBackend {
                     draw(&mut pass, ids);
                 }
                 let images = self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("visbuffer images"),
+                    label: Some("deferred images"),
                     layout: &self.layouts.images,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.ids) },
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&out_view) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.gpos) },
                     ],
                 });
                 {
-                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("visbuffer shade"), timestamp_writes: if meshes { None } else { self.ring.compute_timestamps(ticket, false, true) } });
+                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: if meshes { None } else { self.ring.compute_timestamps(ticket, false, true) } });
                     pass.set_pipeline(shade);
                     pass.set_bind_group(0, &bind0, &[]);
                     pass.set_bind_group(1, &world_bg, &[]);
@@ -873,6 +926,7 @@ impl Renderer for GpuRasterBackend {
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.depth = depth_view(&self.gpu, width, height);
         self.ids = ids_view(&self.gpu, width, height);
+        self.gpos = gpos_view(&self.gpu, width, height, self.built.gbuffer());
         self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
         Ok(())
     }

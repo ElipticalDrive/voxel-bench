@@ -47,6 +47,7 @@ pub fn raster_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {
         "raster" => include_str!("raster/gpu.wgsl"),
         "visbuffer" => include_str!("visbuffer/gpu.wgsl"),
+        "gbuffer" => include_str!("gbuffer/gpu.wgsl"),
         _ => return None,
     })
 }

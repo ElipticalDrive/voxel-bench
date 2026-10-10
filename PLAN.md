@@ -91,14 +91,13 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
     shading direct, pathtrace (128 combinations);
   - cpu: storages bricks, hier, prefix, u8, bits, palette; visibility refloor,
     incremental; shading direct (12 combinations);
-  - gpu-raster: geometry greedy, naive, cubes; visibility raster, visbuffer; storage (for
-    shadow rays) the eight GPU ones; shading direct (48 combinations);
+  - gpu-raster: geometry greedy, naive, cubes; visibility raster, visbuffer, gbuffer;
+    storage (for shadow rays) the eight GPU ones; shading direct (72 combinations);
   - gpu-rt: geometry greedy, naive, boxes; visibility rayquery; shading direct,
     pathtrace (6 combinations).
 - **Legacy renderers** (not yet split into components): cpu-reference (stays a
   monolith on purpose), cpu-raster, cpu-simd, cpu-simd-loc (4), cpu-voxelspace,
-  cpu-discover, cpu-cluster, gpu-hybrid,
-  gpu-frag-dda, gpu-discover,
+  cpu-discover, cpu-cluster, gpu-discover,
   gpu-splat, gpu-voxelspace.
 - **Verification:** zero warnings in both builds, 41 unit tests and 3 GPU end-to-end
   tests pass.
@@ -198,7 +197,8 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
    - 4f. ~~path tracing as a shading component~~ (done; retired gpu-pathtrace).
    - 4g. ~~LOD in the storage interface~~ (done; retired gpu-dda-lod and the gpu-dda crate).
    - 4h. ~~hardware RT as a back end~~ (done: `gpu-rt`; retired gpu-rtx, gpu-rtx-bricks).
-   - 4i. fragment-shader dispatch and the hybrid G-buffer (gpu-frag-dda, gpu-hybrid).
+   - 4i. ~~fragment-shader dispatch and the hybrid G-buffer~~ (done: gpu-compute knob
+     `dispatch`, raster visibility `gbuffer`; retired gpu-frag-dda, gpu-hybrid).
    - 4j. CPU: cpu-simd, cpu-simd-loc layouts and tiles, cpu-raster.
    - 4k. discovery as raster / CPU visibility (gpu-discover, cpu-discover, cpu-cluster).
    - 4l. their own representations: voxelspace (gpu, cpu) and splats.
@@ -541,6 +541,24 @@ earlier if meshes become more urgent; 7c depends on 6′.
   monoliths: greedy 1.07 / 1.17 ms (gpu-rtx 1.07 / 1.17), boxes 1.02 / 1.47 (1.03 /
   1.47). naive triangles 2.05 / 2.15 ms; pathtrace at 0 bounces 1.26 ms lit.
 - **Retired:** gpu-rtx, gpu-rtx-bricks.
+
+### 2026-10-10: phase 4i (fragment dispatch, G-buffer)
+- **gpu-compute knob `dispatch = compute | fragment`** (was gpu-frag-dda): the per-pixel
+  code is one `pixel_color()`, entered from a compute shader or from a fragment shader
+  over a full-screen triangle (group 0 then binds a 1×1 stand-in for the storage-texture
+  output; the mesh-composite group became fragment-visible). Works with every
+  composition, prepass and meshes.
+- **Raster visibility `gbuffer`** (was gpu-hybrid): the raster pass writes hit point +
+  face (Rgba32Float, allocated only while chosen) and block id; a compute pass rebuilds
+  the `Hit` and calls the shading component. The visbuffer path is now a general
+  deferred path.
+- **Results** (terrain, 3 interleaved repeats): fragment dispatch 0.87 ms vs gpu-frag-dda
+  0.92 (−5%), same image (60.2 dB; the fragment path differs from compute by 0.3 dB,
+  as before); fragment and compute run at the same speed. `gbuffer` lit 0.75 ms vs
+  gpu-hybrid 0.98 (−23%), visbuffer 0.73; same images (53.5 / 50.4 dB). Unlit
+  gpu-hybrid drew forward (0.28 ms), which `greedy + raster` covers (0.26); `gbuffer`
+  always defers (0.36).
+- **Retired:** gpu-frag-dda, gpu-hybrid (the gpu-frag-hybrid crate).
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp
