@@ -1018,9 +1018,17 @@ may survive only as legacy entries while porting continues. Phases:
      kept depth);
    - gpu-raster, gpu-raster-naive, gpu-cubes and gpu-visbuffer retired.
    Discovery (`quadtree`, `cluster`) as raster visibility components is still to do.
-4. Port the remaining unique pieces: tree64, SVO-DAG, clipmap, beam, path tracing, LOD,
-   hardware RT as a back end, splats, voxelspace.
-5. Remove the legacy section and the monolith crates.
+4. Port the remaining unique pieces. **Done** (2026-10-10, PLAN 4a–4l): tree64,
+   svo_dag and clipmap as storages (with region / DAG / texture storage kinds and a top
+   level `s_top` in the interface); the beam as a `prepass` slot; path tracing as a
+   shading component; LOD in the storage interface; hardware RT (`gpu-rt`), CPU raster,
+   discovery (`gpu-discover`, `cpu-discover`), splats and Voxel Space as back ends. Same
+   images as every former renderer; speeds equal or better except tree64 (−5%) and the
+   CPU layout storages (−3–4%).
+5. Remove the legacy section. **Done** (2026-10-10): only cpu-reference stays
+   standalone; a compact stage grid (back end + its knobs, then each stage's component
+   with its own knobs; unavailable choices greyed with the conflict on hover) replaces
+   the chooser in the plan editor and the live session.
 
 *Done on the GPU so far (gpu-compose, now gpu-compute).* Storages bricks, hier, prefix, distance, rows;
 traversals refloor, incremental, sphere, rowrun. All 20 combinations render the

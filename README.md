@@ -26,8 +26,8 @@ cargo build --release
 GUI. It has five areas:
 
 - **Workflow (left).** A form for every plan setting: world generator, camera path,
-  environment, lights, scripted events, renderers with their options, run settings and
-  benchmark outputs. A TOML tab lets you edit the raw plan. Open, save and Ctrl+S are in
+  environment, lights, scripted events, renderers (each as a stage grid, see below), run
+  settings and benchmark outputs. A TOML tab lets you edit the raw plan. Open, save and Ctrl+S are in
   the toolbar. "⌖ cam" buttons copy the live camera into positions and camera-path
   points, which is a quick way to author fly-throughs.
 - **Viewport (centre).** Every renderer in the plan runs live, tiled side by side. Each
@@ -62,7 +62,17 @@ A renderer is assembled from components rather than picked from a list (IDEAS §
 **back end** × **storage** × **geometry** × **prepass** × **visibility** × **shading**. The
 pieces live in `components/`, one directory each (`storage/prefix/gpu.wgsl`, ...); back
 ends in `backends/`. Not every back end has every slot: `geometry` exists only on the
-raster back end, `prepass` only on gpu-compute.
+rasterising and RT back ends, `prepass` only on gpu-compute.
+
+**The stage grid** (plan editor and live Metrics tab) edits a renderer in one compact
+block: the back end with its own knobs, then one row per stage with the chosen component
+and *that component's* knobs next to it (e.g. `exact` / `skip2…16` beside visibility
+`incremental`, `bounces` / `spp` beside shading `pathtrace`, `cull` beside geometry
+`naive`). Every component of a stage is listed; ones that cannot run with this back end
+are greyed out, and hovering them says what they conflict with. In the live session a
+component switch applies in place where the back end can (or hot-swaps), and a back-end
+switch hot-swaps the renderer. Back ends declare each knob's owner with
+`ParamSpec::of(slot, &[components])`.
 
 ```toml
 [[renderer]]
@@ -142,7 +152,8 @@ whether it can change *live*. Every lane also has host knobs:
 - `host.view_radius`: streamed chunks.
 - `host.in_flight`: frames the host lets this renderer queue.
 
-The **Metrics → knobs** section shows them all as sliders, checkboxes and dropdowns.
+The **Metrics → stages & knobs** section shows them in the stage grid, each next to its
+component, as sliders, checkboxes and dropdowns.
 Live knobs apply between frames. Knobs marked ↻ need a restart, which is done as a
 **hot swap**: a replacement worker spawns, streams the world and renders three unseen
 warm-up frames, while the old one keeps rendering. Then it takes over in one step.
@@ -230,8 +241,9 @@ crates/mr-mesh   greedy mesher and quad decoding shared by the raster and triang
 components/      mr-components: the registry, compatibility rules and `Composition`, plus one
                  directory per component: storage/<name>/{gpu.wgsl,cpu.rs},
                  geometry/<name>/..., visibility/<name>/..., shading/<name>/...
-backends/*       back ends that assemble compositions: gpu-compute, cpu, gpu-raster
-renderers/*      legacy monolithic renderers, one crate each (being split into components)
+backends/*       back ends that assemble compositions: gpu-compute, cpu, gpu-raster, gpu-rt,
+                 cpu-raster, gpu-discover, cpu-discover, gpu-splat, gpu-voxelspace, cpu-voxelspace
+renderers/*      cpu-reference only: the standalone reference renderer
 ```
 
 - **Isolation.** By default every renderer runs in its own process: the host binary
@@ -307,7 +319,7 @@ launcher = []
 repeats = 1             # >1: passes repeat round-robin; a median/spread table is added
 
 [[renderer]]
-compose = { backend = "gpu-raster", geometry = "greedy", visibility = "raster" }  # or name = "<legacy renderer>"
+compose = { backend = "gpu-raster", geometry = "greedy", visibility = "raster" }  # or name = "cpu-reference"
 label = "raster-sunshadow"         # optional; lets you run one renderer with several option sets
 options = { shadows = "sun" }      # renderer-specific
 view_radius = 8                    # optional per-renderer override of run.view_radius

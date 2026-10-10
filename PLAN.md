@@ -12,9 +12,10 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   and mention it to the user.
 - The project is about exploring the problem space, not chasing speed. Slower techniques
   and negative results are findings too.
-- **New rendering techniques are built as components** (storage, visibility, geometry,
-  shading, back end; IDEAS §12 design), not as new monolithic renderers. Existing
-  renderers are ported by yield and retire only when a composed equivalent matches them.
+- **New rendering techniques are built as components** (storage, geometry, prepass,
+  visibility, shading, back end; IDEAS §12), never as monolithic renderers. A new knob
+  declares the component it belongs to (`ParamSpec::of(slot, &[components])`) so the GUI
+  shows it next to that component.
 - No subagents until the user re-enables them. Usage is self-metered.
 - Ideas the user shares go into `IDEAS.md` with analysis. Implement only after asking.
 - Verify everything: zero warnings, unit tests, GPU end-to-end tests, a comparison
@@ -22,7 +23,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   Report negative results honestly.
 - **One step at a time** (the user's request after hitting a rate limit, 2026-10-10):
   finish a step, verify, commit and push, report, and wait for the go before the next.
-- Priority: the component refactor (phases 3–5 below), then a wider space of
+- Priority: the component refactor is complete (2026-10-10). Next is a wider space of
   techniques, each built as components. The user prefers new techniques over completing
   coverage of a feature across every renderer (7b is shelved for that reason).
 - The user values diagnostic `view` modes highly; add them where a component has
@@ -34,13 +35,18 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - Unit tests: `cargo test -q --workspace` (40, including: the component registry
   matches its implementations; storages are exact; the CPU walks agree; every shipped
   plan loads).
-- GPU end-to-end tests: `cargo test -q --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve` (3, including mesh mode).
-- `multirenderer list`: back ends, components by slot, legacy renderers.
+- GPU end-to-end tests: `cargo test -q --release --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve --skip gui_screenshot` (3: the live session, mesh mode, and the headless GUI).
+- GUI screenshot (to look at layout changes without a display):
+  `cargo test -q --release --bin multirenderer gui_screenshot -- --ignored` writes
+  `target/gui-shot.png`; `SHOT_PLAN=plans/x.toml` picks the plan.
+- `multirenderer list`: back ends with their slots and defaults, components by slot,
+  standalone renderers (cpu-reference).
 - One composition against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{compose={backend="gpu-compute",storage="prefix",visibility="refloor"}}]' -s output.dir=\"target/check\"`
-  - A legacy renderer: `{name="gpu-voxelspace"}`. Further knobs go in `options={...}`.
-  - CLI views: `-r gpu-compute:prefix+incremental`, `-r cpu:hier+refloor`,
-    `-r gpu-raster:bricks+cubes+visbuffer` (the back end's slots in order).
+  - Further knobs go in `options={...}`. The reference: `{name="cpu-reference"}`.
+  - CLI: `-r gpu-compute:prefix+incremental`, `-r cpu:hier+refloor`,
+    `-r gpu-raster:bricks+cubes+visbuffer` (the back end's required slots in order, then
+    optionally shading and prepass), or a bare back end (`-r gpu-discover`).
   - Use `-s run.repeats=3` for interleaved repeats, `-s run.frames=N` (more frames
     means a slower camera on the same path), and `-s run.modes=[\"unlit\"]`.
   - Results are in `<dir>/<stamp>/report.json` (a list of passes with `per_frame`
@@ -60,12 +66,16 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   `quad_buffer_mb` at 2040 MiB to avoid it.
 - `gpu-raster: … + naive` (and `cubes`) with `cull = false` overflows the instance buffer
   on terrain and edits and renders only part of the scene.
-- `gpu-svo-dag` never frees DAG nodes after edits. A full rebuild is meant to kick in at
+- The `svo_dag` storage never frees DAG nodes after edits. A full rebuild is meant to kick in at
   2× growth plus 65,536 nodes, but that path is untested.
 - `gpu-splat` re-uploads every point on any change (slow loads and frames); it has no
   culling.
 - `cpu-discover` uploads the whole face list every frame, not incrementally.
-- `gpu-voxelspace` lit mode is slower than gpu-dda.
+- `gpu-voxelspace` lit mode is slower than `gpu-compute: bricks + refloor`; its shadow
+  rays still walk the voxel pool, not a composed storage.
+- The `tree64` storage is ~5% slower than the former gpu-tree64 (cause open); the CPU
+  `brickmajor` / `morton` storages 3–4% behind their former renderers (codegen, see
+  phase 4j).
 - `cpu: prefix` has higher peak RSS than `cpu: hier` despite less world data, probably
   transient build allocations; not investigated.
 - The ~0.1 dB image difference of `cpu: prefix + refloor` comes from 2-cell steps
@@ -73,43 +83,49 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - The incremental walk on the GPU is 3.5–8× slower than refloor on NVIDIA only (AMD
   1.27×), for an unknown compiler reason (IDEAS §1 "Result 3").
 
-## Status (2026-10-10)
+## Status (2026-10-10, after the component refactor)
 
-- **Architecture:** renderers are assembled from components (IDEAS §12):
-  **back end × storage × geometry × visibility × shading**; back ends declare which slots
-  they have (geometry only on raster).
-  - `components/` (crate `mr-components`): one directory per piece, each with its GPU
-    (`gpu.wgsl`) and/or CPU (`cpu.rs`) implementation, plus the registry, compatibility
-    rules and `Composition`.
-  - `backends/gpu-compute`, `backends/cpu` and `backends/gpu-raster`: the assemblers.
-  - Plans use `compose = { backend, storage, geometry, visibility, shading }` (missing
-    slots take the back end's defaults). The GUI chooser shows the back end's slots and
-    disables combinations that can't run, with the reason.
-- **Available components:**
-  - gpu-compute: storages bricks, hier, prefix, distance, rows, tree64, svo_dag,
-    clipmap; prepass none, beam; visibility refloor, incremental, sphere, rowrun;
-    shading direct, pathtrace (128 combinations);
-  - cpu: storages bricks, hier, prefix, u8, bits, palette, brickmajor, morton;
-    visibility refloor, incremental; shading direct (16 combinations);
-  - cpu-raster: geometry greedy, naive; visibility raster; shading direct (2);
-  - gpu-discover: storage (the nine GPU ones); visibility quadtree; shading direct (9);
-  - cpu-discover: storage (the eight CPU ones); visibility quadtree, cluster; shading
-    direct (16);
-  - gpu-raster: geometry greedy, naive, cubes; visibility raster, visbuffer, gbuffer;
-    storage (for shadow rays) the eight GPU ones; shading direct (72 combinations);
+- **Architecture:** every renderer except the reference is a composition (IDEAS §12):
+  **back end × storage × geometry × prepass × visibility × shading**. Each back end
+  declares which slots it has and their defaults.
+  - `components/` (crate `mr-components`): one directory per component with its GPU
+    (`gpu.wgsl` / `rt.wgsl`) and/or CPU implementation; the registry (`BACKENDS`,
+    `COMPONENTS`), compatibility (`unavailable`), `Composition`, and the shared host-side
+    storage manager (`storage::gpu_data::StorageData`: pool, region, DAG and texture
+    storages).
+  - `backends/`: gpu-compute, cpu, gpu-raster, gpu-rt, cpu-raster, gpu-discover,
+    cpu-discover, gpu-splat, gpu-voxelspace, cpu-voxelspace.
+  - `renderers/`: only `cpu-reference` (standalone on purpose: it defines the reference).
+  - Plans: `compose = { backend, storage, geometry, prepass, visibility, shading }`
+    (missing slots take defaults; `name = "<back end>"` loads as its composition).
+  - GUI: one compact **stage grid** per renderer (`src/gui/stages.rs`), in the plan
+    editor and the live Metrics tab: the back end with its own knobs, then per stage the
+    component and that component's knobs. Unavailable components are greyed, with the
+    conflict on hover; live switches apply in place or hot-swap.
+- **Components by back end:**
+  - gpu-compute: storage bricks, hier, prefix, distance, rows, tree64, svo_dag, clipmap;
+    prepass none, beam; visibility refloor, incremental, sphere, rowrun; shading direct,
+    pathtrace; knobs `dispatch` (compute / fragment), `view` (steps), LOD via `max_lod`
+    (pool storages + refloor).
+  - cpu: storage bricks, hier, prefix, u8, bits, palette, brickmajor, morton; visibility
+    refloor, incremental; shading direct; knob `schedule` (rows / tiles).
+  - gpu-raster: storage (shadow rays) the eight GPU ones; geometry greedy, naive, cubes;
+    visibility raster, visbuffer, gbuffer; shading direct.
   - gpu-rt: geometry greedy, naive, boxes; visibility rayquery; shading direct,
-    pathtrace (6 combinations).
-- **Legacy renderers:** none left. cpu-reference stays a standalone renderer on purpose
-  (it defines the reference images).
-- **Verification:** zero warnings in both builds, 40 unit tests and 3 GPU end-to-end
-  tests pass.
-- **Tools:**
-  - GUI with the component chooser, live knobs, hot swaps, quality probes and an
-    auto-tuner (local search, resolution controller, Bayesian). Tooltips everywhere.
-  - Diagnostic views: gpu-compute `steps`; gpu-discover `tiles` / `rays` / `churn` /
-    `overdraw` / `quads`; cpu-cluster `clusters` / `kinds`.
-  - Benchmark plans in `plans/` (compositions where exact equivalents exist), catalogue
-    scripts in `scripts/`, hardware counters on the `cpu` back end (`perf`).
+    pathtrace.
+  - cpu-raster: geometry greedy, naive; visibility raster; shading direct.
+  - gpu-discover: storage (GPU); visibility quadtree; shading direct.
+  - cpu-discover: storage (CPU); visibility quadtree, cluster; shading direct.
+  - gpu-splat: storage (shadow rays); geometry points; visibility splat; shading direct.
+  - gpu-voxelspace, cpu-voxelspace: storage heightmap; visibility columns; shading
+    direct.
+- **Verification:** zero warnings in both builds; 40 unit tests; 3 GPU end-to-end tests
+  (live session, mesh mode, headless GUI).
+- **Tools:** the GUI (stage grids, live knobs, hot swaps, quality probes, auto-tuner:
+  local search, resolution controller, Bayesian; tooltips everywhere); diagnostic views
+  (gpu-compute `steps`; gpu-discover `tiles` / `rays` / `churn` / `overdraw` / `quads`;
+  cpu-discover cluster `clusters` / `kinds`); benchmark plans in `plans/`; catalogue
+  scripts in `scripts/`; hardware counters on the `cpu` back end (`perf`).
 
 ### Key findings so far
 
@@ -157,67 +173,24 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 
 ## Plan
 
-### Current: the component refactor (IDEAS §12)
+### Done: the component refactor (IDEAS §12)
 
-Goal (the user's): no chooser of monolithic renderers at all. Pieces in files; a renderer
-is a back end plus one component per slot; the UI forbids unsupported combinations.
+The user's goal, reached 2026-10-10: no chooser of monolithic renderers; a renderer is a
+back end plus one component per stage; the UI forbids unsupported combinations and says
+why. Phases 1–5 (components crate and gpu-compute; CPU back end; GPU-raster back end;
+porting every remaining renderer, 4a–4l; removing the legacy handling and adding the
+stage grid) are in the progress log below, with their measurements.
 
-1. ~~Components crate, GPU-compute back end, compositions in plans / CLI / GUI~~ (done).
-2. ~~CPU back end~~ (done).
-3. ~~The GPU-raster back end~~ (done 2026-10-10, except the discovery components; see
-   the progress log). What it needed:
-   - **A `geometry` slot**, which turns storage into drawable faces:
-     - `greedy`: greedy quads, from `crates/mr-mesh` (`mesh_chunk_merge`, `Merge::Block`
-       / `Merge::Exposure`), as gpu-raster uses;
-     - `naive`: one quad per exposed face (gpu-raster-naive);
-     - `cubes`: whole cubes (gpu-cubes).
-   - **Raster visibility components:**
-     - `raster`: depth-tested rasterisation of the geometry (gpu-raster's culled
-       multi-draw-indirect path);
-     - `visbuffer`: a visibility buffer with deferred shading (gpu-visbuffer);
-     - later the discovery components (`quadtree` from gpu-discover / cpu-discover,
-       `cluster` from cpu-cluster), which produce a face set that is then rasterised.
-   - **Shading `direct` on the raster back end:** the fragment shader's texel / lit
-     shading (shared `shade_lit`, shadow rays through `VoxelWorld`).
-   - **Meshes:** `mr_gpu::meshes::GpuMeshes` (gpu-raster already uses it).
-   - **Compatibility rules gain slot dependencies:** the raster back end needs a
-     geometry component; ray-walk back ends have no geometry slot. Generalise
-     `mr_components::unavailable` / `Composition` so that slots can be "not applicable"
-     per back end (and shown so in the GUI).
-   - **Then retire** gpu-raster, gpu-raster-naive, gpu-cubes and gpu-visbuffer once
-     their compositions match them, and update the plans.
-   - **Still open:** the discovery components (`quadtree`, `cluster`) as raster
-     visibility; a candidate for its own step.
-4. ~~Port the remaining unique pieces~~ (done 2026-10-10) (the user, 2026-10-10: "we remove
-   technical debt"). Sub-steps, each verified, committed and pushed on its own:
-   - 4a. ~~Retire what compositions already cover~~: gpu-dda (plain), gpu-sdf,
-     gpu-bitmask, the gpu-compose alias (done).
-   - 4b. ~~tree64 as a storage~~ (done; retired gpu-tree64).
-   - 4c. ~~SVO-DAG as a storage~~ (done; retired gpu-svo-dag).
-   - 4d. ~~clipmap as a storage~~ (done; retired gpu-clipmap).
-   - 4e. ~~the beam prepass as a stage~~ (done: slot `prepass`; retired gpu-beam).
-   - 4f. ~~path tracing as a shading component~~ (done; retired gpu-pathtrace).
-   - 4g. ~~LOD in the storage interface~~ (done; retired gpu-dda-lod and the gpu-dda crate).
-   - 4h. ~~hardware RT as a back end~~ (done: `gpu-rt`; retired gpu-rtx, gpu-rtx-bricks).
-   - 4i. ~~fragment-shader dispatch and the hybrid G-buffer~~ (done: gpu-compute knob
-     `dispatch`, raster visibility `gbuffer`; retired gpu-frag-dda, gpu-hybrid).
-   - 4j. ~~CPU: cpu-simd, cpu-simd-loc layouts and tiles, cpu-raster~~ (done: storages
-     brickmajor / morton, cpu knob `schedule`, back end `cpu-raster`).
-   - 4k. ~~discovery~~ (done: back ends `gpu-discover` and `cpu-discover`, visibility
-     `quadtree` / `cluster`, over the composed storage).
-   - 4l. ~~their own representations~~ (done: back ends gpu-splat, gpu-voxelspace,
-     cpu-voxelspace). **Phase 4 is complete.**
-   cpu-reference stays a monolith on purpose.
-5. **Next:** remove the legacy section (GUI chooser, `list`, plan handling of `name =`
-   for back-end renderers) and tidy the back ends (shared `require` / `names_on`
-   helpers, one place for the per-back-end option boilerplate).
+### Next: candidates (ask the user which)
 
-Also wanted, sized for single steps:
-- Colour scales on the views.
+Sized for single steps:
+- Colour scales (numeric legends) on the diagnostic views.
 - Lighting / meshes as stage components.
-- A plan sweep over all combinations.
-
-(All three are in the notes below, and the backlog.)
+- A plan sweep over all combinations (`compose = { storage = "*", ... }`).
+- More techniques as components (the backlog below), e.g. the persistent-kernel
+  discovery (3b), mesh shadows (7d), transparent cubes.
+- Known issues above (tree64's 5%, gpu-voxelspace shadows through a composed storage,
+  gpu-splat culling / incremental uploads).
 
 ### History: the step plan of 2026-10-09
 
@@ -626,6 +599,27 @@ earlier if meshes become more urgent; 7c depends on 6′.
   2.79). Splat over prefix equal, over tree64 +10% lit.
 - **Retired:** gpu-splat, gpu-voxelspace, cpu-voxelspace (crates moved to `backends/`).
   `renderers/` now holds only cpu-reference.
+
+### 2026-10-10: phase 5 (stage grid, legacy removed)
+- **Knobs belong to components:** `ParamSpec.owner` (`ParamSpec::of(slot, components)`),
+  set by every back end (e.g. `exact` / `skip*` → visibility incremental, `bounces` /
+  `spp` → shading pathtrace, `merge` → geometry greedy, discovery knobs → visibility
+  quadtree / cluster). The field is always serialised: renderer infos cross the worker
+  boundary as postcard, which cannot skip fields (a `skip_serializing_if` broke the
+  workers until the GUI test caught it).
+- **Stage grid** (`src/gui/stages.rs`), used by the plan editor and the live Metrics
+  tab: back end + its own knobs, then per stage the component picker and that
+  component's knobs. All components of a slot are listed, unavailable ones greyed with
+  "Conflicts: …" on hover. Rows wrap knob by knob (a grid or nested scopes widened the
+  side panels and squeezed the Metrics panel out). Live: component changes go through
+  `set_param` (in place or hot swap), back-end changes hot-swap the lane.
+- **Legacy removed:** no legacy pickers; "+ renderer" and "+ cpu-reference";
+  `name = "<back end>"` in a plan (e.g. the playground's gpu-discover) loads as that back
+  end's composition, stages from the options; `list` shows standalone renderers.
+- **Back ends** use `mr_components::require` / `names_on` instead of copies of
+  `check` / `names`.
+- **GUI screenshot test** (`gui_screenshot`, ignored): renders the real GUI offscreen
+  with egui-wgpu to `target/gui-shot.png`, so layout changes can be checked visually.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp
