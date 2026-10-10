@@ -1,32 +1,48 @@
 //! CPU builder of the `prefix` storage's per-slot words (layout in `store_prefix.wgsl`).
 
 use mr_core::DenseChunk;
-use mr_core::chunk::cell_of_index;
 
 /// u32 words per slot: 512 masks as (lo, hi) pairs, then 513 u16 prefixes in pairs.
 pub const PREFIX_WORDS: usize = 1024 + 257;
 
-/// Morton index of up to 3 bits per axis, x lowest (matches `morton3` in the WGSL).
-pub fn morton3(x: u32, y: u32, z: u32) -> u32 {
-    fn spread(v: u32) -> u32 {
-        (v & 1) | (v & 2) << 2 | (v & 4) << 4
-    }
-    spread(x) | spread(y) << 1 | spread(z) << 2
+/// Coordinate `axis` (0 = x, 1 = y, 2 = z) of a 3-bit-per-axis Morton index.
+const fn unmorton3(m: usize, axis: usize) -> usize {
+    ((m >> axis) & 1) | ((m >> (axis + 3)) & 1) << 1 | ((m >> (axis + 6)) & 1) << 2
 }
 
-pub fn build(d: &DenseChunk) -> Vec<u32> {
-    let mut masks = [0u64; 512];
-    for (i, b) in d.0.iter().enumerate() {
-        if b.is_solid() {
-            let l = cell_of_index(i).as_uvec3();
-            masks[morton3(l.x >> 2, l.y >> 2, l.z >> 2) as usize] |= 1 << morton3(l.x & 3, l.y & 3, l.z & 3);
-        }
+/// Dense index (`x + 32 z + 1024 y`) of the origin of the brick with Morton index `m`.
+const BRICK_BASE: [usize; 512] = {
+    let mut t = [0; 512];
+    let mut m = 0;
+    while m < 512 {
+        t[m] = 4 * unmorton3(m, 0) + 128 * unmorton3(m, 2) + 4096 * unmorton3(m, 1);
+        m += 1;
     }
+    t
+};
+
+/// Dense index offset of bit `k` (Morton order) within a brick.
+const BIT_OFFSET: [usize; 64] = {
+    let mut t = [0; 64];
+    let mut k = 0;
+    while k < 64 {
+        t[k] = unmorton3(k, 0) + 32 * unmorton3(k, 2) + 1024 * unmorton3(k, 1);
+        k += 1;
+    }
+    t
+};
+
+/// One pass in Morton order: masks and prefixes come out together (as in cpu-simd-mem).
+pub fn build(d: &DenseChunk) -> Vec<u32> {
     let mut words = vec![0u32; PREFIX_WORDS];
     let mut sum = 0u32;
-    for (m, w) in masks.iter().enumerate() {
-        words[2 * m] = *w as u32;
-        words[2 * m + 1] = (*w >> 32) as u32;
+    for (m, &base) in BRICK_BASE.iter().enumerate() {
+        let mut w = 0u64;
+        for (k, &off) in BIT_OFFSET.iter().enumerate() {
+            w |= (d.0[base + off].is_solid() as u64) << k;
+        }
+        words[2 * m] = w as u32;
+        words[2 * m + 1] = (w >> 32) as u32;
         words[1024 + m / 2] |= sum << ((m & 1) * 16);
         sum += w.count_ones();
     }
@@ -38,8 +54,16 @@ pub fn build(d: &DenseChunk) -> Vec<u32> {
 mod tests {
     use super::*;
     use glam::IVec3;
-    use mr_core::chunk::cell_index;
+    use mr_core::chunk::{cell_index, cell_of_index};
     use mr_core::{BlockId, CHUNK_VOLUME};
+
+    /// Morton index of up to 3 bits per axis, x lowest (matches `morton3` in the WGSL).
+    fn morton3(x: u32, y: u32, z: u32) -> u32 {
+        fn spread(v: u32) -> u32 {
+            (v & 1) | (v & 2) << 2 | (v & 4) << 4
+        }
+        spread(x) | spread(y) << 1 | spread(z) << 2
+    }
 
     fn prefix(w: &[u32], i: usize) -> u32 {
         (w[1024 + (i >> 1)] >> ((i & 1) * 16)) & 0xffff
