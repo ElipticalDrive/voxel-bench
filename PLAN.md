@@ -580,7 +580,7 @@ earlier if meshes become more urgent; 7c depends on 6′.
   geometry greedy or naive (the geometry component's CPU mesher), visibility raster,
   shading direct (the reference model). Same image and speed (15.6 / 12.3 fps vs 15.3 /
   12.0); naive on the CPU is new (12.4 / 10.4 fps).
-- **Retired:** cpu-simd, cpu-simd-u16-era presets cpu-simd-brickmajor / -morton /
+- **Retired:** cpu-simd and the presets cpu-simd-brickmajor / -morton /
   -tiles / -best (the cpu-simd and cpu-simd-loc crates).
 
 ### Notes from the user (2026-10-10)
