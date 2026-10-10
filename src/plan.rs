@@ -176,7 +176,7 @@ impl RendererSpec {
 
     /// From the command line: `backend:slot+slot+...` for a composition (a bare back-end
     /// name gives its default composition): the back end's
-    /// required slots in order, then optionally shading and prepass
+    /// required slots in order, then optionally shading, prepass and meshes
     /// (`gpu-compute:prefix+incremental`, `gpu-compute:tree64+refloor+direct+beam`,
     /// `gpu-raster:bricks+greedy+visbuffer`); otherwise a renderer name (a back end's, giving its default composition, or a
     /// standalone one).
@@ -188,7 +188,7 @@ impl RendererSpec {
         let all: Vec<Slot> = c.slots().collect();
         let mut order: Vec<Slot> = all.iter().copied().filter(|s| !s.optional()).collect();
         let required = order.len();
-        order.extend([Slot::Shading, Slot::Prepass].into_iter().filter(|s| all.contains(s)));
+        order.extend([Slot::Shading, Slot::Prepass, Slot::Meshes].into_iter().filter(|s| all.contains(s)));
         if all.is_empty() || !(required..=order.len()).contains(&parts.len()) {
             let names = |sl: &[Slot]| sl.iter().map(|s| s.name()).collect::<Vec<_>>().join("+");
             bail!("composition `{s}` should be {backend}:{}[+{}]", names(&order[..required]), names(&order[required..]));
@@ -227,6 +227,15 @@ impl RendererSpec {
         match &self.compose {
             Some(c) => self.compose_label.get_or_init(|| c.label()),
             None => &self.name,
+        }
+    }
+
+    /// Whether this renderer draws passes of mode `m`: its lighting modes from `info`, mesh
+    /// support from the composition's meshes stage (standalone renderers: the `meshes` tag).
+    pub fn supports(&self, info: &mr_core::RendererInfo, m: PassMode) -> bool {
+        match &self.compose {
+            Some(c) => info.modes.contains(&m.lighting) && c.supports(m),
+            None => info.supports(m),
         }
     }
 
@@ -429,6 +438,15 @@ mod tests {
         let spec = RendererSpec::from_cli("gpu-compute:distance+sphere").unwrap();
         assert_eq!(spec.options.get("storage").and_then(|v| v.as_str()), Some("distance"));
         assert!(RendererSpec::from_cli("gpu-compute:nope+sphere").is_err());
+        // The meshes stage: last in the CLI form; `none` drops mesh passes.
+        let spec = RendererSpec::from_cli("gpu-compute:bricks+refloor+direct+none+none").unwrap();
+        assert_eq!(spec.options.get("meshes").and_then(|v| v.as_str()), Some("none"));
+        assert_eq!(spec.label(), "gpu-compute: bricks + refloor + no meshes");
+        let info = mr_core::RendererInfo { name: "gpu-compute".into(), description: String::new(), tags: vec!["meshes".into()], modes: vec![mr_core::RenderMode::Unlit, mr_core::RenderMode::Lit], max_lod: 0, params: vec![] };
+        let lit_meshes = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
+        assert!(!spec.supports(&info, lit_meshes) && spec.supports(&info, PassMode::LIT));
+        assert!(RendererSpec::from_cli("gpu-compute:bricks+refloor").unwrap().supports(&info, lit_meshes));
+        assert_eq!(RendererSpec::from_cli("gpu-raster:bricks+greedy+raster+direct+none").unwrap().options.get("meshes").and_then(|v| v.as_str()), Some("none"));
     }
 
     /// Every shipped plan parses, and its compositions validate and resolve.

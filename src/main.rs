@@ -88,7 +88,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::Gui { plan } => gui::run(plan),
         Cmd::Worker { socket } => mr_worker::run(&socket),
         Cmd::List => {
-            println!("Renderers are assembled from components (plan: compose = {{ backend, storage, geometry, prepass, visibility, shading }};\nCLI: -r backend:<its required slots in order>[+shading[+prepass]], e.g. gpu-compute:prefix+incremental, gpu-compute:bricks+refloor+direct+beam).\n\nBack ends:");
+            println!("Renderers are assembled from components (plan: compose = {{ backend, storage, geometry, prepass, visibility, shading, meshes }};\nCLI: -r backend:<its required slots in order>[+shading[+prepass[+meshes]]], e.g. gpu-compute:prefix+incremental, gpu-compute:bricks+refloor+direct+beam).\n\nBack ends:");
             for b in mr_components::BACKENDS {
                 let slots: Vec<String> = b.slots.iter().map(|(s, d)| format!("{}={d}", s.name())).collect();
                 println!("  {:<12} {}{}\n               slots: {}", b.name, b.description, if b.renderer.is_none() { "  [not available yet]" } else { "" }, slots.join(", "));
@@ -302,7 +302,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
             .renderers
             .iter()
             .filter(|s| {
-                let ok = infos.iter().any(|i| i.name == s.name && i.supports(mode));
+                let ok = infos.iter().any(|i| i.name == s.name && s.supports(i, mode));
                 if !ok {
                     tracing::warn!("{} does not support {} mode; skipped", s.label(), mode.name());
                 }

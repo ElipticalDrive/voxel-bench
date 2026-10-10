@@ -38,7 +38,7 @@ pub fn entry() -> RendererEntry {
             tags: vec!["cpu".into(), "raycast".into(), "simd".into()],
             modes: vec![RenderMode::Unlit, RenderMode::Lit],
             max_lod: 0,
-            params: params(),
+            params: mr_components::lighting_knobs(BACKEND, params()),
         },
         create: |p, _| {
             let opts: Options = p.options()?;

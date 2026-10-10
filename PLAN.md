@@ -185,7 +185,7 @@ stage grid) are in the progress log below, with their measurements.
 
 Sized for single steps:
 - ~~Colour scales (numeric legends) on the diagnostic views.~~ Done (2026-10-10).
-- Lighting / meshes as stage components.
+- ~~Lighting / meshes as stage components.~~ Done (2026-10-10).
 - A plan sweep over all combinations (`compose = { storage = "*", ... }`).
 - More techniques as components (the backlog below), e.g. the persistent-kernel
   discovery (3b), mesh shadows (7d), transparent cubes.
@@ -646,6 +646,33 @@ earlier if meshes become more urgent; 7c depends on 6′.
   GPU end-to-end tests; GUI screenshot with four views (`SHOT_PLAN`).
 - **Open:** auto-ranging (the scale following the frame's maximum, as thermal cameras
   do) needs a GPU reduction read back a frame late; fixed `view_max` for now.
+
+### 2026-10-10: lighting and meshes as stages
+- **Design (the user's note):** stages around the walk, so storages and walks stay
+  unaware. The pass mode stays what the scene asks for; no component implements four
+  variants.
+  - *Meshes:* a new slot `Slot::Meshes` (optional, last in labels and the CLI form) on
+    the back ends that can draw meshes: gpu-compute (`composite`, default; `none`) and
+    gpu-raster (`depth`, default; `none`). Back ends without the slot draw no meshes,
+    as before. `none` reads "no meshes" in labels.
+  - *Lighting:* stays with the shading component (every shading component renders lit
+    and unlit). The lighting knob `shadows` is now owned by the shading stage on every
+    back end (`mr_components::lighting_knobs`), so the grid shows it there. A separate
+    lighting slot would have one choice per back end today; it becomes worth having
+    with a second lighting technique (e.g. flood-fill light, shadow maps, AO).
+- **Mode support from the composition:** `Composition::supports(PassMode)` and
+  `RendererSpec::supports(info, mode)` replace the static `meshes` tag for compositions
+  (benchmark pass filter, the GUI's "(no meshes)" label). The tag remains for the
+  standalone cpu-reference.
+- **Tuner:** never tunes `view`, `view_max` or `meshes` (they change what is shown).
+- **Verified:** plans/meshes.toml, 60 frames: `… + no meshes` skipped in both mesh
+  passes; mesh-mode PSNR identical to the previous build (gpu-raster 62.9 dB unlit+meshes,
+  gpu-compute prefix 68.1 dB); in `lit`, `none` and the default match (72.7 / 76.3 dB).
+  New tests (registry, plan/CLI); 41 unit tests; the 3 GPU end-to-end tests; GUI
+  screenshot shows the meshes stage and `shadows` under shading.
+- **Next possible meshes components:** gpu-discover and cpu-raster could reuse `depth`
+  (they rasterise); gpu-rt could put meshes into its TLAS (meshes would then shadow
+  voxels, step 7d).
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

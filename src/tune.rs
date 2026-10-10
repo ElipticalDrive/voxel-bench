@@ -18,6 +18,10 @@ use mr_core::{ParamKind, ParamSpec, ParamValue};
 use serde::{Deserialize, Serialize};
 
 /// Host-side knobs every lane has, alongside its renderer's own parameters.
+/// Knobs that change what is shown rather than how fast the same image is made (diagnostic
+/// views; `meshes = none` drops the meshes): never tuned.
+const NEVER_TUNED: &[&str] = &["view", "view_max", "meshes"];
+
 pub fn host_params(base_view_radius: u32) -> Vec<ParamSpec> {
     vec![
         ParamSpec::float("host.render_scale", "Render resolution relative to the plan's (frames are upscaled for display)", 0.2, 1.0, false, 1.0, true),
@@ -404,7 +408,7 @@ impl Tuner {
     }
 
     fn tunable(&self) -> Vec<ParamSpec> {
-        self.specs.iter().filter(|s| !self.cfg.locked.contains(&s.name) && (s.live || self.cfg.allow_restart)).cloned().collect()
+        self.specs.iter().filter(|s| !self.cfg.locked.contains(&s.name) && !NEVER_TUNED.contains(&s.name.as_str()) && (s.live || self.cfg.allow_restart)).cloned().collect()
     }
 
     fn knob_snapshot(&self) -> Vec<(String, f64)> {

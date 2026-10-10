@@ -42,7 +42,7 @@ fn info() -> RendererInfo {
         tags: vec!["gpu".into(), "raster".into(), "hybrid".into(), "modular".into(), "wgpu".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
-        params: params(),
+        params: mr_components::lighting_knobs(BACKEND, params()),
     }
 }
 
@@ -57,6 +57,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::choice("geometry", &format!("Geometry component. {}", describe(Slot::Geometry)), &names_on(BACKEND, Slot::Geometry), "greedy", true),
         ParamSpec::choice("visibility", &format!("Visibility component. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "raster", true),
         ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
+        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(BACKEND, Slot::Meshes), "depth", true),
         ParamSpec::choice("merge", "greedy: merge faces of the same block only (`block`), or any exposed coplanar faces with a per-pixel block lookup (`exposure`)", &["block", "exposure"], "block", true).of("geometry", &["greedy"]),
         ParamSpec::bool("cull", "naive / cubes: skip faces (blocks) hidden by solid neighbours (false = every face of every solid block)", true, true).of("geometry", &["naive", "cubes"]),
         ParamSpec::bool("depth_prepass", "raster, lit mode: depth pre-pass so lighting runs once per pixel", true, true).of("visibility", &["raster"]),
@@ -77,6 +78,7 @@ struct Options {
     geometry: String,
     visibility: String,
     shading: String,
+    meshes: String,
     merge: String,
     cull: bool,
     /// raster, lit mode: lay down depth first so the expensive fragment shader runs once
@@ -99,6 +101,7 @@ impl Default for Options {
             geometry: "greedy".into(),
             visibility: "raster".into(),
             shading: "direct".into(),
+            meshes: "depth".into(),
             merge: "block".into(),
             cull: true,
             depth_prepass: true,
@@ -435,6 +438,7 @@ impl Pipelines {
 impl GpuRasterBackend {
     pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
+        require(BACKEND, Slot::Meshes, &opts.meshes)?;
         parse_merge(&opts.merge)?;
         let comp = Composition {
             storage: require(BACKEND, Slot::Storage, &opts.storage)?,
@@ -650,6 +654,8 @@ impl Renderer for GpuRasterBackend {
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        // The meshes stage draws meshes (`depth`), or not (`none`).
+        let want_meshes = req.meshes && self.opts.meshes != "none";
         if self.comp != self.built {
             self.pipelines = Pipelines::new(&self.gpu, &self.layouts, &self.comp)?;
             if self.comp.geometry != self.built.geometry {
@@ -684,7 +690,7 @@ impl Renderer for GpuRasterBackend {
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
-        if req.meshes {
+        if want_meshes {
             self.mesh.prepare(&self.gpu, c, view_proj, req.mode);
         }
 
@@ -777,7 +783,7 @@ impl Renderer for GpuRasterBackend {
                         multiview_mask: None,
                     });
                     draw(&mut pass, depth);
-                    if req.meshes {
+                    if want_meshes {
                         self.mesh.draw(&mut pass, MeshPass::Depth, &world_bg);
                     }
                 }
@@ -795,13 +801,13 @@ impl Renderer for GpuRasterBackend {
                     multiview_mask: None,
                 });
                 draw(&mut pass, if prepass { equal } else { fill });
-                if req.meshes {
+                if want_meshes {
                     self.mesh.draw(&mut pass, if prepass { MeshPass::Equal } else { MeshPass::Fill }, &world_bg);
                 }
             }
             Pipelines::Deferred { ids, shade } => {
                 // Meshes are drawn after shading, depth-tested against the faces.
-                let meshes = req.meshes && self.mesh.triangles() > 0;
+                let meshes = want_meshes && self.mesh.triangles() > 0;
                 {
                     let attach = |view| {
                         Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })
@@ -864,7 +870,7 @@ impl Renderer for GpuRasterBackend {
                 ("draws".into(), n as f64),
                 ("remeshed".into(), remeshed as f64),
                 ("mesh_ms".into(), mesh_ms),
-                ("mesh_triangles".into(), if req.meshes { self.mesh.triangles() as f64 } else { 0.0 }),
+                ("mesh_triangles".into(), if want_meshes { self.mesh.triangles() as f64 } else { 0.0 }),
             ]
             .into_iter()
             .chain(self.data.counters())
@@ -888,6 +894,7 @@ impl Renderer for GpuRasterBackend {
             "geometry" => self.comp.geometry = require(BACKEND, Slot::Geometry, &s())?,
             "visibility" => self.comp.visibility = require(BACKEND, Slot::Visibility, &s())?,
             "shading" => self.comp.shading = require(BACKEND, Slot::Shading, &s())?,
+            "meshes" => self.opts.meshes = require(BACKEND, Slot::Meshes, &s())?,
             "merge" => {
                 parse_merge(&s())?;
                 if s() != self.opts.merge {

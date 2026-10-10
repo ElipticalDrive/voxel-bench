@@ -647,7 +647,7 @@ impl App {
                 .map(|l| {
                     let (fps, gpu) = recent(&l.samples, 1.0);
                     // Lanes whose renderer can't draw meshes say so while mesh mode is on.
-                    let no_meshes = self.mode.meshes && !self.infos.iter().any(|i| i.name == l.spec.name && i.tags.iter().any(|t| t == "meshes"));
+                    let no_meshes = self.mode.meshes && !self.infos.iter().any(|i| i.name == l.spec.name && l.spec.supports(i, self.mode));
                     (l.spec.label().to_string(), l.status.clone(), l.frame.clone(), fps, gpu, no_meshes, l.legend.clone())
                 })
                 .collect()

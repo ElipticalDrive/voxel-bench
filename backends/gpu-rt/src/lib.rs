@@ -41,7 +41,7 @@ fn info() -> RendererInfo {
         tags: vec!["gpu".into(), "raytrace".into(), "hardware-rt".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
-        params: params(),
+        params: mr_components::lighting_knobs(BACKEND, params()),
     }
 }
 

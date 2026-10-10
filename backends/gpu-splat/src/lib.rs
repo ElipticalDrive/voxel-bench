@@ -32,7 +32,7 @@ fn info() -> RendererInfo {
         tags: vec!["gpu".into(), "compute".into(), "points".into(), "splat".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
-        params: vec![
+        params: mr_components::lighting_knobs(BACKEND, vec![
             ParamSpec::choice("storage", "Storage component the lit-mode shadow rays walk (refloor)", &names_on(BACKEND, Slot::Storage), "bricks", false),
             ParamSpec::choice("geometry", "Geometry component", &names_on(BACKEND, Slot::Geometry), "points", false),
             ParamSpec::choice("visibility", "Visibility component", &names_on(BACKEND, Slot::Visibility), "splat", false),
@@ -41,7 +41,7 @@ fn info() -> RendererInfo {
             shadows_param(),
             ParamSpec::int("pool_mb", "Voxel pool limit (MiB)", 64, 6144, 2048, false),
             ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
-        ],
+        ]),
     }
 }
 

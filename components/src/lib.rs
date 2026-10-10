@@ -1,11 +1,17 @@
 //! Renderer components (IDEAS §12): instead of choosing a monolithic renderer, a renderer is
 //! assembled from one component per slot and run on a back end:
 //!
-//! `backend` × `storage` × `geometry` × `prepass` × `visibility` × `shading`
+//! `backend` × `storage` × `geometry` × `prepass` × `visibility` × `shading` × `meshes`
 //!
 //! Not every slot applies to every back end: `geometry` (storage turned into drawable faces)
 //! exists only on rasterising back ends, `prepass` (a stage before the walk, e.g. beams)
-//! only on gpu-compute; slots a back end lacks are left empty.
+//! only on gpu-compute, `meshes` (how polygon meshes join the voxel image) only where a
+//! back end can draw them; slots a back end lacks are left empty.
+//!
+//! Lighting and meshes are stages *around* the walk, so storages and walks stay unaware of
+//! them: the pass mode (lit / unlit, meshes on / off) is what the scene asks for, the
+//! shading component realises lit and unlit (with the lighting knobs, e.g. `shadows`), and
+//! the meshes component decides how meshes are drawn, or that they are not (`none`).
 //!
 //! This crate is the single source of truth for what exists and what combines: component
 //! metadata, compatibility (used by the GUI to forbid unsupported combinations, by plan
@@ -33,11 +39,12 @@ pub enum Slot {
     Prepass,
     Visibility,
     Shading,
+    Meshes,
 }
 
 impl Slot {
     /// In composition order (labels, the GUI chooser).
-    pub const ALL: [Slot; 5] = [Slot::Storage, Slot::Geometry, Slot::Prepass, Slot::Visibility, Slot::Shading];
+    pub const ALL: [Slot; 6] = [Slot::Storage, Slot::Geometry, Slot::Prepass, Slot::Visibility, Slot::Shading, Slot::Meshes];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -46,13 +53,15 @@ impl Slot {
             Slot::Prepass => "prepass",
             Slot::Visibility => "visibility",
             Slot::Shading => "shading",
+            Slot::Meshes => "meshes",
         }
     }
 
-    /// Slots that usually keep their default (`direct` shading, no prepass): left out of
-    /// labels while at the default, and last (optional) in the CLI form.
+    /// Slots that usually keep their default (`direct` shading, no prepass, the back end's
+    /// mesh drawing): left out of labels while at the default, and last (optional) in the
+    /// CLI form.
     pub fn optional(self) -> bool {
-        matches!(self, Slot::Prepass | Slot::Shading)
+        matches!(self, Slot::Prepass | Slot::Shading | Slot::Meshes)
     }
 }
 
@@ -76,7 +85,7 @@ impl BackendInfo {
 }
 
 const RAY_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Visibility, "refloor"), (Slot::Shading, "direct")];
-const COMPUTE_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Prepass, "none"), (Slot::Visibility, "refloor"), (Slot::Shading, "direct")];
+const COMPUTE_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Prepass, "none"), (Slot::Visibility, "refloor"), (Slot::Shading, "direct"), (Slot::Meshes, "composite")];
 
 /// Every back end, including planned ones (shown disabled, with the reason).
 pub const BACKENDS: &[BackendInfo] = &[
@@ -86,7 +95,7 @@ pub const BACKENDS: &[BackendInfo] = &[
         name: "gpu-raster",
         description: "GPU rasterisation (wgpu): the geometry component turns chunks into faces on the CPU, drawn with vertex pulling and multi-draw-indirect after chunk and face-direction culling. Storage here is what lit-mode shadow rays walk (refloor)",
         renderer: Some("gpu-raster"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct")],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct"), (Slot::Meshes, "depth")],
     },
     BackendInfo {
         name: "gpu-rt",
@@ -160,6 +169,8 @@ const VOXELSPACE: &[&str] = &["gpu-voxelspace", "cpu-voxelspace"];
 const DISCOVER: &[&str] = &["gpu-discover", "cpu-discover"];
 const CPU_DISCOVER: &[&str] = &["cpu-discover"];
 const COMPUTE_RT: &[&str] = &["gpu-compute", "gpu-rt"];
+/// Back ends that can draw meshes (the others have no meshes slot).
+const MESH: &[&str] = &["gpu-compute", "gpu-raster"];
 
 pub const COMPONENTS: &[ComponentInfo] = &[
     // Storage.
@@ -202,6 +213,10 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     // Shading.
     ComponentInfo { slot: Slot::Shading, name: "pathtrace", description: "Diffuse path tracing (from gpu-pathtrace): NEE for sun and point lights, cosine-weighted bounces through the composed walk, progressive accumulation while the view is still. bounces = 0 reproduces direct. Knobs: bounces, spp, accumulate.", backends: COMPUTE_RT, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Shading, name: "direct", description: "The reference lighting model: texel (unlit); ambient, sun and point lights with shadow rays through the same walk (lit).", backends: SHADE_ALL, provides: &[], uses: &[] },
+    // Meshes (mesh mode, IDEAS §13): how polygon meshes join the voxel image.
+    ComponentInfo { slot: Slot::Meshes, name: "none", description: "Meshes are not drawn: voxels only. Benchmarks skip the composition in +meshes passes; the GUI labels it \"(no meshes)\".", backends: MESH, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Meshes, name: "composite", description: "Meshes rasterised first (shaded, voxel shadows in lit mode) into a colour and depth target; each primary ray is cast only up to the mesh depth at its pixel, and the mesh shows where no voxel is nearer. Exact for primary visibility; capped rays trace less (mr_gpu::meshes::MeshComposite).", backends: &["gpu-compute"], provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Meshes, name: "depth", description: "Meshes drawn into the same depth buffer as the voxel faces, before them, shaded with the voxel lighting model (voxels shadow meshes). Exact (mr_gpu::meshes::GpuMeshes).", backends: &["gpu-raster"], provides: &[], uses: &[] },
 ];
 
 /// A renderer as an assembly of components. Slots left out (empty) take the back end's
@@ -221,6 +236,8 @@ pub struct Composition {
     pub visibility: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shading: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub meshes: String,
 }
 
 fn default_backend() -> String {
@@ -237,7 +254,7 @@ impl Default for Composition {
 impl Composition {
     /// The back end's default composition (empty slots if the back end is unknown).
     pub fn new(backend: &str) -> Self {
-        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), shading: String::new() };
+        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), shading: String::new(), meshes: String::new() };
         c.fill_defaults();
         c
     }
@@ -249,6 +266,7 @@ impl Composition {
             Slot::Prepass => &self.prepass,
             Slot::Visibility => &self.visibility,
             Slot::Shading => &self.shading,
+            Slot::Meshes => &self.meshes,
         }
     }
 
@@ -259,6 +277,7 @@ impl Composition {
             Slot::Prepass => &mut self.prepass,
             Slot::Visibility => &mut self.visibility,
             Slot::Shading => &mut self.shading,
+            Slot::Meshes => &mut self.meshes,
         };
         *v = name.to_string();
     }
@@ -296,7 +315,11 @@ impl Composition {
     /// out, e.g. `gpu-compute: prefix + incremental` or `gpu-raster: bricks + greedy + raster`.
     pub fn label(&self) -> String {
         let b = backend(&self.backend);
-        let parts: Vec<&str> = self.slots().filter(|&s| !(s.optional() && b.and_then(|b| b.default_for(s)) == Some(self.get(s)))).map(|s| self.get(s)).collect();
+        let parts: Vec<&str> = self
+            .slots()
+            .filter(|&s| !(s.optional() && b.and_then(|b| b.default_for(s)) == Some(self.get(s))))
+            .map(|s| if s == Slot::Meshes && self.get(s) == "none" { "no meshes" } else { self.get(s) })
+            .collect();
         format!("{}: {}", self.backend, parts.join(" + "))
     }
 
@@ -307,6 +330,12 @@ impl Composition {
         self.validate()?;
         let b = backend(&self.backend).unwrap();
         Ok((b.renderer.unwrap(), self.slots().map(|s| (s.name(), self.get(s).to_string())).collect()))
+    }
+
+    /// Whether this composition draws passes of mode `m`: meshes need a meshes stage that
+    /// draws them. (Every shading component renders lit and unlit.)
+    pub fn supports(&self, m: mr_core::PassMode) -> bool {
+        !m.meshes || !matches!(self.get(Slot::Meshes), "" | "none")
     }
 
     /// Why this composition cannot run, if it can't.
@@ -365,6 +394,16 @@ pub fn names_on(backend: &str, slot: Slot) -> Vec<&'static str> {
     components(slot).filter(|c| c.backends.contains(&backend)).map(|c| c.name).collect()
 }
 
+/// Lighting knobs belong to the shading stage (lit mode is the shading component's job):
+/// marks `shadows` as owned by `backend`'s shading components, so UIs show it there.
+pub fn lighting_knobs(backend: &str, mut params: Vec<mr_core::ParamSpec>) -> Vec<mr_core::ParamSpec> {
+    let shading = names_on(backend, Slot::Shading);
+    for p in params.iter_mut().filter(|p| p.name == "shadows" && p.owner.is_none()) {
+        *p = p.clone().of(Slot::Shading.name(), &shading);
+    }
+    params
+}
+
 /// Advisory note for an allowed pairing that runs through a generic fallback.
 pub fn fallback_note(c: &Composition) -> Option<String> {
     let st = component(Slot::Storage, &c.storage)?;
@@ -388,6 +427,7 @@ mod tests {
                 Slot::Visibility => visibility::gpu_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 Slot::Prepass => prepass::gpu_wgsl(c.name).is_some(),
+                Slot::Meshes => ["none", "composite"].contains(&c.name),
                 Slot::Geometry => false,
             };
             assert!(ok, "{} `{}`", c.slot.name(), c.name);
@@ -398,6 +438,7 @@ mod tests {
                 Slot::Geometry => geometry::gpu(c.name).is_some(),
                 Slot::Visibility => visibility::raster_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
+                Slot::Meshes => ["none", "depth"].contains(&c.name),
                 Slot::Prepass => false,
             };
             assert!(ok, "gpu-raster {} `{}`", c.slot.name(), c.name);
@@ -466,13 +507,19 @@ mod tests {
             };
             assert!(ok, "gpu-rt {} `{}`", c.slot.name(), c.name);
         }
-        let mut raster = Composition { backend: "gpu-raster".into(), storage: String::new(), visibility: String::new(), shading: String::new(), prepass: String::new(), geometry: "cubes".into() };
+        let mut raster = Composition { backend: "gpu-raster".into(), storage: String::new(), visibility: String::new(), shading: String::new(), prepass: String::new(), geometry: "cubes".into(), meshes: String::new() };
         assert_eq!(raster.resolve().unwrap().0, "gpu-raster");
         assert_eq!(raster.label(), "gpu-raster: bricks + cubes + raster");
         let mut moved = Composition { storage: "rows".into(), visibility: "sphere".into(), ..Default::default() };
         moved.backend = "gpu-raster".into();
         moved.adapt_to_backend();
-        assert_eq!(moved, Composition { backend: "gpu-raster".into(), storage: "rows".into(), geometry: "greedy".into(), prepass: String::new(), visibility: "raster".into(), shading: "direct".into() });
+        assert_eq!(moved, Composition { backend: "gpu-raster".into(), storage: "rows".into(), geometry: "greedy".into(), prepass: String::new(), visibility: "raster".into(), shading: "direct".into(), meshes: "depth".into() });
+        // Mesh passes: only compositions whose meshes stage draws them.
+        let lit_meshes = mr_core::PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
+        assert!(Composition::default().supports(lit_meshes));
+        assert!(!Composition { meshes: "none".into(), ..Default::default() }.supports(lit_meshes));
+        assert!(!Composition::new("cpu").supports(lit_meshes) && Composition::new("cpu").supports(mr_core::PassMode::LIT));
+        assert_eq!(Composition { meshes: "none".into(), ..Default::default() }.label(), "gpu-compute: bricks + refloor + no meshes");
         assert_eq!(Composition { prepass: "beam".into(), ..Default::default() }.label(), "gpu-compute: bricks + beam + refloor");
         assert!(Composition { storage: "nope".into(), ..Default::default() }.validate().is_err());
         assert!(fallback_note(&Composition { storage: "bricks".into(), visibility: "sphere".into(), ..Default::default() }).is_some());

@@ -34,7 +34,7 @@ pub fn entry() -> RendererEntry {
             tags: vec!["cpu".into(), "raster".into(), "software".into(), "visibility-buffer".into(), "modular".into()],
             modes: vec![RenderMode::Unlit, RenderMode::Lit],
             max_lod: 0,
-            params: params(),
+            params: mr_components::lighting_knobs(BACKEND, params()),
         },
         create: |p, _| Ok(Box::new(CpuRaster::new(p)?)),
     }

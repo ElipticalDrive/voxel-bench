@@ -38,7 +38,7 @@ fn info() -> RendererInfo {
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         // LOD with pool storages and refloor (cells 2x coarser per level; was gpu-dda-lod).
         max_lod: 6,
-        params: params(),
+        params: mr_components::lighting_knobs(BACKEND, params()),
     }
 }
 
@@ -53,6 +53,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::choice("visibility", &format!("Visibility component (any storage works with any; missing fast paths use generic fallbacks). {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "refloor", true),
         ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
         ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &names_on(BACKEND, Slot::Prepass), "none", true),
+        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(BACKEND, Slot::Meshes), "composite", true),
         ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
         ParamSpec::int("bounces", "pathtrace shading: diffuse indirect bounces (lit)", 0, 8, 1, true).of("shading", &["pathtrace"]),
         ParamSpec::int("spp", "pathtrace shading: paths per pixel per frame (lit)", 1, 64, 1, true).of("shading", &["pathtrace"]),
@@ -84,6 +85,7 @@ struct Options {
     visibility: String,
     shading: String,
     prepass: String,
+    meshes: String,
     tile: u32,
     bounces: u32,
     spp: u32,
@@ -110,6 +112,7 @@ impl Default for Options {
             visibility: "refloor".into(),
             shading: "direct".into(),
             prepass: "none".into(),
+            meshes: "composite".into(),
             tile: 8,
             bounces: 1,
             spp: 1,
@@ -287,6 +290,8 @@ pub struct GpuCompose {
     accum: Accum,
     /// `view = steps`: the top of the colour scale.
     view_max: u32,
+    /// The meshes stage draws meshes (`composite`), or not (`none`).
+    draw_meshes: bool,
     /// The storage's own data (group 2).
     data: StorageData,
     ring: FrameRing,
@@ -421,6 +426,7 @@ impl GpuCompose {
             beam,
             accum,
             view_max: opts.view_max.clamp(1, 16384),
+            draw_meshes: require(BACKEND, Slot::Meshes, &opts.meshes)? != "none",
             data,
             ring,
             width: p.width,
@@ -548,9 +554,10 @@ impl Renderer for GpuCompose {
         self.meshes.meshes.set_occlusion_bind_group(&bind2);
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         // The first pass carries the frame's begin timestamp: meshes, else the prepass.
-        let meshes_on = self.meshes.active(req.meshes);
+        let want_meshes = req.meshes && self.draw_meshes;
+        let meshes_on = self.meshes.active(want_meshes);
         let ts = if meshes_on { self.ring.render_timestamps(ticket, true, false) } else { None };
-        self.meshes.encode(&self.gpu, &mut enc, c, self.width as f32 / self.height as f32, req.mode, req.meshes, &world_bg, ts);
+        self.meshes.encode(&self.gpu, &mut enc, c, self.width as f32 / self.height as f32, req.mode, want_meshes, &world_bg, ts);
         let copy_stats = self.beam.begin(&mut enc, self.prepass.is_some());
         if let Some(pre) = &self.prepass {
             let tile = self.comp.tile.max(1);
@@ -646,6 +653,7 @@ impl Renderer for GpuCompose {
                 self.comp = c;
             }
             "shading" => self.comp.shading = require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?,
+            "meshes" => self.draw_meshes = require(BACKEND, Slot::Meshes, value.as_str().unwrap_or(""))? != "none",
             "bounces" => (self.accum.bounces, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(0, 8) as u32, 0),
             "spp" => (self.accum.spp, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(1, 64) as u32, 0),
             "accumulate" => self.accum.accumulate = value.as_bool().unwrap_or(true),

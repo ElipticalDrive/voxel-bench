@@ -59,10 +59,17 @@ display resolution. **O** hides the overlays. The ❓ Keys tab lists everything.
 ### Assembling renderers from components
 
 A renderer is assembled from components rather than picked from a list (IDEAS §12):
-**back end** × **storage** × **geometry** × **prepass** × **visibility** × **shading**. The
-pieces live in `components/`, one directory each (`storage/prefix/gpu.wgsl`, ...); back
-ends in `backends/`. Not every back end has every slot: `geometry` exists only on the
-rasterising and RT back ends, `prepass` only on gpu-compute.
+**back end** × **storage** × **geometry** × **prepass** × **visibility** × **shading** ×
+**meshes**. The pieces live in `components/`, one directory each
+(`storage/prefix/gpu.wgsl`, ...); back ends in `backends/`. Not every back end has every
+slot: `geometry` exists only on the rasterising and RT back ends, `prepass` only on
+gpu-compute, `meshes` only on gpu-compute and gpu-raster.
+
+Lighting and meshes are stages *around* the walk, so storages and walks know nothing of
+them. The pass mode (lit / unlit, meshes on / off) is what the scene asks for. The shading
+stage renders lit and unlit and owns the lighting knobs (`shadows`). The meshes stage
+decides how meshes are drawn (`composite` on gpu-compute, `depth` on gpu-raster), or that
+they are not (`none`).
 
 **The stage grid** (plan editor and live Metrics tab) edits a renderer in one compact
 block: the back end with its own knobs, then one row per stage with the chosen component
@@ -84,9 +91,10 @@ compose = { backend = "gpu-compute", storage = "prefix", visibility = "increment
 compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", visibility = "visbuffer" }
 ```
 
-- *Command line:* the back end's required slots in order, then optionally shading and
-  prepass: `-r gpu-compute:prefix+incremental`, `-r gpu-raster:bricks+greedy+visbuffer`,
-  `-r gpu-compute:bricks+refloor+direct+beam`.
+- *Command line:* the back end's required slots in order, then optionally shading,
+  prepass and meshes: `-r gpu-compute:prefix+incremental`,
+  `-r gpu-raster:bricks+greedy+visbuffer`, `-r gpu-compute:bricks+refloor+direct+beam`,
+  `-r gpu-compute:bricks+refloor+direct+none+none` (no prepass, no meshes).
   `multirenderer list` shows back ends (with their slots and defaults) and components.
   Slots left out of a `compose` table take the back end's default.
 - *GUI:* each renderer has a back-end picker and one picker per slot. Combinations that
@@ -133,11 +141,12 @@ vertex colours, scattered copies, and spin / orbit / bob animation; see
 `plans/meshes.toml`). A pass mode is lighting plus meshes: `run.modes` takes `unlit`,
 `lit`, `unlit+meshes` and `lit+meshes`, and the GUI has latching **Lit** and **Meshes**
 toggles.
-- *Who draws meshes:* renderers with the `meshes` tag (`multirenderer list`): currently
-  `cpu-reference`, the `gpu-raster` back end (every composition; same depth buffer), and the ray casters
-  `gpu-compute` (every composition; meshes are
-  rasterised first, rays stop at the mesh). Others are skipped in `+meshes` benchmark passes and
-  labelled "(no meshes)" in the GUI.
+- *Who draws meshes:* compositions whose `meshes` stage draws them: gpu-raster `depth`
+  (the default; same depth buffer) and gpu-compute `composite` (the default; meshes are
+  rasterised first, rays stop at the mesh), plus the standalone `cpu-reference`.
+  `meshes = none`, and back ends without a meshes stage, are skipped in `+meshes`
+  benchmark passes and labelled "(no meshes)" in the GUI. The auto-tuner never changes
+  `meshes` (nor the diagnostic `view` knobs): they change what is shown, not its speed.
 - *Semantics* (see `mr_core::mesh`): meshes and voxels occlude each other, lit meshes
   are shadowed by voxels, and meshes cast no shadows yet.
 - *For renderer authors:* GPU rasterisers can use `mr_gpu::meshes::GpuMeshes`, GPU ray
