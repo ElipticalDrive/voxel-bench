@@ -63,13 +63,15 @@ vertex colours, scattered copies, and spin / orbit / bob animation; see
 `plans/meshes.toml`). A pass mode is lighting plus meshes: `run.modes` takes `unlit`,
 `lit`, `unlit+meshes` and `lit+meshes`, and the GUI has latching **Lit** and **Meshes**
 toggles.
-- *Who draws meshes:* renderers with the `meshes` tag (`multirenderer list`), currently
-  `cpu-reference` and `gpu-raster`. Others are skipped in `+meshes` benchmark passes and
+- *Who draws meshes:* renderers with the `meshes` tag (`multirenderer list`): currently
+  `cpu-reference`, `gpu-raster` (same depth buffer), and the ray casters `gpu-dda`,
+  `gpu-dda-lod`, `gpu-compose`, `gpu-bitmask`, `gpu-sdf` and `gpu-beam` (meshes are
+  rasterised first, rays stop at the mesh). Others are skipped in `+meshes` benchmark passes and
   labelled "(no meshes)" in the GUI.
 - *Semantics* (see `mr_core::mesh`): meshes and voxels occlude each other, lit meshes
   are shadowed by voxels, and meshes cast no shadows yet.
-- *For renderer authors:* GPU rasterisers can use `mr_gpu::meshes`, CPU renderers
-  `cpu_reference::mesh`.
+- *For renderer authors:* GPU rasterisers can use `mr_gpu::meshes::GpuMeshes`, GPU ray
+  casters `MeshComposite`, and CPU renderers `cpu_reference::mesh`.
 
 ### Knobs, hot swaps, quality probes and auto-tuning
 

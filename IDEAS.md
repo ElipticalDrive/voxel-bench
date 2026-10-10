@@ -914,7 +914,29 @@ renderer, 7b).**
   - gpu-raster: unlit 63.4 dB (64.4 without meshes), lit 71.1 dB (72.7); GPU time
     0.21 → 0.23 ms lit, so meshes cost about 1 dB of edge pixels and almost no time;
   - in the live GUI end-to-end test, a probe in `lit+meshes` scored gpu-raster 60.9 dB
-    and gpu-dda (no mesh support) 29.7 dB.
+    and gpu-tree64 (no mesh support) 29.7 dB.
+
+**Result 2: meshes for the GPU ray casters (PLAN 7c, `mr_gpu::meshes::MeshComposite`).**
+- *How it works.* Before the ray caster's dispatch, the meshes are rasterised, fully
+  shaded and with voxel shadows in lit mode, into a colour and depth target (bind group
+  3). The shader casts each primary ray only up to the mesh's distance at that pixel
+  (`mesh_t`: reverse-Z depth turned into distance along the ray) and shows the mesh
+  colour where no voxel is nearer. That is exact for primary visibility, and capped
+  rays trace less.
+- *Cost of adding it to a renderer:* three shader lines, an extra bind group, one call
+  before the dispatch; the mesh pass carries the frame's begin timestamp. The other
+  renderers were converted mechanically from gpu-dda's change.
+- *Supported:* gpu-dda (and gpu-dda-lod), gpu-compose (every storage × traversal),
+  gpu-bitmask, gpu-sdf and gpu-beam.
+- *Measured* (plans/meshes.toml, 2 interleaved repeats): every one scores 71.3 dB in
+  `unlit+meshes` and 73.5 dB in `lit+meshes`, identical because the compositing is
+  identical and their voxel images already match the reference. Meshes cost
+  +0.01–0.05 ms.
+- *Not yet:* gpu-tree64, gpu-svo-dag, gpu-clipmap and gpu-rtx keep their voxels in their
+  own structures, so the shared voxel world has no data for the mesh pass's shadow
+  rays: lit meshes would get no voxel shadows. They need their occlusion code in the mesh
+  pass, so they stay without the `meshes` tag. gpu-pathtrace would need meshes in its
+  bounces.
 
 ---
 

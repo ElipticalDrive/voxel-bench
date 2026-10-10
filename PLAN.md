@@ -131,7 +131,7 @@ Further steps:
 | 6′ | ~~**Storage + traversal slice** of §12~~ | done | | Done 2026-10-09: `gpu-compose` with storages bricks/hier/prefix and traversals refloor/incremental. |
 | 7 | ~~**Mesh mode, core** (§13)~~ | done | | Done 2026-10-09: PassMode, `meshes` tag, `update_meshes`, scene meshes with animation, reference triangles, GUI toggles. The tuner tunes knobs within a lane and doesn't pick renderers, so it needs no filter. IDEAS §13 "Result". |
 | 7b | Meshes in the raster renderers (gpu-raster ~~first~~ done) | 0.5–1 h each | ~¼ each | `mr_gpu::meshes` makes each further raster renderer a few lines (gpu-raster-naive, gpu-cubes, gpu-visbuffer, gpu-discover's raster). |
-| 7c | Mesh compositing module for ray casters (raster meshes first, rays capped at mesh depth) | 1.5–2.5 h | ~¾ | Gives every GPU ray caster on the slice mesh support at once. |
+| 7c | ~~Mesh compositing module for ray casters~~ | done | | Done 2026-10-10: `MeshComposite`; gpu-dda(-lod), gpu-compose, gpu-bitmask, gpu-sdf, gpu-beam. tree64 / svo-dag / clipmap / rtx need their own occlusion in the mesh pass. IDEAS §13 "Result 2". |
 | 7d | Meshes shadowing voxels | 2–4 h | ~1–1½ | Later and optional; needs a mesh BVH in the shadow path. |
 
 **Totals for the planned path.**
@@ -148,7 +148,7 @@ Further steps:
 first. Steps 1–4 change the inside of single components, so modularity wouldn't make them
 cheaper, and step 1 tells us what the storage/traversal interface must offer.
 
-**Order:** ~~1~~ → ~~6′~~ → ~~2~~ → ~~3~~ → ~~4~~ → ~~2b~~ → ~~7~~ (done) → 7c → 7b (more renderers) → 5 → rest of 6. Transparent cubes are the other remaining big feature; the user wants them later. → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
+**Order:** ~~1~~ → ~~6′~~ → ~~2~~ → ~~3~~ → ~~4~~ → ~~2b~~ → ~~7~~ → ~~7c~~ (done) → 7b (more renderers) → 5 → rest of 6. Transparent cubes are the other remaining big feature; the user wants them later. → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
 earlier if meshes become more urgent; 7c depends on 6′.
 
 ## Progress log
@@ -241,6 +241,12 @@ earlier if meshes become more urgent; 7c depends on 6′.
   - tests, including a live end-to-end mesh test.
 - **Simplification:** meshes cast no shadows yet (7d), so every renderer can match the
   reference now.
+
+### 2026-10-10: step 7c
+- **`mr_gpu::meshes::MeshComposite`:** meshes rasterised first, rays capped at mesh depth.
+- **Mesh support for ray casters:** gpu-dda(-lod), gpu-compose, gpu-bitmask, gpu-sdf and
+  gpu-beam, all at 71.3 / 73.5 dB on the mesh scene for +0.01–0.05 ms.
+- **Live mesh test:** now uses gpu-tree64 as the renderer without mesh support.
 
 ## Future additions (backlog by category)
 
