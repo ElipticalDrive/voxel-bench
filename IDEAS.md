@@ -473,6 +473,45 @@ Counters: `frame_kind`, `frames_*_pct`, `faces_new`, `faces_dropped`.
   (both already noted above);
 - a one-sided parallax test (reveals lie on the background side, along the motion);
 - skip the face-id raster on moving frames by reprojecting last frame's depth instead.
+
+**Result 3: greedy merge of the discovered set (PLAN 2b; gpu-discover `merge = rows`,
+view `quads`).**
+- *How it works.* One GPU pass over S. A face whose predecessor along its face's u axis
+  differs starts a run, and the run takes the following faces with the same signature,
+  up to 64. "Differs" means not in S, another block, or another pattern of coplanar
+  neighbours above and below.
+- *Why runs agree on their v-neighbours.* That makes each long edge of a run either
+  entirely a seam (the plane continues beyond it) or entirely a silhouette.
+- *No "re-merge only changed chunks" bookkeeping.* Merging the whole set every frame is
+  one cheap pass.
+- *Texturing.* Merged quads look up the block of the cell under each fragment (§2), so
+  seams texture like a ray caster.
+- *T-junctions are the hard part.* A long quad edge passes through the corners of
+  shorter neighbouring quads, and pixel centres on that line can fall between both.
+  - Without countermeasures: ~100 crack pixels per frame on terrain, −4 dB.
+  - Growing every edge closes them but bleeds over silhouettes. Even 1/128 px of growth
+    gave more wrong pixels (750–1400) than the cracks it fixed, because silhouettes far
+    outnumber seams.
+  - Growing seam edges only, by 1/16 px, brings it to ~25 extra crack pixels per frame
+    (baseline ~15) and −2 dB. The rest is at convex corners, where a merged face meets
+    perpendicular faces whose corners fall mid-edge. Growing those would bleed again.
+
+| scene | mode | faces → quads | GPU ms, none → rows | PSNR, none → rows |
+|---|---|---|---|---|
+| terrain | unlit | 272k → 140k (1.94 per quad) | 1.91 → 2.32 | 52.7 → 50.6 |
+| terrain | lit | same | 4.10 → **3.70** | 49.8 → 47.6 |
+| edits | unlit | 54k → 36k (1.52) | 1.33 → 1.50 | 55.9 → 54.3 |
+| edits | lit | same | 2.18 → 2.19 | 50.0 → 49.1 |
+
+- *Speed.* The merge pass costs ~0.35 ms (three hash lookups per cell per test). Lit
+  rasterisation gains 15–17% from fewer, larger quads (tiny quads waste shading lanes),
+  so lit terrain is 10% faster overall; unlit is slower.
+- *For the integration use (a face list handed to a normal raster pipeline):* about half
+  the quads, at the price of T-junction handling. Default off.
+- *Next if pursued:*
+  - 2D (rectangle) merging, which has more T-junctions;
+  - a CPU-side merge of a stable set;
+  - closing convex-corner cracks by drawing those edges' neighbour faces unmerged.
 ---
 
 ## 4. Skip space using last frame's ray distances plus world heuristics

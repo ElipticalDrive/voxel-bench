@@ -117,7 +117,7 @@ sit at the high end.
 | 1 | ~~Prefix structure with an **incremental-level hierarchical DDA**, CPU~~ | done | | Done 2026-10-09 as the `traversal` knob on every `cpu-simd-*` variant. Mixed result; see IDEAS §1 "Result 2". |
 | 1b | ~~The same on the GPU~~ | done | | Absorbed into 6′: `gpu-compose storage=prefix`. |
 | 2 | ~~**Event-driven discovery** in gpu-discover~~ | done | | Done 2026-10-09: static frames 17× cheaper; pure pans need the face-id raster after all (pixel sampling); exact change areas. IDEAS §3 "Result 2". |
-| 2b | **Incremental greedy merge** of the discovered set (re-merge only changed chunks) | 1.5–2.5 h | ~¾ | Worth it once 2 makes the set stable. |
+| 2b | ~~**Greedy merge** of the discovered set~~ | done | | Done 2026-10-09 as one-pass row merging (`merge = rows`): half the quads, lit −10%, T-junction cracks −2 dB. IDEAS §3 "Result 3". |
 | 3 | ~~**Morton-ordered breadth-first work queues**~~ | done | | Done 2026-10-09: no gain from ordering (the cost is per-level pass latency); inlining small footprints gave −17–21% on edits. IDEAS §8 "Result". |
 | 3b | Persistent kernel with work stealing | 2–3 h | ~1 | Riskier: driver and forward-progress caveats. Now the measured bottleneck: ~0.6 ms of a 1.9 ms frame is per-level pass latency. |
 | 4 | ~~**Back-to-front order without depth testing**~~ | done | | Done 2026-10-09: exact Manhattan-distance painter order; even or slightly worse, since overdraw is already 1.03. IDEAS §11 "Result". |
@@ -148,7 +148,7 @@ Further steps:
 first. Steps 1–4 change the inside of single components, so modularity wouldn't make them
 cheaper, and step 1 tells us what the storage/traversal interface must offer.
 
-**Order:** ~~1~~ → ~~6′~~ → ~~2~~ → ~~3~~ → ~~4~~ (done) → 2b → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
+**Order:** ~~1~~ → ~~6′~~ → ~~2~~ → ~~3~~ → ~~4~~ → ~~2b~~ (done) → 7 → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
 earlier if meshes become more urgent; 7c depends on 6′.
 
 ## Progress log
@@ -223,6 +223,12 @@ earlier if meshes become more urgent; 7c depends on 6′.
   and `view = overdraw`.
 - **Findings:** overdraw 1.03 for full discovery, so there's nothing to win; ~5 for
   incremental on edits (kept unseen faces). See IDEAS §11 "Result".
+
+### 2026-10-09 (later): step 2b
+- **gpu-discover:** `merge = rows` (runs along u with uniform v-neighbour signature; seam
+  edges grown 1/16 px; per-cell block lookup) and `view = quads`.
+- **Finding:** T-junctions dominate the quality cost of merging; growing silhouettes
+  bleeds more than it fixes.
 
 ## Future additions (backlog by category)
 
