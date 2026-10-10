@@ -28,19 +28,57 @@ use serde::Deserialize;
 
 /// A storage module: its WGSL, plus optional per-slot side data in the `aux` buffer
 /// (indexed like the shared pool), built on the CPU for each dense chunk.
+///
+/// Every storage answers the required queries (`S_LEVELS`, `s_occupied`, `s_probe`,
+/// `s_block`). Optional queries (`OPTIONAL_QUERIES`) are fast paths: a storage lists the
+/// ones it implements in `provides`, and the assembler appends a generic fallback from
+/// `defaults.wgsl` for the rest, so every storage works with every traversal.
 struct Storage {
     name: &'static str,
     wgsl: &'static str,
+    provides: &'static [&'static str],
     /// u32 words per slot (0 = no side data) and their builder.
     aux_words: usize,
     build: fn(&DenseChunk) -> Vec<u32>,
 }
 
 const STORAGES: &[Storage] = &[
-    Storage { name: "bricks", wgsl: include_str!("store_bricks.wgsl"), aux_words: 0, build: |_| Vec::new() },
-    Storage { name: "hier", wgsl: include_str!("store_hier.wgsl"), aux_words: 2, build: hier_summary },
-    Storage { name: "prefix", wgsl: include_str!("store_prefix.wgsl"), aux_words: prefix::PREFIX_WORDS, build: prefix::build },
+    Storage { name: "bricks", wgsl: include_str!("store_bricks.wgsl"), provides: &[], aux_words: 0, build: |_| Vec::new() },
+    Storage { name: "hier", wgsl: include_str!("store_hier.wgsl"), provides: &[], aux_words: 2, build: hier_summary },
+    Storage { name: "prefix", wgsl: include_str!("store_prefix.wgsl"), provides: &[], aux_words: prefix::PREFIX_WORDS, build: prefix::build },
+    Storage { name: "distance", wgsl: include_str!("store_distance.wgsl"), provides: &["s_dist"], aux_words: CHUNK_VOLUME / 4, build: distance_field },
+    Storage { name: "rows", wgsl: include_str!("store_rows.wgsl"), provides: &["s_row"], aux_words: 1024, build: occupancy_rows },
 ];
+
+/// Optional storage queries with a generic fallback in `defaults.wgsl` (`//@name`).
+const OPTIONAL_QUERIES: &[&str] = &["s_dist", "s_row"];
+
+/// The fallback WGSL of every optional query `st` does not provide.
+fn fallbacks(st: &Storage) -> String {
+    let src = include_str!("defaults.wgsl");
+    let mut out = String::new();
+    for q in OPTIONAL_QUERIES.iter().filter(|q| !st.provides.contains(q)) {
+        let start = src.find(&format!("//@{q}\n")).expect("fallback missing");
+        let rest = &src[start..];
+        let end = rest[3..].find("//@").map_or(rest.len(), |e| e + 3);
+        out += &rest[..end];
+    }
+    out
+}
+
+/// `distance`: gpu-sdf's Chebyshev distance field, packed four u8 per word.
+fn distance_field(d: &DenseChunk) -> Vec<u32> {
+    bytemuck::cast_slice(&gpu_sdf::chebyshev_df(d)).to_vec()
+}
+
+/// `rows`: gpu-bitmask's occupancy rows (row y * 32 + z, bit x).
+fn occupancy_rows(d: &DenseChunk) -> Vec<u32> {
+    let mut rows = vec![0u32; 1024];
+    for (i, b) in d.0.iter().enumerate() {
+        rows[i >> 5] |= (b.is_solid() as u32) << (i & 31);
+    }
+    rows
+}
 
 /// `hier`: one bit per 8^3 region (index `x | z << 2 | y << 4`, as cpu-simd-hier).
 fn hier_summary(d: &DenseChunk) -> Vec<u32> {
@@ -53,7 +91,12 @@ fn hier_summary(d: &DenseChunk) -> Vec<u32> {
     }
     vec![bits as u32, (bits >> 32) as u32]
 }
-const TRAVERSALS: &[(&str, &str)] = &[("refloor", include_str!("trav_refloor.wgsl")), ("incremental", include_str!("trav_incremental.wgsl"))];
+const TRAVERSALS: &[(&str, &str)] = &[
+    ("refloor", include_str!("trav_refloor.wgsl")),
+    ("incremental", include_str!("trav_incremental.wgsl")),
+    ("sphere", include_str!("trav_sphere.wgsl")),
+    ("rowrun", include_str!("trav_rowrun.wgsl")),
+];
 const CHUNK_BYTES: u64 = CHUNK_VOLUME as u64 * 2;
 
 pub fn entry() -> RendererEntry {
@@ -81,8 +124,8 @@ fn storage_names() -> Vec<&'static str> {
 
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
-        ParamSpec::choice("storage", "World storage module. bricks: the shared u16 pool with 4^3 brick bits (levels 1, 4). hier: bricks + one bit per 8^3 region (levels 1, 4, 8). prefix: Morton occupancy masks + popcount prefix (levels 1, 2, 4, 8, 16)", &storage_names(), "bricks", false),
-        ParamSpec::choice("traversal", "Ray walk module. refloor: probe for the largest empty cube, step out, re-floor (gpu-dda). incremental: hierarchical DDA keeping per-level exit times, moving between levels incrementally", &names(TRAVERSALS), "refloor", true),
+        ParamSpec::choice("storage", "World storage module. bricks: the shared u16 pool with 4^3 brick bits (levels 1, 4). hier: bricks + one bit per 8^3 region (levels 1, 4, 8). prefix: Morton occupancy masks + popcount prefix (levels 1, 2, 4, 8, 16). distance: per-voxel Chebyshev distance field (from gpu-sdf; fast s_dist). rows: 32x32 occupancy rows per chunk (from gpu-bitmask; fast s_row)", &storage_names(), "bricks", false),
+        ParamSpec::choice("traversal", "Ray walk module. refloor: probe for the largest empty cube, step out, re-floor (gpu-dda). incremental: hierarchical DDA keeping per-level exit times, moving between levels incrementally. sphere: Chebyshev sphere tracing on s_dist (gpu-sdf). rowrun: refloor plus bit-scan jumps across empty row runs on s_row (gpu-bitmask). Every storage works with every traversal; missing fast paths use generic fallbacks", &names(TRAVERSALS), "refloor", true),
         ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true),
     ];
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
@@ -160,11 +203,12 @@ impl Composition {
              const EXACT: bool = {};\n\
              const VIEW_STEPS: bool = {};\n\
              const LEVEL_MASK: u32 = (S_LEVELS & {:#x}u) | 0x21u;\n\
-             {MESH_COMPOSITE_WGSL}\n{store}\n{trav}\n{}",
+             {MESH_COMPOSITE_WGSL}\n{store}\n{}\n{trav}\n{}",
             st.aux_words.max(1),
             self.exact,
             self.steps_view,
             self.levels,
+            fallbacks(st),
             include_str!("main.wgsl"),
         );
         let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";

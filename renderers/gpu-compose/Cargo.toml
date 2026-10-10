@@ -13,3 +13,4 @@ bytemuck.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 mr-gpu.workspace = true
+gpu-sdf.workspace = true
