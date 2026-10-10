@@ -43,3 +43,12 @@ fn job_args() {
     args[at + 1u] = max(1u, (n + 32767u) / 32768u);
     args[at + 2u] = 1u;
 }
+
+// Draw args for the merged quad list (count in lcount[2]), at [108].
+@compute @workgroup_size(1)
+fn merge_args() {
+    args[108] = 4u;
+    args[109] = min(lcount[2], lv.list_cap);
+    args[110] = 0u;
+    args[111] = 0u;
+}

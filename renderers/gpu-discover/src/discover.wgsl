@@ -68,6 +68,7 @@ struct Level { level: u32, size: u32, in_off: u32, out_off: u32, parity: u32, ca
 @group(0) @binding(24) var<storage, read_write> cast_frame: array<u32>; // per lattice point: frame its ray was last cast (`rays` view)
 @group(0) @binding(25) var<storage, read_write> hist: array<atomic<u32>>;  // painter order: bucket counts, then offsets
 @group(0) @binding(26) var<storage, read_write> sorted: array<vec4<u32>>;  // painter order: the face list, farthest first
+@group(0) @binding(27) var<storage, read_write> merged: array<vec4<u32>>;  // row merge: (start key, seam edges, block, fresh | run length << 1); count in lcount[2]
 
 const WG: u32 = 256u;
 const NO_KEY: u32 = 0xffffffffu;
@@ -915,4 +916,66 @@ fn sort_scatter(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n
     if (i >= min(atomicLoad(&lcount[pr.parity]), pr.list_cap)) { return; }
     let e = list[i];
     sorted[atomicAdd(&hist[sort_key(e)], 1u)] = e;
+}
+
+// ---- greedy row merge (`merge = rows`, PLAN step 2b) ----
+// Each face of S whose predecessor along its face's u axis differs (not in S, another
+// block, or another v-neighbour pattern) starts a run; the run takes every following face
+// with the same signature, up to MERGE_MAX. One quad per run is drawn instead of one per face. Texturing stays
+// exact: the fragment shader derives texel coordinates per cell from the hit point.
+
+const MERGE_MAX: u32 = 64u;
+
+// (normal axis, u axis, v axis) per face; must match `face_axes` in raster.wgsl.
+fn face_axes_d(face: u32) -> vec3<u32> {
+    switch face {
+        case 0u: { return vec3<u32>(0u, 1u, 2u); }
+        case 1u: { return vec3<u32>(0u, 2u, 1u); }
+        case 2u: { return vec3<u32>(1u, 2u, 0u); }
+        case 3u: { return vec3<u32>(1u, 0u, 2u); }
+        case 4u: { return vec3<u32>(2u, 0u, 1u); }
+        default: { return vec3<u32>(2u, 1u, 0u); }
+    }
+}
+
+// Whether the face of cell `a` (on this face's plane) is in S.
+fn in_s(a: vec3<i32>, face: u32) -> bool {
+    let k = face_key(a, face);
+    return k != NO_KEY && set_contains(k);
+}
+
+// What a run needs to agree on per cell: the block, and whether the coplanar neighbours
+// before and after it along v are in S (bit 0: -v, bit 1: +v). Agreeing on the latter
+// makes each long edge of the run either entirely a seam or entirely a silhouette.
+fn run_sig(a: vec3<i32>, face: u32, dv: vec3<i32>) -> u32 {
+    if (!in_s(a, face)) { return 0xffffffffu; }
+    return (exposed(a, face) << 2u) | select(0u, 1u, in_s(a - dv, face)) | select(0u, 2u, in_s(a + dv, face));
+}
+
+@compute @workgroup_size(256)
+fn merge_rows(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let i = tid(wg, nwg, li);
+    if (i >= min(atomicLoad(&lcount[pr.parity]), pr.list_cap)) { return; }
+    let e = list[i];
+    let cp = cpos[e.x >> 18u];
+    let l = (e.x >> 3u) & 32767u;
+    let a = cp.xyz * 32 + vec3<i32>(i32(l & 31u), i32((l >> 5u) & 31u), i32(l >> 10u));
+    let face = e.x & 7u;
+    let fa = face_axes_d(face);
+    var du = vec3<i32>(0);
+    du[fa.y] = 1;
+    var dv = vec3<i32>(0);
+    dv[fa.z] = 1;
+    let sig = run_sig(a, face, dv);
+    if (run_sig(a - du, face, dv) == sig) { return; } // not the start of a run
+    var len = 1u;
+    while (len < MERGE_MAX && run_sig(a + du * i32(len), face, dv) == sig) { len++; }
+    // Seam edges (the face continues coplanar beyond them) get grown in the raster to
+    // close T-junction cracks; silhouette edges must not, or they bleed over the
+    // background. Bits: 0 -u, 1 +u, 2 -v, 3 +v.
+    var seams = (sig & 1u) << 2u | (sig & 2u) << 2u;
+    if (in_s(a - du, face)) { seams |= 1u; }
+    if (in_s(a + du * i32(len), face)) { seams |= 2u; }
+    let j = atomicAdd(&lcount[2], 1u);
+    if (j < pr.list_cap) { merged[j] = vec4<u32>(e.x, seams, e.z, e.w | (len << 1u)); }
 }
