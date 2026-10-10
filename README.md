@@ -16,7 +16,7 @@ cargo build --release
 ./target/release/multirenderer list                         # available renderers
 ./target/release/multirenderer run plans/terrain.toml       # benchmark + compare + report
 ./target/release/multirenderer run plans/showcase.toml -s output.window=true -s run.frames=600
-./target/release/multirenderer view plans/terrain.toml -r gpu-dda -r gpu-raster   # fly around
+./target/release/multirenderer view plans/terrain.toml -r gpu-dda -r gpu-raster:bricks+greedy+raster   # fly around
 ./target/release/multirenderer diff a.png b.png --out diff.png
 ```
 
@@ -59,32 +59,43 @@ display resolution. **O** hides the overlays. The ❓ Keys tab lists everything.
 ### Assembling renderers from components
 
 A renderer is assembled from components rather than picked from a list (IDEAS §12):
-**back end** × **storage** × **visibility** × **shading**. The pieces live in
-`components/`, one directory each (`storage/prefix/gpu.wgsl`, ...); back ends in
-`backends/`.
+**back end** × **storage** × **geometry** × **visibility** × **shading**. The pieces live
+in `components/`, one directory each (`storage/prefix/gpu.wgsl`, ...); back ends in
+`backends/`. Not every back end has every slot: `geometry` exists only on the raster back
+end.
 
 ```toml
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "prefix", visibility = "incremental", shading = "direct" }
 ```
 
-- *Command line:* `-r gpu-compute:prefix+incremental`. `multirenderer list` shows back
-  ends and components.
+```toml
+[[renderer]]
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", visibility = "visbuffer" }
+```
+
+- *Command line:* the back end's slots in order, shading optional:
+  `-r gpu-compute:prefix+incremental`, `-r gpu-raster:bricks+greedy+visbuffer`.
+  `multirenderer list` shows back ends (with their slots and defaults) and components.
+  Slots left out of a `compose` table take the back end's default.
 - *GUI:* each renderer has a back-end picker and one picker per slot. Combinations that
   cannot run are disabled, with the reason on hover.
 - *Mismatched pairings:* within a back end every storage works with every visibility
   component. A fast path the storage lacks (e.g. `sphere` without `distance`) uses a
   generic fallback: correct, but slower, and noted in the GUI.
-- *Today:* two back ends.
+- *Today:* three back ends.
   - `gpu-compute`: storages bricks, hier, prefix, distance, rows; visibility refloor,
     incremental, sphere, rowrun;
   - `cpu`: storages bricks, hier, prefix, u8, bits, palette; visibility refloor,
     incremental;
-  - both: shading `direct`.
+  - `gpu-raster`: geometry greedy, naive, cubes; visibility raster, visbuffer; storage
+    (what lit-mode shadow rays walk, with refloor) bricks, hier, prefix, distance, rows;
+  - all: shading `direct`.
 
-  GPU-raster and hardware-RT back ends follow. Renderers not yet split into components
-  remain available as "legacy". The former cpu-simd-u16/u8/bits/hier/prefix/palette
-  renderers are now `cpu` compositions.
+  A hardware-RT back end follows. Renderers not yet split into components remain
+  available as "legacy". The former cpu-simd-u16/u8/bits/hier/prefix/palette renderers
+  are now `cpu` compositions; gpu-raster, gpu-raster-naive, gpu-cubes and gpu-visbuffer
+  are now `gpu-raster` compositions.
 
 ### Mesh mode
 
@@ -94,7 +105,7 @@ vertex colours, scattered copies, and spin / orbit / bob animation; see
 `lit`, `unlit+meshes` and `lit+meshes`, and the GUI has latching **Lit** and **Meshes**
 toggles.
 - *Who draws meshes:* renderers with the `meshes` tag (`multirenderer list`): currently
-  `cpu-reference`, `gpu-raster` (same depth buffer), and the ray casters `gpu-dda`,
+  `cpu-reference`, the `gpu-raster` back end (every composition; same depth buffer), and the ray casters `gpu-dda`,
   `gpu-dda-lod`, `gpu-compute` (every composition), `gpu-bitmask`, `gpu-sdf` and `gpu-beam` (meshes are
   rasterised first, rays stop at the mesh). Others are skipped in `+meshes` benchmark passes and
   labelled "(no meshes)" in the GUI.
@@ -199,8 +210,8 @@ crates/mr-gpu    wgpu helpers: adapter choice, frame ring (readback/timestamps),
 crates/mr-mesh   greedy mesher and quad decoding shared by the raster and triangle-RT renderers
 components/      mr-components: the registry, compatibility rules and `Composition`, plus one
                  directory per component: storage/<name>/{gpu.wgsl,cpu.rs},
-                 visibility/<name>/..., shading/<name>/...
-backends/*       back ends that assemble compositions: gpu-compute, cpu
+                 geometry/<name>/..., visibility/<name>/..., shading/<name>/...
+backends/*       back ends that assemble compositions: gpu-compute, cpu, gpu-raster
 renderers/*      legacy monolithic renderers, one crate each (being split into components)
 ```
 
@@ -277,7 +288,7 @@ launcher = []
 repeats = 1             # >1: passes repeat round-robin; a median/spread table is added
 
 [[renderer]]
-name = "gpu-raster"
+compose = { backend = "gpu-raster", geometry = "greedy", visibility = "raster" }  # or name = "<legacy renderer>"
 label = "raster-sunshadow"         # optional; lets you run one renderer with several option sets
 options = { shadows = "sun" }      # renderer-specific
 view_radius = 8                    # optional per-renderer override of run.view_radius
@@ -309,7 +320,7 @@ Every value can be overridden from the command line, for example
 | `gpu-dda-lod` | GPU compute plus LOD | gpu-dda over level-of-detail chunks. At each step it uses the finest LOD whose streamed region contains the ray, and cells grow 2× per level with distance while textures still tile per block. Set `max_lod` (and usually a smaller `view_radius`) per renderer. |
 | `gpu-sdf` | GPU compute | Distance-field marching: every voxel stores its Chebyshev distance to the nearest solid in its chunk (separable CPU transform, computed asynchronously), so rays leap whole empty cubes. Chunks whose field is pending render with plain stepping. |
 | `gpu-tree64` | GPU compute | Sparse 64-tree per 64³ region: 4×4×4 child masks, popcount-packed children, compressed leaves holding only solid voxels, and uniform subtrees collapsed. The DDA skips the largest empty node. Options: `shadows`, `max_steps`, `nodes_mb`, `leaves_mb`. |
-| `gpu-raster` | GPU raster plus hybrid | Parallel incremental CPU greedy meshing into 8-byte quads. Vertex pulling, one `multi_draw_indirect`, per-chunk frustum and per-face-direction culling. Analytic per-pixel UVs. Lit mode traces shadow rays from the fragment shader through the voxel world, with a depth pre-pass. Options: `shadows`, `depth_prepass`, `merge` (`block`, or `exposure`: merge across block types with a per-fragment block lookup; −16% quads and −13% GPU time on menger, slightly slower on terrain), `quad_buffer_mb`, `pool_mb`, `adapter`. |
+| `gpu-raster: … + greedy/naive/cubes + raster/visbuffer` *(back end; were gpu-raster, gpu-raster-naive, gpu-cubes, gpu-visbuffer)* | GPU raster plus hybrid | The `geometry` component meshes chunks on the CPU (parallel, incremental) into 8-byte instances: `greedy` quads (knob `merge` = `block`, or `exposure`: merge across block types with a per-pixel block lookup; −16% quads and −13% GPU time on menger, slightly slower on terrain), `naive` one quad per exposed face (2.6–18× more faces than greedy; `cull = false` emits every face), or `cubes` one 36-vertex instance per surface block. Vertex pulling, one `multi_draw_indirect`, per-chunk frustum and per-face-direction culling, analytic per-pixel UVs. `visibility` = `raster` (forward shading, `depth_prepass` in lit mode) or `visbuffer` (ids + depth, then one compute shading pass per pixel: 1.5–2.5× faster lit with lots of overdraw; halves lit time for cubes). Lit-mode shadow rays walk the composed `storage` with refloor (7–18% faster than the former fixed walk). Options: `shadows`, `max_steps`, `mesh_budget`, `quad_buffer_mb`, `pool_mb`, `adapter`. |
 | `gpu-rtx` | GPU hardware RT | RT cores via wgpu ray queries. Greedy-mesh triangles in one BLAS per chunk, and a TLAS of chunks rebuilt each frame relative to the camera block. Primary and shadow rays are hardware queries. Options: `shadows`, `cull` (back/front/none), `fast_build`. |
 | `gpu-rtx-bricks` | GPU hardware/software hybrid | The RT-core BVH covers one AABB per occupied 4³ brick, and a software DDA inside each candidate box reports hits with `rayQueryGenerateIntersection` (procedural geometry). Options: `shadows`, `pool_mb`, `fast_build`. |
 | `gpu-svo-dag` | GPU compute | Sparse voxel DAG: binary octree per chunk with inline leaves, identical subtrees deduplicated across all chunks by hash-consing (dedup ~3× on terrain). Stackless descent to the largest empty cell. 5–6× less GPU memory than gpu-tree64, up to 2× slower. Counters: `dag_nodes`, `dedup_ratio`. |
@@ -319,10 +330,7 @@ Every value can be overridden from the command line, for example
 | `gpu-frag-dda` | GPU fragment | gpu-dda's ray casting in a fragment shader on a full-screen triangle instead of compute, to compare dispatch paths. Often faster than compute here (needs confirming with repeats). |
 | `gpu-pathtrace` | GPU compute, GI | Path tracer: next-event estimation for sun and point lights, `bounces` cosine-weighted diffuse bounces, `spp`, and progressive accumulation while the view is still. `bounces = 0` reproduces gpu-dda's lit image exactly; with bounces it adds colour bleeding and indirect fill (and so differs from the reference by design). |
 | `gpu-compute` *(back end; legacy alias `gpu-compose`)* | GPU compute, modular | Storage and traversal as separate WGSL modules behind one interface, fused into one shader per combination (so the split costs nothing at run time). Knobs: `storage` = `bricks` (the shared pool and 4³ brick bits), `hier` (bricks + an 8³ region summary), `prefix` (the user's Morton masks + popcount prefix), `distance` (Chebyshev distance field, from gpu-sdf) or `rows` (occupancy rows, from gpu-bitmask); every storage works with every traversal (`refloor`, `incremental`, `sphere`, `rowrun`) through generic fallbacks for missing fast paths; `visibility` (alias `traversal`) = `refloor` (gpu-dda's walk) or `incremental` (the per-level DDA from step 1), with `exact` and `skip2`…`skip16`; `view = "steps"` shows loop iterations per pixel. `bricks` + `refloor` is gpu-dda's algorithm and runs 7–9% faster (no LOD code); `prefix` + `refloor` is the fastest GPU ray walk on open scenes (−13% terrain, −23% edits). `incremental` is 3.5–8× slower on NVIDIA for reasons still unknown (1.3× on AMD). |
-| `gpu-raster-naive` | GPU raster | The Minecraft-style baseline: one instanced quad per exposed face, no greedy merging. `cull = false` emits all six faces of every block (worst case; exceeds buffer limits on terrain). 2.6–18× more faces than greedy meshing. |
-| `gpu-cubes` | GPU raster | One hardware-instanced 36-vertex cube per surface block (back faces culled by the hardware): the "every block is a mesh instance" approach. Same image as gpu-raster-naive at 4.5–7× its GPU time. |
-| `gpu-visbuffer` | GPU raster plus deferred | Visibility buffer: rasterise greedy meshes writing only a 32-bit quad id, then a compute pass reconstructs the hit by ray–plane intersection and shades once per pixel. 1.5–2.5× faster than gpu-raster when lighting with lots of overdraw. |
-| `gpu-hybrid` | GPU raster plus compute RT | Deferred: greedy-mesh G-buffer (albedo + position/face), then a compute pass traces shadow rays per pixel. Same image as gpu-raster. |
+| `gpu-hybrid` | GPU raster plus compute RT | Deferred: greedy-mesh G-buffer (albedo + position/face), then a compute pass traces shadow rays per pixel. Same image as the `gpu-raster` back end. |
 | `gpu-discover` | GPU compute discovery + raster | Self-directed visibility discovery: adaptive screen quadtree of corner rays (coherent tiles accept all exposed faces on the hit plane, otherwise split, down to 1 px), a GPU hash set of discovered faces kept for `keep_frames`, then only those faces are rasterised. 0.05–0.34 rays/px, audit misses ≈0–1 px/frame. Not yet faster than rasterising everything: levels serialise and late rays are incoherent. Knobs: `tile`, `criterion` (plane/face), `sky_tile`, `keep_frames`, `jitter`, `audit`. `incremental = true` rasterises last frame's faces first and only re-discovers tiles that are uncovered (with a reprojected sky memory), near occlusion edges whose parallax may reveal something, in changed chunks, or due for refresh: −83% rays and −33% GPU time at walking speed with equal or better quality, but 13–19% slower for fast flight (see IDEAS.md §3). `events = true` (default) classifies frames: a still camera skips discovery entirely (17× less GPU time), rotation-only frames skip seen-marking and parallax (`still_holes` now/late), and edits mark only their own blocks. `view = tiles | rays | churn | overdraw | quads` shows why tiles were discovered, where rays went, which faces are new, fragments per pixel, and drawn quads. Also: `order = painter` (exact back-to-front without depth test), `merge = rows` (half the quads), `inline_fp`, `morton`. |
 | `cpu-cluster` | CPU discovery + GPU raster | The user's face-cluster discovery (IDEAS §10): seed rays on a coarse-to-fine pixel lattice; from each hit, a flood fill over coplanar faces confirmed by rays to their corners (each corner cast once); confirmed faces cover their pixels. More complete than the quadtree on every scene at about the same rays (terrain 0.24 rays/px, 51.0 vs 43.8 dB; menger 51.5 vs 26.4 dB), 2.5× its CPU time. Knobs: `seed_step`, `sky` (corners / sparse), `sky_tile`; views `clusters` and `kinds`. |
 | `cpu-discover` | CPU discovery + GPU raster | The same discovery idea with the quadtree on the CPU (cpu-simd's DDA, rayon), pipelined: frame N+1 is discovered while the GPU draws frame N, optionally for the extrapolated camera (`predict`). Synchronous (`pipelined = false`): 0.25 rays/px finds all but ~15 faces on terrain (PSNR 49.8). Pipelined: one frame of latency costs 0.1–0.3% of pixels when moving. CPU discovery (25–60 ms) is the bottleneck. |

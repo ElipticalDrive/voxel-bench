@@ -478,7 +478,7 @@ fn is_backend_renderer(name: &str) -> bool {
 /// cannot run are shown disabled with the reason; pairings that run through a generic
 /// fallback get a note.
 fn composition(ui: &mut Ui, r: &mut RendererSpec) -> Changed {
-    use mr_components::{BACKENDS, Slot, components, unavailable};
+    use mr_components::{BACKENDS, components, unavailable};
     let Some(mut comp) = r.compose.clone() else { return false };
     let before = comp.clone();
     ui.horizontal_wrapped(|ui| {
@@ -499,7 +499,8 @@ fn composition(ui: &mut Ui, r: &mut RendererSpec) -> Changed {
             })
             .response
             .on_hover_text("Back end the renderer runs on");
-        for slot in Slot::ALL {
+        // Only the slots this back end has (e.g. geometry only on raster back ends).
+        for slot in comp.slots() {
             ui.label(format!("{}:", slot.name()));
             ComboBox::from_id_salt(slot.name())
                 .selected_text(comp.get(slot).to_string())
@@ -528,13 +529,7 @@ fn composition(ui: &mut Ui, r: &mut RendererSpec) -> Changed {
     }
     if comp != before {
         // Switching back end: keep components that exist there, default the rest.
-        for slot in Slot::ALL {
-            if unavailable(&comp.backend, slot, comp.get(slot)).is_some() {
-                if let Some(c) = components(slot).find(|c| c.backends.contains(&comp.backend.as_str())) {
-                    comp.set(slot, c.name);
-                }
-            }
-        }
+        comp.adapt_to_backend();
         if let Err(e) = r.set_compose(comp) {
             tracing::warn!("composition: {e:#}");
         }

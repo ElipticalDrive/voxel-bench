@@ -507,6 +507,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-gpu-raster"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "glam",
+ "mr-components",
+ "mr-core",
+ "mr-gpu",
+ "pollster",
+ "rayon",
+ "serde",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1732,23 +1749,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-cubes"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "mr-mesh",
- "pollster",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "gpu-dda"
 version = "0.1.0"
 dependencies = [
@@ -1805,40 +1805,6 @@ dependencies = [
  "glam",
  "mr-core",
  "mr-gpu",
- "pollster",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "gpu-raster"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "mr-mesh",
- "pollster",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "gpu-raster-naive"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "mr-mesh",
  "pollster",
  "rayon",
  "serde",
@@ -1918,23 +1884,6 @@ dependencies = [
  "glam",
  "mr-core",
  "mr-gpu",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "gpu-visbuffer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "mr-mesh",
- "pollster",
  "rayon",
  "serde",
  "tracing",
@@ -2469,6 +2418,7 @@ dependencies = [
  "bytemuck",
  "glam",
  "mr-core",
+ "mr-mesh",
  "serde",
 ]
 
@@ -2522,6 +2472,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "backend-cpu",
+ "backend-gpu-raster",
  "cpu-discover",
  "cpu-raster",
  "cpu-reference",
@@ -2533,19 +2484,15 @@ dependencies = [
  "gpu-bitmask",
  "gpu-clipmap",
  "gpu-compute",
- "gpu-cubes",
  "gpu-dda",
  "gpu-discover",
  "gpu-frag-hybrid",
  "gpu-pathtrace",
- "gpu-raster",
- "gpu-raster-naive",
  "gpu-rtx",
  "gpu-sdf",
  "gpu-splat",
  "gpu-svo-dag",
  "gpu-tree64",
- "gpu-visbuffer",
  "gpu-voxelspace",
  "mr-core",
  "mr-ipc",

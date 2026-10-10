@@ -998,7 +998,20 @@ may survive only as legacy entries while porting continues. Phases:
      `shading/direct/cpu.rs`;
    - the six cpu-simd-* renderers retired;
    - all 12 CPU combinations render the reference image.
-3. The GPU-raster back end: geometry components, raster visibility, discovery, meshes.
+3. The GPU-raster back end. **Done** (2026-10-10), except discovery:
+   - a `geometry` slot that only raster back ends have (`BackendInfo.slots`, with
+     per-back-end defaults; ray-walk compositions leave it empty and reject it);
+     components `greedy` (mr-mesh), `naive`, `cubes`, each a CPU mesher plus a small
+     WGSL vertex interface (`G_VERTS`, `g_face`, `g_size`, `g_corner`);
+   - raster visibility `raster` (forward, depth pre-pass) and `visbuffer` (ids, then
+     compute shading), both built on one `face_hit` that turns a pixel and a face into a
+     `Hit`, so the shading component `direct` is the same WGSL as on gpu-compute;
+   - storage on raster is what the lit-mode shadow rays walk (refloor), so all five GPU
+     storages apply;
+   - meshes in every raster composition (visbuffer draws them after shading, against the
+     kept depth);
+   - gpu-raster, gpu-raster-naive, gpu-cubes and gpu-visbuffer retired.
+   Discovery (`quadtree`, `cluster`) as raster visibility components is still to do.
 4. Port the remaining unique pieces: tree64, SVO-DAG, clipmap, beam, path tracing, LOD,
    hardware RT as a back end, splats, voxelspace.
 5. Remove the legacy section and the monolith crates.
@@ -1009,6 +1022,25 @@ reference image like the originals (58.8 dB on terrain). The fallbacks make odd
 pairings correct but slow: sphere without a distance field ~2 ms, rowrun with a
 generated row 0.9–1.7 ms. New pairings worth noting: `distance + refloor` 0.73 ms,
 `prefix + rowrun` 0.95 ms (terrain, single runs).
+
+*Result (phase 3, the raster back end).* Every composed equivalent renders the same image
+as its monolith (terrain unlit: greedy 53.6 dB, naive 55.5, cubes 55.4, exposure merge
+53.6; meshes 63.4 / 71.1 dB). GPU time, terrain, 3 interleaved repeats, medians:
+
+| composition (was) | unlit ms | lit ms |
+|---|---|---|
+| greedy + raster (gpu-raster) | 0.26 (0.27) | 1.11 (1.35) |
+| greedy + visbuffer (gpu-visbuffer) | 0.31 (0.31) | 0.68 (0.71) |
+| naive + raster (gpu-raster-naive) | 0.70 (0.63; ranges overlap, both min 0.63) | 1.99 (2.30) |
+| cubes + raster (gpu-cubes) | 5.33 (6.16) | 10.92 (11.77) |
+| cubes + visbuffer (new) | 5.38 | 5.76 |
+
+Lit is 7–18% faster because the shadow rays now take the composed refloor walk (the
+7–9% gpu-compute vs gpu-dda effect). Cubes are 13% faster unlit, likely from the shared
+vertex code. The new pairing `cubes + visbuffer` halves cubes' lit time: their overdraw
+no longer pays for lighting. On menger (single runs) `prefix + greedy + visbuffer` takes
+1.15 ms lit against 2.03 for `bricks + greedy + raster`; how much of that is prefix and how
+much visbuffer is not separated yet.
 
 ## 13. A mode for integrating arbitrary polygons (animated meshes)
 

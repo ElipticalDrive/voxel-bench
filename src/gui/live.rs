@@ -1358,7 +1358,7 @@ mod tests {
             [[renderer]]
             name = "gpu-dda"
             [[renderer]]
-            name = "gpu-raster"
+            compose = { backend = "gpu-raster" }
             [[renderer]]
             name = "gpu-dda-lod"
             view_radius = 2
@@ -1436,7 +1436,7 @@ mod tests {
     fn live_meshes_end_to_end() {
         let plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/meshes.toml")), &[
             "run.isolation=\"thread\"".into(),
-            "renderer=[{name=\"gpu-raster\"},{name=\"gpu-tree64\"}]".into(),
+            "renderer=[{compose={backend=\"gpu-raster\"}},{name=\"gpu-tree64\"}]".into(),
             "run.resolution=[480,270]".into(),
         ])
         .unwrap();

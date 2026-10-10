@@ -16,7 +16,6 @@ members = [
     "renderers/cpu-raster",
     "renderers/cpu-simd",
     "renderers/gpu-dda",
-    "renderers/gpu-raster",
     "renderers/gpu-rtx",
     "renderers/gpu-tree64",
     "renderers/gpu-sdf",
@@ -24,20 +23,18 @@ members = [
     "renderers/cpu-discover",
     "renderers/gpu-discover",
     "renderers/cpu-voxelspace",
-    "renderers/gpu-cubes",
     "renderers/gpu-bitmask",
     "renderers/gpu-splat",
     "renderers/gpu-voxelspace",
-    "renderers/gpu-raster-naive",
     "renderers/gpu-beam",
     "renderers/gpu-frag-hybrid",
     "renderers/gpu-svo-dag",
-    "renderers/gpu-visbuffer",
     "renderers/gpu-clipmap",
     "renderers/gpu-pathtrace",
     "components",
     "backends/gpu-compute",
     "backends/cpu",
+    "backends/gpu-raster",
 ]
 
 [workspace.package]
@@ -55,7 +52,6 @@ cpu-reference = { path = "renderers/cpu-reference" }
 cpu-raster = { path = "renderers/cpu-raster" }
 cpu-simd = { path = "renderers/cpu-simd" }
 gpu-dda = { path = "renderers/gpu-dda" }
-gpu-raster = { path = "renderers/gpu-raster" }
 gpu-rtx = { path = "renderers/gpu-rtx" }
 gpu-tree64 = { path = "renderers/gpu-tree64" }
 gpu-sdf = { path = "renderers/gpu-sdf" }
@@ -64,19 +60,17 @@ cpu-discover = { path = "renderers/cpu-discover" }
 gpu-discover = { path = "renderers/gpu-discover" }
 backend-cpu = { path = "backends/cpu" }
 cpu-voxelspace = { path = "renderers/cpu-voxelspace" }
-gpu-cubes = { path = "renderers/gpu-cubes" }
 gpu-bitmask = { path = "renderers/gpu-bitmask" }
 gpu-splat = { path = "renderers/gpu-splat" }
 gpu-voxelspace = { path = "renderers/gpu-voxelspace" }
-gpu-raster-naive = { path = "renderers/gpu-raster-naive" }
 gpu-beam = { path = "renderers/gpu-beam" }
 gpu-frag-hybrid = { path = "renderers/gpu-frag-hybrid" }
 gpu-svo-dag = { path = "renderers/gpu-svo-dag" }
-gpu-visbuffer = { path = "renderers/gpu-visbuffer" }
 gpu-clipmap = { path = "renderers/gpu-clipmap" }
 gpu-pathtrace = { path = "renderers/gpu-pathtrace" }
 mr-components = { path = "components" }
 gpu-compute = { path = "backends/gpu-compute" }
+backend-gpu-raster = { path = "backends/gpu-raster" }
 
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }

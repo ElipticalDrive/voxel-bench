@@ -88,9 +88,10 @@ fn main() -> anyhow::Result<()> {
         Cmd::Gui { plan } => gui::run(plan),
         Cmd::Worker { socket } => mr_worker::run(&socket),
         Cmd::List => {
-            println!("Renderers are assembled from components (plan: compose = {{ backend, storage, visibility, shading }};\nCLI: -r backend:storage+visibility[+shading]).\n\nBack ends:");
+            println!("Renderers are assembled from components (plan: compose = {{ backend, storage, geometry, visibility, shading }};\nCLI: -r backend:<its slots in order, +-separated>, shading optional, e.g. gpu-compute:prefix+incremental).\n\nBack ends:");
             for b in mr_components::BACKENDS {
-                println!("  {:<12} {}{}", b.name, b.description, if b.renderer.is_none() { "  [not available yet]" } else { "" });
+                let slots: Vec<String> = b.slots.iter().map(|(s, d)| format!("{}={d}", s.name())).collect();
+                println!("  {:<12} {}{}\n               slots: {}", b.name, b.description, if b.renderer.is_none() { "  [not available yet]" } else { "" }, slots.join(", "));
             }
             for slot in mr_components::Slot::ALL {
                 println!("\n{}:", slot.name());

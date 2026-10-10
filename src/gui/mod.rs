@@ -32,16 +32,15 @@ resolution = [1280, 720]
 view_radius = 10
 streaming = { budget = 512 }
 
-# Renderers are assembled from components (back end, storage, visibility, shading).
+# Renderers are assembled from components (back end, storage, geometry, visibility, shading).
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "prefix", visibility = "refloor" }
 
-# Not yet split into components:
 [[renderer]]
-name = "gpu-raster"
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", visibility = "raster" }
 "#;
 
 const SCENE_FPS: f64 = 60.0;
@@ -1471,7 +1470,7 @@ mod tests {
             [[renderer]]
             name = "gpu-dda"
             [[renderer]]
-            name = "gpu-raster"
+            compose = { backend = "gpu-raster" }
             "#,
             &[],
         )

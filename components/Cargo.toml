@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 mr-core.workspace = true
+mr-mesh.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 serde.workspace = true

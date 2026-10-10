@@ -31,7 +31,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 ## How to verify and measure
 
 - Builds, zero warnings: `cargo build` and `cargo build --release`.
-- Unit tests: `cargo test -q --workspace` (40, including: the component registry
+- Unit tests: `cargo test -q --workspace` (41, including: the component registry
   matches its implementations; storages are exact; the CPU walks agree; every shipped
   plan loads).
 - GPU end-to-end tests: `cargo test -q --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve` (3, including mesh mode).
@@ -39,7 +39,8 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - One composition against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{compose={backend="gpu-compute",storage="prefix",visibility="refloor"}}]' -s output.dir=\"target/check\"`
   - A legacy renderer: `{name="gpu-tree64"}`. Further knobs go in `options={...}`.
-  - CLI views: `-r gpu-compute:prefix+incremental` or `-r cpu:hier+refloor`.
+  - CLI views: `-r gpu-compute:prefix+incremental`, `-r cpu:hier+refloor`,
+    `-r gpu-raster:bricks+cubes+visbuffer` (the back end's slots in order).
   - Use `-s run.repeats=3` for interleaved repeats, `-s run.frames=N` (more frames
     means a slower camera on the same path), and `-s run.modes=[\"unlit\"]`.
   - Results are in `<dir>/<stamp>/report.json` (a list of passes with `per_frame`
@@ -55,10 +56,10 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 
 - Some renderers produce incorrect frames. The user knows; fix later.
 - `GrowableBuffer` (`crates/mr-gpu`) rounds sizes up to powers of two, so a 2 GiB
-  request exceeds the storage-binding limit (2^31 − 4). `gpu-raster-naive` caps itself at
-  2040 MiB to avoid it.
-- `gpu-raster-naive` with `cull = false` overflows its buffer on terrain and edits and
-  renders only part of the scene.
+  request exceeds the storage-binding limit (2^31 − 4). The `gpu-raster` back end caps
+  `quad_buffer_mb` at 2040 MiB to avoid it.
+- `gpu-raster: … + naive` (and `cubes`) with `cull = false` overflows the instance buffer
+  on terrain and edits and renders only part of the scene.
 - `gpu-svo-dag` never frees DAG nodes after edits. A full rebuild is meant to kick in at
   2× growth plus 65,536 nodes, but that path is untested.
 - `gpu-splat` re-uploads every point on any change (slow loads and frames); it has no
@@ -75,26 +76,30 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 ## Status (2026-10-10)
 
 - **Architecture:** renderers are assembled from components (IDEAS §12):
-  **back end × storage × visibility × shading**.
+  **back end × storage × geometry × visibility × shading**; back ends declare which slots
+  they have (geometry only on raster).
   - `components/` (crate `mr-components`): one directory per piece, each with its GPU
     (`gpu.wgsl`) and/or CPU (`cpu.rs`) implementation, plus the registry, compatibility
     rules and `Composition`.
-  - `backends/gpu-compute` and `backends/cpu`: the assemblers.
-  - Plans use `compose = { backend, storage, visibility, shading }`. The GUI chooser
-    disables combinations that can't run and shows the reason.
+  - `backends/gpu-compute`, `backends/cpu` and `backends/gpu-raster`: the assemblers.
+  - Plans use `compose = { backend, storage, geometry, visibility, shading }` (missing
+    slots take the back end's defaults). The GUI chooser shows the back end's slots and
+    disables combinations that can't run, with the reason.
 - **Available components:**
   - gpu-compute: storages bricks, hier, prefix, distance, rows; visibility refloor,
     incremental, sphere, rowrun; shading direct (20 combinations);
   - cpu: storages bricks, hier, prefix, u8, bits, palette; visibility refloor,
-    incremental; shading direct (12 combinations).
+    incremental; shading direct (12 combinations);
+  - gpu-raster: geometry greedy, naive, cubes; visibility raster, visbuffer; storage (for
+    shadow rays) the five GPU ones; shading direct (30 combinations).
 - **Legacy renderers** (not yet split into components): cpu-reference (stays a
   monolith on purpose), cpu-raster, cpu-simd, cpu-simd-loc (4), cpu-voxelspace,
   cpu-discover, cpu-cluster, gpu-dda (still in the registry; plans use the composition),
-  gpu-dda-lod, gpu-raster, gpu-raster-naive, gpu-cubes, gpu-visbuffer, gpu-hybrid,
+  gpu-dda-lod, gpu-hybrid,
   gpu-frag-dda, gpu-discover, gpu-rtx(-bricks), gpu-tree64, gpu-svo-dag, gpu-clipmap,
   gpu-beam, gpu-bitmask and gpu-sdf (both covered by compositions), gpu-splat,
   gpu-voxelspace, gpu-pathtrace, and the gpu-compose alias.
-- **Verification:** zero warnings in both builds, 40 unit tests and 3 GPU end-to-end
+- **Verification:** zero warnings in both builds, 41 unit tests and 3 GPU end-to-end
   tests pass.
 - **Tools:**
   - GUI with the component chooser, live knobs, hot swaps, quality probes and an
@@ -119,7 +124,10 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
     of hier but does not pass it.
 - **Composition costs nothing** at run time: `gpu-compute: bricks + refloor` is 7–9%
   faster than gpu-dda (no LOD code); `distance + sphere` and `rows + rowrun` match
-  gpu-sdf and gpu-bitmask; the CPU compositions match the former cpu-simd-* speeds.
+  gpu-sdf and gpu-bitmask; the CPU compositions match the former cpu-simd-* speeds; the
+  raster compositions match their monoliths unlit and are 7–18% faster lit (shadow rays
+  take the composed refloor walk). The new pairing `cubes + visbuffer` halves cubes' lit
+  time (IDEAS §12 "Result (phase 3)").
 - **Face-cluster discovery (`cpu-cluster`, the user's §10 design)** is more complete
   than the quadtree on every scene at about the same rays (terrain 51.0 vs 43.8 dB;
   menger 51.5 vs 26.4 dB), at 2.5× the CPU time.
@@ -154,7 +162,8 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
 
 1. ~~Components crate, GPU-compute back end, compositions in plans / CLI / GUI~~ (done).
 2. ~~CPU back end~~ (done).
-3. **Next: the GPU-raster back end.** What it needs:
+3. ~~The GPU-raster back end~~ (done 2026-10-10, except the discovery components; see
+   the progress log). What it needed:
    - **A `geometry` slot**, which turns storage into drawable faces:
      - `greedy`: greedy quads, from `crates/mr-mesh` (`mesh_chunk_merge`, `Merge::Block`
        / `Merge::Exposure`), as gpu-raster uses;
@@ -175,7 +184,9 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
      per back end (and shown so in the GUI).
    - **Then retire** gpu-raster, gpu-raster-naive, gpu-cubes and gpu-visbuffer once
      their compositions match them, and update the plans.
-4. Port the remaining unique pieces: tree64 and SVO-DAG (storages with tree-descent
+   - **Still open:** the discovery components (`quadtree`, `cluster`) as raster
+     visibility; a candidate for its own step.
+4. **Next:** port the remaining unique pieces: tree64 and SVO-DAG (storages with tree-descent
    walks), clipmap (storage), the beam prepass (a visibility stage), path tracing
    (shading), LOD (in the storage interface, for gpu-dda-lod), hardware RT as a back end
    (gpu-rtx), splats and voxelspace (their own representations), cpu-raster,
@@ -380,6 +391,29 @@ earlier if meshes become more urgent; 7c depends on 6′.
   earlier speeds.
 - **Plans:** gpu-dda, gpu-sdf and gpu-compose entries replaced by exact compositions
   (gpu-dda-lod stays until LOD is a component); a test loads every shipped plan.
+
+### 2026-10-10: component refactor, phase 3 (GPU-raster back end)
+- **Slots per back end:** `BackendInfo.slots` lists each back end's slots with defaults;
+  `Composition` gains `geometry`, fills missing slots from the back end's defaults,
+  rejects slots a back end lacks, and adapts on a back-end switch. CLI: the back end's
+  slots in order (`gpu-raster:bricks+greedy+visbuffer`); GUI shows only the back end's
+  slots; `list` shows slots and defaults.
+- **Components:** `geometry/{greedy,naive,cubes}` (CPU mesher + WGSL vertex interface;
+  naive and cubes moved out of their renderers), `visibility/{raster,visbuffer}`
+  (raster-only WGSL entry points built on the back end's `face_hit`).
+- **`backends/gpu-raster`:** one renderer for all 30 combinations; geometry,
+  visibility, shading, merge, cull and depth_prepass switch live. Shading is the same
+  `shade_hit` as on gpu-compute; shadow rays walk the composed storage (refloor).
+  Meshes work in every combination (new for naive, cubes and visbuffer).
+- **Retired:** gpu-raster, gpu-raster-naive, gpu-cubes, gpu-visbuffer; plans and GUI
+  defaults use `compose = { backend = "gpu-raster", … }`.
+- **Results:** same images as the monoliths (terrain greedy 53.6 dB, naive 55.5, cubes
+  55.4; meshes 63.4 / 71.1); equal GPU time unlit, 7–18% faster lit; `cubes +
+  visbuffer` new and 1.9× faster lit than cubes + raster. Details in IDEAS §12.
+- **A detail found on the way:** clamping the texel cell into the quad (as gpu-visbuffer
+  did) costs ~1 dB on naive / cubes against the reference; the unclamped cell (the
+  former gpu-raster's `fract`) is used for texels, the clamped one only for the
+  exposure-merge block lookup.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

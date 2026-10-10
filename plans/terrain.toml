@@ -19,7 +19,7 @@ view_radius = 16
 compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
 
 [[renderer]]
-name = "gpu-raster"
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", visibility = "raster" }
 
 [[renderer]]
 name = "cpu-raster"

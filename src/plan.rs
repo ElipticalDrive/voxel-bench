@@ -148,7 +148,7 @@ impl RendererSpec {
     /// For compositions: checks them and sets `name` (the back end's renderer) and the
     /// options that select the components.
     pub fn resolve(&mut self) -> anyhow::Result<()> {
-        if let Some(c) = &self.compose {
+        if let Some(c) = &mut self.compose {
             let (name, opts) = c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?;
             self.name = name.to_string();
             for (k, v) in opts {
@@ -161,16 +161,20 @@ impl RendererSpec {
         Ok(())
     }
 
-    /// From the command line: `backend:storage+visibility[+shading]` for a composition,
-    /// otherwise a legacy renderer name.
+    /// From the command line: `backend:slot+slot+...` for a composition, the back end's
+    /// slots in order with shading optional (`gpu-compute:prefix+incremental`,
+    /// `gpu-raster:bricks+greedy+visbuffer`), otherwise a legacy renderer name.
     pub fn from_cli(s: &str) -> anyhow::Result<Self> {
         let Some((backend, rest)) = s.split_once(':') else { return Ok(Self::new(s)) };
         let parts: Vec<&str> = rest.split('+').collect();
-        let mut c = mr_components::Composition { backend: backend.into(), ..Default::default() };
-        match parts.as_slice() {
-            [st, vis] => (c.storage, c.visibility) = (st.to_string(), vis.to_string()),
-            [st, vis, sh] => (c.storage, c.visibility, c.shading) = (st.to_string(), vis.to_string(), sh.to_string()),
-            _ => bail!("composition `{s}` should be backend:storage+visibility[+shading]"),
+        let mut c = mr_components::Composition::new(backend);
+        let slots: Vec<mr_components::Slot> = c.slots().collect();
+        if slots.is_empty() || !(slots.len() - 1..=slots.len()).contains(&parts.len()) {
+            let form: Vec<&str> = slots.iter().map(|s| s.name()).collect();
+            bail!("composition `{s}` should be {backend}:{}[+shading]", form[..form.len().saturating_sub(1)].join("+"));
+        }
+        for (slot, name) in slots.into_iter().zip(parts) {
+            c.set(slot, name);
         }
         let mut spec = Self::new("");
         spec.set_compose(c)?;
@@ -188,7 +192,7 @@ impl RendererSpec {
     pub fn extra_options(&self) -> toml::Table {
         let mut t = self.options.clone();
         if self.compose.is_some() {
-            for k in ["storage", "visibility", "shading"] {
+            for k in mr_components::Slot::ALL.map(|s| s.name()) {
                 t.remove(k);
             }
         }
@@ -303,7 +307,7 @@ impl Plan {
         for r in &mut p.renderers {
             if r.compose.is_some() {
                 r.name.clear();
-                for k in ["storage", "visibility", "shading"] {
+                for k in mr_components::Slot::ALL.map(|s| s.name()) {
                     r.options.remove(k);
                 }
             }
@@ -382,12 +386,19 @@ mod tests {
         assert!(!saved.contains("name = \"gpu-compute\"") && saved.contains("compose") && !saved.contains("[renderer.options]\nstorage"), "{saved}");
         assert_eq!(Plan::parse(&saved, &[]).unwrap().renderers[0].options, r.options);
         // Unsupported combinations are rejected with the reason.
-        let bad = text.replace("storage = \"prefix\"", "backend = \"gpu-raster\", storage = \"prefix\"");
+        let bad = text.replace("storage = \"prefix\"", "backend = \"gpu-rt\", storage = \"prefix\"");
         assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("not available"));
         let cpu = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"palette\"");
         assert_eq!(Plan::parse(&cpu, &[]).unwrap().renderers[0].name, "cpu");
         let bad = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"rows\"");
         assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("no cpu implementation"));
+        let raster = text.replace("storage = \"prefix\", visibility = \"incremental\"", "backend = \"gpu-raster\", geometry = \"cubes\"");
+        let r = &Plan::parse(&raster, &[]).unwrap().renderers[0];
+        assert_eq!((r.name.as_str(), r.label()), ("gpu-raster", "gpu-raster: bricks + cubes + raster"));
+        assert!(Plan::parse(&text.replace("visibility = \"incremental\"", "geometry = \"greedy\""), &[]).unwrap_err().to_string().contains("no geometry slot"));
+        let spec = RendererSpec::from_cli("gpu-raster:hier+naive+visbuffer").unwrap();
+        assert_eq!(spec.options.get("geometry").and_then(|v| v.as_str()), Some("naive"));
+        assert!(RendererSpec::from_cli("gpu-raster:hier+naive").is_err());
         let spec = RendererSpec::from_cli("gpu-compute:distance+sphere").unwrap();
         assert_eq!(spec.options.get("storage").and_then(|v| v.as_str()), Some("distance"));
         assert!(RendererSpec::from_cli("gpu-compute:nope+sphere").is_err());
