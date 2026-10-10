@@ -920,6 +920,74 @@ combinations for free.
 
 ---
 
+**Design for replacing the monoliths (2026-10-10).** The user's goal: replace the
+individual renderers with components assembled through interfaces into renderers, at no
+performance cost.
+
+*Component kinds.* A renderer is
+**storage × visibility × (geometry) × shading × back end**:
+
+| kind | what it does | interface |
+|---|---|---|
+| storage | holds the world, answers queries | required: `S_LEVELS`, `s_occupied(slot, level, c)`, `s_probe(slot, l) -> (block, empty cube)`, `s_block(slot, l)`; optional fast paths: `s_dist`, `s_row`, … |
+| visibility | finds the surface per pixel or per face set | ray walks: `ctrace(o, d, max_t) -> Hit`; discovery: produces a face set; raster: draws geometry |
+| geometry | converts storage to triangles for rasterisers | greedy mesh, naive faces, merged discovered faces (merge = rows) |
+| shading | colour of a hit | unlit texel; lit with shadow rays (via `occluded` = the same traversal); path tracing |
+| back end | where it runs | CPU (generics), GPU compute (WGSL modules), GPU raster, hardware RT |
+
+*Contracts.*
+- `s_occupied` may report "occupied" for an empty cube but never the reverse, and must be
+  exact at the voxel level. Traversals descend until they reach exactness.
+- `s_probe`'s cube must be truly empty.
+- An optional query is never required: the assembler adds a generic fallback built from
+  the required ones (`defaults.wgsl`). This is the §9 rule, "good pairings are fast, bad
+  pairings are slow".
+- Side data lives per pool slot in `aux` and is built by the storage's CPU builder.
+
+*Why it costs nothing.*
+- GPU: modules are pasted into one shader before compilation.
+- CPU: Rust generics monomorphise per combination.
+- Measured: `bricks + refloor` runs 7–9% faster than gpu-dda (no LOD code);
+  `distance + sphere` 0.60 ms vs gpu-sdf 0.64 ms; `rows + rowrun` 1.02 ms vs gpu-bitmask
+  1.02 ms.
+
+*Inventory* (renderer → components; ✓ = available as a component now):
+
+| renderer | storage | visibility | shading / back end | status |
+|---|---|---|---|---|
+| gpu-dda | bricks ✓ | refloor ✓ | lit, compute | composed: `bricks + refloor` |
+| gpu-sdf | distance ✓ | sphere ✓ | lit, compute | composed: `distance + sphere` |
+| gpu-bitmask | rows ✓ | rowrun ✓ | lit, compute | composed: `rows + rowrun` |
+| cpu-simd-* (6) | u16, u8, bits, hier, prefix, palette (CPU `Repr` ✓) | refloor, incremental (CPU ✓) | lit, CPU | composed on the CPU side already |
+| gpu-tree64 | 64-tree (own world) | tree descent | lit (own occlusion), compute | to port: storage + traversal |
+| gpu-svo-dag | SVO-DAG (own world) | tree descent | compute | to port |
+| gpu-clipmap | toroidal 3D texture | DDA | compute | to port: storage |
+| gpu-beam | bricks | beam prepass + DDA | compute | to port: prepass as a visibility stage |
+| gpu-dda-lod | bricks with LOD | refloor with LOD | compute | needs LOD in the storage interface |
+| gpu-rtx(-bricks) | hardware BVH | ray query | hardware RT | fused: a back-end-specific storage + traversal pair |
+| gpu-pathtrace | bricks | refloor | path tracing | to port: shading component |
+| gpu-raster, -naive, cubes, visbuffer | via meshing | raster | lit, raster | to port: geometry + raster visibility |
+| gpu-discover, cpu-discover, cpu-cluster | bricks / CPU grid | discovery (quadtree, cluster) | raster | partly: discovery is a knob in cpu-discover |
+| gpu-frag-dda, gpu-hybrid | bricks | raster + fragment DDA | hybrid | to port: hybrid visibility |
+| cpu-reference, cpu-raster, cpu-simd, cpu-simd-loc (4) | CPU grid | DDA, software raster | CPU | the reference stays a monolith on purpose |
+| gpu-splat, gpu-voxelspace, cpu-voxelspace | point / heightmap representations | splat, column raster | — | different representations: own components later |
+
+*Migration rules.*
+- **New techniques are built as components only** (PLAN.md working agreement).
+- Port by yield: components that add a storage, traversal or visibility shape first.
+  Renderers whose parts already exist retire once a composed equivalent matches their
+  image and speed; until then they stay as controls.
+- *Next ports, in order of yield:* tree64 and SVO-DAG (storages with tree-descent
+  traversals), clipmap (storage), the beam prepass (a visibility stage before any
+  traversal), path tracing as a shading component, LOD in the storage interface.
+
+*Done on the GPU so far (gpu-compose).* Storages bricks, hier, prefix, distance, rows;
+traversals refloor, incremental, sphere, rowrun. All 20 combinations render the
+reference image like the originals (58.8 dB on terrain). The fallbacks make odd
+pairings correct but slow: sphere without a distance field ~2 ms, rowrun with a
+generated row 0.9–1.7 ms. New pairings worth noting: `distance + refloor` 0.73 ms,
+`prefix + rowrun` 0.95 ms (terrain, single runs).
+
 ## 13. A mode for integrating arbitrary polygons (animated meshes)
 
 **Idea (user).** Besides lit and unlit, add a mode that renders arbitrary polygons, such

@@ -12,6 +12,9 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   and mention it to the user.
 - The project is about exploring the problem space, not chasing speed. Slower techniques
   and negative results are findings too.
+- **New rendering techniques are built as components** (storage, visibility, geometry,
+  shading, back end; IDEAS §12 design), not as new monolithic renderers. Existing
+  renderers are ported by yield and retire only when a composed equivalent matches them.
 - No subagents until the user re-enables them. Usage is self-metered.
 - Ideas the user shares go into `IDEAS.md` with analysis. Implement only after asking.
 - Verify everything: zero warnings, unit tests, GPU end-to-end tests, a comparison
@@ -254,6 +257,15 @@ earlier if meshes become more urgent; 7c depends on 6′.
   `corners` / `sparse`; views `clusters` and `kinds`; a completeness unit test.
 - **Findings:** see IDEAS §10 "Result".
 - **Follow-ups:** a scanline fill (speed), far-field super-faces, a GPU version.
+
+### 2026-10-10: composition step
+- **Interface design and inventory** in IDEAS §12.
+- **gpu-compose:** optional storage queries with generic fallbacks (`s_dist`, `s_row`);
+  storages `distance` (from gpu-sdf) and `rows` (from gpu-bitmask); traversals `sphere`
+  and `rowrun`. That is 5 × 4 = 20 combinations, all matching the reference; the
+  composed ports are as fast as the originals.
+- **Next ports by yield:** tree64 / SVO-DAG, clipmap, the beam prepass, a path-tracing
+  shading component, LOD.
 
 ## Future additions (backlog by category)
 
