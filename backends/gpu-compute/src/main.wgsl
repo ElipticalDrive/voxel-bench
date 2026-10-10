@@ -9,7 +9,7 @@ struct Camera {
     up: vec3<f32>, mode: u32,      // 0 unlit, 1 lit
     origin: vec3<f32>, sky: u32,   // camera position relative to vp.cam_block; packed sRGB sky
     width: u32, height: u32, frame: u32, prev_count: u32,   // frame counter; samples accumulated so far
-    bounces: u32, spp: u32, _p0: u32, _p1: u32,             // pathtrace shading
+    bounces: u32, spp: u32, view_max: u32, _p1: u32,        // pathtrace shading; steps view scale
 }
 
 @group(0) @binding(0) var<uniform> cam: Camera;
@@ -43,11 +43,8 @@ fn pixel_color(px: vec2<u32>) -> vec4<f32> {
         h = ctrace(o, d, min(vp.max_dist, mt));
     }
     if (VIEW_STEPS) {
-        // Primary-ray loop iterations: red = low 8 bits, green = high bits (exact counts
-        // for analysis), blue = a log-scale brightness for viewing.
-        let n = ct_iters;
-        let v = log2(f32(n) + 1.0) / 11.0;
-        return vec4<f32>(f32(n & 255u) / 255.0, f32(min(n >> 8u, 255u)) / 255.0, v, 1.0);
+        // Primary-ray loop iterations on the shared colour scale (log; white above the top).
+        return ramp_value(f32(ct_iters), f32(cam.view_max), true);
     }
     var color = unpack4x8unorm(cam.sky);
     if (!h.hit && mt < 1e29) { color = mesh_color(px); }

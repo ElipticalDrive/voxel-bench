@@ -258,6 +258,7 @@ impl CpuVoxelSpace {
         FrameStats {
             cpu_ms: total as f32,
             gpu_ms: None,
+            legend: None,
             counters: vec![
                 ("heightmap_size".into(), size as f64),
                 ("chunk_columns".into(), self.columns.len() as f64),

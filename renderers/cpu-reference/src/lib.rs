@@ -466,6 +466,7 @@ impl Renderer for CpuReference {
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
+            legend: None,
             counters: vec![
                 ("chunks".into(), self.scene.chunk_count() as f64),
                 ("lights".into(), self.scene.light_count() as f64),

@@ -63,7 +63,8 @@ fn params() -> Vec<ParamSpec> {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("visibility", &["incremental"]));
     }
     p.push(ParamSpec::choice("dispatch", "How pixels are run: `compute` (one compute thread per pixel) or `fragment` (a fragment shader over a full-screen triangle; was gpu-frag-dda)", &["compute", "fragment"], "compute", true));
-    p.push(ParamSpec::choice("view", "image: the rendered scene. steps: primary-ray loop iterations per pixel (red = low 8 bits, green = high bits, blue = log-scale brightness)", &["image", "steps"], "image", true));
+    p.push(ParamSpec::choice("view", "image: the rendered scene. steps: primary-ray loop iterations per pixel on a colour scale (log; white above view_max)", &["image", "steps"], "image", true));
+    p.push(ParamSpec::int("view_max", "steps view: the top of the colour scale (iterations)", 1, 16384, 256, true));
     p.extend([
         shadows_param(),
         ParamSpec::int("max_steps", "Loop iteration limit per ray", 32, 16384, 2048, true),
@@ -93,6 +94,7 @@ struct Options {
     skip8: bool,
     skip16: bool,
     view: String,
+    view_max: u32,
     dispatch: String,
     shadows: Shadows,
     pool_mb: u32,
@@ -118,6 +120,7 @@ impl Default for Options {
             skip8: true,
             skip16: true,
             view: "image".into(),
+            view_max: 256,
             dispatch: "compute".into(),
             shadows: Shadows::All,
             pool_mb: 2048,
@@ -169,7 +172,7 @@ impl Composition {
              const EXACT: bool = {};\n\
              const VIEW_STEPS: bool = {};\n\
              const LEVEL_MASK: u32 = (S_LEVELS & {:#x}u) | 1u | (1u << S_TOP);\n\
-             {MESH_COMPOSITE_WGSL}\n{}\n{vis}\n{shade}\n{}\n{pre}",
+             {MESH_COMPOSITE_WGSL}\n{}\n{}\n{vis}\n{shade}\n{}\n{pre}",
             self.storage,
             self.prepass(),
             self.visibility,
@@ -179,6 +182,7 @@ impl Composition {
             self.exact,
             self.steps_view,
             self.levels,
+            mr_core::legend::ramp_wgsl(),
             st.source(),
             include_str!("main.wgsl"),
         );
@@ -234,7 +238,8 @@ struct CameraUniform {
     prev_count: u32,
     bounces: u32,
     spp: u32,
-    _pad: [u32; 2],
+    view_max: u32,
+    _pad: u32,
 }
 
 /// Progressive accumulation (pathtrace shading): samples averaged so far, reset when the
@@ -280,6 +285,8 @@ pub struct GpuCompose {
     /// Prepass output: one f32 per tile (sized for 1-pixel tiles), and statistics.
     beam: Beam,
     accum: Accum,
+    /// `view = steps`: the top of the colour scale.
+    view_max: u32,
     /// The storage's own data (group 2).
     data: StorageData,
     ring: FrameRing,
@@ -413,6 +420,7 @@ impl GpuCompose {
             stand_in,
             beam,
             accum,
+            view_max: opts.view_max.clamp(1, 16384),
             data,
             ring,
             width: p.width,
@@ -529,7 +537,8 @@ impl Renderer for GpuCompose {
             prev_count: a.count,
             bounces: a.bounces,
             spp: a.spp,
-            _pad: [0; 2],
+            view_max: self.view_max,
+            _pad: 0,
         };
         a.count = a.count.saturating_add(a.spp);
         let accumulated = a.count;
@@ -604,6 +613,7 @@ impl Renderer for GpuCompose {
                 .chain(self.prepass.is_some().then(|| ("avg_skip_blocks".to_string(), self.beam.avg_skip)))
                 .chain((self.built.shading == "pathtrace" && req.mode == RenderMode::Lit).then(|| ("accumulated_spp".to_string(), accumulated as f64)))
                 .collect(),
+            legend: self.built.steps_view.then(|| Legend::ramp("loop iterations (primary ray)", self.view_max as f64, true)),
         };
         if copy_stats {
             self.beam.copy(&mut enc);
@@ -639,6 +649,7 @@ impl Renderer for GpuCompose {
             "bounces" => (self.accum.bounces, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(0, 8) as u32, 0),
             "spp" => (self.accum.spp, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(1, 64) as u32, 0),
             "accumulate" => self.accum.accumulate = value.as_bool().unwrap_or(true),
+            "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,
             "view" => self.comp.steps_view = parse_view(value.as_str().unwrap_or(""))?,
             "dispatch" => self.comp.fragment = parse_dispatch(value.as_str().unwrap_or(""))?,
             "exact" => self.comp.exact = value.as_bool().unwrap_or(true),

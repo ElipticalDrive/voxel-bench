@@ -612,7 +612,16 @@ impl Renderer for CpuDiscover {
             counters.push(("audit_ms".into(), ms));
         }
         counters.extend(out.extra);
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters };
+        let legend = match (self.tags_valid, self.opts.view.as_str()) {
+            (true, "clusters") => Some(Legend::categories(&[("one random colour per cluster found this pass", None), ("carried over from earlier passes (dark grey)", Some([64, 64, 64]))])),
+            (true, "kinds") => Some(Legend::categories(&[
+                ("confirmed: all corners visible (green tint)", Some([51, 230, 77])),
+                ("partial: an occluded corner (yellow tint)", Some([255, 217, 26])),
+                ("carried over from earlier passes (dark grey)", Some([64, 64, 64])),
+            ])),
+            _ => None,
+        };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
     }

@@ -132,11 +132,11 @@ fn fs_id(in: VOut) -> @location(0) u32 {
     return in.iid;
 }
 
-// `view = overdraw`: every rasterised fragment adds a constant (additive blending), so
-// brightness counts how many times each pixel was shaded.
+// `view = overdraw`: every rasterised fragment adds 1/255 to red (additive blending), so
+// red counts how many times each pixel was shaded (up to 255); the overlay pass colours it.
 @fragment
 fn fs_overdraw(in: VOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(0.07, 0.05, 0.02, 1.0);
+    return vec4<f32>(1.0 / 255.0, 0.0, 0.0, 1.0);
 }
 
 // Block id at absolute cell `a` (0 = air or not loaded), through the composed storage.

@@ -614,7 +614,7 @@ impl Renderer for GpuRt {
         if self.shading == "pathtrace" && req.mode == RenderMode::Lit {
             counters.push(("accumulated_spp".into(), self.accum.count as f64));
         }
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend: None };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
     }

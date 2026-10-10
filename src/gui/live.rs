@@ -127,6 +127,8 @@ pub struct LaneView {
     pub frame: Option<LiveFrame>,
     pub samples: VecDeque<Sample>,
     pub counters: Vec<(String, f64)>,
+    /// What the colours of the latest frame mean (a diagnostic `view` is active).
+    pub legend: Option<mr_core::Legend>,
     pub rss_mb: Option<f64>,
     pub gpu_mb: Option<f64>,
     pub init_ms: f32,
@@ -152,6 +154,7 @@ impl LaneView {
             frame: None,
             samples: VecDeque::new(),
             counters: vec![],
+            legend: None,
             rss_mb: None,
             gpu_mb: None,
             init_ms: 0.0,
@@ -1190,6 +1193,7 @@ impl Session {
                                     v.samples.pop_front();
                                 }
                                 v.counters = stats.counters;
+                                v.legend = stats.legend;
                                 v.frames += 1;
                                 if let Some(px) = pixels {
                                     lane.seq += 1;

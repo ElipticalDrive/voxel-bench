@@ -77,6 +77,8 @@ fn params() -> Vec<ParamSpec> {
     p.push(ParamSpec::choice("tile_order", "schedule = tiles: order tiles are handed out in", &["morton", "hilbert", "linear"], "morton", true));
     p.push(ParamSpec::int("tile", "schedule = tiles: tile edge in pixels", 4, 256, 16, true));
     p.push(ParamSpec::bool("perf", "Hardware counters per frame (perf_event_open; cycles, instructions, cache misses per pixel)", false, true));
+    p.push(ParamSpec::choice("view", "image: the rendered scene. steps: the walk's work per pixel on a colour scale (log; white above view_max): refloor = lockstep iterations of the pixel's packet, incremental = occupancy tests of the pixel's ray", &["image", "steps"], "image", true));
+    p.push(ParamSpec::int("view_max", "steps view: the top of the colour scale", 1, 16384, 256, true));
     p
 }
 
@@ -99,11 +101,13 @@ struct Options {
     tile_order: String,
     tile: u32,
     perf: bool,
+    view: String,
+    view_max: u32,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { threads: 0, shadows: Shadows::All, storage: "bricks".into(), visibility: "refloor".into(), shading: "direct".into(), exact: true, packet: "1".into(), isa: "auto".into(), skip2: true, skip4: true, skip8: true, skip16: true, schedule: "rows".into(), tile_order: "morton".into(), tile: 16, perf: false }
+        Self { threads: 0, shadows: Shadows::All, storage: "bricks".into(), visibility: "refloor".into(), shading: "direct".into(), exact: true, packet: "1".into(), isa: "auto".into(), skip2: true, skip4: true, skip8: true, skip16: true, schedule: "rows".into(), tile_order: "morton".into(), tile: 16, perf: false, view: "image".into(), view_max: 256 }
     }
 }
 
@@ -116,6 +120,14 @@ enum Traversal {
     Incremental,
     /// `trace_incremental`, exit times recomputed from the integer cell (one multiply).
     IncrementalExact,
+}
+
+fn parse_view(s: &str) -> anyhow::Result<bool> {
+    match s {
+        "image" => Ok(false),
+        "steps" => Ok(true),
+        _ => anyhow::bail!("view must be `image` or `steps`, got `{s}`"),
+    }
 }
 
 fn parse_schedule(s: &str) -> anyhow::Result<bool> {
@@ -296,6 +308,9 @@ pub struct CpuBackend<R> {
     tile: u32,
     rects: Vec<Rect>,
     pixels: Vec<u8>,
+    /// `view = steps` and the top of its scale.
+    steps_view: bool,
+    view_max: u32,
 }
 
 impl<R: Repr> CpuBackend<R> {
@@ -335,6 +350,8 @@ impl<R: Repr> CpuBackend<R> {
             packet: o.packet.parse().unwrap_or(1),
             isa,
             isa_choice: o.isa,
+            steps_view: parse_view(&o.view)?,
+            view_max: o.view_max.clamp(1, 16384),
             pixels: vec![0; (p.width * p.height * 4) as usize],
         })
     }
@@ -366,6 +383,8 @@ struct Job<'a, R> {
     packet: usize,
     /// Packets as 2D pixel blocks (tiles) instead of runs along a row.
     two_d: bool,
+    /// `view = steps`: pixels show the walk's work on this scale instead of the image.
+    steps: Option<Legend>,
     out: OutPtr,
 }
 
@@ -412,8 +431,14 @@ fn render_rect<R: Repr, const N: usize>(job: &Job<R>, r: Rect) -> RowWork {
                 }
             }
             let mut hits = [None; N];
+            // Work per lane, for the steps view.
+            let mut lane_work = [0u32; N];
             if scene.traversal == Traversal::Refloor {
-                work.lane_steps += trace_packet::<R, N>(&scene.grid, cam_block, o, &dx, &dy, &dz, 1e7, bmin, bmax, &mut hits) as u64 * N as u64;
+                let it = trace_packet::<R, N>(&scene.grid, cam_block, o, &dx, &dy, &dz, 1e7, bmin, bmax, &mut hits);
+                work.lane_steps += it as u64 * N as u64;
+                if job.steps.is_some() {
+                    lane_work = [it; N];
+                }
             } else {
                 for l in 0..N {
                     if !dx[l].is_nan() {
@@ -425,6 +450,9 @@ fn render_rect<R: Repr, const N: usize>(job: &Job<R>, r: Rect) -> RowWork {
                         // Occupancy tests: one per step and per descent, plus the first
                         // cell and the ascent attempts.
                         work.lane_steps += (t.steps + t.down + t.up + 1) as u64;
+                        if job.steps.is_some() {
+                            lane_work[l] = t.steps + t.down + t.up + 1;
+                        }
                         work.steps += t.steps as u64;
                         work.up += t.up as u64;
                         work.down += t.down as u64;
@@ -441,6 +469,15 @@ fn render_rect<R: Repr, const N: usize>(job: &Job<R>, r: Rect) -> RowWork {
                 };
                 // SAFETY: pix < w * h, and each pixel belongs to exactly one rectangle.
                 unsafe { std::ptr::copy_nonoverlapping(px.as_ptr(), job.out.0.add(pix[l] as usize * 4), 4) };
+            }
+            if let Some(scale) = &job.steps {
+                for l in 0..N {
+                    if pix[l] != u32::MAX {
+                        let [r, g, b] = scale.color(lane_work[l] as f64);
+                        // SAFETY: as above.
+                        unsafe { std::ptr::copy_nonoverlapping([r, g, b, 255].as_ptr(), job.out.0.add(pix[l] as usize * 4), 4) };
+                    }
+                }
             }
             bx += bw;
         }
@@ -662,7 +699,11 @@ impl<R: Repr> Renderer for CpuBackend<R> {
         if self.rects.is_empty() {
             self.rects = rects(w, h, self.tiles, self.tile, self.tile_order);
         }
-        let job = Job { scene, cam, w, h, mode, packet, two_d: self.tiles, out: OutPtr(pixels.as_mut_ptr()) };
+        let legend = self.steps_view.then(|| {
+            let quantity = if self.scene.traversal == Traversal::Refloor { "lockstep loop iterations (packet)" } else { "occupancy tests (ray)" };
+            Legend::ramp(quantity, self.view_max as f64, true)
+        });
+        let job = Job { scene, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone(), out: OutPtr(pixels.as_mut_ptr()) };
         let rect_list = &self.rects;
         let work: RowWork = self.pool.pool.install(|| rect_list.par_iter().map(|&r| render_rect_isa(isa, &job, r)).reduce(RowWork::default, |a, b| a + b));
         drop(job);
@@ -693,7 +734,7 @@ impl<R: Repr> Renderer for CpuBackend<R> {
                 counters.push(("ipc".into(), hw[1] / hw[0]));
             }
         }
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend };
         sink.complete(CompletedFrame { frame_id: req.frame_id, stats, pixels: Some(&self.pixels) });
         Ok(())
     }
@@ -708,6 +749,8 @@ impl<R: Repr> Renderer for CpuBackend<R> {
             }
             "shadows" => self.scene.shadows = value.as_str().and_then(Shadows::parse).ok_or_else(|| anyhow::anyhow!("bad shadows"))?,
             "perf" => self.perf = value.as_bool().unwrap_or(false),
+            "view" => self.steps_view = parse_view(value.as_str().unwrap_or(""))?,
+            "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,
             "skip2" | "skip4" | "skip8" | "skip16" => {
                 let bit = 1 << (name[4..].parse::<u32>()?.trailing_zeros());
                 if value.as_bool().unwrap_or(true) {

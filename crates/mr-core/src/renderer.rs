@@ -99,6 +99,9 @@ pub struct FrameStats {
     pub gpu_ms: Option<f32>,
     /// Arbitrary per-frame counters (rays cast, triangles drawn, ...).
     pub counters: Vec<(String, f64)>,
+    /// What the colours mean while a diagnostic `view` is active (`None`: the image).
+    #[serde(default)]
+    pub legend: Option<crate::Legend>,
 }
 
 pub struct CompletedFrame<'a> {

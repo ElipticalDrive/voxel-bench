@@ -184,7 +184,7 @@ stage grid) are in the progress log below, with their measurements.
 ### Next: candidates (ask the user which)
 
 Sized for single steps:
-- Colour scales (numeric legends) on the diagnostic views.
+- ~~Colour scales (numeric legends) on the diagnostic views.~~ Done (2026-10-10).
 - Lighting / meshes as stage components.
 - A plan sweep over all combinations (`compose = { storage = "*", ... }`).
 - More techniques as components (the backlog below), e.g. the persistent-kernel
@@ -620,6 +620,32 @@ earlier if meshes become more urgent; 7c depends on 6′.
   `check` / `names`.
 - **GUI screenshot test** (`gui_screenshot`, ignored): renders the real GUI offscreen
   with egui-wgpu to `target/gui-shot.png`, so layout changes can be checked visually.
+
+### 2026-10-10: colour scales on the diagnostic views
+- **`mr_core::legend`:** `Legend::Ramp { quantity, max, log }` or `Legend::Categories`; one
+  shared ramp (Turbo polynomial) with identical Rust (`Legend::color`) and WGSL
+  (`ramp_wgsl()`: `ramp_value(v, max, log)`) versions; white above `max`. `Legend::read`
+  inverts a pixel colour to a value (nearest of 256 ramp steps; ±3% on a log scale).
+- **`FrameStats::legend`:** renderers report what the active view's colours mean with
+  every frame; the GUI stores it per lane, draws it in the lane's bottom-right corner
+  (ramp with five numeric ticks and an "over" swatch, or category swatches), and shows
+  the value under the cursor with a marker on the ramp.
+- **Views converted:** gpu-compute `steps` (was red/green bit-packing) → ramp, log, knob
+  `view_max` (default 256). gpu-discover `overdraw` → exact counts (1/255 per fragment
+  in red), copied to a scratch texture and ramped by the overlay pass, linear, `view_max`
+  (default 8, max 255); `tiles` / `rays` / `churn` / `quads` and cpu-discover
+  `clusters` / `kinds` get category legends.
+- **New view:** `cpu` back end `view = steps`: refloor = lockstep iterations of the
+  pixel's packet, incremental = occupancy tests of the pixel's ray (log, `view_max`).
+- **Cost in image mode:** none measurable. The first version put the view in the pixel
+  loop and cost the CPU back end 2–3% (incremental); moving it to a separate pass after
+  each packet brought it back within noise (interleaved old/new ×3, 3 repeats each:
+  hier + refloor 101.0/100.3, 98.7/98.4, 97.5/98.2 fps; prefix + incremental
+  91.4/91.2, 90.1/90.0, 89.1/89.6). gpu-compute GPU time unchanged (0.35 ms).
+- **Verified:** zero warnings in both builds; 41 unit tests (new: ramp read-back); the 3
+  GPU end-to-end tests; GUI screenshot with four views (`SHOT_PLAN`).
+- **Open:** auto-ranging (the scale following the frame's maximum, as thermal cameras
+  do) needs a GPU reduction read back a frame late; fixed `view_max` for now.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

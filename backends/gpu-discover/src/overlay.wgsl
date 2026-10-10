@@ -1,18 +1,20 @@
 // gpu-discover diagnostic overlays, blended over the rendered image by a fullscreen pass.
 // `tiles`: level-0 tiles tinted by why they were discovered this frame. `rays`: a dot at
 // every lattice point whose ray was cast this frame (the adaptive quadtree's samples).
+// `overdraw`: the fragment counts (red of a copy of the output) on the shared colour ramp.
 
 struct Overlay {
-    view: u32,       // 2 tiles, 3 rays
+    view: u32,       // 2 tiles, 3 rays, 4 overdraw
     frame: u32,      // discovery frame shown (0 = none this frame: nothing discovered)
     tile: u32, cols: u32,
     rows: u32, need_off: u32, lat_w: u32, off_x: u32,
-    off_y: u32, _p0: u32, _p1: u32, _p2: u32,
+    off_y: u32, view_max: u32, _p1: u32, _p2: u32,
 }
 
 @group(0) @binding(0) var<uniform> ov: Overlay;
 @group(0) @binding(1) var<storage, read> need: array<u32>;
 @group(0) @binding(2) var<storage, read> cast_frame: array<u32>;
+@group(0) @binding(3) var counts: texture_2d<f32>;
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
@@ -23,6 +25,10 @@ fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 @fragment
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let p = vec2<u32>(pos.xy);
+    if (ov.view == 4u) {
+        let n = round(textureLoad(counts, vec2<i32>(p), 0).r * 255.0);
+        return ramp_value(n, f32(ov.view_max), false);
+    }
     // Nothing discovered this frame (an event-driven static frame): everything skipped.
     if (ov.frame == 0u) { return vec4<f32>(0.0, 0.0, 0.0, 0.45); }
     if (ov.view == 3u) {

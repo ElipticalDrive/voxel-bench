@@ -8,6 +8,7 @@
 pub mod camera;
 pub mod chunk;
 pub mod face;
+pub mod legend;
 pub mod lighting;
 pub mod mesh;
 pub mod params;
@@ -17,6 +18,7 @@ pub mod texture;
 pub use camera::Camera;
 pub use chunk::{BlockId, CHUNK_SIZE, CHUNK_VOLUME, ChunkData, ChunkKey, DenseChunk};
 pub use face::Face;
+pub use legend::{Legend, Reading};
 pub use lighting::{Environment, Light, PassMode, RenderMode, Sun};
 pub use mesh::{MeshData, MeshInstance, MeshUpdate};
 pub use params::{ParamKind, ParamSpec, ParamValue};

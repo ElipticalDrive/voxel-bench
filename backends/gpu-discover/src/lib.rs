@@ -109,7 +109,8 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::choice("merge", "Faces drawn as: none = one quad per face; rows = runs of same-block faces along each face's u axis merged into one quad (one GPU pass over S; ignored with order = painter)", &["none", "rows"], "none", true).of("visibility", &["quadtree"]),
         ParamSpec::choice("order", "Face drawing order. depth: any order, depth-tested (lit mode adds a depth pre-pass). painter: sorted back to front by Manhattan distance from the camera cell (an exact order for voxels; GPU counting sort), drawn without depth testing, so every fragment is shaded", &["depth", "painter"], "depth", true).of("visibility", &["quadtree"]),
         ParamSpec::choice("still_holes", "Events, rotation-only frames: now = rasterise the old face list first and discover holes (faces that rotation moved onto a pixel centre) in the same frame; late = skip that raster and discover them next frame (cheaper, holes visible for one frame)", &["now", "late"], "now", true).of("visibility", &["quadtree"]),
-        ParamSpec::choice("view", "image: the rendered scene. quads: one colour per drawn quad (shows merging). overdraw: fragments shaded per pixel (brighter = more; compare order = depth vs painter). tiles: level-0 tiles tinted by why they were discovered this frame (white full, blue edited block / changed chunk, cyan entering strip (still_holes = late), red uncovered or hole, yellow parallax, green refresh; dark = skipped). rays: a dot per ray cast this frame. churn: faces new to the set this frame in red, carried-over faces grey", &["image", "tiles", "rays", "churn", "overdraw", "quads"], "image", true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("view", "image: the rendered scene. quads: one colour per drawn quad (shows merging). overdraw: fragments shaded per pixel on a colour scale (linear; white above view_max; compare order = depth vs painter). tiles: level-0 tiles tinted by why they were discovered this frame (white full, blue edited block / changed chunk, cyan entering strip (still_holes = late), red uncovered or hole, yellow parallax, green refresh; dark = skipped). rays: a dot per ray cast this frame. churn: faces new to the set this frame in red, carried-over faces grey", &["image", "tiles", "rays", "churn", "overdraw", "quads"], "image", true).of("visibility", &["quadtree"]),
+        ParamSpec::int("view_max", "overdraw view: the top of the colour scale (fragments per pixel)", 1, 255, 8, true).of("visibility", &["quadtree"]),
         ParamSpec::int("reveal_tiles", "Incremental: largest reveal radius around an edge, in level-0 tiles", 1, 16, 4, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true).of("visibility", &["quadtree"]),
         shadows_param(),
@@ -150,6 +151,7 @@ struct Options {
     merge: String,
     still_holes: String,
     view: String,
+    view_max: u32,
     audit: bool,
     shadows: Shadows,
     max_steps: u32,
@@ -188,6 +190,7 @@ impl Default for Options {
             merge: "none".into(),
             still_holes: "now".into(),
             view: "image".into(),
+            view_max: 8,
             audit: false,
             shadows: Shadows::All,
             max_steps: 2048,
@@ -295,7 +298,8 @@ struct OverlayUniform {
     lat_w: u32,
     off_x: u32,
     off_y: u32,
-    _p: [u32; 3],
+    view_max: u32,
+    _p: [u32; 2],
 }
 
 /// What an event-driven frame has to do (see the module docs).
@@ -339,6 +343,8 @@ struct Sized {
     rayq: wgpu::Buffer,
     tileq: wgpu::Buffer,
     output: wgpu::Texture,
+    /// `view = overdraw`: a copy of the counts (red, in 1/255 steps) the overlay ramps.
+    counts: wgpu::Texture,
     depth: wgpu::TextureView,
     /// Incremental mode: last frame's faces rasterised at the current camera (list index + 1).
     idtex: wgpu::TextureView,
@@ -501,6 +507,16 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
         rayq: storage(gpu, "ray queue", n * 4, none),
         tileq: storage(gpu, "tile queues", 2 * n * 4, none),
         output: mr_gpu::output_texture(gpu, w, h),
+        counts: gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("overdraw counts"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        }),
         depth: depth_view(gpu, w, h),
         idtex: gpu
             .device
@@ -641,11 +657,17 @@ impl GpuDiscover {
         let pipe_merge = compute(&pl_disc, &disc_mod, "merge_rows");
         let pipe_merge_args = compute(&pl_args, &args_mod, "merge_args");
         // Diagnostic overlays (`view = tiles | rays`), alpha-blended over the image.
-        let ov_mod = module("discover overlay", include_str!("overlay.wgsl").to_string());
+        let ov_mod = module("discover overlay", format!("{}{}", mr_core::legend::ramp_wgsl(), include_str!("overlay.wgsl")));
         let f = wgpu::ShaderStages::FRAGMENT;
+        let counts_entry = wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: f,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            count: None,
+        };
         let layout_ov = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("discover overlay"),
-            entries: &[buf(0, uni, f, false), buf(1, ro, f, false), buf(2, ro, f, false)],
+            entries: &[buf(0, uni, f, false), buf(1, ro, f, false), buf(2, ro, f, false), counts_entry],
         });
         let pl_ov = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover overlay"), bind_group_layouts: &[Some(&layout_ov)], immediate_size: 0 });
         let pipe_overlay = dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1012,6 +1034,26 @@ impl GpuDiscover {
         }
     }
 
+    /// What the active `view`'s colours mean.
+    fn legend(&self) -> Option<Legend> {
+        Some(match self.opts.view.as_str() {
+            "overdraw" => Legend::ramp("fragments shaded per pixel", self.opts.view_max.clamp(1, 255) as f64, false),
+            "tiles" => Legend::categories(&[
+                ("full frame", Some([255, 255, 255])),
+                ("edited block / changed chunk", Some([64, 102, 255])),
+                ("entering strip", Some([26, 230, 255])),
+                ("uncovered or hole", Some([255, 51, 38])),
+                ("parallax", Some([255, 217, 26])),
+                ("refresh", Some([51, 230, 77])),
+                ("skipped (darkened)", Some([0, 0, 0])),
+            ]),
+            "rays" => Legend::categories(&[("ray cast this frame", Some([255, 255, 51])), ("no ray (darkened)", Some([0, 0, 0]))]),
+            "churn" => Legend::categories(&[("face new to the set this frame", Some([255, 38, 26])), ("carried over (grey)", Some([128, 128, 128]))]),
+            "quads" => Legend::categories(&[("one random colour per drawn quad", None)]),
+            _ => return None,
+        })
+    }
+
     fn counters(&self) -> Vec<(String, f64)> {
         let mut out = vec![("chunk_slots".into(), self.slots.len() as f64), ("slot_overflow".into(), self.slot_overflow as f64)];
         if self.opts.incremental && self.opts.events {
@@ -1164,14 +1206,20 @@ impl GpuDiscover {
         pass.draw_indirect(&self.args, draw_ofs);
     }
 
-    /// `view = tiles | rays`: blends the diagnostic overlay over the output. `frame` is the
+    /// `view = tiles | rays`: blends the diagnostic overlay over the output (`overdraw`:
+    /// replaces the counts with their colours). `frame` is the
     /// discovery frame to show (0: nothing was discovered this frame).
     fn encode_overlay(&mut self, enc: &mut wgpu::CommandEncoder, frame: u32, off_x: u32, off_y: u32, cols: u32, rows: u32) {
         let view = view_code(&self.opts.view);
         if view < 2 {
             return;
         }
-        let u = OverlayUniform { view, frame, tile: self.opts.tile, cols, rows, need_off: self.sized.need_off, lat_w: self.sized.lat_w, off_x, off_y, _p: [0; 3] };
+        let u = OverlayUniform { view, frame, tile: self.opts.tile, cols, rows, need_off: self.sized.need_off, lat_w: self.sized.lat_w, off_x, off_y, view_max: self.opts.view_max.clamp(1, 255), _p: [0; 2] };
+        if view == 4 {
+            // The overlay ramps the counts, so it reads them from a copy of the output.
+            let size = wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 };
+            enc.copy_texture_to_texture(self.sized.output.as_image_copy(), self.sized.counts.as_image_copy(), size);
+        }
         self.gpu.queue.write_buffer(&self.overlay_buf, 0, bytemuck::bytes_of(&u));
         if self.bind_ov.is_none() {
             self.bind_ov = Some(self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1181,6 +1229,7 @@ impl GpuDiscover {
                     wgpu::BindGroupEntry { binding: 0, resource: self.overlay_buf.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: self.sized.need.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 2, resource: self.sized.cast_frame.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.sized.counts.create_view(&Default::default())) },
                 ],
             }));
         }
@@ -1235,7 +1284,7 @@ impl GpuDiscover {
         self.encode_shade(&mut enc, parity, &world_bg, req.mode, (true, true), ticket);
         let tile = self.opts.tile;
         self.encode_overlay(&mut enc, 0, 0, 0, self.width.div_ceil(tile), self.height.div_ceil(tile));
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters() };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(), legend: self.legend() };
         self.ring.submit(&self.gpu, enc, ticket, &self.sized.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
     }
@@ -1630,7 +1679,7 @@ impl Renderer for GpuDiscover {
             }
             self.stages[i].tag = (self.frame, parity as u32);
         }
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters() };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(), legend: self.legend() };
         self.ring.submit(&self.gpu, enc, ticket, &self.sized.output, req.frame_id, req.readback, stats);
         if let Some(i) = stage {
             let st = &self.stages[i];
@@ -1683,6 +1732,10 @@ impl Renderer for GpuDiscover {
             "view" => {
                 // Display only: no need to re-discover.
                 self.opts.view = value.as_str().unwrap_or("image").into();
+                return Ok(());
+            }
+            "view_max" => {
+                self.opts.view_max = int(8).clamp(1, 255) as u32;
                 return Ok(());
             }
             "shadows" => self.world.cfg.shadows.set(value)?,

@@ -857,6 +857,7 @@ impl Renderer for GpuRasterBackend {
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
+            legend: None,
             counters: vec![
                 ("instances".into(), drawn as f64),
                 ("instances_total".into(), total as f64),

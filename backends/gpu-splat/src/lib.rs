@@ -390,6 +390,7 @@ impl Renderer for GpuSplat {
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
+            legend: None,
             counters: vec![("points".into(), self.count as f64), ("dropped_chunks".into(), self.world.dropped_chunks() as f64)],
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);

@@ -4,6 +4,7 @@
 
 mod bench;
 mod editor;
+mod legend;
 mod live;
 mod stages;
 
@@ -638,7 +639,8 @@ impl App {
         };
 
         // Snapshot lane state.
-        let lanes: Vec<(String, LaneStatus, Option<live::LiveFrame>, f64, Option<f64>, bool)> = {
+        type LaneSnap = (String, LaneStatus, Option<live::LiveFrame>, f64, Option<f64>, bool, Option<mr_core::Legend>);
+        let lanes: Vec<LaneSnap> = {
             let sh = live.shared.lock().unwrap();
             sh.lanes
                 .iter()
@@ -646,7 +648,7 @@ impl App {
                     let (fps, gpu) = recent(&l.samples, 1.0);
                     // Lanes whose renderer can't draw meshes say so while mesh mode is on.
                     let no_meshes = self.mode.meshes && !self.infos.iter().any(|i| i.name == l.spec.name && i.tags.iter().any(|t| t == "meshes"));
-                    (l.spec.label().to_string(), l.status.clone(), l.frame.clone(), fps, gpu, no_meshes)
+                    (l.spec.label().to_string(), l.status.clone(), l.frame.clone(), fps, gpu, no_meshes, l.legend.clone())
                 })
                 .collect()
         };
@@ -664,7 +666,8 @@ impl App {
         let ppp = ui.ctx().pixels_per_point();
         let snap = |p: Pos2| Pos2::new((p.x * ppp).round() / ppp, (p.y * ppp).round() / ppp);
         for (k, &i) in visible.iter().enumerate() {
-            let (label, status, frame, fps, gpu, no_meshes) = &lanes[i];
+            let (label, status, frame, fps, gpu, no_meshes, legend) = &lanes[i];
+            let mut reading = None;
             let mut t = Rect::from_min_size(rect.min + Vec2::new((k % cols) as f32 * tile.x, (k / cols) as f32 * tile.y), tile);
             if visible.len() > 1 {
                 t = t.shrink(2.0);
@@ -698,8 +701,20 @@ impl App {
                 if let Some(e) = &self.textures[i] {
                     painter.with_clip_rect(t).image(e.tex.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
                 }
-                if hover.is_some_and(|h| img_rect.contains(h)) {
+                if let Some(h) = hover.filter(|&h| img_rect.contains(h) && t.contains(h)) {
                     pick = Some((img_rect, f.width, f.height));
+                    // The diagnostic view's value under the cursor.
+                    if let Some(lg) = legend {
+                        let x = ((h.x - img_rect.min.x) / img_rect.width() * f.width as f32) as u32;
+                        let y = ((h.y - img_rect.min.y) / img_rect.height() * f.height as f32) as u32;
+                        reading = legend::read(lg, &f.pixels, f.width, x.min(f.width - 1), y.min(f.height - 1));
+                        if let (Some(r), true) = (reading, self.overlays) {
+                            let galley = painter.layout_no_wrap(legend::describe(lg, r), egui::FontId::monospace(12.0), Color32::WHITE);
+                            let bg = Rect::from_min_size(h + Vec2::new(14.0, 10.0), galley.size() + Vec2::splat(6.0));
+                            painter.rect_filled(bg, 3.0, Color32::from_black_alpha(200));
+                            painter.galley(bg.min + Vec2::splat(3.0), galley, Color32::WHITE);
+                        }
+                    }
                 }
             }
             if !self.overlays {
@@ -707,6 +722,9 @@ impl App {
                     self.focus = if self.focus.is_some() { None } else { Some(i) };
                 }
                 continue;
+            }
+            if let Some(lg) = legend {
+                legend::draw(&painter.with_clip_rect(t), t, lg, reading);
             }
             let mut text = format!("{} {}  {:.0} fps", i + 1, label, fps);
             if let Some(g) = gpu {

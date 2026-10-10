@@ -364,6 +364,7 @@ impl CpuRaster {
         let stats = FrameStats {
             cpu_ms: total as f32,
             gpu_ms: None,
+            legend: None,
             counters: vec![
                 ("chunks_drawn".into(), visible.len() as f64),
                 ("triangles".into(), tris.len() as f64),

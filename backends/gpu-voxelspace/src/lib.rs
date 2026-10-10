@@ -292,6 +292,7 @@ impl Renderer for GpuVoxelSpace {
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
+            legend: None,
             counters: vec![("heightmap_size".into(), self.size as f64), ("chunk_columns".into(), self.columns.len() as f64)],
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
