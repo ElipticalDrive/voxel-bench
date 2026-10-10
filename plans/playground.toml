@@ -2,6 +2,7 @@ name = "playground"
 
 [scene]
 fov_deg = 70.0
+meshes = []
 
 [scene.generator]
 type = "terrain"
@@ -67,7 +68,9 @@ repeats = 1
 budget = 512
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
+name = "gpu-discover"
+
+[renderer.options]
 
 [output]
 window = false
