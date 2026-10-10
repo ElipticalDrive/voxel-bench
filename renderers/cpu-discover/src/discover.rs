@@ -78,6 +78,12 @@ pub(crate) struct Settings {
     pub dilate: u32,
     /// Tile size (px) at or below which samples are dilated.
     pub dilate_below: u32,
+    /// `cluster`: use the face-cluster discovery (`crate::cluster`) instead of the quadtree.
+    pub cluster: bool,
+    /// Cluster discovery: coarsest seed lattice spacing (px).
+    pub seed_step: u32,
+    /// Cluster discovery: a single seed miss covers its sky cell (else all four corners).
+    pub sky_sparse: bool,
 }
 
 #[derive(Copy, Clone, Default)]
@@ -98,6 +104,10 @@ pub(crate) struct State {
     stamp: Vec<u32>,
     generation: u32,
     pub frame: u32,
+    /// Cluster discovery: per-pixel coverage of the last pass, and how each face was found
+    /// (face key, kind, cluster id) for the diagnostic views.
+    pub cover: Vec<u8>,
+    pub kinds: Vec<(u64, u8, u32)>,
 }
 
 pub(crate) struct Output {
@@ -114,6 +124,11 @@ pub(crate) struct Output {
     /// Quadtree breakdown (ms): corner gather, ray tracing, tile classification.
     pub quad_ms: [f32; 3],
     pub ms: f32,
+    /// Algorithm-specific counters.
+    pub extra: Vec<(String, f64)>,
+    /// Per instance, for the diagnostic views (cluster discovery; empty otherwise):
+    /// kind << 30 | cluster id, 0 for faces carried over from earlier passes.
+    pub tags: Vec<u32>,
 }
 
 /// Bias for the 15-bit anchor-relative coordinates in a face record.
@@ -145,6 +160,20 @@ pub(crate) struct Rays {
 }
 
 impl Rays {
+    /// Pixel position (x, y) and view depth (z) of a camera-block-relative point, or `None`
+    /// behind the camera.
+    #[inline]
+    pub(crate) fn project(&self, rel: Vec3) -> Option<Vec3> {
+        let v = rel - self.o;
+        let z = v.dot(self.f);
+        if z <= 1e-3 {
+            return None;
+        }
+        let sx = v.dot(self.r) / (z * self.tx);
+        let sy = v.dot(self.u) / (z * self.ty);
+        Some(Vec3::new((sx + 1.0) * 0.5 * self.w, (1.0 - sy) * 0.5 * self.h, z))
+    }
+
     pub(crate) fn new(cam: &Camera, w: u32, h: u32, margin: f32) -> Self {
         let (cb, o) = cam.split_position();
         let ty = (cam.fov_y * 0.5).tan() * (1.0 + margin);
@@ -180,7 +209,14 @@ enum Verdict {
     Split,
 }
 
-pub(crate) fn discover(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
+pub(crate) fn discover(st: State, grid: &Grid, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
+    if set.cluster {
+        return crate::cluster::discover(st, grid, cam, w, h, set);
+    }
+    quadtree(st, grid, cam, w, h, set)
+}
+
+fn quadtree(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
     let start = Instant::now();
     let rays = Rays::new(cam, w, h, set.margin);
     let (bmin, bmax) = grid.bounds_rel(rays.cb);
@@ -308,21 +344,25 @@ pub(crate) fn discover(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32,
     }
 
     let t_quad = start.elapsed().as_secs_f32() * 1e3;
-    // 3. Merge into the temporal set and expire stale faces.
     let faces_found = found.len() as u64;
+    let _ = frame;
+    let (instances, _) = finalize(&mut st, found, grid, rays.cb, set.keep_frames, None);
+    Output { state: st, instances, anchor: rays.cb, rays: rays_cast, tiles_accepted: accepted, faces_found, quad_ms: [gather_ms, trace_ms, classify_ms], phase_ms: [t_quad, 0.0, start.elapsed().as_secs_f32() * 1e3 - t_quad], ms: start.elapsed().as_secs_f32() * 1e3, extra: vec![], tags: vec![] }
+}
+
+/// Merges this pass's faces into the temporal set S (expiring faces not confirmed for
+/// `keep_frames` passes), then validates S against the current world and builds the raster
+/// records relative to `anchor`; with `tags`, also each record's tag (0 if absent).
+pub(crate) fn finalize(st: &mut State, mut found: Vec<u64>, grid: &Grid, anchor: IVec3, keep_frames: u32, tags: Option<&FaceMap>) -> (Vec<[u32; 2]>, Vec<u32>) {
+    let frame = st.frame;
     found.par_sort_unstable();
     found.dedup();
     for k in found {
         st.s.insert(k, frame);
     }
-    let keep = set.keep_frames.max(1);
+    let keep = keep_frames.max(1);
     st.s.retain(|_, f| frame.wrapping_sub(*f) < keep);
-
-    let t_merge = start.elapsed().as_secs_f32() * 1e3;
-    // 4. Validate against the current world and build raster records.
-    let anchor = rays.cb;
-    let instances: Vec<[u32; 2]> = st
-        .s
+    st.s
         .par_iter()
         .filter_map(|(&k, _)| {
             let (cell, face) = unpack_key(k);
@@ -330,10 +370,9 @@ pub(crate) fn discover(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32,
             if block == 0 || grid.block(cell + Face::from_index(face as usize).normal()) != 0 {
                 return None;
             }
-            record(cell - anchor, face, block)
+            record(cell - anchor, face, block).map(|r| (r, tags.and_then(|t| t.get(&k).copied()).unwrap_or(0)))
         })
-        .collect();
-    Output { state: st, instances, anchor, rays: rays_cast, tiles_accepted: accepted, faces_found, quad_ms: [gather_ms, trace_ms, classify_ms], phase_ms: [t_quad, t_merge - t_quad, start.elapsed().as_secs_f32() * 1e3 - t_merge], ms: start.elapsed().as_secs_f32() * 1e3 }
+        .unzip()
 }
 
 /// Enumerates exposed faces on the common plane of the four corner samples inside the

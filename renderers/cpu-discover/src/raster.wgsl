@@ -6,13 +6,14 @@ struct Frame {
     cam_frac: vec3<f32>, mode: u32,   // camera position within vp.cam_block; 0 unlit, 1 lit
     forward: vec3<f32>, tan_half_fov: f32,
     right: vec3<f32>, aspect: f32,
-    up: vec3<f32>, _p0: u32,
+    up: vec3<f32>, view: u32,        // 0 image, 1 clusters, 2 kinds (cluster discovery)
     size: vec2<f32>, _p1: vec2<f32>,
     anchor: vec4<i32>,               // absolute block the face records are relative to
 }
 
 @group(0) @binding(0) var<uniform> fr: Frame;
 @group(0) @binding(1) var<storage, read> quads: array<vec2<u32>>;
+@group(0) @binding(2) var<storage, read> tags: array<u32>;  // views: kind << 30 | cluster id
 
 // (normal axis, u axis, v axis) per face; must match mesher::FACE_AXES.
 fn face_axes(face: u32) -> vec3<u32> {
@@ -31,6 +32,7 @@ struct VOut {
     @location(0) rel: vec3<f32>,               // relative to vp.cam_block
     @location(1) @interpolate(flat) info: vec2<u32>, // face, block
     @location(2) @interpolate(flat) plane: f32,       // face plane along its normal axis (camera-block relative)
+    @location(3) @interpolate(flat) tag: u32,
 }
 
 @vertex
@@ -52,6 +54,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     out.rel = rel;
     out.info = vec2<u32>(face, q.y & 0xffffu);
     out.plane = rel[ax.x];
+    out.tag = select(0u, tags[ii], fr.view != 0u);
     return out;
 }
 
@@ -74,6 +77,24 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     local[ax.y] = fract(hit[ax.y]);
     local[ax.z] = fract(hit[ax.z]);
     let texel = surface_texel(in.info.y, face, local);
-    if (fr.mode == 0u) { return texel; }
-    return shade_lit(texel, hit, face_normal(face));
+    var color = texel;
+    if (fr.mode != 0u) { color = shade_lit(texel, hit, face_normal(face)); }
+    let kind = in.tag >> 30u;
+    if (fr.view == 1u) {
+        // Clusters: one colour per cluster (grey for faces carried over from earlier passes).
+        var h = (in.tag & 0x3fffffffu) * 0x9E3779B1u;
+        h ^= h >> 15u; h *= 0x85EBCA77u; h ^= h >> 13u;
+        let c = vec3<f32>(f32(h & 255u), f32((h >> 8u) & 255u), f32((h >> 16u) & 255u)) / 255.0;
+        let g = dot(color.rgb, vec3<f32>(0.3, 0.5, 0.2));
+        color = select(vec4<f32>(vec3<f32>(g * 0.5), 1.0), vec4<f32>(mix(color.rgb, c, 0.7), 1.0), kind != 0u);
+    } else if (fr.view == 2u) {
+        // Kinds: confirmed (all corners visible) green, partial (an occluded corner) yellow,
+        // carried over grey.
+        let g = dot(color.rgb, vec3<f32>(0.3, 0.5, 0.2));
+        var c = vec3<f32>(g * 0.5);
+        if (kind == 1u) { c = mix(vec3<f32>(g), vec3<f32>(0.2, 0.9, 0.3), 0.6); }
+        if (kind == 2u) { c = mix(vec3<f32>(g), vec3<f32>(1.0, 0.85, 0.1), 0.7); }
+        color = vec4<f32>(c, 1.0);
+    }
+    return color;
 }

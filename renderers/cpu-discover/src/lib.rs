@@ -21,6 +21,7 @@
 //! blocked on the job). `audit=true` also casts one CPU ray per pixel for the rendered
 //! camera and counts pixels / distinct faces visible but missing from S.
 
+mod cluster;
 mod discover;
 mod grid;
 
@@ -39,7 +40,22 @@ use rayon::prelude::*;
 use serde::Deserialize;
 
 pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, w| Ok(Box::new(CpuDiscover::new(p, w)?)) }
+    RendererEntry { info, create: |p, w| Ok(Box::new(CpuDiscover::new(p, w, false)?)) }
+}
+
+/// The same renderer with face-cluster discovery (IDEAS §10) as its default algorithm.
+pub fn entry_cluster() -> RendererEntry {
+    RendererEntry {
+        info: || RendererInfo {
+            name: "cpu-cluster".into(),
+            description: "Face-cluster discovery (the user's design, IDEAS §10): seed rays on a coarse-to-fine pixel lattice; from each hit, a flood fill over coplanar exposed faces confirmed by corner rays (each lattice point cast once); confirmed faces cover their screen area; GPU rasterises the found faces".into(),
+            tags: vec!["cpu".into(), "gpu".into(), "raster".into(), "raycast".into(), "hybrid".into(), "discovery".into(), "wgpu".into()],
+            modes: vec![RenderMode::Unlit, RenderMode::Lit],
+            max_lod: 0,
+            params: params(),
+        },
+        create: |p, w| Ok(Box::new(CpuDiscover::new(p, w, true)?)),
+    }
 }
 
 fn info() -> RendererInfo {
@@ -55,9 +71,13 @@ fn info() -> RendererInfo {
 
 fn params() -> Vec<ParamSpec> {
     vec![
+        ParamSpec::choice("algorithm", "quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (IDEAS §10). Default: quadtree for cpu-discover, cluster for cpu-cluster", &["quadtree", "cluster"], "quadtree", true),
+        ParamSpec::int("seed_step", "Cluster: coarsest seed lattice spacing (px, rounded to a power of two)", 1, 256, 16, true),
+        ParamSpec::choice("sky", "Cluster: corners = a lattice cell at spacing <= sky_tile is sky when all four corner seeds miss; sparse = one missed seed covers its cell (cheaper; thin things may take a few frames to appear)", &["corners", "sparse"], "corners", true),
+        ParamSpec::choice("view", "image: the rendered scene. Cluster discovery only: clusters = one colour per cluster found this pass; kinds = confirmed faces (all corners visible) green, faces with an occluded corner yellow, faces carried over from earlier passes grey", &["image", "clusters", "kinds"], "image", true),
         ParamSpec::int("tile", "Initial quadtree tile size (px)", 2, 256, 32, true),
         ParamSpec::choice("criterion", "Tile coherence test: all corners on one face plane (then enumerate the plane's faces in the footprint) or on one face", &["plane", "face"], "plane", true),
-        ParamSpec::int("sky_tile", "All-miss tiles at most this size (px) are accepted as sky", 1, 256, 8, true),
+        ParamSpec::int("sky_tile", "All-miss tiles at most this size (px) are accepted as sky (default 8 for quadtree, 16 for cluster)", 1, 256, 8, true),
         ParamSpec::int("keep_frames", "Discovery passes a face stays in S without being re-confirmed", 1, 1000, 8, true),
         ParamSpec::int("max_footprint", "Max cells enumerated for one coherent tile (else split)", 1, 1 << 20, 4096, true),
         ParamSpec::int("dilate", "Fine-level samples add camera-facing exposed faces around the hit: 0 off, 1 cell+6 neighbours, 2 3x3x3", 0, 2, 0, true),
@@ -79,9 +99,13 @@ fn params() -> Vec<ParamSpec> {
 #[serde(default, deny_unknown_fields)]
 struct Options {
     adapter: Option<String>,
+    algorithm: Option<String>,
+    seed_step: u32,
+    sky: String,
+    view: String,
     tile: u32,
     criterion: String,
-    sky_tile: u32,
+    sky_tile: Option<u32>,
     keep_frames: u32,
     max_footprint: u32,
     predict: bool,
@@ -102,9 +126,13 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             adapter: None,
+            algorithm: None,
+            seed_step: 16,
+            sky: "corners".into(),
+            view: "image".into(),
             tile: 32,
             criterion: "plane".into(),
-            sky_tile: 8,
+            sky_tile: None,
             keep_frames: 8,
             max_footprint: 4096,
             predict: true,
@@ -128,12 +156,15 @@ impl Options {
         Settings {
             tile: self.tile.max(1),
             face_criterion: self.criterion == "face",
-            sky_tile: self.sky_tile,
+            sky_tile: self.sky_tile.unwrap_or(if self.algorithm.as_deref() == Some("cluster") { 16 } else { 8 }),
             keep_frames: self.keep_frames,
             max_footprint: self.max_footprint,
             margin: self.margin,
             dilate: self.dilate,
             dilate_below: self.dilate_below,
+            cluster: self.algorithm.as_deref() == Some("cluster"),
+            seed_step: self.seed_step,
+            sky_sparse: self.sky == "sparse",
         }
     }
 }
@@ -171,6 +202,9 @@ pub struct CpuDiscover {
     pipe_equal: wgpu::RenderPipeline,
     frame_buf: wgpu::Buffer,
     rec_buf: GrowableBuffer,
+    /// Per-record tags for the diagnostic views (cluster discovery).
+    tag_buf: GrowableBuffer,
+    tags_valid: bool,
     layout0: wgpu::BindGroupLayout,
     bind0: Option<wgpu::BindGroup>,
     output: wgpu::Texture,
@@ -217,8 +251,10 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
 }
 
 impl CpuDiscover {
-    pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
-        let opts: Options = p.options()?;
+    pub fn new(p: InitParams, waker: Waker, cluster: bool) -> anyhow::Result<Self> {
+        let mut opts: Options = p.options()?;
+        let algo = opts.algorithm.get_or_insert_with(|| if cluster { "cluster" } else { "quadtree" }.into());
+        anyhow::ensure!(["quadtree", "cluster"].contains(&algo.as_str()), "algorithm must be `quadtree` or `cluster`, not `{algo}`");
         let gpu = Gpu::new(GpuRequest {
             experimental: false,
             adapter: opts.adapter.as_deref(),
@@ -253,6 +289,7 @@ impl CpuDiscover {
             entries: &[
                 buf_entry(0, wgpu::BufferBindingType::Uniform, wgpu::ShaderStages::VERTEX_FRAGMENT),
                 buf_entry(1, wgpu::BufferBindingType::Storage { read_only: true }, wgpu::ShaderStages::VERTEX),
+                buf_entry(2, wgpu::BufferBindingType::Storage { read_only: true }, wgpu::ShaderStages::VERTEX),
             ],
         });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -295,6 +332,7 @@ impl CpuDiscover {
             mapped_at_creation: false,
         });
         let rec_buf = GrowableBuffer::new(&gpu, "face records", 1 << 22, 2040 << 20, wgpu::BufferUsages::STORAGE);
+        let tag_buf = GrowableBuffer::new(&gpu, "face tags", 1 << 21, 1020 << 20, wgpu::BufferUsages::STORAGE);
         let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(opts.threads).thread_name(|i| format!("discover-{i}")).build()?);
         let fif = opts.frames_in_flight.max(1);
         Ok(Self {
@@ -314,6 +352,8 @@ impl CpuDiscover {
             pipe_equal,
             frame_buf,
             rec_buf,
+            tag_buf,
+            tags_valid: false,
             layout0,
             bind0: None,
             width: p.width,
@@ -415,6 +455,17 @@ impl Renderer for CpuDiscover {
             }
         }
         let n = if bytes <= self.rec_buf.size() { n } else { 0 };
+        // Tags for the views, when the algorithm provides them.
+        self.tags_valid = false;
+        if out.tags.len() == out.instances.len() && !out.tags.is_empty() && self.opts.view != "image" {
+            if let Ok(grew) = self.tag_buf.reserve(&self.gpu, out.tags.len() as u64 * 4) {
+                if grew {
+                    self.bind0 = None;
+                }
+                self.gpu.queue.write_buffer(self.tag_buf.buffer(), 0, bytemuck::cast_slice(&out.tags));
+                self.tags_valid = true;
+            }
+        }
 
         // 3. Optional audit against a full per-pixel cast of the camera actually drawn.
         let audit = if self.opts.audit {
@@ -455,7 +506,15 @@ impl Renderer for CpuDiscover {
             right: c.right().to_array(),
             aspect: w as f32 / h as f32,
             up: c.up().to_array(),
-            _p0: 0,
+            _p0: if self.tags_valid {
+                match self.opts.view.as_str() {
+                    "clusters" => 1,
+                    "kinds" => 2,
+                    _ => 0,
+                }
+            } else {
+                0
+            },
             size: [w as f32, h as f32],
             _p1: [0.0; 2],
             anchor: [out.anchor.x, out.anchor.y, out.anchor.z, 0],
@@ -469,6 +528,7 @@ impl Renderer for CpuDiscover {
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: self.frame_buf.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: self.rec_buf.buffer().as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: self.tag_buf.buffer().as_entire_binding() },
                 ],
             }));
         }
@@ -538,6 +598,7 @@ impl Renderer for CpuDiscover {
             ("build_ms".into(), out.phase_ms[2] as f64),
             ("tiles_accepted".into(), out.tiles_accepted as f64),
             ("discovery_ms".into(), out.ms as f64),
+            ("algorithm_cluster".into(), self.opts.algorithm.as_deref().map_or(0.0, |a| (a == "cluster") as u32 as f64)),
             ("wait_ms".into(), wait_ms),
         ];
         if let Some((px, faces, hit, ms)) = audit {
@@ -547,6 +608,7 @@ impl Renderer for CpuDiscover {
             counters.push(("hit_px".into(), hit as f64));
             counters.push(("audit_ms".into(), ms));
         }
+        counters.extend(out.extra);
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
@@ -560,8 +622,12 @@ impl Renderer for CpuDiscover {
         let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
         match name {
             "tile" => self.opts.tile = int(32),
+            "algorithm" => self.opts.algorithm = Some(value.as_str().unwrap_or("quadtree").to_string()),
+            "seed_step" => self.opts.seed_step = int(16),
+            "sky" => self.opts.sky = value.as_str().unwrap_or("corners").to_string(),
+            "view" => self.opts.view = value.as_str().unwrap_or("image").to_string(),
             "criterion" => self.opts.criterion = value.as_str().unwrap_or("plane").to_string(),
-            "sky_tile" => self.opts.sky_tile = int(8),
+            "sky_tile" => self.opts.sky_tile = Some(int(8)),
             "keep_frames" => self.opts.keep_frames = int(8),
             "max_footprint" => self.opts.max_footprint = int(4096),
             "dilate" => self.opts.dilate = int(0),
