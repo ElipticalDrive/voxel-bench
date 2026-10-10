@@ -1,5 +1,5 @@
 [package]
-name = "gpu-splat"
+name = "backend-gpu-splat"
 version.workspace = true
 edition.workspace = true
 
@@ -13,3 +13,4 @@ bytemuck.workspace = true
 pollster.workspace = true
 wgpu.workspace = true
 mr-gpu.workspace = true
+mr-components.workspace = true

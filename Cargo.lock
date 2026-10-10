@@ -538,6 +538,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-cpu-voxelspace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cpu-reference",
+ "glam",
+ "mr-components",
+ "mr-core",
+ "rayon",
+ "serde",
+]
+
+[[package]]
 name = "backend-gpu-discover"
 version = "0.1.0"
 dependencies = [
@@ -581,6 +594,39 @@ dependencies = [
  "mr-core",
  "mr-gpu",
  "mr-mesh",
+ "rayon",
+ "serde",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
+name = "backend-gpu-splat"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "glam",
+ "mr-components",
+ "mr-core",
+ "mr-gpu",
+ "pollster",
+ "serde",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
+name = "backend-gpu-voxelspace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "glam",
+ "mr-components",
+ "mr-core",
+ "mr-gpu",
+ "pollster",
  "rayon",
  "serde",
  "tracing",
@@ -925,18 +971,6 @@ dependencies = [
  "rayon",
  "serde",
  "tracing",
-]
-
-[[package]]
-name = "cpu-voxelspace"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cpu-reference",
- "glam",
- "mr-core",
- "rayon",
- "serde",
 ]
 
 [[package]]
@@ -1709,37 +1743,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-splat"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "pollster",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "gpu-voxelspace"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "pollster",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "guillotiere"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2312,15 +2315,15 @@ dependencies = [
  "backend-cpu",
  "backend-cpu-discover",
  "backend-cpu-raster",
+ "backend-cpu-voxelspace",
  "backend-gpu-discover",
  "backend-gpu-raster",
  "backend-gpu-rt",
+ "backend-gpu-splat",
+ "backend-gpu-voxelspace",
  "cpu-reference",
- "cpu-voxelspace",
  "crossbeam-channel",
  "gpu-compute",
- "gpu-splat",
- "gpu-voxelspace",
  "mr-core",
  "mr-ipc",
  "tracing",

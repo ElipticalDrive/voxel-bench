@@ -99,9 +99,8 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
     storage (for shadow rays) the eight GPU ones; shading direct (72 combinations);
   - gpu-rt: geometry greedy, naive, boxes; visibility rayquery; shading direct,
     pathtrace (6 combinations).
-- **Legacy renderers** (not yet split into components): cpu-reference (stays a
-  monolith on purpose), cpu-voxelspace,
-  gpu-splat, gpu-voxelspace.
+- **Legacy renderers:** none left. cpu-reference stays a standalone renderer on purpose
+  (it defines the reference images).
 - **Verification:** zero warnings in both builds, 40 unit tests and 3 GPU end-to-end
   tests pass.
 - **Tools:**
@@ -189,7 +188,7 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
      their compositions match them, and update the plans.
    - **Still open:** the discovery components (`quadtree`, `cluster`) as raster
      visibility; a candidate for its own step.
-4. **Current:** port the remaining unique pieces (the user, 2026-10-10: "we remove
+4. ~~Port the remaining unique pieces~~ (done 2026-10-10) (the user, 2026-10-10: "we remove
    technical debt"). Sub-steps, each verified, committed and pushed on its own:
    - 4a. ~~Retire what compositions already cover~~: gpu-dda (plain), gpu-sdf,
      gpu-bitmask, the gpu-compose alias (done).
@@ -206,9 +205,12 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
      brickmajor / morton, cpu knob `schedule`, back end `cpu-raster`).
    - 4k. ~~discovery~~ (done: back ends `gpu-discover` and `cpu-discover`, visibility
      `quadtree` / `cluster`, over the composed storage).
-   - 4l. their own representations: voxelspace (gpu, cpu) and splats.
+   - 4l. ~~their own representations~~ (done: back ends gpu-splat, gpu-voxelspace,
+     cpu-voxelspace). **Phase 4 is complete.**
    cpu-reference stays a monolith on purpose.
-5. Remove the legacy section and the monolith crates.
+5. **Next:** remove the legacy section (GUI chooser, `list`, plan handling of `name =`
+   for back-end renderers) and tidy the back ends (shared `require` / `names_on`
+   helpers, one place for the per-back-end option boilerplate).
 
 Also wanted, sized for single steps:
 - Colour scales on the views.
@@ -611,6 +613,19 @@ earlier if meshes become more urgent; 7c depends on 6′.
   `prefix` −4%. All views checked visually.
 - **Retired:** the gpu-discover, cpu-discover and cpu-cluster renderers (their crates
   moved to `backends/`).
+
+### 2026-10-10: phase 4l (own representations)
+- **Back ends `gpu-splat`** (storage for shadow rays, geometry `points`, visibility
+  `splat`, shading direct; shadows walk the composed storage, so the voxel pool is off
+  for region storages), **`gpu-voxelspace` and `cpu-voxelspace`** (storage `heightmap`,
+  visibility `columns`, shading direct: single-option slots for now, ready for more).
+  New helpers `mr_components::require` / `names_on` for back ends' option checks.
+- **Results** (terrain, 2 interleaved repeats): identical images to the three former
+  renderers (splat 27.34 / 23.97 dB, voxelspace 20.42 / 17.54 GPU, 20.42 / 17.50 CPU);
+  GPU time equal (splat 1.29 / 1.79 ms vs 1.30 / 1.85; voxelspace 1.13 / 2.80 vs 1.13 /
+  2.79). Splat over prefix equal, over tree64 +10% lit.
+- **Retired:** gpu-splat, gpu-voxelspace, cpu-voxelspace (crates moved to `backends/`).
+  `renderers/` now holds only cpu-reference.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

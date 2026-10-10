@@ -1,3 +1,6 @@
+//! CPU-voxelspace back end (components, IDEAS §12): storage `heightmap`, visibility
+//! `columns`, shading `direct`. Was the cpu-voxelspace renderer.
+//!
 //! CPU port of gpu-voxelspace: Comanche (1992) style 2.5D heightmap renderer. A heightmap
 //! ring (top solid block height + block id per (x, z) column) is marched front-to-back per
 //! screen column (rayon-parallel over columns), drawing spans with a per-column y-buffer.
@@ -20,7 +23,12 @@ pub fn entry() -> RendererEntry {
             tags: vec!["cpu".into(), "heightmap".into(), "2.5d".into(), "software".into()],
             modes: vec![RenderMode::Unlit, RenderMode::Lit],
             max_lod: 0,
-            params: vec![ParamSpec::int("threads", "Worker threads (0 = all cores)", 0, 256, 0, true)],
+            params: vec![
+                ParamSpec::choice("storage", "Storage component", &mr_components::names_on(BACKEND, mr_components::Slot::Storage), "heightmap", false),
+                ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(BACKEND, mr_components::Slot::Visibility), "columns", false),
+                ParamSpec::choice("shading", "Shading component", &mr_components::names_on(BACKEND, mr_components::Slot::Shading), "direct", false),
+                ParamSpec::int("threads", "Worker threads (0 = all cores)", 0, 256, 0, true),
+            ],
         },
         create: |p, _| Ok(Box::new(CpuVoxelSpace::new(p)?)),
     }
@@ -41,17 +49,32 @@ pub struct CpuVoxelSpace {
     pixels: Vec<u8>,
 }
 
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
+    storage: String,
+    visibility: String,
+    shading: String,
     threads: usize,
 }
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { storage: "heightmap".into(), visibility: "columns".into(), shading: "direct".into(), threads: 0 }
+    }
+}
+
+const BACKEND: &str = "cpu-voxelspace";
 
 const EMPTY: f32 = -1e6;
 
 impl CpuVoxelSpace {
     pub fn new(p: InitParams) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
+        use mr_components::{Slot, require};
+        for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
+            require(BACKEND, slot, name)?;
+        }
         let size = (((2 * p.view_radius_chunks + 2) * CHUNK_SIZE as u32).next_power_of_two()) as i32;
         Ok(Self {
             width: p.width,

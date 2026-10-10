@@ -13,9 +13,6 @@ members = [
     "crates/mr-gpu",
     "crates/mr-mesh",
     "renderers/cpu-reference",
-    "renderers/cpu-voxelspace",
-    "renderers/gpu-splat",
-    "renderers/gpu-voxelspace",
     "components",
     "backends/gpu-compute",
     "backends/cpu",
@@ -24,6 +21,9 @@ members = [
     "backends/cpu-raster",
     "backends/gpu-discover",
     "backends/cpu-discover",
+    "backends/gpu-splat",
+    "backends/gpu-voxelspace",
+    "backends/cpu-voxelspace",
 ]
 
 [workspace.package]
@@ -42,9 +42,9 @@ backend-cpu-raster = { path = "backends/cpu-raster" }
 backend-cpu-discover = { path = "backends/cpu-discover" }
 backend-gpu-discover = { path = "backends/gpu-discover" }
 backend-cpu = { path = "backends/cpu" }
-cpu-voxelspace = { path = "renderers/cpu-voxelspace" }
-gpu-splat = { path = "renderers/gpu-splat" }
-gpu-voxelspace = { path = "renderers/gpu-voxelspace" }
+backend-cpu-voxelspace = { path = "backends/cpu-voxelspace" }
+backend-gpu-splat = { path = "backends/gpu-splat" }
+backend-gpu-voxelspace = { path = "backends/gpu-voxelspace" }
 mr-components = { path = "components" }
 gpu-compute = { path = "backends/gpu-compute" }
 backend-gpu-raster = { path = "backends/gpu-raster" }

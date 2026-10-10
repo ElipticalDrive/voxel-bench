@@ -1,10 +1,11 @@
 [package]
-name = "cpu-voxelspace"
+name = "backend-cpu-voxelspace"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 mr-core.workspace = true
+mr-components.workspace = true
 cpu-reference.workspace = true
 anyhow.workspace = true
 glam.workspace = true

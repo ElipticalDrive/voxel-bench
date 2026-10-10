@@ -11,7 +11,7 @@ use mr_core::{CompletedFrame, FrameSink, Renderer, RendererEntry, RendererInfo, 
 use mr_ipc::{FrameSlots, HostMsg, MsgWriter, PROTOCOL_VERSION, WorkerMsg};
 
 pub fn registry() -> Vec<RendererEntry> {
-    vec![cpu_reference::entry(), backend_cpu_raster::entry(), backend_cpu_discover::entry(), backend_gpu_discover::entry(), backend_cpu::entry(), cpu_voxelspace::entry(), gpu_splat::entry(), gpu_voxelspace::entry(), gpu_compute::entry(), backend_gpu_raster::entry(), backend_gpu_rt::entry()]
+    vec![cpu_reference::entry(), backend_cpu_raster::entry(), backend_cpu_discover::entry(), backend_gpu_discover::entry(), backend_cpu::entry(), backend_cpu_voxelspace::entry(), backend_gpu_splat::entry(), backend_gpu_voxelspace::entry(), gpu_compute::entry(), backend_gpu_raster::entry(), backend_gpu_rt::entry()]
 }
 
 pub fn infos() -> Vec<RendererInfo> {

@@ -107,6 +107,24 @@ pub const BACKENDS: &[BackendInfo] = &[
         slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Shading, "direct")],
     },
     BackendInfo {
+        name: "gpu-splat",
+        description: "GPU point splatting: one point per exposed block, atomicMin depth + id buffers, ray-box resolve; lit-mode shadow rays walk the composed storage",
+        renderer: Some("gpu-splat"),
+        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "points"), (Slot::Visibility, "splat"), (Slot::Shading, "direct")],
+    },
+    BackendInfo {
+        name: "gpu-voxelspace",
+        description: "Comanche-style Voxel Space (2.5D, no overhangs) in a compute shader: one thread per screen column marches a heightmap front to back with a y-buffer",
+        renderer: Some("gpu-voxelspace"),
+        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")],
+    },
+    BackendInfo {
+        name: "cpu-voxelspace",
+        description: "Comanche-style Voxel Space (2.5D) on the CPU, rayon-parallel over screen columns",
+        renderer: Some("cpu-voxelspace"),
+        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")],
+    },
+    BackendInfo {
         name: "cpu-raster",
         description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
         renderer: Some("cpu-raster"),
@@ -130,13 +148,15 @@ const GPU: &[&str] = &["gpu-compute"];
 const CPU: &[&str] = &["cpu", "cpu-discover"];
 const BOTH: &[&str] = &["gpu-compute", "cpu"];
 /// GPU storages: the ray walks, and the raster back end's shadow rays.
-const GPU_ST: &[&str] = &["gpu-compute", "gpu-raster", "gpu-discover"];
-const ALL_ST: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-discover", "cpu-discover"];
+const GPU_ST: &[&str] = &["gpu-compute", "gpu-raster", "gpu-discover", "gpu-splat"];
+const ALL_ST: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-discover", "cpu-discover", "gpu-splat"];
 const RASTER: &[&str] = &["gpu-raster"];
 const RT: &[&str] = &["gpu-rt"];
 const RASTER_RT: &[&str] = &["gpu-raster", "gpu-rt", "cpu-raster"];
 const RASTERS: &[&str] = &["gpu-raster", "cpu-raster"];
-const SHADE_ALL: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-rt", "cpu-raster", "gpu-discover", "cpu-discover"];
+const SHADE_ALL: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-rt", "cpu-raster", "gpu-discover", "cpu-discover", "gpu-splat", "gpu-voxelspace", "cpu-voxelspace"];
+const SPLAT: &[&str] = &["gpu-splat"];
+const VOXELSPACE: &[&str] = &["gpu-voxelspace", "cpu-voxelspace"];
 const DISCOVER: &[&str] = &["gpu-discover", "cpu-discover"];
 const CPU_DISCOVER: &[&str] = &["cpu-discover"];
 const COMPUTE_RT: &[&str] = &["gpu-compute", "gpu-rt"];
@@ -153,6 +173,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Storage, name: "clipmap", description: "Camera-centred toroidal 3D textures (from gpu-clipmap): block ids, 4^3 brick occupancy and slot tags, read with textureLoad only; no hash table, no voxel pool.", backends: GPU_ST, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "brickmajor", description: "bricks with each 4^3 brick's 64 ids contiguous (128 bytes; from cpu-simd-brickmajor): fewer L1/L2 misses per ray.", backends: CPU, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "morton", description: "bricks with ids in Morton (Z-)order over the chunk (from cpu-simd-morton): bricks contiguous and neighbouring bricks close.", backends: CPU, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "heightmap", description: "Top solid block height and id per (x, z) column, in a ring around the camera (from voxelspace): 2.5D, no overhangs or caves.", backends: VOXELSPACE, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "u8", description: "Brick mask plus a u8 id per voxel: half of bricks' footprint (32 KiB per chunk; at most 256 block types).", backends: CPU, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "bits", description: "One occupancy bit per voxel, brick-major (4 KiB per chunk); block ids read only at the hit.", backends: CPU, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "palette", description: "Per-chunk palette with indices packed at 1/2/4/8/16 bits (7x smaller than bricks on terrain).", backends: CPU, provides: &[], uses: &[] },
@@ -163,6 +184,8 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Visibility, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: GPU, provides: &[], uses: &["s_row"] },
     ComponentInfo { slot: Slot::Visibility, name: "quadtree", description: "Discovery (the user's idea, IDEAS §3): an adaptive screen-space quadtree of corner rays; coherent tiles add every exposed face of the hit plane in their footprint to a face set kept across frames, which is rasterised. Knobs: tile, criterion, incremental, events, merge, order, views tiles/rays/churn/overdraw/quads, ...", backends: DISCOVER, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "cluster", description: "Face-cluster discovery (the user's design, IDEAS §10; was cpu-cluster): seed rays on a coarse-to-fine pixel lattice; from each hit a flood fill over coplanar exposed faces confirmed by corner rays; confirmed faces cover their screen area. Knobs: seed_step, sky, views clusters/kinds.", backends: CPU_DISCOVER, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "splat", description: "Point splatting in compute (from gpu-splat): each point's square footprint (sized from its projected size, capped at max_splat px) atomicMin's its depth, a second pass writes the winning id, a resolve pass ray-boxes the block. Knob: max_splat.", backends: SPLAT, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "columns", description: "Voxel Space column march (Comanche, 1992): per screen column, front to back over the heightmap, drawing spans with a y-buffer.", backends: VOXELSPACE, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "rayquery", description: "Hardware ray queries against the acceleration structure (RT cores) for primary, shadow and bounce rays. Knob: cull (triangle facing culled for primary rays).", backends: RT, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "raster", description: "Depth-tested rasterisation of the geometry; each pixel's ray is intersected with the face plane and shaded. gpu-raster: knob depth_prepass (lit: shade once per pixel). cpu-raster: edge functions into a visibility buffer, then deferred shading; knobs tile_width, band_height.", backends: RASTERS, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "gbuffer", description: "G-buffer (from gpu-hybrid): the raster pass writes the hit point, face and block; a compute pass rebuilds the hit and shades once per pixel. 20 bytes per pixel against visbuffer's 4, but no refetch.", backends: RASTER, provides: &[], uses: &[] },
@@ -173,6 +196,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     // Geometry.
     ComponentInfo { slot: Slot::Geometry, name: "greedy", description: "Greedy quads (CPU, per chunk, incremental): coplanar exposed faces merged into rectangles (on gpu-rt: two triangles each). Knob: merge = block (same block only) or exposure (any block, looked up per fragment; raster only).", backends: RASTER_RT, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Geometry, name: "naive", description: "One quad per exposed block face, no merging (\"Minecraft-style\"). Knob: cull = false emits all six faces of every solid block.", backends: RASTER_RT, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Geometry, name: "points", description: "One point per block with an exposed face (from gpu-splat), rebuilt per chunk.", backends: SPLAT, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Geometry, name: "boxes", description: "One AABB per occupied 4^3 brick (from gpu-rtx-bricks): the RT cores find candidate boxes, a small software DDA through the voxel pool finds the voxel.", backends: RT, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Geometry, name: "cubes", description: "One 36-vertex cube instance per surface block; the hardware back-face culls the hidden half. Knob: cull = false instances every solid block.", backends: RASTER, provides: &[], uses: &[] },
     // Shading.
@@ -325,6 +349,20 @@ pub fn unavailable(backend_name: &str, slot: Slot, name: &str) -> Option<String>
         return Some(format!("unknown {} component `{name}` (have: {})", slot.name(), components(slot).map(|c| c.name).collect::<Vec<_>>().join(", ")));
     };
     (!c.backends.contains(&backend_name)).then(|| format!("`{name}` has no {backend_name} implementation yet (available on: {})", c.backends.join(", ")))
+}
+
+/// For back ends checking their options: `name` if it is a `slot` component of `backend`,
+/// else why not.
+pub fn require(backend: &str, slot: Slot, name: &str) -> anyhow::Result<String> {
+    match unavailable(backend, slot, name) {
+        None => Ok(name.to_string()),
+        Some(why) => anyhow::bail!(why),
+    }
+}
+
+/// The `slot` components `backend` implements (for its parameter choices).
+pub fn names_on(backend: &str, slot: Slot) -> Vec<&'static str> {
+    components(slot).filter(|c| c.backends.contains(&backend)).map(|c| c.name).collect()
 }
 
 /// Advisory note for an allowed pairing that runs through a generic fallback.

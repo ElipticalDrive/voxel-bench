@@ -1,3 +1,7 @@
+//! GPU-voxelspace back end (components, IDEAS §12): storage `heightmap`, visibility
+//! `columns`, shading `direct` (the reference lit model with heightmap-gradient normals on
+//! column tops; shadow rays walk the GPU voxel pool). Was the gpu-voxelspace renderer.
+//!
 //! Voxel Space (Comanche, 1992) style 2.5D renderer: a CPU-built heightmap ring (top
 //! solid block height + block id per (x, z) column) marched front-to-back per screen
 //! column in a compute shader, drawing spans with a per-column y-buffer.
@@ -24,7 +28,12 @@ fn info() -> RendererInfo {
         tags: vec!["gpu".into(), "compute".into(), "heightmap".into(), "2.5d".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
-        params: vec![ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false)],
+        params: vec![
+            ParamSpec::choice("storage", "Storage component", &mr_components::names_on(BACKEND, mr_components::Slot::Storage), "heightmap", false),
+            ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(BACKEND, mr_components::Slot::Visibility), "columns", false),
+            ParamSpec::choice("shading", "Shading component", &mr_components::names_on(BACKEND, mr_components::Slot::Shading), "direct", false),
+            ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
+        ],
     }
 }
 
@@ -32,12 +41,17 @@ fn info() -> RendererInfo {
 #[serde(default, deny_unknown_fields)]
 struct Options {
     adapter: Option<String>,
+    storage: String,
+    visibility: String,
+    shading: String,
     frames_in_flight: usize,
 }
 
+const BACKEND: &str = "gpu-voxelspace";
+
 impl Default for Options {
     fn default() -> Self {
-        Self { adapter: None, frames_in_flight: 3 }
+        Self { adapter: None, storage: "heightmap".into(), visibility: "columns".into(), shading: "direct".into(), frames_in_flight: 3 }
     }
 }
 
@@ -82,6 +96,10 @@ pub struct GpuVoxelSpace {
 impl GpuVoxelSpace {
     pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
+        use mr_components::{Slot, require};
+        for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
+            require(BACKEND, slot, name)?;
+        }
         let gpu = Gpu::new(GpuRequest {
             experimental: false,
             adapter: opts.adapter.as_deref(),
