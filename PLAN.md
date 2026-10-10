@@ -23,7 +23,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 ## How to verify and measure
 
 - Builds, zero warnings: `cargo build` and `cargo build --release`.
-- Unit tests: `cargo test -q --workspace` (36).
+- Unit tests: `cargo test -q --workspace` (37).
 - GPU end-to-end tests: `cargo test -q --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve` (3, including mesh mode).
 - One renderer against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{name="gpu-dda"}]' -s output.dir=\"target/check\"`
@@ -121,7 +121,7 @@ sit at the high end.
 | 3 | ~~**Morton-ordered breadth-first work queues**~~ | done | | Done 2026-10-09: no gain from ordering (the cost is per-level pass latency); inlining small footprints gave −17–21% on edits. IDEAS §8 "Result". |
 | 3b | Persistent kernel with work stealing | 2–3 h | ~1 | Riskier: driver and forward-progress caveats. Now the measured bottleneck: ~0.6 ms of a 1.9 ms frame is per-level pass latency. |
 | 4 | ~~**Back-to-front order without depth testing**~~ | done | | Done 2026-10-09: exact Manhattan-distance painter order; even or slightly worse, since overdraw is already 1.03. IDEAS §11 "Result". |
-| 5 | **Face-cluster discovery prototype** (§10), CPU, clip-space fixed point (§7), sparse sky pass, far-field consolidation | 3–5 h | 1½–2 | A new renderer; needs careful completeness tests. |
+| 5 | ~~**Face-cluster discovery prototype** (§10)~~ | done | | Done 2026-10-10: `cpu-cluster`. More complete than the quadtree everywhere at about the same rays/px; CPU 2.5× slower. Far-field LOD and clip-space fixed point not needed yet. IDEAS §10 "Result". |
 | 6 | **Modular library, first step** (§9): swappable storage + traversal with per-query conversions, for a few ray casters | 3–6 h | 1½–2½ | The full library takes several sessions. |
 
 Further steps:
@@ -148,7 +148,7 @@ Further steps:
 first. Steps 1–4 change the inside of single components, so modularity wouldn't make them
 cheaper, and step 1 tells us what the storage/traversal interface must offer.
 
-**Order:** ~~1~~ → ~~6′~~ → ~~2~~ → ~~3~~ → ~~4~~ → ~~2b~~ → ~~7~~ → ~~7c~~ (done) → 7b (more renderers) → 5 → rest of 6. Transparent cubes are the other remaining big feature; the user wants them later. → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
+**Order:** ~~1~~ → ~~6′~~ → ~~2~~ → ~~3~~ → ~~4~~ → ~~2b~~ → ~~7~~ → ~~7c~~ → ~~5~~ (done) → rest of 6, and more renderer variety (the user's priority, 2026-10-10). 7b is shelved by the user for a later date. Transparent cubes are the other remaining big feature; the user wants them later. → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
 earlier if meshes become more urgent; 7c depends on 6′.
 
 ## Progress log
@@ -247,6 +247,13 @@ earlier if meshes become more urgent; 7c depends on 6′.
 - **Mesh support for ray casters:** gpu-dda(-lod), gpu-compose, gpu-bitmask, gpu-sdf and
   gpu-beam, all at 71.3 / 73.5 dB on the mesh scene for +0.01–0.05 ms.
 - **Live mesh test:** now uses gpu-tree64 as the renderer without mesh support.
+
+### 2026-10-10: step 5
+- **`cpu-cluster`** (cpu-discover `algorithm = cluster`): seed lattice, coplanar flood
+  fill confirmed by shared corner rays, coverage of confirmed faces; sky rules
+  `corners` / `sparse`; views `clusters` and `kinds`; a completeness unit test.
+- **Findings:** see IDEAS §10 "Result".
+- **Follow-ups:** a scanline fill (speed), far-field super-faces, a GPU version.
 
 ## Future additions (backlog by category)
 

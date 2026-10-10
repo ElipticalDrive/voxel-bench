@@ -753,6 +753,69 @@ them as one face: a form of LOD.
 
 ---
 
+**Result (implemented: `cpu-cluster`, i.e. cpu-discover with `algorithm = cluster`;
+PLAN step 5).**
+- *Seeds.* A pixel lattice is walked coarse to fine (`seed_step` 16 → 1 px). Every
+  lattice pixel not yet covered casts a ray.
+- *Flood fill.* From the hit face, a fill crosses shared edges to exposed faces on the
+  same plane. Each face is confirmed by rays to its four corners. Corner visibility
+  belongs to the point, so each lattice point is cast once per frame, whichever faces
+  (of any plane) share it.
+- *Covering.* A face with all corners visible is confirmed: it covers the pixel centres
+  of its projection, and the fill continues through it. A face with an occluded corner
+  still joins S but stops the fill.
+- *Sky.* Two rules, knob `sky`:
+  - `corners` (default): a lattice cell at spacing ≤ `sky_tile` (16) is sky when all four
+    corner seeds miss;
+  - `sparse`: the user's rule, where a single miss covers its cell.
+- *Clip-space fixed point (§7)* was not needed. The pixel lattice is the yardstick (an
+  image is point-sampled at pixel centres), and coverage is an exact pixel-centre test
+  against projected faces.
+- *A stronger lemma, and its limit.* An axis-aligned square of side > 1 that overlaps a
+  unit face contains one of *that face's* corners: per axis, an interval longer than 1
+  that overlaps [0, 1] contains 0 or 1. An occluder's near face projects onto the plane
+  as such a square. But its full shadow is the hull of its near and far faces, and a
+  sliver of that hull can overlap a face without covering a corner. So completeness is
+  not proven. It holds in practice:
+  - a unit test (floor, wall, pillar in front of it, a floating block; three
+    viewpoints; two seed spacings) finds zero missing pixels;
+  - with `sky_tile = 1` (no sky shortcut), terrain has zero missed pixels in the audit.
+
+Synchronous (`pipelined = false`), 1080p unlit, audit on, against the quadtree
+(cpu-discover defaults):
+
+| scene | quadtree rays/px | cluster rays/px | missed px quadtree → cluster | PSNR quadtree → cluster |
+|---|---|---|---|---|
+| terrain | 0.254 | **0.242** (seeds 0.106, corners 0.135) | 0.0062% → **0.0038%** | 43.8 → **51.0** |
+| menger | 0.114 | 0.150 | 0.68% → **0** | 26.4 → **51.5** |
+| room | 0.027 | **0.025** | 0 → 0 | 60.5 → 60.5 |
+
+- **More complete than the quadtree on every scene, at about the same rays.** Menger is
+  the striking case: the quadtree's plane-coherent tiles accept tiles that hide the
+  sponge's holes, while clusters only cover what their corners prove.
+- **About one corner ray per confirmed face.** Shared corners are cast once: terrain
+  confirms ~144k faces with ~0.135 rays/px of corner rays.
+- **Sky is what decides cost.** With the `sparse` rule at 8 px: 0.26 rays/px but 0.15%
+  missed (thin horizon features vanish within a cell). Sampling every sky pixel: 0.89
+  rays/px but zero misses. The four-corner rule gets both: few rays and almost no
+  misses.
+- **The quadtree is faster on the CPU:** 100 ms per pass on terrain against 40 ms. The
+  fill runs in ~460 waves per frame (a plane needs as many waves as its radius in
+  faces), and corner and face bookkeeping is about a million hash operations. Already
+  done: fast hashing, parallel classification per wave, small waves kept on one thread
+  (135 → 101 ms).
+- **Pipelined (default), lit, fast terrain flight:** both lose ~1% of pixels to the
+  frame of latency. Cluster 35.6 dB / 1.08% missed, quadtree 30.6 dB / 1.38%.
+- *Views:* `view = clusters` (one colour per cluster) and `view = kinds` (confirmed
+  green, an occluded corner yellow, carried over grey). Yellow traces every silhouette,
+  where occluders cut a plane.
+- *Not done yet:*
+  - far-field consolidation (super-faces where faces are sub-pixel): terrain did not
+    need it for the ray count, but distant faces still cost a corner ray each;
+  - a scanline fill (row runs per plane, the previous row's corners in an array) to
+    remove the hash traffic;
+  - a GPU version.
+
 ## 11. Back-to-front order to turn off depth testing
 
 **Idea (user).** If the face buffer sent to the GPU is ordered back to front, depth
