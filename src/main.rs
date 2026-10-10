@@ -99,7 +99,7 @@ fn main() -> anyhow::Result<()> {
                     println!("  {:<12} [{}] {}", c.name, c.backends.join(","), c.description);
                 }
             }
-            println!("\nLegacy renderers (not yet split into components; -r name):");
+            println!("\nStandalone renderers (-r name; cpu-reference defines the reference images):");
             for i in mr_worker::infos().into_iter().filter(|i| !mr_components::BACKENDS.iter().any(|b| b.renderer == Some(i.name.as_str()))) {
                 let modes: Vec<_> = i.modes.iter().map(|m| m.name()).collect();
                 println!("  {:<16} [{}] modes={} max_lod={}\n      {}", i.name, i.tags.join(","), modes.join(","), i.max_lod, i.description);

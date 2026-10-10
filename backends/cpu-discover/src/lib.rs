@@ -36,7 +36,7 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use discover::{Output, Settings, State, cast};
-use mr_components::{Slot, components};
+use mr_components::{names_on, require, Slot};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::{DDA_OCCLUSION_WGSL, Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
@@ -50,17 +50,7 @@ pub fn entry() -> RendererEntry {
 
 const BACKEND: &str = "cpu-discover";
 
-/// Checks that `name` is a `slot` component with a cpu-discover implementation.
-fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
-    match mr_components::unavailable(BACKEND, slot, name) {
-        None => Ok(name.to_string()),
-        Some(why) => anyhow::bail!(why),
-    }
-}
 
-fn names(slot: Slot) -> Vec<&'static str> {
-    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| c.name).collect()
-}
 
 fn info() -> RendererInfo {
     RendererInfo {
@@ -75,19 +65,19 @@ fn info() -> RendererInfo {
 
 fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::choice("storage", "Storage component: the CPU representation discovery rays walk (refloor)", &names(Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (IDEAS §10; was cpu-cluster)", &names(Slot::Visibility), "quadtree", true),
-        ParamSpec::choice("shading", "Shading component", &names(Slot::Shading), "direct", false),
-        ParamSpec::int("seed_step", "Cluster: coarsest seed lattice spacing (px, rounded to a power of two)", 1, 256, 16, true),
-        ParamSpec::choice("sky", "Cluster: corners = a lattice cell at spacing <= sky_tile is sky when all four corner seeds miss; sparse = one missed seed covers its cell (cheaper; thin things may take a few frames to appear)", &["corners", "sparse"], "corners", true),
+        ParamSpec::choice("storage", "Storage component: the CPU representation discovery rays walk (refloor)", &names_on(BACKEND, Slot::Storage), "bricks", false),
+        ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (IDEAS §10; was cpu-cluster)", &names_on(BACKEND, Slot::Visibility), "quadtree", true),
+        ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false),
+        ParamSpec::int("seed_step", "Cluster: coarsest seed lattice spacing (px, rounded to a power of two)", 1, 256, 16, true).of("visibility", &["cluster"]),
+        ParamSpec::choice("sky", "Cluster: corners = a lattice cell at spacing <= sky_tile is sky when all four corner seeds miss; sparse = one missed seed covers its cell (cheaper; thin things may take a few frames to appear)", &["corners", "sparse"], "corners", true).of("visibility", &["cluster"]),
         ParamSpec::choice("view", "image: the rendered scene. Cluster discovery only: clusters = one colour per cluster found this pass; kinds = confirmed faces (all corners visible) green, faces with an occluded corner yellow, faces carried over from earlier passes grey", &["image", "clusters", "kinds"], "image", true),
-        ParamSpec::int("tile", "Initial quadtree tile size (px)", 2, 256, 32, true),
-        ParamSpec::choice("criterion", "Tile coherence test: all corners on one face plane (then enumerate the plane's faces in the footprint) or on one face", &["plane", "face"], "plane", true),
+        ParamSpec::int("tile", "Initial quadtree tile size (px)", 2, 256, 32, true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("criterion", "Tile coherence test: all corners on one face plane (then enumerate the plane's faces in the footprint) or on one face", &["plane", "face"], "plane", true).of("visibility", &["quadtree"]),
         ParamSpec::int("sky_tile", "All-miss tiles at most this size (px) are accepted as sky (default 8 for quadtree, 16 for cluster)", 1, 256, 8, true),
         ParamSpec::int("keep_frames", "Discovery passes a face stays in S without being re-confirmed", 1, 1000, 8, true),
-        ParamSpec::int("max_footprint", "Max cells enumerated for one coherent tile (else split)", 1, 1 << 20, 4096, true),
-        ParamSpec::int("dilate", "Fine-level samples add camera-facing exposed faces around the hit: 0 off, 1 cell+6 neighbours, 2 3x3x3", 0, 2, 0, true),
-        ParamSpec::int("dilate_below", "Dilate samples traced at tile sizes <= this (px)", 1, 256, 2, true),
+        ParamSpec::int("max_footprint", "Max cells enumerated for one coherent tile (else split)", 1, 1 << 20, 4096, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("dilate", "Fine-level samples add camera-facing exposed faces around the hit: 0 off, 1 cell+6 neighbours, 2 3x3x3", 0, 2, 0, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("dilate_below", "Dilate samples traced at tile sizes <= this (px)", 1, 256, 2, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("predict", "Discover from the camera extrapolated one frame ahead", true, true),
         ParamSpec::float("margin", "Widen the discovery FOV by this fraction", 0.0, 0.5, false, 0.0, true),
         ParamSpec::bool("pipelined", "Discover frame N+1 while the GPU renders frame N (false = synchronous, zero latency)", true, true),
@@ -265,9 +255,9 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
 impl CpuDiscover {
     pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
-        let storage = check(Slot::Storage, &opts.storage)?;
-        check(Slot::Visibility, &opts.visibility)?;
-        check(Slot::Shading, &opts.shading)?;
+        let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
+        require(BACKEND, Slot::Visibility, &opts.visibility)?;
+        require(BACKEND, Slot::Shading, &opts.shading)?;
         let gpu = Gpu::new(GpuRequest {
             experimental: false,
             adapter: opts.adapter.as_deref(),
@@ -635,7 +625,7 @@ impl Renderer for CpuDiscover {
         let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
         match name {
             "tile" => self.opts.tile = int(32),
-            "algorithm" | "visibility" => self.opts.visibility = check(Slot::Visibility, value.as_str().unwrap_or("quadtree"))?,
+            "algorithm" | "visibility" => self.opts.visibility = require(BACKEND, Slot::Visibility, value.as_str().unwrap_or("quadtree"))?,
             "seed_step" => self.opts.seed_step = int(16),
             "sky" => self.opts.sky = value.as_str().unwrap_or("corners").to_string(),
             "view" => self.opts.view = value.as_str().unwrap_or("image").to_string(),

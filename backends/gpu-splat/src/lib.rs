@@ -16,7 +16,7 @@ use glam::IVec3;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::storage::gpu_data::{self, StorageData};
-use mr_components::{Slot, components, storage, visibility};
+use mr_components::{names_on, require, Slot, storage, visibility};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
 use serde::Deserialize;
@@ -33,11 +33,11 @@ fn info() -> RendererInfo {
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         params: vec![
-            ParamSpec::choice("storage", "Storage component the lit-mode shadow rays walk (refloor)", &names(Slot::Storage), "bricks", false),
-            ParamSpec::choice("geometry", "Geometry component", &names(Slot::Geometry), "points", false),
-            ParamSpec::choice("visibility", "Visibility component", &names(Slot::Visibility), "splat", false),
-            ParamSpec::choice("shading", "Shading component", &names(Slot::Shading), "direct", false),
-            ParamSpec::int("max_splat", "Largest splat side (px)", 1, 64, 8, true),
+            ParamSpec::choice("storage", "Storage component the lit-mode shadow rays walk (refloor)", &names_on(BACKEND, Slot::Storage), "bricks", false),
+            ParamSpec::choice("geometry", "Geometry component", &names_on(BACKEND, Slot::Geometry), "points", false),
+            ParamSpec::choice("visibility", "Visibility component", &names_on(BACKEND, Slot::Visibility), "splat", false),
+            ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false),
+            ParamSpec::int("max_splat", "Largest splat side (px)", 1, 64, 8, true).of("visibility", &["splat"]),
             shadows_param(),
             ParamSpec::int("pool_mb", "Voxel pool limit (MiB)", 64, 6144, 2048, false),
             ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
@@ -122,17 +122,7 @@ fn build_points(world: &VoxelWorld, cpos: IVec3) -> Vec<Point> {
 
 const BACKEND: &str = "gpu-splat";
 
-/// Checks that `name` is a `slot` component with a gpu-splat implementation.
-fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
-    match mr_components::unavailable(BACKEND, slot, name) {
-        None => Ok(name.to_string()),
-        Some(why) => anyhow::bail!(why),
-    }
-}
 
-fn names(slot: Slot) -> Vec<&'static str> {
-    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| c.name).collect()
-}
 
 pub struct GpuSplat {
     gpu: Gpu,
@@ -175,9 +165,9 @@ fn pixel_buffer(gpu: &Gpu, w: u32, h: u32) -> wgpu::Buffer {
 impl GpuSplat {
     pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
-        let st = storage::gpu(&check(Slot::Storage, &opts.storage)?).expect("validated");
+        let st = storage::gpu(&require(BACKEND, Slot::Storage, &opts.storage)?).expect("validated");
         for (slot, name) in [(Slot::Geometry, &opts.geometry), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
-            check(slot, name)?;
+            require(BACKEND, slot, name)?;
         }
         let gpu = Gpu::new(GpuRequest {
             experimental: false,

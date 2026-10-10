@@ -23,7 +23,7 @@ use mr_components::storage::u8::cpu::U8;
 use mr_components::visibility::cpu::Hit;
 use mr_components::visibility::incremental::cpu::trace_incremental;
 use mr_components::visibility::refloor::cpu::trace_packet;
-use mr_components::{Slot, components};
+use mr_components::{names_on, require, Slot};
 use mr_core::chunk::local_of_block;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -42,7 +42,7 @@ pub fn entry() -> RendererEntry {
         },
         create: |p, _| {
             let opts: Options = p.options()?;
-            let storage = check(Slot::Storage, &opts.storage)?;
+            let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
             Ok(match storage.as_str() {
                 "bricks" => Box::new(CpuBackend::<U16>::new(p)?),
                 "u8" => Box::new(CpuBackend::<U8>::new(p)?),
@@ -58,28 +58,20 @@ pub fn entry() -> RendererEntry {
     }
 }
 
-/// Checks that `name` is a `slot` component with a CPU implementation.
-fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
-    match mr_components::unavailable("cpu", slot, name) {
-        None => Ok(name.to_string()),
-        Some(why) => anyhow::bail!(why),
-    }
-}
 
-fn names(slot: Slot) -> Vec<&'static str> {
-    components(slot).filter(|c| c.backends.contains(&"cpu")).map(|c| c.name).collect()
-}
+
+const BACKEND: &str = "cpu";
 
 fn params() -> Vec<ParamSpec> {
     let mut p = cpu_reference::cpu_params();
-    p.push(ParamSpec::choice("storage", "Storage component (CPU implementations)", &names(Slot::Storage), "bricks", false));
-    p.push(ParamSpec::choice("visibility", "Visibility component. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &names(Slot::Visibility), "refloor", true));
-    p.push(ParamSpec::choice("shading", "Shading component", &names(Slot::Shading), "direct", true));
-    p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell (no float drift) instead of accumulating them", true, true));
-    p.push(ParamSpec::choice("packet", "Rays traced together in lockstep (refloor; measured: no gain on Zen 5)", &["1", "4", "8", "16"], "1", true));
+    p.push(ParamSpec::choice("storage", "Storage component (CPU implementations)", &names_on(BACKEND, Slot::Storage), "bricks", false));
+    p.push(ParamSpec::choice("visibility", "Visibility component. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &names_on(BACKEND, Slot::Visibility), "refloor", true));
+    p.push(ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", true));
+    p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell (no float drift) instead of accumulating them", true, true).of("visibility", &["incremental"]));
+    p.push(ParamSpec::choice("packet", "Rays traced together in lockstep (refloor; measured: no gain on Zen 5)", &["1", "4", "8", "16"], "1", true).of("visibility", &["refloor"]));
     p.push(ParamSpec::choice("isa", "Instruction set for the hot loop", &["auto", "scalar", "avx2", "avx512"], "auto", true));
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
-        p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them. Fewer levels mean fewer failed ascent tests but smaller skips"), true, true));
+        p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them. Fewer levels mean fewer failed ascent tests but smaller skips"), true, true).of("visibility", &["incremental"]));
     }
     p.push(ParamSpec::choice("schedule", "Work split over the threads: image rows (packets along the row), or screen tiles along a space-filling curve (packets as 2x2 / 4x2 / 4x4 pixel blocks; from cpu-simd-tiles)", &["rows", "tiles"], "rows", true));
     p.push(ParamSpec::choice("tile_order", "schedule = tiles: order tiles are handed out in", &["morton", "hilbert", "linear"], "morton", true));
@@ -135,7 +127,7 @@ fn parse_schedule(s: &str) -> anyhow::Result<bool> {
 }
 
 fn traversal(visibility: &str, exact: bool) -> anyhow::Result<Traversal> {
-    Ok(match check(Slot::Visibility, visibility)?.as_str() {
+    Ok(match require(BACKEND, Slot::Visibility, visibility)?.as_str() {
         "refloor" => Traversal::Refloor,
         "incremental" if exact => Traversal::IncrementalExact,
         "incremental" => Traversal::Incremental,
@@ -314,7 +306,7 @@ impl<R: Repr> CpuBackend<R> {
         }
         let isa = detect(&o.isa);
         tracing::info!("cpu: storage {}, visibility {}, {:?} hot loop, packets of {}", o.storage, o.visibility, isa, o.packet);
-        check(Slot::Shading, &o.shading)?;
+        require(BACKEND, Slot::Shading, &o.shading)?;
         Ok(Self {
             visibility: o.visibility.clone(),
             exact: o.exact,
@@ -733,7 +725,7 @@ impl<R: Repr> Renderer for CpuBackend<R> {
                 self.scene.traversal = traversal(&self.visibility, self.exact)?;
             }
             "shading" => {
-                check(Slot::Shading, value.as_str().unwrap_or(""))?;
+                require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?;
             }
             "packet" => self.packet = value.as_str().and_then(|s| s.parse().ok()).unwrap_or(8),
             "schedule" => (self.tiles, self.rects) = (parse_schedule(value.as_str().unwrap_or(""))?, vec![]),

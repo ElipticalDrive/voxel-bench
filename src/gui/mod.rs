@@ -5,6 +5,7 @@
 mod bench;
 mod editor;
 mod live;
+mod stages;
 
 use std::path::{Path, PathBuf};
 
@@ -809,6 +810,7 @@ impl App {
                         self.send(Cmd::Restart { lane: i, spec });
                     }
                 }
+                LaneAction::Swap(lane, spec) => self.send(Cmd::Restart { lane, spec }),
                 LaneAction::Remove(i) => {
                     self.send(Cmd::RemoveLane(i));
                     self.textures.clear();
@@ -958,34 +960,71 @@ impl App {
                     }
                 });
             });
-        egui::CollapsingHeader::new("knobs").id_salt(("knobs", i)).show(ui, |ui| {
+        egui::CollapsingHeader::new("stages & knobs").id_salt(("knobs", i)).default_open(true).show(ui, |ui| {
             ui.weak("↻ = changing it hot-swaps the renderer · 🔒 = the tuner may not touch it");
-            egui::Grid::new("knobs").num_columns(3).striped(true).show(ui, |ui| {
-                for (spec, value) in &l.params {
-                    let label = if spec.live { spec.name.clone() } else { format!("{} ↻", spec.name) };
-                    ui.label(label).on_hover_text(&spec.description);
-                    let key = (i, spec.name.clone());
-                    let shown = self.knob_edits.get(&key).cloned().unwrap_or(value.clone());
-                    let continuous = spec.live && spec.name != "host.render_scale";
-                    if let Some((v, commit)) = knob_widget(ui, spec, &shown) {
-                        if continuous || commit {
-                            self.knob_edits.remove(&key);
-                            actions.push(LaneAction::Set(i, spec.name.clone(), v));
-                        } else {
-                            self.knob_edits.insert(key.clone(), v);
-                        }
+            let locks = &mut self.locks;
+            let mut lock_box = |ui: &mut egui::Ui, spec: &mr_core::ParamSpec| {
+                let key = (i, spec.name.clone());
+                let mut locked = locks.contains(&key);
+                if ui.checkbox(&mut locked, "🔒").on_hover_text("Lock: the auto-tuner may not change this knob (applies when the tuner is (re)started)").changed() {
+                    if locked {
+                        locks.insert(key);
+                    } else {
+                        locks.remove(&key);
                     }
-                    let mut locked = self.locks.contains(&key);
-                    if ui.checkbox(&mut locked, "🔒").on_hover_text("Lock: the auto-tuner may not change this knob (applies when the tuner is (re)started)").changed() {
-                        if locked {
-                            self.locks.insert(key);
-                        } else {
-                            self.locks.remove(&key);
-                        }
-                    }
-                    ui.end_row();
                 }
-            });
+            };
+            // Values being dragged are shown before they are applied.
+            let knobs: Vec<(mr_core::ParamSpec, mr_core::ParamValue)> = l.params.iter().map(|(s, v)| (s.clone(), self.knob_edits.get(&(i, s.name.clone())).cloned().unwrap_or(v.clone()))).collect();
+            let edits = match &l.spec.compose {
+                Some(comp) => stages::stage_grid(ui, comp, &knobs, true, &mut lock_box),
+                // A standalone renderer: its knobs only.
+                None => {
+                    let mut edits = vec![];
+                    egui::Grid::new("knobs").num_columns(3).striped(true).show(ui, |ui| {
+                        for (spec, value) in &knobs {
+                            let label = if spec.live { spec.name.clone() } else { format!("{} ↻", spec.name) };
+                            ui.label(label).on_hover_text(&spec.description);
+                            if let Some((v, commit)) = stages::knob_widget(ui, spec, value) {
+                                edits.push(stages::StageEdit::Knob { name: spec.name.clone(), value: v, commit });
+                            }
+                            lock_box(ui, spec);
+                            ui.end_row();
+                        }
+                    });
+                    edits
+                }
+            };
+            for e in edits {
+                match e {
+                    stages::StageEdit::Knob { name, value, commit } => {
+                        let key = (i, name.clone());
+                        let live = l.params.iter().find(|(s, _)| s.name == name).is_some_and(|(s, _)| s.live);
+                        if (live && name != "host.render_scale") || commit {
+                            self.knob_edits.remove(&key);
+                            actions.push(LaneAction::Set(i, name, value));
+                        } else {
+                            self.knob_edits.insert(key, value);
+                        }
+                    }
+                    // Live where the back end can switch the component, else a hot swap.
+                    stages::StageEdit::Slot(slot, name) => actions.push(LaneAction::Set(i, slot.name().into(), mr_core::ParamValue::Choice(name))),
+                    stages::StageEdit::Backend(b) => {
+                        let mut spec = l.spec.clone();
+                        if let Some(mut comp) = spec.compose.clone() {
+                            comp.backend = b;
+                            comp.adapt_to_backend();
+                            let renderer = mr_components::backend(&comp.backend).and_then(|bk| bk.renderer);
+                            if let Some(info) = self.infos.iter().find(|x| Some(x.name.as_str()) == renderer) {
+                                stages::prune_options(&mut spec.options, &info.params);
+                            }
+                            if spec.set_compose(comp).is_ok() {
+                                actions.push(LaneAction::Swap(i, spec));
+                            }
+                        }
+                    }
+                }
+            }
         });
         let running = l.tuner.is_some();
         egui::CollapsingHeader::new(if running { "auto-tune (running)" } else { "auto-tune" }).id_salt(("tune", i)).default_open(running).show(ui, |ui| {
@@ -1287,6 +1326,8 @@ impl App {
 enum LaneAction {
     Focus(usize),
     Restart(usize),
+    /// Hot-swap a lane to a new spec (e.g. another back end).
+    Swap(usize, crate::plan::RendererSpec),
     Remove(usize),
     SaveToPlan(usize, crate::plan::RendererSpec),
     Set(usize, String, mr_core::ParamValue),
@@ -1310,47 +1351,6 @@ impl Default for TuneUi {
     fn default() -> Self {
         let d = tune::TunerConfig::default();
         Self { goal: 0, fps: 144.0, psnr: 25.0, metric: tune::QualityMetric::MsSsim, algorithm: Algorithm::LocalSearch, allow_restart: false, settle: d.settle_s, window: d.window_s, patience: d.patience }
-    }
-}
-
-/// Edits a knob value. Returns the new value and whether the edit is complete (e.g. a
-/// drag finished), for knobs that should only be applied once.
-fn knob_widget(ui: &mut egui::Ui, spec: &mr_core::ParamSpec, value: &mr_core::ParamValue) -> Option<(mr_core::ParamValue, bool)> {
-    use mr_core::{ParamKind, ParamValue};
-    match &spec.kind {
-        ParamKind::Bool => {
-            let mut b = value.as_bool().unwrap_or(false);
-            ui.checkbox(&mut b, "").on_hover_text(&spec.description).changed().then(|| (ParamValue::Bool(b), true))
-        }
-        ParamKind::Int { min, max } => {
-            let mut v = value.as_i64().unwrap_or(*min);
-            let speed = ((*max - *min) as f64 / 300.0).max(0.05);
-            let r = ui.add(egui::DragValue::new(&mut v).range(*min..=*max).speed(speed)).on_hover_text(format!("{}\nRange {min}–{max}. Drag or double-click to type.", spec.description));
-            let commit = r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus());
-            (r.changed() || commit).then(|| (ParamValue::Int(v), commit))
-        }
-        ParamKind::Float { min, max, log } => {
-            let mut v = value.as_f64().unwrap_or(*min);
-            let r = ui.add(egui::Slider::new(&mut v, *min..=*max).logarithmic(*log).max_decimals(3)).on_hover_text(&spec.description);
-            let commit = r.drag_stopped() || (r.changed() && !r.dragged());
-            (r.changed() || commit).then(|| (ParamValue::Float(v), commit))
-        }
-        ParamKind::Choice(opts) => {
-            let cur = value.as_str().unwrap_or("").to_string();
-            let mut out = None;
-            egui::ComboBox::from_id_salt(&spec.name)
-                .selected_text(&cur)
-                .show_ui(ui, |ui| {
-                    for o in opts {
-                        if ui.selectable_label(*o == cur, o).clicked() && *o != cur {
-                            out = Some((ParamValue::Choice(o.clone()), true));
-                        }
-                    }
-                })
-                .response
-                .on_hover_text(&spec.description);
-            out
-        }
     }
 }
 
@@ -1450,6 +1450,117 @@ mod tests {
         };
         let mut out = ctx.run_ui(input, |ui| app.draw(ui));
         out.textures_delta.clear(); // no renderer in tests
+    }
+
+    /// Renders the GUI offscreen to `target/gui-shot.png` (needs a GPU; `--ignored`): a live
+    /// session with composed renderers, so the stage grids of the plan editor and of the
+    /// Metrics tab can be looked at. `SHOT_PLAN` may name a plan file instead.
+    #[test]
+    #[ignore]
+    fn gui_screenshot() {
+        use mr_gpu::wgpu;
+        let (w, h) = (1800u32, 2300u32);
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx, None);
+        app.plan = match std::env::var("SHOT_PLAN") {
+            Ok(path) => Plan::load(Path::new(&path), &[]).unwrap(),
+            Err(_) => Plan::parse(
+                r#"
+                [scene]
+                generator = { type = "showcase" }
+                camera = { type = "orbit", center = [20, 2, 0], radius = 26, height = 12, period = 120 }
+                [run]
+                resolution = [320, 180]
+                view_radius = 3
+                isolation = "thread"
+                [[renderer]]
+                compose = { backend = "gpu-compute", storage = "prefix", visibility = "incremental", shading = "pathtrace" }
+                [[renderer]]
+                compose = { backend = "gpu-raster", geometry = "naive", visibility = "visbuffer" }
+                "#,
+                &[],
+            )
+            .unwrap(),
+        };
+        app.option_text = option_texts(&app.plan);
+        app.start_live(&ctx);
+        app.right_tab = RightTab::Metrics;
+        // Every texture update, in order: the font atlas only arrives in the first frames.
+        let mut deltas = vec![];
+        let mut last = None;
+        let mut t = 0.0;
+        let start = std::time::Instant::now();
+        let mut frames = 0;
+        while frames < 30 || start.elapsed().as_secs_f32() < 4.0 {
+            t += 1.0 / 60.0;
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(w as f32, h as f32))), time: Some(t), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+            deltas.extend(std::mem::take(&mut out.textures_delta.set));
+            last = Some(out);
+            frames += 1;
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        let out = last.unwrap();
+        let gpu = mr_gpu::Gpu::new(mr_gpu::GpuRequest { experimental: false, adapter: None, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::empty(), limits: &|a| a.clone() }).unwrap();
+        let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut r = eframe::egui_wgpu::Renderer::new(&gpu.device, fmt, Default::default());
+        for (id, ds) in &deltas {
+            for d in ds {
+                r.update_texture(&gpu.device, &gpu.queue, *id, d);
+            }
+        }
+        let jobs = ctx.tessellate(out.shapes, out.pixels_per_point);
+        let sd = eframe::egui_wgpu::ScreenDescriptor { size_in_pixels: [w, h], pixels_per_point: out.pixels_per_point };
+        let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gui shot"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&Default::default());
+        let mut enc = gpu.device.create_command_encoder(&Default::default());
+        let extra = r.update_buffers(&gpu.device, &gpu.queue, &mut enc, &jobs, &sd);
+        {
+            let mut pass = enc
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("gui"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
+            r.render(&mut pass, &jobs, &sd);
+        }
+        let row = (w * 4).next_multiple_of(256);
+        let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: row as u64 * h as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: Default::default(), aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        gpu.queue.submit(extra.into_iter().chain([enc.finish()]));
+        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
+        let data = buf.slice(..).get_mapped_range().unwrap();
+        let mut img = image::RgbaImage::new(w, h);
+        for y in 0..h {
+            let src = &data[(y * row) as usize..(y * row + w * 4) as usize];
+            img.as_mut()[(y * w * 4) as usize..((y + 1) * w * 4) as usize].copy_from_slice(src);
+        }
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/target/gui-shot.png");
+        img.save(path).unwrap();
+        println!("saved {path} after {frames} frames");
     }
 
     /// Draws the real GUI headlessly through a live session (needs a GPU; `--ignored`).

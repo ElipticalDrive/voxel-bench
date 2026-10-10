@@ -106,8 +106,8 @@ pub enum Isolation {
     Thread,
 }
 
-/// One renderer of a plan: either a composition of components (`compose`, IDEAS §12) or,
-/// for renderers not yet split into components, a legacy monolith by `name`.
+/// One renderer of a plan: a composition of components (`compose`, IDEAS §12), or a
+/// standalone renderer (cpu-reference) by `name`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RendererSpec {
@@ -148,6 +148,19 @@ impl RendererSpec {
     /// For compositions: checks them and sets `name` (the back end's renderer) and the
     /// options that select the components.
     pub fn resolve(&mut self) -> anyhow::Result<()> {
+        // `name = "<back end's renderer>"` (older plans, the CLI): the back end's
+        // composition, with stages taken from the options where given.
+        if self.compose.is_none() {
+            if let Some(b) = mr_components::BACKENDS.iter().find(|b| b.renderer == Some(self.name.as_str())) {
+                let mut c = mr_components::Composition::new(b.name);
+                for slot in c.slots().collect::<Vec<_>>() {
+                    if let Some(v) = self.options.get(slot.name()).and_then(|v| v.as_str()) {
+                        c.set(slot, v);
+                    }
+                }
+                self.compose = Some(c);
+            }
+        }
         if let Some(c) = &mut self.compose {
             let (name, opts) = c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?;
             self.name = name.to_string();
@@ -161,10 +174,12 @@ impl RendererSpec {
         Ok(())
     }
 
-    /// From the command line: `backend:slot+slot+...` for a composition: the back end's
+    /// From the command line: `backend:slot+slot+...` for a composition (a bare back-end
+    /// name gives its default composition): the back end's
     /// required slots in order, then optionally shading and prepass
     /// (`gpu-compute:prefix+incremental`, `gpu-compute:tree64+refloor+direct+beam`,
-    /// `gpu-raster:bricks+greedy+visbuffer`); otherwise a legacy renderer name.
+    /// `gpu-raster:bricks+greedy+visbuffer`); otherwise a renderer name (a back end's, giving its default composition, or a
+    /// standalone one).
     pub fn from_cli(s: &str) -> anyhow::Result<Self> {
         use mr_components::Slot;
         let Some((backend, rest)) = s.split_once(':') else { return Ok(Self::new(s)) };
@@ -404,6 +419,11 @@ mod tests {
         let spec = RendererSpec::from_cli("gpu-raster:hier+naive+visbuffer").unwrap();
         assert_eq!(spec.options.get("geometry").and_then(|v| v.as_str()), Some("naive"));
         assert!(RendererSpec::from_cli("gpu-raster:hier+naive").is_err());
+        // Naming a back end's renderer gives its composition, stages from the options.
+        let named = text.replace("compose = { storage = \"prefix\", visibility = \"incremental\" }", "name = \"gpu-discover\"").replace("options = { exact = false }", "options = { storage = \"prefix\" }");
+        let r = &Plan::parse(&named, &[]).unwrap().renderers[0];
+        assert_eq!(r.label(), "gpu-discover: prefix + quadtree");
+        assert!(Plan::parse(&named, &[]).unwrap().to_toml().unwrap().contains("compose"));
         let spec = RendererSpec::from_cli("gpu-compute:tree64+refloor+direct+beam").unwrap();
         assert_eq!(spec.options.get("prepass").and_then(|v| v.as_str()), Some("beam"));
         let spec = RendererSpec::from_cli("gpu-compute:distance+sphere").unwrap();

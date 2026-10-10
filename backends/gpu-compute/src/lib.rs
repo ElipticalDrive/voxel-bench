@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use mr_components::storage::gpu_data::{self, StorageData};
-use mr_components::{Slot, components, storage, visibility};
+use mr_components::{names_on, require, Slot, components, storage, visibility};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite, Occlusion};
@@ -27,6 +27,8 @@ pub fn entry() -> RendererEntry {
     RendererEntry { info, create: |p, w| Ok(Box::new(GpuCompose::new(p, w)?)) }
 }
 
+
+const BACKEND: &str = "gpu-compute";
 
 fn info() -> RendererInfo {
     RendererInfo {
@@ -40,9 +42,6 @@ fn info() -> RendererInfo {
     }
 }
 
-fn names(slot: Slot) -> Vec<&'static str> {
-    components(slot).filter(|c| c.backends.contains(&"gpu-compute")).map(|c| c.name).collect()
-}
 
 fn describe(slot: Slot) -> String {
     components(slot).filter(|c| c.backends.contains(&"gpu-compute")).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
@@ -50,18 +49,18 @@ fn describe(slot: Slot) -> String {
 
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
-        ParamSpec::choice("storage", &format!("Storage component. {}", describe(Slot::Storage)), &names(Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", &format!("Visibility component (any storage works with any; missing fast paths use generic fallbacks). {}", describe(Slot::Visibility)), &names(Slot::Visibility), "refloor", true),
-        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names(Slot::Shading), "direct", true),
-        ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &names(Slot::Prepass), "none", true),
-        ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true),
-        ParamSpec::int("bounces", "pathtrace shading: diffuse indirect bounces (lit)", 0, 8, 1, true),
-        ParamSpec::int("spp", "pathtrace shading: paths per pixel per frame (lit)", 1, 64, 1, true),
-        ParamSpec::bool("accumulate", "pathtrace shading: average frames while camera and world are still", true, true),
-        ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true),
+        ParamSpec::choice("storage", &format!("Storage component. {}", describe(Slot::Storage)), &names_on(BACKEND, Slot::Storage), "bricks", false),
+        ParamSpec::choice("visibility", &format!("Visibility component (any storage works with any; missing fast paths use generic fallbacks). {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "refloor", true),
+        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
+        ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &names_on(BACKEND, Slot::Prepass), "none", true),
+        ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
+        ParamSpec::int("bounces", "pathtrace shading: diffuse indirect bounces (lit)", 0, 8, 1, true).of("shading", &["pathtrace"]),
+        ParamSpec::int("spp", "pathtrace shading: paths per pixel per frame (lit)", 1, 64, 1, true).of("shading", &["pathtrace"]),
+        ParamSpec::bool("accumulate", "pathtrace shading: average frames while camera and world are still", true, true).of("shading", &["pathtrace"]),
+        ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true).of("visibility", &["incremental"]),
     ];
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
-        p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true));
+        p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("visibility", &["incremental"]));
     }
     p.push(ParamSpec::choice("dispatch", "How pixels are run: `compute` (one compute thread per pixel) or `fragment` (a fragment shader over a full-screen triangle; was gpu-frag-dda)", &["compute", "fragment"], "compute", true));
     p.push(ParamSpec::choice("view", "image: the rendered scene. steps: primary-ray loop iterations per pixel (red = low 8 bits, green = high bits, blue = log-scale brightness)", &["image", "steps"], "image", true));
@@ -188,13 +187,6 @@ impl Composition {
     }
 }
 
-/// Checks that `name` is a `slot` component with a gpu-compute implementation.
-fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
-    match mr_components::unavailable("gpu-compute", slot, name) {
-        None => Ok(name.to_string()),
-        Some(why) => anyhow::bail!(why),
-    }
-}
 
 /// Why LOD cannot run with this composition, if it can't.
 fn lod_blocker(c: &Composition) -> Option<String> {
@@ -301,10 +293,10 @@ impl GpuCompose {
     pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         let comp = Composition {
-            storage: check(Slot::Storage, &opts.storage)?,
-            visibility: check(Slot::Visibility, &opts.visibility)?,
-            shading: check(Slot::Shading, &opts.shading)?,
-            prepass: check(Slot::Prepass, &opts.prepass)?,
+            storage: require(BACKEND, Slot::Storage, &opts.storage)?,
+            visibility: require(BACKEND, Slot::Visibility, &opts.visibility)?,
+            shading: require(BACKEND, Slot::Shading, &opts.shading)?,
+            prepass: require(BACKEND, Slot::Prepass, &opts.prepass)?,
             tile: opts.tile.clamp(1, 64),
             exact: opts.exact,
             steps_view: parse_view(&opts.view)?,
@@ -634,16 +626,16 @@ impl Renderer for GpuCompose {
             "visibility" | "traversal" | "prepass" | "tile" => {
                 let mut c = self.comp.clone();
                 match name {
-                    "prepass" => c.prepass = check(Slot::Prepass, value.as_str().unwrap_or(""))?,
+                    "prepass" => c.prepass = require(BACKEND, Slot::Prepass, value.as_str().unwrap_or(""))?,
                     "tile" => c.tile = value.as_i64().unwrap_or(8).clamp(1, 64) as u32,
-                    _ => c.visibility = check(Slot::Visibility, value.as_str().unwrap_or(""))?,
+                    _ => c.visibility = require(BACKEND, Slot::Visibility, value.as_str().unwrap_or(""))?,
                 }
                 if let (true, Some(why)) = (c.lod, lod_blocker(&c)) {
                     anyhow::bail!("this run streams LOD chunks: {why}");
                 }
                 self.comp = c;
             }
-            "shading" => self.comp.shading = check(Slot::Shading, value.as_str().unwrap_or(""))?,
+            "shading" => self.comp.shading = require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?,
             "bounces" => (self.accum.bounces, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(0, 8) as u32, 0),
             "spp" => (self.accum.spp, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(1, 64) as u32, 0),
             "accumulate" => self.accum.accumulate = value.as_bool().unwrap_or(true),

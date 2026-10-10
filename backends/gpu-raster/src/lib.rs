@@ -20,7 +20,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_components::geometry::{GpuGeometry, Knobs, Merge};
 use mr_components::storage::gpu_data::{self, StorageData};
-use mr_components::{Slot, components, storage, visibility};
+use mr_components::{names_on, require, Slot, components, storage, visibility};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{GpuMeshes, MeshPass, Occlusion};
@@ -46,9 +46,6 @@ fn info() -> RendererInfo {
     }
 }
 
-fn names(slot: Slot) -> Vec<&'static str> {
-    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| c.name).collect()
-}
 
 fn describe(slot: Slot) -> String {
     components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
@@ -56,13 +53,13 @@ fn describe(slot: Slot) -> String {
 
 fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::choice("storage", &format!("Storage component the lit-mode shadow rays walk (refloor). {}", describe(Slot::Storage)), &names(Slot::Storage), "bricks", false),
-        ParamSpec::choice("geometry", &format!("Geometry component. {}", describe(Slot::Geometry)), &names(Slot::Geometry), "greedy", true),
-        ParamSpec::choice("visibility", &format!("Visibility component. {}", describe(Slot::Visibility)), &names(Slot::Visibility), "raster", true),
-        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names(Slot::Shading), "direct", true),
-        ParamSpec::choice("merge", "greedy: merge faces of the same block only (`block`), or any exposed coplanar faces with a per-pixel block lookup (`exposure`)", &["block", "exposure"], "block", true),
-        ParamSpec::bool("cull", "naive / cubes: skip faces (blocks) hidden by solid neighbours (false = every face of every solid block)", true, true),
-        ParamSpec::bool("depth_prepass", "raster, lit mode: depth pre-pass so lighting runs once per pixel", true, true),
+        ParamSpec::choice("storage", &format!("Storage component the lit-mode shadow rays walk (refloor). {}", describe(Slot::Storage)), &names_on(BACKEND, Slot::Storage), "bricks", false),
+        ParamSpec::choice("geometry", &format!("Geometry component. {}", describe(Slot::Geometry)), &names_on(BACKEND, Slot::Geometry), "greedy", true),
+        ParamSpec::choice("visibility", &format!("Visibility component. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "raster", true),
+        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
+        ParamSpec::choice("merge", "greedy: merge faces of the same block only (`block`), or any exposed coplanar faces with a per-pixel block lookup (`exposure`)", &["block", "exposure"], "block", true).of("geometry", &["greedy"]),
+        ParamSpec::bool("cull", "naive / cubes: skip faces (blocks) hidden by solid neighbours (false = every face of every solid block)", true, true).of("geometry", &["naive", "cubes"]),
+        ParamSpec::bool("depth_prepass", "raster, lit mode: depth pre-pass so lighting runs once per pixel", true, true).of("visibility", &["raster"]),
         shadows_param(),
         ParamSpec::int("max_steps", "Shadow-ray step limit", 32, 16384, 2048, true),
         ParamSpec::int("mesh_budget", "Chunks remeshed per frame, nearest first (0 = all)", 0, 100000, 0, true),
@@ -115,13 +112,6 @@ impl Default for Options {
     }
 }
 
-/// Checks that `name` is a `slot` component with a gpu-raster implementation.
-fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
-    match mr_components::unavailable(BACKEND, slot, name) {
-        None => Ok(name.to_string()),
-        Some(why) => anyhow::bail!(why),
-    }
-}
 
 fn parse_merge(s: &str) -> anyhow::Result<Merge> {
     match s {
@@ -447,10 +437,10 @@ impl GpuRasterBackend {
         let opts: Options = p.options()?;
         parse_merge(&opts.merge)?;
         let comp = Composition {
-            storage: check(Slot::Storage, &opts.storage)?,
-            geometry: check(Slot::Geometry, &opts.geometry)?,
-            visibility: check(Slot::Visibility, &opts.visibility)?,
-            shading: check(Slot::Shading, &opts.shading)?,
+            storage: require(BACKEND, Slot::Storage, &opts.storage)?,
+            geometry: require(BACKEND, Slot::Geometry, &opts.geometry)?,
+            visibility: require(BACKEND, Slot::Visibility, &opts.visibility)?,
+            shading: require(BACKEND, Slot::Shading, &opts.shading)?,
         };
         let gpu = Gpu::new(GpuRequest {
             experimental: false,
@@ -894,9 +884,9 @@ impl Renderer for GpuRasterBackend {
             "max_steps" => self.world.cfg.max_steps = value.as_i64().unwrap_or(2048) as u32,
             "depth_prepass" => self.opts.depth_prepass = value.as_bool().unwrap_or(true),
             "mesh_budget" => self.opts.mesh_budget = value.as_i64().unwrap_or(0) as usize,
-            "geometry" => self.comp.geometry = check(Slot::Geometry, &s())?,
-            "visibility" => self.comp.visibility = check(Slot::Visibility, &s())?,
-            "shading" => self.comp.shading = check(Slot::Shading, &s())?,
+            "geometry" => self.comp.geometry = require(BACKEND, Slot::Geometry, &s())?,
+            "visibility" => self.comp.visibility = require(BACKEND, Slot::Visibility, &s())?,
+            "shading" => self.comp.shading = require(BACKEND, Slot::Shading, &s())?,
             "merge" => {
                 parse_merge(&s())?;
                 if s() != self.opts.merge {

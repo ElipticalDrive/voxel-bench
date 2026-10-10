@@ -21,7 +21,7 @@ use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::geometry::{Knobs, MeshFn};
-use mr_components::{Slot, components};
+use mr_components::{names_on, require, Slot};
 use mr_mesh::{FACE_AXES, Mesh, Quad};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -64,26 +64,16 @@ impl Default for Options {
 
 const BACKEND: &str = "cpu-raster";
 
-/// Checks that `name` is a `slot` component with a cpu-raster implementation.
-fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
-    match mr_components::unavailable(BACKEND, slot, name) {
-        None => Ok(name.to_string()),
-        Some(why) => anyhow::bail!(why),
-    }
-}
 
-fn names(slot: Slot) -> Vec<&'static str> {
-    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| c.name).collect()
-}
 
 fn params() -> Vec<ParamSpec> {
     let mut p = cpu_reference::cpu_params();
-    p.push(ParamSpec::choice("geometry", "Geometry component (quads meshed on the CPU)", &names(Slot::Geometry), "greedy", true));
-    p.push(ParamSpec::choice("visibility", "Visibility component", &names(Slot::Visibility), "raster", false));
-    p.push(ParamSpec::choice("shading", "Shading component", &names(Slot::Shading), "direct", false));
-    p.push(ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours", true, true));
-    p.push(ParamSpec::int("tile_width", "Raster tile width (pixels)", 8, 1024, 64, true));
-    p.push(ParamSpec::int("band_height", "Raster band height (pixels); bands are the unit of parallelism", 1, 512, 16, true));
+    p.push(ParamSpec::choice("geometry", "Geometry component (quads meshed on the CPU)", &names_on(BACKEND, Slot::Geometry), "greedy", true));
+    p.push(ParamSpec::choice("visibility", "Visibility component", &names_on(BACKEND, Slot::Visibility), "raster", false));
+    p.push(ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false));
+    p.push(ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours", true, true).of("geometry", &["naive"]));
+    p.push(ParamSpec::int("tile_width", "Raster tile width (pixels)", 8, 1024, 64, true).of("visibility", &["raster"]));
+    p.push(ParamSpec::int("band_height", "Raster band height (pixels); bands are the unit of parallelism", 1, 512, 16, true).of("visibility", &["raster"]));
     p
 }
 
@@ -116,10 +106,10 @@ impl CpuRaster {
         let opts: Options = p.options()?;
         let mut scene = VoxelScene::new(&p);
         scene.shadows = opts.shadows;
-        check(Slot::Visibility, &opts.visibility)?;
-        check(Slot::Shading, &opts.shading)?;
+        require(BACKEND, Slot::Visibility, &opts.visibility)?;
+        require(BACKEND, Slot::Shading, &opts.shading)?;
         anyhow::ensure!(opts.merge == "block", "merge = `{}`: cpu-raster has no per-pixel block lookup (only `block`)", opts.merge);
-        let mesh = mesh_fn(&check(Slot::Geometry, &opts.geometry)?);
+        let mesh = mesh_fn(&require(BACKEND, Slot::Geometry, &opts.geometry)?);
         let knobs = Knobs { cull: opts.cull, ..Default::default() };
         Ok(Self {
             width: p.width,
@@ -410,7 +400,7 @@ impl Renderer for CpuRaster {
             "tile_width" => self.opts.tile_width = value.as_i64().unwrap_or(64) as u32,
             "band_height" => self.opts.band_height = value.as_i64().unwrap_or(16) as u32,
             "geometry" => {
-                self.mesh = mesh_fn(&check(Slot::Geometry, value.as_str().unwrap_or(""))?);
+                self.mesh = mesh_fn(&require(BACKEND, Slot::Geometry, value.as_str().unwrap_or(""))?);
                 self.dirty.extend(self.meshes.keys().copied());
             }
             "cull" => {

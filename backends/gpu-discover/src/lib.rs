@@ -55,7 +55,7 @@ use glam::IVec3;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::storage::gpu_data::{self, StorageData};
-use mr_components::{Slot, components, storage, visibility};
+use mr_components::{names_on, require, Slot, storage, visibility};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
 use serde::Deserialize;
@@ -82,50 +82,40 @@ const CHUNK_TABLE: usize = MAX_SLOTS * 4;
 
 const BACKEND: &str = "gpu-discover";
 
-/// Checks that `name` is a `slot` component with a gpu-discover implementation.
-fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
-    match mr_components::unavailable(BACKEND, slot, name) {
-        None => Ok(name.to_string()),
-        Some(why) => anyhow::bail!(why),
-    }
-}
 
-fn names(slot: Slot) -> Vec<&'static str> {
-    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| c.name).collect()
-}
 
 fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::choice("storage", "Storage component: what discovery rays, exposure tests and shadow rays read (refloor walk)", &names(Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", "Visibility component", &names(Slot::Visibility), "quadtree", false),
-        ParamSpec::choice("shading", "Shading component", &names(Slot::Shading), "direct", false),
-        ParamSpec::int("tile", "Initial tile size in pixels (power of two)", 2, MAX_TILE as i64, 8, true),
-        ParamSpec::choice("criterion", "Tile coherence: all corners hit the same face plane, or the very same face", &["plane", "face"], "plane", true),
-        ParamSpec::int("sky_tile", "Tiles whose corners all miss are accepted as sky at or below this size (px)", 1, MAX_TILE as i64, 4, true),
-        ParamSpec::int("keep_frames", "Frames a face stays in S without being re-discovered", 1, 1000, 8, true),
-        ParamSpec::int("max_footprint", "Max cells a coherent tile may add (larger footprints subdivide)", 1, 4096, 128, true),
-        ParamSpec::bool("strict", "Plane criterion: every footprint cell must be an exposed face of that plane, else subdivide", true, true),
-        ParamSpec::int("inline_fp", "Footprints of up to this many cells are expanded by the classifying thread; larger ones get a cooperative 64-thread workgroup (0 = always cooperative)", 0, 4096, 8, true),
-        ParamSpec::bool("morton", "Enumerate level-0 tiles and rays along a Z-curve (waves cover compact screen squares; children keep their parents' order) instead of row by row. Measured: no difference; deep levels are bound by each pass's slowest ray, not by coherence", false, true),
-        ParamSpec::int("closure_px", "Non-coherent tiles up to this size (px) whose corner hits fit a small box add all its exposed faces instead of splitting (0 = off)", 0, MAX_TILE as i64, 2, true),
-        ParamSpec::int("closure_box", "Local-closure box size in cells per axis", 1, 8, 2, true),
-        ParamSpec::bool("block_faces", "With each discovered face also add its block's other camera-facing exposed faces (closes raster-vs-ray edge cracks)", true, true),
-        ParamSpec::bool("jitter", "Shift the tile lattice randomly every frame (temporal coverage)", true, true),
-        ParamSpec::bool("incremental", "Rasterise last frame's faces first and only discover tiles with uncovered pixels, parallax-revealable occlusion edges, edited blocks or changed chunks, or their refresh turn (jitter off)", false, true),
-        ParamSpec::int("keep_unseen", "Incremental: frames a face inside the view stays in S without covering a pixel (faces outside the view use keep_frames)", 1, 1000, 64, true),
-        ParamSpec::int("refresh", "Incremental: re-discover every Nth tile each frame regardless (0 = never)", 0, 1024, 16, true),
-        ParamSpec::float("parallax_px", "Incremental: an occlusion edge needs discovery if the camera's translation can reveal more than this many pixels behind it", 0.05, 16.0, false, 0.5, true),
-        ParamSpec::bool("events", "Incremental: classify frames by what changed. Unchanged camera and world: skip discovery and redraw (frame_kind 0). Rotation or world changes only: skip seen-marking and the parallax test (1). Translation: the full incremental passes (2). Edits mark only the edited blocks' screen tiles", true, true),
-        ParamSpec::choice("merge", "Faces drawn as: none = one quad per face; rows = runs of same-block faces along each face's u axis merged into one quad (one GPU pass over S; ignored with order = painter)", &["none", "rows"], "none", true),
-        ParamSpec::choice("order", "Face drawing order. depth: any order, depth-tested (lit mode adds a depth pre-pass). painter: sorted back to front by Manhattan distance from the camera cell (an exact order for voxels; GPU counting sort), drawn without depth testing, so every fragment is shaded", &["depth", "painter"], "depth", true),
-        ParamSpec::choice("still_holes", "Events, rotation-only frames: now = rasterise the old face list first and discover holes (faces that rotation moved onto a pixel centre) in the same frame; late = skip that raster and discover them next frame (cheaper, holes visible for one frame)", &["now", "late"], "now", true),
-        ParamSpec::choice("view", "image: the rendered scene. quads: one colour per drawn quad (shows merging). overdraw: fragments shaded per pixel (brighter = more; compare order = depth vs painter). tiles: level-0 tiles tinted by why they were discovered this frame (white full, blue edited block / changed chunk, cyan entering strip (still_holes = late), red uncovered or hole, yellow parallax, green refresh; dark = skipped). rays: a dot per ray cast this frame. churn: faces new to the set this frame in red, carried-over faces grey", &["image", "tiles", "rays", "churn", "overdraw", "quads"], "image", true),
-        ParamSpec::int("reveal_tiles", "Incremental: largest reveal radius around an edge, in level-0 tiles", 1, 16, 4, true),
-        ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true),
+        ParamSpec::choice("storage", "Storage component: what discovery rays, exposure tests and shadow rays read (refloor walk)", &names_on(BACKEND, Slot::Storage), "bricks", false),
+        ParamSpec::choice("visibility", "Visibility component", &names_on(BACKEND, Slot::Visibility), "quadtree", false),
+        ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false),
+        ParamSpec::int("tile", "Initial tile size in pixels (power of two)", 2, MAX_TILE as i64, 8, true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("criterion", "Tile coherence: all corners hit the same face plane, or the very same face", &["plane", "face"], "plane", true).of("visibility", &["quadtree"]),
+        ParamSpec::int("sky_tile", "Tiles whose corners all miss are accepted as sky at or below this size (px)", 1, MAX_TILE as i64, 4, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("keep_frames", "Frames a face stays in S without being re-discovered", 1, 1000, 8, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("max_footprint", "Max cells a coherent tile may add (larger footprints subdivide)", 1, 4096, 128, true).of("visibility", &["quadtree"]),
+        ParamSpec::bool("strict", "Plane criterion: every footprint cell must be an exposed face of that plane, else subdivide", true, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("inline_fp", "Footprints of up to this many cells are expanded by the classifying thread; larger ones get a cooperative 64-thread workgroup (0 = always cooperative)", 0, 4096, 8, true).of("visibility", &["quadtree"]),
+        ParamSpec::bool("morton", "Enumerate level-0 tiles and rays along a Z-curve (waves cover compact screen squares; children keep their parents' order) instead of row by row. Measured: no difference; deep levels are bound by each pass's slowest ray, not by coherence", false, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("closure_px", "Non-coherent tiles up to this size (px) whose corner hits fit a small box add all its exposed faces instead of splitting (0 = off)", 0, MAX_TILE as i64, 2, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("closure_box", "Local-closure box size in cells per axis", 1, 8, 2, true).of("visibility", &["quadtree"]),
+        ParamSpec::bool("block_faces", "With each discovered face also add its block's other camera-facing exposed faces (closes raster-vs-ray edge cracks)", true, true).of("visibility", &["quadtree"]),
+        ParamSpec::bool("jitter", "Shift the tile lattice randomly every frame (temporal coverage)", true, true).of("visibility", &["quadtree"]),
+        ParamSpec::bool("incremental", "Rasterise last frame's faces first and only discover tiles with uncovered pixels, parallax-revealable occlusion edges, edited blocks or changed chunks, or their refresh turn (jitter off)", false, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("keep_unseen", "Incremental: frames a face inside the view stays in S without covering a pixel (faces outside the view use keep_frames)", 1, 1000, 64, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("refresh", "Incremental: re-discover every Nth tile each frame regardless (0 = never)", 0, 1024, 16, true).of("visibility", &["quadtree"]),
+        ParamSpec::float("parallax_px", "Incremental: an occlusion edge needs discovery if the camera's translation can reveal more than this many pixels behind it", 0.05, 16.0, false, 0.5, true).of("visibility", &["quadtree"]),
+        ParamSpec::bool("events", "Incremental: classify frames by what changed. Unchanged camera and world: skip discovery and redraw (frame_kind 0). Rotation or world changes only: skip seen-marking and the parallax test (1). Translation: the full incremental passes (2). Edits mark only the edited blocks' screen tiles", true, true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("merge", "Faces drawn as: none = one quad per face; rows = runs of same-block faces along each face's u axis merged into one quad (one GPU pass over S; ignored with order = painter)", &["none", "rows"], "none", true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("order", "Face drawing order. depth: any order, depth-tested (lit mode adds a depth pre-pass). painter: sorted back to front by Manhattan distance from the camera cell (an exact order for voxels; GPU counting sort), drawn without depth testing, so every fragment is shaded", &["depth", "painter"], "depth", true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("still_holes", "Events, rotation-only frames: now = rasterise the old face list first and discover holes (faces that rotation moved onto a pixel centre) in the same frame; late = skip that raster and discover them next frame (cheaper, holes visible for one frame)", &["now", "late"], "now", true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("view", "image: the rendered scene. quads: one colour per drawn quad (shows merging). overdraw: fragments shaded per pixel (brighter = more; compare order = depth vs painter). tiles: level-0 tiles tinted by why they were discovered this frame (white full, blue edited block / changed chunk, cyan entering strip (still_holes = late), red uncovered or hole, yellow parallax, green refresh; dark = skipped). rays: a dot per ray cast this frame. churn: faces new to the set this frame in red, carried-over faces grey", &["image", "tiles", "rays", "churn", "overdraw", "quads"], "image", true).of("visibility", &["quadtree"]),
+        ParamSpec::int("reveal_tiles", "Incremental: largest reveal radius around an edge, in level-0 tiles", 1, 16, 4, true).of("visibility", &["quadtree"]),
+        ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true).of("visibility", &["quadtree"]),
         shadows_param(),
         ParamSpec::int("max_steps", "DDA step limit", 32, 16384, 2048, true),
         ParamSpec::bool("depth_prepass", "Lit mode: depth pre-pass so lighting runs once per pixel", true, true),
-        ParamSpec::int("max_faces", "Capacity of the face set S (faces)", 1 << 16, 1 << 24, 1 << 20, false),
+        ParamSpec::int("max_faces", "Capacity of the face set S (faces)", 1 << 16, 1 << 24, 1 << 20, false).of("visibility", &["quadtree"]),
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB); for region storages the limit of their own data", 64, 6144, 1536, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ]
@@ -536,9 +526,9 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
 impl GpuDiscover {
     pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
-        let st = storage::gpu(&check(Slot::Storage, &opts.storage)?).expect("validated");
-        check(Slot::Visibility, &opts.visibility)?;
-        let shading = check(Slot::Shading, &opts.shading)?;
+        let st = storage::gpu(&require(BACKEND, Slot::Storage, &opts.storage)?).expect("validated");
+        require(BACKEND, Slot::Visibility, &opts.visibility)?;
+        let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
         let gpu = Gpu::new(GpuRequest {
             experimental: false,
             adapter: opts.adapter.as_deref(),

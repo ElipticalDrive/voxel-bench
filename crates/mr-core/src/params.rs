@@ -82,19 +82,26 @@ pub struct ParamSpec {
     pub default: ParamValue,
     /// Changeable between frames without restarting the renderer.
     pub live: bool,
+    /// The renderer component this knob belongs to: (slot, components it applies to), e.g.
+    /// `("visibility", ["incremental"])`. `None`: a knob of the renderer / back end itself.
+    /// Lets UIs show each knob next to the component that uses it.
+    /// (Always serialised: renderer infos cross the worker boundary as postcard, which
+    /// cannot skip fields.)
+    #[serde(default)]
+    pub owner: Option<(String, Vec<String>)>,
 }
 
 impl ParamSpec {
     pub fn bool(name: &str, description: &str, default: bool, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Bool, default: ParamValue::Bool(default), live }
+        Self { name: name.into(), description: description.into(), kind: ParamKind::Bool, default: ParamValue::Bool(default), live, owner: None }
     }
 
     pub fn int(name: &str, description: &str, min: i64, max: i64, default: i64, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Int { min, max }, default: ParamValue::Int(default), live }
+        Self { name: name.into(), description: description.into(), kind: ParamKind::Int { min, max }, default: ParamValue::Int(default), live, owner: None }
     }
 
     pub fn float(name: &str, description: &str, min: f64, max: f64, log: bool, default: f64, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Float { min, max, log }, default: ParamValue::Float(default), live }
+        Self { name: name.into(), description: description.into(), kind: ParamKind::Float { min, max, log }, default: ParamValue::Float(default), live, owner: None }
     }
 
     pub fn choice(name: &str, description: &str, options: &[&str], default: &str, live: bool) -> Self {
@@ -104,7 +111,19 @@ impl ParamSpec {
             kind: ParamKind::Choice(options.iter().map(|s| s.to_string()).collect()),
             default: ParamValue::Choice(default.into()),
             live,
+            owner: None,
         }
+    }
+
+    /// Marks the knob as belonging to `components` of `slot` (see `owner`).
+    pub fn of(mut self, slot: &str, components: &[&str]) -> Self {
+        self.owner = Some((slot.into(), components.iter().map(|c| c.to_string()).collect()));
+        self
+    }
+
+    /// Whether the knob belongs to component `component` of `slot`.
+    pub fn owned_by(&self, slot: &str, component: &str) -> bool {
+        self.owner.as_ref().is_some_and(|(s, cs)| s == slot && cs.iter().any(|c| c == component))
     }
 
     /// Coerces and clamps a value into this parameter's domain.

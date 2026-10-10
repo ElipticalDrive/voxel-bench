@@ -18,7 +18,7 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use mr_components::geometry::{Knobs, Merge, RtKind};
-use mr_components::{Slot, components, shading, visibility};
+use mr_components::{names_on, require, Slot, components, shading, visibility};
 use mr_core::chunk::cell_of_index;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -45,9 +45,6 @@ fn info() -> RendererInfo {
     }
 }
 
-fn names(slot: Slot) -> Vec<&'static str> {
-    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| c.name).collect()
-}
 
 fn describe(slot: Slot) -> String {
     components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
@@ -55,18 +52,18 @@ fn describe(slot: Slot) -> String {
 
 fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::choice("geometry", &format!("Geometry component (what the BLASes hold). {}", describe(Slot::Geometry)), &names(Slot::Geometry), "greedy", false),
-        ParamSpec::choice("visibility", &format!("Visibility component. {}", describe(Slot::Visibility)), &names(Slot::Visibility), "rayquery", false),
-        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names(Slot::Shading), "direct", true),
-        ParamSpec::choice("merge", "greedy: merge faces of the same block only (`exposure` is raster-only)", &["block"], "block", false),
-        ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours (false = every face of every solid block)", true, false),
-        ParamSpec::choice("cull_faces", "Triangle facing culled for primary rays (triangle geometries)", &["back", "front", "none"], "back", true),
+        ParamSpec::choice("geometry", &format!("Geometry component (what the BLASes hold). {}", describe(Slot::Geometry)), &names_on(BACKEND, Slot::Geometry), "greedy", false),
+        ParamSpec::choice("visibility", &format!("Visibility component. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "rayquery", false),
+        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
+        ParamSpec::choice("merge", "greedy: merge faces of the same block only (`exposure` is raster-only)", &["block"], "block", false).of("geometry", &["greedy"]),
+        ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours (false = every face of every solid block)", true, false).of("geometry", &["naive"]),
+        ParamSpec::choice("cull_faces", "Triangle facing culled for primary rays (triangle geometries)", &["back", "front", "none"], "back", true).of("geometry", &["greedy", "naive"]),
         shadows_param(),
         ParamSpec::bool("fast_build", "Prefer fast BVH builds over fast traversal", false, true),
         ParamSpec::int("build_budget", "Chunk BLAS rebuilds per frame, nearest first (0 = all)", 0, 100000, 0, true),
-        ParamSpec::int("bounces", "pathtrace shading: diffuse indirect bounces (lit)", 0, 8, 1, true),
-        ParamSpec::int("spp", "pathtrace shading: paths per pixel per frame (lit)", 1, 64, 1, true),
-        ParamSpec::bool("accumulate", "pathtrace shading: average frames while camera and world are still", true, true),
+        ParamSpec::int("bounces", "pathtrace shading: diffuse indirect bounces (lit)", 0, 8, 1, true).of("shading", &["pathtrace"]),
+        ParamSpec::int("spp", "pathtrace shading: paths per pixel per frame (lit)", 1, 64, 1, true).of("shading", &["pathtrace"]),
+        ParamSpec::bool("accumulate", "pathtrace shading: average frames while camera and world are still", true, true).of("shading", &["pathtrace"]),
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB; boxes geometry)", 64, 6144, 2048, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ]
@@ -126,13 +123,6 @@ impl Default for Options {
     }
 }
 
-/// Checks that `name` is a `slot` component with a gpu-rt implementation.
-fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
-    match mr_components::unavailable(BACKEND, slot, name) {
-        None => Ok(name.to_string()),
-        Some(why) => anyhow::bail!(why),
-    }
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -240,9 +230,9 @@ fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: String) -> wgpu::C
 impl GpuRt {
     fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
-        let geometry = check(Slot::Geometry, &opts.geometry)?;
-        let vis = check(Slot::Visibility, &opts.visibility)?;
-        let shading = check(Slot::Shading, &opts.shading)?;
+        let geometry = require(BACKEND, Slot::Geometry, &opts.geometry)?;
+        let vis = require(BACKEND, Slot::Visibility, &opts.visibility)?;
+        let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
         anyhow::ensure!(opts.merge == "block", "merge = `{}`: gpu-rt has no per-pixel block lookup (only `block`)", opts.merge);
         let (geo_wgsl, rt) = mr_components::geometry::rt(&geometry).expect("validated");
         let gpu = Gpu::new(GpuRequest {
@@ -632,7 +622,7 @@ impl Renderer for GpuRt {
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
         match name {
             "shadows" => self.world.cfg.shadows.set(value)?,
-            "shading" => self.shading = check(Slot::Shading, value.as_str().unwrap_or(""))?,
+            "shading" => self.shading = require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?,
             "fast_build" => self.opts.fast_build = value.as_bool().unwrap_or(false),
             "build_budget" => self.opts.build_budget = value.as_i64().unwrap_or(0) as usize,
             "bounces" => (self.opts.bounces, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(0, 8) as u32, 0),

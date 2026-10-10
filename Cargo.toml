@@ -95,6 +95,10 @@ eframe.workspace = true
 egui.workspace = true
 egui_plot.workspace = true
 
+[dev-dependencies]
+mr-gpu.workspace = true
+pollster.workspace = true
+
 [profile.release]
 debug = "line-tables-only"
 codegen-units = 16
