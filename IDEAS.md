@@ -504,8 +504,9 @@ view `quads`).**
 | edits | lit | same | 2.18 → 2.19 | 50.0 → 49.1 |
 
 - *Speed.* The merge pass costs ~0.35 ms (three hash lookups per cell per test). Lit
-  rasterisation gains 15–17% from fewer, larger quads (tiny quads waste shading lanes),
-  so lit terrain is 10% faster overall; unlit is slower.
+  rasterisation on terrain gains 17% from fewer, larger quads (tiny quads waste shading
+  lanes), so lit terrain is 10% faster overall. Edits gain nothing (1.5 faces per
+  quad), and unlit is slower everywhere.
 - *For the integration use (a face list handed to a normal raster pipeline):* about half
   the quads, at the price of T-junction handling. Default off.
 - *Next if pursued:*
