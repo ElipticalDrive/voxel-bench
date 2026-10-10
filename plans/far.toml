@@ -15,7 +15,7 @@ modes = ["unlit", "lit"]
 view_radius = 24
 
 [[renderer]]
-name = "gpu-dda"
+compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
 
 [[renderer]]
 name = "gpu-dda-lod"

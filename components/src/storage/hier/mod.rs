@@ -1,6 +1,8 @@
 //! Storage `hier`: bricks plus a 64-bit summary per chunk, one bit per 8^3 region (as
 //! cpu-simd-hier).
 
+pub mod cpu;
+
 pub const GPU_WGSL: &str = include_str!("gpu.wgsl");
 pub const AUX_WORDS: usize = 2;
 

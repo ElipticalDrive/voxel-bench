@@ -492,6 +492,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "backend-cpu"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cpu-reference",
+ "glam",
+ "libc",
+ "mr-components",
+ "mr-core",
+ "rayon",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -875,20 +890,6 @@ dependencies = [
 
 [[package]]
 name = "cpu-simd-loc"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cpu-reference",
- "glam",
- "libc",
- "mr-core",
- "rayon",
- "serde",
- "tracing",
-]
-
-[[package]]
-name = "cpu-simd-mem"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2520,12 +2521,12 @@ name = "mr-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "backend-cpu",
  "cpu-discover",
  "cpu-raster",
  "cpu-reference",
  "cpu-simd",
  "cpu-simd-loc",
- "cpu-simd-mem",
  "cpu-voxelspace",
  "crossbeam-channel",
  "gpu-beam",

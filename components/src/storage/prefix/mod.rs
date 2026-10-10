@@ -2,6 +2,8 @@
 //! plus a popcount prefix per slot; every aligned 2..16 cube's emptiness is one compare.
 //! CPU builder of the per-slot words (layout in `gpu.wgsl`).
 
+pub mod cpu;
+
 use mr_core::DenseChunk;
 
 pub const GPU_WGSL: &str = include_str!("gpu.wgsl");

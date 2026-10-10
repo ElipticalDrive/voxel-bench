@@ -20,7 +20,7 @@ view_radius = 4
 name = "cpu-reference"
 
 [[renderer]]
-name = "gpu-dda"
+compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
 
 [[renderer]]
 name = "gpu-raster"
@@ -41,7 +41,7 @@ name = "gpu-tree64"
 name = "cpu-simd"
 
 [[renderer]]
-name = "gpu-sdf"
+compose = { backend = "gpu-compute", storage = "distance", visibility = "sphere" }
 
 [output]
 save = { every = 30 }

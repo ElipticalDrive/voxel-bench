@@ -382,10 +382,30 @@ mod tests {
         assert!(!saved.contains("name = \"gpu-compute\"") && saved.contains("compose") && !saved.contains("[renderer.options]\nstorage"), "{saved}");
         assert_eq!(Plan::parse(&saved, &[]).unwrap().renderers[0].options, r.options);
         // Unsupported combinations are rejected with the reason.
-        let bad = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"prefix\"");
+        let bad = text.replace("storage = \"prefix\"", "backend = \"gpu-raster\", storage = \"prefix\"");
         assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("not available"));
+        let cpu = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"palette\"");
+        assert_eq!(Plan::parse(&cpu, &[]).unwrap().renderers[0].name, "cpu");
+        let bad = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"rows\"");
+        assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("no cpu implementation"));
         let spec = RendererSpec::from_cli("gpu-compute:distance+sphere").unwrap();
         assert_eq!(spec.options.get("storage").and_then(|v| v.as_str()), Some("distance"));
         assert!(RendererSpec::from_cli("gpu-compute:nope+sphere").is_err());
+    }
+
+    /// Every shipped plan parses, and its compositions validate and resolve.
+    #[test]
+    fn shipped_plans_load() {
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans"));
+        let mut n = 0;
+        for e in std::fs::read_dir(dir).unwrap() {
+            let path = e.unwrap().path();
+            if path.extension().is_some_and(|x| x == "toml") {
+                let p = Plan::load(&path, &[]).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
+                assert!(p.renderers.iter().all(|r| !r.name.is_empty()));
+                n += 1;
+            }
+        }
+        assert!(n >= 10);
     }
 }

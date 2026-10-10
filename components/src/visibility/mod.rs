@@ -2,6 +2,16 @@
 //! `ctrace(o, d, max_t) -> Hit`, written only against the storage interface; shadow rays
 //! use the same walk (`occluded`).
 
+pub mod cpu;
+#[cfg(test)]
+mod cpu_tests;
+pub mod incremental {
+    pub mod cpu;
+}
+pub mod refloor {
+    pub mod cpu;
+}
+
 pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {
         "refloor" => include_str!("refloor/gpu.wgsl"),

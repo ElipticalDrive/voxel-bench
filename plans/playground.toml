@@ -67,9 +67,7 @@ repeats = 1
 budget = 512
 
 [[renderer]]
-name = "gpu-compose"
-
-[renderer.options]
+compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
 
 [output]
 window = false

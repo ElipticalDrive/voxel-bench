@@ -48,7 +48,7 @@ pub struct BackendInfo {
 /// Every back end, including planned ones (shown disabled, with the reason).
 pub const BACKENDS: &[BackendInfo] = &[
     BackendInfo { name: "gpu-compute", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("gpu-compute") },
-    BackendInfo { name: "cpu", description: "CPU, multi-threaded (rayon, SIMD where it pays) — planned (phase 2)", renderer: None },
+    BackendInfo { name: "cpu", description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops", renderer: Some("cpu") },
     BackendInfo { name: "gpu-raster", description: "GPU rasterisation of generated or discovered geometry — planned (phase 3)", renderer: None },
     BackendInfo { name: "gpu-rt", description: "GPU hardware ray tracing (ray queries / pipelines) — planned (phase 4)", renderer: None },
 ];
@@ -66,21 +66,26 @@ pub struct ComponentInfo {
 }
 
 const GPU: &[&str] = &["gpu-compute"];
+const CPU: &[&str] = &["cpu"];
+const BOTH: &[&str] = &["gpu-compute", "cpu"];
 
 pub const COMPONENTS: &[ComponentInfo] = &[
     // Storage.
-    ComponentInfo { slot: Slot::Storage, name: "bricks", description: "The shared pool: a u16 id per voxel and one bit per 4^3 brick (levels 1, 4). gpu-dda's data.", backends: GPU, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "hier", description: "Bricks plus one bit per 8^3 region (levels 1, 4, 8), as cpu-simd-hier.", backends: GPU, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "prefix", description: "The user's structure (IDEAS §1): Morton-ordered 4^3 masks plus a popcount prefix; any aligned 2..16 cube's emptiness is one compare (levels 1-16).", backends: GPU, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "bricks", description: "The shared pool: a u16 id per voxel and one bit per 4^3 brick (levels 1, 4). gpu-dda's data.", backends: BOTH, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "hier", description: "Bricks plus one bit per 8^3 region (levels 1, 4, 8), as cpu-simd-hier.", backends: BOTH, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "prefix", description: "The user's structure (IDEAS §1): Morton-ordered 4^3 masks plus a popcount prefix; any aligned 2..16 cube's emptiness is one compare (levels 1-16).", backends: BOTH, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "distance", description: "Per-voxel Chebyshev distance to the nearest solid voxel (from gpu-sdf). Fast `s_dist`.", backends: GPU, provides: &["s_dist"], uses: &[] },
     ComponentInfo { slot: Slot::Storage, name: "rows", description: "Bricks plus 32x32 occupancy rows per chunk (from gpu-bitmask). Fast `s_row`.", backends: GPU, provides: &["s_row"], uses: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "u8", description: "Brick mask plus a u8 id per voxel: half of bricks' footprint (32 KiB per chunk; at most 256 block types).", backends: CPU, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "bits", description: "One occupancy bit per voxel, brick-major (4 KiB per chunk); block ids read only at the hit.", backends: CPU, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "palette", description: "Per-chunk palette with indices packed at 1/2/4/8/16 bits (7x smaller than bricks on terrain).", backends: CPU, provides: &[], uses: &[] },
     // Visibility.
-    ComponentInfo { slot: Slot::Visibility, name: "refloor", description: "Per-pixel DDA: ask the storage for the largest empty cube, step out of it, re-floor (gpu-dda's walk).", backends: GPU, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", backends: GPU, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "refloor", description: "Per-pixel DDA: ask the storage for the largest empty cube, step out of it, re-floor (gpu-dda's walk).", backends: BOTH, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", backends: BOTH, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", backends: GPU, provides: &[], uses: &["s_dist"] },
     ComponentInfo { slot: Slot::Visibility, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: GPU, provides: &[], uses: &["s_row"] },
     // Shading.
-    ComponentInfo { slot: Slot::Shading, name: "direct", description: "The reference lighting model: texel (unlit); ambient, sun and point lights with shadow rays through the same walk (lit).", backends: GPU, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Shading, name: "direct", description: "The reference lighting model: texel (unlit); ambient, sun and point lights with shadow rays through the same walk (lit).", backends: BOTH, provides: &[], uses: &[] },
 ];
 
 /// A renderer as an assembly of components (missing fields take the defaults).
@@ -190,13 +195,17 @@ mod tests {
             };
             assert!(ok, "{} `{}`", c.slot.name(), c.name);
         }
-        for s in components(Slot::Storage) {
-            for v in components(Slot::Visibility) {
-                let comp = Composition { storage: s.name.into(), visibility: v.name.into(), ..Default::default() };
-                assert!(comp.validate().is_ok(), "{comp:?}");
+        // Within a back end, every storage pairs with every visibility component.
+        for b in BACKENDS.iter().filter(|b| b.renderer.is_some()) {
+            for s in components(Slot::Storage).filter(|c| c.backends.contains(&b.name)) {
+                for v in components(Slot::Visibility).filter(|c| c.backends.contains(&b.name)) {
+                    let comp = Composition { backend: b.name.into(), storage: s.name.into(), visibility: v.name.into(), ..Default::default() };
+                    assert!(comp.validate().is_ok(), "{comp:?}");
+                }
             }
         }
-        assert!(Composition { backend: "cpu".into(), ..Default::default() }.validate().is_err());
+        assert!(Composition { backend: "cpu".into(), storage: "distance".into(), ..Default::default() }.validate().is_err());
+        assert!(Composition { backend: "gpu-raster".into(), ..Default::default() }.validate().is_err());
         assert!(Composition { storage: "nope".into(), ..Default::default() }.validate().is_err());
         assert!(fallback_note(&Composition { storage: "bricks".into(), visibility: "sphere".into(), ..Default::default() }).is_some());
         assert!(fallback_note(&Composition { storage: "distance".into(), visibility: "sphere".into(), ..Default::default() }).is_none());

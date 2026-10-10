@@ -11,11 +11,17 @@
 //!   (`fallbacks.wgsl`), so every storage works with every visibility component.
 //! * side data: `aux_words` u32 per pool slot in the `aux` buffer, built per dense chunk.
 
+pub mod bits;
 pub mod bricks;
+pub mod cpu;
+#[cfg(test)]
+mod cpu_tests;
 pub mod distance;
 pub mod hier;
+pub mod palette;
 pub mod prefix;
 pub mod rows;
+pub mod u8;
 
 use mr_core::DenseChunk;
 
