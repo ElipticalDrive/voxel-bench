@@ -1701,22 +1701,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-clipmap"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "pollster",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "gpu-compute"
 version = "0.1.0"
 dependencies = [
@@ -2423,7 +2407,6 @@ dependencies = [
  "cpu-voxelspace",
  "crossbeam-channel",
  "gpu-beam",
- "gpu-clipmap",
  "gpu-compute",
  "gpu-dda",
  "gpu-discover",

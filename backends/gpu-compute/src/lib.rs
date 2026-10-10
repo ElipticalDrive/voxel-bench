@@ -241,7 +241,7 @@ impl GpuCompose {
         )?;
         let compute = wgpu::ShaderStages::COMPUTE;
         // Fragment too: mesh shadows walk the composed storage.
-        let layout2 = gpu_data::layout(&gpu, compute | wgpu::ShaderStages::FRAGMENT);
+        let layout2 = gpu_data::layout(&gpu, &comp.storage(), compute | wgpu::ShaderStages::FRAGMENT);
         let occ = visibility::occlusion_wgsl(&comp.storage());
         let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Some(Occlusion { wgsl: &occ, layout: &layout2 }));
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -271,7 +271,7 @@ impl GpuCompose {
             immediate_size: 0,
         });
         let pipeline = Self::pipeline(&gpu, &pipeline_layout, &comp)?;
-        let data = StorageData::new(&gpu, comp.storage(), opts.pool_mb);
+        let data = StorageData::new(&gpu, comp.storage(), gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         let camera_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
             size: size_of::<CameraUniform>() as u64,

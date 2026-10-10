@@ -19,10 +19,12 @@
 //! Host side (`Kind`, managed by `gpu_data::StorageData`): pool storages read the shared
 //! voxel pool plus `aux_words` u32 of side data per pool slot; region storages own a blob
 //! of words per region in `aux`, found through the `regions` table; the DAG storage keeps
-//! one global hash-consed node pool in `aux` with chunk roots in the `regions` table.
+//! one global hash-consed node pool in `aux` with chunk roots in the `regions` table; the
+//! clipmap keeps toroidal 3D textures (group 2 bindings 4-7) and its own `s_top`.
 
 pub mod bits;
 pub mod bricks;
+pub mod clipmap;
 pub mod cpu;
 #[cfg(test)]
 mod cpu_tests;
@@ -55,6 +57,8 @@ pub enum Kind {
     Region { shift: u32, build: fn(&dyn Fn(glam::IVec3) -> mr_core::BlockId) -> RegionBlob },
     /// `svo_dag`: one global DAG shared by all chunks (top cell = chunk).
     Dag,
+    /// `clipmap`: toroidal 3D textures around the camera (own `s_top`, bindings 4-7).
+    Clipmap,
 }
 
 /// Implementation details a GPU back end needs for a storage.
@@ -72,6 +76,7 @@ impl GpuStorage {
         let (top, aux_words) = match self.kind {
             Kind::Pool { aux_words, .. } => (include_str!("pool_top.wgsl"), aux_words),
             Kind::Region { .. } | Kind::Dag => (include_str!("region_top.wgsl"), 0),
+            Kind::Clipmap => ("", 0),
         };
         format!(
             "@group(2) @binding(0) var<storage, read> aux: array<u32>;\n\
@@ -97,6 +102,7 @@ pub fn gpu(name: &str) -> Option<GpuStorage> {
         "prefix" => pool(prefix::GPU_WGSL, &[], prefix::AUX_WORDS, prefix::build),
         "distance" => pool(distance::GPU_WGSL, &["s_dist"], distance::AUX_WORDS, distance::build),
         "rows" => pool(rows::GPU_WGSL, &["s_row"], rows::AUX_WORDS, rows::build),
+        "clipmap" => GpuStorage { wgsl: clipmap::GPU_WGSL, provides: &[], kind: Kind::Clipmap },
         "svo_dag" => GpuStorage { wgsl: svo_dag::GPU_WGSL, provides: &[], kind: Kind::Dag },
         "tree64" => GpuStorage { wgsl: tree64::GPU_WGSL, provides: &[], kind: Kind::Region { shift: 6, build: tree64::build } },
         _ => return None,

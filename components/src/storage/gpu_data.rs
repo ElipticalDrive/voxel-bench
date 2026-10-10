@@ -9,6 +9,8 @@
 //!   They need no voxel pool.
 //! * **The DAG storage** (`svo_dag`) keeps one global hash-consed node pool in `aux`
 //!   (append-only on the GPU too) and chunk roots in `regions`. No voxel pool either.
+//! * **The texture storage** (`clipmap`) writes changed chunks into toroidal 3D textures,
+//!   bound as group 2 bindings 4-7.
 
 use std::collections::{HashMap, HashSet};
 
@@ -19,6 +21,7 @@ use mr_gpu::voxels::{VoxelWorld, hash3};
 use mr_gpu::{Gpu, GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 
+use super::clipmap::Clipmap;
 use super::svo_dag::Dag;
 use super::{GpuStorage, Kind, RegionBlob};
 
@@ -30,7 +33,8 @@ const UNIFORM_BIT: u32 = 0x8000_0000;
 /// `aux4`, the same buffer as `aux` seen as 16-byte words (binding 2; region blobs are
 /// 16-byte aligned, so 4-word records load in one access) and `region_head` (binding 3,
 /// uniform: the table's mask and longest probe).
-pub fn layout(gpu: &Gpu, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayout {
+/// Texture storages add their own bindings (`clipmap`: 4-7).
+pub fn layout(gpu: &Gpu, st: &GpuStorage, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayout {
     let entry = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility,
@@ -43,7 +47,21 @@ pub fn layout(gpu: &Gpu, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayou
         ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
         count: None,
     };
-    gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("storage"), entries: &[entry(0), entry(1), entry(2), head] })
+    let mut entries = vec![entry(0), entry(1), entry(2), head];
+    if let Kind::Clipmap = st.kind {
+        entries.extend(super::clipmap::layout_entries(visibility));
+    }
+    gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("storage"), entries: &entries })
+}
+
+/// What a storage needs to know about the run.
+pub struct Limits {
+    /// Side data / own data limit (MiB); pool storages size it per pool slot.
+    pub mb: u32,
+    /// Streaming radius in chunks (sizes the clipmap).
+    pub view_radius: u32,
+    /// More than 256 block types.
+    pub wide_ids: bool,
 }
 
 struct Region {
@@ -67,15 +85,16 @@ pub struct StorageData {
     rebuilt: usize,
     overflowed: bool,
     dag: Dag,
+    clip: Option<Clipmap>,
 }
 
 impl StorageData {
-    /// `limit_mb` caps the side data (pool storages: per pool slot up to the pool limit;
-    /// region storages: all blobs).
-    pub fn new(gpu: &Gpu, st: GpuStorage, limit_mb: u32) -> Self {
+    pub fn new(gpu: &Gpu, st: GpuStorage, limits: Limits) -> Self {
+        let limit_mb = limits.mb;
         let max = match st.kind {
             Kind::Pool { aux_words, .. } => (limit_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1) * aux_words as u64 * 4,
             Kind::Region { .. } | Kind::Dag => limit_mb as u64 * 1024 * 1024,
+            Kind::Clipmap => 256,
         };
         let aux = GrowableBuffer::new(gpu, "storage aux", 1 << 16, max.max(256), wgpu::BufferUsages::STORAGE);
         let regions_buf = Self::table_buffer(gpu, 16 * 16);
@@ -96,6 +115,7 @@ impl StorageData {
             rebuilt: 0,
             overflowed: false,
             dag: Dag::default(),
+            clip: matches!(st.kind, Kind::Clipmap).then(|| Clipmap::new(gpu, limits.view_radius, limits.wide_ids)),
         }
     }
 
@@ -133,6 +153,12 @@ impl StorageData {
                 }
             }
             Kind::Dag => self.dirty.extend(changed),
+            Kind::Clipmap => {
+                let clip = self.clip.as_mut().unwrap();
+                for &pos in changed {
+                    clip.store(gpu, pos, world.chunk(pos));
+                }
+            }
         }
         Ok(())
     }
@@ -141,24 +167,24 @@ impl StorageData {
     pub fn prepare(&mut self, gpu: &Gpu, world: &VoxelWorld, layout: &wgpu::BindGroupLayout) -> &wgpu::BindGroup {
         self.rebuilt = 0;
         match self.st.kind {
-            Kind::Pool { .. } => {}
+            Kind::Pool { .. } | Kind::Clipmap => {}
             Kind::Region { shift, build } => self.rebuild(gpu, world, shift, build),
             Kind::Dag => self.rebuild_dag(gpu, world),
         }
-        if self.table_dirty && !self.needs_pool() {
+        if self.table_dirty && matches!(self.st.kind, Kind::Region { .. } | Kind::Dag) {
             self.upload_table(gpu);
         }
         if self.bind.is_none() {
-            self.bind = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("storage"),
-                layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.aux.buffer().as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: self.regions_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: self.aux.buffer().as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: self.head_buf.as_entire_binding() },
-                ],
-            }));
+            let mut entries = vec![
+                wgpu::BindGroupEntry { binding: 0, resource: self.aux.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.regions_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.aux.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.head_buf.as_entire_binding() },
+            ];
+            if let Some(clip) = &self.clip {
+                entries.extend(clip.bind_entries());
+            }
+            self.bind = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("storage"), layout, entries: &entries }));
         }
         self.bind.as_ref().unwrap()
     }
@@ -289,6 +315,7 @@ impl StorageData {
             Kind::Pool { .. } => self.aux.size(),
             Kind::Region { .. } => self.regions.values().filter_map(|r| r.words).map(|(_, n)| n as u64 * 16).sum::<u64>() + self.regions_buf.size(),
             Kind::Dag => self.dag.nodes.len() as u64 * 32 + self.regions_buf.size(),
+            Kind::Clipmap => self.clip.as_ref().map_or(0, |c| c.memory_bytes()),
         }
     }
 
@@ -303,6 +330,7 @@ impl StorageData {
                 ("dedup_ratio".into(), self.dag.dedup_ratio()),
                 ("chunks_rebuilt".into(), self.rebuilt as f64),
             ],
+            Kind::Clipmap => vec![("clipmap_evictions".into(), self.clip.as_ref().map_or(0.0, |c| c.dropped as f64))],
         }
     }
 }

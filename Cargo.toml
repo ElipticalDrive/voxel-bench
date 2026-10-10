@@ -25,7 +25,6 @@ members = [
     "renderers/gpu-voxelspace",
     "renderers/gpu-beam",
     "renderers/gpu-frag-hybrid",
-    "renderers/gpu-clipmap",
     "renderers/gpu-pathtrace",
     "components",
     "backends/gpu-compute",
@@ -58,7 +57,6 @@ gpu-splat = { path = "renderers/gpu-splat" }
 gpu-voxelspace = { path = "renderers/gpu-voxelspace" }
 gpu-beam = { path = "renderers/gpu-beam" }
 gpu-frag-hybrid = { path = "renderers/gpu-frag-hybrid" }
-gpu-clipmap = { path = "renderers/gpu-clipmap" }
 gpu-pathtrace = { path = "renderers/gpu-pathtrace" }
 mr-components = { path = "components" }
 gpu-compute = { path = "backends/gpu-compute" }

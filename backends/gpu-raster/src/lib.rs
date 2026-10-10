@@ -286,7 +286,7 @@ fn ids_view(gpu: &Gpu, w: u32, h: u32) -> wgpu::TextureView {
 }
 
 impl Layouts {
-    fn new(gpu: &Gpu, world: &VoxelWorld) -> Self {
+    fn new(gpu: &Gpu, world: &VoxelWorld, st: &storage::GpuStorage) -> Self {
         let all = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
         let buf = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
@@ -299,7 +299,7 @@ impl Layouts {
             label: Some("raster frame"),
             entries: &[buf(0, wgpu::BufferBindingType::Uniform), buf(1, ro), buf(2, ro)],
         });
-        let aux = gpu_data::layout(gpu, all);
+        let aux = gpu_data::layout(gpu, st, all);
         let images = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("visbuffer images"),
             entries: &[
@@ -425,7 +425,7 @@ impl GpuRasterBackend {
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
             },
         )?;
-        let layouts = Layouts::new(&gpu, &world);
+        let layouts = Layouts::new(&gpu, &world, &comp.storage());
         let pipelines = Pipelines::new(&gpu, &layouts, &comp)?;
         let max_bytes = (gpu.device.limits().max_storage_buffer_binding_size as u64).min(gpu.device.limits().max_buffer_size);
         // Capped below 2 GiB: GrowableBuffer rounds sizes up to powers of two, which would
@@ -448,7 +448,7 @@ impl GpuRasterBackend {
         let quad_buf = GrowableBuffer::new(&gpu, "quads", 1 << 20, quad_capacity as u64 * QUAD_BYTES, wgpu::BufferUsages::STORAGE);
         let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
-        let data = StorageData::new(&gpu, comp.storage(), opts.pool_mb);
+        let data = StorageData::new(&gpu, comp.storage(), gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         // Mesh shadows walk the composed storage too.
         let occ = visibility::occlusion_wgsl(&comp.storage());
         let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Some(Occlusion { wgsl: &occ, layout: &layouts.aux }));
