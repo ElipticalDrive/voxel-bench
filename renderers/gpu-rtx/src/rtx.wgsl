@@ -29,7 +29,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var color = unpack4x8unorm(cam.sky);
     if (s.hit) {
         let texel = surface_texel(s.block, s.face, s.local);
-        color = select(texel, shade_lit(texel, o + d * s.t, face_normal(s.face)), cam.mode == 1u);
+        // A branch, not `select`: select evaluates both sides, so unlit frames paid for
+        // lighting and shadow rays (unlit and lit GPU times were identical).
+        color = texel;
+        if (cam.mode == 1u) { color = shade_lit(texel, o + d * s.t, face_normal(s.face)); }
     }
     textureStore(out_tex, vec2<i32>(gid.xy), color);
 }

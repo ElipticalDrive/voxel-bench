@@ -124,7 +124,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let face = face_entered(h.axis, d[h.axis] > 0.0);
         let p = o + d * h.t;
         let texel = surface_texel(h.block, face, p - vec3<f32>(h.cell));
-        color = select(texel, shade_lit(texel, p, face_normal(face)), cam.mode == 1u);
+        // A branch, not `select`: select evaluates both sides, so unlit frames paid for
+        // lighting and shadow rays (unlit and lit GPU times were identical).
+        color = texel;
+        if (cam.mode == 1u) { color = shade_lit(texel, p, face_normal(face)); }
     }
     textureStore(out_tex, vec2<i32>(gid.xy), color);
 }

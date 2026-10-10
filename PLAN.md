@@ -49,8 +49,6 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   renders only part of the scene.
 - `gpu-svo-dag` never frees DAG nodes after edits. A full rebuild is meant to kick in at
   2× growth plus 65,536 nodes, but that path is untested.
-- `gpu-frag-dda` reported identical GPU times for lit and unlit on terrain, which is
-  suspicious; its timestamps may measure something different.
 - `gpu-splat` re-uploads every point on any change (slow loads and frames); it has no
   culling.
 - `cpu-discover` uploads the whole face list every frame, not incrementally.

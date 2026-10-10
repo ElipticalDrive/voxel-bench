@@ -31,7 +31,10 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         var local = p - vec3<f32>(h.cell);
         if (h.lod > 0u) { local = p - floor(p); }
         let texel = surface_texel(h.block, face, local);
-        color = select(texel, shade_lit(texel, p, face_normal(face)), cam.mode == 1u);
+        // A branch, not `select`: select evaluates both sides, so unlit frames paid for
+        // lighting and shadow rays (unlit and lit GPU times were identical).
+        color = texel;
+        if (cam.mode == 1u) { color = shade_lit(texel, p, face_normal(face)); }
     }
     return color;
 }
