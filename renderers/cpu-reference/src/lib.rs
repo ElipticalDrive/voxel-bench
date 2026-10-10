@@ -5,13 +5,15 @@
 //! lighting model from `mr_core::lighting` with a shadow ray per light. Correctness and
 //! clarity first; it is still multi-threaded so references don't take forever.
 
+pub mod mesh;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use glam::{DVec3, IVec3, Vec3};
 use mr_core::chunk::{CHUNK_BITS, local_of_block};
-use mr_core::lighting::{encode_srgb, point_light, srgb_to_linear, texel_coord};
+use mr_core::lighting::{encode_srgb, point_light, srgb_to_linear, srgb_to_linear_f, texel_coord};
 use mr_core::*;
 use rayon::prelude::*;
 
@@ -98,7 +100,7 @@ fn info() -> RendererInfo {
     RendererInfo {
         name: "cpu-reference".into(),
         description: "Multi-threaded f64 two-level DDA ray caster; defines the reference images".into(),
-        tags: vec!["cpu".into(), "raycast".into(), "reference".into()],
+        tags: vec!["cpu".into(), "raycast".into(), "reference".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         params: params(),
@@ -125,6 +127,7 @@ pub struct CpuReference {
     width: u32,
     height: u32,
     scene: VoxelScene,
+    meshes: mesh::Meshes,
     pool: Pool,
     pixels: Vec<u8>,
 }
@@ -141,7 +144,7 @@ impl CpuReference {
         let opts: Options = p.options()?;
         let mut scene = VoxelScene::new(&p);
         scene.shadows = opts.shadows;
-        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], scene, pool: Pool::new(opts.threads)? })
+        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], scene, meshes: Default::default(), pool: Pool::new(opts.threads)? })
     }
 }
 
@@ -362,7 +365,24 @@ impl VoxelScene {
             return texel;
         }
         let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
-        let n = face.normal().as_vec3();
+        encode_srgb(albedo * self.light_at(p, face.normal().as_vec3()) * self.env.exposure)
+    }
+
+    /// Shades a mesh surface (mesh mode): `color` is the interpolated sRGB vertex colour,
+    /// `n` the normal facing the viewer. Unlit returns the colour; lit uses the voxel
+    /// lighting model with the voxel world casting shadows.
+    pub fn shade_mesh(&self, p: DVec3, n: Vec3, color: Vec3, mode: RenderMode) -> [u8; 4] {
+        if mode == RenderMode::Unlit {
+            let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            return [q(color.x), q(color.y), q(color.z), 255];
+        }
+        let albedo = Vec3::new(srgb_to_linear_f(color.x), srgb_to_linear_f(color.y), srgb_to_linear_f(color.z));
+        encode_srgb(albedo * self.light_at(p, n) * self.env.exposure)
+    }
+
+    /// Incoming light (linear) at surface point `p` with normal `n`: ambient, sun and
+    /// point lights, each with its shadow ray through the voxel world.
+    pub fn light_at(&self, p: DVec3, n: Vec3) -> Vec3 {
         let p = p + n.as_dvec3() * 1e-4;
         let mut light = self.env.ambient;
         let max_dist = self.max_dist();
@@ -384,7 +404,7 @@ impl VoxelScene {
                 }
             }
         }
-        encode_srgb(albedo * light * self.env.exposure)
+        light
     }
 
     pub fn max_dist(&self) -> f64 {
@@ -411,9 +431,16 @@ impl Renderer for CpuReference {
         Ok(())
     }
 
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        self.meshes.apply(update);
+        Ok(())
+    }
+
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         let start = Instant::now();
         self.scene.prepare();
+        self.meshes.prepare();
+        let meshes = req.meshes.then_some(&self.meshes);
         let (w, h) = (self.width, self.height);
         let cam = req.camera;
         let o = cam.position;
@@ -424,9 +451,13 @@ impl Renderer for CpuReference {
         self.pool.install(|| pixels.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
             for x in 0..w {
                 let d = cam.ray_dir(x, y as u32, w, h).as_dvec3();
-                let px = match this.trace(o, d, max_dist) {
-                    Some(hit) => this.shade(o, d, &hit, req.mode),
-                    None => sky,
+                let hit = this.trace(o, d, max_dist);
+                // Mesh mode: the nearest mesh surface in front of the voxel hit wins.
+                let mesh_hit = meshes.and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_dist, |h| h.t)));
+                let px = match (mesh_hit, hit) {
+                    (Some(m), _) => this.shade_mesh(o + d * m.t, m.normal, m.color, req.mode),
+                    (None, Some(hit)) => this.shade(o, d, &hit, req.mode),
+                    (None, None) => sky,
                 };
                 row[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&px);
             }
@@ -435,7 +466,11 @@ impl Renderer for CpuReference {
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
-            counters: vec![("chunks".into(), self.scene.chunk_count() as f64), ("lights".into(), self.scene.light_count() as f64)],
+            counters: vec![
+                ("chunks".into(), self.scene.chunk_count() as f64),
+                ("lights".into(), self.scene.light_count() as f64),
+                ("mesh_triangles".into(), if req.meshes { self.meshes.triangle_count() as f64 } else { 0.0 }),
+            ],
         };
         sink.complete(CompletedFrame { frame_id: req.frame_id, stats, pixels: Some(&self.pixels) });
         Ok(())

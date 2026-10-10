@@ -12,6 +12,7 @@ use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::{DDA_OCCLUSION_WGSL, Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
+use mr_gpu::meshes::{GpuMeshes, MeshPass};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -24,7 +25,7 @@ fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu-raster".into(),
         description: "Greedy-meshed rasteriser (vertex pulling, multi-draw-indirect, chunk+face culling); lit mode adds ray-traced shadows in the fragment shader".into(),
-        tags: vec!["gpu".into(), "raster".into(), "hybrid".into(), "wgpu".into()],
+        tags: vec!["gpu".into(), "raster".into(), "hybrid".into(), "wgpu".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         params: params(),
@@ -114,6 +115,8 @@ pub struct GpuRaster {
     pipe_fill: wgpu::RenderPipeline,
     pipe_depth: wgpu::RenderPipeline,
     pipe_equal: wgpu::RenderPipeline,
+    /// Mesh mode: drawn into the same depth buffer.
+    mesh: GpuMeshes,
     frame_buf: wgpu::Buffer,
     quad_buf: GrowableBuffer,
     chunk_buf: wgpu::Buffer,
@@ -255,7 +258,9 @@ impl GpuRaster {
         let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
         let depth = opts.frames_in_flight.max(1);
+        let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm);
         Ok(Self {
+            mesh,
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
             depth: depth_view(&gpu, p.width, p.height),
             ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()),
@@ -392,6 +397,11 @@ impl Renderer for GpuRaster {
         Ok(())
     }
 
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        self.mesh.apply(update);
+        Ok(())
+    }
+
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         let ticket = self.ring.begin(&self.gpu, sink)?;
         let start = Instant::now();
@@ -415,6 +425,9 @@ impl Renderer for GpuRaster {
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
+        if req.meshes {
+            self.mesh.prepare(&self.gpu, c, view_proj, req.mode);
+        }
 
         // Cull chunks and face directions; build indirect draws.
         let planes = frustum_planes(view_proj);
@@ -491,6 +504,9 @@ impl Renderer for GpuRaster {
             if n > 0 {
                 pass.multi_draw_indirect(&self.indirect, 0, n);
             }
+            if req.meshes {
+                self.mesh.draw(&mut pass, MeshPass::Depth, &world_bg);
+            }
         }
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -519,6 +535,9 @@ impl Renderer for GpuRaster {
             if n > 0 {
                 pass.multi_draw_indirect(&self.indirect, 0, n);
             }
+            if req.meshes {
+                self.mesh.draw(&mut pass, if prepass { MeshPass::Equal } else { MeshPass::Fill }, &world_bg);
+            }
         }
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
@@ -528,6 +547,7 @@ impl Renderer for GpuRaster {
                 ("draws".into(), n as f64),
                 ("remeshed".into(), remeshed as f64),
                 ("mesh_ms".into(), mesh_ms),
+                ("mesh_triangles".into(), if req.meshes { self.mesh.triangles() as f64 } else { 0.0 }),
             ],
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);

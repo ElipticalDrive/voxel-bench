@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use anyhow::{Context, bail};
 use mr_core::{CompletedFrame, FrameSink, FrameStats, Waker};
 
+pub mod meshes;
 pub mod voxels;
 
 pub use wgpu;

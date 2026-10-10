@@ -124,6 +124,11 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 renderer.update(u)?;
                 *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
             }
+            HostMsg::Meshes(m) => {
+                let t = Instant::now();
+                renderer.update_meshes(m)?;
+                *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
+            }
             HostMsg::Render { req, slot } => {
                 sink.slots.insert(req.frame_id, slot.filter(|_| req.readback));
                 renderer.render(&req, &mut sink)?;

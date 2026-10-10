@@ -3,7 +3,7 @@ use std::sync::Arc;
 use glam::IVec3;
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockId, BlockRegistry, Camera, ChunkData, ChunkKey, Environment, Light, ParamSpec, ParamValue, RenderMode};
+use crate::{BlockId, BlockRegistry, Camera, ChunkData, ChunkKey, Environment, Light, MeshUpdate, ParamSpec, ParamValue, PassMode, RenderMode};
 
 /// Static description of a renderer implementation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -19,6 +19,13 @@ pub struct RendererInfo {
     /// Knobs this renderer exposes (also its accepted `options` keys).
     #[serde(default)]
     pub params: Vec<ParamSpec>,
+}
+
+impl RendererInfo {
+    /// Whether this renderer can render passes of mode `m` (meshes need the `meshes` tag).
+    pub fn supports(&self, m: PassMode) -> bool {
+        self.modes.contains(&m.lighting) && (!m.meshes || self.tags.iter().any(|t| t == "meshes"))
+    }
 }
 
 /// Everything a renderer receives at construction.
@@ -76,6 +83,9 @@ pub struct FrameRequest {
     pub frame_id: u64,
     pub camera: Camera,
     pub mode: RenderMode,
+    /// Draw meshes (mesh mode) this frame. Only sent to renderers with the `meshes` tag.
+    #[serde(default)]
+    pub meshes: bool,
     /// Whether the pixels must be delivered to the host. When false the renderer may
     /// skip any read-back entirely.
     pub readback: bool,
@@ -138,6 +148,11 @@ impl Waker {
 /// frame has completed.
 pub trait Renderer {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()>;
+    /// Mesh geometry and instances (mesh mode). Only renderers with the `meshes` tag get
+    /// these; the default ignores them.
+    fn update_meshes(&mut self, _update: MeshUpdate) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()>;
     /// Changes a `live` parameter between frames. Values arrive already clamped to the
     /// parameter's declared domain.

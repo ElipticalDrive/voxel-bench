@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use memmap2::MmapMut;
-use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, ParamValue, RendererInfo, WorldUpdate};
+use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {
@@ -28,6 +28,8 @@ pub struct ShmSpec {
 pub enum HostMsg {
     Init { renderer: String, params: InitParams, shm: ShmSpec },
     Updates(Vec<WorldUpdate>),
+    /// Mesh mode: geometry and instances, applied in order with `Updates`.
+    Meshes(MeshUpdate),
     /// `slot` is the shared-memory slot to write pixels into when `req.readback` is set.
     Render { req: FrameRequest, slot: Option<u32> },
     Resize { width: u32, height: u32, shm: ShmSpec },

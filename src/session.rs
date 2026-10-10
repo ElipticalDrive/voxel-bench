@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::bail;
 use glam::Vec3;
-use mr_core::{Camera, FrameRequest, Light, RenderMode, WorldUpdate};
+use mr_core::{Camera, FrameRequest, Light, MeshData, MeshInstance, MeshUpdate, PassMode, WorldUpdate};
 use mr_ipc::{HostMsg, WorkerMsg};
 use mr_world::scenario::{FrameEvents, resolve_edits};
 use mr_world::{Scene, World};
@@ -24,8 +24,10 @@ pub struct FrameInput {
     /// Index in the measured timeline (warm-up frames use 0).
     pub frame: u32,
     pub camera: Camera,
-    pub mode: RenderMode,
+    pub mode: PassMode,
     pub events: FrameEvents,
+    /// Mesh instances this frame (mesh mode); `None` when the pass draws no meshes.
+    pub meshes: Option<Vec<MeshInstance>>,
     /// False: advance world state only (e.g. reference passes skip unsampled frames).
     pub render: bool,
     /// False for warm-up frames.
@@ -39,7 +41,7 @@ pub trait Driver {
 /// Follows a scene's scripted camera path and events.
 pub struct ScriptedDriver {
     pub scene: Scene,
-    pub mode: RenderMode,
+    pub mode: PassMode,
     pub warmup: u32,
     pub frames: u32,
     /// Render only frames where `f % n == 0` (and the last one).
@@ -48,7 +50,7 @@ pub struct ScriptedDriver {
 }
 
 impl ScriptedDriver {
-    pub fn new(scene: Scene, mode: RenderMode, warmup: u32, frames: u32, only_every: Option<u32>) -> Self {
+    pub fn new(scene: Scene, mode: PassMode, warmup: u32, frames: u32, only_every: Option<u32>) -> Self {
         Self { scene, mode, warmup, frames, only_every, i: 0 }
     }
 }
@@ -59,7 +61,8 @@ impl Driver for ScriptedDriver {
         self.i += 1;
         if i < self.warmup {
             let camera = self.scene.camera(0);
-            return Ok(Some(FrameInput { frame: 0, camera, mode: self.mode, events: Default::default(), render: true, recorded: false }));
+            let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(0));
+            return Ok(Some(FrameInput { frame: 0, camera, mode: self.mode, events: Default::default(), meshes, render: true, recorded: false }));
         }
         let f = i - self.warmup;
         if f >= self.frames {
@@ -68,7 +71,8 @@ impl Driver for ScriptedDriver {
         let camera = self.scene.camera(f);
         let events = self.scene.events(f, &camera)?;
         let render = self.only_every.is_none_or(|n| sampled(f, n, self.frames));
-        Ok(Some(FrameInput { frame: f, camera, mode: self.mode, events, render, recorded: true }))
+        let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(f));
+        Ok(Some(FrameInput { frame: f, camera, mode: self.mode, events, meshes, render, recorded: true }))
     }
 }
 
@@ -81,7 +85,7 @@ pub struct InteractiveDriver {
     pub ui: UiHandle,
     pub scene: Scene,
     pub camera: Camera,
-    pub mode: RenderMode,
+    pub mode: PassMode,
     pub speed: f32,
     frame: u32,
     last: Instant,
@@ -89,7 +93,7 @@ pub struct InteractiveDriver {
 }
 
 impl InteractiveDriver {
-    pub fn new(ui: UiHandle, scene: Scene, mode: RenderMode) -> Self {
+    pub fn new(ui: UiHandle, scene: Scene, mode: PassMode) -> Self {
         let camera = scene.camera(0);
         Self { ui, scene, camera, mode, speed: 20.0, frame: 0, last: Instant::now(), fps_window: (Instant::now(), 0) }
     }
@@ -110,7 +114,7 @@ impl Driver for InteractiveDriver {
             inp.look = Default::default();
             self.speed *= 1.25f32.powi(std::mem::take(&mut inp.speed_steps));
             if std::mem::take(&mut inp.toggle_mode) {
-                self.mode = if self.mode == RenderMode::Unlit { RenderMode::Lit } else { RenderMode::Unlit };
+                self.mode.lighting = if self.mode.lighting == mr_core::RenderMode::Unlit { mr_core::RenderMode::Lit } else { mr_core::RenderMode::Unlit };
             }
             let f = self.camera.forward();
             let fwd = Vec3::new(f.x, 0.0, f.z).normalize_or_zero();
@@ -151,14 +155,15 @@ impl Driver for InteractiveDriver {
             )));
             self.fps_window = (Instant::now(), 0);
         }
-        Ok(Some(FrameInput { frame: self.frame, camera: self.camera, mode: self.mode, events, render: true, recorded: false }))
+        let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(self.frame));
+        Ok(Some(FrameInput { frame: self.frame, camera: self.camera, mode: self.mode, events, meshes, render: true, recorded: false }))
     }
 }
 
 struct InFlight {
     id: u64,
     frame: u32,
-    mode: RenderMode,
+    mode: PassMode,
     sent: Instant,
     recorded: bool,
 }
@@ -189,7 +194,7 @@ pub struct Outputs {
     pub save: Option<(SaveSpec, PathBuf)>,
     pub compare_every: Option<u32>,
     /// Reference images by (mode, frame).
-    pub references: HashMap<(RenderMode, u32), Arc<Vec<u8>>>,
+    pub references: HashMap<(PassMode, u32), Arc<Vec<u8>>>,
     /// When set, sampled frames are stored as references instead of compared.
     pub recording_reference: bool,
     pub frames: u32,
@@ -234,7 +239,7 @@ impl Outputs {
         }
     }
 
-    fn deliver(&mut self, lane: &mut Lane, frame: u32, mode: RenderMode, recorded: bool, px: &[u8]) -> Option<Quality> {
+    fn deliver(&mut self, lane: &mut Lane, frame: u32, mode: PassMode, recorded: bool, px: &[u8]) -> Option<Quality> {
         let (w, h) = (lane.width, lane.height);
         if let Some(ui) = &self.ui {
             // Throttle what goes to the window to ~60 Hz per lane.
@@ -341,6 +346,7 @@ pub fn run_pass(
     driver: &mut dyn Driver,
     world: &mut World,
     lights: &[Light],
+    meshes: &[Arc<MeshData>],
     run: &RunSpec,
     out: &mut Outputs,
 ) -> anyhow::Result<()> {
@@ -350,7 +356,10 @@ pub fn run_pass(
     let mut pace_start: Option<Instant> = None;
     let mut measure_start: Option<Instant> = None;
     let mut missed = 0u32;
+    let mut sent_instances: Option<Vec<MeshInstance>> = None;
     while let Some(input) = driver.next()? {
+        // Mesh mode: geometry once, instances whenever they change.
+        let instances = input.meshes.filter(|i| sent_instances.as_ref() != Some(i));
         let edits = resolve_edits(world, input.events.edits);
         let changed = world.apply_edits(&edits);
         for lane in lanes.iter_mut() {
@@ -366,6 +375,12 @@ pub fn run_pass(
             if let Some(env) = input.events.environment {
                 ups.push(WorldUpdate::SetEnvironment(env));
             }
+            if first && !meshes.is_empty() {
+                lane.worker.send(HostMsg::Meshes(MeshUpdate::Meshes(meshes.to_vec())))?;
+            }
+            if let Some(i) = &instances {
+                lane.worker.send(HostMsg::Meshes(MeshUpdate::Instances(i.clone())))?;
+            }
             if first {
                 let t = Instant::now();
                 send_updates(&lane.worker, ups)?;
@@ -376,6 +391,9 @@ pub fn run_pass(
             }
         }
         first = false;
+        if instances.is_some() {
+            sent_instances = instances;
+        }
         if !input.render {
             continue;
         }
@@ -407,7 +425,7 @@ pub fn run_pass(
             let slot = if readback { lane.worker.take_slot() } else { None };
             let id = lane.next_id;
             lane.next_id += 1;
-            let req = FrameRequest { frame_id: id, camera: input.camera, mode: input.mode, readback: slot.is_some() };
+            let req = FrameRequest { frame_id: id, camera: input.camera, mode: input.mode.lighting, meshes: input.mode.meshes, readback: slot.is_some() };
             lane.in_flight.push_back(InFlight { id, frame: input.frame, mode: input.mode, sent: Instant::now(), recorded: input.recorded });
             lane.worker.send(HostMsg::Render { req, slot })?;
         }

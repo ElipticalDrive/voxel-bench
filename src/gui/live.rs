@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use glam::{DVec3, Vec3};
 use mr_core::renderer::BlockEdit;
-use mr_core::{BlockId, BlockRegistry, Camera, Environment, FrameRequest, Light, ParamSpec, ParamValue, RenderMode, RendererInfo, WorldUpdate};
+use mr_core::{BlockId, BlockRegistry, Camera, Environment, FrameRequest, Light, MeshData, MeshInstance, MeshUpdate, ParamSpec, ParamValue, PassMode, RendererInfo, WorldUpdate};
 use mr_ipc::{HostMsg, WorkerMsg};
 use mr_world::scenario::resolve_edits;
 use mr_world::textures::default_registry;
@@ -45,7 +45,7 @@ pub enum CameraControl {
 #[derive(Clone, Copy, Debug)]
 pub struct Control {
     pub camera: CameraControl,
-    pub mode: RenderMode,
+    pub mode: PassMode,
     pub scene_frame: u32,
     pub events: bool,
     /// Per-lane frame-rate cap; 0 = uncapped.
@@ -177,7 +177,7 @@ pub struct CompareLane {
 
 pub struct CompareResult {
     pub seq: u64,
-    pub mode: RenderMode,
+    pub mode: PassMode,
     pub camera: Camera,
     pub width: u32,
     pub height: u32,
@@ -280,6 +280,8 @@ struct Runner {
     spawning: Option<Spawn>,
     streamer: Streamer,
     pending: Vec<WorldUpdate>,
+    /// Mesh mode: geometry and instance updates not yet sent.
+    pending_meshes: Vec<MeshUpdate>,
     pending_params: Vec<(String, ParamValue)>,
     in_flight: VecDeque<Flight>,
     next_id: u64,
@@ -287,7 +289,7 @@ struct Runner {
 }
 
 impl Runner {
-    fn submit(&mut self, camera: Camera, mode: RenderMode, readback: bool, purpose: Purpose) -> anyhow::Result<bool> {
+    fn submit(&mut self, camera: Camera, mode: PassMode, readback: bool, purpose: Purpose) -> anyhow::Result<bool> {
         let Some(w) = self.worker.as_mut() else { return Ok(false) };
         let slot = if readback {
             match w.take_slot() {
@@ -303,12 +305,15 @@ impl Runner {
             let rest = if ups.len() > 256 { ups.split_off(256) } else { vec![] };
             w.send(HostMsg::Updates(std::mem::replace(&mut ups, rest)))?;
         }
+        for m in std::mem::take(&mut self.pending_meshes) {
+            w.send(HostMsg::Meshes(m))?;
+        }
         if !self.pending_params.is_empty() {
             w.send(HostMsg::SetParams(std::mem::take(&mut self.pending_params)))?;
         }
         let id = self.next_id;
         self.next_id += 1;
-        w.send(HostMsg::Render { req: FrameRequest { frame_id: id, camera, mode, readback: slot.is_some() }, slot })?;
+        w.send(HostMsg::Render { req: FrameRequest { frame_id: id, camera, mode: mode.lighting, meshes: mode.meshes, readback: slot.is_some() }, slot })?;
         self.in_flight.push_back(Flight { id, sent: Instant::now(), purpose });
         Ok(true)
     }
@@ -333,7 +338,7 @@ struct Lane {
 struct Probe {
     id: u64,
     camera: Camera,
-    mode: RenderMode,
+    mode: PassMode,
     keep_images: bool,
     started: bool,
     reference: Option<Arc<Vec<u8>>>,
@@ -348,6 +353,9 @@ struct Session {
     scene: Scene,
     env: Environment,
     lights: HashMap<u32, Light>,
+    /// Mesh mode: the scene's mesh geometry and the instances last sent.
+    mesh_data: Vec<Arc<MeshData>>,
+    instances: Vec<MeshInstance>,
     lanes: Vec<Lane>,
     reference: Option<Lane>,
     shared: Arc<Mutex<Shared>>,
@@ -385,12 +393,16 @@ impl Session {
         let scene = Scene::new(plan.scene.clone(), blocks.clone(), &mut world, plan.run.frames)?;
         let lights = scene.initial_lights().iter().map(|l| (l.id, *l)).collect();
         let env = scene.environment;
+        let mesh_data = scene.mesh_data();
+        let instances = scene.mesh_instances(0);
         let mut s = Session {
             blocks,
             world,
             scene,
             env,
             lights,
+            mesh_data,
+            instances,
             lanes: vec![],
             reference: None,
             shared,
@@ -437,6 +449,11 @@ impl Session {
             worker: None,
             streamer: Streamer::new(radius, 0, budget(&self.plan)),
             pending: vec![WorldUpdate::LightUpsert(self.lights.values().copied().collect()), WorldUpdate::SetEnvironment(self.env)],
+            pending_meshes: if self.mesh_data.is_empty() {
+                vec![]
+            } else {
+                vec![MeshUpdate::Meshes(self.mesh_data.clone()), MeshUpdate::Instances(self.instances.clone())]
+            },
             pending_params: vec![],
             in_flight: VecDeque::new(),
             next_id: 0,
@@ -688,7 +705,7 @@ impl Session {
         self.probe = Some(Probe {
             id: self.probe_seq,
             camera: Camera::default(),
-            mode: RenderMode::Unlit,
+            mode: PassMode::UNLIT,
             keep_images,
             started: false,
             reference: None,
@@ -727,6 +744,18 @@ impl Session {
             }
             self.applied_frame = Some(ctl.scene_frame);
             self.apply_edits(edits);
+            if !self.mesh_data.is_empty() {
+                let inst = self.scene.mesh_instances(ctl.scene_frame);
+                if inst != self.instances {
+                    self.instances = inst.clone();
+                    for l in self.lanes.iter_mut().chain(self.reference.as_mut()) {
+                        l.run.pending_meshes.push(MeshUpdate::Instances(inst.clone()));
+                        if let Some(s) = &mut l.standby {
+                            s.pending_meshes.push(MeshUpdate::Instances(inst.clone()));
+                        }
+                    }
+                }
+            }
             if let Some(ls) = lights {
                 for l in &ls {
                     self.lights.insert(l.id, *l);
@@ -901,7 +930,7 @@ impl Session {
     }
 
     /// Streams to standbys, warms them with unseen frames, and swaps them in when ready.
-    fn progress_swaps(&mut self, cam: Camera, mode: RenderMode, failures: &mut Vec<(usize, anyhow::Error)>) -> bool {
+    fn progress_swaps(&mut self, cam: Camera, mode: PassMode, failures: &mut Vec<(usize, anyhow::Error)>) -> bool {
         let mut busy = false;
         for i in 0..self.lanes.len() {
             let lane = &mut self.lanes[i];
@@ -989,7 +1018,7 @@ impl Session {
         }
     }
 
-    fn start_probe(&mut self, cam: Camera, mode: RenderMode, failures: &mut Vec<(usize, anyhow::Error)>) {
+    fn start_probe(&mut self, cam: Camera, mode: PassMode, failures: &mut Vec<(usize, anyhow::Error)>) {
         if self.reference.is_none() {
             let name = self.plan.output.compare.as_ref().map(|c| c.reference.clone()).unwrap_or_else(|| "cpu-reference".into());
             let options = self.plan.output.compare.as_ref().map(|c| c.reference_options.clone()).unwrap_or_default();
@@ -1325,14 +1354,14 @@ mod tests {
             &[],
         )
         .unwrap();
-        let control = Control { camera: CameraControl::Path, mode: RenderMode::Unlit, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.0 };
+        let control = Control { camera: CameraControl::Path, mode: PassMode::UNLIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.0 };
         let live = LiveHandle::start(plan.clone(), control, || {});
         wait(&live.shared, "frames from all lanes", 60, |s| s.lanes.len() == 3 && s.lanes.iter().all(|l| l.frame.is_some() && l.samples.len() > 20));
         assert!(live.shared.lock().unwrap().lanes[0].params.iter().any(|(p, _)| p.name == "max_steps"));
 
         let cam = live.shared.lock().unwrap().camera.unwrap();
         live.control.lock().unwrap().camera = CameraControl::Free(Camera { position: cam.position + DVec3::new(0.0, 2.0, 0.0), ..cam });
-        live.control.lock().unwrap().mode = RenderMode::Lit;
+        live.control.lock().unwrap().mode = PassMode::LIT;
 
         live.send(Cmd::Edit { origin: DVec3::new(20.5, 6.0, 0.5), dir: Vec3::NEG_Y, place: None });
         live.send(Cmd::AddLight { position: DVec3::new(20.0, 4.0, 2.0), color: Vec3::ONE, intensity: 30.0, radius: 20.0 });
@@ -1385,6 +1414,32 @@ mod tests {
         wait(&live.shared, "remove", 10, |s| s.lanes.len() == 2);
         drop(live);
     }
+
+    /// Mesh mode through a live session (needs a GPU; run with `--ignored`): the probe's
+    /// reference draws the meshes, so a mesh-capable lane matches it closely and a lane
+    /// without mesh support does not.
+    #[test]
+    #[ignore]
+    fn live_meshes_end_to_end() {
+        let plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/meshes.toml")), &[
+            "run.isolation=\"thread\"".into(),
+            "renderer=[{name=\"gpu-raster\"},{name=\"gpu-dda\"}]".into(),
+            "run.resolution=[480,270]".into(),
+        ])
+        .unwrap();
+        let mode = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
+        let control = Control { camera: CameraControl::Path, mode, scene_frame: 50, events: true, fps_cap: 0.0, display_hz: 30.0, probe_interval: 0.3 };
+        let live = LiveHandle::start(plan, control, || {});
+        wait(&live.shared, "probes on both lanes", 120, |s| s.lanes.len() == 2 && s.lanes.iter().all(|l| !l.quality.is_empty()));
+        let (with, without) = {
+            let sh = live.shared.lock().unwrap();
+            (sh.lanes[0].quality.back().unwrap().psnr, sh.lanes[1].quality.back().unwrap().psnr)
+        };
+        println!("mesh mode probe: gpu-raster {with:.1} dB, gpu-dda (no meshes) {without:.1} dB");
+        assert!(with > 45.0, "gpu-raster with meshes vs reference: {with:.1} dB");
+        assert!(with > without + 5.0, "meshes should matter: gpu-raster {with:.1} dB, gpu-dda (no meshes) {without:.1} dB");
+        drop(live);
+    }
 }
 
 #[cfg(test)]
@@ -1402,7 +1457,7 @@ mod demo {
             "run.resolution=[1920,1080]".into(),
         ])
         .unwrap();
-        let control = Control { camera: CameraControl::Path, mode: RenderMode::Lit, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0 };
+        let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0 };
         let live = LiveHandle::start(plan, control, || {});
         let t0 = Instant::now();
         while live.shared.lock().unwrap().lanes.first().is_none_or(|l| l.samples.len() < 50) {
@@ -1453,7 +1508,7 @@ mod scale_curve {
             "run.resolution=[1280,720]".into(),
         ])
         .unwrap();
-        let control = Control { camera: CameraControl::Path, mode: RenderMode::Lit, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0 };
+        let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0 };
         let live = LiveHandle::start(plan, control, || {});
         let wait = |f: &dyn Fn(&Shared) -> bool| {
             let t = Instant::now();

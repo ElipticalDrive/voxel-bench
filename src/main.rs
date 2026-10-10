@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use mr_core::{BlockRegistry, RenderMode};
+use mr_core::{BlockRegistry, PassMode};
 use mr_world::{Scene, World, textures::default_registry};
 use plan::{Plan, RendererSpec, Streaming};
 use report::PassReport;
@@ -172,7 +172,7 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn spawn_lanes(&self, specs: &[RendererSpec], mode: Option<RenderMode>, env: mr_core::Environment) -> (Vec<Lane>, Vec<PassReport>) {
+    fn spawn_lanes(&self, specs: &[RendererSpec], mode: Option<PassMode>, env: mr_core::Environment) -> (Vec<Lane>, Vec<PassReport>) {
         let run = &self.plan.run;
         let [w, h] = run.resolution;
         let budget = match run.streaming {
@@ -209,11 +209,12 @@ impl Ctx<'_> {
     }
 
     /// One pass: the given renderers run together through the scripted timeline.
-    fn pass(&self, specs: &[RendererSpec], mode: RenderMode, base: &World, out: &mut Outputs, only_every: Option<u32>, warmup: u32) -> anyhow::Result<Vec<PassReport>> {
+    fn pass(&self, specs: &[RendererSpec], mode: PassMode, base: &World, out: &mut Outputs, only_every: Option<u32>, warmup: u32) -> anyhow::Result<Vec<PassReport>> {
         let run = &self.plan.run;
         let mut world = base.clone();
         let scene = Scene::new(self.plan.scene.clone(), self.blocks.clone(), &mut world, run.frames)?;
         let lights = scene.initial_lights().to_vec();
+        let mesh_data = if mode.meshes { scene.mesh_data() } else { vec![] };
         let (mut lanes, mut reports) = self.spawn_lanes(specs, Some(mode), scene.environment);
         if lanes.is_empty() {
             return Ok(reports);
@@ -221,7 +222,7 @@ impl Ctx<'_> {
         let names: Vec<_> = lanes.iter().map(|l| l.report.label.clone()).collect();
         tracing::info!("pass: {} [{}]", names.join(", "), mode.name());
         let mut driver = ScriptedDriver::new(scene, mode, warmup, run.frames, only_every);
-        let result = run_pass(&mut lanes, &mut driver, &mut world, &lights, run, out);
+        let result = run_pass(&mut lanes, &mut driver, &mut world, &lights, &mesh_data, run, out);
         if let Err(e) = &result {
             tracing::error!("pass failed: {e:#}");
         }
@@ -289,7 +290,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
             .renderers
             .iter()
             .filter(|s| {
-                let ok = infos.iter().any(|i| i.name == s.name && i.modes.contains(&mode));
+                let ok = infos.iter().any(|i| i.name == s.name && i.supports(mode));
                 if !ok {
                     tracing::warn!("{} does not support {} mode; skipped", s.label(), mode.name());
                 }
@@ -332,6 +333,7 @@ fn view(plan: &Plan, ui: UiHandle) -> anyhow::Result<()> {
     let mut world = World::new(plan.scene.generator.build());
     let scene = Scene::new(plan.scene.clone(), ctx.blocks.clone(), &mut world, plan.run.frames)?;
     let lights = scene.initial_lights().to_vec();
+    let mesh_data = scene.mesh_data();
     let (mut lanes, failed) = ctx.spawn_lanes(&plan.renderers, None, scene.environment);
     for f in failed {
         tracing::error!("{}: {}", f.label, f.error.unwrap_or_default());
@@ -339,10 +341,10 @@ fn view(plan: &Plan, ui: UiHandle) -> anyhow::Result<()> {
     if lanes.is_empty() {
         bail!("no renderer started");
     }
-    let mode = plan.run.modes.first().copied().unwrap_or(RenderMode::Unlit);
+    let mode = plan.run.modes.first().copied().unwrap_or(PassMode::UNLIT);
     let mut driver = InteractiveDriver::new(ui.clone(), scene, mode);
     let mut out = Outputs::new(Some(ui), plan::Readback::Auto, None, None, u32::MAX);
-    run_pass(&mut lanes, &mut driver, &mut world, &lights, &plan.run, &mut out).context("view session")?;
+    run_pass(&mut lanes, &mut driver, &mut world, &lights, &mesh_data, &plan.run, &mut out).context("view session")?;
     for l in lanes {
         l.worker.shutdown();
     }

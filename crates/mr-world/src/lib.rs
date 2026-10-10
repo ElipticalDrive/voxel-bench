@@ -2,6 +2,7 @@
 //! store, and scripted scenes. Renderers never depend on this crate.
 
 pub mod generators;
+pub mod meshes;
 pub mod noise;
 pub mod scenario;
 pub mod textures;

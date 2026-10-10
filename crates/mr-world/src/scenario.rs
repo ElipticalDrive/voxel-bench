@@ -33,6 +33,9 @@ pub struct SceneSpec {
     pub fov_deg: f32,
     #[serde(default)]
     pub events: Vec<EventSpec>,
+    /// Mesh mode: triangle meshes placed in the world (drawn in `+meshes` passes).
+    #[serde(default)]
+    pub meshes: Vec<crate::meshes::MeshSpec>,
 }
 
 fn default_fov() -> f32 {
@@ -220,6 +223,16 @@ impl Scene {
             return Ok(BlockId::AIR);
         }
         self.blocks.find(name).with_context(|| format!("unknown block `{name}`"))
+    }
+
+    /// Mesh geometry (mesh mode), one per `meshes` entry.
+    pub fn mesh_data(&self) -> Vec<Arc<mr_core::MeshData>> {
+        crate::meshes::build_all(&self.spec.meshes)
+    }
+
+    /// Mesh instances at `frame` (empty without meshes).
+    pub fn mesh_instances(&self, frame: u32) -> Vec<mr_core::MeshInstance> {
+        crate::meshes::instances(&self.spec.meshes, frame)
     }
 
     pub fn initial_lights(&self) -> &[Light] {

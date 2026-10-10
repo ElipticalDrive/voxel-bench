@@ -1,0 +1,34 @@
+# Mesh mode (IDEAS §13): animated triangle meshes inside the voxel Cornell box. Meshes and
+# voxels occlude each other; in lit mode the voxel world shadows the meshes (meshes cast no
+# shadows yet, PLAN step 7d). Only renderers with the `meshes` tag run `+meshes` passes.
+name = "meshes"
+
+[scene]
+generator = { type = "room", size = 48 }
+camera = { type = "static", position = [24, 24, 85], target = [24, 20, 20] }
+environment = { no_sun = true, ambient = [0.03, 0.03, 0.03] }
+lights = [
+    { type = "point", position = [24, 44, 24], color = [1.0, 0.95, 0.85], intensity = 400.0, radius = 70.0 },
+    { type = "point", position = [8, 6, 40], color = [1.0, 0.4, 0.2], intensity = 60.0, radius = 30.0 },
+]
+meshes = [
+    # A torus tumbling in the middle of the room.
+    { shape = "torus", position = [30, 30, 30], scale = 7, detail = 48, animate = [{ type = "spin", axis = [1, 1, 0], period = 160 }, { type = "spin", period = 90 }] },
+    # Spheres orbiting the pillar, passing behind it.
+    { shape = "sphere", position = [14, 14, 14], scale = 3, detail = 32, count = 3, seed = 1, animate = [{ type = "orbit", center = [14.5, 0, 14.5], radius = 12, period = 200 }, { type = "bob", amplitude = 3, period = 70 }] },
+    # A cluster of bobbing, spinning boxes near the floor.
+    { shape = "box", position = [17, 9, 40], scale = 1.5, count = 12, spread = [6, 3, 4], seed = 2, animate = [{ type = "spin", axis = [0.3, 1, 0.2], period = 80 }, { type = "bob", amplitude = 1, period = 50 }] },
+]
+
+[run]
+frames = 200
+resolution = [1920, 1080]
+modes = ["unlit+meshes", "lit+meshes"]
+view_radius = 4
+
+[[renderer]]
+name = "gpu-raster"
+
+[output]
+compare = { every = 50 }
+save = { every = 100 }

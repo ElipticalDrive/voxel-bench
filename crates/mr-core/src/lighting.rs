@@ -29,6 +29,58 @@ impl RenderMode {
     }
 }
 
+/// What a benchmark pass renders: the lighting mode, and whether meshes are drawn with
+/// the voxel world (see [`crate::mesh`]). Written `unlit`, `lit`, `unlit+meshes`,
+/// `lit+meshes`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct PassMode {
+    pub lighting: RenderMode,
+    pub meshes: bool,
+}
+
+impl PassMode {
+    pub const UNLIT: Self = Self { lighting: RenderMode::Unlit, meshes: false };
+    pub const LIT: Self = Self { lighting: RenderMode::Lit, meshes: false };
+
+    pub fn name(self) -> &'static str {
+        match (self.lighting, self.meshes) {
+            (RenderMode::Unlit, false) => "unlit",
+            (RenderMode::Lit, false) => "lit",
+            (RenderMode::Unlit, true) => "unlit+meshes",
+            (RenderMode::Lit, true) => "lit+meshes",
+        }
+    }
+}
+
+impl From<RenderMode> for PassMode {
+    fn from(lighting: RenderMode) -> Self {
+        Self { lighting, meshes: false }
+    }
+}
+
+impl TryFrom<String> for PassMode {
+    type Error = String;
+    fn try_from(s: String) -> Result<Self, String> {
+        let (l, meshes) = match s.strip_suffix("+meshes") {
+            Some(l) => (l, true),
+            None => (s.as_str(), false),
+        };
+        let lighting = match l {
+            "unlit" => RenderMode::Unlit,
+            "lit" => RenderMode::Lit,
+            _ => return Err(format!("unknown mode `{s}` (unlit, lit, unlit+meshes, lit+meshes)")),
+        };
+        Ok(Self { lighting, meshes })
+    }
+}
+
+impl From<PassMode> for String {
+    fn from(m: PassMode) -> String {
+        m.name().to_string()
+    }
+}
+
 /// A point light. It occupies no volume and is never visible itself.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Light {
@@ -104,7 +156,12 @@ pub fn texel_coord(u: f32) -> usize {
 
 #[inline]
 pub fn srgb_to_linear(c: u8) -> f32 {
-    let c = c as f32 / 255.0;
+    srgb_to_linear_f(c as f32 / 255.0)
+}
+
+/// sRGB (0..1, continuous) to linear: for interpolated mesh vertex colours.
+#[inline]
+pub fn srgb_to_linear_f(c: f32) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 

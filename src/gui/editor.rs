@@ -1,7 +1,7 @@
 //! Structured editor for run plans.
 
 use egui::{ComboBox, DragValue, Ui};
-use mr_core::{Camera, RenderMode, RendererInfo};
+use mr_core::{Camera, PassMode, RendererInfo};
 use mr_world::GenSpec;
 use mr_world::scenario::{CameraPathSpec, EnvSpec, EventSpec, LightSpec};
 
@@ -606,9 +606,14 @@ fn run(ui: &mut Ui, plan: &mut Plan) -> Changed {
     c |= num(ui, "warm-up frames", &mut r.warmup, 1.0, "Frames rendered before measuring (shader compilation, caches)");
     ui.horizontal(|ui| {
         ui.label("modes").on_hover_text("Render modes benchmarked; each is a separate pass");
-        for m in [RenderMode::Unlit, RenderMode::Lit] {
+        for m in [PassMode::UNLIT, PassMode::LIT, PassMode { lighting: mr_core::RenderMode::Unlit, meshes: true }, PassMode { lighting: mr_core::RenderMode::Lit, meshes: true }] {
             let mut on = r.modes.contains(&m);
-            if ui.checkbox(&mut on, m.name()).on_hover_text(if m == RenderMode::Lit { "Sun, sky, point lights and shadows" } else { "Textures only" }).changed() {
+            if ui.checkbox(&mut on, m.name()).on_hover_text(match (m.lighting, m.meshes) {
+                (mr_core::RenderMode::Lit, false) => "Sun, sky, point lights and shadows",
+                (mr_core::RenderMode::Unlit, false) => "Textures only",
+                (mr_core::RenderMode::Lit, true) => "Lit, with the scene's meshes (renderers with the `meshes` tag)",
+                (mr_core::RenderMode::Unlit, true) => "Unlit, with the scene's meshes (renderers with the `meshes` tag)",
+            }).changed() {
                 r.modes.retain(|x| *x != m);
                 if on {
                     r.modes.push(m);

@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use mr_core::{MemoryReport, RenderMode};
+use mr_core::{MemoryReport, PassMode};
 use serde::Serialize;
 
 use crate::compare::Quality;
@@ -61,7 +61,7 @@ pub struct QualitySummary {
 pub struct PassReport {
     pub label: String,
     pub renderer: String,
-    pub mode: Option<RenderMode>,
+    pub mode: Option<PassMode>,
     pub tags: Vec<String>,
     pub resolution: [u32; 2],
     pub init_ms: f32,
@@ -153,7 +153,7 @@ pub fn repeat_table(reports: &[PassReport]) -> Option<String> {
     if reports.iter().all(|r| r.repeat == 0) {
         return None;
     }
-    let mut keys: Vec<(String, Option<RenderMode>)> = vec![];
+    let mut keys: Vec<(String, Option<PassMode>)> = vec![];
     for r in reports.iter().filter(|r| r.error.is_none() && !r.label.ends_with("(ref)")) {
         if !keys.contains(&(r.label.clone(), r.mode)) {
             keys.push((r.label.clone(), r.mode));

@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use anyhow::{Context, bail};
-use mr_core::RenderMode;
+use mr_core::PassMode;
 use mr_world::SceneSpec;
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +35,7 @@ pub struct RunSpec {
     /// Unmeasured frames rendered first at the frame-0 camera.
     pub warmup: u32,
     pub resolution: [u32; 2],
-    pub modes: Vec<RenderMode>,
+    pub modes: Vec<PassMode>,
     /// Chunks streamed around the camera (Chebyshev radius, per LOD level).
     pub view_radius: u32,
     /// Highest LOD level streamed (capped by each renderer's own maximum).
@@ -63,7 +63,7 @@ impl Default for RunSpec {
             frames: 300,
             warmup: 10,
             resolution: [1280, 720],
-            modes: vec![RenderMode::Unlit],
+            modes: vec![PassMode::UNLIT],
             view_radius: 12,
             max_lod: 0,
             in_flight: 2,
@@ -261,7 +261,7 @@ mod tests {
         "#;
         let p = Plan::parse(text, &["run.frames=5".into(), "run.modes=[\"lit\"]".into(), "output.window=true".into()]).unwrap();
         assert_eq!(p.run.frames, 5);
-        assert_eq!(p.run.modes, vec![RenderMode::Lit]);
+        assert_eq!(p.run.modes, vec![PassMode::LIT]);
         assert_eq!(p.run.pacing, Pacing::Fps { fps: 60.0 });
         assert_eq!(p.run.streaming, Streaming::Budget { budget: 16 });
         assert!(p.output.window);

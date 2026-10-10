@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use egui::{Color32, Key, PointerButton, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use glam::Vec3;
-use mr_core::{BlockId, Camera, RenderMode, RendererInfo};
+use mr_core::{BlockId, Camera, PassMode, RendererInfo};
 use mr_world::textures::default_registry;
 
 use crate::plan::Plan;
@@ -92,7 +92,7 @@ struct App {
     live: Option<LiveHandle>,
     follow_path: bool,
     cam: Camera,
-    mode: RenderMode,
+    mode: PassMode,
     scene_frame: f64,
     playing: bool,
     events_on: bool,
@@ -163,7 +163,7 @@ impl App {
             live: None,
             follow_path: true,
             cam: Camera::default(),
-            mode: RenderMode::Unlit,
+            mode: PassMode::UNLIT,
             scene_frame: 0.0,
             playing: true,
             events_on: true,
@@ -203,7 +203,7 @@ impl App {
     fn load(&mut self, p: &Path) {
         match Plan::load(p, &[]) {
             Ok(plan) => {
-                self.mode = plan.run.modes.first().copied().unwrap_or(RenderMode::Unlit);
+                self.mode = plan.run.modes.first().copied().unwrap_or(PassMode::UNLIT);
                 self.plan = plan;
                 self.option_text = option_texts(&self.plan);
                 self.plan_path = Some(p.to_path_buf());
@@ -318,7 +318,8 @@ impl App {
                     }
                 }
                 Key::F5 => self.start_live(ctx),
-                Key::L => self.mode = if self.mode == RenderMode::Unlit { RenderMode::Lit } else { RenderMode::Unlit },
+                Key::L => self.mode.lighting = if self.mode.lighting == mr_core::RenderMode::Unlit { mr_core::RenderMode::Lit } else { mr_core::RenderMode::Unlit },
+                Key::N => self.mode.meshes = !self.mode.meshes,
                 Key::F => {
                     if self.follow_path {
                         self.go_free();
@@ -463,8 +464,12 @@ impl App {
             ui.weak(&self.message);
         });
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut self.mode, RenderMode::Unlit, "Unlit").on_hover_text("Textures only: the categorical reference has no lighting (L toggles)");
-            ui.selectable_value(&mut self.mode, RenderMode::Lit, "Lit").on_hover_text("Sun, sky and point lights with shadows (L toggles)");
+            // Two latching toggles (IDEAS §13): lighting and meshes are independent.
+            let mut lit = self.mode.lighting == mr_core::RenderMode::Lit;
+            if ui.toggle_value(&mut lit, "💡 Lit").on_hover_text("Sun, sky and point lights with shadows; off = textures only (L toggles)").changed() {
+                self.mode.lighting = if lit { mr_core::RenderMode::Lit } else { mr_core::RenderMode::Unlit };
+            }
+            ui.toggle_value(&mut self.mode.meshes, "🔺 Meshes").on_hover_text("Draw the scene's triangle meshes with the voxel world (renderers with the `meshes` tag; others show voxels only). N toggles");
             ui.separator();
             if ui.checkbox(&mut self.follow_path, "follow path (F)").on_hover_text("Camera follows the plan's scripted path. Any movement key switches to free fly.").changed() && !self.follow_path {
                 self.follow_path = true;
@@ -628,13 +633,15 @@ impl App {
         };
 
         // Snapshot lane state.
-        let lanes: Vec<(String, LaneStatus, Option<live::LiveFrame>, f64, Option<f64>)> = {
+        let lanes: Vec<(String, LaneStatus, Option<live::LiveFrame>, f64, Option<f64>, bool)> = {
             let sh = live.shared.lock().unwrap();
             sh.lanes
                 .iter()
                 .map(|l| {
                     let (fps, gpu) = recent(&l.samples, 1.0);
-                    (l.spec.label().to_string(), l.status.clone(), l.frame.clone(), fps, gpu)
+                    // Lanes whose renderer can't draw meshes say so while mesh mode is on.
+                    let no_meshes = self.mode.meshes && !self.infos.iter().any(|i| i.name == l.spec.name && i.tags.iter().any(|t| t == "meshes"));
+                    (l.spec.label().to_string(), l.status.clone(), l.frame.clone(), fps, gpu, no_meshes)
                 })
                 .collect()
         };
@@ -652,7 +659,7 @@ impl App {
         let ppp = ui.ctx().pixels_per_point();
         let snap = |p: Pos2| Pos2::new((p.x * ppp).round() / ppp, (p.y * ppp).round() / ppp);
         for (k, &i) in visible.iter().enumerate() {
-            let (label, status, frame, fps, gpu) = &lanes[i];
+            let (label, status, frame, fps, gpu, no_meshes) = &lanes[i];
             let mut t = Rect::from_min_size(rect.min + Vec2::new((k % cols) as f32 * tile.x, (k / cols) as f32 * tile.y), tile);
             if visible.len() > 1 {
                 t = t.shrink(2.0);
@@ -699,6 +706,9 @@ impl App {
             let mut text = format!("{} {}  {:.0} fps", i + 1, label, fps);
             if let Some(g) = gpu {
                 text += &format!("  gpu {g:.2} ms");
+            }
+            if *no_meshes {
+                text += "  (no meshes)";
             }
             match status {
                 LaneStatus::Starting => text += "  — starting…",
@@ -1387,6 +1397,7 @@ fn help(ui: &mut egui::Ui) {
             ("Right-drag / Left-drag / arrows", "look (left-drag only outside edit mode)"),
             ("Mouse wheel", "fly speed"),
             ("L", "toggle lit / unlit"),
+            ("N", "toggle meshes (mesh mode)"),
             ("F", "follow the plan's camera path ↔ free fly"),
             ("P", "play / pause the scene clock (path + scripted events)"),
             ("[ / ]", "scrub scene clock −/+10 frames (Shift: 100)"),
@@ -1488,7 +1499,7 @@ mod tests {
             }
         }
         assert!(!app.follow_path, "W should switch to free fly");
-        assert_eq!(app.mode, RenderMode::Lit);
+        assert_eq!(app.mode, PassMode::LIT);
         let start = std::time::Instant::now();
         while app.live.as_ref().unwrap().shared.lock().unwrap().compare.is_none() {
             assert!(start.elapsed().as_secs() < 60, "compare never finished");
