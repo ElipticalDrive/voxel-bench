@@ -26,7 +26,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 ## How to verify and measure
 
 - Builds, zero warnings: `cargo build` and `cargo build --release`.
-- Unit tests: `cargo test -q --workspace` (39).
+- Unit tests: `cargo test -q --workspace` (40).
 - GPU end-to-end tests: `cargo test -q --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve` (3, including mesh mode).
 - One renderer against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{name="gpu-dda"}]' -s output.dir=\"target/check\"`
@@ -285,6 +285,33 @@ earlier if meshes become more urgent; 7c depends on 6′.
   20 GPU combinations render like the originals.
 - **Next phases:** 2 CPU back end, 3 GPU-raster back end, 4 the remaining unique pieces,
   5 remove the legacy section.
+
+### 2026-10-10: component refactor, phase 2
+- **`backends/cpu`:** renderer `cpu`, one monomorphised instance per storage. Pieces
+  moved into `components/`:
+  - storage: `storage/cpu.rs` (the CPU storage interface and chunk grid) and
+    `storage/*/cpu.rs`;
+  - visibility: `visibility/{refloor,incremental}/cpu.rs`;
+  - shading: `shading/direct/cpu.rs`.
+- **Retired:** cpu-simd-u16/u8/bits/hier/prefix/palette, now cpu compositions.
+  Knobs: `visibility` plus `exact` replace `traversal`.
+- **Results:** all 12 CPU combinations match the reference (63.0 dB terrain) at the
+  earlier speeds.
+- **Plans:** gpu-dda, gpu-sdf and gpu-compose entries replaced by exact compositions
+  (gpu-dda-lod stays until LOD is a component); a test loads every shipped plan.
+
+### Notes from the user (2026-10-10)
+- **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp
+  with numeric values (steps, rays, overdraw, …), so a view shows how much work is done
+  where, not only where relatively. Applies to gpu-compose `steps`, gpu-discover
+  `tiles` / `rays` / `overdraw`, cpu-cluster views, and future ones.
+- **Lit / unlit and meshes may become components,** but without forcing each affected
+  component to implement four variants. Likely design: lighting and meshes as stages
+  around the visibility walk (meshes: composite before / cap the walk, as
+  `MeshComposite` already does; lighting: the shading component takes the mode),
+  so storages and walks stay unaware of them.
+- **A sweep option in plans** (e.g. `compose = { storage = "*", visibility = "*" }`)
+  expanding to every valid combination, for overnight benchmarks of the whole space.
 
 ## Future additions (backlog by category)
 

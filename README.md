@@ -75,9 +75,16 @@ compose = { backend = "gpu-compute", storage = "prefix", visibility = "increment
 - *Mismatched pairings:* within a back end every storage works with every visibility
   component. A fast path the storage lacks (e.g. `sphere` without `distance`) uses a
   generic fallback: correct, but slower, and noted in the GUI.
-- *Today:* the `gpu-compute` back end, with 5 storages, 4 visibility components and 1
-  shading component. CPU, GPU-raster and hardware-RT back ends follow. Renderers not yet
-  split into components remain available as "legacy".
+- *Today:* two back ends.
+  - `gpu-compute`: storages bricks, hier, prefix, distance, rows; visibility refloor,
+    incremental, sphere, rowrun;
+  - `cpu`: storages bricks, hier, prefix, u8, bits, palette; visibility refloor,
+    incremental;
+  - both: shading `direct`.
+
+  GPU-raster and hardware-RT back ends follow. Renderers not yet split into components
+  remain available as "legacy". The former cpu-simd-u16/u8/bits/hier/prefix/palette
+  renderers are now `cpu` compositions.
 
 ### Mesh mode
 

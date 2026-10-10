@@ -991,7 +991,13 @@ may survive only as legacy entries while porting continues. Phases:
    - `backends/gpu-compute`;
    - `compose = { … }` in plans and `-r backend:storage+visibility` on the CLI;
    - the GUI chooser with disabled options and reasons.
-2. The CPU back end (the same components on the CPU).
+2. The CPU back end (the same components on the CPU). **Done:**
+   - `backends/cpu` (was cpu-simd-mem);
+   - CPU implementations in `storage/*/cpu.rs` (bricks, hier, prefix, and CPU-only u8,
+     bits, palette), `visibility/{refloor,incremental}/cpu.rs` and
+     `shading/direct/cpu.rs`;
+   - the six cpu-simd-* renderers retired;
+   - all 12 CPU combinations render the reference image.
 3. The GPU-raster back end: geometry components, raster visibility, discovery, meshes.
 4. Port the remaining unique pieces: tree64, SVO-DAG, clipmap, beam, path tracing, LOD,
    hardware RT as a back end, splats, voxelspace.
