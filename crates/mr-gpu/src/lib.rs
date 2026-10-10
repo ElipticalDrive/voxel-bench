@@ -37,37 +37,7 @@ pub struct GpuRequest<'a> {
 
 impl Gpu {
     pub fn new(req: GpuRequest) -> anyhow::Result<Self> {
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-        if std::env::var_os("WGPU_BACKEND").is_none() {
-            desc.backends = wgpu::Backends::VULKAN;
-        }
-        // Debug object labels go through VK_EXT_debug_utils, whose loader bookkeeping is not
-        // safe with several Vulkan instances on threads of one process (thread isolation):
-        // it segfaults intermittently. Opt in explicitly when debugging a renderer.
-        desc.flags = if std::env::var_os("MR_GPU_DEBUG").is_some() { wgpu::InstanceFlags::debugging() } else { wgpu::InstanceFlags::empty() };
-        let instance = wgpu::Instance::new(desc);
-        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-        if adapters.is_empty() {
-            bail!("no GPU adapters found");
-        }
-        let names: Vec<String> = adapters.iter().map(|a| format!("{} ({:?})", a.get_info().name, a.get_info().device_type)).collect();
-        let adapter = match req.adapter {
-            Some(f) => {
-                let f = f.to_lowercase();
-                adapters.into_iter().find(|a| a.get_info().name.to_lowercase().contains(&f)).with_context(|| format!("no adapter matching `{f}` among {names:?}"))?
-            }
-            None => {
-                use wgpu::DeviceType::*;
-                let rank = |a: &wgpu::Adapter| match a.get_info().device_type {
-                    DiscreteGpu => 0,
-                    IntegratedGpu => 1,
-                    VirtualGpu => 2,
-                    Other => 3,
-                    Cpu => 4,
-                };
-                adapters.into_iter().min_by_key(rank).unwrap()
-            }
-        };
+        let adapter = pick_adapter(req.adapter)?;
         let info = adapter.get_info();
         tracing::info!("using adapter {} ({:?}, {:?}, driver {})", info.name, info.device_type, info.backend, info.driver_info);
         let available = adapter.features();
@@ -490,4 +460,47 @@ impl GrowableBuffer {
             alloc.grow(cap);
         }
     }
+}
+
+/// The adapter renderers use: the one whose name contains `filter` (case-insensitive), else
+/// the discrete GPU, else the best other one. Vulkan unless `WGPU_BACKEND` says otherwise.
+pub fn pick_adapter(filter: Option<&str>) -> anyhow::Result<wgpu::Adapter> {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        desc.backends = wgpu::Backends::VULKAN;
+    }
+    // Debug object labels go through VK_EXT_debug_utils, whose loader bookkeeping is not
+    // safe with several Vulkan instances on threads of one process (thread isolation):
+    // it segfaults intermittently. Opt in explicitly when debugging a renderer.
+    desc.flags = if std::env::var_os("MR_GPU_DEBUG").is_some() { wgpu::InstanceFlags::debugging() } else { wgpu::InstanceFlags::empty() };
+    let instance = wgpu::Instance::new(desc);
+    let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+    if adapters.is_empty() {
+        bail!("no GPU adapters found");
+    }
+    let names: Vec<String> = adapters.iter().map(|a| format!("{} ({:?})", a.get_info().name, a.get_info().device_type)).collect();
+    let adapter = match filter {
+        Some(f) => {
+            let f = f.to_lowercase();
+            adapters.into_iter().find(|a| a.get_info().name.to_lowercase().contains(&f)).with_context(|| format!("no adapter matching `{f}` among {names:?}"))?
+        }
+        None => {
+            use wgpu::DeviceType::*;
+            let rank = |a: &wgpu::Adapter| match a.get_info().device_type {
+                DiscreteGpu => 0,
+                IntegratedGpu => 1,
+                VirtualGpu => 2,
+                Other => 3,
+                Cpu => 4,
+            };
+            adapters.into_iter().min_by_key(rank).unwrap()
+        }
+    };
+    Ok(adapter)
+}
+
+/// Name, driver and backend of the adapter [`pick_adapter`] chooses (for records of which
+/// machine a measurement came from).
+pub fn adapter_info(filter: Option<&str>) -> anyhow::Result<wgpu::AdapterInfo> {
+    Ok(pick_adapter(filter)?.get_info())
 }

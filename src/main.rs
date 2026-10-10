@@ -3,7 +3,9 @@
 
 mod bayes;
 mod compare;
+mod catalogue;
 mod gui;
+mod observe;
 mod plan;
 mod report;
 mod session;
@@ -44,6 +46,22 @@ enum Cmd {
         /// Override plan values, e.g. `-s run.frames=100 -s output.window=true`.
         #[arg(short = 's', long = "set")]
         overrides: Vec<String>,
+        /// Remove plan values, e.g. `-u output.save` (no saved frames).
+        #[arg(short = 'u', long = "unset")]
+        unset: Vec<String>,
+    },
+    /// What each renderer is good at: reads the observations of any number of runs (run
+    /// directories, or directories containing them) and writes a catalogue (Markdown and
+    /// CSV) ranking the renderers per scenario and mode.
+    Catalogue {
+        paths: Vec<PathBuf>,
+        /// Where `catalogue.md` and `catalogue.csv` go (default: the first path, if a directory).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Frames below this mean PSNR against the reference count as incorrect: such a
+        /// renderer is ranked, but cannot be the best or "good at" a scenario.
+        #[arg(long, default_value_t = 35.0)]
+        min_psnr: f64,
     },
     /// Fly around a plan's scene interactively with one or more renderers side by side.
     View {
@@ -120,11 +138,26 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Cmd::Run { plan: path, overrides } => {
-            let plan = Plan::load(&path, &overrides)?;
+        Cmd::Catalogue { paths, out, min_psnr } => {
+            let files = observe::find(&paths);
+            if files.is_empty() {
+                bail!("no observations.jsonl under {paths:?}");
+            }
+            let obs = observe::read(&files)?;
+            let out = out.or_else(|| paths.first().filter(|p| p.is_dir()).cloned()).unwrap_or_else(|| PathBuf::from("."));
+            let cat = catalogue::Catalogue::build(&obs, min_psnr);
+            std::fs::create_dir_all(&out)?;
+            std::fs::write(out.join("catalogue.md"), cat.markdown())?;
+            std::fs::write(out.join("catalogue.csv"), cat.csv())?;
+            println!("{}", cat.summary());
+            println!("{} observations from {} files → {}", obs.len(), files.len(), out.join("catalogue.md").display());
+            Ok(())
+        }
+        Cmd::Run { plan: path, overrides, unset } => {
+            let plan = Plan::load_with(&path, &overrides, &unset)?;
             let run_dir = make_run_dir(&plan)?;
             let text = std::fs::read_to_string(&path)?;
-            std::fs::write(run_dir.join("plan.toml"), format!("# overrides: {overrides:?}\n{text}"))?;
+            std::fs::write(run_dir.join("plan.toml"), format!("# overrides: {overrides:?}, unset: {unset:?}\n{text}"))?;
             tracing::info!("run directory {}", run_dir.display());
             let reports = if plan.output.window {
                 let (p, d) = (plan.clone(), run_dir.clone());
@@ -139,7 +172,9 @@ fn main() -> anyhow::Result<()> {
             println!("\n{table}");
             std::fs::write(run_dir.join("summary.txt"), &table)?;
             std::fs::write(run_dir.join("report.json"), serde_json::to_string_pretty(&reports)?)?;
-            println!("report: {}", run_dir.join("report.json").display());
+            let run_name = run_dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let n = observe::write(&run_dir.join("observations.jsonl"), &reports, &plan, &run_name, &observe::Machine::detect())?;
+            println!("report: {} ({n} observations)", run_dir.join("report.json").display());
             Ok(())
         }
         Cmd::View { plan: path, renderers, overrides } => {
@@ -194,7 +229,16 @@ impl Ctx<'_> {
         let (mut lanes, mut failed) = (vec![], vec![]);
         for spec in specs {
             let label = spec.label().to_string();
-            let mut report = PassReport { label: label.clone(), renderer: spec.name.clone(), mode, resolution: [w, h], ..Default::default() };
+            let mut report = PassReport {
+                label: label.clone(),
+                renderer: spec.name.clone(),
+                composition: spec.compose.clone(),
+                options: spec.extra_options(),
+                view_radius: spec.view_radius(run),
+                mode,
+                resolution: [w, h],
+                ..Default::default()
+            };
             let mode_tag = mode.map(|m| m.name()).unwrap_or("view");
             let log = self.run_dir.map(|d| d.join("logs").join(format!("{}-{mode_tag}.log", sanitize(&label))));
             let spawn = || worker::spawn_renderer(run, spec, self.blocks.clone(), env, log, run.resolution, run.in_flight + 2);
@@ -298,18 +342,34 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
             reports.extend(ctx.pass(&[spec], mode, &base, &mut out, Some(c.every), 0)?);
             out.recording_reference = false;
         }
+        // Swept compositions run as what this mode can tell apart, once each.
+        let mut seen = std::collections::HashSet::new();
+        let mut moot = 0;
         let specs: Vec<RendererSpec> = plan
             .renderers
             .iter()
             .filter(|s| {
                 let ok = infos.iter().any(|i| i.name == s.name && s.supports(i, mode));
-                if !ok {
+                if !ok && !s.swept {
                     tracing::warn!("{} does not support {} mode; skipped", s.label(), mode.name());
                 }
                 ok
             })
-            .cloned()
+            .filter_map(|s| {
+                let Some(c) = s.compose.as_ref().filter(|_| s.swept) else { return Some(s.clone()) };
+                let mut e = s.clone();
+                e.set_compose(c.effective(mode)).ok()?;
+                if seen.insert((e.label().to_string(), toml::to_string(&e.extra_options()).unwrap_or_default())) {
+                    Some(e)
+                } else {
+                    moot += 1;
+                    None
+                }
+            })
             .collect();
+        if moot > 0 {
+            tracing::info!("{} mode: {} swept compositions run, {moot} more are the same in this mode", mode.name(), specs.iter().filter(|s| s.swept).count());
+        }
         // Repeats go round-robin (A B C A B C ...) so slow drifts in clocks and
         // temperature spread over all renderers instead of favouring whichever ran first.
         for repeat in 0..run.repeats.max(1) {

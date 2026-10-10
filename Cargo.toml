@@ -78,6 +78,7 @@ mr-components.workspace = true
 mr-world.workspace = true
 mr-ipc.workspace = true
 mr-worker.workspace = true
+mr-gpu.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 crossbeam-channel.workspace = true
@@ -96,7 +97,6 @@ egui.workspace = true
 egui_plot.workspace = true
 
 [dev-dependencies]
-mr-gpu.workspace = true
 pollster.workspace = true
 
 [profile.release]

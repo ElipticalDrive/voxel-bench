@@ -61,6 +61,12 @@ pub struct QualitySummary {
 pub struct PassReport {
     pub label: String,
     pub renderer: String,
+    /// The composition and the options beyond it (knobs), when composed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub composition: Option<mr_components::Composition>,
+    #[serde(skip_serializing_if = "toml::Table::is_empty")]
+    pub options: toml::Table,
+    pub view_radius: u32,
     pub mode: Option<PassMode>,
     pub tags: Vec<String>,
     pub resolution: [u32; 2],

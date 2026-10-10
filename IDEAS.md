@@ -1139,6 +1139,92 @@ renderer, 7b).**
 
 ---
 
+## 14. A library interface with a planner that learns this machine
+
+**Idea (user, 2026-10-10).** Over all of this, a simpler library-style interface so the
+project can be used as a renderer: the incoming scene, edits and so on are the input
+(various data structures). Something like the tuner, but with persistent memory across
+sessions about the user's machine, uses all the information it can to determine very
+cheaply a decent render plan (composition and knobs). Ideally it keeps learning, the
+whole time the user interacts with it, how best to render things on that machine. It
+replaces (or extends) the tuner. Not to be implemented yet. Sweeping every combination
+(PLAN, "plan sweep") gives it data about every combination's performance on this machine.
+
+**My notes (feedback; nothing built yet beyond the data it needs).**
+- *Precedent.* This is how FFTW's "wisdom", ATLAS, cuDNN's autotuner and Halide's
+  autoscheduler work: plans measured on this machine, persisted, reused. A database
+  query optimiser with a learned cost model is the closest analogue for picking among
+  hundreds of plans from cheap scene statistics. Learning during use is a contextual
+  bandit: the context is the scene and settings, the arms are compositions plus knobs,
+  and the reward is speed under a quality floor.
+- *Features, not scenario names.* The planner has to generalise from the sweep's
+  scenarios to the user's scene, so it needs a cheap feature vector of the scene and
+  request: resolution, view radius and loaded chunks, solid and surface fractions (how
+  open or cave-like), camera speed and turn rate, edits per frame, lights, mesh
+  triangles, lit or unlit. Observations record the scene only as its plan spec today.
+  Recording measured features beside it is the next step for the data side.
+- *Constraints first, then the objective.* Mode support, a quality floor against the
+  reference, and VRAM and RAM budgets are filters. Frame time (mean and p99), latency,
+  and later power are the objective. The catalogue already applies the quality floor.
+- *Switching costs.* A knob change is cheap and live. A composition change rebuilds data
+  structures and compiles shaders, which costs a hot swap (seconds). So the planner should
+  pick the composition rarely (at scene load, or when the context drifts far) and tune
+  knobs continuously. That suggests two levels: a learned model picks the composition, and
+  the existing Bayesian tuner tunes its knobs.
+- *Model.* Start with something small and honest about uncertainty, such as
+  per-composition regression of log frame time on the features, or nearest neighbours
+  over observations. Exploration during use must not cause visible stutter: try
+  alternatives on a hidden standby lane (the live session already warms one for hot
+  swaps), in idle time, or only when the model's uncertainty is large.
+- *Noise and drift.* Laptop boost and thermals spread runs by ±5–8% (seen in the
+  repeat tables). Driver updates change performance. Key observations by machine and
+  driver (they carry both), weight recent ones more, and re-measure the incumbent
+  occasionally.
+- *Coverage.* One night sweeps every composition at default knobs over ten scenarios.
+  The knob space is far too big to sweep, so knobs must be learned online or with
+  targeted sweeps around the best compositions.
+- *Library interface.* The `Renderer` trait plus `WorldUpdate` / `MeshUpdate` /
+  `FrameRequest` is close to the input side already. A library needs:
+  - in-process renderers (`isolation = "thread"` exists);
+  - one canonical world copy on the library side, so a composition switch can re-stream
+    the world into the new renderer (the live session does this for hot swaps);
+  - **output into the caller's surface**: today frames are read back to host memory.
+    GPU back ends would have to render into a caller-provided wgpu device and texture.
+    Each back end creates its own device today, so this is the API decision worth
+    making early.
+
+## 15. Composing across back ends (a device per stage)
+
+**Question (user, 2026-10-10).** Are renderers fully modular now? In the GUI each
+renderer is one back end with its components. The wish: choose the algorithm and the
+back end per stage, in any supported combination.
+
+**Answer.** Not yet. A composition is one back end plus one component per stage; the
+registry says which back ends implement each component, so the back end comes first.
+- *Why.* The storage↔visibility boundary is a source-level interface: WGSL functions
+  (`s_top`, `ctrace`) fused into one shader. That fusion is why the split costs nothing
+  (IDEAS §12). A walk reads its storage every step, so the two must live on the same
+  device. A device per stage only makes sense at coarse boundaries where little data
+  crosses per frame:
+  - geometry (CPU meshing) → raster (GPU): already how gpu-raster works;
+  - discovery (CPU) → raster (GPU): cpu-discover is a hand-built cross-device pipeline;
+  - visibility (GPU) → shading on another device: rarely worth it.
+- *What it takes.*
+  1. Model devices per stage: each component lists implementations per device (CPU,
+     GPU compute, GPU raster, RT) instead of per back end.
+  2. Define fused groups (storage + visibility always share a device) and data-level
+     contracts at the cut points (a hit or visibility buffer, a face list).
+  3. Add transfer stages (upload, readback, pipelining) and a small frame-graph executor
+     that runs the groups on their devices. Today's back ends become those groups'
+     executors.
+  4. Change the GUI to a device picker per stage, with conflicts greyed as now.
+- *Verdict.* An incremental refactor rather than a rewrite. The stage boundaries drawn so
+  far are the right ones, and the registry and stage grid extend naturally. The real
+  work is the data-level contracts at a few cut points and the executor. The sweep, the
+  catalogue and the observations need no change: a composition just gets more fields.
+
+---
+
 ## Suggested order
 
 The live plan, with estimates and progress, is in `PLAN.md`.

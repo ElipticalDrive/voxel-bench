@@ -350,6 +350,55 @@ compare = { reference = "cpu-reference", every = 100 }
 dir = "runs"
 ```
 
+Override any key with `-s dotted.key=value`, and remove one with `-u dotted.key` (e.g.
+`-u output.save` for no saved frames).
+
+### Sweeps, observations and the catalogue
+
+A `compose` field may be `"*"` (every component the back end has for that stage; for
+`backend`, every back end) or a list. The renderer then expands into one renderer per
+valid combination:
+
+```toml
+[[renderer]]
+compose = { backend = "*", storage = "*", geometry = "*", prepass = "*", visibility = "*", shading = "*", meshes = "*" }
+```
+
+- Stages left out keep their default. `"*"` on a stage a back end lacks is ignored, and a
+  *named* component there skips that back end (`backend = "*", storage = "palette"` runs
+  only the back ends with a `palette` storage).
+- The entry's `options` go to each combination whose back end declares them.
+- In each pass, combinations the pass mode cannot tell apart run once
+  (`Composition::effective`): shading in unlit passes (every shading component shows the
+  texel), the meshes stage without meshes, and gpu-raster's and gpu-splat's storage (only
+  their shadow rays walk it) in unlit passes. The full sweep expands to 458
+  compositions, of which 121 are distinct in unlit passes and 258 in lit ones.
+
+Every `run` writes `observations.jsonl` to its run directory: one record per renderer and
+pass, with the machine (CPU, threads, memory, GPU, driver), the scenario (the plan's name
+and scene, resolution, view radius, frames, streaming, mode), the composition and knobs,
+and the results (fps, frame-interval mean / p50 / p99, GPU / CPU ms, latency, init and
+load time, memory, PSNR mean / min, bad pixels, the renderer's counters averaged). They are
+the raw material for the catalogue, and later for a planner that learns this machine
+(IDEAS §14).
+
+`multirenderer catalogue <dirs…> [--out DIR] [--min-psnr 35]` reads any number of runs and
+writes `catalogue.md` and `catalogue.csv`. Per scenario (plan × mode) it ranks the renderers
+by fps; renderers below the PSNR floor count as incorrect (ranked, never best). Per renderer
+it lists:
+- the geometric mean of its speed relative to each scenario's best;
+- wins, and where it is within 10% of the best (*good at*);
+- where it is comparatively strong (*stands out*: at least 1.25× its own average relative
+  speed);
+- where it is weak (below 0.25), incorrect, or failed.
+
+Per back end and stage, it shows the paired effect of each component: fps against the
+best of otherwise equal compositions.
+
+`scripts/sweep.sh [plans…]` runs the full sweep over every scenario plan, one night's
+work at each plan's own length (`FRAMES=120` for shorter, faster camera paths), into
+`target/sweep/<time>/`, then writes the catalogue there.
+
 Every value can be overridden from the command line, for example
 `-s run.resolution=[3840,2160] -s 'renderer=[{compose={backend="gpu-compute",storage="prefix"}}]'`.
 

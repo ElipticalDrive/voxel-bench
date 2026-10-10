@@ -1,6 +1,14 @@
 //! Run plans: TOML files describing what to render, with what, and where results go.
 //! See `plans/` for examples. Any value can be overridden from the command line with
 //! `-s dotted.path=value` (value parsed as TOML, falling back to a string).
+//!
+//! **Sweeps:** a `compose` field may be `"*"` (every component the back end has for that
+//! stage; for `backend`, every back end) or a list; the renderer then expands into one
+//! renderer per valid combination (`RendererSpec::swept`). Stages left out keep their
+//! defaults, `"*"` on a stage a back end lacks is ignored (a named component there skips
+//! that back end), and the entry's `options` go to each
+//! combination whose back end declares them. In each pass, swept combinations that the
+//! pass mode cannot tell apart run once (`Composition::effective`).
 
 use std::path::Path;
 
@@ -127,6 +135,9 @@ pub struct RendererSpec {
     /// Overrides `run.max_lod` for this renderer (still capped by what it supports).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_lod: Option<u8>,
+    /// Expanded from a sweep (see the module docs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub swept: bool,
     /// Cache of the composition's label (derived; not part of the plan).
     #[serde(skip)]
     pub compose_label: std::sync::OnceLock<String>,
@@ -134,7 +145,7 @@ pub struct RendererSpec {
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), compose: None, label: None, options: Default::default(), view_radius: None, max_lod: None, compose_label: Default::default() }
+        Self { name: name.into(), compose: None, label: None, options: Default::default(), view_radius: None, max_lod: None, swept: false, compose_label: Default::default() }
     }
 
     /// A renderer assembled from components.
@@ -308,15 +319,37 @@ fn default_reference() -> String {
 
 impl Plan {
     pub fn load(path: &Path, overrides: &[String]) -> anyhow::Result<Self> {
+        Self::load_with(path, overrides, &[])
+    }
+
+    /// Loads with overrides (`dotted.path=value`) and removals (`dotted.path`; absent keys
+    /// are fine, so scripts can unset across plans).
+    pub fn load_with(path: &Path, overrides: &[String], unset: &[String]) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Self::parse(&text, overrides).with_context(|| format!("in plan {}", path.display()))
+        Self::parse_with(&text, overrides, unset).with_context(|| format!("in plan {}", path.display()))
     }
 
     pub fn parse(text: &str, overrides: &[String]) -> anyhow::Result<Self> {
+        Self::parse_with(text, overrides, &[])
+    }
+
+    pub fn parse_with(text: &str, overrides: &[String], unset: &[String]) -> anyhow::Result<Self> {
         let mut table: toml::Table = toml::from_str(text)?;
         for o in overrides {
             apply_override(&mut table, o)?;
         }
+        for u in unset {
+            let mut parts: Vec<&str> = u.trim().split('.').collect();
+            let last = parts.pop().unwrap_or_default();
+            let mut cur = Some(&mut table);
+            for p in parts {
+                cur = cur.and_then(|t| t.get_mut(p)).and_then(|v| v.as_table_mut());
+            }
+            if cur.and_then(|t| t.remove(last)).is_none() {
+                tracing::debug!("unset `{u}`: not in the plan");
+            }
+        }
+        expand_sweeps(&mut table)?;
         let mut plan: Plan = table.try_into()?;
         for r in &mut plan.renderers {
             r.resolve()?;
@@ -343,6 +376,97 @@ impl Plan {
         }
         Ok(toml::to_string_pretty(&p)?)
     }
+}
+
+/// How a sweep picks one `compose` field.
+enum Pick {
+    /// Not given: the back end's default.
+    Default,
+    /// `"*"`: everything available.
+    All,
+    /// A name or a list of names.
+    Some(Vec<String>),
+}
+
+impl Pick {
+    fn of(v: Option<&toml::Value>, field: &str) -> anyhow::Result<Self> {
+        Ok(match v {
+            None => Pick::Default,
+            Some(toml::Value::String(s)) if s == "*" => Pick::All,
+            Some(toml::Value::String(s)) => Pick::Some(vec![s.clone()]),
+            Some(toml::Value::Array(a)) => Pick::Some(a.iter().map(|x| x.as_str().map(String::from).with_context(|| format!("compose.{field}: list entries must be names"))).collect::<anyhow::Result<_>>()?),
+            Some(_) => bail!("compose.{field} must be a name, \"*\" or a list of names"),
+        })
+    }
+}
+
+/// Expands every swept `[[renderer]]` (a `compose` field that is `"*"` or a list) into one
+/// renderer per valid combination.
+fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
+    let Some(toml::Value::Array(entries)) = table.get_mut("renderer") else { return Ok(()) };
+    let swept = |e: &toml::Value| e.get("compose").and_then(|c| c.as_table()).is_some_and(|c| c.values().any(|v| v.is_array() || v.as_str() == Some("*")));
+    if !entries.iter().any(swept) {
+        return Ok(());
+    }
+    let infos = mr_worker::infos();
+    let mut out = vec![];
+    for e in entries.drain(..) {
+        if !swept(&e) {
+            out.push(e);
+            continue;
+        }
+        let compose = e.get("compose").and_then(|c| c.as_table()).unwrap().clone();
+        if let Some(k) = compose.keys().find(|k| *k != "backend" && !mr_components::Slot::ALL.iter().any(|s| s.name() == k.as_str())) {
+            bail!("compose: unknown field `{k}`");
+        }
+        let backends: Vec<&mr_components::BackendInfo> = match Pick::of(compose.get("backend"), "backend")? {
+            Pick::Default => vec![mr_components::backend("gpu-compute").unwrap()],
+            Pick::All => mr_components::BACKENDS.iter().filter(|b| b.renderer.is_some()).collect(),
+            Pick::Some(names) => names.iter().map(|n| mr_components::backend(n).with_context(|| format!("compose.backend: unknown back end `{n}`"))).collect::<anyhow::Result<_>>()?,
+        };
+        let before = out.len();
+        for b in backends {
+            // Named components for a stage the back end lacks: not this back end ("*" there
+            // is ignored).
+            if mr_components::Slot::ALL.iter().any(|&s| !b.has(s) && matches!(Pick::of(compose.get(s.name()), s.name()), Ok(Pick::Some(_)))) {
+                continue;
+            }
+            // Per slot, the components to combine (an empty list: the back end is skipped).
+            let mut axes: Vec<(mr_components::Slot, Vec<String>)> = vec![];
+            for &(slot, default) in b.slots {
+                let names = match Pick::of(compose.get(slot.name()), slot.name())? {
+                    Pick::Default => vec![default.to_string()],
+                    Pick::All => mr_components::names_on(b.name, slot).into_iter().map(String::from).collect(),
+                    Pick::Some(l) => l.into_iter().filter(|n| mr_components::unavailable(b.name, slot, n).is_none()).collect(),
+                };
+                axes.push((slot, names));
+            }
+            let mut combos = vec![mr_components::Composition::new(b.name)];
+            for (slot, names) in &axes {
+                combos = combos.iter().flat_map(|c| names.iter().map(move |n| {
+                    let mut c = c.clone();
+                    c.set(*slot, n);
+                    c
+                })).collect();
+            }
+            // Options the back end declares (plus `adapter`, an option of every GPU back end).
+            let known: Vec<String> = infos.iter().find(|i| Some(i.name.as_str()) == b.renderer).map(|i| i.params.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
+            let options: toml::Table = e.get("options").and_then(|o| o.as_table()).map(|t| t.iter().filter(|(k, _)| *k == "adapter" || known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+            for c in combos {
+                let mut entry = e.as_table().unwrap().clone();
+                entry.insert("compose".into(), toml::Value::try_from(&c)?);
+                entry.insert("options".into(), toml::Value::Table(options.clone()));
+                entry.insert("swept".into(), toml::Value::Boolean(true));
+                entry.remove("label");
+                out.push(toml::Value::Table(entry));
+            }
+        }
+        if out.len() == before {
+            bail!("the sweep {} matches no valid combination", toml::Value::Table(compose));
+        }
+    }
+    *entries = out;
+    Ok(())
 }
 
 fn apply_override(table: &mut toml::Table, ov: &str) -> anyhow::Result<()> {
@@ -387,6 +511,10 @@ mod tests {
         assert_eq!(p.run.pacing, Pacing::Fps { fps: 60.0 });
         assert_eq!(p.run.streaming, Streaming::Budget { budget: 16 });
         assert!(p.output.window);
+        let text = text.replace("[run]", "[output]\nsave = { every = 5 }\n[run]");
+        assert!(Plan::parse(&text, &[]).unwrap().output.save.is_some());
+        assert!(Plan::parse_with(&text, &[], &["output.save".into()]).unwrap().output.save.is_none());
+        assert!(Plan::parse_with(&text, &[], &["output.nope".into(), "nope.x".into()]).is_ok(), "unsetting what is not there is fine");
     }
 
     #[test]
@@ -447,6 +575,36 @@ mod tests {
         assert!(!spec.supports(&info, lit_meshes) && spec.supports(&info, PassMode::LIT));
         assert!(RendererSpec::from_cli("gpu-compute:bricks+refloor").unwrap().supports(&info, lit_meshes));
         assert_eq!(RendererSpec::from_cli("gpu-raster:bricks+greedy+raster+direct+none").unwrap().options.get("meshes").and_then(|v| v.as_str()), Some("none"));
+    }
+
+    /// Sweeps expand into every valid combination, with options only where they apply.
+    #[test]
+    fn sweeps() {
+        let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
+        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = \"*\", visibility = [\"refloor\", \"sphere\"] }}\noptions = {{ exact = false, merge = \"rows\" }}\n"), &[]).unwrap();
+        // gpu-compute: 8 storages x 2 walks.
+        assert_eq!(p.renderers.len(), 16);
+        assert!(p.renderers.iter().all(|r| r.swept && r.name == "gpu-compute" && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
+        let all = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = \"*\", storage = \"*\", geometry = \"*\", prepass = \"*\", visibility = \"*\", shading = \"*\", meshes = \"*\" }}\n"), &[]).unwrap();
+        let n = |b: &str| all.renderers.iter().filter(|r| r.compose.as_ref().unwrap().backend == b).count();
+        assert_eq!(n("gpu-compute"), 8 * 2 * 4 * 2 * 2);
+        assert_eq!(n("gpu-rt"), 3 * 2);
+        assert_eq!(n("cpu-voxelspace"), 1);
+        // Only what a pass can tell apart: unlit collapses shading, meshes and the
+        // rasteriser's shadow-ray storage.
+        let distinct = |m: PassMode| {
+            let mut v: Vec<String> = all.renderers.iter().map(|r| r.compose.as_ref().unwrap().effective(m).label()).collect();
+            v.sort();
+            v.dedup();
+            v.len()
+        };
+        assert!(distinct(PassMode::UNLIT) < distinct(PassMode::LIT) && distinct(PassMode::LIT) < all.renderers.len());
+        // A name the back end lacks skips it; nothing valid is an error.
+        let only = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = \"*\", storage = \"palette\" }}\n"), &[]).unwrap();
+        let names: Vec<&str> = only.renderers.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["cpu", "cpu-discover"], "named components: only back ends that have them");
+        assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = [\"palette\"] }}\n"), &[]).is_err());
+        assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = \"*\", nope = \"x\" }}\n"), &[]).is_err());
     }
 
     /// Every shipped plan parses, and its compositions validate and resolve.

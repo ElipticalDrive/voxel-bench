@@ -186,7 +186,8 @@ stage grid) are in the progress log below, with their measurements.
 Sized for single steps:
 - ~~Colour scales (numeric legends) on the diagnostic views.~~ Done (2026-10-10).
 - ~~Lighting / meshes as stage components.~~ Done (2026-10-10).
-- A plan sweep over all combinations (`compose = { storage = "*", ... }`).
+- ~~A plan sweep over all combinations (`compose = { storage = "*", ... }`).~~ Done
+  (2026-10-10): `scripts/sweep.sh`, `multirenderer catalogue`.
 - More techniques as components (the backlog below), e.g. the persistent-kernel
   discovery (3b), mesh shadows (7d), transparent cubes.
 - Known issues above (tree64's 5%, gpu-voxelspace shadows through a composed storage,
@@ -673,6 +674,50 @@ earlier if meshes become more urgent; 7c depends on 6′.
 - **Next possible meshes components:** gpu-discover and cpu-raster could reuse `depth`
   (they rasterise); gpu-rt could put meshes into its TLAS (meshes would then shadow
   voxels, step 7d).
+
+### 2026-10-10: sweeps, observations and the catalogue
+- **Goal (the user):** metrics on how each renderer performs in various scenarios, to see
+  what each is good at, and data on every combination for a future planner that learns
+  this machine (IDEAS §14).
+- **Sweeps in plans:** `"*"` or lists in `compose` expand into every valid combination
+  (`expand_sweeps` in `plan.rs`; `RendererSpec::swept`). The entry's options go only to
+  back ends that declare them. A named component on a stage a back end lacks skips that
+  back end; `"*"` there is ignored.
+- **Per-pass dedup:** `Composition::effective(mode)` resets stages a mode cannot tell
+  apart: shading in unlit, meshes without meshes, and `BackendInfo::lit_only` (the
+  storage of gpu-raster and gpu-splat) in unlit. The full sweep is 458 compositions:
+  121 distinct unlit, 258 lit.
+- **Observations:** every `run` writes `observations.jsonl` (`src/observe.rs`). Each
+  record holds the machine (CPU, threads, memory, GPU, driver via
+  `mr_gpu::adapter_info`, OS), the scenario (plan name, scene spec, resolution, view
+  radius, frames, streaming, mode), the composition and knobs, and the metrics (fps,
+  frame-interval mean / p50 / p99, GPU / CPU ms, latency, init, load, memory, PSNR
+  mean / min, bad %, counters averaged). `PassReport` now carries the composition,
+  options and view radius.
+- **`multirenderer catalogue <dirs>`** (`src/catalogue.rs`) writes `catalogue.md` and
+  `catalogue.csv`:
+  - per scenario: a ranking, with a PSNR floor (`--min-psnr`, default 35) so incorrect
+    renderers are ranked but never best;
+  - per renderer: the geometric mean of relative speed, wins, *good at* (within 10%),
+    *stands out* (comparative advantage ≥ 1.25×), weak, incorrect, failed;
+  - per back end and stage: the paired component effect (other stages and knobs equal).
+- **`scripts/sweep.sh [plans]`:** the full sweep over the ten scenario plans, then the
+  catalogue. New `-u key` removes plan keys (`-u output.save`).
+- **Verified:** unit tests for sweep expansion and the catalogue (43 total); a sweep over
+  all back ends on terrain (20 passes); the **full sweep on showcase**: 379 passes in
+  3.5 min, none failed.
+  - Showcase is tiny and host-bound (2,000–4,000 fps), so the ranking compresses there.
+  - The component effects agree with earlier findings: CPU hier is the best storage
+    (prefix 0.87); CPU refloor beats incremental (0.87); GPU prefix ≈ hier best
+    (bricks 0.76); refloor ≫ incremental (0.64) on this NVIDIA GPU; beam 0.96; cluster
+    discovery 0.21 of the quadtree's speed.
+- **Caveats:**
+  - Renderers that only appear in lit passes are averaged over fewer scenarios.
+  - Above ~1,000 fps, host overhead dominates fps; GPU ms is in the tables.
+  - Knobs are swept only at their defaults.
+- **Next for the data:** record measured scene features (loaded chunks, solid and surface
+  fractions, camera speed, edits per frame) beside the plan spec, so the planner can
+  generalise from scenario names to features (IDEAS §14).
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

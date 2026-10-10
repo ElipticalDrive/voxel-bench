@@ -72,6 +72,9 @@ pub struct BackendInfo {
     pub renderer: Option<&'static str>,
     /// The slots this back end has, each with its default component.
     pub slots: &'static [(Slot, &'static str)],
+    /// Slots that only matter in lit mode (e.g. the storage of a rasteriser, which only
+    /// its shadow rays walk). Sweeps run one of each such variant in unlit passes.
+    pub lit_only: &'static [Slot],
 }
 
 impl BackendInfo {
@@ -89,55 +92,55 @@ const COMPUTE_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Prepa
 
 /// Every back end, including planned ones (shown disabled, with the reason).
 pub const BACKENDS: &[BackendInfo] = &[
-    BackendInfo { name: "gpu-compute", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("gpu-compute"), slots: COMPUTE_SLOTS },
-    BackendInfo { name: "cpu", description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops", renderer: Some("cpu"), slots: RAY_SLOTS },
+    BackendInfo { name: "gpu-compute", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("gpu-compute"), slots: COMPUTE_SLOTS, lit_only: &[] },
+    BackendInfo { name: "cpu", description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops", renderer: Some("cpu"), slots: RAY_SLOTS, lit_only: &[] },
     BackendInfo {
         name: "gpu-raster",
         description: "GPU rasterisation (wgpu): the geometry component turns chunks into faces on the CPU, drawn with vertex pulling and multi-draw-indirect after chunk and face-direction culling. Storage here is what lit-mode shadow rays walk (refloor)",
         renderer: Some("gpu-raster"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct"), (Slot::Meshes, "depth")],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct"), (Slot::Meshes, "depth")], lit_only: &[Slot::Storage],
     },
     BackendInfo {
         name: "gpu-rt",
         description: "GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component, a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries",
         renderer: Some("gpu-rt"),
-        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "rayquery"), (Slot::Shading, "direct")],
+        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "rayquery"), (Slot::Shading, "direct")], lit_only: &[],
     },
     BackendInfo {
         name: "gpu-discover",
         description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
         renderer: Some("gpu-discover"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Shading, "direct")],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Shading, "direct")], lit_only: &[],
     },
     BackendInfo {
         name: "cpu-discover",
         description: "CPU discovery + GPU raster (the user's idea): CPU rays discover the visible face set (one frame ahead, pipelined), the GPU rasterises only it. Storage: the CPU representation discovery rays walk",
         renderer: Some("cpu-discover"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Shading, "direct")],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Shading, "direct")], lit_only: &[],
     },
     BackendInfo {
         name: "gpu-splat",
         description: "GPU point splatting: one point per exposed block, atomicMin depth + id buffers, ray-box resolve; lit-mode shadow rays walk the composed storage",
         renderer: Some("gpu-splat"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "points"), (Slot::Visibility, "splat"), (Slot::Shading, "direct")],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "points"), (Slot::Visibility, "splat"), (Slot::Shading, "direct")], lit_only: &[Slot::Storage],
     },
     BackendInfo {
         name: "gpu-voxelspace",
         description: "Comanche-style Voxel Space (2.5D, no overhangs) in a compute shader: one thread per screen column marches a heightmap front to back with a y-buffer",
         renderer: Some("gpu-voxelspace"),
-        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")],
+        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[],
     },
     BackendInfo {
         name: "cpu-voxelspace",
         description: "Comanche-style Voxel Space (2.5D) on the CPU, rayon-parallel over screen columns",
         renderer: Some("cpu-voxelspace"),
-        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")],
+        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[],
     },
     BackendInfo {
         name: "cpu-raster",
         description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
         renderer: Some("cpu-raster"),
-        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct")],
+        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct")], lit_only: &[],
     },
 ];
 
@@ -338,6 +341,27 @@ impl Composition {
         !m.meshes || !matches!(self.get(Slot::Meshes), "" | "none")
     }
 
+    /// The composition as far as a pass of mode `m` can tell: stages that cannot affect
+    /// it are reset to the back end's default (shading in unlit mode: every shading
+    /// component shows the texel; meshes without meshes; the back end's `lit_only`
+    /// slots in unlit mode). Sweeps run one composition per distinct result.
+    pub fn effective(&self, m: mr_core::PassMode) -> Composition {
+        let mut c = self.clone();
+        let Some(b) = backend(&self.backend) else { return c };
+        let unlit = m.lighting == mr_core::RenderMode::Unlit;
+        for &(slot, default) in b.slots {
+            let moot = match slot {
+                Slot::Shading => unlit,
+                Slot::Meshes => !m.meshes,
+                _ => unlit && b.lit_only.contains(&slot),
+            };
+            if moot {
+                c.set(slot, default);
+            }
+        }
+        c
+    }
+
     /// Why this composition cannot run, if it can't.
     pub fn validate(&self) -> Result<(), String> {
         let b = backend(&self.backend).ok_or_else(|| format!("unknown back end `{}` (have: {})", self.backend, BACKENDS.iter().map(|b| b.name).collect::<Vec<_>>().join(", ")))?;
@@ -520,6 +544,16 @@ mod tests {
         assert!(!Composition { meshes: "none".into(), ..Default::default() }.supports(lit_meshes));
         assert!(!Composition::new("cpu").supports(lit_meshes) && Composition::new("cpu").supports(mr_core::PassMode::LIT));
         assert_eq!(Composition { meshes: "none".into(), ..Default::default() }.label(), "gpu-compute: bricks + refloor + no meshes");
+        // What a pass can tell apart.
+        let pt = Composition { shading: "pathtrace".into(), meshes: "none".into(), ..Default::default() };
+        assert_eq!(pt.effective(mr_core::PassMode::UNLIT), Composition::default());
+        assert_eq!(pt.effective(mr_core::PassMode::LIT).shading, "pathtrace");
+        assert_eq!(pt.effective(lit_meshes), pt);
+        let raster = Composition { storage: "prefix".into(), ..Composition::new("gpu-raster") };
+        assert_eq!(raster.effective(mr_core::PassMode::UNLIT).storage, "bricks");
+        assert_eq!(raster.effective(mr_core::PassMode::LIT).storage, "prefix");
+        let disc = Composition { storage: "prefix".into(), ..Composition::new("gpu-discover") };
+        assert_eq!(disc.effective(mr_core::PassMode::UNLIT).storage, "prefix", "discovery rays walk the storage");
         assert_eq!(Composition { prepass: "beam".into(), ..Default::default() }.label(), "gpu-compute: bricks + beam + refloor");
         assert!(Composition { storage: "nope".into(), ..Default::default() }.validate().is_err());
         assert!(fallback_note(&Composition { storage: "bricks".into(), visibility: "sphere".into(), ..Default::default() }).is_some());
