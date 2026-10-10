@@ -12,10 +12,13 @@
 // under the camera's translation can reveal something, changed chunks' screen rectangles,
 // and a round-robin refresh. Level 0 casts and classifies only those tiles.
 //
-// Event-driven frames (`events`, chosen on the host): a camera that only rotated cannot
-// change visibility, so `still` frames skip the face-id raster and the parallax test and
-// discover only the strip entering the screen plus changed chunks (`need_still`); faces
-// inside the view count as seen. Frames where nothing changed skip discovery entirely.
+// Event-driven frames (`events`, chosen on the host): frames where nothing changed skip
+// discovery entirely. A camera that only rotated keeps geometric visibility, so `still`
+// frames skip seen-marking and the parallax test, and faces inside the view count as
+// seen; but rotation moves pixel centres, so small faces can newly cover one. With
+// `still_holes = now` the face-id raster still finds such holes in the same frame; with
+// `late`, `need_still` discovers only the entering strip, changed tiles, holes found by
+// `sky_update` after the previous raster, and the refresh.
 
 struct Params {
     forward: vec3<f32>, tan_half_fov: f32,
@@ -28,7 +31,7 @@ struct Params {
     table_mask: u32, list_cap: u32, chunk_mask: u32, chunk_probe: u32,
     queue_cap: u32, parity: u32, strict: u32, still: u32,   // still: rotation / world-change-only frame
     closure_px: u32, closure_box: i32, block_faces: u32, _p2: u32,
-    incr: u32, refresh: u32, par_k: f32, n_rects: u32,   // par_k = f_px * |camera move| / near
+    incr: u32, refresh: u32, par_k: f32, changed: u32,   // par_k = f_px * |camera move| / near; changed: tile mask non-empty
     full: u32, r_max: u32, need_off: u32, par_thresh: f32,
     prev_forward: vec3<f32>, prev_tan: f32,               // previous camera, for sky reprojection
     prev_right: vec3<f32>, has_prev: u32,
@@ -58,7 +61,7 @@ struct Level { level: u32, size: u32, in_off: u32, out_off: u32, parity: u32, ca
 @group(0) @binding(18) var<storage, read_write> need: array<u32>;  // [0..) reveal radius + 1 per tile; [need_off..) why discovered (0 = not); [2 need_off..) frames since discovered; [3 need_off..) hole seen after the last raster
 @group(0) @binding(19) var idtex: texture_2d<u32>;                  // previous list's face index + 1 per pixel
 @group(0) @binding(20) var depthtex: texture_depth_2d;
-@group(0) @binding(21) var<storage, read> rects: array<vec4<u32>>; // changed-chunk screen rects, in level-0 tiles
+@group(0) @binding(21) var<storage, read> changed_tiles: array<u32>; // per level-0 tile: covered by an edited block or a changed chunk
 @group(0) @binding(22) var<storage, read_write> sky_cur: array<u32>;  // 1 = sky in this frame's final raster
 @group(0) @binding(23) var<storage, read> sky_prev: array<u32>;
 @group(0) @binding(24) var<storage, read_write> cast_frame: array<u32>; // per lattice point: frame its ray was last cast (`rays` view)
@@ -645,7 +648,7 @@ fn mark(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec3
 // Whether pixel `p`'s direction was sky in the previous frame. Sky is at infinity, so only
 // the camera's rotation moves it on screen: map the direction into the previous camera's
 // image. Things that can newly appear in front of the sky do so at silhouettes (the
-// parallax rule), in changed chunks (rects), or at the screen border (no history here).
+// parallax rule), in changed blocks / chunks, or at the screen border (no history here).
 fn sky_known(p: vec2<i32>) -> bool {
     if (pr.has_prev == 0u) { return false; }
     let sx = (2.0 * (f32(p.x) + 0.5) / f32(pr.width) - 1.0) * pr.tan_half_fov * pr.aspect;
@@ -753,10 +756,7 @@ fn need_final(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg
 }
 
 fn rect_why(tx: u32, ty: u32) -> u32 {
-    for (var k = 0u; k < pr.n_rects; k++) {
-        let r = rects[k];
-        if (tx >= r.x && ty >= r.y && tx <= r.z && ty <= r.w) { return WHY_CHUNK; }
-    }
+    if (pr.changed != 0u && changed_tiles[ty * pr.cols + tx] != 0u) { return WHY_CHUNK; }
     return 0u;
 }
 

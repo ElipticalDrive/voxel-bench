@@ -31,11 +31,13 @@
 //!
 //! Event-driven frames (`events`, with `incremental`): the host classifies each frame.
 //! *static* (camera pose unchanged, no world changes) skips discovery and redraws the last
-//! face list; *still* (rotation and/or changed chunks, no translation) discovers only the
-//! strip entering the screen and changed chunks, without the face-id raster; *moving*
-//! (translation) runs the incremental passes; *full* re-discovers everything. `view`
-//! shows why tiles were discovered (`tiles`), where rays were cast (`rays`) and which
-//! faces are new to S (`churn`).
+//! face list; *still* (rotation and/or world changes, no translation) skips seen-marking
+//! and the parallax test (with `still_holes = late` also the face-id raster, finding holes
+//! a frame late); *moving* (translation) runs the incremental passes; *full* re-discovers
+//! everything. World changes mark the screen tiles of edited blocks (exactly) and of
+//! loaded chunks. Holes (uncovered pixels that were neither sky nor discovered) are told
+//! apart from sky after the raster and re-discovered. `view` shows why tiles were
+//! discovered (`tiles`), where rays were cast (`rays`) and which faces are new (`churn`).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -83,13 +85,13 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("closure_box", "Local-closure box size in cells per axis", 1, 8, 2, true),
         ParamSpec::bool("block_faces", "With each discovered face also add its block's other camera-facing exposed faces (closes raster-vs-ray edge cracks)", true, true),
         ParamSpec::bool("jitter", "Shift the tile lattice randomly every frame (temporal coverage)", true, true),
-        ParamSpec::bool("incremental", "Rasterise last frame's faces first and only discover tiles with uncovered pixels, parallax-revealable occlusion edges, changed chunks, or their refresh turn (jitter off)", false, true),
+        ParamSpec::bool("incremental", "Rasterise last frame's faces first and only discover tiles with uncovered pixels, parallax-revealable occlusion edges, edited blocks or changed chunks, or their refresh turn (jitter off)", false, true),
         ParamSpec::int("keep_unseen", "Incremental: frames a face inside the view stays in S without covering a pixel (faces outside the view use keep_frames)", 1, 1000, 64, true),
         ParamSpec::int("refresh", "Incremental: re-discover every Nth tile each frame regardless (0 = never)", 0, 1024, 16, true),
         ParamSpec::float("parallax_px", "Incremental: an occlusion edge needs discovery if the camera's translation can reveal more than this many pixels behind it", 0.05, 16.0, false, 0.5, true),
-        ParamSpec::bool("events", "Incremental: classify frames by what changed. Unchanged camera and world: skip discovery and redraw. Rotation or chunk changes only: discover just the entering strip and changed chunks (no face-id raster, no refresh). Translation: full incremental passes", true, true),
+        ParamSpec::bool("events", "Incremental: classify frames by what changed. Unchanged camera and world: skip discovery and redraw (frame_kind 0). Rotation or world changes only: skip seen-marking and the parallax test (1). Translation: the full incremental passes (2). Edits mark only the edited blocks' screen tiles", true, true),
         ParamSpec::choice("still_holes", "Events, rotation-only frames: now = rasterise the old face list first and discover holes (faces that rotation moved onto a pixel centre) in the same frame; late = skip that raster and discover them next frame (cheaper, holes visible for one frame)", &["now", "late"], "now", true),
-        ParamSpec::choice("view", "image: the rendered scene. tiles: level-0 tiles tinted by why they were discovered this frame (white full, blue changed chunk, cyan entering strip, red uncovered, yellow parallax, green refresh; dark = skipped). rays: a dot per ray cast this frame. churn: faces new to the set this frame in red, carried-over faces grey", &["image", "tiles", "rays", "churn"], "image", true),
+        ParamSpec::choice("view", "image: the rendered scene. tiles: level-0 tiles tinted by why they were discovered this frame (white full, blue edited block / changed chunk, cyan entering strip (still_holes = late), red uncovered or hole, yellow parallax, green refresh; dark = skipped). rays: a dot per ray cast this frame. churn: faces new to the set this frame in red, carried-over faces grey", &["image", "tiles", "rays", "churn"], "image", true),
         ParamSpec::int("reveal_tiles", "Incremental: largest reveal radius around an edge, in level-0 tiles", 1, 16, 4, true),
         ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true),
         shadows_param(),
@@ -219,7 +221,7 @@ struct Params {
     incr: u32,
     refresh: u32,
     par_k: f32,
-    n_rects: u32,
+    changed: u32,
     full: u32,
     r_max: u32,
     need_off: u32,
@@ -285,8 +287,6 @@ const ARGS_WORDS: u64 = 112;
 const JOB_CAP: u64 = 262144;
 const STATS_WORDS: u64 = 64;
 const STAGES: usize = 8;
-/// Changed-chunk rectangles per frame; more changes force a full frame.
-const MAX_RECTS: usize = 64;
 /// GPU timestamps per frame for the phase breakdown (begin, survive, L0, levels, raster).
 const PROFILE_TS: u32 = 4 + 2 * MAX_LEVELS as u32;
 
@@ -310,6 +310,8 @@ struct Sized {
     /// (from `3 * need_off`) a hole seen after the last raster.
     need: wgpu::Buffer,
     need_off: u32,
+    /// Incremental mode: per level-0 tile, 1 if an edited block or changed chunk covers it.
+    changed_tiles: wgpu::Buffer,
     /// Per pixel, 1 where the final raster was sky; double-buffered by frame parity.
     sky: [wgpu::Buffer; 2],
 }
@@ -365,10 +367,9 @@ pub struct GpuDiscover {
     cpos: wgpu::Buffer,
     /// Incremental mode: per previous-list entry, the frame it last covered a pixel.
     seen: wgpu::Buffer,
-    /// Incremental mode: screen rectangles (level-0 tiles) of chunks changed since last frame.
-    rects: wgpu::Buffer,
-    /// Chunks changed by world updates since the last frame.
-    pending: Vec<IVec3>,
+    /// World boxes (min block, size) changed since the last frame: edited blocks (size 1)
+    /// and loaded / unloaded chunks (size 32).
+    pending: Vec<(IVec3, i32)>,
     prev_pos: Option<glam::DVec3>,
     /// Previous camera (forward, right, up, tan of half fov) for sky reprojection.
     prev_cam: Option<([f32; 3], [f32; 3], [f32; 3], f32)>,
@@ -460,6 +461,7 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
         // Tiles are at least 2 px, so the lattice has at most (lat_w/2) x (lat_h/2) tiles.
         need: storage(gpu, "tile needs", 4 * tiles_max(lat_w, lat_h) as u64 * 4, none),
         need_off: tiles_max(lat_w, lat_h),
+        changed_tiles: storage(gpu, "changed tiles", tiles_max(lat_w, lat_h) as u64 * 4, none),
         sky: [0, 1].map(|_| storage(gpu, "sky mask", w as u64 * h as u64 * 4, none)),
     }
 }
@@ -724,7 +726,6 @@ impl GpuDiscover {
             ctable,
             cpos,
             seen: storage(&gpu, "seen", list_cap as u64 * 4, none),
-            rects: storage(&gpu, "changed rects", MAX_RECTS as u64 * 16, none),
             pending: vec![],
             prev_pos: None,
             prev_cam: None,
@@ -785,7 +786,7 @@ impl GpuDiscover {
                 (18, res(&s.need)),
                 (19, wgpu::BindingResource::TextureView(&s.idtex)),
                 (20, wgpu::BindingResource::TextureView(&s.depth)),
-                (21, res(&self.rects)),
+                (21, res(&s.changed_tiles)),
                 (22, res(&s.sky[par])),
                 (23, res(&s.sky[prev])),
                 (24, res(&s.cast_frame)),
@@ -1081,10 +1082,17 @@ impl GpuDiscover {
 
 impl Renderer for GpuDiscover {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        let changed = self.world.apply(&self.gpu, updates);
         if self.opts.incremental {
-            self.pending.extend(changed.iter().copied());
+            // Event areas for the next frame: edited blocks exactly, chunk loads whole.
+            for u in &updates {
+                match u {
+                    WorldUpdate::SetBlocks(edits) => self.pending.extend(edits.iter().map(|e| (e.pos, 1))),
+                    WorldUpdate::ChunkLoad { key, .. } | WorldUpdate::ChunkUnload { key } if key.lod == 0 => self.pending.push((key.pos * 32, 32)),
+                    _ => {}
+                }
+            }
         }
+        let changed = self.world.apply(&self.gpu, updates);
         self.update_slots(changed);
         Ok(())
     }
@@ -1127,23 +1135,25 @@ impl Renderer for GpuDiscover {
         self.prev_pos = Some(c.position);
         let f_px = self.height as f32 * 0.5 / tan_half_fov;
         let mut full = self.force_full || moved > 64.0;
-        let mut rects: Vec<[u32; 4]> = vec![];
-        if self.opts.incremental {
+        let mut any_changed = false;
+        if self.opts.incremental && !self.pending.is_empty() {
             let vp = c.projection(aspect) * c.view_rotation();
-            for pos in self.pending.drain(..) {
-                match chunk_rect(&vp, pos, c.position, self.width, self.height, tile, cols, rows) {
-                    Some(Some(r)) => rects.push(r),
+            let mut mask = vec![0u32; (cols * rows) as usize];
+            for (lo, size) in self.pending.drain(..) {
+                match box_rect(&vp, lo, size, c.position, self.width, self.height, tile, cols, rows) {
+                    Some(Some([x0, y0, x1, y1])) => {
+                        for y in y0..=y1 {
+                            mask[(y * cols + x0) as usize..=(y * cols + x1) as usize].fill(1);
+                        }
+                        any_changed = true;
+                    }
                     Some(None) => {}
                     None => full = true,
                 }
             }
-            rects.sort_unstable();
-            rects.dedup();
-            if rects.len() > MAX_RECTS {
-                full = true;
-                rects.clear();
+            if any_changed {
+                self.gpu.queue.write_buffer(&self.sized.changed_tiles, 0, bytemuck::cast_slice(&mask));
             }
-            self.gpu.queue.write_buffer(&self.rects, 0, bytemuck::cast_slice(&rects));
         }
         let kind = if full {
             FrameKind::Full
@@ -1193,7 +1203,7 @@ impl Renderer for GpuDiscover {
             incr: self.opts.incremental as u32,
             refresh: self.opts.refresh,
             par_k: if moved.is_finite() { f_px * moved as f32 / c.near } else { 0.0 },
-            n_rects: rects.len() as u32,
+            changed: any_changed as u32,
             full: full as u32,
             r_max: self.opts.reveal_tiles.max(1),
             need_off: self.sized.need_off,
@@ -1473,24 +1483,33 @@ impl Renderer for GpuDiscover {
 
     fn memory(&self) -> MemoryReport {
         let s = &self.sized;
-        let set = (self.keys[0].size() + self.vals[0].size() + self.lists[0].size()) * 2 + self.jobs.size() + self.seen.size() + self.rects.size() + s.need.size() + self.width as u64 * self.height as u64 * 4;
+        let set = (self.keys[0].size() + self.vals[0].size() + self.lists[0].size()) * 2 + self.jobs.size() + self.seen.size() + s.changed_tiles.size() + s.need.size() + self.width as u64 * self.height as u64 * 4;
         let gpu = self.world.memory_bytes() + set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size() + self.width as u64 * self.height as u64 * 8;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
 }
 
-/// Screen rectangle, in level-0 tiles, of the chunk at `pos`: `Some(None)` if it is off
-/// screen, `None` if it crosses the near plane (treat as the whole frame).
+/// Screen rectangle, in level-0 tiles, of the world box `[min, min + size)`: `Some(None)`
+/// if it is off screen. A box straddling the camera plane that may be visible gets the
+/// whole screen (its projection is unbounded); `None` is never returned for boxes behind
+/// or beside the camera, only kept for callers that want a forced full frame.
 #[allow(clippy::too_many_arguments)]
-fn chunk_rect(view_proj: &glam::Mat4, pos: IVec3, cam: glam::DVec3, width: u32, height: u32, tile: u32, cols: u32, rows: u32) -> Option<Option<[u32; 4]>> {
+fn box_rect(view_proj: &glam::Mat4, min: IVec3, size: i32, cam: glam::DVec3, width: u32, height: u32, tile: u32, cols: u32, rows: u32) -> Option<Option<[u32; 4]>> {
+    let clips: [glam::Vec4; 8] = std::array::from_fn(|k| {
+        let k = k as i32;
+        let corner = (min + IVec3::new(k & 1, (k >> 1) & 1, k >> 2) * size).as_dvec3();
+        *view_proj * (corner - cam).as_vec3().extend(1.0)
+    });
+    // Outside one frustum plane entirely (left, right, bottom, top, near): off screen.
+    let outside = |f: &dyn Fn(&glam::Vec4) -> bool| clips.iter().all(f);
+    if outside(&|c| c.x < -c.w) || outside(&|c| c.x > c.w) || outside(&|c| c.y < -c.w) || outside(&|c| c.y > c.w) || outside(&|c| c.w <= 1e-3) {
+        return Some(None);
+    }
+    if clips.iter().any(|c| c.w <= 1e-3) {
+        return Some(Some([0, 0, cols - 1, rows - 1]));
+    }
     let (mut lo, mut hi) = (glam::Vec2::splat(f32::MAX), glam::Vec2::splat(f32::MIN));
-    for k in 0..8 {
-        let corner = (pos * 32 + IVec3::new(k & 1, (k >> 1) & 1, k >> 2) * 32).as_dvec3();
-        let rel = (corner - cam).as_vec3();
-        let clip = *view_proj * rel.extend(1.0);
-        if clip.w <= 1e-3 {
-            return None;
-        }
+    for clip in clips {
         let ndc = clip.truncate().truncate() / clip.w;
         let px = glam::Vec2::new((ndc.x * 0.5 + 0.5) * width as f32, (0.5 - ndc.y * 0.5) * height as f32);
         lo = lo.min(px);
