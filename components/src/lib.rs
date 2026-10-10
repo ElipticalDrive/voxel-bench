@@ -88,7 +88,12 @@ pub const BACKENDS: &[BackendInfo] = &[
         renderer: Some("gpu-raster"),
         slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct")],
     },
-    BackendInfo { name: "gpu-rt", description: "GPU hardware ray tracing (ray queries / pipelines) — planned (phase 4)", renderer: None, slots: RAY_SLOTS },
+    BackendInfo {
+        name: "gpu-rt",
+        description: "GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component, a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries",
+        renderer: Some("gpu-rt"),
+        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "rayquery"), (Slot::Shading, "direct")],
+    },
 ];
 
 pub struct ComponentInfo {
@@ -110,6 +115,10 @@ const BOTH: &[&str] = &["gpu-compute", "cpu"];
 const GPU_ST: &[&str] = &["gpu-compute", "gpu-raster"];
 const ALL_ST: &[&str] = &["gpu-compute", "cpu", "gpu-raster"];
 const RASTER: &[&str] = &["gpu-raster"];
+const RT: &[&str] = &["gpu-rt"];
+const RASTER_RT: &[&str] = &["gpu-raster", "gpu-rt"];
+const SHADE_ALL: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-rt"];
+const COMPUTE_RT: &[&str] = &["gpu-compute", "gpu-rt"];
 
 pub const COMPONENTS: &[ComponentInfo] = &[
     // Storage.
@@ -129,18 +138,20 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Visibility, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", backends: BOTH, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", backends: GPU, provides: &[], uses: &["s_dist"] },
     ComponentInfo { slot: Slot::Visibility, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: GPU, provides: &[], uses: &["s_row"] },
+    ComponentInfo { slot: Slot::Visibility, name: "rayquery", description: "Hardware ray queries against the acceleration structure (RT cores) for primary, shadow and bounce rays. Knob: cull (triangle facing culled for primary rays).", backends: RT, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "raster", description: "Depth-tested rasterisation of the geometry; the fragment shader intersects the pixel's ray with the face plane and shades. Knob: depth_prepass (lit: shade once per pixel).", backends: RASTER, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "visbuffer", description: "Visibility buffer: the raster pass writes only a face id and depth; a compute pass reconstructs the hit and shades once per pixel, independent of overdraw.", backends: RASTER, provides: &[], uses: &[] },
     // Prepass.
     ComponentInfo { slot: Slot::Prepass, name: "none", description: "No prepass: every ray walks from the camera.", backends: GPU, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Prepass, name: "beam", description: "Conservative per-tile beam (from gpu-beam): one cone per tile marches top cells; rays start where their tile's cone is provably empty. Exact. Knob: tile (pixels, 1 = off).", backends: GPU, provides: &[], uses: &[] },
     // Geometry.
-    ComponentInfo { slot: Slot::Geometry, name: "greedy", description: "Greedy quads (CPU, per chunk, incremental): coplanar exposed faces merged into rectangles. Knob: merge = block (same block only) or exposure (any block, looked up per fragment).", backends: RASTER, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Geometry, name: "naive", description: "One quad per exposed block face, no merging (\"Minecraft-style\"). Knob: cull = false emits all six faces of every solid block.", backends: RASTER, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Geometry, name: "greedy", description: "Greedy quads (CPU, per chunk, incremental): coplanar exposed faces merged into rectangles (on gpu-rt: two triangles each). Knob: merge = block (same block only) or exposure (any block, looked up per fragment; raster only).", backends: RASTER_RT, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Geometry, name: "naive", description: "One quad per exposed block face, no merging (\"Minecraft-style\"). Knob: cull = false emits all six faces of every solid block.", backends: RASTER_RT, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Geometry, name: "boxes", description: "One AABB per occupied 4^3 brick (from gpu-rtx-bricks): the RT cores find candidate boxes, a small software DDA through the voxel pool finds the voxel.", backends: RT, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Geometry, name: "cubes", description: "One 36-vertex cube instance per surface block; the hardware back-face culls the hidden half. Knob: cull = false instances every solid block.", backends: RASTER, provides: &[], uses: &[] },
     // Shading.
-    ComponentInfo { slot: Slot::Shading, name: "pathtrace", description: "Diffuse path tracing (from gpu-pathtrace): NEE for sun and point lights, cosine-weighted bounces through the composed walk, progressive accumulation while the view is still. bounces = 0 reproduces direct. Knobs: bounces, spp, accumulate.", backends: GPU, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Shading, name: "direct", description: "The reference lighting model: texel (unlit); ambient, sun and point lights with shadow rays through the same walk (lit).", backends: ALL_ST, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Shading, name: "pathtrace", description: "Diffuse path tracing (from gpu-pathtrace): NEE for sun and point lights, cosine-weighted bounces through the composed walk, progressive accumulation while the view is still. bounces = 0 reproduces direct. Knobs: bounces, spp, accumulate.", backends: COMPUTE_RT, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Shading, name: "direct", description: "The reference lighting model: texel (unlit); ambient, sun and point lights with shadow rays through the same walk (lit).", backends: SHADE_ALL, provides: &[], uses: &[] },
 ];
 
 /// A renderer as an assembly of components. Slots left out (empty) take the back end's
@@ -354,7 +365,16 @@ mod tests {
         assert!(Composition { backend: "cpu".into(), storage: "distance".into(), ..Default::default() }.validate().is_err());
         assert!(Composition { geometry: "greedy".into(), ..Default::default() }.validate().is_err());
         assert!(Composition { visibility: "raster".into(), ..Default::default() }.validate().is_err());
-        assert!(Composition { backend: "gpu-rt".into(), ..Default::default() }.validate().is_err());
+        assert!(Composition { backend: "gpu-rt".into(), ..Default::default() }.validate().is_err(), "storage does not apply on gpu-rt");
+        for c in COMPONENTS.iter().filter(|c| c.backends.contains(&"gpu-rt")) {
+            let ok = match c.slot {
+                Slot::Geometry => geometry::rt(c.name).is_some(),
+                Slot::Visibility => visibility::rt_wgsl(c.name).is_some(),
+                Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
+                _ => false,
+            };
+            assert!(ok, "gpu-rt {} `{}`", c.slot.name(), c.name);
+        }
         let mut raster = Composition { backend: "gpu-raster".into(), storage: String::new(), visibility: String::new(), shading: String::new(), prepass: String::new(), geometry: "cubes".into() };
         assert_eq!(raster.resolve().unwrap().0, "gpu-raster");
         assert_eq!(raster.label(), "gpu-raster: bricks + cubes + raster");

@@ -26,10 +26,10 @@ compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", vis
 name = "cpu-raster"
 
 [[renderer]]
-name = "gpu-rtx"
+compose = { backend = "gpu-rt", geometry = "greedy", visibility = "rayquery" }
 
 [[renderer]]
-name = "gpu-rtx-bricks"
+compose = { backend = "gpu-rt", geometry = "boxes", visibility = "rayquery" }
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "tree64", visibility = "refloor" }

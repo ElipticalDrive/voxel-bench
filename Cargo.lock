@@ -524,6 +524,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-gpu-rt"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "glam",
+ "mr-components",
+ "mr-core",
+ "mr-gpu",
+ "mr-mesh",
+ "rayon",
+ "serde",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1733,22 +1750,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-rtx"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-core",
- "mr-gpu",
- "mr-mesh",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "gpu-splat"
 version = "0.1.0"
 dependencies = [
@@ -2351,6 +2352,7 @@ dependencies = [
  "anyhow",
  "backend-cpu",
  "backend-gpu-raster",
+ "backend-gpu-rt",
  "cpu-discover",
  "cpu-raster",
  "cpu-reference",
@@ -2361,7 +2363,6 @@ dependencies = [
  "gpu-compute",
  "gpu-discover",
  "gpu-frag-hybrid",
- "gpu-rtx",
  "gpu-splat",
  "gpu-voxelspace",
  "mr-core",

@@ -1,18 +1,24 @@
-//! Hardware ray tracing (RT cores) through wgpu ray queries, in two flavours:
+//! GPU-RT back end: hardware ray tracing (RT cores) through wgpu ray queries, assembled from
+//! components (`mr-components`, IDEAS §12):
 //!
-//! * `gpu-rtx`: greedy-meshed triangles in one BLAS per chunk. Traversal and intersection
-//!   are entirely in fixed-function hardware.
-//! * `gpu-rtx-bricks`: one AABB per occupied 4^3 brick. The hardware walks the BVH, a
-//!   tiny software DDA intersects voxels inside each candidate box (procedural geometry).
+//! * **geometry** decides what goes into each chunk's BLAS: `greedy` / `naive` quads as
+//!   triangles (traversal and intersection entirely in fixed-function hardware), or `boxes`,
+//!   one AABB per occupied 4^3 brick with a small software DDA inside each candidate
+//!   (procedural geometry);
+//! * **visibility** `rayquery`: primary, shadow and bounce rays are ray queries;
+//! * **shading**: the same `shade_hit` as the other back ends (`direct`, `pathtrace`).
 //!
-//! Both rebuild the TLAS every frame with instances translated relative to the camera's
-//! block, so precision never degrades far from the origin.
+//! The TLAS is rebuilt every frame with instances translated relative to the camera's
+//! block, so precision never degrades far from the origin. Replaces gpu-rtx and
+//! gpu-rtx-bricks.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
+use mr_components::geometry::{Knobs, Merge, RtKind};
+use mr_components::{Slot, components, shading, visibility};
 use mr_core::chunk::cell_of_index;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -22,53 +28,48 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use wgpu::util::DeviceExt;
 
-#[derive(Copy, Clone, PartialEq, Debug)]
-enum Geometry {
-    Triangles,
-    Bricks,
+const BACKEND: &str = "gpu-rt";
+
+pub fn entry() -> RendererEntry {
+    RendererEntry { info, create: |p, w| Ok(Box::new(GpuRt::new(p, w)?)) }
 }
 
-pub fn entry_triangles() -> RendererEntry {
-    RendererEntry {
-        info: || RendererInfo {
-            name: "gpu-rtx".into(),
-            description: "Hardware ray tracing: greedy-mesh triangles per chunk BLAS, TLAS of chunks, ray queries for primary and shadow rays".into(),
-            tags: vec!["gpu".into(), "raytrace".into(), "hardware-rt".into(), "wgpu".into()],
-            modes: vec![RenderMode::Unlit, RenderMode::Lit],
-            max_lod: 0,
-            params: params(true),
-        },
-        create: |p, w| Ok(Box::new(GpuRtx::new(p, w, Geometry::Triangles)?)),
+fn info() -> RendererInfo {
+    RendererInfo {
+        name: BACKEND.into(),
+        description: "GPU-RT back end: hardware ray queries over a TLAS of per-chunk BLASes built from the geometry component (triangles or brick boxes); shading components as elsewhere".into(),
+        tags: vec!["gpu".into(), "raytrace".into(), "hardware-rt".into(), "modular".into(), "wgpu".into()],
+        modes: vec![RenderMode::Unlit, RenderMode::Lit],
+        max_lod: 0,
+        params: params(),
     }
 }
 
-pub fn entry_bricks() -> RendererEntry {
-    RendererEntry {
-        info: || RendererInfo {
-            name: "gpu-rtx-bricks".into(),
-            description: "Hybrid hardware/software: RT-core BVH over occupied 4^3 bricks (AABBs), software voxel DDA inside each candidate".into(),
-            tags: vec!["gpu".into(), "raytrace".into(), "hardware-rt".into(), "procedural".into(), "wgpu".into()],
-            modes: vec![RenderMode::Unlit, RenderMode::Lit],
-            max_lod: 0,
-            params: params(false),
-        },
-        create: |p, w| Ok(Box::new(GpuRtx::new(p, w, Geometry::Bricks)?)),
-    }
+fn names(slot: Slot) -> Vec<&'static str> {
+    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| c.name).collect()
 }
 
-fn params(triangles: bool) -> Vec<ParamSpec> {
-    let mut p = vec![
+fn describe(slot: Slot) -> String {
+    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
+}
+
+fn params() -> Vec<ParamSpec> {
+    vec![
+        ParamSpec::choice("geometry", &format!("Geometry component (what the BLASes hold). {}", describe(Slot::Geometry)), &names(Slot::Geometry), "greedy", false),
+        ParamSpec::choice("visibility", &format!("Visibility component. {}", describe(Slot::Visibility)), &names(Slot::Visibility), "rayquery", false),
+        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names(Slot::Shading), "direct", true),
+        ParamSpec::choice("merge", "greedy: merge faces of the same block only (`exposure` is raster-only)", &["block"], "block", false),
+        ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours (false = every face of every solid block)", true, false),
+        ParamSpec::choice("cull_faces", "Triangle facing culled for primary rays (triangle geometries)", &["back", "front", "none"], "back", true),
         shadows_param(),
         ParamSpec::bool("fast_build", "Prefer fast BVH builds over fast traversal", false, true),
         ParamSpec::int("build_budget", "Chunk BLAS rebuilds per frame, nearest first (0 = all)", 0, 100000, 0, true),
+        ParamSpec::int("bounces", "pathtrace shading: diffuse indirect bounces (lit)", 0, 8, 1, true),
+        ParamSpec::int("spp", "pathtrace shading: paths per pixel per frame (lit)", 1, 64, 1, true),
+        ParamSpec::bool("accumulate", "pathtrace shading: average frames while camera and world are still", true, true),
+        ParamSpec::int("pool_mb", "Voxel pool limit (MiB; boxes geometry)", 64, 6144, 2048, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
-    ];
-    if triangles {
-        p.push(ParamSpec::choice("cull", "Triangle facing culled for primary rays", &["back", "front", "none"], "back", true));
-    } else {
-        p.push(ParamSpec::int("pool_mb", "Voxel pool limit (MiB)", 64, 6144, 2048, false));
-    }
-    p
+    ]
 }
 
 #[derive(Copy, Clone, Debug, Default, Deserialize, PartialEq)]
@@ -84,20 +85,52 @@ enum Cull {
 #[serde(default, deny_unknown_fields)]
 struct Options {
     adapter: Option<String>,
+    geometry: String,
+    visibility: String,
+    shading: String,
+    merge: String,
+    cull: bool,
+    /// Triangle facing culled for primary rays.
+    cull_faces: Cull,
     shadows: Shadows,
-    frames_in_flight: usize,
-    /// Voxel pool for the bricks variant.
-    pool_mb: u32,
-    /// Triangle facing culled for primary rays (triangles variant).
-    cull: Cull,
     /// Prefer fast BVH builds over fast traversal (helps edit-heavy scenes).
     fast_build: bool,
     build_budget: usize,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
+    /// Voxel pool for the boxes geometry.
+    pool_mb: u32,
+    frames_in_flight: usize,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { adapter: None, shadows: Shadows::All, frames_in_flight: 3, pool_mb: 2048, cull: Cull::Back, fast_build: false, build_budget: 0 }
+        Self {
+            adapter: None,
+            geometry: "greedy".into(),
+            visibility: "rayquery".into(),
+            shading: "direct".into(),
+            merge: "block".into(),
+            cull: true,
+            cull_faces: Cull::Back,
+            shadows: Shadows::All,
+            fast_build: false,
+            build_budget: 0,
+            bounces: 1,
+            spp: 1,
+            accumulate: true,
+            pool_mb: 2048,
+            frames_in_flight: 3,
+        }
+    }
+}
+
+/// Checks that `name` is a `slot` component with a gpu-rt implementation.
+fn check(slot: Slot, name: &str) -> anyhow::Result<String> {
+    match mr_components::unavailable(BACKEND, slot, name) {
+        None => Ok(name.to_string()),
+        Some(why) => anyhow::bail!(why),
     }
 }
 
@@ -114,6 +147,10 @@ struct CameraUniform {
     sky: u32,
     width: u32,
     height: u32,
+    frame: u32,
+    prev_count: u32,
+    bounces: u32,
+    spp: u32,
     ray_flags: u32,
     _p0: u32,
 }
@@ -135,12 +172,31 @@ enum Built {
     Aabbs { boxes: Vec<[f32; 6]>, bricks: Vec<u32> },
 }
 
-pub struct GpuRtx {
+/// Progressive accumulation (pathtrace shading), as in gpu-compute.
+struct Accum {
+    buf: wgpu::Buffer,
+    count: u32,
+    frame: u32,
+    last: Option<(Camera, RenderMode)>,
+}
+
+fn accum_buffer(gpu: &Gpu, width: u32, height: u32, shading: &str) -> wgpu::Buffer {
+    let size = if shading == "pathtrace" { width as u64 * height as u64 * 16 } else { 16 };
+    gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("accum"), size: size.max(16), usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
+}
+
+pub struct GpuRt {
     gpu: Gpu,
     world: VoxelWorld,
-    geometry: Geometry,
+    rt: RtKind,
+    knobs: Knobs,
+    shading: String,
+    /// Shading the pipeline was built with (rebuilt lazily on a live switch).
+    built_shading: String,
     opts: Options,
+    source: Box<dyn Fn(&str) -> String + Send + Sync>,
     pipeline: wgpu::ComputePipeline,
+    pipeline_layout: wgpu::PipelineLayout,
     layout0: wgpu::BindGroupLayout,
     camera_buf: wgpu::Buffer,
     output: wgpu::Texture,
@@ -156,6 +212,7 @@ pub struct GpuRtx {
     chunks: HashMap<IVec3, ChunkAs>,
     free_slots: Vec<u32>,
     dirty: HashSet<IVec3>,
+    accum: Accum,
     bind0: Option<wgpu::BindGroup>,
 }
 
@@ -168,9 +225,26 @@ fn tlas(gpu: &Gpu, cap: u32) -> wgpu::Tlas {
     })
 }
 
-impl GpuRtx {
-    fn new(p: InitParams, waker: Waker, geometry: Geometry) -> anyhow::Result<Self> {
+fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: String) -> wgpu::ComputePipeline {
+    let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("gpu-rt"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+    gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("gpu-rt"),
+        layout: Some(layout),
+        module: &module,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    })
+}
+
+impl GpuRt {
+    fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
+        let geometry = check(Slot::Geometry, &opts.geometry)?;
+        let vis = check(Slot::Visibility, &opts.visibility)?;
+        let shading = check(Slot::Shading, &opts.shading)?;
+        anyhow::ensure!(opts.merge == "block", "merge = `{}`: gpu-rt has no per-pixel block lookup (only `block`)", opts.merge);
+        let (geo_wgsl, rt) = mr_components::geometry::rt(&geometry).expect("validated");
         let gpu = Gpu::new(GpuRequest {
             experimental: true,
             adapter: opts.adapter.as_deref(),
@@ -184,7 +258,8 @@ impl GpuRtx {
             p.environment,
             VoxelWorldConfig {
                 max_lod: 0,
-                upload_voxels: geometry == Geometry::Bricks,
+                // Only the boxes' DDA reads voxels.
+                upload_voxels: matches!(rt, RtKind::Boxes),
                 pool_mb: opts.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
@@ -192,13 +267,16 @@ impl GpuRtx {
                 visibility: wgpu::ShaderStages::COMPUTE,
             },
         )?;
-        let own = format!("{}\n{}", include_str!("rtx.wgsl"), if geometry == Geometry::Triangles { include_str!("tri.wgsl") } else { include_str!("bricks.wgsl") });
-        let source = format!("enable wgpu_ray_query;\n{}", shader_source("", &own));
-        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("rtx"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let vis_wgsl = visibility::rt_wgsl(&vis).expect("validated");
+        let source = Box::new(move |shading: &str| {
+            let own = format!("// Composition: geometry = {geometry}, visibility = {vis}, shading = {shading}\n{}\n{geo_wgsl}\n{vis_wgsl}\n{}", include_str!("main.wgsl"), shading::gpu_wgsl(shading).expect("validated"));
+            // Shadow rays come from the visibility component (`occluded`).
+            format!("enable wgpu_ray_query;\n{}", shader_source("", &own))
+        });
         let e = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty, count: None };
-        let storage = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None };
+        let storage = |read_only| wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None };
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("rtx"),
+            label: Some("gpu-rt"),
             entries: &[
                 e(0, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }),
                 e(
@@ -210,23 +288,17 @@ impl GpuRtx {
                     },
                 ),
                 e(2, wgpu::BindingType::AccelerationStructure { vertex_return: false }),
-                e(3, storage),
-                e(4, storage),
+                e(3, storage(true)),
+                e(4, storage(true)),
+                e(5, storage(false)),
             ],
         });
-        let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("rtx"),
+        let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("gpu-rt"),
             bind_group_layouts: &[Some(&layout0), Some(world.layout())],
             immediate_size: 0,
         });
-        let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("rtx"),
-            layout: Some(&pl),
-            module: &module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let pipeline = pipeline(&gpu, &pipeline_layout, source(&shading));
         let buf = |label, size: u64, usage| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
         let camera_buf = buf("camera", size_of::<CameraUniform>() as u64, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
         let geo_buf = GrowableBuffer::new(&gpu, "geometry", 1 << 20, 1 << 30, wgpu::BufferUsages::STORAGE);
@@ -234,17 +306,23 @@ impl GpuRtx {
         let chunk_info = buf("chunk info", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let depth = opts.frames_in_flight.max(1);
         let tlas_cap = 4096;
+        tracing::info!("gpu-rt: geometry {}, shading {shading}", opts.geometry);
         Ok(Self {
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
             ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()),
             tlas: tlas(&gpu, tlas_cap),
             tlas_cap,
+            accum: Accum { buf: accum_buffer(&gpu, p.width, p.height, &shading), count: 0, frame: 0, last: None },
             geo_buf,
-            gpu,
             world,
-            geometry,
+            rt,
+            knobs: Knobs { merge: Merge::Block, cull: opts.cull },
+            built_shading: shading.clone(),
+            shading,
             opts,
+            source,
             pipeline,
+            pipeline_layout,
             layout0,
             camera_buf,
             waker,
@@ -256,6 +334,7 @@ impl GpuRtx {
             free_slots: (0..MAX_SLOTS).rev().collect(),
             dirty: HashSet::new(),
             bind0: None,
+            gpu,
         })
     }
 
@@ -267,9 +346,11 @@ impl GpuRtx {
     }
 
     fn build_geometry(&self, pos: IVec3) -> Option<Built> {
-        match self.geometry {
-            Geometry::Triangles => {
-                let mesh = mr_mesh::mesh_at(pos, |p| self.world.chunk(p), 0)?;
+        match self.rt {
+            RtKind::Triangles(mesh) => {
+                let center = self.world.chunk(pos)?;
+                let neighbors = Face::ALL.map(|f| self.world.chunk(pos + f.normal()));
+                let mesh = mesh(center, neighbors, 0, self.knobs);
                 if mesh.quads.is_empty() {
                     return None;
                 }
@@ -282,7 +363,7 @@ impl GpuRtx {
                 }
                 Some(Built::Triangles { vertices, indices, quads: mesh.quads })
             }
-            Geometry::Bricks => match self.world.chunk(pos)? {
+            RtKind::Boxes => match self.world.chunk(pos)? {
                 ChunkData::Uniform(b) if b.is_air() => None,
                 ChunkData::Uniform(_) => Some(Built::Aabbs { boxes: vec![[0.0, 0.0, 0.0, 32.0, 32.0, 32.0]], bricks: vec![NO_BRICK] }),
                 ChunkData::Dense(d) => {
@@ -334,7 +415,7 @@ impl GpuRtx {
             let Some(b) = b else { continue };
             let Some(slot) = old_slot.or_else(|| self.free_slots.pop()) else { continue };
             let usage = wgpu::BufferUsages::BLAS_INPUT;
-            let (sizes, inputs, words, extra) = match &b {
+            let (sizes, inputs, words, info) = match &b {
                 Built::Triangles { vertices, indices, quads } => {
                     let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(vertices), usage });
                     let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(indices), usage });
@@ -347,7 +428,7 @@ impl GpuRtx {
                             flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
                         }],
                     };
-                    (sizes, vec![vb, ib], bytemuck::cast_slice::<[u32; 2], u32>(quads).to_vec(), 0u32)
+                    (sizes, vec![vb, ib], bytemuck::cast_slice::<[u32; 2], u32>(quads).to_vec(), None)
                 }
                 Built::Aabbs { boxes, bricks } => {
                     let ab = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(boxes), usage });
@@ -357,8 +438,7 @@ impl GpuRtx {
                             flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
                         }],
                     };
-                    let value = self.world.table_lookup(pos).unwrap_or(0xffff_ffff);
-                    (sizes, vec![ab], bricks.clone(), value)
+                    (sizes, vec![ab], bricks.clone(), Some(self.world.table_lookup(pos).unwrap_or(0xffff_ffff)))
                 }
             };
             let off = match self.geo_buf.alloc(&self.gpu, &mut self.geo_alloc, words.len() as u32, 4) {
@@ -375,9 +455,10 @@ impl GpuRtx {
                 }
             };
             self.gpu.queue.write_buffer(self.geo_buf.buffer(), off as u64 * 4, bytemuck::cast_slice(&words));
-            let info = match self.geometry {
-                Geometry::Triangles => [off / 2, 0, 0, 0],
-                Geometry::Bricks => [extra, off, 0, 0],
+            // Triangles: first quad; boxes: chunk-table value and first brick.
+            let info = match info {
+                None => [off / 2, 0, 0, 0],
+                Some(value) => [value, off, 0, 0],
             };
             self.gpu.queue.write_buffer(&self.chunk_info, slot as u64 * 16, bytemuck::cast_slice(&info));
             let blas = self.gpu.device.create_blas(&wgpu::CreateBlasDescriptor { label: None, flags, update_mode: wgpu::AccelerationStructureUpdateMode::Build }, sizes.clone());
@@ -426,11 +507,14 @@ impl GpuRtx {
     }
 }
 
-impl Renderer for GpuRtx {
+impl Renderer for GpuRt {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        if !updates.is_empty() {
+            self.accum.count = 0;
+        }
         for pos in self.world.apply(&self.gpu, updates) {
             self.dirty.insert(pos);
-            if self.geometry == Geometry::Triangles {
+            if let RtKind::Triangles(_) = self.rt {
                 // Face culling depends on neighbours.
                 for f in Face::ALL {
                     let nb = pos + f.normal();
@@ -444,6 +528,12 @@ impl Renderer for GpuRtx {
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        if self.shading != self.built_shading {
+            self.pipeline = pipeline(&self.gpu, &self.pipeline_layout, (self.source)(&self.shading));
+            self.accum.buf = accum_buffer(&self.gpu, self.width, self.height, &self.shading);
+            self.built_shading = self.shading.clone();
+            self.bind0 = None;
+        }
         let ticket = self.ring.begin(&self.gpu, sink)?;
         let start = Instant::now();
         let c = &req.camera;
@@ -476,11 +566,17 @@ impl Renderer for GpuRtx {
         }
         enc.build_acceleration_structures(std::iter::empty(), std::iter::once(&self.tlas));
 
-        let cull = match self.opts.cull {
+        let cull = match self.opts.cull_faces {
             Cull::Back => 0x10,
             Cull::Front => 0x20,
             Cull::None => 0,
         };
+        let a = &mut self.accum;
+        if !self.opts.accumulate || a.last != Some((*c, req.mode)) || self.shading != "pathtrace" {
+            a.count = 0;
+        }
+        a.last = Some((*c, req.mode));
+        a.frame = a.frame.wrapping_add(1);
         let cu = CameraUniform {
             forward: c.forward().to_array(),
             tan_half_fov: (c.fov_y * 0.5).tan(),
@@ -492,15 +588,20 @@ impl Renderer for GpuRtx {
             sky: u32::from_le_bytes(encode_srgb(self.world.env.sky)),
             width: self.width,
             height: self.height,
-            ray_flags: if self.geometry == Geometry::Triangles { cull } else { 0 },
+            frame: a.frame,
+            prev_count: a.count,
+            bounces: self.opts.bounces.min(8),
+            spp: self.opts.spp.clamp(1, 64),
+            ray_flags: if let RtKind::Triangles(_) = self.rt { cull } else { 0 },
             _p0: 0,
         };
+        a.count = a.count.saturating_add(cu.spp);
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cu));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         if self.bind0.is_none() {
             let view = self.output.create_view(&Default::default());
             self.bind0 = Some(self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("rtx"),
+                label: Some("gpu-rt"),
                 layout: &self.layout0,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: self.camera_buf.as_entire_binding() },
@@ -508,21 +609,22 @@ impl Renderer for GpuRtx {
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::AccelerationStructure(&self.tlas) },
                     wgpu::BindGroupEntry { binding: 3, resource: self.geo_buf.buffer().as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 4, resource: self.chunk_info.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: self.accum.buf.as_entire_binding() },
                 ],
             }));
         }
         {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("rtx"), timestamp_writes: self.ring.compute_timestamps(ticket, !encoder_ts, true) });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("gpu-rt"), timestamp_writes: self.ring.compute_timestamps(ticket, !encoder_ts, true) });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, self.bind0.as_ref().unwrap(), &[]);
             pass.set_bind_group(1, &world_bg, &[]);
             pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
         }
-        let stats = FrameStats {
-            cpu_ms: start.elapsed().as_secs_f32() * 1e3,
-            gpu_ms: None,
-            counters: vec![("instances".into(), n as f64), ("blas_rebuilt".into(), rebuilt as f64), ("build_ms".into(), build_ms)],
-        };
+        let mut counters = vec![("instances".into(), n as f64), ("blas_rebuilt".into(), rebuilt as f64), ("build_ms".into(), build_ms)];
+        if self.shading == "pathtrace" && req.mode == RenderMode::Lit {
+            counters.push(("accumulated_spp".into(), self.accum.count as f64));
+        }
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
     }
@@ -530,10 +632,14 @@ impl Renderer for GpuRtx {
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
         match name {
             "shadows" => self.world.cfg.shadows.set(value)?,
+            "shading" => self.shading = check(Slot::Shading, value.as_str().unwrap_or(""))?,
             "fast_build" => self.opts.fast_build = value.as_bool().unwrap_or(false),
             "build_budget" => self.opts.build_budget = value.as_i64().unwrap_or(0) as usize,
-            "cull" => {
-                self.opts.cull = match value.as_str() {
+            "bounces" => (self.opts.bounces, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(0, 8) as u32, 0),
+            "spp" => (self.opts.spp, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(1, 64) as u32, 0),
+            "accumulate" => self.opts.accumulate = value.as_bool().unwrap_or(true),
+            "cull_faces" => {
+                self.opts.cull_faces = match value.as_str() {
                     Some("front") => Cull::Front,
                     Some("none") => Cull::None,
                     _ => Cull::Back,
@@ -557,6 +663,8 @@ impl Renderer for GpuRtx {
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
+        self.accum.buf = accum_buffer(&self.gpu, width, height, &self.built_shading);
+        self.accum.count = 0;
         self.bind0 = None;
         Ok(())
     }
@@ -564,12 +672,12 @@ impl Renderer for GpuRtx {
     fn memory(&self) -> MemoryReport {
         // BLAS sizes are driver-internal; BLAS input buffers are a lower bound.
         let inputs: u64 = self.chunks.values().flat_map(|c| c._inputs.iter()).map(|b| b.size()).sum();
-        let gpu = self.world.memory_bytes() + self.geo_buf.size() + self.chunk_info.size() + inputs;
+        let gpu = self.world.memory_bytes() + self.geo_buf.size() + self.chunk_info.size() + self.accum.buf.size() + inputs;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
 }
 
-impl Drop for GpuRtx {
+impl Drop for GpuRt {
     fn drop(&mut self) {
         let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
         let positions: Vec<IVec3> = self.chunks.keys().copied().collect();

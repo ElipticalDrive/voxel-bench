@@ -34,6 +34,14 @@ pub fn occlusion_wgsl(storage: &crate::storage::GpuStorage, lod: bool) -> String
     )
 }
 
+/// Visibility components of the gpu-rt back end.
+pub fn rt_wgsl(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "rayquery" => include_str!("rayquery/gpu.wgsl"),
+        _ => return None,
+    })
+}
+
 /// Visibility components of the gpu-raster back end.
 pub fn raster_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {

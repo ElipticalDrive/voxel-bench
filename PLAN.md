@@ -38,7 +38,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - `multirenderer list`: back ends, components by slot, legacy renderers.
 - One composition against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{compose={backend="gpu-compute",storage="prefix",visibility="refloor"}}]' -s output.dir=\"target/check\"`
-  - A legacy renderer: `{name="gpu-rtx"}`. Further knobs go in `options={...}`.
+  - A legacy renderer: `{name="gpu-voxelspace"}`. Further knobs go in `options={...}`.
   - CLI views: `-r gpu-compute:prefix+incremental`, `-r cpu:hier+refloor`,
     `-r gpu-raster:bricks+cubes+visbuffer` (the back end's slots in order).
   - Use `-s run.repeats=3` for interleaved repeats, `-s run.frames=N` (more frames
@@ -92,11 +92,13 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   - cpu: storages bricks, hier, prefix, u8, bits, palette; visibility refloor,
     incremental; shading direct (12 combinations);
   - gpu-raster: geometry greedy, naive, cubes; visibility raster, visbuffer; storage (for
-    shadow rays) the eight GPU ones; shading direct (48 combinations).
+    shadow rays) the eight GPU ones; shading direct (48 combinations);
+  - gpu-rt: geometry greedy, naive, boxes; visibility rayquery; shading direct,
+    pathtrace (6 combinations).
 - **Legacy renderers** (not yet split into components): cpu-reference (stays a
   monolith on purpose), cpu-raster, cpu-simd, cpu-simd-loc (4), cpu-voxelspace,
   cpu-discover, cpu-cluster, gpu-hybrid,
-  gpu-frag-dda, gpu-discover, gpu-rtx(-bricks),
+  gpu-frag-dda, gpu-discover,
   gpu-splat, gpu-voxelspace.
 - **Verification:** zero warnings in both builds, 41 unit tests and 3 GPU end-to-end
   tests pass.
@@ -195,7 +197,7 @@ is a back end plus one component per slot; the UI forbids unsupported combinatio
    - 4e. ~~the beam prepass as a stage~~ (done: slot `prepass`; retired gpu-beam).
    - 4f. ~~path tracing as a shading component~~ (done; retired gpu-pathtrace).
    - 4g. ~~LOD in the storage interface~~ (done; retired gpu-dda-lod and the gpu-dda crate).
-   - 4h. hardware RT as a back end (gpu-rtx, gpu-rtx-bricks).
+   - 4h. ~~hardware RT as a back end~~ (done: `gpu-rt`; retired gpu-rtx, gpu-rtx-bricks).
    - 4i. fragment-shader dispatch and the hybrid G-buffer (gpu-frag-dda, gpu-hybrid).
    - 4j. CPU: cpu-simd, cpu-simd-loc layouts and tiles, cpu-raster.
    - 4k. discovery as raster / CPU visibility (gpu-discover, cpu-discover, cpu-cluster).
@@ -527,6 +529,18 @@ earlier if meshes become more urgent; 7c depends on 6′.
   1.19 vs 1.18 (unlit); lit 2.11 vs 2.09, 1.55 vs 1.53: **matches**. `prefix` with LOD
   1.32 ms unlit (−22%), 1.61 lit (−23%).
 - **Retired:** gpu-dda-lod (the gpu-dda crate is gone).
+
+### 2026-10-10: phase 4h (hardware RT as a back end)
+- **`backends/gpu-rt`** (slots geometry, visibility, shading): geometry `greedy` /
+  `naive` become triangles (one RT implementation, `geometry/greedy/rt.wgsl`), the new
+  `boxes` geometry brick AABBs with a software DDA inside (from gpu-rtx-bricks).
+  Visibility `rayquery` turns `g_rt_trace` into `ctrace` / `occluded`, so the shared
+  shading components run unchanged; `pathtrace` on RT is new (bounce rays are ray
+  queries; accumulation as on gpu-compute).
+- **Results** (terrain, 2 interleaved repeats): images and GPU times identical to the
+  monoliths: greedy 1.07 / 1.17 ms (gpu-rtx 1.07 / 1.17), boxes 1.02 / 1.47 (1.03 /
+  1.47). naive triangles 2.05 / 2.15 ms; pathtrace at 0 bounces 1.26 ms lit.
+- **Retired:** gpu-rtx, gpu-rtx-bricks.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

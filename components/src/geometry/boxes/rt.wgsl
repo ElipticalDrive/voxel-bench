@@ -1,15 +1,15 @@
-// Procedural geometry: one AABB per occupied 4^3 brick (or one per uniform-solid chunk).
-// The RT cores walk the BVH down to candidate boxes; a small software DDA inside each box
-// finds the actual voxel and reports it with rayQueryGenerateIntersection.
-
-struct BoxHit { hit: bool, t: f32, cell: vec3<i32>, block: u32, axis: u32 }
+// Geometry `boxes` on gpu-rt (from gpu-rtx-bricks): one AABB per occupied 4^3 brick (or one
+// per uniform solid chunk). The RT cores walk the BVH to candidate boxes; a small software
+// DDA through the voxel pool finds the voxel inside and reports it with
+// rayQueryGenerateIntersection.
 
 // DDA through the box `[corner, corner + size)` (camera-block-relative cells) of the chunk
 // whose minimum corner is `origin`. `value` is the chunk-table value (pool slot or uniform
-// block). Ignores the cell containing `o`, like every other renderer.
-fn box_dda(o: vec3<f32>, d: vec3<f32>, origin: vec3<i32>, value: u32, corner: vec3<i32>, size: i32, max_t: f32) -> BoxHit {
-    var r: BoxHit;
+// block). Ignores the cell containing `o`, like every other walk.
+fn box_dda(o: vec3<f32>, d: vec3<f32>, origin: vec3<i32>, value: u32, corner: vec3<i32>, size: i32, max_t: f32) -> Hit {
+    var r: Hit;
     r.hit = false;
+    r.lod = 0u;
     let dd = select(d, vec3<f32>(1e-20), abs(d) < vec3<f32>(1e-20));
     let inv = 1.0 / dd;
     let t0 = (vec3<f32>(corner) - o) * inv;
@@ -54,12 +54,12 @@ fn box_dda(o: vec3<f32>, d: vec3<f32>, origin: vec3<i32>, value: u32, corner: ve
     return r;
 }
 
-fn trace_rt(o: vec3<f32>, d: vec3<f32>, max_t: f32, any_hit: bool) -> BoxHit {
-    var best: BoxHit;
+fn g_rt_trace(o: vec3<f32>, d: vec3<f32>, max_t: f32, shadow: bool) -> Hit {
+    var best: Hit;
     best.hit = false;
     var best_t = max_t;
     var rq: ray_query;
-    rayQueryInitialize(&rq, acc, RayDesc(select(0u, RAY_FLAG_TERMINATE_ON_FIRST_HIT, any_hit), 0xffu, 0.0, max_t, o, d));
+    rayQueryInitialize(&rq, acc, RayDesc(select(0u, RAY_FLAG_TERMINATE_ON_FIRST_HIT, shadow), 0xffu, 0.0, max_t, o, d));
     while (rayQueryProceed(&rq)) {
         let c = rayQueryGetCandidateIntersection(&rq);
         if (c.kind != RAY_QUERY_INTERSECTION_AABB) { continue; }
@@ -79,27 +79,10 @@ fn trace_rt(o: vec3<f32>, d: vec3<f32>, max_t: f32, any_hit: bool) -> BoxHit {
             // (naga 30 mis-scopes a struct-field argument here; pass a loaded local.)
             let gen_t = best_t;
             rayQueryGenerateIntersection(&rq, gen_t);
-            if (any_hit) {
+            if (shadow) {
                 rayQueryTerminate(&rq);
             }
         }
     }
     return best;
-}
-
-fn primary(o: vec3<f32>, d: vec3<f32>) -> Surface {
-    var s: Surface;
-    let h = trace_rt(o, d, vp.max_dist, false);
-    s.hit = h.hit;
-    if (h.hit) {
-        s.t = h.t;
-        s.block = h.block;
-        s.face = face_entered(h.axis, d[h.axis] > 0.0);
-        s.local = o + d * h.t - vec3<f32>(h.cell);
-    }
-    return s;
-}
-
-fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool {
-    return trace_rt(p, d, max_t, true).hit;
 }

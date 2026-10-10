@@ -36,6 +36,27 @@ impl Default for Knobs {
 
 pub type MeshFn = fn(&ChunkData, [Option<&ChunkData>; 6], u16, Knobs) -> Mesh;
 
+/// What the gpu-rt back end builds per chunk for a geometry.
+#[derive(Copy, Clone)]
+pub enum RtKind {
+    /// Quads (the `mesh` encoding) as two triangles each.
+    Triangles(MeshFn),
+    /// One AABB per occupied 4^3 brick, searched by a DDA through the voxel pool.
+    Boxes,
+}
+
+/// The gpu-rt implementation of a geometry: WGSL `g_rt_trace(o, d, max_t, shadow) -> Hit`
+/// and what to build.
+pub fn rt(name: &str) -> Option<(&'static str, RtKind)> {
+    let quads = include_str!("greedy/rt.wgsl");
+    Some(match name {
+        "greedy" => (quads, RtKind::Triangles(|c, n, slot, k| mr_mesh::mesh_chunk_merge(c, n, slot, k.merge))),
+        "naive" => (quads, RtKind::Triangles(|c, n, slot, k| naive::mesh(c, n, slot, k.cull))),
+        "boxes" => (include_str!("boxes/rt.wgsl"), RtKind::Boxes),
+        _ => return None,
+    })
+}
+
 /// Implementation details a raster back end needs for a geometry.
 pub struct GpuGeometry {
     pub wgsl: &'static str,

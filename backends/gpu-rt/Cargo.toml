@@ -1,16 +1,17 @@
 [package]
-name = "gpu-rtx"
+name = "backend-gpu-rt"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 mr-core.workspace = true
-mr-gpu.workspace = true
-mr-mesh.workspace = true
 anyhow.workspace = true
-bytemuck.workspace = true
 glam.workspace = true
-rayon.workspace = true
 serde.workspace = true
 tracing.workspace = true
+bytemuck.workspace = true
+rayon.workspace = true
 wgpu.workspace = true
+mr-gpu.workspace = true
+mr-components.workspace = true
+mr-mesh.workspace = true

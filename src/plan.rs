@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(Plan::parse(&saved, &[]).unwrap().renderers[0].options, r.options);
         // Unsupported combinations are rejected with the reason.
         let bad = text.replace("storage = \"prefix\"", "backend = \"gpu-rt\", storage = \"prefix\"");
-        assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("not available"));
+        assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("no storage slot"));
         let cpu = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"palette\"");
         assert_eq!(Plan::parse(&cpu, &[]).unwrap().renderers[0].name, "cpu");
         let bad = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"rows\"");

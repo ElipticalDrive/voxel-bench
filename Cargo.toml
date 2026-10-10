@@ -15,7 +15,6 @@ members = [
     "renderers/cpu-reference",
     "renderers/cpu-raster",
     "renderers/cpu-simd",
-    "renderers/gpu-rtx",
     "renderers/cpu-simd-loc",
     "renderers/cpu-discover",
     "renderers/gpu-discover",
@@ -27,6 +26,7 @@ members = [
     "backends/gpu-compute",
     "backends/cpu",
     "backends/gpu-raster",
+    "backends/gpu-rt",
 ]
 
 [workspace.package]
@@ -43,7 +43,6 @@ mr-mesh = { path = "crates/mr-mesh" }
 cpu-reference = { path = "renderers/cpu-reference" }
 cpu-raster = { path = "renderers/cpu-raster" }
 cpu-simd = { path = "renderers/cpu-simd" }
-gpu-rtx = { path = "renderers/gpu-rtx" }
 cpu-simd-loc = { path = "renderers/cpu-simd-loc" }
 cpu-discover = { path = "renderers/cpu-discover" }
 gpu-discover = { path = "renderers/gpu-discover" }
@@ -55,6 +54,7 @@ gpu-frag-hybrid = { path = "renderers/gpu-frag-hybrid" }
 mr-components = { path = "components" }
 gpu-compute = { path = "backends/gpu-compute" }
 backend-gpu-raster = { path = "backends/gpu-raster" }
+backend-gpu-rt = { path = "backends/gpu-rt" }
 
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
