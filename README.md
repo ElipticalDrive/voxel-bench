@@ -95,7 +95,7 @@ vertex colours, scattered copies, and spin / orbit / bob animation; see
 toggles.
 - *Who draws meshes:* renderers with the `meshes` tag (`multirenderer list`): currently
   `cpu-reference`, `gpu-raster` (same depth buffer), and the ray casters `gpu-dda`,
-  `gpu-dda-lod`, `gpu-compose`, `gpu-bitmask`, `gpu-sdf` and `gpu-beam` (meshes are
+  `gpu-dda-lod`, `gpu-compute` (every composition), `gpu-bitmask`, `gpu-sdf` and `gpu-beam` (meshes are
   rasterised first, rays stop at the mesh). Others are skipped in `+meshes` benchmark passes and
   labelled "(no meshes)" in the GUI.
 - *Semantics* (see `mr_core::mesh`): meshes and voxels occlude each other, lit meshes
@@ -197,7 +197,11 @@ crates/mr-ipc    protocol messages, framing, shared-memory frame slots
 crates/mr-gpu    wgpu helpers: adapter choice, frame ring (readback/timestamps), GPU voxel world,
                  lighting WGSL with a pluggable `occluded()` (DDA, ray query, tree, ...)
 crates/mr-mesh   greedy mesher and quad decoding shared by the raster and triangle-RT renderers
-renderers/*      one crate per renderer
+components/      mr-components: the registry, compatibility rules and `Composition`, plus one
+                 directory per component: storage/<name>/{gpu.wgsl,cpu.rs},
+                 visibility/<name>/..., shading/<name>/...
+backends/*       back ends that assemble compositions: gpu-compute, cpu
+renderers/*      legacy monolithic renderers, one crate each (being split into components)
 ```
 
 - **Isolation.** By default every renderer runs in its own process: the host binary
@@ -297,8 +301,8 @@ Every value can be overridden from the command line, for example
 | `cpu-reference` | CPU ray casting | Multi-threaded f64 two-level DDA (chunk, then voxel), exact lighting with a shadow ray per light. Defines ground truth. |
 | `cpu-raster` | CPU software raster | Greedy meshes, then homogeneous clipping, tiled multithreaded edge-function rasterisation into a depth + visibility-ID buffer, then deferred shading from an exact per-pixel ray–plane hit, with CPU ray-traced shadows. Options: `tile_width`, `band_height`. |
 | `cpu-simd` | CPU ray casting | Speed-oriented CPU caster: f32 camera-relative multi-level DDA (chunk/brick/voxel) over a dense chunk grid, and lockstep ray packets compiled for scalar, AVX2 and AVX-512 (runtime-selected). Knobs: `packet`, `isa`, `threads`, `shadows`. |
-| `cpu-simd-prefix` | CPU ray casting | The user's hierarchy: Morton-ordered 4³ occupancy masks (bits Morton-ordered too) plus a popcount prefix array, so any aligned 2–16 cube's emptiness is one compare. The prefix doubles as a rank into compressed, solid-only block ids. Fewest steps of any variant (−31 to −51% vs u16) and 20% less world memory, but 3–9% behind `hier` per pixel: big steps cost more than unit steps in this traversal. Knob `traversal = "incremental-exact"` (on every `cpu-simd-*` variant) is the incremental-level hierarchical DDA; it brings prefix within 2% of hier on terrain (+13% for prefix) but loses on short rays. `skip2`…`skip16` choose the levels. |
-| `cpu-simd-u16/u8/bits/hier/palette` | CPU ray casting | cpu-simd generic over the world representation: u16 ids (control), u8 ids, 1-bit occupancy (one u64 per 4³ brick) with ids fetched on hit, `hier` (bits + 8³ region skips), and per-chunk palette compression (1–16-bit indices, 7× smaller on terrain). Knob `perf` adds hardware counters (cycles, instructions, cache and TLB misses per pixel). |
+| `cpu: prefix` *(composition; was `cpu-simd-prefix`)* | CPU ray casting | The user's hierarchy: Morton-ordered 4³ occupancy masks (bits Morton-ordered too) plus a popcount prefix array, so any aligned 2–16 cube's emptiness is one compare. The prefix doubles as a rank into compressed, solid-only block ids. Fewest steps of any variant (−31 to −51% vs u16) and 20% less world memory, but 3–9% behind `hier` per pixel: big steps cost more than unit steps in this traversal. `visibility = "incremental"` (with `exact`, default on) is the incremental-level hierarchical DDA; it brings prefix within 2% of hier on terrain (+13% for prefix) but loses on short rays. `skip2`…`skip16` choose the levels. |
+| `cpu: bricks/u8/bits/hier/palette` *(compositions; were `cpu-simd-u16/u8/bits/hier/palette`)* | CPU ray casting | The `cpu` back end with each storage component: `bricks` (u16 ids, cpu-simd's layout), u8 ids, 1-bit occupancy (one u64 per 4³ brick) with ids fetched on hit, `hier` (bits + 8³ region skips), and per-chunk palette compression (1–16-bit indices, 7× smaller on terrain). Knob `perf` adds hardware counters (cycles, instructions, cache and TLB misses per pixel). |
 | `cpu-simd-brickmajor/morton/tiles/best` | CPU ray casting | Locality and scheduling presets of one crate: chunk layout (`linear`/`brick`/`morton`), Morton/Hilbert screen tiles, tile packets, software `prefetch`, and per-thread hardware `counters`. Layout and prefetch don't help (not memory-bound); Morton-ordered 16 px tiles are best (+12–15% over cpu-simd, ~4% from fewer branch misses, the rest from codegen). |
 | `cpu-voxelspace` | CPU, 2.5D | Rayon port of gpu-voxelspace (one task per screen column); identical image, about half its speed. |
 | `gpu-dda` | GPU compute | One thread per pixel. A hashed chunk table, then 4³ brick occupancy bits, then voxels. Ray-traced shadows and a hashed world-space light grid. Options: `shadows` (all/sun/none), `pool_mb`, `max_steps`, `adapter`, `frames_in_flight`. |
@@ -314,7 +318,7 @@ Every value can be overridden from the command line, for example
 | `gpu-clipmap` | GPU compute | Camera-centred toroidal 3D-texture ring buffer (R8/R16 block ids + brick occupancy + slot tags), traversed with `textureLoad` only: no hash table. Exact; 1.4–5× slower than gpu-dda and denser in memory. |
 | `gpu-frag-dda` | GPU fragment | gpu-dda's ray casting in a fragment shader on a full-screen triangle instead of compute, to compare dispatch paths. Often faster than compute here (needs confirming with repeats). |
 | `gpu-pathtrace` | GPU compute, GI | Path tracer: next-event estimation for sun and point lights, `bounces` cosine-weighted diffuse bounces, `spp`, and progressive accumulation while the view is still. `bounces = 0` reproduces gpu-dda's lit image exactly; with bounces it adds colour bleeding and indirect fill (and so differs from the reference by design). |
-| `gpu-compose` | GPU compute, modular | Storage and traversal as separate WGSL modules behind one interface, fused into one shader per combination (so the split costs nothing at run time). Knobs: `storage` = `bricks` (the shared pool and 4³ brick bits), `hier` (bricks + an 8³ region summary), `prefix` (the user's Morton masks + popcount prefix), `distance` (Chebyshev distance field, from gpu-sdf) or `rows` (occupancy rows, from gpu-bitmask); every storage works with every traversal (`refloor`, `incremental`, `sphere`, `rowrun`) through generic fallbacks for missing fast paths; `traversal` = `refloor` (gpu-dda's walk) or `incremental` (the per-level DDA from step 1), with `exact` and `skip2`…`skip16`; `view = "steps"` shows loop iterations per pixel. `bricks` + `refloor` is gpu-dda's algorithm and runs 7–9% faster (no LOD code); `prefix` + `refloor` is the fastest GPU ray walk on open scenes (−13% terrain, −23% edits). `incremental` is 3.5–8× slower on NVIDIA for reasons still unknown (1.3× on AMD). |
+| `gpu-compute` *(back end; legacy alias `gpu-compose`)* | GPU compute, modular | Storage and traversal as separate WGSL modules behind one interface, fused into one shader per combination (so the split costs nothing at run time). Knobs: `storage` = `bricks` (the shared pool and 4³ brick bits), `hier` (bricks + an 8³ region summary), `prefix` (the user's Morton masks + popcount prefix), `distance` (Chebyshev distance field, from gpu-sdf) or `rows` (occupancy rows, from gpu-bitmask); every storage works with every traversal (`refloor`, `incremental`, `sphere`, `rowrun`) through generic fallbacks for missing fast paths; `visibility` (alias `traversal`) = `refloor` (gpu-dda's walk) or `incremental` (the per-level DDA from step 1), with `exact` and `skip2`…`skip16`; `view = "steps"` shows loop iterations per pixel. `bricks` + `refloor` is gpu-dda's algorithm and runs 7–9% faster (no LOD code); `prefix` + `refloor` is the fastest GPU ray walk on open scenes (−13% terrain, −23% edits). `incremental` is 3.5–8× slower on NVIDIA for reasons still unknown (1.3× on AMD). |
 | `gpu-raster-naive` | GPU raster | The Minecraft-style baseline: one instanced quad per exposed face, no greedy merging. `cull = false` emits all six faces of every block (worst case; exceeds buffer limits on terrain). 2.6–18× more faces than greedy meshing. |
 | `gpu-cubes` | GPU raster | One hardware-instanced 36-vertex cube per surface block (back faces culled by the hardware): the "every block is a mesh instance" approach. Same image as gpu-raster-naive at 4.5–7× its GPU time. |
 | `gpu-visbuffer` | GPU raster plus deferred | Visibility buffer: rasterise greedy meshes writing only a 32-bit quad id, then a compute pass reconstructs the hit by ray–plane intersection and shades once per pixel. 1.5–2.5× faster than gpu-raster when lighting with lots of overdraw. |
@@ -340,6 +344,13 @@ GPU renderers pick the discrete GPU on hybrid laptops. Override this with
 `options = { adapter = "nvidia" }`, or set `WGPU_BACKEND` to choose the backend.
 
 ### Adding a renderer
+
+**New techniques go in as components, not new renderers.** Add a directory under
+`components/src/<slot>/<name>/` with the implementation for each back end that supports
+it (`gpu.wgsl` for gpu-compute, `cpu.rs` for cpu), and register it in `COMPONENTS` in
+`components/src/lib.rs` (slot, back ends, the optional queries it `provides` / `uses`).
+The `registry_is_consistent` test checks that the registry and the implementations agree.
+The steps below are for the legacy, monolithic kind.
 
 Declare knobs in `RendererInfo::params` (`ParamSpec::int/float/bool/choice`, with the same
 names as your `options`). For each knob marked `live`, implement `Renderer::set_param`.
@@ -376,10 +387,10 @@ terrain flight unless noted. They're indicative; see `run.repeats`.
     with face count (Menger sponge: 8 fps).
   - cpu-simd is about 1.5× the reference; avoiding libm `floor` calls was the big win.
     SIMD packets don't help, but **not** because of memory: hardware counters
-    (`cpu-simd-*` with `perf = true`) show ~80 cycles and ~220 instructions per DDA step at
+    (the `cpu` back end with `perf = true`) show ~80 cycles and ~220 instructions per DDA step at
     IPC 2.6, with L2 misses costing ≤3% of the time. Shrinking the world data 7–16×
     (bits, palette) leaves cycles per pixel unchanged. What helps is fewer steps:
-    `cpu-simd-hier` skips empty 8³ regions (20–34% fewer steps, up to +29% fps). The
+    `cpu: hier` (formerly `cpu-simd-hier`) skips empty 8³ regions (20–34% fewer steps, up to +29% fps). The
     next wins are fewer instructions per step (register spills, saturating float→int
     casts, bounds checks in the hot loop).
 - **Metrics:** PSNR treats any resampling as a ~30 dB loss on this content; MS-SSIM is the

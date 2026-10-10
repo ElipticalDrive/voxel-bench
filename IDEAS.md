@@ -45,7 +45,7 @@ from one flat structure.
 first, where the hardware counters can confirm both steps per pixel and instructions per
 step. Then do a GPU version.
 
-**Result (implemented: `cpu-simd-prefix`, `Prefix` in `renderers/cpu-simd-mem/src/repr.rs`).**
+**Result (implemented: `cpu-simd-prefix`, `Prefix`, now `components/src/storage/prefix/cpu.rs`; the renderer is now the composition `cpu: prefix`).**
 The structure is as described: Morton-ordered bricks, Morton-ordered bits inside each
 `u64`, a `u16 prefix[513]` per chunk in one cache-aligned allocation with the masks, and
 compressed solid-only block ids addressed by rank. The probe goes bottom-up (bit, byte =
@@ -705,7 +705,7 @@ slow. Good pairings are fast and bad pairings are slow, without odd architecture
 - *How to make it free.*
   - On the CPU, Rust generics are monomorphised, so a separate optimised copy is
     generated per combination. `cpu-simd-mem` (generic over its world representation)
-    already works this way.
+    already worked this way; it became the `cpu` back end.
   - On the GPU, shader modules are concatenated into one shader before compilation, as
     `shader_source(...)` already does, so the driver optimises across module boundaries.
 - *The query interface.* It suits this well: a trait (CPU) or WGSL function set (GPU)

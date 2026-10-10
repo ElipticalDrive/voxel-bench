@@ -20,23 +20,32 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - Verify everything: zero warnings, unit tests, GPU end-to-end tests, a comparison
   against the reference renderer, and interleaved repeats for performance claims.
   Report negative results honestly.
-- Priority: more renderers and optimising existing ones, then the discovery line of
-  work.
+- **One step at a time** (the user's request after hitting a rate limit, 2026-10-10):
+  finish a step, verify, commit and push, report, and wait for the go before the next.
+- Priority: the component refactor (phases 3–5 below), then a wider space of
+  techniques, each built as components. The user prefers new techniques over completing
+  coverage of a feature across every renderer (7b is shelved for that reason).
+- The user values diagnostic `view` modes highly; add them where a component has
+  something to show (with a numeric colour scale once that exists).
 
 ## How to verify and measure
 
 - Builds, zero warnings: `cargo build` and `cargo build --release`.
-- Unit tests: `cargo test -q --workspace` (40).
+- Unit tests: `cargo test -q --workspace` (40, including: the component registry
+  matches its implementations; storages are exact; the CPU walks agree; every shipped
+  plan loads).
 - GPU end-to-end tests: `cargo test -q --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve` (3, including mesh mode).
-- One renderer against the reference:
-  `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{name="gpu-dda"}]' -s output.dir=\"target/check\"`
-  - Options go in `options={...}`.
+- `multirenderer list`: back ends, components by slot, legacy renderers.
+- One composition against the reference:
+  `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{compose={backend="gpu-compute",storage="prefix",visibility="refloor"}}]' -s output.dir=\"target/check\"`
+  - A legacy renderer: `{name="gpu-tree64"}`. Further knobs go in `options={...}`.
+  - CLI views: `-r gpu-compute:prefix+incremental` or `-r cpu:hier+refloor`.
   - Use `-s run.repeats=3` for interleaved repeats, `-s run.frames=N` (more frames
     means a slower camera on the same path), and `-s run.modes=[\"unlit\"]`.
   - Results are in `<dir>/<stamp>/report.json` (a list of passes with `per_frame`
     counters).
 - CPU performance: pin to one CCD (`taskset -c 0-7,16-23`) and read the `perf=true`
-  hardware counters (`cycles_per_px`, `instructions_per_px`, `lane_steps_per_pixel`)
+  hardware counters of the `cpu` back end (`cycles_per_px`, `instructions_per_px`, `lane_steps_per_pixel`)
   rather than fps alone.
 - Whole catalogue: `scripts/suite.sh`, then
   `python3 scripts/summarise.py target/catalogue`.
@@ -56,37 +65,65 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   culling.
 - `cpu-discover` uploads the whole face list every frame, not incrementally.
 - `gpu-voxelspace` lit mode is slower than gpu-dda.
-- `cpu-simd-prefix` has higher peak RSS than hier despite less world data, probably
+- `cpu: prefix` has higher peak RSS than `cpu: hier` despite less world data, probably
   transient build allocations; not investigated.
-- The ~0.1 dB image difference of `cpu-simd-prefix` comes from 2-cell steps rounding
-  differently at grazing edges. It goes both ways against the reference.
+- The ~0.1 dB image difference of `cpu: prefix + refloor` comes from 2-cell steps
+  rounding differently at grazing edges. It goes both ways against the reference.
+- The incremental walk on the GPU is 3.5–8× slower than refloor on NVIDIA only (AMD
+  1.27×), for an unknown compiler reason (IDEAS §1 "Result 3").
 
-## Status (2026-10-09)
+## Status (2026-10-10)
 
-- **Renderers:** 36 in the registry (gpu-compose added). See the README table. Some produce incorrect
-  frames; the user knows and will deal with them later.
-- **Verification:** both builds have zero warnings, all 28 unit tests pass, and both GPU
-  end-to-end tests pass.
+- **Architecture:** renderers are assembled from components (IDEAS §12):
+  **back end × storage × visibility × shading**.
+  - `components/` (crate `mr-components`): one directory per piece, each with its GPU
+    (`gpu.wgsl`) and/or CPU (`cpu.rs`) implementation, plus the registry, compatibility
+    rules and `Composition`.
+  - `backends/gpu-compute` and `backends/cpu`: the assemblers.
+  - Plans use `compose = { backend, storage, visibility, shading }`. The GUI chooser
+    disables combinations that can't run and shows the reason.
+- **Available components:**
+  - gpu-compute: storages bricks, hier, prefix, distance, rows; visibility refloor,
+    incremental, sphere, rowrun; shading direct (20 combinations);
+  - cpu: storages bricks, hier, prefix, u8, bits, palette; visibility refloor,
+    incremental; shading direct (12 combinations).
+- **Legacy renderers** (not yet split into components): cpu-reference (stays a
+  monolith on purpose), cpu-raster, cpu-simd, cpu-simd-loc (4), cpu-voxelspace,
+  cpu-discover, cpu-cluster, gpu-dda (still in the registry; plans use the composition),
+  gpu-dda-lod, gpu-raster, gpu-raster-naive, gpu-cubes, gpu-visbuffer, gpu-hybrid,
+  gpu-frag-dda, gpu-discover, gpu-rtx(-bricks), gpu-tree64, gpu-svo-dag, gpu-clipmap,
+  gpu-beam, gpu-bitmask and gpu-sdf (both covered by compositions), gpu-splat,
+  gpu-voxelspace, gpu-pathtrace, and the gpu-compose alias.
+- **Verification:** zero warnings in both builds, 40 unit tests and 3 GPU end-to-end
+  tests pass.
 - **Tools:**
-  - GUI with live knobs, hot swaps, quality probes and an auto-tuner (local search,
-    resolution controller, Bayesian), with explore → hold → resume, noise-aware
-    acceptance, and stop-restores-best. Tooltips everywhere.
-  - Benchmark plans in `plans/`, catalogue scripts in `target/catalogue/`, and hardware
-    counters on the `cpu-simd-*` renderers (`perf` / `counters` knobs).
+  - GUI with the component chooser, live knobs, hot swaps, quality probes and an
+    auto-tuner (local search, resolution controller, Bayesian). Tooltips everywhere.
+  - Diagnostic views: gpu-compute `steps`; gpu-discover `tiles` / `rays` / `churn` /
+    `overdraw` / `quads`; cpu-cluster `clusters` / `kinds`.
+  - Benchmark plans in `plans/` (compositions where exact equivalents exist), catalogue
+    scripts in `scripts/`, hardware counters on the `cpu` back end (`perf`).
 
 ### Key findings so far
 
 - **CPU traversal is instruction-bound, not memory-bound.** About 80 cycles and 220
   instructions per step at IPC 2.6; cache misses are ≤3% of the time.
 - **Steps per pixel are the lever.**
-  - `cpu-simd-hier`, with one 8³ level, is the fastest CPU caster (+29% on edits).
-  - `cpu-simd-prefix` (the user's structure) takes the fewest steps, 31–51% fewer than
-    u16, but loses 3–9% per pixel to hier under a re-flooring traversal.
+  - `cpu: hier`, with one 8³ level, is the fastest CPU storage under refloor (+29% on
+    edits vs bricks).
+  - `cpu: prefix` (the user's structure) takes the fewest steps, 31–51% fewer than
+    bricks, but loses 3–9% per pixel to hier under refloor.
   - Under the incremental-level traversal (step 1, IDEAS §1 "Result 2") each move costs
     ~30% fewer instructions, but failed ascent tests add work. It wins on terrain (prefix
     +13–17%, hier +5–10%) and loses on short rays (menger −3–12%). Prefix comes within 2%
     of hier but does not pass it.
-- **GPU storage × traversal (`gpu-compose`, step 6′):**
+- **Composition costs nothing** at run time: `gpu-compute: bricks + refloor` is 7–9%
+  faster than gpu-dda (no LOD code); `distance + sphere` and `rows + rowrun` match
+  gpu-sdf and gpu-bitmask; the CPU compositions match the former cpu-simd-* speeds.
+- **Face-cluster discovery (`cpu-cluster`, the user's §10 design)** is more complete
+  than the quadtree on every scene at about the same rays (terrain 51.0 vs 43.8 dB;
+  menger 51.5 vs 26.4 dB), at 2.5× the CPU time.
+- **GPU storage × visibility (gpu-compute, formerly gpu-compose):**
   - prefix + refloor is the fastest GPU ray walk on open scenes (−13% terrain, −23%
     edits vs bricks);
   - the split costs nothing (bricks + refloor is 7–9% faster than gpu-dda);
@@ -110,6 +147,50 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 
 ## Plan
 
+### Current: the component refactor (IDEAS §12)
+
+Goal (the user's): no chooser of monolithic renderers at all. Pieces in files; a renderer
+is a back end plus one component per slot; the UI forbids unsupported combinations.
+
+1. ~~Components crate, GPU-compute back end, compositions in plans / CLI / GUI~~ (done).
+2. ~~CPU back end~~ (done).
+3. **Next: the GPU-raster back end.** What it needs:
+   - **A `geometry` slot**, which turns storage into drawable faces:
+     - `greedy`: greedy quads, from `crates/mr-mesh` (`mesh_chunk_merge`, `Merge::Block`
+       / `Merge::Exposure`), as gpu-raster uses;
+     - `naive`: one quad per exposed face (gpu-raster-naive);
+     - `cubes`: whole cubes (gpu-cubes).
+   - **Raster visibility components:**
+     - `raster`: depth-tested rasterisation of the geometry (gpu-raster's culled
+       multi-draw-indirect path);
+     - `visbuffer`: a visibility buffer with deferred shading (gpu-visbuffer);
+     - later the discovery components (`quadtree` from gpu-discover / cpu-discover,
+       `cluster` from cpu-cluster), which produce a face set that is then rasterised.
+   - **Shading `direct` on the raster back end:** the fragment shader's texel / lit
+     shading (shared `shade_lit`, shadow rays through `VoxelWorld`).
+   - **Meshes:** `mr_gpu::meshes::GpuMeshes` (gpu-raster already uses it).
+   - **Compatibility rules gain slot dependencies:** the raster back end needs a
+     geometry component; ray-walk back ends have no geometry slot. Generalise
+     `mr_components::unavailable` / `Composition` so that slots can be "not applicable"
+     per back end (and shown so in the GUI).
+   - **Then retire** gpu-raster, gpu-raster-naive, gpu-cubes and gpu-visbuffer once
+     their compositions match them, and update the plans.
+4. Port the remaining unique pieces: tree64 and SVO-DAG (storages with tree-descent
+   walks), clipmap (storage), the beam prepass (a visibility stage), path tracing
+   (shading), LOD (in the storage interface, for gpu-dda-lod), hardware RT as a back end
+   (gpu-rtx), splats and voxelspace (their own representations), cpu-raster,
+   cpu-simd-loc layouts, the hybrid / fragment-DDA renderers.
+5. Remove the legacy section and the monolith crates.
+
+Also wanted, sized for single steps:
+- Colour scales on the views.
+- Lighting / meshes as stage components.
+- A plan sweep over all combinations.
+
+(All three are in the notes below, and the backlog.)
+
+### History: the step plan of 2026-10-09
+
 Estimates are rough, in hours of my working time. For scale, the §2 + §1 + §3 stretch on
 2026-10-09 was about 2½ hours. The user can judge what share of a usage window that was;
 each step below is sized relative to it. Steps that need new correctness proofs or tests
@@ -125,7 +206,7 @@ sit at the high end.
 | 3b | Persistent kernel with work stealing | 2–3 h | ~1 | Riskier: driver and forward-progress caveats. Now the measured bottleneck: ~0.6 ms of a 1.9 ms frame is per-level pass latency. |
 | 4 | ~~**Back-to-front order without depth testing**~~ | done | | Done 2026-10-09: exact Manhattan-distance painter order; even or slightly worse, since overdraw is already 1.03. IDEAS §11 "Result". |
 | 5 | ~~**Face-cluster discovery prototype** (§10)~~ | done | | Done 2026-10-10: `cpu-cluster`. More complete than the quadtree everywhere at about the same rays/px; CPU 2.5× slower. Far-field LOD and clip-space fixed point not needed yet. IDEAS §10 "Result". |
-| 6 | **Modular library, first step** (§9): swappable storage + traversal with per-query conversions, for a few ray casters | 3–6 h | 1½–2½ | The full library takes several sessions. |
+| 6 | ~~**Modular library**~~ | superseded | | Became the component refactor above (phases 1–2 done 2026-10-10). |
 
 Further steps:
 
@@ -133,7 +214,7 @@ Further steps:
 |---|---|---|---|---|
 | 6′ | ~~**Storage + traversal slice** of §12~~ | done | | Done 2026-10-09: `gpu-compose` with storages bricks/hier/prefix and traversals refloor/incremental. |
 | 7 | ~~**Mesh mode, core** (§13)~~ | done | | Done 2026-10-09: PassMode, `meshes` tag, `update_meshes`, scene meshes with animation, reference triangles, GUI toggles. The tuner tunes knobs within a lane and doesn't pick renderers, so it needs no filter. IDEAS §13 "Result". |
-| 7b | Meshes in the raster renderers (gpu-raster ~~first~~ done) | 0.5–1 h each | ~¼ each | `mr_gpu::meshes` makes each further raster renderer a few lines (gpu-raster-naive, gpu-cubes, gpu-visbuffer, gpu-discover's raster). |
+| 7b | Meshes in the raster renderers (gpu-raster ~~first~~ done) | 0.5–1 h each | ~¼ each | **Shelved by the user (2026-10-10).** Will fall out of the GPU-raster back end (phase 3), which uses `mr_gpu::meshes`. |
 | 7c | ~~Mesh compositing module for ray casters~~ | done | | Done 2026-10-10: `MeshComposite`; gpu-dda(-lod), gpu-compose, gpu-bitmask, gpu-sdf, gpu-beam. tree64 / svo-dag / clipmap / rtx need their own occlusion in the mesh pass. IDEAS §13 "Result 2". |
 | 7d | Meshes shadowing voxels | 2–4 h | ~1–1½ | Later and optional; needs a mesh BVH in the shadow path. |
 
