@@ -23,7 +23,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 ## How to verify and measure
 
 - Builds, zero warnings: `cargo build` and `cargo build --release`.
-- Unit tests: `cargo test -q --workspace` (31).
+- Unit tests: `cargo test -q --workspace` (32).
 - GPU end-to-end tests: `cargo test -q --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve`.
 - One renderer against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{name="gpu-dda"}]' -s output.dir=\"target/check\"`
@@ -60,7 +60,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 
 ## Status (2026-10-09)
 
-- **Renderers:** 35 in the registry. See the README table. Some produce incorrect
+- **Renderers:** 36 in the registry (gpu-compose added). See the README table. Some produce incorrect
   frames; the user knows and will deal with them later.
 - **Verification:** both builds have zero warnings, all 28 unit tests pass, and both GPU
   end-to-end tests pass.
@@ -83,6 +83,14 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
     ~30% fewer instructions, but failed ascent tests add work. It wins on terrain (prefix
     +13–17%, hier +5–10%) and loses on short rays (menger −3–12%). Prefix comes within 2%
     of hier but does not pass it.
+- **GPU storage × traversal (`gpu-compose`, step 6′):**
+  - prefix + refloor is the fastest GPU ray walk on open scenes (−13% terrain, −23%
+    edits vs bricks);
+  - the split costs nothing (bricks + refloor is 7–9% faster than gpu-dda);
+  - the incremental traversal hits an unexplained 3.5–8× slowdown on NVIDIA only (AMD
+    1.27×). See IDEAS §1 "Result 3".
+- **Unlit GPU timings before 2026-10-09 were inflated.** Ten GPU shaders computed lighting
+  and shadow rays in unlit mode (`select` evaluates both sides); fixed, −25–35% unlit.
 - **Greedy merge across block types** (`gpu-raster merge = "exposure"`) gives −16–18%
   quads on mixed geometry, but nothing on terrain.
 - **Discovery** (`gpu-discover`, `cpu-discover`) finds nearly every visible face at
@@ -104,7 +112,7 @@ sit at the high end.
 | # | Step | Time | vs. the 2½ h stretch | Notes |
 |---|---|---|---|---|
 | 1 | ~~Prefix structure with an **incremental-level hierarchical DDA**, CPU~~ | done | | Done 2026-10-09 as the `traversal` knob on every `cpu-simd-*` variant. Mixed result; see IDEAS §1 "Result 2". |
-| 1b | The same on the GPU, as a new renderer | 1.5–2.5 h | ~¾ | Step 1 did not win clearly on the CPU, but the GPU's costs differ, and the project is exploratory. Fold it into 6′. |
+| 1b | ~~The same on the GPU~~ | done | | Absorbed into 6′: `gpu-compose storage=prefix`. |
 | 2 | **Event-driven discovery** in gpu-discover: skip when nothing changed, edge strips for pure pans, hysteresis for a stable set | 1–2 h | ~½ | Directly addresses the churning face count. |
 | 2b | **Incremental greedy merge** of the discovered set (re-merge only changed chunks) | 1.5–2.5 h | ~¾ | Worth it once 2 makes the set stable. |
 | 3 | **Morton-ordered breadth-first work queues** in gpu-discover (§8) | 1–1.5 h | ~½ | Attacks the measured ray incoherence. |
@@ -117,7 +125,7 @@ Further steps:
 
 | # | Step | Time | vs. the 2½ h stretch | Notes |
 |---|---|---|---|---|
-| 6′ | **Storage + traversal slice** of §12, done right after step 1. The prefix structure is its first GPU plugin, which absorbs 1b. | 3–4 h | ~1½ | About 2–3 h more than 1b alone; afterwards every storage pairs with every traversal. |
+| 6′ | ~~**Storage + traversal slice** of §12~~ | done | | Done 2026-10-09: `gpu-compose` with storages bricks/hier/prefix and traversals refloor/incremental. |
 | 7 | **Mesh mode, core** (§13): mode flags and capabilities, mesh world updates and IPC, plan animation, triangle support in cpu-reference, GUI latching toggles, tuner filtering | 3–4 h | ~1½ | Nothing renders meshes yet except the reference. |
 | 7b | Meshes in the raster renderers (gpu-raster first) | 0.5–1 h each | ~¼ each | Same depth buffer. |
 | 7c | Mesh compositing module for ray casters (raster meshes first, rays capped at mesh depth) | 1.5–2.5 h | ~¾ | Gives every GPU ray caster on the slice mesh support at once. |
@@ -137,7 +145,7 @@ Further steps:
 first. Steps 1–4 change the inside of single components, so modularity wouldn't make them
 cheaper, and step 1 tells us what the storage/traversal interface must offer.
 
-**Order:** ~~1~~ (done) → 6′ → 2 → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
+**Order:** ~~1~~ → ~~6′~~ (done) → 2 → 3 → 4 → 2b → 7 → 7c → 7b → 5 → rest of 6. Step 7 can move
 earlier if meshes become more urgent; 7c depends on 6′.
 
 ## Progress log
@@ -176,6 +184,18 @@ earlier if meshes become more urgent; 7c depends on 6′.
   - additive exit times drift by 1.5–3 dB, and the exact variant fixes it;
   - prefix's per-level test costs more than hier's.
 - **Tried and reverted:** `ascent_delay` (bookkeeping cost more than it saved).
+
+### 2026-10-09 (later): step 6′
+- **`gpu-compose`:** storage and traversal as WGSL modules fused into one shader.
+  - Storages: `bricks`, `hier`, `prefix` (per-slot side data kept in step with the pool
+    via the new `VoxelWorld::slot_of` / `pool_slots`).
+  - Traversals: `refloor`, `incremental` (with `exact`, `skip*`).
+  - Live shader recompiles for traversal knobs; `view = "steps"` heat map.
+- **Findings:** see IDEAS §1 "Result 3" and §12 "Result".
+- **Fixed in ten other GPU renderers:** lit/unlit `select` evaluated lighting on unlit
+  frames (closes the gpu-frag-dda known issue).
+- **Open:** why incremental is slow on NVIDIA; LOD and the other ray casters as storages;
+  rank-compressed ids for prefix on the GPU.
 
 ## Future additions (backlog by category)
 
@@ -274,6 +294,9 @@ voices also go into IDEAS.md with analysis.
 - Continuous checks: a script running builds, tests and a short catalogue, comparing
   against stored baselines.
 - Shared GPU modules (the start of §12): one place for chunk tables, shading and
-  timestamps.
+  timestamps. *(Started: gpu-compose.)*
+- Pipeline statistics (registers, spills) per shader, to explain compiler pathologies
+  like the NVIDIA incremental slowdown. Needs Vulkan's
+  `VK_KHR_pipeline_executable_properties`, which wgpu doesn't expose.
 - Golden-image tests per renderer, to catch regressions in the incorrect-frames
   category.

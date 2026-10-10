@@ -4,8 +4,9 @@
 //! and the split costs nothing at run time.
 //!
 //! * Storage (`store_*.wgsl`): `S_LEVELS`, `s_occupied(slot, level, c)`, `s_probe(slot, l)`,
-//!   `s_block(slot, l)`. `bricks` is the shared pool + 4^3 brick bits; `prefix` adds the
-//!   user's Morton masks + popcount prefix per slot (`prefix.rs`).
+//!   `s_block(slot, l)`. `bricks` is the shared pool + 4^3 brick bits; `hier` adds an 8^3
+//!   region summary per slot; `prefix` adds the user's Morton masks + popcount prefix per
+//!   slot (`prefix.rs`). Side data lives in `aux`, indexed like the pool.
 //! * Traversal (`trav_*.wgsl`): `ctrace(o, d, max_t) -> Hit`, written only against the
 //!   storage interface and the shared chunk table. `refloor` is gpu-dda's walk;
 //!   `incremental` is the per-level DDA from cpu-simd-mem.
@@ -24,9 +25,34 @@ use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shado
 use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, wgpu};
 use serde::Deserialize;
 
-const STORAGES: &[(&str, &str)] = &[("bricks", include_str!("store_bricks.wgsl")), ("prefix", include_str!("store_prefix.wgsl"))];
+/// A storage module: its WGSL, plus optional per-slot side data in the `aux` buffer
+/// (indexed like the shared pool), built on the CPU for each dense chunk.
+struct Storage {
+    name: &'static str,
+    wgsl: &'static str,
+    /// u32 words per slot (0 = no side data) and their builder.
+    aux_words: usize,
+    build: fn(&DenseChunk) -> Vec<u32>,
+}
+
+const STORAGES: &[Storage] = &[
+    Storage { name: "bricks", wgsl: include_str!("store_bricks.wgsl"), aux_words: 0, build: |_| Vec::new() },
+    Storage { name: "hier", wgsl: include_str!("store_hier.wgsl"), aux_words: 2, build: hier_summary },
+    Storage { name: "prefix", wgsl: include_str!("store_prefix.wgsl"), aux_words: prefix::PREFIX_WORDS, build: prefix::build },
+];
+
+/// `hier`: one bit per 8^3 region (index `x | z << 2 | y << 4`, as cpu-simd-hier).
+fn hier_summary(d: &DenseChunk) -> Vec<u32> {
+    // Dense order is x + 32 z + 1024 y: the region index is bits 3-4 of each coordinate.
+    // Branch-free (solidity is unpredictable in mixed chunks).
+    let mut bits = 0u64;
+    for (i, b) in d.0.iter().enumerate() {
+        let r = (i >> 3) & 3 | ((i >> 8) & 3) << 2 | ((i >> 13) & 3) << 4;
+        bits |= (b.is_solid() as u64) << r;
+    }
+    vec![bits as u32, (bits >> 32) as u32]
+}
 const TRAVERSALS: &[(&str, &str)] = &[("refloor", include_str!("trav_refloor.wgsl")), ("incremental", include_str!("trav_incremental.wgsl"))];
-const PREFIX_BYTES: u64 = prefix::PREFIX_WORDS as u64 * 4;
 const CHUNK_BYTES: u64 = CHUNK_VOLUME as u64 * 2;
 
 pub fn entry() -> RendererEntry {
@@ -48,9 +74,13 @@ fn names(list: &[(&'static str, &str)]) -> Vec<&'static str> {
     list.iter().map(|(n, _)| *n).collect()
 }
 
+fn storage_names() -> Vec<&'static str> {
+    STORAGES.iter().map(|s| s.name).collect()
+}
+
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
-        ParamSpec::choice("storage", "World storage module. bricks: the shared u16 pool with 4^3 brick bits (levels 1, 4). prefix: Morton occupancy masks + popcount prefix (levels 1, 2, 4, 8, 16)", &names(STORAGES), "bricks", false),
+        ParamSpec::choice("storage", "World storage module. bricks: the shared u16 pool with 4^3 brick bits (levels 1, 4). hier: bricks + one bit per 8^3 region (levels 1, 4, 8). prefix: Morton occupancy masks + popcount prefix (levels 1, 2, 4, 8, 16)", &storage_names(), "bricks", false),
         ParamSpec::choice("traversal", "Ray walk module. refloor: probe for the largest empty cube, step out, re-floor (gpu-dda). incremental: hierarchical DDA keeping per-level exit times, moving between levels incrementally", &names(TRAVERSALS), "refloor", true),
         ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true),
     ];
@@ -119,17 +149,18 @@ struct Composition {
 
 impl Composition {
     fn source(&self) -> String {
-        let (sname, store) = STORAGES[self.storage];
+        let st = &STORAGES[self.storage];
+        let (sname, store) = (st.name, st.wgsl);
         let (tname, trav) = TRAVERSALS[self.traversal];
         let own = format!(
             "// Composition: storage = {sname}, traversal = {tname}\n\
              @group(2) @binding(0) var<storage, read> aux: array<u32>;\n\
-             const PREFIX_WORDS: u32 = {}u;\n\
+             const AUX_WORDS: u32 = {}u;\n\
              const EXACT: bool = {};\n\
              const VIEW_STEPS: bool = {};\n\
              const LEVEL_MASK: u32 = (S_LEVELS & {:#x}u) | 0x21u;\n\
              {store}\n{trav}\n{}",
-            prefix::PREFIX_WORDS,
+            st.aux_words.max(1),
             self.exact,
             self.steps_view,
             self.levels,
@@ -195,7 +226,7 @@ impl GpuCompose {
     pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         let comp = Composition {
-            storage: pick(STORAGES, &opts.storage, "storage")?,
+            storage: STORAGES.iter().position(|s| s.name == opts.storage).ok_or_else(|| anyhow::anyhow!("unknown storage `{}` (have: {})", opts.storage, storage_names().join(", ")))?,
             traversal: pick(TRAVERSALS, &opts.traversal, "traversal")?,
             exact: opts.exact,
             steps_view: parse_view(&opts.view)?,
@@ -261,7 +292,8 @@ impl GpuCompose {
         let pipeline = Self::pipeline(&gpu, &pipeline_layout, &comp)?;
         // Side data covers the same slots as the pool, up to the same limit.
         let max_slots = (opts.pool_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1);
-        let aux = GrowableBuffer::new(&gpu, "compose aux", 256, max_slots * PREFIX_BYTES, wgpu::BufferUsages::STORAGE);
+        let aux_bytes = STORAGES[comp.storage].aux_words as u64 * 4;
+        let aux = GrowableBuffer::new(&gpu, "compose aux", 256, (max_slots * aux_bytes).max(256), wgpu::BufferUsages::STORAGE);
         let camera_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
             size: size_of::<CameraUniform>() as u64,
@@ -272,7 +304,7 @@ impl GpuCompose {
         let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output);
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
-        tracing::info!("gpu-compose: storage {}, traversal {}", STORAGES[comp.storage].0, TRAVERSALS[comp.traversal].0);
+        tracing::info!("gpu-compose: storage {}, traversal {}", STORAGES[comp.storage].name, TRAVERSALS[comp.traversal].0);
         Ok(Self {
             gpu,
             world,
@@ -325,23 +357,26 @@ impl GpuCompose {
         })
     }
 
-    fn uses_prefix(&self) -> bool {
-        STORAGES[self.comp.storage].0 == "prefix"
+    /// Bytes of side data per pool slot for the chosen storage (0 = none).
+    fn aux_bytes(&self) -> u64 {
+        STORAGES[self.comp.storage].aux_words as u64 * 4
     }
 }
 
 impl Renderer for GpuCompose {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let changed = self.world.apply(&self.gpu, updates);
-        if self.uses_prefix() {
+        let unit = self.aux_bytes();
+        if unit > 0 {
             // Keep the side data indexed like the pool: every changed dense chunk rewrites
             // its slot (slots of unloaded chunks are simply no longer referenced).
-            if self.aux.reserve(&self.gpu, self.world.pool_slots() as u64 * PREFIX_BYTES)? {
+            if self.aux.reserve(&self.gpu, self.world.pool_slots() as u64 * unit)? {
                 self.bind2 = None;
             }
+            let build = STORAGES[self.comp.storage].build;
             for pos in changed {
                 if let (Some(slot), Some(ChunkData::Dense(d))) = (self.world.slot_of(pos), self.world.chunk(pos)) {
-                    self.gpu.queue.write_buffer(self.aux.buffer(), slot as u64 * PREFIX_BYTES, bytemuck::cast_slice(&prefix::build(d)));
+                    self.gpu.queue.write_buffer(self.aux.buffer(), slot as u64 * unit, bytemuck::cast_slice(&build(d)));
                 }
             }
         }
@@ -438,7 +473,7 @@ impl Renderer for GpuCompose {
     }
 
     fn memory(&self) -> MemoryReport {
-        let aux = if self.uses_prefix() { self.aux.size() } else { 0 };
+        let aux = if self.aux_bytes() > 0 { self.aux.size() } else { 0 };
         MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + aux + self.width as u64 * self.height as u64 * 4 }
     }
 }

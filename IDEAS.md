@@ -190,7 +190,44 @@ on terrain).
 - testing the next coarse level only when the current level has been empty for a while,
   without per-step bookkeeping, for example by unrolling the step loop;
 - a GPU version (PLAN 1b / 6′), where ALU-heavy re-flooring costs differently, and where a
-  per-pixel ascent test is a memory latency rather than an instruction count.
+  per-pixel ascent test is a memory latency rather than an instruction count. *(Done: see
+  Result 3.)*
+
+**Result 3: on the GPU (`gpu-compose`, PLAN 6′).** The prefix structure is a GPU storage
+module: per pool slot, the 512 Morton masks and the 513 prefixes (5.1 KiB), with block ids
+still read from the shared pool. Rank-compressed ids are not done on the GPU yet. GPU ms
+per frame, 1080p, RTX 5060 Laptop, medians of 3 interleaved repeats (hier: 2):
+
+| scene | mode | gpu-dda | bricks + refloor | hier + refloor | prefix + refloor | bricks + incr | prefix + incr |
+|---|---|---|---|---|---|---|---|
+| terrain | unlit | 0.942 | 0.857 | 0.764 | **0.748** | 4.51 | 4.02 |
+| terrain | lit | 1.317 | 1.203 | 1.103 | **1.070** | 6.13 | 5.77 |
+| edits | unlit | 0.714 | 0.653 | 0.528 | **0.506** | 2.27 | 1.90 |
+| edits | lit | 1.004 | 0.927 | 0.784 | **0.746** | 3.32 | 2.95 |
+| menger | unlit | 0.355 | **0.323** | – | 0.331 | 1.70 | 2.16 |
+| menger | lit | 0.631 | **0.578** | – | 0.602 | 3.54 | 4.60 |
+
+All of them render the reference image equally well (same PSNR as gpu-dda in every row).
+
+- **Under refloor, prefix is the fastest GPU walk on open scenes:** −13% vs bricks on
+  terrain, −23% on edits, and ahead of hier too. The GPU pays memory latency per step
+  rather than instructions, so prefix's bigger skips pay off there, unlike on the CPU. On
+  menger (short rays) it is even with bricks.
+- **The incremental traversal is 3.5–8× slower on NVIDIA.** This is not the algorithm: on
+  the AMD iGPU (RADV) the same shader is only 1.27× slower than refloor, which is about
+  the CPU's ratio. And on NVIDIA itself, `view = "steps"` (which writes only the
+  iteration count) runs it in 1.18 ms against refloor's 0.85, with nearly the same
+  iterations per pixel (29.9 vs 28.8). The ~3.3 ms extra appears only when the ray's
+  result is consumed; even consuming just the hit flag triggers it.
+  - Ruled out, one at a time: dynamic vector indexing, the chunk cache in private
+    globals, writing the result struct inside the loop, returning from inside the loop,
+    unbounded inner loops, `continue`, a flattened one-test-per-iteration loop, runaway
+    rays (`max_steps` 256 vs 2048 changes nothing), and extra live state.
+  - Still open. A register-allocation or reconvergence decision in NVIDIA's compiler is
+    the most likely cause; seeing it needs the pipeline statistics (registers, spills),
+    which wgpu doesn't expose.
+- The CPU-side cost of the side data matters: building prefix data for edited chunks costs
+  +0.7 ms per frame on the edits plan after a one-pass Morton-order build (it was +2.0 ms).
 ---
 
 ## 2. Greedy meshing across block types with a per-cell block-id lookup
@@ -628,6 +665,35 @@ combinations for free.
   learns to avoid them.
 - *Order.* Start with the storage + traversal slice, after the incremental-level prefix
   traversal (PLAN.md step 1) has shown what a traversal needs to ask of storage.
+
+**Result (implemented: `gpu-compose`, the storage + traversal slice).**
+- *Interface.* A storage is a WGSL module providing:
+  - `S_LEVELS`, the levels it answers directly;
+  - `s_occupied(slot, level, cell)` for top-down walks;
+  - `s_probe(slot, cell)`, returning (block, largest empty cube), for skip-size walks;
+  - `s_block(slot, cell)`;
+  - optional per-slot side data with a CPU builder.
+
+  A traversal is a WGSL module providing `ctrace(o, d, max_t) -> Hit`, written only
+  against that interface and the shared chunk table. Shadow rays use the same composed
+  walk.
+- *Modules so far.* Storages `bricks`, `hier` and `prefix`; traversals `refloor` and
+  `incremental`. That gives 6 combinations from 5 modules. Adding `hier` took one
+  28-line WGSL file and a 10-line builder, and it works with both traversals.
+- *Knobs.* `storage` needs a restart (its side data is built per chunk). `traversal`,
+  `exact`, `skip*` and `view` recompile the shader live.
+- *Cost of the split: none measured.* `bricks` + `refloor` is gpu-dda's algorithm on
+  gpu-dda's data. It runs 7–9% faster than gpu-dda, because gpu-dda also carries LOD
+  code.
+- *A side finding that changed other renderers.* Ten GPU renderers shaded with
+  `select(texel, shade_lit(...), lit)`. WGSL's `select` evaluates both sides, so unlit
+  frames paid for lighting and shadow rays: unlit and lit GPU times were identical.
+  Branching instead cut unlit GPU time by 25–35% (gpu-rtx 5%) with identical images.
+  Unlit GPU numbers recorded before 2026-10-09 are therefore inflated.
+- *Not yet:* LOD in gpu-compose; converting the other ray casters (tree64, bitmask,
+  clipmap, svo-dag) into storages; rank-compressed ids for `prefix` on the GPU;
+  composition as a tuner dimension (it is a knob, so the tuner can already flip
+  `traversal`).
 
 ---
 

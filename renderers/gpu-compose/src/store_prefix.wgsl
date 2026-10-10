@@ -16,12 +16,12 @@ fn morton3(c: vec3<u32>) -> u32 {
 }
 
 fn p_mask(slot: u32, m: u32) -> vec2<u32> {
-    let b = slot * PREFIX_WORDS + 2u * m;
+    let b = slot * AUX_WORDS + 2u * m;
     return vec2<u32>(aux[b], aux[b + 1u]);
 }
 
 fn p_prefix(slot: u32, i: u32) -> u32 {
-    let w = aux[slot * PREFIX_WORDS + 1024u + (i >> 1u)];
+    let w = aux[slot * AUX_WORDS + 1024u + (i >> 1u)];
     return (w >> ((i & 1u) * 16u)) & 0xffffu;
 }
 
