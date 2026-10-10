@@ -6,7 +6,7 @@ struct Frame {
     cam_frac: vec3<f32>, mode: u32,   // camera position within vp.cam_block; 0 unlit, 1 lit
     forward: vec3<f32>, tan_half_fov: f32,
     right: vec3<f32>, aspect: f32,
-    up: vec3<f32>, _p0: u32,
+    up: vec3<f32>, view: u32,         // view: 0 image, 1 churn (tint faces new this frame)
     size: vec2<f32>, _p1: vec2<f32>,
 }
 
@@ -32,6 +32,7 @@ struct VOut {
     @location(1) @interpolate(flat) info: vec2<u32>, // face, block
     @location(2) @interpolate(flat) plane: f32,       // face plane along its normal axis (camera-block relative)
     @location(3) @interpolate(flat) iid: u32,         // list index + 1 (face-id raster)
+    @location(4) @interpolate(flat) fresh: u32,       // 1 = new to the face set this frame
 }
 
 @vertex
@@ -53,6 +54,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     out.info = vec2<u32>(face, e.z);
     out.plane = rel[ax.x];
     out.iid = ii + 1u;
+    out.fresh = e.w;
     return out;
 }
 
@@ -75,8 +77,14 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     local[ax.y] = fract(hit[ax.y]);
     local[ax.z] = fract(hit[ax.z]);
     let texel = surface_texel(in.info.y, face, local);
-    if (fr.mode == 0u) { return texel; }
-    return shade_lit(texel, hit, face_normal(face));
+    var color = texel;
+    if (fr.mode != 0u) { color = shade_lit(texel, hit, face_normal(face)); }
+    if (fr.view == 1u) {
+        // Churn: faces discovered this frame red, faces carried over greyed.
+        let g = dot(color.rgb, vec3<f32>(0.3, 0.5, 0.2));
+        color = select(vec4<f32>(vec3<f32>(g * 0.6), 1.0), vec4<f32>(1.0, 0.15, 0.1, 1.0), in.fresh != 0u);
+    }
+    return color;
 }
 
 // Face-id raster (incremental mode): which list entry covers each pixel.

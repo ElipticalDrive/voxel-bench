@@ -11,6 +11,11 @@
 // the level-0 tiles that need discovery: uncovered pixels, occlusion edges whose parallax
 // under the camera's translation can reveal something, changed chunks' screen rectangles,
 // and a round-robin refresh. Level 0 casts and classifies only those tiles.
+//
+// Event-driven frames (`events`, chosen on the host): a camera that only rotated cannot
+// change visibility, so `still` frames skip the face-id raster and the parallax test and
+// discover only the strip entering the screen plus changed chunks (`need_still`); faces
+// inside the view count as seen. Frames where nothing changed skip discovery entirely.
 
 struct Params {
     forward: vec3<f32>, tan_half_fov: f32,
@@ -21,7 +26,7 @@ struct Params {
     lat_w: u32, lat_h: u32, cols: u32, rows: u32,
     keep: u32, criterion: u32, sky_tile: u32, max_fp: u32,   // criterion: 0 plane, 1 face
     table_mask: u32, list_cap: u32, chunk_mask: u32, chunk_probe: u32,
-    queue_cap: u32, parity: u32, strict: u32, _p0: u32,
+    queue_cap: u32, parity: u32, strict: u32, still: u32,   // still: rotation / world-change-only frame
     closure_px: u32, closure_box: i32, block_faces: u32, _p2: u32,
     incr: u32, refresh: u32, par_k: f32, n_rects: u32,   // par_k = f_px * |camera move| / near
     full: u32, r_max: u32, need_off: u32, par_thresh: f32,
@@ -50,12 +55,13 @@ struct Level { level: u32, size: u32, in_off: u32, out_off: u32, parity: u32, ca
 @group(0) @binding(15) var<storage, read_write> lcount: array<atomic<u32>>;
 @group(0) @binding(16) var<storage, read_write> jobs: array<vec4<i32>>; // footprint jobs, 2 per job
 @group(0) @binding(17) var<storage, read_write> seen: array<u32>;  // per previous-list entry: frame last rasterised
-@group(0) @binding(18) var<storage, read_write> need: array<u32>;  // [0..) reveal radius + 1 per tile; [need_off..) final flag; [2 need_off..) frames since discovered
+@group(0) @binding(18) var<storage, read_write> need: array<u32>;  // [0..) reveal radius + 1 per tile; [need_off..) why discovered (0 = not); [2 need_off..) frames since discovered; [3 need_off..) hole seen after the last raster
 @group(0) @binding(19) var idtex: texture_2d<u32>;                  // previous list's face index + 1 per pixel
 @group(0) @binding(20) var depthtex: texture_depth_2d;
 @group(0) @binding(21) var<storage, read> rects: array<vec4<u32>>; // changed-chunk screen rects, in level-0 tiles
 @group(0) @binding(22) var<storage, read_write> sky_cur: array<u32>;  // 1 = sky in this frame's final raster
 @group(0) @binding(23) var<storage, read> sky_prev: array<u32>;
+@group(0) @binding(24) var<storage, read_write> cast_frame: array<u32>; // per lattice point: frame its ray was last cast (`rays` view)
 
 const WG: u32 = 256u;
 const NO_KEY: u32 = 0xffffffffu;
@@ -76,6 +82,15 @@ const C_CLOSURE: u32 = 40u;  // tiles accepted by local closure
 const C_CL_FACES: u32 = 41u; // faces added by local closure
 const C_NEED: u32 = 42u;     // level-0 tiles needing discovery (incremental)
 const C_RCLAMP: u32 = 43u;   // tiles whose reveal radius hit r_max
+const C_NEW: u32 = 44u;      // faces new to S this frame (not carried over by survive)
+
+// Why a level-0 tile was discovered (bits of need[need_off + tile]; the `tiles` view).
+const WHY_FULL: u32 = 1u;
+const WHY_REFRESH: u32 = 2u;
+const WHY_CHUNK: u32 = 4u;
+const WHY_UNCOVERED: u32 = 8u;
+const WHY_PARALLAX: u32 = 16u;
+const WHY_STRIP: u32 = 32u;
 const C_JOBS: u32 = 48u;     // + level: footprint jobs queued
 const JOB_CAP: u32 = 262144u;
 
@@ -153,7 +168,8 @@ fn hash_u(k: u32) -> u32 {
     return h;
 }
 
-fn set_insert(key: u32, block: u32, last: u32) {
+// `fresh`: inserted by discovery rather than carried over by `survive` (list.w = 1).
+fn set_insert(key: u32, block: u32, last: u32, fresh: u32) {
     let k1 = key + 1u;
     var i = hash_u(key) & pr.table_mask;
     for (var n = 0u; n < 128u; n++) {
@@ -161,7 +177,8 @@ fn set_insert(key: u32, block: u32, last: u32) {
         if (r.exchanged) {
             let j = atomicAdd(&lcount[pr.parity], 1u);
             if (j < pr.list_cap) {
-                list[j] = vec4<u32>(key, i, block, 0u);
+                list[j] = vec4<u32>(key, i, block, fresh);
+                if (fresh != 0u) { atomicAdd(&st[C_NEW], 1u); }
             } else {
                 atomicAdd(&st[C_OVER], 1u);
             }
@@ -193,7 +210,7 @@ fn set_contains(key: u32) -> bool {
 fn add_face_plain(a: vec3<i32>, face: u32, block: u32) {
     let k = face_key(a, face);
     if (k == NO_KEY) { atomicAdd(&st[C_NOCHUNK], 1u); return; }
-    set_insert(k, block, pr.frame);
+    set_insert(k, block, pr.frame, 1u);
 }
 
 // Adds a face and (with `block_faces`) the block's other camera-facing exposed faces: a
@@ -236,12 +253,14 @@ fn survive(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: v
         let z = dot(v, pr.forward);
         let inside = z > -1.0 && abs(dot(v, pr.right)) <= z * pr.tan_half_fov * pr.aspect + 1.0 && abs(dot(v, pr.up)) <= z * pr.tan_half_fov + 1.0;
         if (!inside) { keep = pr.keep_out; }
+        // Rotation (or world changes) only: what was visible and is still in view still is.
+        if (pr.still != 0u && inside) { last = pr.frame; }
     }
     if (pr.frame - last >= keep) { return; }
     let face = key & 7u;
     let b = exposed(a, face);
     if (b == 0u) { return; }
-    set_insert(key, b, last);
+    set_insert(key, b, last, 0u);
     atomicAdd(&st[C_SURV], 1u);
 }
 
@@ -250,6 +269,7 @@ fn cast_ray(q: vec2<u32>) {
     let d = ray_dir(q);
     let h = trace(pr.origin, d, vp.max_dist);
     let idx = q.y * pr.lat_w + q.x;
+    cast_frame[idx] = pr.frame;
     if (h.hit) {
         let face = face_entered(h.axis, d[h.axis] > 0.0);
         cache_c[idx] = vec4<i32>(h.cell, i32(face | (h.block << 3u)));
@@ -640,14 +660,26 @@ fn sky_known(p: vec2<i32>) -> bool {
     return sky_prev[u32(q.y) * pr.width + u32(q.x)] != 0u;
 }
 
-// After the final raster: which pixels are sky this frame. Every uncovered pixel that was
-// not sky-known forced its tile through discovery, so uncovered now means confirmed sky.
+// After the final raster: which pixels are sky this frame. An uncovered pixel is
+// confirmed sky if it was sky-known or its tile went through discovery this frame.
+// Otherwise it is a hole (a face no sample has found yet, e.g. one that a rotation moved
+// onto a pixel centre): not sky, and its tile is discovered next frame.
 @compute @workgroup_size(256)
 fn sky_update(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
     let i = tid(wg, nwg, li);
     if (i >= pr.width * pr.height) { return; }
-    let d = textureLoad(depthtex, vec2<u32>(i % pr.width, i / pr.width), 0);
-    sky_cur[i] = select(0u, 1u, d == 0.0);
+    let p = vec2<u32>(i % pr.width, i / pr.width);
+    let d = textureLoad(depthtex, p, 0);
+    var sky = d == 0.0;
+    if (sky) {
+        let t = p / pr.tile;
+        let tile = t.y * pr.cols + t.x;
+        if (need[pr.need_off + tile] == 0u && !sky_known(vec2<i32>(p))) {
+            sky = false;
+            need[3u * pr.need_off + tile] = 1u;
+        }
+    }
+    sky_cur[i] = select(0u, 1u, sky);
 }
 
 // Per level-0 tile: 1 if it has uncovered pixels; 1 + R if an occlusion edge in it (or on
@@ -702,23 +734,76 @@ fn need_final(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg
     if (i >= pr.cols * pr.rows) { return; }
     let tx = i32(i % pr.cols);
     let ty = i32(i / pr.cols);
-    var n = pr.full != 0u || (pr.refresh != 0u && i % pr.refresh == pr.frame % pr.refresh);
+    var why = select(0u, WHY_FULL, pr.full != 0u);
+    if (pr.refresh != 0u && i % pr.refresh == pr.frame % pr.refresh) { why |= WHY_REFRESH; }
     let rm = i32(pr.r_max);
-    for (var dy = -rm; dy <= rm && !n; dy++) {
+    for (var dy = -rm; dy <= rm; dy++) {
         for (var dx = -rm; dx <= rm; dx++) {
             let x = tx + dx;
             let y = ty + dy;
             if (x < 0 || y < 0 || x >= i32(pr.cols) || y >= i32(pr.rows)) { continue; }
             let v = need[u32(y) * pr.cols + u32(x)];
-            if (v != 0u && max(abs(dx), abs(dy)) <= i32(v) - 1) { n = true; break; }
+            if (v != 0u && max(abs(dx), abs(dy)) <= i32(v) - 1) {
+                why |= select(WHY_PARALLAX, WHY_UNCOVERED, v == 1u);
+            }
         }
     }
-    for (var k = 0u; k < pr.n_rects && !n; k++) {
+    why |= rect_why(u32(tx), u32(ty));
+    finish_need(i, why);
+}
+
+fn rect_why(tx: u32, ty: u32) -> u32 {
+    for (var k = 0u; k < pr.n_rects; k++) {
         let r = rects[k];
-        if (u32(tx) >= r.x && u32(ty) >= r.y && u32(tx) <= r.z && u32(ty) <= r.w) { n = true; }
+        if (tx >= r.x && ty >= r.y && tx <= r.z && ty <= r.w) { return WHY_CHUNK; }
     }
-    need[pr.need_off + i] = select(0u, 1u, n);
+    return 0u;
+}
+
+// Stores the tile's reasons (non-zero = discover) and its age since last discovered.
+fn finish_need(i: u32, why: u32) {
+    need[pr.need_off + i] = why;
+    need[3u * pr.need_off + i] = 0u;
     let age = need[2u * pr.need_off + i];
-    need[2u * pr.need_off + i] = select(age + 1u, 0u, n);
-    if (n) { atomicAdd(&st[C_NEED], 1u); }
+    need[2u * pr.need_off + i] = select(age + 1u, 0u, why != 0u);
+    if (why != 0u) { atomicAdd(&st[C_NEED], 1u); }
+}
+
+// Whether the direction through image point `px` (pixel units, not pixel centres) lay
+// inside the previous camera's image.
+fn in_prev(px: vec2<f32>) -> bool {
+    let sx = (2.0 * px.x / f32(pr.width) - 1.0) * pr.tan_half_fov * pr.aspect;
+    let sy = (1.0 - 2.0 * px.y / f32(pr.height)) * pr.tan_half_fov;
+    let d = pr.forward + sx * pr.right + sy * pr.up;
+    let z = dot(d, pr.prev_forward);
+    if (z <= 0.0) { return false; }
+    let u = dot(d, pr.prev_right) / (z * pr.prev_tan * pr.aspect);
+    let v = dot(d, pr.prev_up) / (z * pr.prev_tan);
+    return abs(u) <= 1.0 && abs(v) <= 1.0;
+}
+
+// Still frames (camera rotated and/or chunks changed, no translation): visibility can
+// only change where the image shows directions the previous frame did not (the strip
+// entering the screen) and in changed chunks. The previous image is a convex region of
+// directions, so a tile lies inside it exactly when its four corners do.
+@compute @workgroup_size(256)
+fn need_still(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let i = tid(wg, nwg, li);
+    if (i >= pr.cols * pr.rows) { return; }
+    let tx = i % pr.cols;
+    let ty = i / pr.cols;
+    var why = select(0u, WHY_FULL, pr.full != 0u || pr.has_prev == 0u);
+    let s = f32(pr.tile);
+    let lo = vec2<f32>(f32(tx), f32(ty)) * s;
+    let hi = min(lo + vec2<f32>(s), vec2<f32>(f32(pr.width), f32(pr.height)));
+    if (!(in_prev(lo) && in_prev(vec2<f32>(hi.x, lo.y)) && in_prev(vec2<f32>(lo.x, hi.y)) && in_prev(hi))) {
+        why |= WHY_STRIP;
+    }
+    why |= rect_why(tx, ty);
+    if (need[3u * pr.need_off + i] != 0u) { why |= WHY_UNCOVERED; }
+    // Rotation keeps geometric visibility but moves pixel centres: a face too small to have
+    // been sampled can land on one in front of a known face. Nothing local reveals that,
+    // so the round-robin refresh stays on.
+    if (pr.refresh != 0u && i % pr.refresh == pr.frame % pr.refresh) { why |= WHY_REFRESH; }
+    finish_need(i, why);
 }
