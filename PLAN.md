@@ -6,9 +6,9 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 
 ## Working agreements
 
-- No git commits unless asked. The repository has no commits yet, so everything is
-  untracked. The user wants a GitHub repository (2026-10-09); visibility and name are
-  still to be confirmed, and `gh` is not installed.
+- Repository: https://github.com/ElipticalDrive/voxel-bench (public, branch `main`),
+  created 2026-10-09. Commits use the repo-local identity (GitHub noreply address).
+  Commit and push only when asked.
 - The project is about exploring the problem space, not chasing speed. Slower techniques
   and negative results are findings too.
 - No subagents until the user re-enables them. Usage is self-metered.
@@ -272,7 +272,6 @@ voices also go into IDEAS.md with analysis.
 
 ### Infrastructure and code health
 - Fix the 2 GiB `GrowableBuffer` rounding issue.
-- An initial git commit, so changes can be reviewed as diffs.
 - Continuous checks: a script running builds, tests and a short catalogue, comparing
   against stored baselines.
 - Shared GPU modules (the start of §12): one place for chunk tables, shading and
