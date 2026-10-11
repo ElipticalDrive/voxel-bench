@@ -1223,6 +1223,84 @@ registry says which back ends implement each component, so the back end comes fi
   work is the data-level contracts at a few cut points and the executor. The sweep, the
   catalogue and the observations need no change: a composition just gets more fields.
 
+## 16. Maximum control over combinations, minimal code of redundant purpose
+
+**Goal (user, 2026-10-11).** Maximum control over which pieces combine, with as little code
+of redundant purpose as possible. Different back-end implementations of the same feature
+(a storage in Rust for the CPU and in WGSL for the GPU, greedy meshes exposed to a raster
+pipeline and to a BLAS) are **not** redundant: they serve different back ends. Redundant
+means the same purpose written twice for the same kind of back end. The question that
+started it: will the current architecture make us write copies of components just so they
+support every combination?
+
+**This is one exploration of the problem, not a decision.** A wider first-principles
+design (world + change log; representations with update costs; traversal kernels;
+visibility strategies; surface sources; shading with inline or deferred placement;
+history; post; an executor; per-stage timings) was discussed alongside it, and §15 is a
+related one. This section only assesses where the current structure duplicates and where
+it limits combinations.
+
+**Analysis (from the code, 2026-10-11).**
+- *Protected: storage × traversal kernel.* They meet through a small source-level interface
+  (`s_block`, `s_occupied`, `s_top`, `s_probe`, … and `ctrace`), with generic fallbacks
+  (`storage/fallbacks.wgsl`) for optional fast paths. A new storage works with every kernel
+  and vice versa: cost grows as storages + kernels, not storages × kernels. CPU and GPU
+  versions of one storage or kernel are back-end implementations, not redundancy.
+  Cross-cutting features (LOD, later material masks) touch each storage and kernel once:
+  wide, but additive.
+- *Not protected: everything after visibility.* Shading, drawing surfaces and the
+  visibility buffer live inside each back end, so they are rewritten per back end, and a
+  piece that lives inside one back end cannot be chosen anywhere else. Copies and missing
+  combinations have the same cause.
+
+  Redundant purpose (same purpose, same kind of back end):
+
+  | purpose | copies | where |
+  |---|---|---|
+  | lighting (GPU) | `shade_hit` + 3 own | `shade_hit` (shading component) serves gpu-compute, gpu-raster, gpu-rt, gpu-discover; gpu-splat, gpu-voxelspace and cpu-discover's `raster.wgsl` light on their own |
+  | lighting (CPU) | `shade` + 2 own | `shading/direct/cpu.rs` serves `cpu`; cpu-raster and cpu-voxelspace light on their own |
+  | drawing a face quad (`face_axes`) | 3 | gpu-raster `main.wgsl`, gpu-discover `raster.wgsl`, cpu-discover `raster.wgsl` |
+  | `block_at`, `pixel_ray` | 2 each | gpu-raster with gpu-discover; gpu-raster with gpu-voxelspace |
+
+  Combinations missing because a piece is locked inside a back end:
+  - visbuffer / gbuffer exist only in gpu-raster, though gpu-discover and cpu-discover also
+    rasterise faces;
+  - path tracing is offered by gpu-compute and gpu-rt only; gpu-discover's fragments have a
+    hit and could use it;
+  - the shading slot of gpu-splat, both voxelspace back ends and cpu-raster offers only
+    their own lighting;
+  - cpu-discover's lit-mode shadow rays walk its own GPU voxel structure, gpu-voxelspace's
+    its own pool: not the composed storage.
+- *How it grows.* Every feature after visibility costs one copy per back end that keeps
+  its own version: transparency would touch ~7 lighting paths and 3 face drawers; each
+  new lighting feature (AO, soft shadows, flood-fill light) or discovery variant (a new
+  drawer, discovery with a visbuffer or path tracing) multiplies the same way.
+
+**Direction.** Make the **hit record** the boundary after visibility, as `s_*` / `ctrace`
+already are between storage and kernel:
+1. *One shading implementation per kind of back end.* Every visibility strategy (ray
+   walk, raster, discovery, splat, voxelspace columns) produces a hit (position, normal,
+   block, face) and calls the shading component: `shade_hit` on the GPU, `shade` on the
+   CPU. Fused, it is a function call (as gpu-compute does today); deferred, it is a
+   visibility buffer. Moves the five own lighting paths onto it, and makes every shading
+   component (direct, pathtrace, later AO, transparency) available to every strategy.
+2. *One surface drawer* for face quads, used by gpu-raster, gpu-discover and
+   cpu-discover; visbuffer and gbuffer then become choices for both discovery back ends.
+3. *Shadow and secondary rays through the composed storage everywhere* (cpu-discover,
+   gpu-voxelspace), so the storage slot means the same thing in every back end.
+4. *A guard test:* no WGSL function defined in more than one back end's shaders, and every
+   back end's lighting goes through the shading component. Catches backsliding.
+5. Later, splitting the "visibility" slot into *traversal kernels* (refloor, incremental,
+   sphere, rowrun, rayquery) and *visibility strategies* (ray cast, raster, discovery,
+   splat, columns), so any strategy can use any kernel; discovery's own pieces (sampler,
+   hole detection, retention policy, drawer) would become choices of their own.
+
+**Verdict.** Worth doing in steps, before transparency and before the next round of
+discovery work, which would both land on the duplicated parts. Step 1 is the largest
+multiplier. Costs to measure: a deferred visibility buffer costs bandwidth against
+shading at the hit, so placement (inline or deferred) should stay a choice; the steps
+must keep each back end's speed (compare against the sweep). Not started; ask first.
+
 ---
 
 ## Suggested order

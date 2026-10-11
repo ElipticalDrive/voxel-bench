@@ -203,6 +203,12 @@ Recommended order (2026-10-10):
    few per scenario), since knobs are only swept at defaults.
 4. Planner groundwork (IDEAS §14), once data exists: a first model predicting a
    composition's fps from scene features, judged by leave-one-scenario-out error.
+5. **Redundancy and combinations (IDEAS §16):** the user's goal is maximum control over
+   combinations with minimal code of redundant purpose. Steps, before transparency and the
+   next discovery work: one shading implementation per kind of back end (move the five own
+   lighting paths onto `shade_hit` / `shade`), one shared face drawer (gpu-raster,
+   gpu-discover, cpu-discover), shadow rays through the composed storage everywhere, a
+   guard test against duplicated shader functions. Ask before starting.
 
 Other candidates, sized for single steps:
 - ~~Colour scales (numeric legends) on the diagnostic views.~~ Done (2026-10-10).
