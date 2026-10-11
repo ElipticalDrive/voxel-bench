@@ -1,4 +1,5 @@
-// Visibility `gbuffer` (gpu-raster back end; was gpu-hybrid): the raster pass writes the
+// Visibility `gbuffer` (gpu-raster, a drawer choice of the discovery back ends; was gpu-hybrid;
+// keeps no instance, so the face source's diagnostic views do not apply): the raster pass writes the
 // surface itself (camera-relative hit point and face; block id + 1, 0 = sky) instead of
 // an id; a compute pass rebuilds the `Hit` from it and shades once per pixel. A fatter
 // buffer than `visbuffer` (20 bytes per pixel against 4), but no refetch of the face.
@@ -12,7 +13,7 @@ struct GOut { @location(0) pos: vec4<f32>, @location(1) block: u32 }
 @fragment
 fn fs(in: VOut) -> GOut {
     let d = pixel_ray(in.pos.xy);
-    let h = face_hit(in.info.y, in.info.x, d);
+    let h = fragment_hit(in, d);
     var o: GOut;
     o.pos = vec4<f32>(fr.cam_frac + d * h.t, f32(in.info.x));
     o.block = h.block + 1u;

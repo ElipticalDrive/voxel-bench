@@ -595,7 +595,7 @@ impl GpuDiscover {
         if let Some(why) = shade_state::fragment_blocker(&shading, &gpu.device) {
             anyhow::bail!(why);
         }
-        let raster = format!("{}\n{}", shade_state::fragment_wgsl(&shading, include_str!("raster.wgsl")), visibility::FACES_WGSL);
+        let raster = format!("{}\n{}\n{}", include_str!("raster.wgsl"), visibility::faces_wgsl(true), shade_state::fragment_wgsl(&shading, visibility::raster_wgsl("raster").unwrap()));
         let draw_mod = module("discover raster", shader_source(occlusion, &format!("{walk}\n{}\n{shade}\n{raster}", ShadeState::wgsl(0, 3))));
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {
@@ -644,8 +644,8 @@ impl GpuDiscover {
             label: Some("discover draw"),
             entries: &[
                 buf(0, uni, vf, false),
-                buf(1, ro, wgpu::ShaderStages::VERTEX, false),
-                buf(2, ro, wgpu::ShaderStages::VERTEX, false),
+                buf(1, ro, wgpu::ShaderStages::VERTEX_FRAGMENT, false),
+                buf(2, ro, wgpu::ShaderStages::VERTEX_FRAGMENT, false),
                 ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT)[0],
                 ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT)[1],
             ],

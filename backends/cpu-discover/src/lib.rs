@@ -280,7 +280,7 @@ impl CpuDiscover {
             },
         )?;
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
-        let source = shader_source(DDA_OCCLUSION_WGSL, &format!("{}\n{}\n{shade}", include_str!("raster.wgsl"), mr_components::visibility::FACES_WGSL));
+        let source = shader_source(DDA_OCCLUSION_WGSL, &format!("{}\n{}\n{shade}\n{}", include_str!("raster.wgsl"), mr_components::visibility::faces_wgsl(true), mr_components::visibility::raster_wgsl("raster").unwrap()));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("cpu-discover raster"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let buf_entry = |binding, ty, vis| wgpu::BindGroupLayoutEntry {
             binding,
@@ -292,8 +292,8 @@ impl CpuDiscover {
             label: Some("cpu-discover frame"),
             entries: &[
                 buf_entry(0, wgpu::BufferBindingType::Uniform, wgpu::ShaderStages::VERTEX_FRAGMENT),
-                buf_entry(1, wgpu::BufferBindingType::Storage { read_only: true }, wgpu::ShaderStages::VERTEX),
-                buf_entry(2, wgpu::BufferBindingType::Storage { read_only: true }, wgpu::ShaderStages::VERTEX),
+                buf_entry(1, wgpu::BufferBindingType::Storage { read_only: true }, wgpu::ShaderStages::VERTEX_FRAGMENT),
+                buf_entry(2, wgpu::BufferBindingType::Storage { read_only: true }, wgpu::ShaderStages::VERTEX_FRAGMENT),
             ],
         });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

@@ -1,6 +1,7 @@
-// cpu-discover: vertex-pulled unit face quads (4-vertex strips, one instance per discovered face).
-// The shading component colours each fragment (`shade_surface`); lit-mode shadow rays walk
-// the voxel world (group 1).
+// cpu-discover: the face source of the face drawer (`visibility/faces.wgsl`) for the face
+// list discovered on the CPU, one unit quad (4-vertex strip) per face. The drawer's
+// visibility component shades (`shade_surface`); lit-mode shadow rays walk the voxel
+// world (group 1).
 
 struct Frame {
     view_proj: mat4x4<f32>,
@@ -16,69 +17,52 @@ struct Frame {
 @group(0) @binding(1) var<storage, read> quads: array<vec2<u32>>;
 @group(0) @binding(2) var<storage, read> tags: array<u32>;  // views: kind << 30 | cluster id
 
-struct VOut {
-    @builtin(position) @invariant pos: vec4<f32>,
-    @location(0) rel: vec3<f32>,               // relative to vp.cam_block
-    @location(1) @interpolate(flat) info: vec2<u32>, // face, block
-    @location(2) @interpolate(flat) plane: f32,       // face plane along its normal axis (camera-block relative)
-    @location(3) @interpolate(flat) tag: u32,
+// Record: x(15) | z(15) << 15 | face.lo(2) << 30 ; block(16) | y(15) << 16 | face.hi(1) << 31
+fn rec_face(q: vec2<u32>) -> u32 {
+    return (q.x >> 30u) | ((q.y >> 31u) << 2u);
 }
 
-@vertex
-fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
-    let q = quads[ii];
-    // Record: x(15) | z(15) << 15 | face.lo(2) << 30 ; block(16) | y(15) << 16 | face.hi(1) << 31
-    let face = (q.x >> 30u) | ((q.y >> 31u) << 2u);
-    let ax = face_axes(face);
-    let cu = f32(vi & 1u);
-    let cv = f32(vi >> 1u);
+// The face's origin (camera-block relative), on the face plane.
+fn rec_origin(q: vec2<u32>, face: u32) -> vec3<f32> {
     let cell = vec3<i32>(i32(q.x & 0x7fffu), i32((q.y >> 16u) & 0x7fffu), i32((q.x >> 15u) & 0x7fffu)) - 16384;
-    var p = vec3<f32>(0.0);
-    if ((face & 1u) == 0u) { p[ax.x] += 1.0; }
-    p[ax.y] += cu;
-    p[ax.z] += cv;
-    let rel = vec3<f32>(fr.anchor.xyz + cell - vp.cam_block) + p;
-    var out: VOut;
-    out.pos = fr.view_proj * vec4<f32>(rel - fr.cam_frac, 1.0);
-    out.rel = rel;
-    out.info = vec2<u32>(face, q.y & 0xffffu);
-    out.plane = rel[ax.x];
-    out.tag = select(0u, tags[ii], fr.view != 0u);
-    return out;
+    return vec3<f32>(fr.anchor.xyz + cell - vp.cam_block) + face_origin(vec3<f32>(0.0), face);
 }
 
-// The analytic surface point of this pixel on the face (`face_plane_hit`).
-@fragment
-fn fs(in: VOut) -> @location(0) vec4<f32> {
-    let face = in.info.x;
-    let d = pixel_ray(in.pos.xy);
-    var h = face_plane_hit(face, in.plane, d, in.rel);
-    h.block = in.info.y;
-    // Lit and unlit call the shading separately (a constant flag), so unlit fragments
-    // compile without the lighting (a runtime flag measured +4.5% GPU time unlit).
-    let s = face_surface(h, face, d);
-    var color: vec4<f32>;
-    if (fr.mode != 0u) {
-        color = shade_surface(s, d, true, vec2<u32>(in.pos.xy));
-    } else {
-        color = shade_surface(s, d, false, vec2<u32>(in.pos.xy));
-    }
-    let kind = in.tag >> 30u;
+fn src_vertex(ii: u32, vi: u32) -> FaceVertex {
+    let q = quads[ii];
+    let face = rec_face(q);
+    return FaceVertex(rec_origin(q, face) + face_corner(vec3<f32>(0.0), face, vec2<f32>(1.0), vec2<f32>(f32(vi & 1u), f32(vi >> 1u))), face, q.y & 0xffffu);
+}
+
+fn src_origin(ii: u32, face: u32) -> vec3<f32> {
+    return rec_origin(quads[ii], face);
+}
+
+fn src_block(ii: u32) -> u32 {
+    return quads[ii].y & 0xffffu;
+}
+
+// Faces are single blocks: never asked.
+fn src_lookup(ii: u32, face: u32, h: Hit, d: vec3<f32>) -> u32 {
+    return h.block;
+}
+
+fn src_view(ii: u32, color: vec4<f32>) -> vec4<f32> {
+    if (fr.view == 0u) { return color; }
+    let tag = tags[ii];
+    let kind = tag >> 30u;
+    let g = dot(color.rgb, vec3<f32>(0.3, 0.5, 0.2));
     if (fr.view == 1u) {
         // Clusters: one colour per cluster (grey for faces carried over from earlier passes).
-        var h = (in.tag & 0x3fffffffu) * 0x9E3779B1u;
+        var h = (tag & 0x3fffffffu) * 0x9E3779B1u;
         h ^= h >> 15u; h *= 0x85EBCA77u; h ^= h >> 13u;
         let c = vec3<f32>(f32(h & 255u), f32((h >> 8u) & 255u), f32((h >> 16u) & 255u)) / 255.0;
-        let g = dot(color.rgb, vec3<f32>(0.3, 0.5, 0.2));
-        color = select(vec4<f32>(vec3<f32>(g * 0.5), 1.0), vec4<f32>(mix(color.rgb, c, 0.7), 1.0), kind != 0u);
-    } else if (fr.view == 2u) {
-        // Kinds: confirmed (all corners visible) green, partial (an occluded corner) yellow,
-        // carried over grey.
-        let g = dot(color.rgb, vec3<f32>(0.3, 0.5, 0.2));
-        var c = vec3<f32>(g * 0.5);
-        if (kind == 1u) { c = mix(vec3<f32>(g), vec3<f32>(0.2, 0.9, 0.3), 0.6); }
-        if (kind == 2u) { c = mix(vec3<f32>(g), vec3<f32>(1.0, 0.85, 0.1), 0.7); }
-        color = vec4<f32>(c, 1.0);
+        return select(vec4<f32>(vec3<f32>(g * 0.5), 1.0), vec4<f32>(mix(color.rgb, c, 0.7), 1.0), kind != 0u);
     }
-    return color;
+    // Kinds: confirmed (all corners visible) green, partial (an occluded corner) yellow,
+    // carried over grey.
+    var c = vec3<f32>(g * 0.5);
+    if (kind == 1u) { c = mix(vec3<f32>(g), vec3<f32>(0.2, 0.9, 0.3), 0.6); }
+    if (kind == 2u) { c = mix(vec3<f32>(g), vec3<f32>(1.0, 0.85, 0.1), 0.7); }
+    return vec4<f32>(c, 1.0);
 }

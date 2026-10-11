@@ -1,4 +1,4 @@
-// Visibility `visbuffer` (gpu-raster back end): the raster pass writes only an id
+// Visibility `visbuffer` (gpu-raster; a drawer choice of gpu-discover and cpu-discover): the raster pass writes only an id
 // (instance << 3 | face, plus one; 0 = sky) and depth. A compute pass then reads the id,
 // reconstructs the hit (`face_hit`) and shades once per pixel, independent of overdraw.
 
@@ -20,6 +20,8 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let d = pixel_ray(vec2<f32>(gid.xy) + 0.5);
-    let h = face_hit((id - 1u) >> 3u, (id - 1u) & 7u, d);
-    textureStore(out_tex, vec2<i32>(gid.xy), shade_surface(face_surface(h, (id - 1u) & 7u, d), d, fr.mode == 1u, gid.xy));
+    let ii = (id - 1u) >> 3u;
+    let h = face_hit(ii, (id - 1u) & 7u, d);
+    let color = shade_surface(face_surface(h, (id - 1u) & 7u, d), d, fr.mode == 1u, gid.xy);
+    textureStore(out_tex, vec2<i32>(gid.xy), src_view(ii, color));
 }

@@ -175,7 +175,7 @@ impl Composition {
             self.geometry().wgsl,
             include_str!("main.wgsl"),
             ShadeState::wgsl(0, 3),
-            visibility::FACES_WGSL,
+            visibility::faces_wgsl(false),
             // Deferred visibility shades in compute; forward raster shades its fragments.
             if self.deferred() {
                 visibility::raster_wgsl(&self.visibility).expect("validated").to_string()
