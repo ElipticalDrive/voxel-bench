@@ -132,14 +132,6 @@ fn ray_dir(q: vec2<u32>) -> vec3<f32> {
     return normalize(pr.forward + sx * pr.right + sy * pr.up);
 }
 
-// Block at absolute cell `a`, through the composed storage (group 2).
-fn block_at(a: vec3<i32>) -> u32 {
-    let v = s_top(a >> vec3<u32>(S_TOP));
-    if (v == EMPTY) { return 0u; }
-    if ((v & UNIFORM_BIT) != 0u) { return v & 0xffffu; }
-    return s_block(v, a & vec3<i32>((1 << S_TOP) - 1));
-}
-
 fn normal_i(face: u32) -> vec3<i32> {
     var n = vec3<i32>(0);
     n[face / 2u] = select(1, -1, (face & 1u) == 1u);
@@ -928,18 +920,6 @@ fn sort_scatter(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n
 
 const MERGE_MAX: u32 = 64u;
 
-// (normal axis, u axis, v axis) per face; must match `face_axes` in raster.wgsl.
-fn face_axes_d(face: u32) -> vec3<u32> {
-    switch face {
-        case 0u: { return vec3<u32>(0u, 1u, 2u); }
-        case 1u: { return vec3<u32>(0u, 2u, 1u); }
-        case 2u: { return vec3<u32>(1u, 2u, 0u); }
-        case 3u: { return vec3<u32>(1u, 0u, 2u); }
-        case 4u: { return vec3<u32>(2u, 0u, 1u); }
-        default: { return vec3<u32>(2u, 1u, 0u); }
-    }
-}
-
 // Whether the face of cell `a` (on this face's plane) is in S.
 fn in_s(a: vec3<i32>, face: u32) -> bool {
     let k = face_key(a, face);
@@ -963,7 +943,7 @@ fn merge_rows(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg
     let l = (e.x >> 3u) & 32767u;
     let a = cp.xyz * 32 + vec3<i32>(i32(l & 31u), i32((l >> 5u) & 31u), i32(l >> 10u));
     let face = e.x & 7u;
-    let fa = face_axes_d(face);
+    let fa = face_axes(face);
     var du = vec3<i32>(0);
     du[fa.y] = 1;
     var dv = vec3<i32>(0);

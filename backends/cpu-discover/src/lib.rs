@@ -280,7 +280,7 @@ impl CpuDiscover {
             },
         )?;
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
-        let source = shader_source(DDA_OCCLUSION_WGSL, &format!("{}\n{shade}", include_str!("raster.wgsl")));
+        let source = shader_source(DDA_OCCLUSION_WGSL, &format!("{}\n{}\n{shade}", include_str!("raster.wgsl"), mr_components::visibility::FACES_WGSL));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("cpu-discover raster"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let buf_entry = |binding, ty, vis| wgpu::BindGroupLayoutEntry {
             binding,

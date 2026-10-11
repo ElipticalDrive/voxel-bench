@@ -41,5 +41,5 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The cell behind the face, as `face_hit` computes it.
     h.cell = vec3<i32>(floor(g.xyz));
     h.cell[a] = i32(round(g.xyz[a])) - select(0, 1, (face & 1u) == 0u);
-    textureStore(out_tex, vec2<i32>(gid.xy), shade_surface(surface_of(h, fr.cam_frac, d), d, fr.mode == 1u, gid.xy));
+    textureStore(out_tex, vec2<i32>(gid.xy), shade_surface(face_surface(h, face, d), d, fr.mode == 1u, gid.xy));
 }

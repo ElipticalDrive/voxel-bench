@@ -5,5 +5,5 @@
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
     let d = pixel_ray(in.pos.xy);
-    return shade_surface(surface_of(face_hit(in.info.y, in.info.x, d), fr.cam_frac, d), d, fr.mode == 1u, vec2<u32>(in.pos.xy));
+    return shade_surface(face_surface(face_hit(in.info.y, in.info.x, d), in.info.x, d), d, fr.mode == 1u, vec2<u32>(in.pos.xy));
 }

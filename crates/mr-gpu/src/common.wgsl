@@ -35,6 +35,18 @@ fn face_normal(face: u32) -> vec3<f32> {
     return n;
 }
 
+// (normal axis, u axis, v axis) per face; must match mr_mesh::FACE_AXES.
+fn face_axes(face: u32) -> vec3<u32> {
+    switch face {
+        case 0u: { return vec3<u32>(0u, 1u, 2u); }
+        case 1u: { return vec3<u32>(0u, 2u, 1u); }
+        case 2u: { return vec3<u32>(1u, 2u, 0u); }
+        case 3u: { return vec3<u32>(1u, 0u, 2u); }
+        case 4u: { return vec3<u32>(2u, 0u, 1u); }
+        default: { return vec3<u32>(2u, 1u, 0u); }
+    }
+}
+
 fn face_uv(face: u32, l: vec3<f32>) -> vec2<f32> {
     switch face {
         case 0u: { return vec2<f32>(1.0 - l.z, 1.0 - l.y); }

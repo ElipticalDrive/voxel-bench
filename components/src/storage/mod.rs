@@ -94,7 +94,7 @@ impl GpuStorage {
              @group(2) @binding(1) var<storage, read> regions: array<vec4<u32>>;\n\
              @group(2) @binding(2) var<storage, read> aux4: array<vec4<u32>>;\n\
              @group(2) @binding(3) var<uniform> region_head: vec4<u32>;\n\
-             const AUX_WORDS: u32 = {}u;\n{top}\n{}\n{}",
+             const AUX_WORDS: u32 = {}u;\n{top}\n{}\n{}\n{BLOCK_AT}",
             aux_words.max(1),
             self.wgsl,
             fallbacks(self.provides)
@@ -119,6 +119,16 @@ pub fn gpu(name: &str) -> Option<GpuStorage> {
         _ => return None,
     })
 }
+
+/// Derived from the required interface, for every storage: the block at absolute cell `a`
+/// (0 = air or not loaded).
+const BLOCK_AT: &str = "fn s_block_at(a: vec3<i32>) -> u32 {
+    let h = s_top(a >> vec3<u32>(S_TOP));
+    if (h == EMPTY) { return 0u; }
+    if ((h & UNIFORM_BIT) != 0u) { return h & 0xffffu; }
+    return s_block(h, a & vec3<i32>((1 << S_TOP) - 1));
+}
+";
 
 /// The fallback WGSL of every optional query `provides` lacks.
 pub fn fallbacks(provides: &[&str]) -> String {

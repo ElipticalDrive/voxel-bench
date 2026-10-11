@@ -16,18 +16,6 @@ struct Frame {
 @group(0) @binding(1) var<storage, read> quads: array<vec2<u32>>;
 @group(0) @binding(2) var<storage, read> tags: array<u32>;  // views: kind << 30 | cluster id
 
-// (normal axis, u axis, v axis) per face; must match mesher::FACE_AXES.
-fn face_axes(face: u32) -> vec3<u32> {
-    switch face {
-        case 0u: { return vec3<u32>(0u, 1u, 2u); }
-        case 1u: { return vec3<u32>(0u, 2u, 1u); }
-        case 2u: { return vec3<u32>(1u, 2u, 0u); }
-        case 3u: { return vec3<u32>(1u, 0u, 2u); }
-        case 4u: { return vec3<u32>(2u, 0u, 1u); }
-        default: { return vec3<u32>(2u, 1u, 0u); }
-    }
-}
-
 struct VOut {
     @builtin(position) @invariant pos: vec4<f32>,
     @location(0) rel: vec3<f32>,               // relative to vp.cam_block
@@ -59,27 +47,16 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     return out;
 }
 
-// Analytic surface point: intersect this pixel's primary ray (built exactly like the ray
-// casters build theirs) with the face plane, instead of trusting interpolated attributes.
-// Makes texel selection match the reference even on texel boundaries far away.
+// The analytic surface point of this pixel on the face (`face_plane_hit`).
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
     let face = in.info.x;
-    let ax = face_axes(face);
-    let sx = (2.0 * in.pos.x / fr.size.x - 1.0) * fr.tan_half_fov * fr.aspect;
-    let sy = (1.0 - 2.0 * in.pos.y / fr.size.y) * fr.tan_half_fov;
-    let d = normalize(fr.forward + sx * fr.right + sy * fr.up);
-    var hit = in.rel;
-    if (abs(d[ax.x]) > 1e-6) {
-        hit = fr.cam_frac + d * ((in.plane - fr.cam_frac[ax.x]) / d[ax.x]);
-    }
-    var local = vec3<f32>(0.0);
-    local[ax.x] = select(0.0, 1.0, (face & 1u) == 0u);
-    local[ax.y] = fract(hit[ax.y]);
-    local[ax.z] = fract(hit[ax.z]);
+    let d = pixel_ray(in.pos.xy);
+    var h = face_plane_hit(face, in.plane, d, in.rel);
+    h.block = in.info.y;
     // Lit and unlit call the shading separately (a constant flag), so unlit fragments
     // compile without the lighting (a runtime flag measured +4.5% GPU time unlit).
-    let s = Surface(hit, face_normal(face), local, in.info.y, face);
+    let s = face_surface(h, face, d);
     var color: vec4<f32>;
     if (fr.mode != 0u) {
         color = shade_surface(s, d, true, vec2<u32>(in.pos.xy));

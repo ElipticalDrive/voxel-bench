@@ -13,6 +13,10 @@ pub mod refloor {
     pub mod cpu;
 }
 
+/// The face drawer's shared WGSL (`pixel_ray`, `face_plane_hit`), for every back end that
+/// rasterises block faces.
+pub const FACES_WGSL: &str = include_str!("faces.wgsl");
+
 pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {
         "refloor" => include_str!("refloor/gpu.wgsl"),

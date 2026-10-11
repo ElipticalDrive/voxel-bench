@@ -595,7 +595,7 @@ impl GpuDiscover {
         if let Some(why) = shade_state::fragment_blocker(&shading, &gpu.device) {
             anyhow::bail!(why);
         }
-        let raster = shade_state::fragment_wgsl(&shading, include_str!("raster.wgsl"));
+        let raster = format!("{}\n{}", shade_state::fragment_wgsl(&shading, include_str!("raster.wgsl")), visibility::FACES_WGSL);
         let draw_mod = module("discover raster", shader_source(occlusion, &format!("{walk}\n{}\n{shade}\n{raster}", ShadeState::wgsl(0, 3))));
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {

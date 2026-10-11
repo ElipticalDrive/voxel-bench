@@ -19,29 +19,8 @@ struct Frame {
 // Loop iterations of the shadow walk (the visibility walks count them; unused here).
 var<private> ct_iters: u32;
 
-// (normal axis, u axis, v axis) per face; must match mr_mesh::FACE_AXES.
-fn face_axes(face: u32) -> vec3<u32> {
-    switch face {
-        case 0u: { return vec3<u32>(0u, 1u, 2u); }
-        case 1u: { return vec3<u32>(0u, 2u, 1u); }
-        case 2u: { return vec3<u32>(1u, 2u, 0u); }
-        case 3u: { return vec3<u32>(1u, 0u, 2u); }
-        case 4u: { return vec3<u32>(2u, 0u, 1u); }
-        default: { return vec3<u32>(2u, 1u, 0u); }
-    }
-}
-
 // Quads merged across block types carry this block id; the hit looks the block up.
 const LOOKUP_BLOCK: u32 = 0xffffu;
-
-// Block at a camera-relative cell, read through the storage.
-fn block_at(rel_cell: vec3<i32>) -> u32 {
-    let abs_cell = rel_cell + vp.cam_block;
-    let h = s_top(abs_cell >> vec3<u32>(S_TOP));
-    if (h == EMPTY) { return 0u; }
-    if ((h & UNIFORM_BIT) != 0u) { return h & 0xffffu; }
-    return s_block(h, abs_cell & vec3<i32>((1 << S_TOP) - 1));
-}
 
 // Minimum corner of instance `q`'s `face` (camera-block relative), on the face plane.
 fn quad_base(q: vec2<u32>, face: u32) -> vec3<f32> {
@@ -71,41 +50,23 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     return out;
 }
 
-// The primary ray through pixel position `px` (pixel centres at +0.5), built exactly like
-// the ray casters build theirs.
-fn pixel_ray(px: vec2<f32>) -> vec3<f32> {
-    let sx = (2.0 * px.x / fr.size.x - 1.0) * fr.tan_half_fov * fr.aspect;
-    let sy = (1.0 - 2.0 * px.y / fr.size.y) * fr.tan_half_fov;
-    return normalize(fr.forward + sx * fr.right + sy * fr.up);
-}
-
-// The hit of ray `d` (from the camera) on instance `ii`'s `face`: analytic intersection
-// with the face plane rather than interpolated attributes, so texel selection matches the
-// reference even far away. Quads merged across block types look their block up in the
-// cell kept inside the quad (at silhouettes the analytic hit can land a hair outside it);
-// the texel uses the unclamped cell, which matched the reference better.
+// The hit of ray `d` (from the camera) on instance `ii`'s `face` (`face_plane_hit`). Quads
+// merged across block types look their block up in the cell kept inside the quad (at
+// silhouettes the analytic hit can land a hair outside it); the texel uses the unclamped
+// cell, which matched the reference better.
 fn face_hit(ii: u32, face: u32, d: vec3<f32>) -> Hit {
     let q = quads[ii];
     let ax = face_axes(face);
     let base = quad_base(q, face);
     let size = g_size(q);
-    let plane = base[ax.x];
-    var h: Hit;
-    h.hit = true;
-    h.axis = ax.x;
-    h.lod = 0u;
-    h.t = length(base - fr.cam_frac);
-    if (abs(d[ax.x]) > 1e-6) { h.t = (plane - fr.cam_frac[ax.x]) / d[ax.x]; }
-    let p = fr.cam_frac + d * h.t;
-    h.cell[ax.x] = i32(round(plane)) - select(0, 1, (face & 1u) == 0u);
-    h.cell[ax.y] = i32(floor(p[ax.y]));
-    h.cell[ax.z] = i32(floor(p[ax.z]));
+    var h = face_plane_hit(face, base[ax.x], d, base);
     h.block = q.y & 0xffffu;
     if (h.block == LOOKUP_BLOCK) {
+        let p = fr.cam_frac + d * h.t;
         var cell = h.cell;
         cell[ax.y] = i32(clamp(floor(p[ax.y]), base[ax.y], base[ax.y] + size.x - 1.0));
         cell[ax.z] = i32(clamp(floor(p[ax.z]), base[ax.z], base[ax.z] + size.y - 1.0));
-        h.block = block_at(cell);
+        h.block = s_block_at(cell + vp.cam_block);
     }
     return h;
 }
