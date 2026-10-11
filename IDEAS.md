@@ -1301,6 +1301,66 @@ multiplier. Costs to measure: a deferred visibility buffer costs bandwidth again
 shading at the hit, so placement (inline or deferred) should stay a choice; the steps
 must keep each back end's speed (compare against the sweep). Not started; ask first.
 
+## 17. The pipeline model, the requirements, and compiling on demand
+
+**The user's model (2026-10-11), a picture of the level of genericity wanted, not a
+design.** A *stage* is a device, the interface used to program it (an API; on the CPU, a
+compiler), and a program and data model. Stages are joined by *communication machinery*,
+elided when data can pass directly without moves or conversions. A *pipeline* runs from a
+defined input interface to a defined output interface (these are not stages). A pipeline
+is valid when every connection has a communication path both sides support.
+
+**Requirements (the user's).**
+1. No cost from composability while the pipeline runs. Compiling before it runs
+   (at run time of the program) is fine.
+2. No architectural opinion on hardware configuration (e.g. "one GPU only").
+3. As much code reused as is practical.
+4. As many combinations as is practical, grown over time with *adapters* ("transition
+   code") that give a method a feature it lacks natively, even if slower. More
+   combinations, not fewer.
+5. Combinations without a valid path do not exist (greyed with the reason); nothing
+   substitutes for them silently.
+6. Compilation: a generic precompiled version of none, some or all variants, plus variants
+   compiled on demand for the user's machine and cached. A user-triggered **break-in mode**
+   spends as long as it needs to build the most optimised version for that machine;
+   the generic builds keep the user free to choose when. `rustc` will ship with the final
+   product. On the CPU this is option 2 of the discussion: generate Rust for a
+   composition, compile it to a library, load it (in a worker process).
+
+**Analysis.**
+- *Adapters exist already.* `storage/fallbacks.wgsl` is one: it gives storages without a
+  distance field an `s_dist` built from their occupancy queries, compiled in when the
+  composition is built. Adapters must be compiled into the stage like this; a dynamic
+  adapter on the hot path would break requirement 1.
+- *A testable meaning of "no cost".* A composed pipeline runs as fast as a hand-written
+  pipeline of the same pieces on the same devices. Transfers between devices are not a
+  cost of composability (the hand-written version pays them too). Measured once
+  (`bricks + refloor` vs the former gpu-dda); it should be a standing check.
+- *Graphs, not chains.* Shading reads the visibility result and also queries the storage
+  (shadow rays); history feeds a frame's output into the next. Validity generalises: every
+  input of every stage is connected to a compatible output.
+- *Where today's code breaks requirement 2.* Each GPU back end creates its own device
+  (`Gpu::new` in seven back ends), one per process. Devices should be resources handed to
+  stages, so two GPUs or a CPU and a GPU are a configuration.
+- *Where today's code limits requirement 6 on the CPU.* `backends/cpu` instantiates the hot
+  loop ahead of time for storage (8) × traversal (3) × packet width (4); every new CPU
+  option multiplies compile time and binary size. Compiling on demand removes the product.
+- *Break-in mode has three layers, cheapest first:* compile for this CPU
+  (`target-cpu=native`, LTO, constants specialised for the run: resolution, packet width);
+  profile-guided optimisation with a short sweep as the training run; autotuning knobs and
+  choosing compositions (the planner, §14). On the GPU the driver compiles anyway; the
+  gains there are specialised constants and persistent pipeline caches.
+- *Requirements worth adding (suggested, not agreed):* every newly compiled pipeline is
+  checked against the reference before it is trusted; compiled variants are keyed by
+  source hash, toolchain, CPU and driver; the generic build runs while the optimised one
+  compiles, then hot-swaps (the live session already can); generated code runs in worker
+  processes, so a bad build only kills its worker.
+
+**Status.** Discussion; the user is not yet convinced of a concrete architecture. Open
+questions: the pieces after the split (§16 step 5), one capability model for all
+interfaces or one per boundary, which data crosses between devices, when the CPU moves
+to on-demand compilation, and how the GUI shows a deeper composition.
+
 ---
 
 ## Suggested order
