@@ -1333,8 +1333,8 @@ is valid when every connection has a communication path both sides support.
   composition is built. Adapters must be compiled into the stage like this; a dynamic
   adapter on the hot path would break requirement 1.
 - *A testable meaning of "no cost".* A composed pipeline runs as fast as a hand-written
-  pipeline of the same pieces on the same devices. Transfers between devices are not a
-  cost of composability (the hand-written version pays them too). Measured once
+  pipeline of the same pieces on the same devices (agreed by the user). Transfers between
+  devices are not a cost of composability (the hand-written version pays them too). Measured once
   (`bricks + refloor` vs the former gpu-dda); it should be a standing check.
 - *Graphs, not chains.* Shading reads the visibility result and also queries the storage
   (shadow rays); history feeds a frame's output into the next. Validity generalises: every
@@ -1350,7 +1350,7 @@ is valid when every connection has a communication path both sides support.
   profile-guided optimisation with a short sweep as the training run; autotuning knobs and
   choosing compositions (the planner, §14). On the GPU the driver compiles anyway; the
   gains there are specialised constants and persistent pipeline caches.
-- *Requirements worth adding (suggested, not agreed):* every newly compiled pipeline is
+- *Further requirements (suggested, agreed by the user 2026-10-11):* every newly compiled pipeline is
   checked against the reference before it is trusted; compiled variants are keyed by
   source hash, toolchain, CPU and driver; the generic build runs while the optimised one
   compiles, then hot-swaps (the live session already can); generated code runs in worker
