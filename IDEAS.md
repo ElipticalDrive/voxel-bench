@@ -1312,6 +1312,11 @@ difference (precision; the f32 component cost 4–22 dB of lit PSNR), not a copy
 lighting rows of the table above are resolved; `shade_lit` remains only as the direct
 model's body and the mesh shader's lighting.
 
+**Status (2026-10-11): step 2 done.** One face drawer (`visibility/faces.wgsl`, host side
+`visibility/drawer.rs`) with face sources; `face_axes`, `block_at` (`s_block_at`) and
+`pixel_ray` exist once; visbuffer and gbuffer are choices (`draw`) of both discovery back
+ends.
+
 ## 17. The pipeline model, the requirements, and compiling on demand
 
 **The user's model (2026-10-11), a picture of the level of genericity wanted, not a

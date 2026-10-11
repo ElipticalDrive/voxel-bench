@@ -131,6 +131,10 @@ compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", visi
   - `gpu-discover` and `cpu-discover` (discovery, the user's idea: cast few rays to find
     the visible faces, rasterise only those): storage (any GPU / CPU storage), visibility
     `quadtree` (both) or `cluster` (CPU), shading direct (gpu-discover also pathtrace);
+    both draw the face set with the shared face drawer (`visibility/faces.wgsl`,
+    `visibility/drawer.rs`) and choose how with `draw` = `raster` (shaded per fragment),
+    `visbuffer` or `gbuffer` (shaded once per pixel in a compute pass: lit 2–4× faster on
+    terrain, unlit a little slower);
   - `gpu-splat`: storage (for shadow rays), geometry points, visibility splat, shading
     direct, pathtrace; `gpu-voxelspace` / `cpu-voxelspace`: storage heightmap, visibility
     columns (Voxel Space, 2.5D), shading direct (heightmap-slope normals, no shadows).

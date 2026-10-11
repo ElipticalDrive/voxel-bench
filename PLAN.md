@@ -140,8 +140,10 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   - gpu-rt: geometry greedy, naive, boxes; visibility rayquery; shading direct,
     pathtrace.
   - cpu-raster: geometry greedy, naive; visibility raster; shading direct.
-  - gpu-discover: storage (GPU); visibility quadtree; shading direct, pathtrace.
-  - cpu-discover: storage (CPU); visibility quadtree, cluster; shading direct.
+  - gpu-discover: storage (GPU); visibility quadtree (knob `draw`: raster, visbuffer,
+    gbuffer); shading direct, pathtrace.
+  - cpu-discover: storage (CPU); visibility quadtree, cluster (knob `draw`: raster,
+    visbuffer, gbuffer); shading direct.
   - gpu-splat: storage (shadow rays); geometry points; visibility splat; shading direct,
     pathtrace.
   - gpu-voxelspace, cpu-voxelspace: storage heightmap; visibility columns; shading
@@ -241,7 +243,7 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    (f32) and keep the reference's f64 `shade_surface` if PSNR drops (a fundamental
    difference, so not redundant). Pathtrace goes where a `ctrace` exists (gpu-discover,
    gpu-splat); cpu-discover and voxelspace stay greyed with the reason until step 3.
-2. **One shared face drawer** (§16 step 2): `face_axes`, `block_at`, `pixel_ray` and the
+2. **Done 2026-10-11 (progress log).** **One shared face drawer** (§16 step 2): `face_axes`, `block_at`, `pixel_ray` and the
    quad drawing of gpu-raster `main.wgsl`, gpu-discover `raster.wgsl` and cpu-discover
    `raster.wgsl` become one component; visbuffer and gbuffer become choices for both
    discovery back ends.
@@ -892,6 +894,44 @@ earlier if meshes become more urgent; 7c depends on 6′.
   now host-side (update) cost, not measurement. Rasterisers win the closed scenes (room,
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
+
+### 2026-10-11: architecture refactor step 2 (one face drawer)
+- **2a, shared helpers:** `face_axes` in `common.wgsl` (4 copies, incl. discover.wgsl's
+  `face_axes_d`); the derived storage query `s_block_at` (3 copies); `pixel_ray`,
+  `face_plane_hit` and `face_surface` in the drawer module. `face_surface` keeps the drawn
+  face instead of inferring it from the ray: one grazing pixel of cpu-discover depended on
+  it (checked against the reference).
+- **2b, one face drawer:** `visibility/faces.wgsl` owns the vertex stage and the hit
+  construction; `raster` / `visbuffer` / `gbuffer` supply the fragment and compute entry
+  points for any **face source**. A face source (gpu-raster's geometry instances,
+  gpu-discover's face set, cpu-discover's face list) provides `src_vertex`,
+  `src_origin`, `src_block`, `src_lookup` (merged quads) and `src_view` (its diagnostic
+  tints). Fragment data comes from the records (gpu-raster: extra vertex outputs cost its
+  36-vertex cubes 8–15%) or from flat varyings (discovery: a record read cost
+  cpu-discover's cheap unlit fragments 15–17%), chosen per source (`faces_wgsl`). Where
+  the ray runs along the face plane (horizon rows) the fallback point now comes from the
+  fragment's depth (free): fixes one pixel per frame on gpu-raster naive / cubes lit.
+- **2c, host side and new choices:** `visibility::drawer::FaceDrawer` owns the pipelines
+  (forward fill / prepass / equal; deferred ids or G-buffer plus the compute shade
+  pass), the deferred targets and the passes, for all three back ends. gpu-discover and
+  cpu-discover get the live knob `draw` = raster | visbuffer | gbuffer. Terrain lit GPU
+  ms: cpu-discover 2.30 → 0.62 (visbuffer), gpu-discover 3.57 → 2.50, gpu-discover
+  pathtrace 11.7 → 4.6 (deferred needs no depth-prepass rule); unlit slightly slower
+  (cpu-discover 0.19 → 0.31). Same PSNR in every draw mode (merged rows: 49.9 dB in all
+  three). Painter order and the overdraw view stay forward (an error names the reason).
+  Likely cause of cpu-discover's forward cost: unit-face quads are small on screen, so
+  2×2 fragment quads run many helper lanes, each paying for shadow rays.
+- **Zero-cost check** (interleaved against the step-1 build, terrain, 3–8 rounds): GPU
+  ms within ±1.2% on every changed composition (gpu-discover lit −4…−5%). Forward images
+  pixel-identical apart from the fixed pixels; gpu-discover's merged runs and overdraw
+  view differ between runs of the same old build too (GPU-ordered lists).
+- **Measurement lesson:** gpu-raster fps read −5% (host-bound, CPU mesher +8%) in one
+  build with no mesher change; with `-C llvm-args=-align-all-functions=6
+  -align-all-nofallthru-blocks=5` both builds were equal, and the next build lost the
+  effect. Host-bound fps can move ±5% from code layout alone; a candidate for the
+  zero-cost check is building both sides with forced alignment.
+- **Remaining duplicates** across back-end shaders: only the face-source functions (each
+  reads its own record format) and the compute entry points named `main`.
 
 ### 2026-10-11: architecture refactor step 1 (one shading implementation per kind)
 - **Interface:** shading reads a `Surface` (camera-relative point, normal, block-local
