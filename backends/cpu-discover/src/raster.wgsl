@@ -1,5 +1,6 @@
 // cpu-discover: vertex-pulled unit face quads (4-vertex strips, one instance per discovered face).
-// Lit mode traces shadow rays from the fragment shader through the voxel world (group 1).
+// The shading component colours each fragment (`shade_surface`); lit-mode shadow rays walk
+// the voxel world (group 1).
 
 struct Frame {
     view_proj: mat4x4<f32>,
@@ -76,9 +77,7 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     local[ax.x] = select(0.0, 1.0, (face & 1u) == 0u);
     local[ax.y] = fract(hit[ax.y]);
     local[ax.z] = fract(hit[ax.z]);
-    let texel = surface_texel(in.info.y, face, local);
-    var color = texel;
-    if (fr.mode != 0u) { color = shade_lit(texel, hit, face_normal(face)); }
+    var color = shade_surface(Surface(hit, face_normal(face), local, in.info.y, face), d, fr.mode != 0u, vec2<u32>(in.pos.xy));
     let kind = in.tag >> 30u;
     if (fr.view == 1u) {
         // Clusters: one colour per cluster (grey for faces carried over from earlier passes).

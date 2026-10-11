@@ -1,5 +1,5 @@
 // gpu-discover raster: one instanced quad per discovered face (list built on the GPU).
-// The shading component colours each fragment (`shade_hit`); lit-mode shadow rays walk the
+// The shading component colours each fragment (`shade_surface`); lit-mode shadow rays walk the
 // composed storage (group 2).
 
 struct Frame {
@@ -110,7 +110,7 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     if (abs(d[ax.x]) > 1e-6) { h.t = (in.plane - fr.cam_frac[ax.x]) / d[ax.x]; }
     h.cell = vec3<i32>(floor(hit));
     h.cell[ax.x] = i32(round(in.plane)) - select(0, 1, (face & 1u) == 0u);
-    var color = shade_hit(h, fr.cam_frac, d, fr.mode != 0u, vec2<u32>(in.pos.xy));
+    var color = shade_surface(surface_of(h, fr.cam_frac, d), d, fr.mode != 0u, vec2<u32>(in.pos.xy));
     if (fr.view == 2u) {
         // Quads: one colour per drawn instance (a face, or a merged run of faces).
         var h = in.iid * 0x9E3779B1u;

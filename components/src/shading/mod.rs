@@ -1,5 +1,7 @@
-//! Shading components: the colour of a hit, `shade_hit(h, o, d, lit, px)` (`px`: the
-//! pixel, for per-pixel state such as random sequences and accumulation). Lit / unlit is
+//! Shading components: the colour of a surface point, `shade_surface(s, d, lit, px)` on the
+//! GPU (`s`: the `Surface` a visibility strategy found, ray walks via `surface_of`; `d`: the
+//! view ray; `px`: the pixel, for per-pixel state such as random sequences and
+//! accumulation) and `shade` on the CPU (`direct::cpu`). Lit / unlit is
 //! the pass mode, not a component; a shading component decides how either is computed.
 
 pub mod direct {

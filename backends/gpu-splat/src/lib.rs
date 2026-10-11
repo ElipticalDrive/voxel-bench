@@ -195,7 +195,8 @@ impl GpuSplat {
         let layout_st = gpu_data::layout(&gpu, &st, wgpu::ShaderStages::COMPUTE);
         let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
-        let own = format!("var<private> ct_iters: u32;\nconst LOD: bool = false;\n{}\n{}\n{}", st.source(), visibility::gpu_wgsl("refloor").unwrap(), include_str!("splat.wgsl"));
+        let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
+        let own = format!("var<private> ct_iters: u32;\nconst LOD: bool = false;\n{}\n{}\n{}\n{shade}", st.source(), visibility::gpu_wgsl("refloor").unwrap(), include_str!("splat.wgsl"));
         let source = shader_source(occlusion, &own);
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("splat"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

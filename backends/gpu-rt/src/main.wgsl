@@ -1,6 +1,6 @@
 // GPU-RT back end: one compute thread per pixel casts a hardware ray query (`ctrace` from
 // the visibility component over the geometry component's acceleration structure) and
-// colours the hit with the shading component (`shade_hit`).
+// colours the hit with the shading component (`shade_surface`).
 
 struct Camera {
     forward: vec3<f32>, tan_half_fov: f32,
@@ -29,6 +29,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let o = cam.origin;
     let h = ctrace(o, d, vp.max_dist);
     var color = unpack4x8unorm(cam.sky);
-    if (h.hit) { color = shade_hit(h, o, d, cam.mode == 1u, gid.xy); }
+    if (h.hit) { color = shade_surface(surface_of(h, o, d), d, cam.mode == 1u, gid.xy); }
     textureStore(out_tex, vec2<i32>(gid.xy), color);
 }

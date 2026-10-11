@@ -7,7 +7,7 @@
 //! * **visibility** decides how the front face of each pixel is found and shaded:
 //!   `raster` (forward, with an optional depth pre-pass in lit mode), `gbuffer` or `visbuffer` (ids,
 //!   then one compute shading pass);
-//! * **shading** colours the hit (`shade_hit`, the same component as on the ray-walk back
+//! * **shading** colours the hit (`shade_surface`, the same component as on the ray-walk back
 //!   ends), with lit-mode shadow rays walking the composed **storage** (refloor).
 //!
 //! Replaces the monoliths gpu-raster, gpu-raster-naive, gpu-cubes and gpu-visbuffer.

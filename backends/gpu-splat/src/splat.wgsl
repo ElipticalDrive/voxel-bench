@@ -119,11 +119,8 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
             face = face_entered(a, (p - ctr)[a] < 0.0);
         }
         let local = clamp(p - bmin, vec3<f32>(0.0), vec3<f32>(0.9999));
-        let texel = surface_texel(pt.info & 0xffffu, face, local);
-        // A branch, not `select`: select evaluates both sides, so unlit frames paid for
-        // lighting and shadow rays (unlit and lit GPU times were identical).
-        color = texel;
-        if (cam.mode == 1u) { color = shade_lit(texel, p, face_normal(face)); }
+        let s = Surface(p, face_normal(face), local, pt.info & 0xffffu, face);
+        color = shade_surface(s, d, cam.mode == 1u, gid.xy);
     }
     textureStore(out_tex, vec2<i32>(gid.xy), color);
 }

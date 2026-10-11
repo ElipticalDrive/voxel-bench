@@ -1,7 +1,7 @@
 // GPU-raster back end: the geometry component's instances are drawn with vertex pulling
 // (`g_face` / `g_size` / `g_corner` place each vertex); the visibility component supplies
 // the fragment (and compute) entry points, built on `face_hit`; the shading component
-// colours the hit (`shade_hit`), with shadow rays through the composed storage.
+// colours the hit (`shade_surface`), with shadow rays through the composed storage.
 
 struct Frame {
     view_proj: mat4x4<f32>,

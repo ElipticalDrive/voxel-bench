@@ -2,7 +2,7 @@
 //! rendered by rasterisation. Assembled from components (IDEAS §12): the **storage**
 //! (discovery rays, exposure tests and lit-mode shadow rays all read the composed storage,
 //! group 2, and rays walk it with `refloor`), the **visibility** component `quadtree`
-//! (the discovery below) and the **shading** component (`direct`, via `shade_hit`). Was the
+//! (the discovery below) and the **shading** component (`direct`, via `shade_surface`). Was the
 //! gpu-discover renderer, which read the voxel pool only.
 //!
 //! Instead of one ray per pixel, an adaptive screen-space quadtree decides where to cast

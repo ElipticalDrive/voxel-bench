@@ -60,6 +60,21 @@ fn brick_occupied(slot: u32, l: vec3<i32>) -> bool {
 
 struct Hit { hit: bool, t: f32, cell: vec3<i32>, block: u32, axis: u32, lod: u32 }
 
+// What shading reads from visibility (the shading components' `shade_surface`): the
+// camera-relative surface point, its normal (the face's, unless a visibility strategy has
+// a better one), the point within the block (texture lookup), the block and its face.
+struct Surface { p: vec3<f32>, n: vec3<f32>, local: vec3<f32>, block: u32, face: u32 }
+
+// The surface at hit `h` of ray (`o`, `d`): the adapter for ray walks.
+fn surface_of(h: Hit, o: vec3<f32>, d: vec3<f32>) -> Surface {
+    let face = face_entered(h.axis, d[h.axis] > 0.0);
+    let p = o + d * h.t;
+    // LOD cells span several blocks; textures still tile once per block.
+    var local = p - vec3<f32>(h.cell);
+    if (h.lod > 0u) { local = p - floor(p); }
+    return Surface(p, face_normal(face), local, h.block, face);
+}
+
 // Chunk-table key: LOD folded into y, mirroring `voxels::table_key`.
 fn chunk_key(c: vec3<i32>, lod: u32) -> vec3<i32> {
     return vec3<i32>(c.x, c.y * 8 + i32(lod), c.z);

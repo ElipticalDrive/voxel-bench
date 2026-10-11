@@ -130,7 +130,8 @@ impl GpuVoxelSpace {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let source = shader_source(DDA_OCCLUSION_WGSL, include_str!("vs.wgsl"));
+        let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
+        let source = shader_source(DDA_OCCLUSION_WGSL, &format!("{}\n{shade}", include_str!("vs.wgsl")));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("voxelspace"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("voxelspace"),

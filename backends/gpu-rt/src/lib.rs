@@ -6,7 +6,7 @@
 //!   one AABB per occupied 4^3 brick with a small software DDA inside each candidate
 //!   (procedural geometry);
 //! * **visibility** `rayquery`: primary, shadow and bounce rays are ray queries;
-//! * **shading**: the same `shade_hit` as the other back ends (`direct`, `pathtrace`).
+//! * **shading**: the same `shade_surface` as the other back ends (`direct`, `pathtrace`).
 //!
 //! The TLAS is rebuilt every frame with instances translated relative to the camera's
 //! block, so precision never degrades far from the origin. Replaces gpu-rtx and

@@ -82,11 +82,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     if (d.y < -1e-6) { t = (H - o.y) / d.y; } else { t = t0 / max(length(d.xz), 1e-4); }
                 }
                 let p = o + d * t;
-                var local = p - vec3<f32>(f32(cell.x), H - 1.0, f32(cell.y));
-                local = clamp(local, vec3<f32>(0.0), vec3<f32>(0.999));
-                let texel = surface_texel(block, face, local);
-                var color = texel;
+                let local = clamp(p - vec3<f32>(f32(cell.x), H - 1.0, f32(cell.y)), vec3<f32>(0.0), vec3<f32>(0.999));
+                var color: vec4<f32>;
                 if (cam.mode == 1u) {
+                    // Tops shade with the heightmap's slope instead of the face normal.
                     var n = face_normal(face);
                     if (!side) {
                         let hx0 = top_of(hm_at(cell - vec2<i32>(1, 0)));
@@ -97,7 +96,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                         let gz = clamp(select(0.0, hz0, hz0 > -1e5) - select(0.0, hz1, hz1 > -1e5), -2.0, 2.0);
                         n = normalize(vec3<f32>(gx * 0.5, 2.0, gz * 0.5));
                     }
-                    color = shade_lit(texel, p, n);
+                    color = shade_surface(Surface(p, n, local, block, face), d, true, vec2<u32>(gid.x, u32(row)));
+                } else {
+                    color = shade_surface(Surface(p, face_normal(face), local, block, face), d, false, vec2<u32>(gid.x, u32(row)));
                 }
                 textureStore(out_tex, vec2<i32>(i32(gid.x), row), color);
             }

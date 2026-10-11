@@ -1,7 +1,7 @@
 // GPU-compute back end: one thread per pixel (compute, or a fragment shader over a
 // full-screen triangle with `dispatch = "fragment"`). `ctrace` comes from the chosen
 // visibility component, which reaches the world only through the chosen storage
-// component; `shade_hit` comes from the chosen shading component.
+// component; `shade_surface` comes from the chosen shading component.
 
 struct Camera {
     forward: vec3<f32>, tan_half_fov: f32,
@@ -48,7 +48,7 @@ fn pixel_color(px: vec2<u32>) -> vec4<f32> {
     }
     var color = unpack4x8unorm(cam.sky);
     if (!h.hit && mt < 1e29) { color = mesh_color(px); }
-    if (h.hit) { color = shade_hit(h, o, d, cam.mode == 1u, px); }
+    if (h.hit) { color = shade_surface(surface_of(h, o, d), d, cam.mode == 1u, px); }
     return color;
 }
 
