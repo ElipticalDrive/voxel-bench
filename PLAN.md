@@ -40,6 +40,10 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - Terminology: **adapters** are compile-time code that gives a component a feature it lacks
   natively (e.g. `storage/fallbacks.wgsl`); combinations with no valid path do not exist
   (greyed with the reason), nothing substitutes silently. Avoid the word "fallback".
+- **Redundancy means the same algorithm the same way** (the user, 2026-10-11): one
+  algorithm implemented several ways is fine when the ways differ fundamentally (back end,
+  precision, data layout, a different trade-off); only same-purpose copies that differ in
+  nothing essential should be merged.
 - The user values diagnostic `view` modes highly; add them where a component has
   something to show (with a numeric colour scale once that exists).
 
@@ -227,8 +231,15 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    Move the own lighting of gpu-splat (`splat.wgsl`), gpu-voxelspace (`vs.wgsl`),
    cpu-discover (`raster.wgsl`), cpu-raster and cpu-voxelspace onto it. Then every
    shading component (direct, pathtrace) is offered wherever a hit exists (e.g.
-   pathtrace on gpu-discover). Voxelspace columns may stay a declared fused exception
-   if a hit record does not fit them; decide with the user.
+   pathtrace on gpu-discover). Decided 2026-10-11 (the user: "your call"): the shading
+   input becomes an explicit surface point (position, face or normal override, block,
+   cell, lod), filled from `t` by ray casters, so gpu-splat's clamped point and
+   voxelspace's slope normal fit; both voxelspace back ends move onto it (no fused
+   exception). cpu-voxelspace gains the reference's lights and shadows (slower lit, by
+   doing more work; the zero-cost check compares like for like). cpu-raster: try `shade`
+   (f32) and keep the reference's f64 `shade_surface` if PSNR drops (a fundamental
+   difference, so not redundant). Pathtrace goes where a `ctrace` exists (gpu-discover,
+   gpu-splat); cpu-discover and voxelspace stay greyed with the reason until step 3.
 2. **One shared face drawer** (§16 step 2): `face_axes`, `block_at`, `pixel_ray` and the
    quad drawing of gpu-raster `main.wgsl`, gpu-discover `raster.wgsl` and cpu-discover
    `raster.wgsl` become one component; visbuffer and gbuffer become choices for both
