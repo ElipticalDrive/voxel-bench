@@ -55,6 +55,7 @@ use glam::IVec3;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::storage::gpu_data::{self, StorageData};
+use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::{names_on, require, Slot, storage, visibility};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
@@ -120,6 +121,9 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB); for region storages the limit of their own data", 64, 6144, 1536, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ]
+    .into_iter()
+    .chain(shade_state::params())
+    .collect()
 }
 
 #[derive(Deserialize)]
@@ -156,6 +160,9 @@ struct Options {
     shadows: Shadows,
     max_steps: u32,
     depth_prepass: bool,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
     max_faces: u32,
     pool_mb: u32,
     frames_in_flight: usize,
@@ -195,6 +202,9 @@ impl Default for Options {
             shadows: Shadows::All,
             max_steps: 2048,
             depth_prepass: true,
+            bounces: 1,
+            spp: 1,
+            accumulate: true,
             max_faces: 1 << 20,
             pool_mb: 1536,
             frames_in_flight: 3,
@@ -442,6 +452,10 @@ pub struct GpuDiscover {
     bind_disc: Option<[wgpu::BindGroup; 2]>,
     bind_args: wgpu::BindGroup,
     bind_draw: [wgpu::BindGroup; 2],
+    layout_draw: wgpu::BindGroupLayout,
+    /// Shading state (pathtrace's accumulation).
+    accum: ShadeState,
+    shading: String,
     stages: Vec<Stage>,
     profile: Option<wgpu::QuerySet>,
     profile_resolve: Option<wgpu::Buffer>,
@@ -549,7 +563,7 @@ impl GpuDiscover {
             experimental: false,
             adapter: opts.adapter.as_deref(),
             required_features: wgpu::Features::empty(),
-            optional_features: wgpu::Features::TIMESTAMP_QUERY,
+            optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE,
             limits: &|a| a.clone(),
         })?;
         let world = VoxelWorld::new(
@@ -578,7 +592,11 @@ impl GpuDiscover {
         let disc_mod = module("discover", shader_source(occlusion, &format!("{walk}\n{}", include_str!("discover.wgsl"))));
         let args_mod = module("discover args", include_str!("args.wgsl").to_string());
         let shade = mr_components::shading::gpu_wgsl(&shading).expect("validated");
-        let draw_mod = module("discover raster", shader_source(occlusion, &format!("{walk}\n{shade}\n{}", include_str!("raster.wgsl"))));
+        if let Some(why) = shade_state::fragment_blocker(&shading, &gpu.device) {
+            anyhow::bail!(why);
+        }
+        let raster = shade_state::fragment_wgsl(&shading, include_str!("raster.wgsl"));
+        let draw_mod = module("discover raster", shader_source(occlusion, &format!("{walk}\n{}\n{shade}\n{raster}", ShadeState::wgsl(0, 3))));
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {
             binding,
@@ -624,7 +642,13 @@ impl GpuDiscover {
         let vf = wgpu::ShaderStages::VERTEX_FRAGMENT;
         let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("discover draw"),
-            entries: &[buf(0, uni, vf, false), buf(1, ro, wgpu::ShaderStages::VERTEX, false), buf(2, ro, wgpu::ShaderStages::VERTEX, false)],
+            entries: &[
+                buf(0, uni, vf, false),
+                buf(1, ro, wgpu::ShaderStages::VERTEX, false),
+                buf(2, ro, wgpu::ShaderStages::VERTEX, false),
+                ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT)[0],
+                ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT)[1],
+            ],
         });
         let pl_disc = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover"), bind_group_layouts: &[Some(&layout_disc), Some(world.layout()), Some(&layout_st)], immediate_size: 0 });
         let pl_args = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover args"), bind_group_layouts: &[Some(&layout_args)], immediate_size: 0 });
@@ -778,24 +802,9 @@ impl GpuDiscover {
         let ctable = storage(&gpu, "chunk slot table", CHUNK_TABLE as u64 * 16, none);
         gpu.queue.write_buffer(&ctable, 0, bytemuck::cast_slice(&vec![[0i32, 0, 0, -1]; CHUNK_TABLE]));
         let cpos = storage(&gpu, "slot chunk positions", MAX_SLOTS as u64 * 16, none);
-        let bind_merged = dev.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("discover draw merged"),
-            layout: &layout_draw,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: merged.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: cpos.as_entire_binding() },
-            ],
-        });
-        let bind_sorted = dev.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("discover draw sorted"),
-            layout: &layout_draw,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: sorted.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: cpos.as_entire_binding() },
-            ],
-        });
+        let accum = ShadeState::new(&gpu, p.width, p.height, &shading, opts.bounces, opts.spp, opts.accumulate);
+        let bind_merged = draw_bind(&gpu, &layout_draw, &frame_buf, &merged, &cpos, &accum);
+        let bind_sorted = draw_bind(&gpu, &layout_draw, &frame_buf, &sorted, &cpos, &accum);
         let bind_args = dev.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("discover args"),
             layout: &layout_args,
@@ -806,17 +815,7 @@ impl GpuDiscover {
                 wgpu::BindGroupEntry { binding: 3, resource: lcount.as_entire_binding() },
             ],
         });
-        let bind_draw = [0, 1].map(|i| {
-            dev.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("discover draw"),
-                layout: &layout_draw,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: lists[i].as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: cpos.as_entire_binding() },
-                ],
-            })
-        });
+        let bind_draw = [0, 1].map(|i| draw_bind(&gpu, &layout_draw, &frame_buf, &lists[i], &cpos, &accum));
         let stages = (0..STAGES)
             .map(|_| Stage {
                 buf: dev.create_buffer(&wgpu::BufferDescriptor { label: Some("counter stage"), size: STATS_WORDS * 4 + 16 + PROFILE_TS as u64 * 8, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false }),
@@ -891,6 +890,9 @@ impl GpuDiscover {
             bind_disc: None,
             bind_args,
             bind_draw,
+            layout_draw,
+            accum,
+            shading,
             profile: gpu.timestamps.then(|| dev.create_query_set(&wgpu::QuerySetDescriptor { label: Some("discover phases"), ty: wgpu::QueryType::Timestamp, count: STAGES as u32 * PROFILE_TS })),
             profile_resolve: gpu.timestamps.then(|| {
                 dev.create_buffer(&wgpu::BufferDescriptor { label: Some("phase ts"), size: STAGES as u64 * 256, usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false })
@@ -1054,8 +1056,9 @@ impl GpuDiscover {
         })
     }
 
-    fn counters(&self) -> Vec<(String, f64)> {
+    fn counters(&self, mode: RenderMode) -> Vec<(String, f64)> {
         let mut out = vec![("chunk_slots".into(), self.slots.len() as f64), ("slot_overflow".into(), self.slot_overflow as f64)];
+        out.extend(self.accum.counter(mode));
         if self.opts.incremental && self.opts.events {
             // 0 static (skipped), 1 still (rotation / chunk changes), 2 moving, 3 full.
             out.push(("frame_kind".into(), self.last_kind as u32 as f64));
@@ -1284,7 +1287,7 @@ impl GpuDiscover {
         self.encode_shade(&mut enc, parity, &world_bg, req.mode, (true, true), ticket);
         let tile = self.opts.tile;
         self.encode_overlay(&mut enc, 0, 0, 0, self.width.div_ceil(tile), self.height.div_ceil(tile));
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(), legend: self.legend() };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(req.mode), legend: self.legend() };
         self.ring.submit(&self.gpu, enc, ticket, &self.sized.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
     }
@@ -1301,6 +1304,9 @@ impl GpuDiscover {
 
 impl Renderer for GpuDiscover {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        if !updates.is_empty() {
+            self.accum.invalidate();
+        }
         if self.opts.incremental {
             // Event areas for the next frame: edited blocks exactly, chunk loads whole.
             for u in &updates {
@@ -1318,6 +1324,10 @@ impl Renderer for GpuDiscover {
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        if shade_state::stateful(&self.shading) && req.mode == RenderMode::Lit && (self.opts.order == "painter" || !self.opts.depth_prepass) {
+            anyhow::bail!("`{}` shading needs order = depth and depth_prepass in lit mode (exactly one fragment per pixel may update its state)", self.shading);
+        }
+        self.accum.begin(&self.gpu, &req.camera, req.mode);
         let ticket = self.ring.begin(&self.gpu, sink)?;
         let start = Instant::now();
         self.harvest();
@@ -1679,7 +1689,7 @@ impl Renderer for GpuDiscover {
             }
             self.stages[i].tag = (self.frame, parity as u32);
         }
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(), legend: self.legend() };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(req.mode), legend: self.legend() };
         self.ring.submit(&self.gpu, enc, ticket, &self.sized.output, req.frame_id, req.readback, stats);
         if let Some(i) = stage {
             let st = &self.stages[i];
@@ -1741,6 +1751,7 @@ impl Renderer for GpuDiscover {
             "shadows" => self.world.cfg.shadows.set(value)?,
             "max_steps" => self.world.cfg.max_steps = int(2048),
             "depth_prepass" => self.opts.depth_prepass = value.as_bool().unwrap_or(true),
+            _ if self.accum.set_param(name, value).is_some() => return Ok(()),
             _ => anyhow::bail!("`{name}` cannot change while running"),
         }
         // Any setting can change what is discoverable: start over from a full frame.
@@ -1756,6 +1767,10 @@ impl Renderer for GpuDiscover {
         self.width = width;
         self.height = height;
         self.sized = make_sized(&self.gpu, width, height);
+        self.accum.resize(&self.gpu, width, height);
+        self.bind_merged = draw_bind(&self.gpu, &self.layout_draw, &self.frame_buf, &self.merged, &self.cpos, &self.accum);
+        self.bind_sorted = draw_bind(&self.gpu, &self.layout_draw, &self.frame_buf, &self.sorted, &self.cpos, &self.accum);
+        self.bind_draw = [0, 1].map(|i| draw_bind(&self.gpu, &self.layout_draw, &self.frame_buf, &self.lists[i], &self.cpos, &self.accum));
         self.bind_disc = None;
         self.bind_ov = None;
         self.force_full = true;
@@ -1766,9 +1781,25 @@ impl Renderer for GpuDiscover {
     fn memory(&self) -> MemoryReport {
         let s = &self.sized;
         let set = (self.keys[0].size() + self.vals[0].size() + self.lists[0].size()) * 2 + self.jobs.size() + self.seen.size() + s.changed_tiles.size() + s.need.size() + self.width as u64 * self.height as u64 * 4;
-        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size() + self.width as u64 * self.height as u64 * 8;
+        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size() + self.accum.memory_bytes() + self.width as u64 * self.height as u64 * 8;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
+}
+
+/// A draw bind group: the frame, a face list, the chunk positions and the shading state.
+fn draw_bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, frame: &wgpu::Buffer, list: &wgpu::Buffer, cpos: &wgpu::Buffer, accum: &ShadeState) -> wgpu::BindGroup {
+    let [a, b] = accum.bind_entries(3);
+    gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("discover draw"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: list.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: cpos.as_entire_binding() },
+            a,
+            b,
+        ],
+    })
 }
 
 /// Screen rectangle, in level-0 tiles, of the world box `[min, min + size)`: `Some(None)`

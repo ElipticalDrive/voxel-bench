@@ -18,6 +18,7 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use mr_components::geometry::{Knobs, Merge, RtKind};
+use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::{names_on, require, Slot, components, shading, visibility};
 use mr_core::chunk::cell_of_index;
 use mr_core::lighting::encode_srgb;
@@ -61,12 +62,14 @@ fn params() -> Vec<ParamSpec> {
         shadows_param(),
         ParamSpec::bool("fast_build", "Prefer fast BVH builds over fast traversal", false, true),
         ParamSpec::int("build_budget", "Chunk BLAS rebuilds per frame, nearest first (0 = all)", 0, 100000, 0, true),
-        ParamSpec::int("bounces", "pathtrace shading: diffuse indirect bounces (lit)", 0, 8, 1, true).of("shading", &["pathtrace"]),
-        ParamSpec::int("spp", "pathtrace shading: paths per pixel per frame (lit)", 1, 64, 1, true).of("shading", &["pathtrace"]),
-        ParamSpec::bool("accumulate", "pathtrace shading: average frames while camera and world are still", true, true).of("shading", &["pathtrace"]),
+    ]
+    .into_iter()
+    .chain(shade_state::params())
+    .chain([
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB; boxes geometry)", 64, 6144, 2048, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
-    ]
+    ])
+    .collect()
 }
 
 #[derive(Copy, Clone, Debug, Default, Deserialize, PartialEq)]
@@ -137,10 +140,6 @@ struct CameraUniform {
     sky: u32,
     width: u32,
     height: u32,
-    frame: u32,
-    prev_count: u32,
-    bounces: u32,
-    spp: u32,
     ray_flags: u32,
     _p0: u32,
 }
@@ -160,19 +159,6 @@ struct ChunkAs {
 enum Built {
     Triangles { vertices: Vec<[f32; 3]>, indices: Vec<u32>, quads: Vec<[u32; 2]> },
     Aabbs { boxes: Vec<[f32; 6]>, bricks: Vec<u32> },
-}
-
-/// Progressive accumulation (pathtrace shading), as in gpu-compute.
-struct Accum {
-    buf: wgpu::Buffer,
-    count: u32,
-    frame: u32,
-    last: Option<(Camera, RenderMode)>,
-}
-
-fn accum_buffer(gpu: &Gpu, width: u32, height: u32, shading: &str) -> wgpu::Buffer {
-    let size = if shading == "pathtrace" { width as u64 * height as u64 * 16 } else { 16 };
-    gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("accum"), size: size.max(16), usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
 }
 
 pub struct GpuRt {
@@ -202,7 +188,8 @@ pub struct GpuRt {
     chunks: HashMap<IVec3, ChunkAs>,
     free_slots: Vec<u32>,
     dirty: HashSet<IVec3>,
-    accum: Accum,
+    /// Shading state (pathtrace's accumulation).
+    accum: ShadeState,
     bind0: Option<wgpu::BindGroup>,
 }
 
@@ -259,7 +246,7 @@ impl GpuRt {
         )?;
         let vis_wgsl = visibility::rt_wgsl(&vis).expect("validated");
         let source = Box::new(move |shading: &str| {
-            let own = format!("// Composition: geometry = {geometry}, visibility = {vis}, shading = {shading}\n{}\n{geo_wgsl}\n{vis_wgsl}\n{}", include_str!("main.wgsl"), shading::gpu_wgsl(shading).expect("validated"));
+            let own = format!("// Composition: geometry = {geometry}, visibility = {vis}, shading = {shading}\n{}\n{}\n{geo_wgsl}\n{vis_wgsl}\n{}", include_str!("main.wgsl"), ShadeState::wgsl(0, 5), shading::gpu_wgsl(shading).expect("validated"));
             // Shadow rays come from the visibility component (`occluded`).
             format!("enable wgpu_ray_query;\n{}", shader_source("", &own))
         });
@@ -280,7 +267,8 @@ impl GpuRt {
                 e(2, wgpu::BindingType::AccelerationStructure { vertex_return: false }),
                 e(3, storage(true)),
                 e(4, storage(true)),
-                e(5, storage(false)),
+                ShadeState::layout_entries(5, wgpu::ShaderStages::COMPUTE)[0],
+                ShadeState::layout_entries(5, wgpu::ShaderStages::COMPUTE)[1],
             ],
         });
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -302,7 +290,7 @@ impl GpuRt {
             ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()),
             tlas: tlas(&gpu, tlas_cap),
             tlas_cap,
-            accum: Accum { buf: accum_buffer(&gpu, p.width, p.height, &shading), count: 0, frame: 0, last: None },
+            accum: ShadeState::new(&gpu, p.width, p.height, &shading, opts.bounces, opts.spp, opts.accumulate),
             geo_buf,
             world,
             rt,
@@ -500,7 +488,7 @@ impl GpuRt {
 impl Renderer for GpuRt {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         if !updates.is_empty() {
-            self.accum.count = 0;
+            self.accum.invalidate();
         }
         for pos in self.world.apply(&self.gpu, updates) {
             self.dirty.insert(pos);
@@ -520,7 +508,7 @@ impl Renderer for GpuRt {
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         if self.shading != self.built_shading {
             self.pipeline = pipeline(&self.gpu, &self.pipeline_layout, (self.source)(&self.shading));
-            self.accum.buf = accum_buffer(&self.gpu, self.width, self.height, &self.shading);
+            self.accum.set_shading(&self.gpu, &self.shading);
             self.built_shading = self.shading.clone();
             self.bind0 = None;
         }
@@ -561,12 +549,7 @@ impl Renderer for GpuRt {
             Cull::Front => 0x20,
             Cull::None => 0,
         };
-        let a = &mut self.accum;
-        if !self.opts.accumulate || a.last != Some((*c, req.mode)) || self.shading != "pathtrace" {
-            a.count = 0;
-        }
-        a.last = Some((*c, req.mode));
-        a.frame = a.frame.wrapping_add(1);
+        self.accum.begin(&self.gpu, c, req.mode);
         let cu = CameraUniform {
             forward: c.forward().to_array(),
             tan_half_fov: (c.fov_y * 0.5).tan(),
@@ -578,14 +561,9 @@ impl Renderer for GpuRt {
             sky: u32::from_le_bytes(encode_srgb(self.world.env.sky)),
             width: self.width,
             height: self.height,
-            frame: a.frame,
-            prev_count: a.count,
-            bounces: self.opts.bounces.min(8),
-            spp: self.opts.spp.clamp(1, 64),
             ray_flags: if let RtKind::Triangles(_) = self.rt { cull } else { 0 },
             _p0: 0,
         };
-        a.count = a.count.saturating_add(cu.spp);
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cu));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         if self.bind0.is_none() {
@@ -599,7 +577,8 @@ impl Renderer for GpuRt {
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::AccelerationStructure(&self.tlas) },
                     wgpu::BindGroupEntry { binding: 3, resource: self.geo_buf.buffer().as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 4, resource: self.chunk_info.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 5, resource: self.accum.buf.as_entire_binding() },
+                    self.accum.bind_entries(5)[0].clone(),
+                    self.accum.bind_entries(5)[1].clone(),
                 ],
             }));
         }
@@ -611,9 +590,7 @@ impl Renderer for GpuRt {
             pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
         }
         let mut counters = vec![("instances".into(), n as f64), ("blas_rebuilt".into(), rebuilt as f64), ("build_ms".into(), build_ms)];
-        if self.shading == "pathtrace" && req.mode == RenderMode::Lit {
-            counters.push(("accumulated_spp".into(), self.accum.count as f64));
-        }
+        counters.extend(self.accum.counter(req.mode));
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend: None };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
@@ -625,9 +602,6 @@ impl Renderer for GpuRt {
             "shading" => self.shading = require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?,
             "fast_build" => self.opts.fast_build = value.as_bool().unwrap_or(false),
             "build_budget" => self.opts.build_budget = value.as_i64().unwrap_or(0) as usize,
-            "bounces" => (self.opts.bounces, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(0, 8) as u32, 0),
-            "spp" => (self.opts.spp, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(1, 64) as u32, 0),
-            "accumulate" => self.opts.accumulate = value.as_bool().unwrap_or(true),
             "cull_faces" => {
                 self.opts.cull_faces = match value.as_str() {
                     Some("front") => Cull::Front,
@@ -635,6 +609,7 @@ impl Renderer for GpuRt {
                     _ => Cull::Back,
                 }
             }
+            _ if self.accum.set_param(name, value).is_some() => {}
             _ => anyhow::bail!("`{name}` cannot change while running"),
         }
         Ok(())
@@ -653,8 +628,7 @@ impl Renderer for GpuRt {
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
-        self.accum.buf = accum_buffer(&self.gpu, width, height, &self.built_shading);
-        self.accum.count = 0;
+        self.accum.resize(&self.gpu, width, height);
         self.bind0 = None;
         Ok(())
     }
@@ -662,7 +636,7 @@ impl Renderer for GpuRt {
     fn memory(&self) -> MemoryReport {
         // BLAS sizes are driver-internal; BLAS input buffers are a lower bound.
         let inputs: u64 = self.chunks.values().flat_map(|c| c._inputs.iter()).map(|b| b.size()).sum();
-        let gpu = self.world.memory_bytes() + self.geo_buf.size() + self.chunk_info.size() + self.accum.buf.size() + inputs;
+        let gpu = self.world.memory_bytes() + self.geo_buf.size() + self.chunk_info.size() + self.accum.memory_bytes() + inputs;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
 }

@@ -20,6 +20,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_components::geometry::{GpuGeometry, Knobs, Merge};
 use mr_components::storage::gpu_data::{self, StorageData};
+use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::{names_on, require, Slot, components, storage, visibility};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -52,7 +53,7 @@ fn describe(slot: Slot) -> String {
 }
 
 fn params() -> Vec<ParamSpec> {
-    vec![
+    let mut p = vec![
         ParamSpec::choice("storage", &format!("Storage component the lit-mode shadow rays walk (refloor). {}", describe(Slot::Storage)), &names_on(BACKEND, Slot::Storage), "bricks", false),
         ParamSpec::choice("geometry", &format!("Geometry component. {}", describe(Slot::Geometry)), &names_on(BACKEND, Slot::Geometry), "greedy", true),
         ParamSpec::choice("visibility", &format!("Visibility component. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "raster", true),
@@ -67,7 +68,9 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB); for region storages (tree64) the limit of their own data", 64, 6144, 1536, false),
         ParamSpec::int("quad_buffer_mb", "Instance buffer limit (MiB; grows on demand)", 16, 2040, 1024, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
-    ]
+    ];
+    p.extend(shade_state::params());
+    p
 }
 
 #[derive(Deserialize)]
@@ -84,6 +87,9 @@ struct Options {
     /// raster, lit mode: lay down depth first so the expensive fragment shader runs once
     /// per pixel.
     depth_prepass: bool,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
     shadows: Shadows,
     max_steps: u32,
     mesh_budget: usize,
@@ -105,6 +111,9 @@ impl Default for Options {
             merge: "block".into(),
             cull: true,
             depth_prepass: true,
+            bounces: 1,
+            spp: 1,
+            accumulate: true,
             shadows: Shadows::All,
             max_steps: 2048,
             mesh_budget: 0,
@@ -156,7 +165,7 @@ impl Composition {
         let own = format!(
             "// Composition: storage = {}, geometry = {}, visibility = {}, shading = {}\n\
              const LOD: bool = false;\n\
-             {}\n{}\n{}\n{}\n{}\n{}",
+             {}\n{}\n{}\n{}\n{}\n{}\n{}",
             self.storage,
             self.geometry,
             self.visibility,
@@ -165,7 +174,13 @@ impl Composition {
             visibility::gpu_wgsl("refloor").unwrap(),
             self.geometry().wgsl,
             include_str!("main.wgsl"),
-            visibility::raster_wgsl(&self.visibility).expect("validated"),
+            ShadeState::wgsl(0, 3),
+            // Deferred visibility shades in compute; forward raster shades its fragments.
+            if self.deferred() {
+                visibility::raster_wgsl(&self.visibility).expect("validated").to_string()
+            } else {
+                shade_state::fragment_wgsl(&self.shading, visibility::raster_wgsl(&self.visibility).expect("validated"))
+            },
             mr_components::shading::gpu_wgsl(&self.shading).expect("validated"),
         );
         let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
@@ -246,6 +261,8 @@ pub struct GpuRasterBackend {
     chunk_buf: wgpu::Buffer,
     indirect: wgpu::Buffer,
     bind0: Option<wgpu::BindGroup>,
+    /// Shading state (pathtrace's accumulation).
+    accum: ShadeState,
     /// The storage's own data for the shadow walk (group 2).
     data: StorageData,
     output: wgpu::Texture,
@@ -306,7 +323,14 @@ impl Layouts {
         let ro = wgpu::BufferBindingType::Storage { read_only: true };
         let frame = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("raster frame"),
-            entries: &[buf(0, wgpu::BufferBindingType::Uniform), buf(1, ro), buf(2, ro)],
+            entries: &[
+                buf(0, wgpu::BufferBindingType::Uniform),
+                buf(1, ro),
+                buf(2, ro),
+                // Shading state: shading runs in fragment (raster) or compute (deferred) passes.
+                ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE)[0],
+                ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE)[1],
+            ],
         });
         let aux = gpu_data::layout(gpu, st, all);
         let images = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -352,6 +376,11 @@ impl Layouts {
 
 impl Pipelines {
     fn new(gpu: &Gpu, layouts: &Layouts, comp: &Composition) -> anyhow::Result<Self> {
+        if !comp.deferred() {
+            if let Some(why) = shade_state::fragment_blocker(&comp.shading, &gpu.device) {
+                anyhow::bail!(why);
+            }
+        }
         let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("raster"), source: wgpu::ShaderSource::Wgsl(comp.source().into()) });
         let geo = comp.geometry();
@@ -450,7 +479,7 @@ impl GpuRasterBackend {
             experimental: false,
             adapter: opts.adapter.as_deref(),
             required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE,
-            optional_features: wgpu::Features::TIMESTAMP_QUERY,
+            optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE,
             limits: &|a| a.clone(),
         })?;
         let world = VoxelWorld::new(
@@ -496,6 +525,7 @@ impl GpuRasterBackend {
         let occ = visibility::occlusion_wgsl(&comp.storage(), false);
         let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Some(Occlusion { wgsl: &occ, layout: &layouts.aux }));
         let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone());
+        let accum = ShadeState::new(&gpu, p.width, p.height, &comp.shading, opts.bounces, opts.spp, opts.accumulate);
         tracing::info!("gpu-raster: storage {}, geometry {}, visibility {}, shading {}", comp.storage, comp.geometry, comp.visibility, comp.shading);
         Ok(Self {
             mesh,
@@ -515,6 +545,7 @@ impl GpuRasterBackend {
             chunk_buf,
             indirect,
             bind0: None,
+            accum,
             data,
             meshes: HashMap::new(),
             dirty: HashSet::new(),
@@ -634,6 +665,9 @@ fn aabb_visible(planes: &[Vec4; 5], min: Vec3, max: Vec3) -> bool {
 
 impl Renderer for GpuRasterBackend {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        if !updates.is_empty() {
+            self.accum.invalidate();
+        }
         let changed = self.world.apply(&self.gpu, updates);
         self.data.update(&self.gpu, &self.world, &changed)?;
         for pos in changed {
@@ -664,7 +698,13 @@ impl Renderer for GpuRasterBackend {
             if self.comp.gbuffer() != self.built.gbuffer() {
                 self.gpos = gpos_view(&self.gpu, self.width, self.height, self.comp.gbuffer());
             }
+            if self.accum.set_shading(&self.gpu, &self.comp.shading) {
+                self.bind0 = None;
+            }
             self.built = self.comp.clone();
+        }
+        if !self.built.deferred() && req.mode == RenderMode::Lit && !self.opts.depth_prepass && shade_state::stateful(&self.built.shading) {
+            anyhow::bail!("`{}` shading with `raster` visibility needs depth_prepass in lit mode (exactly one fragment per pixel may update its state)", self.built.shading);
         }
         let ticket = self.ring.begin(&self.gpu, sink)?;
         let start = Instant::now();
@@ -689,6 +729,7 @@ impl Renderer for GpuRasterBackend {
             sky: [sky[0] as f32 / 255.0, sky[1] as f32 / 255.0, sky[2] as f32 / 255.0, 1.0],
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
+        self.accum.begin(&self.gpu, c, req.mode);
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         if want_meshes {
             self.mesh.prepare(&self.gpu, c, view_proj, req.mode);
@@ -748,6 +789,8 @@ impl Renderer for GpuRasterBackend {
                     wgpu::BindGroupEntry { binding: 0, resource: self.frame_buf.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: self.quad_buf.buffer().as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 2, resource: self.chunk_buf.as_entire_binding() },
+                    self.accum.bind_entries(3)[0].clone(),
+                    self.accum.bind_entries(3)[1].clone(),
                 ],
             }));
         }
@@ -874,6 +917,7 @@ impl Renderer for GpuRasterBackend {
             ]
             .into_iter()
             .chain(self.data.counters())
+            .chain(self.accum.counter(req.mode))
             .collect(),
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
@@ -909,6 +953,7 @@ impl Renderer for GpuRasterBackend {
                     self.remesh_all();
                 }
             }
+            _ if self.accum.set_param(name, value).is_some() => {}
             _ => anyhow::bail!("`{name}` cannot change while running"),
         }
         Ok(())
@@ -925,12 +970,14 @@ impl Renderer for GpuRasterBackend {
         self.depth = depth_view(&self.gpu, width, height);
         self.ids = ids_view(&self.gpu, width, height);
         self.gpos = gpos_view(&self.gpu, width, height, self.built.gbuffer());
+        self.accum.resize(&self.gpu, width, height);
+        self.bind0 = None;
         self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
         Ok(())
     }
 
     fn memory(&self) -> MemoryReport {
-        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size() + self.width as u64 * self.height as u64 * 12;
+        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size() + self.accum.memory_bytes() + self.width as u64 * self.height as u64 * 12;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
 }

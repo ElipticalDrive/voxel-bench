@@ -15,6 +15,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
+use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::{names_on, require, Slot, storage, visibility};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
@@ -41,7 +42,10 @@ fn info() -> RendererInfo {
             shadows_param(),
             ParamSpec::int("pool_mb", "Voxel pool limit (MiB)", 64, 6144, 2048, false),
             ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
-        ]),
+        ]
+        .into_iter()
+        .chain(shade_state::params())
+        .collect()),
     }
 }
 
@@ -54,6 +58,9 @@ struct Options {
     visibility: String,
     shading: String,
     max_splat: u32,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
     shadows: Shadows,
     pool_mb: u32,
     frames_in_flight: usize,
@@ -61,7 +68,7 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { adapter: None, storage: "bricks".into(), geometry: "points".into(), visibility: "splat".into(), shading: "direct".into(), max_splat: 8, shadows: Shadows::All, pool_mb: 2048, frames_in_flight: 3 }
+        Self { adapter: None, storage: "bricks".into(), geometry: "points".into(), visibility: "splat".into(), shading: "direct".into(), max_splat: 8, bounces: 1, spp: 1, accumulate: true, shadows: Shadows::All, pool_mb: 2048, frames_in_flight: 3 }
     }
 }
 
@@ -138,6 +145,8 @@ pub struct GpuSplat {
     idbuf: wgpu::Buffer,
     points_buf: wgpu::Buffer,
     bind0: wgpu::BindGroup,
+    /// Shading state (pathtrace's accumulation).
+    accum: ShadeState,
     ring: FrameRing,
     chunks: HashMap<IVec3, Vec<Point>>,
     dirty: bool,
@@ -196,7 +205,7 @@ impl GpuSplat {
         let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
-        let own = format!("var<private> ct_iters: u32;\nconst LOD: bool = false;\n{}\n{}\n{}\n{shade}", st.source(), visibility::gpu_wgsl("refloor").unwrap(), include_str!("splat.wgsl"));
+        let own = format!("var<private> ct_iters: u32;\nconst LOD: bool = false;\n{}\n{}\n{}\n{}\n{shade}", st.source(), visibility::gpu_wgsl("refloor").unwrap(), include_str!("splat.wgsl"), ShadeState::wgsl(0, 5));
         let source = shader_source(occlusion, &own);
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("splat"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -221,6 +230,8 @@ impl GpuSplat {
                 storage_entry(2, true),
                 storage_entry(3, false),
                 storage_entry(4, false),
+                ShadeState::layout_entries(5, wgpu::ShaderStages::COMPUTE)[0],
+                ShadeState::layout_entries(5, wgpu::ShaderStages::COMPUTE)[1],
             ],
         });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -249,7 +260,8 @@ impl GpuSplat {
         let output = mr_gpu::output_texture(&gpu, p.width, p.height);
         let zbuf = pixel_buffer(&gpu, p.width, p.height);
         let idbuf = pixel_buffer(&gpu, p.width, p.height);
-        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &points_buf, &zbuf, &idbuf);
+        let accum = ShadeState::new(&gpu, p.width, p.height, &opts.shading, opts.bounces, opts.spp, opts.accumulate);
+        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &points_buf, &zbuf, &idbuf, &accum);
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
         Ok(Self {
@@ -265,6 +277,7 @@ impl GpuSplat {
             idbuf,
             points_buf,
             bind0,
+            accum,
             ring,
             chunks: HashMap::new(),
             dirty: false,
@@ -286,7 +299,7 @@ impl GpuSplat {
         })
     }
 
-    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, pts: &wgpu::Buffer, z: &wgpu::Buffer, id: &wgpu::Buffer) -> wgpu::BindGroup {
+    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, pts: &wgpu::Buffer, z: &wgpu::Buffer, id: &wgpu::Buffer, accum: &ShadeState) -> wgpu::BindGroup {
         let view = out.create_view(&Default::default());
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("splat"),
@@ -297,12 +310,14 @@ impl GpuSplat {
                 wgpu::BindGroupEntry { binding: 2, resource: pts.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: z.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: id.as_entire_binding() },
+                accum.bind_entries(5)[0].clone(),
+                accum.bind_entries(5)[1].clone(),
             ],
         })
     }
 
     fn rebind(&mut self) {
-        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.points_buf, &self.zbuf, &self.idbuf);
+        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.points_buf, &self.zbuf, &self.idbuf, &self.accum);
     }
 
     /// Concatenates every chunk's points into one GPU buffer (rebuilt after any change).
@@ -322,6 +337,9 @@ impl GpuSplat {
 
 impl Renderer for GpuSplat {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        if !updates.is_empty() {
+            self.accum.invalidate();
+        }
         let changed = self.world.apply(&self.gpu, updates);
         self.data.update(&self.gpu, &self.world, &changed)?;
         // Exposure depends on neighbours, so rebuild the 6-neighbourhood too.
@@ -367,6 +385,7 @@ impl Renderer for GpuSplat {
             max_splat: self.max_splat,
         };
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
+        self.accum.begin(&self.gpu, c, req.mode);
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         let storage_bg = self.data.prepare(&self.gpu, &self.world, &self.layout_st).clone();
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
@@ -392,7 +411,7 @@ impl Renderer for GpuSplat {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
             legend: None,
-            counters: vec![("points".into(), self.count as f64), ("dropped_chunks".into(), self.world.dropped_chunks() as f64)],
+            counters: [("points".into(), self.count as f64), ("dropped_chunks".into(), self.world.dropped_chunks() as f64)].into_iter().chain(self.accum.counter(req.mode)).collect(),
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
@@ -406,6 +425,7 @@ impl Renderer for GpuSplat {
         match name {
             "max_splat" => self.max_splat = value.as_i64().unwrap_or(8).clamp(1, 64) as u32,
             "shadows" => self.world.cfg.shadows.set(value)?,
+            _ if self.accum.set_param(name, value).is_some() => {}
             _ => anyhow::bail!("`{name}` cannot change while running"),
         }
         Ok(())
@@ -421,6 +441,7 @@ impl Renderer for GpuSplat {
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.zbuf = pixel_buffer(&self.gpu, width, height);
         self.idbuf = pixel_buffer(&self.gpu, width, height);
+        self.accum.resize(&self.gpu, width, height);
         self.rebind();
         self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
         Ok(())
@@ -428,6 +449,6 @@ impl Renderer for GpuSplat {
 
     fn memory(&self) -> MemoryReport {
         let cpu = self.chunks.values().map(|v| v.len() as u64 * 16).sum();
-        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.world.memory_bytes() + self.data.memory_bytes() + self.points_buf.size() + self.width as u64 * self.height as u64 * 12 }
+        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.world.memory_bytes() + self.data.memory_bytes() + self.points_buf.size() + self.accum.memory_bytes() + self.width as u64 * self.height as u64 * 12 }
     }
 }

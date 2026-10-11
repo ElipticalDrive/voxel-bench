@@ -171,7 +171,8 @@ const SPLAT: &[&str] = &["gpu-splat"];
 const VOXELSPACE: &[&str] = &["gpu-voxelspace", "cpu-voxelspace"];
 const DISCOVER: &[&str] = &["gpu-discover", "cpu-discover"];
 const CPU_DISCOVER: &[&str] = &["cpu-discover"];
-const COMPUTE_RT: &[&str] = &["gpu-compute", "gpu-rt"];
+/// Back ends with the shading state (`shading::state`) and a ray walk for bounces.
+const PATHTRACE: &[&str] = &["gpu-compute", "gpu-rt", "gpu-splat", "gpu-raster", "gpu-discover"];
 /// Back ends that can draw meshes (the others have no meshes slot).
 const MESH: &[&str] = &["gpu-compute", "gpu-raster"];
 
@@ -214,7 +215,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Geometry, name: "boxes", description: "One AABB per occupied 4^3 brick (from gpu-rtx-bricks): the RT cores find candidate boxes, a small software DDA through the voxel pool finds the voxel.", backends: RT, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Geometry, name: "cubes", description: "One 36-vertex cube instance per surface block; the hardware back-face culls the hidden half. Knob: cull = false instances every solid block.", backends: RASTER, provides: &[], uses: &[] },
     // Shading.
-    ComponentInfo { slot: Slot::Shading, name: "pathtrace", description: "Diffuse path tracing (from gpu-pathtrace): NEE for sun and point lights, cosine-weighted bounces through the composed walk, progressive accumulation while the view is still. bounces = 0 reproduces direct. Knobs: bounces, spp, accumulate.", backends: COMPUTE_RT, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Shading, name: "pathtrace", description: "Diffuse path tracing (from gpu-pathtrace): NEE for sun and point lights, cosine-weighted bounces through the composed walk, progressive accumulation while the view is still. bounces = 0 reproduces direct. Knobs: bounces, spp, accumulate.", backends: PATHTRACE, provides: &[], uses: &[] },
     ComponentInfo { slot: Slot::Shading, name: "direct", description: "The reference lighting model: texel (unlit); ambient, sun and point lights with shadow rays through the same walk (lit).", backends: SHADE_ALL, provides: &[], uses: &[] },
     // Meshes (mesh mode, IDEAS §13): how polygon meshes join the voxel image.
     ComponentInfo { slot: Slot::Meshes, name: "none", description: "Meshes are not drawn: voxels only. Benchmarks skip the composition in +meshes passes; the GUI labels it \"(no meshes)\".", backends: MESH, provides: &[], uses: &[] },

@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use mr_components::storage::gpu_data::{self, StorageData};
+use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::{names_on, require, Slot, components, storage, visibility};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -55,11 +56,9 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &names_on(BACKEND, Slot::Prepass), "none", true),
         ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(BACKEND, Slot::Meshes), "composite", true),
         ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
-        ParamSpec::int("bounces", "pathtrace shading: diffuse indirect bounces (lit)", 0, 8, 1, true).of("shading", &["pathtrace"]),
-        ParamSpec::int("spp", "pathtrace shading: paths per pixel per frame (lit)", 1, 64, 1, true).of("shading", &["pathtrace"]),
-        ParamSpec::bool("accumulate", "pathtrace shading: average frames while camera and world are still", true, true).of("shading", &["pathtrace"]),
-        ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true).of("visibility", &["incremental"]),
     ];
+    p.extend(shade_state::params());
+    p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true).of("visibility", &["incremental"]));
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("visibility", &["incremental"]));
     }
@@ -175,7 +174,8 @@ impl Composition {
              const EXACT: bool = {};\n\
              const VIEW_STEPS: bool = {};\n\
              const LEVEL_MASK: u32 = (S_LEVELS & {:#x}u) | 1u | (1u << S_TOP);\n\
-             {MESH_COMPOSITE_WGSL}\n{}\n{}\n{vis}\n{shade}\n{}\n{pre}",
+             {MESH_COMPOSITE_WGSL}\n{}\n{}\n{}\n{vis}\n{shade}\n{}\n{pre}",
+
             self.storage,
             self.prepass(),
             self.visibility,
@@ -186,6 +186,7 @@ impl Composition {
             self.steps_view,
             self.levels,
             mr_core::legend::ramp_wgsl(),
+            ShadeState::wgsl(0, 4),
             st.source(),
             include_str!("main.wgsl"),
         );
@@ -237,32 +238,8 @@ struct CameraUniform {
     sky: u32,
     width: u32,
     height: u32,
-    frame: u32,
-    prev_count: u32,
-    bounces: u32,
-    spp: u32,
     view_max: u32,
     _pad: u32,
-}
-
-/// Progressive accumulation (pathtrace shading): samples averaged so far, reset when the
-/// view, the mode or the world changes.
-struct Accum {
-    buf: wgpu::Buffer,
-    count: u32,
-    frame: u32,
-    last: Option<(Camera, RenderMode)>,
-    accumulate: bool,
-    bounces: u32,
-    spp: u32,
-}
-
-impl Accum {
-    /// Full size only for shading that accumulates (a placeholder otherwise).
-    fn buffer(gpu: &Gpu, width: u32, height: u32, shading: &str) -> wgpu::Buffer {
-        let size = if shading == "pathtrace" { width as u64 * height as u64 * 16 } else { 16 };
-        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("accum"), size: size.max(16), usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
-    }
 }
 
 pub struct GpuCompose {
@@ -287,7 +264,8 @@ pub struct GpuCompose {
     stand_in: wgpu::Texture,
     /// Prepass output: one f32 per tile (sized for 1-pixel tiles), and statistics.
     beam: Beam,
-    accum: Accum,
+    /// Shading state (pathtrace's accumulation).
+    accum: ShadeState,
     /// `view = steps`: the top of the colour scale.
     view_max: u32,
     /// The meshes stage draws meshes (`composite`), or not (`none`).
@@ -366,7 +344,8 @@ impl GpuCompose {
             entries: &[
                 rw(2),
                 rw(3),
-                rw(4),
+                ShadeState::layout_entries(4, pixel)[0],
+                ShadeState::layout_entries(4, pixel)[1],
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: pixel,
@@ -400,10 +379,10 @@ impl GpuCompose {
         });
         let output = mr_gpu::output_texture(&gpu, p.width, p.height);
         let beam = Beam::new(&gpu, p.width, p.height);
-        let accum = Accum { buf: Accum::buffer(&gpu, p.width, p.height, &comp.shading), count: 0, frame: 0, last: None, accumulate: opts.accumulate, bounces: opts.bounces.min(8), spp: opts.spp.clamp(1, 64) };
-        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &beam, &accum.buf);
+        let accum = ShadeState::new(&gpu, p.width, p.height, &comp.shading, opts.bounces, opts.spp, opts.accumulate);
+        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &beam, &accum);
         let stand_in = mr_gpu::output_texture(&gpu, 1, 1);
-        let bind0_frag = Self::bind0(&gpu, &layout0, &camera_buf, &stand_in, &beam, &accum.buf);
+        let bind0_frag = Self::bind0(&gpu, &layout0, &camera_buf, &stand_in, &beam, &accum);
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
         tracing::info!("gpu-compute: storage {}, visibility {}, shading {}", comp.storage, comp.visibility, comp.shading);
@@ -475,11 +454,11 @@ impl GpuCompose {
     }
 
     fn rebind(&mut self) {
-        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam, &self.accum.buf);
-        self.bind0_frag = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.stand_in, &self.beam, &self.accum.buf);
+        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam, &self.accum);
+        self.bind0_frag = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.stand_in, &self.beam, &self.accum);
     }
 
-    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, beam: &Beam, accum: &wgpu::Buffer) -> wgpu::BindGroup {
+    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, beam: &Beam, accum: &ShadeState) -> wgpu::BindGroup {
         let view = out.create_view(&Default::default());
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("compose camera"),
@@ -489,7 +468,8 @@ impl GpuCompose {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
                 wgpu::BindGroupEntry { binding: 2, resource: beam.tiles.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: beam.stats.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: accum.as_entire_binding() },
+                accum.bind_entries(4)[0].clone(),
+                accum.bind_entries(4)[1].clone(),
             ],
         })
     }
@@ -503,7 +483,7 @@ impl Renderer for GpuCompose {
 
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         if !updates.is_empty() {
-            self.accum.count = 0;
+            self.accum.invalidate();
         }
         let changed = self.world.apply(&self.gpu, updates);
         self.data.update(&self.gpu, &self.world, &changed)
@@ -512,8 +492,7 @@ impl Renderer for GpuCompose {
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         if self.comp != self.built {
             (self.pipeline, self.prepass) = Self::pipeline(&self.gpu, &self.pipeline_layout, &self.comp)?;
-            if self.comp.shading != self.built.shading {
-                self.accum.buf = Accum::buffer(&self.gpu, self.width, self.height, &self.comp.shading);
+            if self.accum.set_shading(&self.gpu, &self.comp.shading) {
                 self.rebind();
             }
             self.built = self.comp.clone();
@@ -522,12 +501,7 @@ impl Renderer for GpuCompose {
         let start = Instant::now();
         let c = &req.camera;
         let (_, frac) = c.split_position();
-        let a = &mut self.accum;
-        if !a.accumulate || a.last != Some((*c, req.mode)) || self.built.shading != "pathtrace" {
-            a.count = 0;
-        }
-        a.last = Some((*c, req.mode));
-        a.frame = a.frame.wrapping_add(1);
+        self.accum.begin(&self.gpu, c, req.mode);
         let cam = CameraUniform {
             forward: c.forward().to_array(),
             tan_half_fov: (c.fov_y * 0.5).tan(),
@@ -539,15 +513,9 @@ impl Renderer for GpuCompose {
             sky: u32::from_le_bytes(encode_srgb(self.world.env.sky)),
             width: self.width,
             height: self.height,
-            frame: a.frame,
-            prev_count: a.count,
-            bounces: a.bounces,
-            spp: a.spp,
             view_max: self.view_max,
             _pad: 0,
         };
-        a.count = a.count.saturating_add(a.spp);
-        let accumulated = a.count;
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         let bind2 = self.data.prepare(&self.gpu, &self.world, &self.layout2).clone();
@@ -618,7 +586,7 @@ impl Renderer for GpuCompose {
                 .into_iter()
                 .chain(self.data.counters())
                 .chain(self.prepass.is_some().then(|| ("avg_skip_blocks".to_string(), self.beam.avg_skip)))
-                .chain((self.built.shading == "pathtrace" && req.mode == RenderMode::Lit).then(|| ("accumulated_spp".to_string(), accumulated as f64)))
+                .chain(self.accum.counter(req.mode))
                 .collect(),
             legend: self.built.steps_view.then(|| Legend::ramp("loop iterations (primary ray)", self.view_max as f64, true)),
         };
@@ -654,9 +622,6 @@ impl Renderer for GpuCompose {
             }
             "shading" => self.comp.shading = require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?,
             "meshes" => self.draw_meshes = require(BACKEND, Slot::Meshes, value.as_str().unwrap_or(""))? != "none",
-            "bounces" => (self.accum.bounces, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(0, 8) as u32, 0),
-            "spp" => (self.accum.spp, self.accum.count) = (value.as_i64().unwrap_or(1).clamp(1, 64) as u32, 0),
-            "accumulate" => self.accum.accumulate = value.as_bool().unwrap_or(true),
             "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,
             "view" => self.comp.steps_view = parse_view(value.as_str().unwrap_or(""))?,
             "dispatch" => self.comp.fragment = parse_dispatch(value.as_str().unwrap_or(""))?,
@@ -669,6 +634,7 @@ impl Renderer for GpuCompose {
                     self.comp.levels &= !bit;
                 }
             }
+            _ if self.accum.set_param(name, value).is_some() => {}
             _ => anyhow::bail!("`{name}` cannot change while running"),
         }
         Ok(())
@@ -684,15 +650,14 @@ impl Renderer for GpuCompose {
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.meshes.resize(&self.gpu, width, height);
         self.beam = Beam::new(&self.gpu, width, height);
-        self.accum.buf = Accum::buffer(&self.gpu, width, height, &self.built.shading);
-        self.accum.count = 0;
+        self.accum.resize(&self.gpu, width, height);
         self.rebind();
         self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
         Ok(())
     }
 
     fn memory(&self) -> MemoryReport {
-        MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + self.data.memory_bytes() + self.accum.buf.size() + self.beam.tiles.size() + self.width as u64 * self.height as u64 * 4 }
+        MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + self.data.memory_bytes() + self.accum.memory_bytes() + self.beam.tiles.size() + self.width as u64 * self.height as u64 * 4 }
     }
 }
 

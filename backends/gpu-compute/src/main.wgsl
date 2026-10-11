@@ -8,8 +8,7 @@ struct Camera {
     right: vec3<f32>, aspect: f32,
     up: vec3<f32>, mode: u32,      // 0 unlit, 1 lit
     origin: vec3<f32>, sky: u32,   // camera position relative to vp.cam_block; packed sRGB sky
-    width: u32, height: u32, frame: u32, prev_count: u32,   // frame counter; samples accumulated so far
-    bounces: u32, spp: u32, view_max: u32, _p1: u32,        // pathtrace shading; steps view scale
+    width: u32, height: u32, view_max: u32, _p1: u32,       // steps view scale
 }
 
 @group(0) @binding(0) var<uniform> cam: Camera;
@@ -20,8 +19,7 @@ var<private> ct_iters: u32;
 // Prepass output (one start distance per tile) and statistics; see `prepass` components.
 @group(0) @binding(2) var<storage, read_write> beam: array<f32>;
 @group(0) @binding(3) var<storage, read_write> beam_stats: array<atomic<u32>, 2>;
-// Progressive accumulation for shading components that need it (pathtrace).
-@group(0) @binding(4) var<storage, read_write> accum: array<vec4<f32>>;
+// Bindings 4 and 5: the shading state (`sp`, `accum`; shading::state).
 
 // The colour of pixel `px` (or its step count with `view = "steps"`).
 fn pixel_color(px: vec2<u32>) -> vec4<f32> {

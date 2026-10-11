@@ -7,6 +7,7 @@
 pub mod direct {
     pub mod cpu;
 }
+pub mod state;
 
 pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {

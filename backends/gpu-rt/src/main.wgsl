@@ -7,8 +7,7 @@ struct Camera {
     right: vec3<f32>, aspect: f32,
     up: vec3<f32>, mode: u32,      // 0 unlit, 1 lit
     origin: vec3<f32>, sky: u32,   // camera position relative to vp.cam_block; packed sRGB sky
-    width: u32, height: u32, frame: u32, prev_count: u32,   // frame counter; samples accumulated so far
-    bounces: u32, spp: u32, ray_flags: u32, _p0: u32,       // pathtrace shading; primary-ray culling
+    width: u32, height: u32, ray_flags: u32, _p0: u32,      // primary-ray culling
 }
 
 @group(0) @binding(0) var<uniform> cam: Camera;
@@ -16,8 +15,7 @@ struct Camera {
 @group(0) @binding(2) var acc: acceleration_structure;
 @group(0) @binding(3) var<storage, read> geo: array<u32>;              // quads or brick lists
 @group(0) @binding(4) var<storage, read> chunk_info: array<vec4<u32>>; // per instance slot
-// Progressive accumulation for shading components that need it (pathtrace).
-@group(0) @binding(5) var<storage, read_write> accum: array<vec4<f32>>;
+// Bindings 5 and 6: the shading state (`sp`, `accum`; shading::state).
 var<private> ct_iters: u32;
 
 @compute @workgroup_size(8, 8)
