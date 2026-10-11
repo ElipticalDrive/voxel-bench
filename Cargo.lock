@@ -2257,6 +2257,7 @@ dependencies = [
  "mr-core",
  "mr-gpu",
  "mr-mesh",
+ "pollster",
  "rayon",
  "serde",
  "tracing",

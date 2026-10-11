@@ -39,6 +39,7 @@ use discover::{Output, Settings, State, cast};
 use mr_components::{names_on, require, Slot};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
+use mr_components::visibility::{self, drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer}};
 use mr_gpu::voxels::{DDA_OCCLUSION_WGSL, Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, wgpu};
 use rayon::prelude::*;
@@ -85,7 +86,8 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("threads", "Discovery threads (0 = all cores)", 0, 256, 0, false),
         shadows_param(),
         ParamSpec::int("max_steps", "Shadow-ray DDA step limit", 32, 16384, 2048, true),
-        ParamSpec::bool("depth_prepass", "Lit mode: depth pre-pass so lighting runs once per pixel", true, true),
+        ParamSpec::choice("draw", "How the discovered faces are drawn (the raster visibility components): raster = depth-tested and shaded per fragment; visbuffer = face ids, then one compute pass shades each pixel; gbuffer = hit points and blocks, then the same (no diagnostic views)", &DrawMode::NAMES, "raster", true).of("visibility", &["quadtree", "cluster"]),
+        ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB)", 64, 6144, 1536, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ]
@@ -117,6 +119,7 @@ struct Options {
     threads: usize,
     shadows: Shadows,
     max_steps: u32,
+    draw: String,
     depth_prepass: bool,
     pool_mb: u32,
     frames_in_flight: usize,
@@ -146,6 +149,7 @@ impl Default for Options {
             threads: 0,
             shadows: Shadows::All,
             max_steps: 2048,
+            draw: "raster".into(),
             depth_prepass: true,
             pool_mb: 1536,
             frames_in_flight: 3,
@@ -186,6 +190,7 @@ struct FrameUniform {
     size: [f32; 2],
     _p1: [f32; 2],
     anchor: [i32; 4],
+    sky: [f32; 4],
 }
 
 const REC_BYTES: u64 = 8;
@@ -199,9 +204,13 @@ pub struct CpuDiscover {
     state: Option<State>,
     pending: Option<Receiver<Output>>,
     prev_cam: Option<Camera>,
-    pipe_fill: wgpu::RenderPipeline,
-    pipe_depth: wgpu::RenderPipeline,
-    pipe_equal: wgpu::RenderPipeline,
+    /// The face drawer (`draw`: the raster visibility component's pipelines).
+    drawer: FaceDrawer,
+    pl: wgpu::PipelineLayout,
+    pl_shade: wgpu::PipelineLayout,
+    images: wgpu::BindGroupLayout,
+    /// Group 2 is empty here (no composed storage on the GPU); deferred images are group 3.
+    empty: wgpu::BindGroup,
     frame_buf: wgpu::Buffer,
     rec_buf: GrowableBuffer,
     /// Per-record tags for the diagnostic views (cluster discovery).
@@ -276,59 +285,37 @@ impl CpuDiscover {
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
                 max_steps: opts.max_steps,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
             },
         )?;
-        let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
-        let source = shader_source(DDA_OCCLUSION_WGSL, &format!("{}\n{}\n{shade}\n{}", include_str!("raster.wgsl"), mr_components::visibility::faces_wgsl(true), mr_components::visibility::raster_wgsl("raster").unwrap()));
-        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("cpu-discover raster"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-        let buf_entry = |binding, ty, vis| wgpu::BindGroupLayoutEntry {
+        let buf_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: vis,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None },
             count: None,
         };
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cpu-discover frame"),
             entries: &[
-                buf_entry(0, wgpu::BufferBindingType::Uniform, wgpu::ShaderStages::VERTEX_FRAGMENT),
-                buf_entry(1, wgpu::BufferBindingType::Storage { read_only: true }, wgpu::ShaderStages::VERTEX_FRAGMENT),
-                buf_entry(2, wgpu::BufferBindingType::Storage { read_only: true }, wgpu::ShaderStages::VERTEX_FRAGMENT),
+                buf_entry(0, wgpu::BufferBindingType::Uniform),
+                buf_entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
+                buf_entry(2, wgpu::BufferBindingType::Storage { read_only: true }),
             ],
         });
+        let empty_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("empty"), entries: &[] });
+        let empty = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("empty"), layout: &empty_layout, entries: &[] });
+        let images = FaceDrawer::images_layout(&gpu.device);
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("cpu-discover"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout())],
+            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&empty_layout)],
             immediate_size: 0,
         });
-        let pipeline = |label, write: bool, compare, fragment: bool| {
-            let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
-            gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pl),
-                vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: Some(wgpu::Face::Back),
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(write),
-                    depth_compare: Some(compare),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                fragment: fragment.then(|| wgpu::FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &targets }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let pipe_fill = pipeline("fill", true, wgpu::CompareFunction::Greater, true);
-        let pipe_depth = pipeline("depth prepass", true, wgpu::CompareFunction::Greater, false);
-        let pipe_equal = pipeline("shade equal", false, wgpu::CompareFunction::Equal, true);
+        let pl_shade = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("cpu-discover deferred shade"),
+            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&empty_layout), Some(&images)],
+            immediate_size: 0,
+        });
+        let drawer = Self::drawer(&gpu, &opts, &pl, &pl_shade, &images, p.width, p.height)?;
         let frame_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame"),
             size: size_of::<FrameUniform>() as u64,
@@ -351,9 +338,11 @@ impl CpuDiscover {
             state: Some(State::default()),
             pending: None,
             prev_cam: None,
-            pipe_fill,
-            pipe_depth,
-            pipe_equal,
+            drawer,
+            pl,
+            pl_shade,
+            images,
+            empty,
             frame_buf,
             rec_buf,
             tag_buf,
@@ -365,6 +354,19 @@ impl CpuDiscover {
             waker,
             overflowed: false,
         })
+    }
+
+    /// The face drawer for `opts.draw` (shader module: the face source, the drawer, the
+    /// shading and the visibility component).
+    fn drawer(gpu: &Gpu, opts: &Options, pl: &wgpu::PipelineLayout, pl_shade: &wgpu::PipelineLayout, images: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<FaceDrawer> {
+        let mode = DrawMode::parse(&opts.draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{}`", opts.draw))?;
+        let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
+        let source = shader_source(
+            DDA_OCCLUSION_WGSL,
+            &format!("{}\n{}\n{shade}\n{}", include_str!("raster.wgsl"), visibility::faces_wgsl(true), visibility::raster_wgsl(mode.name()).unwrap()),
+        );
+        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("cpu-discover raster"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl, shade_layout: pl_shade, strip: true }, mode, images, width, height)
     }
 
     /// Takes back the state from an in-flight job (discarding its result).
@@ -522,6 +524,10 @@ impl Renderer for CpuDiscover {
             size: [w as f32, h as f32],
             _p1: [0.0; 2],
             anchor: [out.anchor.x, out.anchor.y, out.anchor.z, 0],
+            sky: {
+                let s = encode_srgb(self.world.env.sky);
+                [s[0] as f32 / 255.0, s[1] as f32 / 255.0, s[2] as f32 / 255.0, 1.0]
+            },
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         let world_bg = self.world.prepare(&self.gpu, &c).clone();
@@ -540,53 +546,24 @@ impl Renderer for CpuDiscover {
         let sky = encode_srgb(self.world.env.sky);
         let clear = wgpu::Color { r: sky[0] as f64 / 255.0, g: sky[1] as f64 / 255.0, b: sky[2] as f64 / 255.0, a: 1.0 };
         let out_view = self.output.create_view(&Default::default());
-        let prepass = self.opts.depth_prepass && req.mode == RenderMode::Lit;
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
-        if prepass {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("depth prepass"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: self.ring.render_timestamps(ticket, true, false),
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.pipe_depth);
-            pass.set_bind_group(0, &bind0, &[]);
-            pass.set_bind_group(1, &world_bg, &[]);
+        let frame = DrawFrame {
+            out: &out_view,
+            depth: &self.depth,
+            clear,
+            prepass: self.opts.depth_prepass && req.mode == RenderMode::Lit,
+            keep_depth: false,
+            binds: &[&bind0, &world_bg, &self.empty],
+            ring: &self.ring,
+            ticket,
+            ts: (true, true),
+        };
+        let draw = |pass: &mut wgpu::RenderPass<'_>| {
             if n > 0 {
                 pass.draw(0..4, 0..n);
             }
-        }
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("shade"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &out_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
-                    depth_ops: Some(wgpu::Operations { load: if prepass { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(0.0) }, store: wgpu::StoreOp::Discard }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: self.ring.render_timestamps(ticket, !prepass, true),
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(if prepass { &self.pipe_equal } else { &self.pipe_fill });
-            pass.set_bind_group(0, &bind0, &[]);
-            pass.set_bind_group(1, &world_bg, &[]);
-            if n > 0 {
-                pass.draw(0..4, 0..n);
-            }
-        }
+        };
+        self.drawer.encode(&self.gpu, &mut enc, &frame, &draw, None, None);
         let pixels = (w as f64) * (h as f64);
         let mut counters = vec![
             ("rays".into(), out.rays as f64),
@@ -657,6 +634,17 @@ impl Renderer for CpuDiscover {
             "shadows" => self.world.cfg.shadows.set(value)?,
             "max_steps" => self.world.cfg.max_steps = value.as_i64().unwrap_or(2048) as u32,
             "depth_prepass" => self.opts.depth_prepass = value.as_bool().unwrap_or(true),
+            "draw" => {
+                let mut opts_draw = value.as_str().unwrap_or("raster").to_string();
+                std::mem::swap(&mut self.opts.draw, &mut opts_draw);
+                match Self::drawer(&self.gpu, &self.opts, &self.pl, &self.pl_shade, &self.images, self.width, self.height) {
+                    Ok(d) => self.drawer = d,
+                    Err(e) => {
+                        self.opts.draw = opts_draw;
+                        return Err(e);
+                    }
+                }
+            }
             _ => anyhow::bail!("`{name}` cannot change while running"),
         }
         Ok(())
@@ -672,12 +660,13 @@ impl Renderer for CpuDiscover {
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.depth = depth_view(&self.gpu, width, height);
+        self.drawer.resize(&self.gpu, width, height);
         self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
         Ok(())
     }
 
     fn memory(&self) -> MemoryReport {
-        let gpu = self.world.memory_bytes() + self.rec_buf.size() + self.width as u64 * self.height as u64 * 8;
+        let gpu = self.world.memory_bytes() + self.rec_buf.size() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
         let s = self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16);
         MemoryReport { cpu_bytes: self.cpu.memory() + s + (self.width as u64 + 1) * (self.height as u64 + 1) * 36, gpu_bytes: gpu }
     }

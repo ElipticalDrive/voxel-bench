@@ -10,6 +10,7 @@ struct Frame {
     right: vec3<f32>, aspect: f32,
     up: vec3<f32>, view: u32,         // view: 0 image, 1 churn (tint faces new this frame), 2 quads (colour per drawn quad)
     size: vec2<f32>, _p1: vec2<f32>,
+    sky: vec4<f32>,                   // deferred drawing: the colour of uncovered pixels
 }
 
 @group(0) @binding(0) var<uniform> fr: Frame;

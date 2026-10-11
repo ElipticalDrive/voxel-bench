@@ -56,6 +56,7 @@ use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::shading::state::{self as shade_state, ShadeState};
+use mr_components::visibility::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
 use mr_components::{names_on, require, Slot, storage, visibility};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
@@ -116,7 +117,8 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true).of("visibility", &["quadtree"]),
         shadows_param(),
         ParamSpec::int("max_steps", "DDA step limit", 32, 16384, 2048, true),
-        ParamSpec::bool("depth_prepass", "Lit mode: depth pre-pass so lighting runs once per pixel", true, true),
+        ParamSpec::choice("draw", "How the face set is drawn (the raster visibility components): raster = depth-tested and shaded per fragment (order and the overdraw view apply); visbuffer = face ids, then one compute pass shades each pixel; gbuffer = hit points and blocks, then the same (no diagnostic tints)", &DrawMode::NAMES, "raster", true).of("visibility", &["quadtree"]),
+        ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("max_faces", "Capacity of the face set S (faces)", 1 << 16, 1 << 24, 1 << 20, false).of("visibility", &["quadtree"]),
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB); for region storages the limit of their own data", 64, 6144, 1536, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
@@ -159,6 +161,7 @@ struct Options {
     audit: bool,
     shadows: Shadows,
     max_steps: u32,
+    draw: String,
     depth_prepass: bool,
     bounces: u32,
     spp: u32,
@@ -201,6 +204,7 @@ impl Default for Options {
             audit: false,
             shadows: Shadows::All,
             max_steps: 2048,
+            draw: "raster".into(),
             depth_prepass: true,
             bounces: 1,
             spp: 1,
@@ -226,6 +230,8 @@ struct FrameUniform {
     view: u32,
     size: [f32; 2],
     _p1: [f32; 2],
+    /// Deferred drawing: the colour of uncovered pixels.
+    sky: [f32; 4],
 }
 
 #[repr(C)]
@@ -422,9 +428,13 @@ pub struct GpuDiscover {
     kind_counts: [u64; 4],
     last_kind: FrameKind,
     pipe_id: wgpu::RenderPipeline,
-    pipe_fill: wgpu::RenderPipeline,
-    pipe_depth: wgpu::RenderPipeline,
-    pipe_equal: wgpu::RenderPipeline,
+    /// The face drawer (`draw`: the raster visibility component's pipelines); painter
+    /// order and the overdraw view replace its forward pipeline.
+    drawer: FaceDrawer,
+    draw_src: String,
+    pl_draw: wgpu::PipelineLayout,
+    pl_shade: wgpu::PipelineLayout,
+    images: wgpu::BindGroupLayout,
     layout_disc: wgpu::BindGroupLayout,
     params_buf: wgpu::Buffer,
     level_buf: wgpu::Buffer,
@@ -595,8 +605,9 @@ impl GpuDiscover {
         if let Some(why) = shade_state::fragment_blocker(&shading, &gpu.device) {
             anyhow::bail!(why);
         }
-        let raster = format!("{}\n{}\n{}", include_str!("raster.wgsl"), visibility::faces_wgsl(true), shade_state::fragment_wgsl(&shading, visibility::raster_wgsl("raster").unwrap()));
-        let draw_mod = module("discover raster", shader_source(occlusion, &format!("{walk}\n{}\n{shade}\n{raster}", ShadeState::wgsl(0, 3))));
+        // The face source and everything but the visibility component (the drawer's `draw`).
+        let draw_src = shader_source(occlusion, &format!("{walk}\n{}\n{shade}\n{}\n{}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), visibility::faces_wgsl(true)));
+        let draw_mod = module("discover raster", format!("{draw_src}\n{}", shade_state::fragment_wgsl(&shading, visibility::raster_wgsl("raster").unwrap())));
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {
             binding,
@@ -643,11 +654,11 @@ impl GpuDiscover {
         let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("discover draw"),
             entries: &[
-                buf(0, uni, vf, false),
-                buf(1, ro, wgpu::ShaderStages::VERTEX_FRAGMENT, false),
-                buf(2, ro, wgpu::ShaderStages::VERTEX_FRAGMENT, false),
-                ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT)[0],
-                ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT)[1],
+                buf(0, uni, vf | c, false),
+                buf(1, ro, vf | c, false),
+                buf(2, ro, vf | c, false),
+                ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | c)[0],
+                ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | c)[1],
             ],
         });
         let pl_disc = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover"), bind_group_layouts: &[Some(&layout_disc), Some(world.layout()), Some(&layout_st)], immediate_size: 0 });
@@ -737,9 +748,13 @@ impl GpuDiscover {
                 cache: None,
             })
         };
-        let pipe_fill = pipeline("fill", true, wgpu::CompareFunction::Greater, true);
-        let pipe_depth = pipeline("depth prepass", true, wgpu::CompareFunction::Greater, false);
-        let pipe_equal = pipeline("shade equal", false, wgpu::CompareFunction::Equal, true);
+        let images = FaceDrawer::images_layout(dev);
+        let pl_shade = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("discover deferred shade"),
+            bind_group_layouts: &[Some(&layout_draw), Some(world.layout()), Some(&layout_st), Some(&images)],
+            immediate_size: 0,
+        });
+        let drawer = Self::drawer(&gpu, &draw_src, &shading, &opts.draw, &pl_draw, &pl_shade, &images, p.width, p.height)?;
         // Painter order: no depth test, but depth is still written (the last fragment is the
         // nearest), since incremental mode reads it.
         let pipe_paint = pipeline("painter", true, wgpu::CompareFunction::Always, true);
@@ -866,9 +881,11 @@ impl GpuDiscover {
             kind_counts: [0; 4],
             last_kind: FrameKind::Full,
             pipe_id,
-            pipe_fill,
-            pipe_depth,
-            pipe_equal,
+            drawer,
+            draw_src,
+            pl_draw,
+            pl_shade,
+            images,
             layout_disc,
             params_buf,
             level_buf,
@@ -1154,59 +1171,41 @@ impl GpuDiscover {
         } else {
             &self.bind_draw[parity]
         };
-        if prepass {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("depth prepass"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.sized.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: if ts.0 { self.ring.render_timestamps(ticket, true, false) } else { None },
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.pipe_depth);
-            pass.set_bind_group(0, bind_draw, &[]);
-            pass.set_bind_group(1, world_bg, &[]);
-            pass.set_bind_group(2, self.bind_st.as_ref().expect("set in render"), &[]);
-            pass.draw_indirect(&self.args, draw_ofs);
-        }
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("shade"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &out_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.sized.depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: if prepass { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(0.0) },
-                    store: if self.opts.incremental { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: {
-                let begin = ts.0 && !prepass;
-                if begin || ts.1 { self.ring.render_timestamps(ticket, begin, ts.1) } else { None }
-            },
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(match (overdraw, painter, prepass) {
-            (true, true, _) => &self.pipe_over_paint,
-            (true, false, _) => &self.pipe_over_depth,
-            (false, true, _) => &self.pipe_paint,
-            (false, false, true) => &self.pipe_equal,
-            (false, false, false) => &self.pipe_fill,
-        });
-        pass.set_bind_group(0, bind_draw, &[]);
-        pass.set_bind_group(1, world_bg, &[]);
-            pass.set_bind_group(2, self.bind_st.as_ref().expect("set in render"), &[]);
-        pass.draw_indirect(&self.args, draw_ofs);
+        let st = self.bind_st.as_ref().expect("set in render");
+        let frame = DrawFrame {
+            out: &out_view,
+            depth: &self.sized.depth,
+            clear,
+            prepass,
+            keep_depth: self.opts.incremental,
+            binds: &[bind_draw, world_bg, st],
+            ring: &self.ring,
+            ticket,
+            ts,
+        };
+        let draw = |pass: &mut wgpu::RenderPass<'_>| pass.draw_indirect(&self.args, draw_ofs);
+        let main = match (overdraw, painter) {
+            (true, true) => Some(&self.pipe_over_paint),
+            (true, false) => Some(&self.pipe_over_depth),
+            (false, true) => Some(&self.pipe_paint),
+            (false, false) => None,
+        };
+        self.drawer.encode(&self.gpu, enc, &frame, &draw, None, main);
+    }
+
+    /// The face drawer for `draw` (`draw_src` plus the visibility component).
+    #[allow(clippy::too_many_arguments)]
+    fn drawer(gpu: &Gpu, draw_src: &str, shading: &str, draw: &str, pl_draw: &wgpu::PipelineLayout, pl_shade: &wgpu::PipelineLayout, images: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<FaceDrawer> {
+        let mode = DrawMode::parse(draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`"))?;
+        let vis = visibility::raster_wgsl(mode.name()).unwrap();
+        let vis = if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis) };
+        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("discover drawer"), source: wgpu::ShaderSource::Wgsl(format!("{draw_src}\n{vis}").into()) });
+        FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl_draw, shade_layout: pl_shade, strip: true }, mode, images, width, height)
+    }
+
+    fn sky_rgba(&self) -> [f32; 4] {
+        let s = encode_srgb(self.world.env.sky);
+        [s[0] as f32 / 255.0, s[1] as f32 / 255.0, s[2] as f32 / 255.0, 1.0]
     }
 
     /// `view = tiles | rays`: blends the diagnostic overlay over the output (`overdraw`:
@@ -1278,6 +1277,7 @@ impl GpuDiscover {
             view: if view_code(&self.opts.view) == 5 { 2 } else { 0 },
             size: [self.width as f32, self.height as f32],
             _p1: [0.0; 2],
+            sky: self.sky_rgba(),
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
@@ -1324,8 +1324,12 @@ impl Renderer for GpuDiscover {
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        if shade_state::stateful(&self.shading) && req.mode == RenderMode::Lit && (self.opts.order == "painter" || !self.opts.depth_prepass) {
-            anyhow::bail!("`{}` shading needs order = depth and depth_prepass in lit mode (exactly one fragment per pixel may update its state)", self.shading);
+        let forward = !self.drawer.mode().deferred();
+        if !forward && (self.opts.order == "painter" || view_code(&self.opts.view) == 4) {
+            anyhow::bail!("order = painter and view = overdraw need draw = raster (both draw forward)");
+        }
+        if forward && shade_state::stateful(&self.shading) && req.mode == RenderMode::Lit && (self.opts.order == "painter" || !self.opts.depth_prepass) {
+            anyhow::bail!("`{}` shading with draw = raster needs order = depth and depth_prepass in lit mode (exactly one fragment per pixel may update its state)", self.shading);
         }
         self.accum.begin(&self.gpu, &req.camera, req.mode);
         let ticket = self.ring.begin(&self.gpu, sink)?;
@@ -1481,6 +1485,7 @@ impl Renderer for GpuDiscover {
             },
             size: [self.width as f32, self.height as f32],
             _p1: [0.0; 2],
+            sky: self.sky_rgba(),
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
@@ -1751,6 +1756,13 @@ impl Renderer for GpuDiscover {
             "shadows" => self.world.cfg.shadows.set(value)?,
             "max_steps" => self.world.cfg.max_steps = int(2048),
             "depth_prepass" => self.opts.depth_prepass = value.as_bool().unwrap_or(true),
+            "draw" => {
+                // Drawing only: the face set is unaffected.
+                let draw = value.as_str().unwrap_or("raster");
+                self.drawer = Self::drawer(&self.gpu, &self.draw_src, &self.shading, draw, &self.pl_draw, &self.pl_shade, &self.images, self.width, self.height)?;
+                self.opts.draw = draw.into();
+                return Ok(());
+            }
             _ if self.accum.set_param(name, value).is_some() => return Ok(()),
             _ => anyhow::bail!("`{name}` cannot change while running"),
         }
@@ -1767,6 +1779,7 @@ impl Renderer for GpuDiscover {
         self.width = width;
         self.height = height;
         self.sized = make_sized(&self.gpu, width, height);
+        self.drawer.resize(&self.gpu, width, height);
         self.accum.resize(&self.gpu, width, height);
         self.bind_merged = draw_bind(&self.gpu, &self.layout_draw, &self.frame_buf, &self.merged, &self.cpos, &self.accum);
         self.bind_sorted = draw_bind(&self.gpu, &self.layout_draw, &self.frame_buf, &self.sorted, &self.cpos, &self.accum);
@@ -1781,7 +1794,7 @@ impl Renderer for GpuDiscover {
     fn memory(&self) -> MemoryReport {
         let s = &self.sized;
         let set = (self.keys[0].size() + self.vals[0].size() + self.lists[0].size()) * 2 + self.jobs.size() + self.seen.size() + s.changed_tiles.size() + s.need.size() + self.width as u64 * self.height as u64 * 4;
-        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size() + self.accum.memory_bytes() + self.width as u64 * self.height as u64 * 8;
+        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size() + self.accum.memory_bytes() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
 }

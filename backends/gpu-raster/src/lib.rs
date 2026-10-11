@@ -21,6 +21,7 @@ use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_components::geometry::{GpuGeometry, Knobs, Merge};
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::shading::state::{self as shade_state, ShadeState};
+use mr_components::visibility::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
 use mr_components::{names_on, require, Slot, components, storage, visibility};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -230,14 +231,6 @@ impl ChunkMesh {
     }
 }
 
-/// The pipelines of one composition.
-enum Pipelines {
-    Raster { fill: wgpu::RenderPipeline, depth: wgpu::RenderPipeline, equal: wgpu::RenderPipeline },
-    /// visbuffer and gbuffer: the raster pass writes `ids` (and with `gbuffer` the hit point
-    /// first), then `shade` runs once per pixel.
-    Deferred { ids: wgpu::RenderPipeline, shade: wgpu::ComputePipeline },
-}
-
 struct Layouts {
     frame: wgpu::BindGroupLayout,
     aux: wgpu::BindGroupLayout,
@@ -253,7 +246,8 @@ pub struct GpuRasterBackend {
     comp: Composition,
     /// Composition the pipelines were built from (rebuilt lazily when knobs change it).
     built: Composition,
-    pipelines: Pipelines,
+    /// The face drawer with the visibility component's pipelines.
+    drawer: FaceDrawer,
     layouts: Layouts,
     /// Mesh mode: drawn into the same depth buffer.
     mesh: GpuMeshes,
@@ -268,10 +262,6 @@ pub struct GpuRasterBackend {
     data: StorageData,
     output: wgpu::Texture,
     depth: wgpu::TextureView,
-    /// visbuffer: face ids; gbuffer: block ids.
-    ids: wgpu::TextureView,
-    /// gbuffer: hit point and face (1x1 otherwise).
-    gpos: wgpu::TextureView,
     ring: FrameRing,
     meshes: HashMap<IVec3, ChunkMesh>,
     dirty: HashSet<IVec3>,
@@ -302,16 +292,6 @@ fn depth_view(gpu: &Gpu, w: u32, h: u32) -> wgpu::TextureView {
     target(gpu, "depth", w, h, wgpu::TextureFormat::Depth32Float, wgpu::TextureUsages::RENDER_ATTACHMENT)
 }
 
-fn ids_view(gpu: &Gpu, w: u32, h: u32) -> wgpu::TextureView {
-    target(gpu, "visibility ids", w, h, wgpu::TextureFormat::R32Uint, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
-}
-
-/// The G-buffer's hit points, full size only while `gbuffer` is chosen.
-fn gpos_view(gpu: &Gpu, w: u32, h: u32, used: bool) -> wgpu::TextureView {
-    let (w, h) = if used { (w, h) } else { (1, 1) };
-    target(gpu, "gbuffer points", w, h, wgpu::TextureFormat::Rgba32Float, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
-}
-
 impl Layouts {
     fn new(gpu: &Gpu, world: &VoxelWorld, st: &storage::GpuStorage) -> Self {
         let all = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
@@ -334,33 +314,7 @@ impl Layouts {
             ],
         });
         let aux = gpu_data::layout(gpu, st, all);
-        let images = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("deferred images"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-            ],
-        });
+        let images = FaceDrawer::images_layout(&gpu.device);
         let render = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("raster"),
             bind_group_layouts: &[Some(&frame), Some(world.layout()), Some(&aux)],
@@ -375,93 +329,17 @@ impl Layouts {
     }
 }
 
-impl Pipelines {
-    fn new(gpu: &Gpu, layouts: &Layouts, comp: &Composition) -> anyhow::Result<Self> {
+impl Layouts {
+    /// The face drawer for `comp` (its shader module and the visibility component).
+    fn drawer(&self, gpu: &Gpu, comp: &Composition, width: u32, height: u32) -> anyhow::Result<FaceDrawer> {
         if !comp.deferred() {
             if let Some(why) = shade_state::fragment_blocker(&comp.shading, &gpu.device) {
                 anyhow::bail!(why);
             }
         }
-        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("raster"), source: wgpu::ShaderSource::Wgsl(comp.source().into()) });
-        let geo = comp.geometry();
-        let pipeline = |label, format, write: bool, compare, fragment: bool| {
-            let targets = [Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
-            gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&layouts.render),
-                vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-                primitive: wgpu::PrimitiveState {
-                    topology: if geo.strip { wgpu::PrimitiveTopology::TriangleStrip } else { wgpu::PrimitiveTopology::TriangleList },
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: Some(wgpu::Face::Back),
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(write),
-                    depth_compare: Some(compare),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                fragment: fragment.then(|| wgpu::FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &targets }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        use wgpu::CompareFunction::{Equal, Greater};
-        use wgpu::TextureFormat::{R32Uint, Rgba8Unorm};
-        let p = if comp.deferred() {
-            let ids = if comp.gbuffer() {
-                let targets = [Some(wgpu::TextureFormat::Rgba32Float.into()), Some(R32Uint.into())];
-                gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("gbuffer"),
-                    layout: Some(&layouts.render),
-                    vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-                    primitive: wgpu::PrimitiveState {
-                        topology: if geo.strip { wgpu::PrimitiveTopology::TriangleStrip } else { wgpu::PrimitiveTopology::TriangleList },
-                        front_face: wgpu::FrontFace::Ccw,
-                        cull_mode: Some(wgpu::Face::Back),
-                        ..Default::default()
-                    },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: wgpu::TextureFormat::Depth32Float,
-                        depth_write_enabled: Some(true),
-                        depth_compare: Some(Greater),
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    }),
-                    multisample: Default::default(),
-                    fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &targets }),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            } else {
-                pipeline("visibility ids", R32Uint, true, Greater, true)
-            };
-            Pipelines::Deferred {
-                ids,
-                shade: gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("deferred shade"),
-                    layout: Some(&layouts.shade),
-                    module: &module,
-                    entry_point: Some("shade"),
-                    compilation_options: Default::default(),
-                    cache: None,
-                }),
-            }
-        } else {
-            Pipelines::Raster {
-                fill: pipeline("fill", Rgba8Unorm, true, Greater, true),
-                depth: pipeline("depth prepass", Rgba8Unorm, true, Greater, false),
-                equal: pipeline("shade equal", Rgba8Unorm, false, Equal, true),
-            }
-        };
-        if let Some(e) = pollster::block_on(scope.pop()) {
-            anyhow::bail!("compiling {comp:?}: {e}");
-        }
-        Ok(p)
+        let spec = DrawerSpec { module: &module, render_layout: &self.render, shade_layout: &self.shade, strip: comp.geometry().strip };
+        FaceDrawer::new(gpu, &spec, DrawMode::parse(&comp.visibility).expect("validated"), &self.images, width, height)
     }
 }
 
@@ -499,7 +377,7 @@ impl GpuRasterBackend {
             },
         )?;
         let layouts = Layouts::new(&gpu, &world, &comp.storage());
-        let pipelines = Pipelines::new(&gpu, &layouts, &comp)?;
+        let drawer = layouts.drawer(&gpu, &comp, p.width, p.height)?;
         let max_bytes = (gpu.device.limits().max_storage_buffer_binding_size as u64).min(gpu.device.limits().max_buffer_size);
         // Capped below 2 GiB: GrowableBuffer rounds sizes up to powers of two, which would
         // overshoot a 2^31-4 storage-binding limit.
@@ -532,14 +410,12 @@ impl GpuRasterBackend {
             mesh,
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
             depth: depth_view(&gpu, p.width, p.height),
-            ids: ids_view(&gpu, p.width, p.height),
-            gpos: gpos_view(&gpu, p.width, p.height, comp.gbuffer()),
             ring,
             world,
             opts,
             built: comp.clone(),
             comp,
-            pipelines,
+            drawer,
             layouts,
             frame_buf,
             quad_buf,
@@ -692,12 +568,9 @@ impl Renderer for GpuRasterBackend {
         // The meshes stage draws meshes (`depth`), or not (`none`).
         let want_meshes = req.meshes && self.opts.meshes != "none";
         if self.comp != self.built {
-            self.pipelines = Pipelines::new(&self.gpu, &self.layouts, &self.comp)?;
+            self.drawer = self.layouts.drawer(&self.gpu, &self.comp, self.width, self.height)?;
             if self.comp.geometry != self.built.geometry {
                 self.remesh_all();
-            }
-            if self.comp.gbuffer() != self.built.gbuffer() {
-                self.gpos = gpos_view(&self.gpu, self.width, self.height, self.comp.gbuffer());
             }
             if self.accum.set_shading(&self.gpu, &self.comp.shading) {
                 self.bind0 = None;
@@ -802,108 +675,26 @@ impl Renderer for GpuRasterBackend {
         let out_view = self.output.create_view(&Default::default());
         let n = draws.len() as u32;
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
-        let depth_attachment = |load, store| {
-            Some(wgpu::RenderPassDepthStencilAttachment { view: &self.depth, depth_ops: Some(wgpu::Operations { load, store }), stencil_ops: None })
+        let frame = DrawFrame {
+            out: &out_view,
+            depth: &self.depth,
+            clear,
+            prepass: self.opts.depth_prepass && req.mode == RenderMode::Lit,
+            keep_depth: false,
+            binds: &[&bind0, &world_bg, &bind2],
+            ring: &self.ring,
+            ticket,
+            ts: (true, true),
         };
-        let draw = |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline| {
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &bind0, &[]);
-            pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &bind2, &[]);
+        let draw = |pass: &mut wgpu::RenderPass<'_>| {
             if n > 0 {
                 pass.multi_draw_indirect(&self.indirect, 0, n);
             }
         };
-        match &self.pipelines {
-            Pipelines::Raster { fill, depth, equal } => {
-                let prepass = self.opts.depth_prepass && req.mode == RenderMode::Lit;
-                if prepass {
-                    let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("depth prepass"),
-                        color_attachments: &[],
-                        depth_stencil_attachment: depth_attachment(wgpu::LoadOp::Clear(0.0), wgpu::StoreOp::Store),
-                        timestamp_writes: self.ring.render_timestamps(ticket, true, false),
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    draw(&mut pass, depth);
-                    if want_meshes {
-                        self.mesh.draw(&mut pass, MeshPass::Depth, &world_bg);
-                    }
-                }
-                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("shade"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &out_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
-                    })],
-                    depth_stencil_attachment: depth_attachment(if prepass { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(0.0) }, wgpu::StoreOp::Discard),
-                    timestamp_writes: self.ring.render_timestamps(ticket, !prepass, true),
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                draw(&mut pass, if prepass { equal } else { fill });
-                if want_meshes {
-                    self.mesh.draw(&mut pass, if prepass { MeshPass::Equal } else { MeshPass::Fill }, &world_bg);
-                }
-            }
-            Pipelines::Deferred { ids, shade } => {
-                // Meshes are drawn after shading, depth-tested against the faces.
-                let meshes = want_meshes && self.mesh.triangles() > 0;
-                {
-                    let attach = |view| {
-                        Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })
-                    };
-                    let gbuffer = [attach(&self.gpos), attach(&self.ids)];
-                    let idbuffer = [attach(&self.ids)];
-                    let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("visibility ids"),
-                        color_attachments: if self.comp.gbuffer() { &gbuffer } else { &idbuffer },
-                        depth_stencil_attachment: depth_attachment(wgpu::LoadOp::Clear(0.0), if meshes { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard }),
-                        timestamp_writes: self.ring.render_timestamps(ticket, true, false),
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    draw(&mut pass, ids);
-                }
-                let images = self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("deferred images"),
-                    layout: &self.layouts.images,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.ids) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&out_view) },
-                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.gpos) },
-                    ],
-                });
-                {
-                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: if meshes { None } else { self.ring.compute_timestamps(ticket, false, true) } });
-                    pass.set_pipeline(shade);
-                    pass.set_bind_group(0, &bind0, &[]);
-                    pass.set_bind_group(1, &world_bg, &[]);
-                    pass.set_bind_group(2, &bind2, &[]);
-                    pass.set_bind_group(3, &images, &[]);
-                    pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
-                }
-                if meshes {
-                    let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("meshes"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &out_view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                        })],
-                        depth_stencil_attachment: depth_attachment(wgpu::LoadOp::Load, wgpu::StoreOp::Discard),
-                        timestamp_writes: self.ring.render_timestamps(ticket, false, true),
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    self.mesh.draw(&mut pass, MeshPass::Fill, &world_bg);
-                }
-            }
-        }
+        // Meshes: in the faces' forward passes; after shading (depth-tested) when deferred.
+        let meshes = want_meshes && (!self.drawer.mode().deferred() || self.mesh.triangles() > 0);
+        let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp, &world_bg);
+        self.drawer.encode(&self.gpu, &mut enc, &frame, &draw, meshes.then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass)), None);
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
@@ -969,8 +760,7 @@ impl Renderer for GpuRasterBackend {
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.depth = depth_view(&self.gpu, width, height);
-        self.ids = ids_view(&self.gpu, width, height);
-        self.gpos = gpos_view(&self.gpu, width, height, self.built.gbuffer());
+        self.drawer.resize(&self.gpu, width, height);
         self.accum.resize(&self.gpu, width, height);
         self.bind0 = None;
         self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
@@ -978,7 +768,7 @@ impl Renderer for GpuRasterBackend {
     }
 
     fn memory(&self) -> MemoryReport {
-        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size() + self.accum.memory_bytes() + self.width as u64 * self.height as u64 * 12;
+        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size() + self.accum.memory_bytes() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
 }

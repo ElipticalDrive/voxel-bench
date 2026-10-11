@@ -13,4 +13,5 @@ mr-gpu.workspace = true
 wgpu.workspace = true
 rayon.workspace = true
 anyhow.workspace = true
+pollster.workspace = true
 tracing.workspace = true

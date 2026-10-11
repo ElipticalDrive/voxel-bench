@@ -4,6 +4,7 @@
 //! geometry component's faces instead and find each pixel's face by depth testing.
 
 pub mod cpu;
+pub mod drawer;
 #[cfg(test)]
 mod cpu_tests;
 pub mod incremental {

@@ -11,6 +11,7 @@ struct Frame {
     up: vec3<f32>, view: u32,        // 0 image, 1 clusters, 2 kinds (cluster discovery)
     size: vec2<f32>, _p1: vec2<f32>,
     anchor: vec4<i32>,               // absolute block the face records are relative to
+    sky: vec4<f32>,                  // deferred drawing: the colour of uncovered pixels
 }
 
 @group(0) @binding(0) var<uniform> fr: Frame;
