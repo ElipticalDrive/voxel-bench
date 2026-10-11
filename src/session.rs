@@ -179,11 +179,13 @@ pub struct Lane {
     next_id: u64,
     completions: Vec<f64>,
     last_ui: Option<Instant>,
+    /// Comparisons still running off the frame loop: (index into `per_frame`, result).
+    pending_quality: Vec<(usize, crossbeam_channel::Receiver<Quality>)>,
 }
 
 impl Lane {
     pub fn new(worker: Worker, streamer: Streamer, report: PassReport, ui_index: usize, width: u32, height: u32) -> Self {
-        Self { worker, streamer, report, ui_index, width, height, in_flight: VecDeque::new(), next_id: 0, completions: vec![], last_ui: None }
+        Self { worker, streamer, report, ui_index, width, height, in_flight: VecDeque::new(), next_id: 0, completions: vec![], last_ui: None, pending_quality: vec![] }
     }
 }
 
@@ -198,8 +200,13 @@ pub struct Outputs {
     /// When set, sampled frames are stored as references instead of compared.
     pub recording_reference: bool,
     pub frames: u32,
-    writer: Option<crossbeam_channel::Sender<(PathBuf, u32, u32, Vec<u8>)>>,
+    writer: Option<crossbeam_channel::Sender<SaveJob>>,
+    /// Comparison threads. SSIM and MS-SSIM take ~18 ms per 960×540 frame; on the frame loop
+    /// they stalled the pipeline and halved the measured fps of fast renderers.
+    comparer: crossbeam_channel::Sender<Box<dyn FnOnce() + Send>>,
 }
+
+type SaveJob = (PathBuf, u32, u32, Vec<u8>);
 
 impl Outputs {
     pub fn new(ui: Option<UiHandle>, readback: Readback, save: Option<(SaveSpec, PathBuf)>, compare_every: Option<u32>, frames: u32) -> Self {
@@ -220,7 +227,18 @@ impl Outputs {
             }
             tx
         });
-        Self { ui, readback, save, compare_every, references: HashMap::new(), recording_reference: false, frames, writer }
+        // Bounded, so comparing every frame of a long run cannot queue unbounded images; a full
+        // queue blocks the frame loop again, which only such quality-focused runs hit.
+        let (comparer, jobs) = crossbeam_channel::bounded::<Box<dyn FnOnce() + Send>>(64);
+        for _ in 0..2 {
+            let jobs = jobs.clone();
+            std::thread::spawn(move || {
+                for job in jobs {
+                    job();
+                }
+            });
+        }
+        Self { ui, readback, save, compare_every, references: HashMap::new(), recording_reference: false, frames, writer, comparer }
     }
 
     fn save_hit(&self, f: u32) -> bool {
@@ -239,7 +257,9 @@ impl Outputs {
         }
     }
 
-    fn deliver(&mut self, lane: &mut Lane, frame: u32, mode: PassMode, recorded: bool, px: &[u8]) -> Option<Quality> {
+    /// Hands a finished frame to the window, the saver and the comparison. The comparison runs on
+    /// the comparer threads; its result arrives on the returned channel.
+    fn deliver(&mut self, lane: &mut Lane, frame: u32, mode: PassMode, recorded: bool, px: Vec<u8>) -> Option<crossbeam_channel::Receiver<Quality>> {
         let (w, h) = (lane.width, lane.height);
         if let Some(ui) = &self.ui {
             // Throttle what goes to the window to ~60 Hz per lane.
@@ -258,18 +278,27 @@ impl Outputs {
                 self.references.insert((mode, frame), Arc::new(px.to_vec()));
             } else if let Some(r) = self.references.get(&(mode, frame)) {
                 if r.len() == px.len() {
-                    quality = Some(compare::compare(r, px, w));
-                    if let (true, Some((s, dir)), Some(tx)) = (self.save_hit(frame), &self.save, &self.writer) {
-                        if s.diffs {
-                            let _ = tx.send((dir.join(format!("{tag}/{frame:06}-diff.png")), w, h, compare::diff_image(r, px)));
-                        }
-                    }
+                    let diff = match (self.save_hit(frame), &self.save, &self.writer) {
+                        (true, Some((s, dir)), Some(tx)) if s.diffs => Some((dir.join(format!("{tag}/{frame:06}-diff.png")), tx.clone())),
+                        _ => None,
+                    };
+                    let (r, px) = (r.clone(), px.clone());
+                    let (tx, rx) = crossbeam_channel::bounded(1);
+                    self.comparer
+                        .send(Box::new(move || {
+                            let _ = tx.send(compare::compare(&r, &px, w));
+                            if let Some((path, saver)) = diff {
+                                let _ = saver.send((path, w, h, compare::diff_image(&r, &px)));
+                            }
+                        }))
+                        .expect("comparer threads stopped");
+                    quality = Some(rx);
                 }
             }
         }
         if self.save_hit(frame) {
             if let (Some((_, dir)), Some(tx)) = (&self.save, &self.writer) {
-                let _ = tx.send((dir.join(format!("{tag}/{frame:06}.png")), w, h, px.to_vec()));
+                let _ = tx.send((dir.join(format!("{tag}/{frame:06}.png")), w, h, px));
             }
         }
         quality
@@ -304,13 +333,16 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
             let n = (lane.width * lane.height * 4) as usize;
             let px = lane.worker.shm.slot(s)[..n].to_vec();
             lane.worker.free_slot(s);
-            out.deliver(lane, f.frame, f.mode, f.recorded, &px)
+            out.deliver(lane, f.frame, f.mode, f.recorded, px)
         }
         None => None,
     };
     if f.recorded {
         lane.completions.push(start.elapsed().as_secs_f64() * 1e3);
-        lane.report.per_frame.push(FrameRecord { frame: f.frame, latency_ms, cpu_ms: stats.cpu_ms, gpu_ms: stats.gpu_ms, update_ms, counters: stats.counters, quality });
+        if let Some(rx) = quality {
+            lane.pending_quality.push((lane.report.per_frame.len(), rx));
+        }
+        lane.report.per_frame.push(FrameRecord { frame: f.frame, latency_ms, cpu_ms: stats.cpu_ms, gpu_ms: stats.gpu_ms, update_ms, counters: stats.counters, quality: None });
     }
     Ok(())
 }
@@ -447,6 +479,9 @@ pub fn run_pass(
         lane.worker.send(HostMsg::QueryMemory)?;
         if let Ok(WorkerMsg::Memory(m)) = recv_timeout(&lane.worker.rx, Duration::from_secs(30)) {
             lane.report.memory = m;
+        }
+        for (i, rx) in lane.pending_quality.drain(..) {
+            lane.report.per_frame[i].quality = Some(rx.recv()?);
         }
         let completions = std::mem::take(&mut lane.completions);
         lane.report.finish(&completions);

@@ -82,6 +82,14 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   rounding differently at grazing edges. It goes both ways against the reference.
 - The incremental walk on the GPU is 3.5–8× slower than refloor on NVIDIA only (AMD
   1.27×), for an unknown compiler reason (IDEAS §1 "Result 3").
+- `gpu-rt: naive + rayquery` runs out of GPU memory on `far` (it already uses 911 MB on
+  terrain); found by the first overnight sweep.
+- `cpu-discover` (quadtree and cluster) scores 25–34 dB on menger, far, terrain and edits
+  lit, where `gpu-discover` with the same quadtree stays above 35 dB everywhere. Cause open.
+- The catalogue judges path tracing against the direct-lit reference with the 35 dB floor,
+  so noisy path-traced frames count as incorrect (384 of 512 in the first sweep).
+- A compared frame still costs ~2.7 ms of readback (GPU→host copy of the image), so
+  `compare.every = 50` lowers fps by ~15% at 2,800 fps and ~3% at 500 fps.
 
 ## Status (2026-10-10, after the component refactor)
 
@@ -184,9 +192,10 @@ stage grid) are in the progress log below, with their measurements.
 ### Next: candidates (ask the user which)
 
 Recommended order (2026-10-10):
-1. **Run the overnight sweep** (`scripts/sweep.sh`; the user starts it) and read its
-   catalogue together. The first real "what is each renderer good at" answer. Expect
-   to fix whatever the full matrix shakes out: failures, incorrect frames, slow loads.
+1. ~~**Run the overnight sweep**~~ Ran 2026-10-10 (see the progress log); its fps were
+   distorted by synchronous comparisons, now fixed. **Re-run it** (the user starts it) and
+   read the catalogue together. Then fix what it shakes out (gpu-rt naive OOM on far,
+   cpu-discover quality, the catalogue's path-tracing rule).
 2. **Diagnostic views everywhere the catalogue points:** e.g. per-pixel shadow-ray cost in
    lit mode and overdraw for gpu-raster, to explain the catalogue's surprises (the user
    values views).
@@ -758,6 +767,41 @@ earlier if meshes become more urgent; 7c depends on 6′.
   on menger.
 - **Limits:** the features are measured at the run's view radius (per-renderer overrides
   are not reflected) and from the plan's camera path, not from what a renderer streams.
+
+### 2026-10-10: the first overnight sweep, and comparisons off the frame loop
+- **The sweep** (`target/sweep/20261010-1858`, 18:58–23:07): all ten plans, 3,047
+  observations, 3 failures (`gpu-rt: naive + rayquery` out of GPU memory on far).
+  Repeatable: against the earlier showcase sweep, 90% of passes within ±4% fps and ±1%
+  GPU ms.
+- **Its fps were wrong.** Nearly every pass had a p99 frame interval of 18–24 ms, even at
+  1,200 fps. Each compared frame (every 50th) ran SSIM and MS-SSIM (~18 ms at 960×540) on
+  the host's frame loop and stalled the pipeline. menger, `gpu-compute: bricks + refloor`:
+  1,250 fps with comparisons, 2,840 without; `gpu-raster: bricks + greedy + raster` 675 vs
+  970. GPU ms were unaffected. The catalogue ranks by fps, so its rankings are squeezed
+  and should not be used.
+- **Fix:** `Outputs::deliver` hands the comparison (and the diff image) to two comparer
+  threads; the results are attached to the frame records when the pass ends
+  (`Lane::pending_quality`). Now 2,370 vs 2,800 fps (the rest is the readback, see known
+  issues), 915 vs 965 for the rasteriser; the CPU back end unchanged (137 vs 137);
+  identical PSNR; diff images still saved.
+- **Findings that hold (GPU ms and correctness, unaffected by the stall):**
+  - Never incorrect: gpu-compute direct, gpu-raster, gpu-discover, gpu-rt direct, cpu,
+    cpu-raster. Always below 35 dB: gpu-splat, both voxelspace back ends.
+  - `distance + sphere` has the lowest GPU ms almost everywhere (terrain 0.61 vs 0.76 for
+    prefix), but its fps collapse on streaming scenes (terrain 132, far 47; p99
+    123–205 ms): the distance field rebuild on chunk loads. On static scenes (room,
+    meshes) it is the fastest gpu-compute composition.
+  - `prefix + refloor` has the lowest GPU ms of the grid storages on open scenes (terrain
+    0.76 vs bricks 0.86; far 0.77 vs 0.88), as found before.
+  - Rasterisers win small and closed scenes (room 0.053 ms GPU); on large ones CPU meshing
+    dominates (terrain 2.5 ms CPU). In gpu-raster, `naive` beats `greedy` overall (0.93 vs
+    0.87); visbuffer > gbuffer > raster.
+  - gpu-rt: `boxes` is the best geometry (no meshing); greedy / naive are bound by BLAS
+    builds while streaming (4–11 ms CPU). `gpu-rt: greedy` wins many-lights.
+  - Confirmed again: CPU hier best storage (26 of 30), CPU refloor > incremental (0.89),
+    GPU incremental 0.60 (NVIDIA), beam 0.93, path tracing 0.39, cluster 0.50 of quadtree.
+- **Caveat:** thermal drift over the four hours is not ruled out (the user's room got
+  warm); the repeatability check covers only showcase, the first plan.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp
