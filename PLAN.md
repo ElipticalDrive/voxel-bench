@@ -809,6 +809,19 @@ earlier if meshes become more urgent; 7c depends on 6′.
 - **Caveat:** thermal drift over the four hours is not ruled out (the user's room got
   warm); the repeatability check covers only showcase, the first plan.
 
+### 2026-10-11: the sweep re-run (comparisons off the frame loop)
+- `target/sweep/20261011-0115`: 3,047 observations, the same 3 failures (`gpu-rt: naive +
+  rayquery` out of GPU memory on far). Built after the fix (7748f50).
+- The stall is gone: median p99 frame interval 22.9 → 9.6 ms. GPU ms match the first sweep
+  (median ratio 1.001, 90% within ±2%), so four hours of running showed no thermal drift.
+  fps rose ~12% (median) on the GPU back ends and not at all on the CPU ones, more on fast
+  scenes (room unlit best 1,520 → 5,720 fps).
+- Rankings: gpu-compute `bricks + refloor` still wins the streaming scenes on fps (terrain,
+  far, streaming), though `prefix` and `hier` have lower GPU ms there: the difference is
+  now host-side (update) cost, not measurement. Rasterisers win the closed scenes (room,
+  meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
+  wins many-lights. This catalogue is the first to read with the user.
+
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp
   with numeric values (steps, rays, overdraw, …), so a view shows how much work is done
