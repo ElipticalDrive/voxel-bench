@@ -1236,8 +1236,8 @@ support every combination?
 **This is one exploration of the problem, not a decision.** A wider first-principles
 design (world + change log; representations with update costs; traversal kernels;
 visibility strategies; surface sources; shading with inline or deferred placement;
-history; post; an executor; per-stage timings) was discussed alongside it, and §15 is a
-related one. This section only assesses where the current structure duplicates and where
+history; post; an executor; per-stage timings; §18) was discussed alongside it, and §15 is
+a related one. This section only assesses where the current structure duplicates and where
 it limits combinations.
 
 **Analysis (from the code, 2026-10-11).**
@@ -1326,6 +1326,13 @@ is valid when every connection has a communication path both sides support.
    the generic builds keep the user free to choose when. `rustc` will ship with the final
    product. On the CPU this is option 2 of the discussion: generate Rust for a
    composition, compile it to a library, load it (in a worker process).
+7. **Existing, well-supported compilers everywhere.** No compiler or JIT of our own (no
+   Cranelift back end, no custom IR): `rustc` for CPU pipelines, also at run time; the
+   driver (via wgpu / naga) for shaders; an existing shader module system (`naga_oil`,
+   WESL) if text-joining strains. Options considered and rejected: a Cranelift JIT (a
+   compiler for our own IR, less optimisation than `rustc`). Kept as a possible extra back
+   end, not a replacement: running the WGSL components on the CPU through a software
+   Vulkan driver (lavapipe), which makes every GPU component CPU-capable.
 
 **Analysis.**
 - *Adapters exist already.* `storage/fallbacks.wgsl` is one: it gives storages without a
@@ -1356,10 +1363,80 @@ is valid when every connection has a communication path both sides support.
   compiles, then hot-swaps (the live session already can); generated code runs in worker
   processes, so a bad build only kills its worker.
 
-**Status.** Discussion; the user is not yet convinced of a concrete architecture. Open
-questions: the pieces after the split (§16 step 5), one capability model for all
+**Status (2026-10-11).** The user agrees this is the direction and agrees the condition:
+grow it in steps, each useful on its own and checked against the zero-cost definition,
+never as a rewrite; generalise an interface once two or three real techniques need it.
+The step sequence is in PLAN.md ("Next: the architecture refactor"). Open questions to
+settle along the way: the pieces after the split (§16 step 5), one capability model for all
 interfaces or one per boundary, which data crosses between devices, when the CPU moves
 to on-demand compilation, and how the GUI shows a deeper composition.
+
+## 18. A first-principles design (what the pieces are)
+
+**Context (2026-10-11).** Asked to design as if no architecture existed, from the problem
+space. This is the long-term picture the steps in PLAN.md move toward; it is not to be
+built in one go (§17's condition).
+
+**The problem.** Each frame answers: what colour is each pixel, given a world that keeps
+changing? Four kinds of work, and techniques differ in how they divide them:
+1. *Keeping data current:* every structure a technique relies on (occupancy trees,
+   distance fields, meshes, BLAS, face sets) is rebuilt or patched as the world changes.
+   The 2026-10 sweeps show this often decides the ranking: `distance + sphere` has the
+   fastest walk but 47 fps on far (rebuilds); rasterisers lose large scenes to CPU
+   meshing; gpu-rt to BLAS builds.
+2. *Primary visibility:* image order (ray casting), object order (raster, splat), sparse
+   plus reuse (discovery), special orders (voxelspace columns).
+3. *Shading:* needs secondary queries (any hit, incoherent), which are visibility
+   questions of another kind.
+4. *Reuse over time:* face sets, depth, lighting from earlier frames (incremental
+   discovery, event-driven skipping, beams; later TAA, radiance caches).
+
+**The pieces.**
+1. *World and change log:* the canonical chunks, materials (opaque, cut-out,
+   translucent), meshes and lights; everything else is derived and learns of changes
+   through a list of deltas.
+2. *Representations:* derived data built and kept current from the change log; each
+   declares its queries (occupancy at level k, distance bound, column height, face list,
+   triangles), its device, its update cost and memory. Storages, meshes, BLAS,
+   heightmaps, point sets, LOD pyramids; discovery's face set (view-dependent); baked or
+   flood-fill light.
+3. *Traversal kernels:* answer ray queries against any representation with the needed
+   capabilities (refloor: occupancy levels; sphere: distance bounds; rayquery: BLAS).
+   Always compiled fused with the representation on one device.
+4. *Visibility strategies:* organise primary visibility (ray cast, raster, splat,
+   discovery, columns, near/far hybrids) using kernels; output one common form, a hit
+   record / **visibility buffer** (depth, block and face, position on the face).
+   Discovery's pieces: sampler (quadtree, cluster, heads), hole detector, retention
+   policy (`keep_unseen`, event-driven), surface drawer.
+5. *Surface sources:* meshes (and later non-cubic blocks) write into the same visibility
+   buffer with a depth test; meshes stop being a special mode.
+6. *Shading:* reads hits and materials, issues secondary queries through a kernel (any hit,
+   opaque-only mask for transparency), may read caches (representations). **Placement**
+   is a choice: inline (fused into the kernel, cheapest for ray casting) or deferred (a
+   pass over the visibility buffer, best for raster per the sweep).
+7. *History:* earlier frames' products as explicit inputs any stage may read.
+8. *Composition and post:* translucent layers, tone mapping / HDR, upscaling, debug views
+   with colour scales, written once.
+9. *Executor:* places pieces on devices, inserts transfers at data boundaries, overlaps
+   frames (as cpu-discover works one frame ahead). Back ends become executors.
+
+**Two kinds of composition.** *Fused (source level):* representation + kernel + inline
+shading compiled together; same device; where per-step cost lives. *Graph level (data
+products):* change log, surface sets, visibility buffer, history, images; only these
+cross devices (§15's cut points).
+
+**Exceptions.** Techniques that fill several roles at once (voxelspace columns, path
+tracing's bounce loop, RT pipelines) declare it rather than being forced apart.
+
+**Measurement built in.** Every piece reports its own GPU / CPU time, counters, and an
+optional debug view with a colour scale. Per-stage costs let the planner (§14) predict a
+pipeline's cost as a sum of stages instead of measuring every combination; update cost
+is measured separately from per-frame cost.
+
+**Tensions.** A deferred visibility buffer costs bandwidth against shading at the hit
+(placement as a choice handles it); shader variants multiply (build only what a plan
+uses); capability contracts must stay small or fusion gets harder (§17's capability
+model with adapters is the answer the user chose).
 
 ---
 

@@ -23,9 +23,23 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   Report negative results honestly.
 - **One step at a time** (the user's request after hitting a rate limit, 2026-10-10):
   finish a step, verify, commit and push, report, and wait for the go before the next.
-- Priority: the component refactor is complete (2026-10-10). Next is a wider space of
-  techniques, each built as components. The user prefers new techniques over completing
+- **Priority (2026-10-11): the architecture refactor** (Plan, "Next" below; IDEAS §16–§18).
+  The user agreed the direction, the requirements (IDEAS §17) and the condition: grow it
+  in steps, each useful on its own and checked against the zero-cost definition, never as
+  a rewrite; generalise an interface once two or three real techniques need it. New
+  techniques may land between steps. The user prefers new techniques over completing
   coverage of a feature across every renderer (7b is shelved for that reason).
+- **Existing, well-supported compilers everywhere** (the user, 2026-10-11): never write our
+  own compiler or JIT (no Cranelift back end, no custom IR). CPU pipelines compiled on
+  demand are generated Rust compiled by `rustc` (shipped with the final product); GPU
+  shaders go through the driver (via wgpu / naga). Shader composition may use an existing
+  module system (`naga_oil`, WESL) when text-joining strains.
+- **The GUI may be unusable for a few days during a refactor step** (the user,
+  2026-10-11); steps need not end in something to play with, as long as the project gets
+  back to it.
+- Terminology: **adapters** are compile-time code that gives a component a feature it lacks
+  natively (e.g. `storage/fallbacks.wgsl`); combinations with no valid path do not exist
+  (greyed with the reason), nothing substitutes silently. Avoid the word "fallback".
 - The user values diagnostic `view` modes highly; add them where a component has
   something to show (with a numeric colour scale once that exists).
 
@@ -189,36 +203,81 @@ why. Phases 1–5 (components crate and gpu-compute; CPU back end; GPU-raster ba
 porting every remaining renderer, 4a–4l; removing the legacy handling and adding the
 stage grid) are in the progress log below, with their measurements.
 
-### Next: candidates (ask the user which)
+### Next: the architecture refactor (IDEAS §16–§18)
 
-Recommended order (2026-10-10):
-1. ~~**Run the overnight sweep**~~ Ran 2026-10-10 (see the progress log); its fps were
-   distorted by synchronous comparisons, now fixed. **Re-run it** (the user starts it) and
-   read the catalogue together. Then fix what it shakes out (gpu-rt naive OOM on far,
-   cpu-discover quality, the catalogue's path-tracing rule).
-2. **Diagnostic views everywhere the catalogue points:** e.g. per-pixel shadow-ray cost in
-   lit mode and overdraw for gpu-raster, to explain the catalogue's surprises (the user
-   values views).
-3. **Knob sweeps around the best compositions** (a sweep over a knob's range for the top
-   few per scenario), since knobs are only swept at defaults.
-4. Planner groundwork (IDEAS §14), once data exists: a first model predicting a
-   composition's fps from scene features, judged by leave-one-scenario-out error.
-5. **Redundancy and combinations (IDEAS §16):** the user's goal is maximum control over
-   combinations with minimal code of redundant purpose. Steps, before transparency and the
-   next discovery work: one shading implementation per kind of back end (move the five own
-   lighting paths onto `shade_hit` / `shade`), one shared face drawer (gpu-raster,
-   gpu-discover, cpu-discover), shadow rays through the composed storage everywhere, a
-   guard test against duplicated shader functions. Ask before starting.
+The goal and requirements are in IDEAS §17 (agreed 2026-10-11): no cost from composability
+while a pipeline runs; no opinion on hardware configuration; maximum practical code reuse;
+maximum practical combinations, grown with adapters; combinations without a valid path do
+not exist; generic precompiled variants plus variants compiled on demand for the user's
+machine (cached), and a user-triggered break-in mode. Plus: every newly compiled pipeline
+is checked against the reference before it is trusted; caches keyed by source hash,
+toolchain, CPU and driver; the generic build runs while the optimised one compiles, then
+hot-swaps; generated code runs in worker processes.
+
+**Zero-cost check (every step):** a composed pipeline is as fast as a hand-written pipeline
+of the same pieces on the same devices. In practice: no composition affected by a step may
+get slower than the baseline `baselines/sweep-20261011/` (GPU ms within ±1–2%, fps within
+run-to-run noise, ±4%; interleaved repeats for anything in doubt), and image quality
+(PSNR) must not drop. Steps that widen combinations add rows; existing rows must hold.
+
+Steps, in order; one at a time (verify, commit and push, report, wait for the go):
+1. **One shading implementation per kind of back end** (IDEAS §16 step 1). Every visibility
+   strategy produces a hit (position, normal, block, face) and calls the shading
+   component: `shade_hit` (GPU), `shade` (`components/src/shading/direct/cpu.rs`, CPU).
+   Move the own lighting of gpu-splat (`splat.wgsl`), gpu-voxelspace (`vs.wgsl`),
+   cpu-discover (`raster.wgsl`), cpu-raster and cpu-voxelspace onto it. Then every
+   shading component (direct, pathtrace) is offered wherever a hit exists (e.g.
+   pathtrace on gpu-discover). Voxelspace columns may stay a declared fused exception
+   if a hit record does not fit them; decide with the user.
+2. **One shared face drawer** (§16 step 2): `face_axes`, `block_at`, `pixel_ray` and the
+   quad drawing of gpu-raster `main.wgsl`, gpu-discover `raster.wgsl` and cpu-discover
+   `raster.wgsl` become one component; visbuffer and gbuffer become choices for both
+   discovery back ends.
+3. **Shadow and secondary rays through the composed storage everywhere** (§16 step 3):
+   cpu-discover's lit mode and gpu-voxelspace walk their own structures today.
+4. **The guard test** (§16 step 4): no WGSL function defined in more than one back end's
+   shaders; every back end's lighting goes through the shading component.
+5. **Devices handed to back ends** (requirement 2): today seven back ends call `Gpu::new`
+   themselves. A device becomes a resource given to a back end (and later to stages), so
+   several GPUs, or a GPU and the CPU, are a configuration. Also the first step toward
+   the library interface (IDEAS §14: render into the caller's device and texture).
+6. **One capability model with adapters:** each interface has a required core and optional
+   capabilities; components declare what they provide and need; adapters supply missing
+   capabilities at compile time; the registry derives what is valid. First applied to the
+   hit record (optional: position within the face, LOD level, material layer, step counts,
+   mesh id), generalising the existing `s_*` + `fallbacks.wgsl` pattern. Unused
+   capabilities compile away.
+7. **Split visibility into traversal kernels and visibility strategies** (§16 step 5,
+   IDEAS §18): kernels (refloor, incremental, sphere, rowrun, rayquery) answer ray queries
+   against any storage with the needed capabilities; strategies (ray cast, raster,
+   discovery, splat, columns) organise primary visibility and use kernels. Discovery's
+   pieces (sampler: quadtree, cluster, heads; hole detection; retention policy; drawer)
+   become choices. Pipelines become graphs (shading reads the hit and queries the
+   storage; history feeds frames forward). The GUI's stage grid grows with it.
+8. **CPU pipelines compiled on demand** (IDEAS §17, option 2): generate Rust for one
+   composition, compile it with `rustc` into a library, load it in the worker process;
+   cache by source hash, toolchain and CPU. Start with the `cpu` back end, whose ahead-of-
+   time product (storage 8 × traversal 3 × packet width 4) it replaces; keep generic
+   precompiled variants. Then the break-in mode, cheapest layer first: `target-cpu=native`,
+   LTO and constants specialised for the run; profile-guided optimisation with a short
+   sweep as the training run; then knob autotuning and composition choice (the planner,
+   §14). On the GPU: specialised constants and persistent pipeline caches.
+
+Watch: WGSL text-joining strains as pieces multiply (adopt `naga_oil` or WESL around steps
+6–7); the number of valid pipelines will outgrow overnight sweeps (the per-pipeline
+reference check keeps that safe); wgpu shares no memory between adapters, so multi-GPU
+transfers go through the host.
+
+Findings from the sweeps still to act on (between steps, or after): the `gpu-rt: naive`
+out-of-memory on far; cpu-discover's quality below gpu-discover's; the catalogue's rule
+for path tracing; diagnostic views where the catalogue surprises (shadow-ray cost,
+raster overdraw); knob sweeps around the best compositions; planner groundwork (§14).
 
 Other candidates, sized for single steps:
-- ~~Colour scales (numeric legends) on the diagnostic views.~~ Done (2026-10-10).
-- ~~Lighting / meshes as stage components.~~ Done (2026-10-10).
-- ~~A plan sweep over all combinations (`compose = { storage = "*", ... }`).~~ Done
-  (2026-10-10): `scripts/sweep.sh`, `multirenderer catalogue`.
 - More techniques as components (the backlog below), e.g. the persistent-kernel
-  discovery (3b), mesh shadows (7d), transparent cubes.
-- Known issues above (tree64's 5%, gpu-voxelspace shadows through a composed storage,
-  gpu-splat culling / incremental uploads).
+  discovery (3b), mesh shadows (7d), transparent cubes. Transparency and the next round
+  of discovery work should come after steps 1–4 (they land on the duplicated parts).
+- Known issues above (tree64's 5%, gpu-splat culling / incremental uploads).
 
 ### History: the step plan of 2026-10-09
 
