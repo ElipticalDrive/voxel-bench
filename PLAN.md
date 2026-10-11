@@ -50,7 +50,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 ## How to verify and measure
 
 - Builds, zero warnings: `cargo build` and `cargo build --release`.
-- Unit tests: `cargo test -q --workspace` (40, including: the component registry
+- Unit tests: `cargo test -q --workspace` (44, including: the component registry
   matches its implementations; storages are exact; the CPU walks agree; every shipped
   plan loads).
 - GPU end-to-end tests: `cargo test -q --release --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve --skip gui_screenshot` (3: the live session, mesh mode, and the headless GUI).
@@ -136,16 +136,17 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   - cpu: storage bricks, hier, prefix, u8, bits, palette, brickmajor, morton; visibility
     refloor, incremental; shading direct; knob `schedule` (rows / tiles).
   - gpu-raster: storage (shadow rays) the eight GPU ones; geometry greedy, naive, cubes;
-    visibility raster, visbuffer, gbuffer; shading direct.
+    visibility raster, visbuffer, gbuffer; shading direct, pathtrace.
   - gpu-rt: geometry greedy, naive, boxes; visibility rayquery; shading direct,
     pathtrace.
   - cpu-raster: geometry greedy, naive; visibility raster; shading direct.
-  - gpu-discover: storage (GPU); visibility quadtree; shading direct.
+  - gpu-discover: storage (GPU); visibility quadtree; shading direct, pathtrace.
   - cpu-discover: storage (CPU); visibility quadtree, cluster; shading direct.
-  - gpu-splat: storage (shadow rays); geometry points; visibility splat; shading direct.
+  - gpu-splat: storage (shadow rays); geometry points; visibility splat; shading direct,
+    pathtrace.
   - gpu-voxelspace, cpu-voxelspace: storage heightmap; visibility columns; shading
     direct.
-- **Verification:** zero warnings in both builds; 40 unit tests; 3 GPU end-to-end tests
+- **Verification:** zero warnings in both builds; 44 unit tests; 3 GPU end-to-end tests
   (live session, mesh mode, headless GUI).
 - **Tools:** the GUI (stage grids, live knobs, hot swaps, quality probes, auto-tuner:
   local search, resolution controller, Bayesian; tooltips everywhere); diagnostic views
@@ -225,7 +226,7 @@ run-to-run noise, ±4%; interleaved repeats for anything in doubt), and image qu
 (PSNR) must not drop. Steps that widen combinations add rows; existing rows must hold.
 
 Steps, in order; one at a time (verify, commit and push, report, wait for the go):
-1. **One shading implementation per kind of back end** (IDEAS §16 step 1). Every visibility
+1. **Done 2026-10-11 (progress log).** **One shading implementation per kind of back end** (IDEAS §16 step 1). Every visibility
    strategy produces a hit (position, normal, block, face) and calls the shading
    component: `shade_hit` (GPU), `shade` (`components/src/shading/direct/cpu.rs`, CPU).
    Move the own lighting of gpu-splat (`splat.wgsl`), gpu-voxelspace (`vs.wgsl`),
@@ -235,8 +236,8 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    input becomes an explicit surface point (position, face or normal override, block,
    cell, lod), filled from `t` by ray casters, so gpu-splat's clamped point and
    voxelspace's slope normal fit; both voxelspace back ends move onto it (no fused
-   exception). cpu-voxelspace gains the reference's lights and shadows (slower lit, by
-   doing more work; the zero-cost check compares like for like). cpu-raster: try `shade`
+   exception). cpu-voxelspace gains point lights (gpu-voxelspace's model; shadows for both
+   voxelspace back ends come with step 3, through the heightmap). cpu-raster: try `shade`
    (f32) and keep the reference's f64 `shade_surface` if PSNR drops (a fundamental
    difference, so not redundant). Pathtrace goes where a `ctrace` exists (gpu-discover,
    gpu-splat); cpu-discover and voxelspace stay greyed with the reason until step 3.
@@ -891,6 +892,47 @@ earlier if meshes become more urgent; 7c depends on 6′.
   now host-side (update) cost, not measurement. Rasterisers win the closed scenes (room,
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
+
+### 2026-10-11: architecture refactor step 1 (one shading implementation per kind)
+- **Interface:** shading reads a `Surface` (camera-relative point, normal, block-local
+  point, block, face): `shade_surface(s, d, lit, px)` on the GPU (`Surface` and the ray
+  walks' adapter `surface_of` in `voxels.wgsl`), `direct::cpu::shade(ctx, &Surface, mode)`
+  on the CPU (`Surface::at_cell` for ray walks). A surface instead of a ray hit, so that
+  gpu-splat's clamped point and voxelspace's slope normal fit without special cases.
+- **Moved onto it:** gpu-splat (`splat.wgsl`), gpu-voxelspace (`vs.wgsl`, slope normal in
+  lit mode), cpu-discover (`raster.wgsl`) and cpu-voxelspace (now ambient + sun + point
+  lights, no shadows, i.e. gpu-voxelspace's model; the two differ on 0.005% of lit pixels).
+- **cpu-raster keeps the reference's f64 shading** (the user's rule: same algorithm, a
+  fundamental difference, here precision). Tried the f32 component: lit PSNR fell
+  (terrain 63.1 → 57.7 dB, room 99.0 → 76.6, many-lights 64.8 → 61.0) at equal speed.
+- **Shading state:** `shading::state::ShadeState` owns what pathtrace keeps across frames
+  (its uniform: width, frame, samples so far, bounces, spp; the accumulation buffer), its
+  knobs, WGSL declarations and binding entries; back ends reserve two bindings and call
+  `begin` per frame (nothing per frame for `direct`). Replaces the Accum copies of
+  gpu-compute and gpu-rt.
+- **Pathtrace on more back ends:** gpu-splat, gpu-raster (raster, visbuffer, gbuffer) and
+  gpu-discover. Fragment shading with per-pixel state forces early depth tests
+  (`@early_depth_test(force)`, wgpu `SHADER_EARLY_DEPTH_TEST`, requested as optional) and
+  needs the lit depth prepass (and depth order on gpu-discover) so exactly one fragment per
+  pixel updates the accumulation; otherwise the render fails with the reason (not yet
+  greyed in the GUI: knob-level conflicts have no model before step 6). Checks: PSNR
+  30.3 dB on every back end (as gpu-compute; the reference is direct-only); `bounces = 0`
+  equals `direct`; raster vs visbuffer pathtrace differ on 0.01% of pixels (edges).
+  Cost (terrain lit, GPU ms): gpu-raster raster 5.8 vs visbuffer 2.9 (fragment path
+  tracing pays for quad shading), gpu-discover 11.7 (direct 3.9), gpu-splat 3.9 (1.7).
+  Not offered: cpu-discover and voxelspace (their shadow walks are not the composed
+  storage; step 3).
+- **Zero-cost check:** every direct image (and pathtrace on gpu-compute, gpu-rt) is
+  pixel-identical to the pre-step build. GPU ms, interleaved against that build (terrain,
+  300 frames, 3–6 rounds): 32 passes over 16 compositions within ±1%, except gpu-raster
+  `raster` lit +0.8% (consistent), gpu-voxelspace unlit +1.0–1.5%, cpu-discover unlit
+  +1.6% (3 µs). Lesson: one `shade_surface` call with a runtime `lit` flag compiled
+  slower on NVIDIA than the old inline branch (gpu-voxelspace unlit +6%, cpu-discover
+  +4.5%); calling it twice with a constant flag (the caller branches) fixed both.
+  gpu-raster and gpu-rt fps read 1.5–2% lower (host-bound; within the ±4% noise rule).
+  CPU (one CCD): `cpu` +0.7..3% fps, cpu-voxelspace unlit +1%, lit −20% (the point
+  lights it now computes). Not yet run: the full sweep against the baseline (other
+  scenes); the A/B above is against the build of d52b9fd.
 
 ### Notes from the user (2026-10-10)
 - **A colour scale for every diagnostic view,** like a thermal camera: the colour ramp

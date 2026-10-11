@@ -1301,6 +1301,17 @@ multiplier. Costs to measure: a deferred visibility buffer costs bandwidth again
 shading at the hit, so placement (inline or deferred) should stay a choice; the steps
 must keep each back end's speed (compare against the sweep). Not started; ask first.
 
+**Status (2026-10-11): step 1 done** (PLAN progress log). The boundary is a `Surface`
+(point, normal, block-local point, block, face) rather than a ray hit, so strategies that
+do not walk a ray (splat's clamped point, voxelspace's slope normal) fit; ray walks build
+it with `surface_of`. Every GPU back end lights through `shade_surface`; per-pixel shading
+state (pathtrace's accumulation) is one shared piece (`shading::state`), and pathtrace
+now runs on gpu-splat, gpu-raster and gpu-discover too. On the CPU, cpu-voxelspace moved
+onto `direct::cpu::shade`; cpu-raster keeps the reference's f64 model, a fundamental
+difference (precision; the f32 component cost 4–22 dB of lit PSNR), not a copy. The
+lighting rows of the table above are resolved; `shade_lit` remains only as the direct
+model's body and the mesh shader's lighting.
+
 ## 17. The pipeline model, the requirements, and compiling on demand
 
 **The user's model (2026-10-11), a picture of the level of genericity wanted, not a

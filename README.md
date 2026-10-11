@@ -109,10 +109,16 @@ compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", visi
     incremental;
   - `gpu-raster`: geometry greedy, naive, cubes; visibility raster, visbuffer, gbuffer; storage
     (what lit-mode shadow rays walk, with refloor) bricks, hier, prefix, distance, rows, tree64, svo_dag, clipmap;
-  - all: shading `direct`; gpu-compute also `pathtrace` (was gpu-pathtrace: diffuse path
-    tracing with NEE for sun and point lights, `bounces` cosine-weighted bounces through
-    the composed walk, `spp`, progressive accumulation while the view is still;
-    `bounces = 0` reproduces `direct`; 6–7% faster than the former renderer);
+  - all: shading `direct`; gpu-compute, gpu-rt, gpu-raster, gpu-discover and gpu-splat
+    also `pathtrace` (was gpu-pathtrace: diffuse path tracing with NEE for sun and point
+    lights, `bounces` cosine-weighted bounces through the composed walk, `spp`,
+    progressive accumulation while the view is still; `bounces = 0` reproduces
+    `direct`; 6–7% faster than the former renderer). Every back end lights through its
+    kind's one shading implementation: `shade_surface` on the GPU (a `Surface`: point,
+    normal, block-local point, block, face), `direct::cpu::shade` on the CPU, except
+    cpu-raster, which keeps the reference's f64 model on purpose (higher PSNR).
+    Fragment-shaded `pathtrace` (gpu-raster `raster`, gpu-discover) needs the lit depth
+    prepass (and depth order) so one fragment per pixel updates the accumulation;
   - gpu-compute also: prepass `none` or `beam` (was gpu-beam: one conservative cone per
     tile marches top cells, rays start where it is provably empty; exact, knob `tile`;
     matches the former renderer, and is still a net loss: chunk-level skipping already
@@ -124,10 +130,10 @@ compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", visi
     software rasteriser);
   - `gpu-discover` and `cpu-discover` (discovery, the user's idea: cast few rays to find
     the visible faces, rasterise only those): storage (any GPU / CPU storage), visibility
-    `quadtree` (both) or `cluster` (CPU), shading direct;
+    `quadtree` (both) or `cluster` (CPU), shading direct (gpu-discover also pathtrace);
   - `gpu-splat`: storage (for shadow rays), geometry points, visibility splat, shading
-    direct; `gpu-voxelspace` / `cpu-voxelspace`: storage heightmap, visibility columns
-    (Voxel Space, 2.5D), shading direct.
+    direct, pathtrace; `gpu-voxelspace` / `cpu-voxelspace`: storage heightmap, visibility
+    columns (Voxel Space, 2.5D), shading direct (heightmap-slope normals, no shadows).
 
   Only `cpu-reference`, which defines the reference images, stays a standalone renderer
   (on purpose). The former cpu-simd-u16/u8/bits/hier/prefix/palette renderers
