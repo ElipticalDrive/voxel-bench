@@ -172,6 +172,11 @@ impl VoxelScene {
         self.chunks.len()
     }
 
+    /// Point lights that may reach world block `world` (a coarse candidate list).
+    pub fn lights_near(&self, world: IVec3) -> Option<&[Light]> {
+        self.light_grid.get(&(world >> LIGHT_CELL_BITS)).map(|v| v.as_slice())
+    }
+
     pub fn light_count(&self) -> usize {
         self.lights.len()
     }

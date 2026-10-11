@@ -20,20 +20,40 @@ pub struct Ctx<'a, L, O> {
     pub occluded: O,
 }
 
-/// Colour of a hit on `face` of `block` at camera-relative point `p` inside `cell`.
-pub fn shade<'a, L, O>(ctx: &Ctx<'a, L, O>, block: u16, face: Face, cell: IVec3, p: Vec3, mode: RenderMode) -> [u8; 4]
+/// What shading reads from visibility (as the GPU's `Surface`): the camera-relative
+/// surface point, its normal (the face's, unless a visibility strategy has a better one),
+/// the point within the block (texture lookup), the block and its face.
+#[derive(Copy, Clone, Debug)]
+pub struct Surface {
+    pub p: Vec3,
+    pub n: Vec3,
+    pub local: Vec3,
+    pub block: u16,
+    pub face: Face,
+}
+
+impl Surface {
+    /// A ray walk's hit: point `p` on `face` of `block` in `cell` (camera-relative).
+    #[inline]
+    pub fn at_cell(block: u16, face: Face, cell: IVec3, p: Vec3) -> Self {
+        Self { p, n: face.normal().as_vec3(), local: p - cell.as_vec3(), block, face }
+    }
+}
+
+/// Colour of surface `s`.
+pub fn shade<'a, L, O>(ctx: &Ctx<'a, L, O>, s: &Surface, mode: RenderMode) -> [u8; 4]
 where
     L: Fn(IVec3) -> Option<&'a [Light]>,
     O: Fn(Vec3, Vec3, f32) -> bool,
 {
-    let uv = face.uv(p - cell.as_vec3());
-    let texel = ctx.blocks.texture_of(BlockId(block), face).texel(texel_coord(uv.x), texel_coord(uv.y));
+    let uv = s.face.uv(s.local);
+    let texel = ctx.blocks.texture_of(BlockId(s.block), s.face).texel(texel_coord(uv.x), texel_coord(uv.y));
     if mode == RenderMode::Unlit {
         return texel;
     }
     let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
-    let n = face.normal().as_vec3();
-    let ps = p + n * 1e-3;
+    let n = s.n;
+    let ps = s.p + n * 1e-3;
     let mut light = ctx.env.ambient;
     if let Some(sun) = ctx.env.sun {
         let ndl = n.dot(-sun.direction);

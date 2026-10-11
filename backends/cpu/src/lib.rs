@@ -271,7 +271,8 @@ impl<R: Repr> Scene<R> {
             lights_near: |world: IVec3| self.light_grid.get(&(world >> LIGHT_CELL_BITS)).map(|v| v.as_slice()),
             occluded: |p: Vec3, d: Vec3, dist: f32| self.occluded(cam, p, d, dist),
         };
-        mr_components::shading::direct::cpu::shade(&ctx, block, face, h.cell, o + d * h.t, mode)
+        use mr_components::shading::direct::cpu::{Surface, shade};
+        shade(&ctx, &Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
     }
 }
 

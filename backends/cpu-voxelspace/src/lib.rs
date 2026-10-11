@@ -4,14 +4,16 @@
 //! CPU port of gpu-voxelspace: Comanche (1992) style 2.5D heightmap renderer. A heightmap
 //! ring (top solid block height + block id per (x, z) column) is marched front-to-back per
 //! screen column (rayon-parallel over columns), drawing spans with a per-column y-buffer.
-//! Lit mode: N.L (sun) from the heightmap gradient + ambient, no shadows.
+//! Lit mode: the shading component (`direct::cpu::shade`) with the heightmap gradient as
+//! the top faces' normal; ambient, sun and point lights, no shadows (as gpu-voxelspace).
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use cpu_reference::{Pool, VoxelScene};
 use glam::{IVec2, IVec3, Vec2, Vec3};
-use mr_core::lighting::{encode_srgb, srgb_to_linear};
+use mr_components::shading::direct::cpu::{Ctx, Surface, shade};
+use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use rayon::prelude::*;
 
@@ -130,6 +132,16 @@ impl CpuVoxelSpace {
         let lit = req.mode == RenderMode::Lit;
         let sky = encode_srgb(scene.env.sky);
         let max_cells = self.max_cells;
+        // No shadow rays: a heightmap walk for them is step 3 of the architecture refactor.
+        let ctx = Ctx {
+            blocks: &scene.blocks,
+            env: &scene.env,
+            cam: cam_block,
+            sun_shadows: false,
+            light_shadows: false,
+            lights_near: |world: IVec3| scene.lights_near(world),
+            occluded: |_: Vec3, _: Vec3, _: f32| false,
+        };
         let hm_at = |c: IVec2| -> u32 {
             let a = c + IVec2::new(cam_block.x, cam_block.z);
             hm[((a.y & mask) * size + (a.x & mask)) as usize]
@@ -213,18 +225,8 @@ impl CpuVoxelSpace {
                         }
                         let p = o + d * t;
                         let local = (p - Vec3::new(cell.x as f32, hh - 1.0, cell.y as f32)).clamp(Vec3::ZERO, Vec3::splat(0.999));
-                        let texel = scene.shade_surface(p.as_dvec3(), local, face, block, RenderMode::Unlit);
-                        let px = if lit {
-                            let n = if side { face.normal().as_vec3() } else { top_n };
-                            let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
-                            let mut light = scene.env.ambient;
-                            if let Some(sun) = scene.env.sun {
-                                light += sun.color * n.dot(-sun.direction).max(0.0);
-                            }
-                            encode_srgb(albedo * light * scene.env.exposure)
-                        } else {
-                            texel
-                        };
+                        let n = if side { face.normal().as_vec3() } else { top_n };
+                        let px = shade(&ctx, &Surface { p, n, local, block: block.0, face }, req.mode);
                         let k = row as usize * 4;
                         col[k..k + 4].copy_from_slice(&px);
                     }

@@ -3,6 +3,11 @@
 //! CPU), **visibility** `raster` (below), **shading** `direct` (here the reference
 //! scene's f64 model, with CPU ray-traced shadows). Was the cpu-raster renderer.
 //!
+//! Shading stays on the reference's f64 model on purpose, not the f32 CPU shading
+//! component (`direct::cpu::shade`): the same algorithm at a different precision. Measured
+//! 2026-10-11, the f32 component lowered lit PSNR (terrain 63.1 -> 57.7 dB, room 99.0 ->
+//! 76.6, many-lights 64.8 -> 61.0) at the same speed.
+//!
 //! Pipeline per frame:
 //! 1. incremental parallel meshing by the geometry component,
 //! 2. per-chunk frustum culling and per-face-direction culling,
