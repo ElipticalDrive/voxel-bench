@@ -1448,6 +1448,16 @@ ahead of time, and step 8 does it at run time.
   5. *Trust:* each newly compiled pipeline checked against the reference before use
      (already a requirement).
 
+**The user's clarification (2026-10-12): graphs, not stage lists.** "I in no way require
+that every pipeline have the same list of component types. I treat any valid path from
+the input to the output regardless of stages as viable." Different techniques have
+different kinds of pieces, and each place rays are cast should be able to use its own
+ray-casting method ("a different one in each place where rays are cast"). The
+architecture is to be settled with finality, in a way that sets up no limits later,
+before optimisation and bug fixes. Consequence: the fixed stage list (`Slot`,
+`Composition`) is itself a limit and is replaced by a graph of component instances with
+typed ports (PLAN step 9).
+
 ## 18. A first-principles design (what the pieces are)
 
 **Context (2026-10-11).** Asked to design as if no architecture existed, from the problem

@@ -29,6 +29,14 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   a rewrite; generalise an interface once two or three real techniques need it. New
   techniques may land between steps. The user prefers new techniques over completing
   coverage of a feature across every renderer (7b is shelved for that reason).
+- **Architecture first, with finality** (the user, 2026-10-12): settle the architecture
+  completely, in a way that sets up no limits later, before optimisation, bug fixes and
+  new techniques (fix only what blocks the architecture work). **A pipeline is a graph,
+  not a fixed list of stages:** any valid path from the input to the output is a viable
+  pipeline; pipelines need not share the same kinds of components. In particular, every
+  place rays are cast picks its own ray-casting method (and storage): primary rays,
+  discovery rays, exposure tests, shadow rays, bounce rays, later AO, each independently
+  or shared. Steps 9–15 below.
 - **Existing, well-supported compilers everywhere** (the user, 2026-10-11): never write our
   own compiler or JIT (no Cranelift back end, no custom IR). CPU pipelines compiled on
   demand are generated Rust compiled by `rustc` (shipped with the final product); GPU
@@ -223,7 +231,11 @@ stage grid) are in the progress log below, with their measurements.
 
 ### Next: the architecture refactor (IDEAS §16–§18)
 
-**Where we are (2026-10-12):** steps 1–5 are done (progress log entries of 2026-10-11/12:
+**Where we are (2026-10-12, later):** steps 1–8 are done (progress log). They were the
+first stretch, not the whole design: steps 9–15 below finish the architecture (IDEAS
+§17–§18 and the user's graph requirement), starting with pipelines as graphs.
+
+**Earlier (2026-10-12):** steps 1–5 are done (progress log entries of 2026-10-11/12:
 one shading entry point per kind of back end with a `Surface`; one face drawer with face
 sources and the host-side `FaceDrawer`; every shadow and bounce ray through a storage
 component, the heightmap as a component; the architecture guard test
@@ -310,6 +322,75 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    LTO and constants specialised for the run; profile-guided optimisation with a short
    sweep as the training run; then knob autotuning and composition choice (the planner,
    §14). On the GPU: specialised constants and persistent pipeline caches.
+
+### Next: finishing the architecture (steps 9–15)
+
+Agreed 2026-10-12: the architecture is to be settled completely, without built-in limits,
+before optimisation, bug fixes and new techniques. Against IDEAS §17–§18 and the user's
+graph requirement (working agreements), after step 8 these are missing:
+- **The fixed stage list itself.** `Slot` is a fixed enum, `Composition` a struct with one
+  field per slot, `BackendInfo` a fixed slot list per back end. A pipeline cannot have
+  stages another lacks beyond that list, nor bind a different kernel at each place rays
+  are cast. Step 7c's `shadow_storage` / `shadow_traversal` are a hard-coded special case
+  of what should be general.
+- **Strategies inside back ends:** discovery (quadtree, cluster and their pieces), splat
+  and voxelspace columns are back-end code, not components; the ten back ends are
+  hand-written assemblers, not executors placing pieces on devices (§18).
+- **No common visibility buffer:** strategies do not share one hit record / visibility
+  buffer; inline or deferred shading is a choice only where a face drawer exists; meshes
+  are a special stage instead of a surface source (§18).
+- **No per-stage devices:** cpu-discover (CPU discovery, GPU drawing) is a hard-wired back
+  end, not a configuration; two GPUs cannot be combined (requirement 2).
+- **No history and no post stages** (§18 pieces 7 and 8).
+- **No per-stage measurement** (§18: every piece reports its own time; the planner needs it).
+- **Composition not fully data:** knobs not declared as baked-in or live; CPU components
+  declare no capabilities; only the `cpu` back end compiles on demand (§17).
+- **A known composition cost:** cpu-discover calls its storage through `dyn World` per ray.
+- **Shader assembly by text-joining** strains: 7c needed a hand-written renaming pass
+  (`traversal::namespaced`); the plan said to adopt an existing module system then.
+
+Steps, in dependency order; each verified and zero-cost-checked as before, one at a time:
+9. **Pipelines as graphs** (the foundation; replaces `Slot`, `Composition`'s fixed fields
+   and per-back-end slot lists). Components declare typed *ports*: inputs they need and
+   outputs they provide (e.g. a ray-query service with its capabilities: closest or any
+   hit, LOD, step counts; a storage; a face set; a hit record / visibility buffer; an
+   image; history), each on a device. A pipeline is a graph of component instances
+   (each with its own knobs) and edges; it is valid when every input is connected to a
+   compatible output (capabilities met natively or by an adapter, devices joined by a
+   communication path), with no fixed list of stages. Every ray-casting site is an input
+   port of the component that casts (primary rays of ray casting, discovery's rays and
+   exposure tests, shading's shadow and bounce rays, later AO), bound to its own kernel
+   and storage nodes or to shared ones. Sub-steps:
+   - 9a: the graph model in the registry, validation with reasons, a canonical
+     serialisation (hashable: the cache key), today's flat compositions and old records
+     loading as graphs; no behaviour change.
+   - 9b: GPU shader assembly per graph through an existing module system (`naga_oil` or
+     WESL): each node instance its own module, so two instances of one storage or kernel
+     need no renaming pass; replaces text-joining and `traversal::namespaced`.
+   - 9c: back ends consume graphs: every ray-casting site of every back end binds its own
+     kernel and storage (the 7c shadow stages become two such ports).
+   - 9d: GUI (the stage grid becomes a tree: each port expands into the node bound to it,
+     shared nodes shown as shared), CLI form, labels, sweeps over graphs (bounded
+     enumeration), observations and `sweepcmp.py` keyed by the canonical graph.
+   On the CPU, arbitrary graphs cannot all be precompiled: generic precompiled builds
+   cover a common set, other graphs run compiled on demand (step 8's machinery; the
+   user's intent that every pipeline is eventually compiled at run time).
+10. **Composition fully data:** knobs declared as baked-in (specialisable) or live; CPU
+    components declare capabilities (associated consts, as `backend_cpu::Spec`); the
+    graph hash is the compile cache key everywhere.
+11. **Per-stage measurement:** every node reports its own GPU time (timestamps per pass)
+    and CPU time; observations carry them.
+12. **A common visibility buffer:** every strategy outputs one hit record; shading
+    placement (inline or deferred) a choice for every strategy; meshes a surface source
+    writing into it, no longer a special stage.
+13. **Strategies as components, back ends as executors:** discovery's pieces (sampler,
+    hole detection, retention, drawer), splat and columns become components; back ends
+    become executors placing nodes on devices (a device per node), so cpu-discover is a
+    configuration of CPU and GPU nodes, and its `dyn World` call goes.
+14. **History and post as nodes:** earlier frames' products as explicit inputs; tone
+    mapping and diagnostic views with colour scales written once.
+15. **Compiled on demand everywhere:** every CPU graph (generated Rust), and on the GPU
+    specialised constants and persistent pipeline caches; then the break-in layers.
 
 Watch: WGSL text-joining strains as pieces multiply (adopt `naga_oil` or WESL around steps
 6–7); the number of valid pipelines will outgrow overnight sweeps (the per-pipeline
