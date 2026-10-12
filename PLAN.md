@@ -83,6 +83,10 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - Tuner on real terrain: `ALGO=bayes TARGET_FPS=900 SECONDS=60 cargo test --release --bin multirenderer tuner_demo -- --ignored --nocapture`.
 
 ## Known issues (not yet fixed)
+- `cargo clippy --workspace` (not part of the checks): two deny-by-default errors from
+  before the refactor (`backends/cpu/src/perf.rs:21` equal operands to `|`;
+  `backends/cpu-discover/src/lib.rs` an approximate π/2 literal) and 42 warnings (37 before
+  steps 1–5; the new ones are mostly "too many arguments").
 
 - Some renderers produce incorrect frames. The user knows; fix later.
 - `GrowableBuffer` (`crates/mr-gpu`) rounds sizes up to powers of two, so a 2 GiB
