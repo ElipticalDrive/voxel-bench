@@ -932,6 +932,19 @@ earlier if meshes become more urgent; 7c depends on 6′.
   zero-cost check is building both sides with forced alignment.
 - **Remaining duplicates** across back-end shaders: only the face-source functions (each
   reads its own record format) and the compute entry points named `main`.
+- **Full sweep after steps 1–2** (`target/sweep/20261011-1700`, 3,735 observations, the
+  same 3 known failures on far) against `baselines/sweep-20261011/` (3,047 shared rows):
+  GPU ms median ratio 1.0002 (per back end 0.97–1.01), 78% of rows within ±2%, 89%
+  within ±4%; no PSNR drop above 0.5 dB; 688 new rows (pathtrace on more back ends).
+  Interleaved re-runs of the worst rows against a build of d52b9fd: most are noise
+  (gpu-compute + meshes ±1%; distance storage on edits / far and gpu-raster gbuffer on
+  terrain / edits swing ±10–30% between runs of either build, some bimodal). **One real
+  shift:** gpu-compute **pathtrace** kernels moved −9…+24% (median +0.6%), deterministic,
+  from step 1; the worst is many-lights `prefix + rowrun + pathtrace` 22.6 → 28.0 ms
+  (bricks + refloor +1.8%, gpu-rt +1.0%). Not the bounce loop's shape and not the
+  separate `sp` uniform (both tried); most likely NVIDIA register allocation of the
+  largest kernels (walk + 400-light loop + bounces). Open: decide with the user whether to
+  chase it (SASS / register counts) or accept it as codegen variance.
 
 ### 2026-10-11: architecture refactor step 1 (one shading implementation per kind)
 - **Interface:** shading reads a `Surface` (camera-relative point, normal, block-local
