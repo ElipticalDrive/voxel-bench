@@ -14,7 +14,7 @@ use glam::{IVec3, Vec3};
 use mr_core::{Camera, MeshData, MeshInstance, MeshUpdate, RenderMode};
 
 use crate::Gpu;
-use crate::voxels::{DDA_OCCLUSION_WGSL, VoxelWorld, shader_source};
+use crate::voxels::{VoxelWorld, shader_source};
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -34,7 +34,6 @@ struct MeshFrame {
 
 /// A renderer's own shadow-ray module for the mesh pass: WGSL defining `occluded()` (and
 /// whatever it needs), reading bind group 2 with `layout` (visible to the fragment stage).
-/// Without one, mesh shadows walk the voxel pool (`DDA_OCCLUSION_WGSL`).
 pub struct Occlusion<'a> {
     pub wgsl: &'a str,
     pub layout: &'a wgpu::BindGroupLayout,
@@ -59,17 +58,17 @@ pub struct GpuMeshes {
     fill: wgpu::RenderPipeline,
     depth: wgpu::RenderPipeline,
     equal: wgpu::RenderPipeline,
-    /// With an [`Occlusion`]: its bind group 2, set by the renderer each frame.
+    /// The [`Occlusion`]'s bind group 2, set by the renderer each frame.
     occlusion_bg: Option<wgpu::BindGroup>,
 }
 
 impl GpuMeshes {
     /// `world` provides bind group 1 (lighting and shadow rays); its visibility must
-    /// include the fragment stage. `occlusion`: the renderer's own shadow rays (bind group
-    /// 2, see [`Self::set_occlusion_bind_group`]).
-    pub fn new(gpu: &Gpu, world: &VoxelWorld, color: wgpu::TextureFormat, occlusion: Option<Occlusion>) -> Self {
+    /// include the fragment stage. `occlusion`: the renderer's shadow rays through its
+    /// composed storage (bind group 2, see [`Self::set_occlusion_bind_group`]).
+    pub fn new(gpu: &Gpu, world: &VoxelWorld, color: wgpu::TextureFormat, occlusion: Occlusion) -> Self {
         let dev = &gpu.device;
-        let occ_src = occlusion.as_ref().map_or(DDA_OCCLUSION_WGSL, |o| o.wgsl);
+        let occ_src = occlusion.wgsl;
         let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("meshes"), source: wgpu::ShaderSource::Wgsl(shader_source(occ_src, include_str!("mesh.wgsl")).into()) });
         let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mesh frame"),
@@ -82,7 +81,7 @@ impl GpuMeshes {
         });
         let frame_buf = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh frame"), size: size_of::<MeshFrame>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let bind = dev.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("mesh frame"), layout: &layout0, entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() }] });
-        let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("meshes"), bind_group_layouts: &[Some(&layout0), Some(world.layout()), occlusion.as_ref().map(|o| o.layout)], immediate_size: 0 });
+        let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("meshes"), bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(occlusion.layout)], immediate_size: 0 });
         let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Float32x3];
         let pipeline = |label, write: bool, compare, fragment: bool| {
             let targets = [Some(wgpu::ColorTargetState { format: color, blend: None, write_mask: wgpu::ColorWrites::ALL })];
@@ -245,7 +244,7 @@ pub struct MeshComposite {
 }
 
 impl MeshComposite {
-    pub fn new(gpu: &Gpu, world: &VoxelWorld, width: u32, height: u32, occlusion: Option<Occlusion>) -> Self {
+    pub fn new(gpu: &Gpu, world: &VoxelWorld, width: u32, height: u32, occlusion: Occlusion) -> Self {
         let dev = &gpu.device;
         // Fragment too: ray casters may run per pixel in a fragment shader.
         let stages = wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT;

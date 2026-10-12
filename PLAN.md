@@ -143,11 +143,12 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   - gpu-discover: storage (GPU); visibility quadtree (knob `draw`: raster, visbuffer,
     gbuffer); shading direct, pathtrace.
   - cpu-discover: storage (CPU); visibility quadtree, cluster (knob `draw`: raster,
-    visbuffer, gbuffer); shading direct.
+    visbuffer, gbuffer); shading direct, pathtrace (knob `shadow_storage`: the GPU storage
+    shadow and bounce rays walk).
   - gpu-splat: storage (shadow rays); geometry points; visibility splat; shading direct,
     pathtrace.
-  - gpu-voxelspace, cpu-voxelspace: storage heightmap; visibility columns; shading
-    direct.
+  - gpu-voxelspace, cpu-voxelspace: storage heightmap (a component: ring + walks);
+    visibility columns; shading direct (gpu also pathtrace); knob `shadows`.
 - **Verification:** zero warnings in both builds; 44 unit tests; 3 GPU end-to-end tests
   (live session, mesh mode, headless GUI).
 - **Tools:** the GUI (stage grids, live knobs, hot swaps, quality probes, auto-tuner:
@@ -247,7 +248,7 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    quad drawing of gpu-raster `main.wgsl`, gpu-discover `raster.wgsl` and cpu-discover
    `raster.wgsl` become one component; visbuffer and gbuffer become choices for both
    discovery back ends.
-3. **Shadow and secondary rays through the composed storage everywhere** (§16 step 3):
+3. **Done 2026-10-12 (progress log).** **Shadow and secondary rays through the composed storage everywhere** (§16 step 3):
    cpu-discover's lit mode and gpu-voxelspace walk their own structures today.
 4. **The guard test** (§16 step 4): no WGSL function defined in more than one back end's
    shaders; every back end's lighting goes through the shading component.
@@ -894,6 +895,37 @@ earlier if meshes become more urgent; 7c depends on 6′.
   now host-side (update) cost, not measurement. Rasterisers win the closed scenes (room,
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
+
+### 2026-10-12: architecture refactor step 3 (secondary rays through the composed storage)
+- **Heightmap storage component** (`components/src/storage/heightmap`): the ring building
+  both voxelspace back ends had separately, plus a ray walk through the heightmap on the
+  GPU (`hm_trace`) and the CPU (`Heightmap::trace`): a 2D DDA over the columns (side faces
+  when entering below a top, tops when descending below them), skipping 32×32 tiles the
+  ray passes above (per-tile maxima after the entries) and stopping rising rays above the
+  highest top. Without the skip, sun shadow rays cost 196 ms per frame; with it 7.6 ms.
+  Unit test for the CPU walk.
+- **Voxelspace:** knob `shadows` (default all, as elsewhere); shadow rays walk the
+  heightmap; gpu-voxelspace offers pathtrace (bounces walk it too). Terrain lit GPU ms:
+  2.67 (none) → 5.18 (sun) → 7.6 (all); PSNR 17.2 → 17.6 dB, bad pixels 26.7 → 24.9%;
+  CPU and GPU give identical scores. cpu-voxelspace lit 119 → 95 fps.
+- **cpu-discover:** its GPU shadow rays walk a composed GPU storage with refloor (knob
+  `shadow_storage`, owned by shading, default bricks) instead of the voxel world's DDA:
+  pixel-identical with bricks, lit GPU 2.30 → 2.19 ms; prefix 2.02, tree64 2.95 (98 MB GPU
+  instead of 535: region storages skip the pool). The storage slot stays the CPU
+  structure discovery walks: two storages on two devices wait for per-stage slots (step
+  7). Pathtrace on cpu-discover: 10.9 ms forward, 2.6 with `draw = visbuffer`.
+- **Removed:** the voxel world's own DDA (`trace` in `voxels.wgsl`, 71 lines,
+  `DDA_OCCLUSION_WGSL`) and the mesh shading's default walk (a composed walk is now
+  required). Every shadow and bounce ray now goes through a storage component.
+- **Checks:** pixel-identical to the step-2 build where behaviour is unchanged (cpu-discover,
+  gpu-compute, gpu-raster, gpu-splat, meshes, voxelspace with shadows off). GPU ms within
+  ±2% (cpu-discover −4…−6%). fps of gpu-compute and gpu-raster read −6…−8.5% on terrain;
+  with forced function / block alignment both builds are within ±1.4%: code layout
+  again (second time). Suggestion for the user: build measured binaries with forced
+  alignment by default.
+- **Slip:** 3b was committed with the registry test failing (it hard-coded `direct` for
+  cpu-discover's shading); fixed in the next commit. Commits now run only after the
+  tests pass.
 
 ### 2026-10-11: architecture refactor step 2 (one face drawer)
 - **2a, shared helpers:** `face_axes` in `common.wgsl` (4 copies, incl. discover.wgsl's

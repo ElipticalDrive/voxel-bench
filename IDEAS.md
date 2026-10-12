@@ -1317,6 +1317,11 @@ model's body and the mesh shader's lighting.
 `pixel_ray` exist once; visbuffer and gbuffer are choices (`draw`) of both discovery back
 ends.
 
+**Status (2026-10-12): step 3 done.** Every shadow and bounce ray walks a storage
+component: the heightmap became a component with a ray walk (CPU and GPU), cpu-discover's
+GPU side walks a chosen GPU storage (`shadow_storage`), and the voxel world's own DDA is
+gone.
+
 ## 17. The pipeline model, the requirements, and compiling on demand
 
 **The user's model (2026-10-11), a picture of the level of genericity wanted, not a

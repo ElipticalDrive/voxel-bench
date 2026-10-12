@@ -18,8 +18,6 @@ use crate::{Gpu, GrowableBuffer};
 
 pub const VOXELS_WGSL: &str = include_str!("voxels.wgsl");
 pub const LIGHTING_WGSL: &str = include_str!("lighting.wgsl");
-/// Shadow rays answered by the software DDA in `voxels.wgsl`.
-pub const DDA_OCCLUSION_WGSL: &str = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return trace(p, d, max_t).hit; }\n";
 
 /// Full shader source: shared helpers, voxel world, an occlusion module, lighting and
 /// the renderer's own code.

@@ -332,7 +332,7 @@ impl GpuCompose {
         // Fragment too: mesh shadows walk the composed storage.
         let layout2 = gpu_data::layout(&gpu, &comp.storage(), compute | wgpu::ShaderStages::FRAGMENT);
         let occ = visibility::occlusion_wgsl(&comp.storage(), comp.lod);
-        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Some(Occlusion { wgsl: &occ, layout: &layout2 }));
+        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Occlusion { wgsl: &occ, layout: &layout2 });
         let rw = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: pixel,

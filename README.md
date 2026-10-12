@@ -137,7 +137,9 @@ compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", visi
     terrain, unlit a little slower);
   - `gpu-splat`: storage (for shadow rays), geometry points, visibility splat, shading
     direct, pathtrace; `gpu-voxelspace` / `cpu-voxelspace`: storage heightmap, visibility
-    columns (Voxel Space, 2.5D), shading direct (heightmap-slope normals, no shadows).
+    columns (Voxel Space, 2.5D), shading direct (heightmap-slope normals; shadow rays
+    walk the heightmap, knob `shadows`; gpu-voxelspace also pathtrace). cpu-discover's
+    GPU shadow and bounce rays walk the GPU storage chosen by `shadow_storage`.
 
   Only `cpu-reference`, which defines the reference images, stays a standalone renderer
   (on purpose). The former cpu-simd-u16/u8/bits/hier/prefix/palette renderers

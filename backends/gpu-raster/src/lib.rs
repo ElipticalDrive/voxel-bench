@@ -402,7 +402,7 @@ impl GpuRasterBackend {
         let data = StorageData::new(&gpu, comp.storage(), gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         // Mesh shadows walk the composed storage too.
         let occ = visibility::occlusion_wgsl(&comp.storage(), false);
-        let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Some(Occlusion { wgsl: &occ, layout: &layouts.aux }));
+        let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Occlusion { wgsl: &occ, layout: &layouts.aux });
         let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone());
         let accum = ShadeState::new(&gpu, p.width, p.height, &comp.shading, opts.bounces, opts.spp, opts.accumulate);
         tracing::info!("gpu-raster: storage {}, geometry {}, visibility {}, shading {}", comp.storage, comp.geometry, comp.visibility, comp.shading);
