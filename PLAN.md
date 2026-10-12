@@ -219,6 +219,20 @@ stage grid) are in the progress log below, with their measurements.
 
 ### Next: the architecture refactor (IDEAS §16–§18)
 
+**Where we are (2026-10-12):** steps 1–4 are done (progress log entries of 2026-10-11/12:
+one shading entry point per kind of back end with a `Surface`; one face drawer with face
+sources and the host-side `FaceDrawer`; every shadow and bounce ray through a storage
+component, the heightmap as a component; the architecture guard test
+`tests/architecture.rs`). Builds force code alignment (`.cargo/config.toml`). Step 5
+(devices handed to back ends) is in progress; steps 6–8 follow. Open, deferred by the
+user to a later optimisation pass: gpu-voxelspace's lit cost (column threads shade
+serially; proposed per-pixel deferred shading, sweep entry of 2026-10-12), gpu-compute
+pathtrace codegen variance (accepted), cpu-discover's per-ray `dyn World` call.
+A/B tooling used for the zero-cost checks lived in the session's temporary directory;
+the method: save a release build before a step, then render with both builds and
+compare saved frames pixel by pixel (`output.save`), and interleave `run` invocations of
+both for GPU ms / fps (`-u output.compare -u output.save`, 3+ rounds, 300 frames).
+
 The goal and requirements are in IDEAS §17 (agreed 2026-10-11): no cost from composability
 while a pipeline runs; no opinion on hardware configuration; maximum practical code reuse;
 maximum practical combinations, grown with adapters; combinations without a valid path do
