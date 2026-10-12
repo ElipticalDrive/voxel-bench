@@ -30,6 +30,27 @@ use mr_core::*;
 use rayon::prelude::*;
 use serde::Deserialize;
 
+/// The renderer entry of a pipeline compiled for one composition (`S`, storage `R`); the
+/// generated crate's worker serves only this.
+pub fn entry_for<R: Repr, S: Spec>() -> RendererEntry {
+    RendererEntry { info: entry().info, create: |p, _, _| Ok(Box::new(CpuBackend::<R, S>::new(p)?)) }
+}
+
+/// The Rust type of each CPU storage, for generated code.
+pub fn storage_type(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "bricks" => "mr_components::storage::bricks::cpu::U16",
+        "u8" => "mr_components::storage::u8::cpu::U8",
+        "bits" => "mr_components::storage::bits::cpu::Bits",
+        "hier" => "mr_components::storage::hier::cpu::Hier",
+        "prefix" => "mr_components::storage::prefix::cpu::Prefix",
+        "palette" => "mr_components::storage::palette::cpu::Palette",
+        "brickmajor" => "mr_components::storage::brickmajor::Cpu",
+        "morton" => "mr_components::storage::morton::Cpu",
+        _ => return None,
+    })
+}
+
 pub fn entry() -> RendererEntry {
     RendererEntry {
         info: || RendererInfo {
@@ -113,9 +134,27 @@ impl Default for Options {
     }
 }
 
+/// What a pipeline compiled for one composition bakes in (PLAN step 8): a generated
+/// crate implements this with the composition's values, so they are constants the
+/// compiler folds (no per-ray `match`, one packet width, no ISA dispatch: the whole crate
+/// is compiled for this CPU). [`Generic`], the precompiled build, leaves everything open.
+/// Live changes of a baked knob are refused with the reason.
+pub trait Spec: Send + Sync + 'static {
+    /// The storage this pipeline was compiled for (checked against the options).
+    const STORAGE: Option<&'static str> = None;
+    const TRAVERSAL: Option<Traversal> = None;
+    const PACKET: Option<usize> = None;
+    /// Compiled with `target-cpu=native`: the hot loop needs no ISA dispatch.
+    const NATIVE: bool = false;
+}
+
+/// The precompiled build: every knob live.
+pub struct Generic;
+impl Spec for Generic {}
+
 /// The traversal kernel, with the `exact` knob folded in.
 #[derive(Copy, Clone, PartialEq, Debug)]
-enum Traversal {
+pub enum Traversal {
     /// `trace_packet`: the probe returns a skip size, and coarse steps re-floor.
     Refloor,
     /// `trace_incremental`, exit times accumulated by adds.
@@ -140,7 +179,8 @@ fn parse_schedule(s: &str) -> anyhow::Result<bool> {
     }
 }
 
-fn traversal(kernel: &str, exact: bool) -> anyhow::Result<Traversal> {
+/// The traversal kernel for the `traversal` and `exact` knobs (also for generated code).
+pub fn traversal(kernel: &str, exact: bool) -> anyhow::Result<Traversal> {
     Ok(match require(BACKEND, Slot::Traversal, kernel)?.as_str() {
         "refloor" => Traversal::Refloor,
         "incremental" if exact => Traversal::IncrementalExact,
@@ -291,7 +331,8 @@ impl Pool {
     }
 }
 
-pub struct CpuBackend<R> {
+pub struct CpuBackend<R, S: Spec = Generic> {
+    spec: std::marker::PhantomData<S>,
     width: u32,
     height: u32,
     scene: Scene<R>,
@@ -316,9 +357,12 @@ pub struct CpuBackend<R> {
     view_max: u32,
 }
 
-impl<R: Repr> CpuBackend<R> {
+impl<R: Repr, S: Spec> CpuBackend<R, S> {
     pub fn new(p: InitParams) -> anyhow::Result<Self> {
         let o: Options = p.options()?;
+        if let Some(st) = S::STORAGE.filter(|&st| st != o.storage) {
+            anyhow::bail!("this pipeline was compiled for storage `{st}`, not `{}`", o.storage);
+        }
         if o.storage == "u8" && p.blocks.blocks.len() > 256 {
             anyhow::bail!("storage u8 needs <= 256 block types, registry has {}", p.blocks.blocks.len());
         }
@@ -326,7 +370,8 @@ impl<R: Repr> CpuBackend<R> {
         tracing::info!("cpu: storage {}, traversal {}, {:?} hot loop, packets of {}", o.storage, o.traversal, isa, o.packet);
         require(BACKEND, Slot::Visibility, &o.visibility)?;
         require(BACKEND, Slot::Shading, &o.shading)?;
-        Ok(Self {
+        let b = Self {
+            spec: std::marker::PhantomData,
             kernel: o.traversal.clone(),
             exact: o.exact,
             tiles: parse_schedule(&o.schedule)?,
@@ -357,7 +402,20 @@ impl<R: Repr> CpuBackend<R> {
             steps_view: parse_view(&o.view)?,
             view_max: o.view_max.clamp(1, 16384),
             pixels: vec![0; (p.width * p.height * 4) as usize],
-        })
+        };
+        b.check_baked()?;
+        Ok(b)
+    }
+
+    /// Fails if a knob differs from the value this pipeline baked in.
+    fn check_baked(&self) -> anyhow::Result<()> {
+        if let Some(t) = S::TRAVERSAL.filter(|&t| t != self.scene.traversal) {
+            anyhow::bail!("this pipeline was compiled for traversal {t:?} (not {:?}); a change needs another build", self.scene.traversal);
+        }
+        if let Some(n) = S::PACKET.filter(|&n| n != self.packet) {
+            anyhow::bail!("this pipeline was compiled for packets of {n} (not {}); a change needs another build", self.packet);
+        }
+        Ok(())
     }
 }
 
@@ -396,7 +454,7 @@ struct Job<'a, R> {
 /// 4x2 or 4x4 block. `#[inline(always)]` so each ISA wrapper below compiles its own copy
 /// with its target features.
 #[inline(always)]
-fn render_rect<R: Repr, const N: usize>(job: &Job<R>, r: Rect) -> RowWork {
+fn render_rect<R: Repr, S: Spec, const N: usize>(job: &Job<R>, r: Rect) -> RowWork {
     let (scene, w, h, mode) = (job.scene, job.w, job.h, job.mode);
     let mut work = RowWork::default();
     let (cam_block, o) = job.cam.split_position();
@@ -437,7 +495,9 @@ fn render_rect<R: Repr, const N: usize>(job: &Job<R>, r: Rect) -> RowWork {
             let mut hits = [None; N];
             // Work per lane, for the steps view.
             let mut lane_work = [0u32; N];
-            if scene.traversal == Traversal::Refloor {
+            // A baked kernel is a constant: the other branches fold away.
+            let kernel = S::TRAVERSAL.unwrap_or(scene.traversal);
+            if kernel == Traversal::Refloor {
                 let it = trace_packet::<R, N>(&scene.grid, cam_block, o, &dx, &dy, &dz, 1e7, bmin, bmax, &mut hits);
                 work.lane_steps += it as u64 * N as u64;
                 if job.steps.is_some() {
@@ -446,7 +506,7 @@ fn render_rect<R: Repr, const N: usize>(job: &Job<R>, r: Rect) -> RowWork {
             } else {
                 for l in 0..N {
                     if !dx[l].is_nan() {
-                        let (hit, t) = match scene.traversal {
+                        let (hit, t) = match kernel {
                             Traversal::IncrementalExact => trace_incremental::<R, true>(&scene.grid, scene.levels, cam_block, o, dirs[l], 1e7, bmin, bmax),
                             _ => trace_incremental::<R, false>(&scene.grid, scene.levels, cam_block, o, dirs[l], 1e7, bmin, bmax),
                         };
@@ -491,31 +551,35 @@ fn render_rect<R: Repr, const N: usize>(job: &Job<R>, r: Rect) -> RowWork {
 }
 
 #[inline(always)]
-fn render_rect_dyn<R: Repr>(job: &Job<R>, r: Rect) -> RowWork {
-    match job.packet {
-        1 => render_rect::<R, 1>(job, r),
-        4 => render_rect::<R, 4>(job, r),
-        16 => render_rect::<R, 16>(job, r),
-        _ => render_rect::<R, 8>(job, r),
+fn render_rect_dyn<R: Repr, S: Spec>(job: &Job<R>, r: Rect) -> RowWork {
+    match S::PACKET.unwrap_or(job.packet) {
+        1 => render_rect::<R, S, 1>(job, r),
+        4 => render_rect::<R, S, 4>(job, r),
+        16 => render_rect::<R, S, 16>(job, r),
+        _ => render_rect::<R, S, 8>(job, r),
     }
 }
 
 #[target_feature(enable = "avx2,fma")]
-fn render_rect_avx2<R: Repr>(job: &Job<R>, r: Rect) -> RowWork {
-    render_rect_dyn(job, r)
+fn render_rect_avx2<R: Repr, S: Spec>(job: &Job<R>, r: Rect) -> RowWork {
+    render_rect_dyn::<R, S>(job, r)
 }
 
 #[target_feature(enable = "avx512f,avx512vl,avx512bw,avx2,fma")]
-fn render_rect_avx512<R: Repr>(job: &Job<R>, r: Rect) -> RowWork {
-    render_rect_dyn(job, r)
+fn render_rect_avx512<R: Repr, S: Spec>(job: &Job<R>, r: Rect) -> RowWork {
+    render_rect_dyn::<R, S>(job, r)
 }
 
-fn render_rect_isa<R: Repr>(isa: Isa, job: &Job<R>, r: Rect) -> RowWork {
+fn render_rect_isa<R: Repr, S: Spec>(isa: Isa, job: &Job<R>, r: Rect) -> RowWork {
+    if S::NATIVE {
+        // The whole crate is compiled for this CPU.
+        return render_rect_dyn::<R, S>(job, r);
+    }
     match isa {
         // SAFETY: only selected when the CPU reports these features.
-        Isa::Avx512 => unsafe { render_rect_avx512(job, r) },
-        Isa::Avx2 => unsafe { render_rect_avx2(job, r) },
-        Isa::Scalar => render_rect_dyn(job, r),
+        Isa::Avx512 => unsafe { render_rect_avx512::<R, S>(job, r) },
+        Isa::Avx2 => unsafe { render_rect_avx2::<R, S>(job, r) },
+        Isa::Scalar => render_rect_dyn::<R, S>(job, r),
     }
 }
 
@@ -592,7 +656,7 @@ fn rects(w: u32, h: u32, tiles: bool, tile: u32, order: TileOrder) -> Vec<Rect> 
     v.into_iter().map(|e| e.1).collect()
 }
 
-impl<R: Repr> CpuBackend<R> {
+impl<R: Repr, S: Spec> CpuBackend<R, S> {
     /// (bytes read by traversal, bytes kept alive) over all dense chunks.
     fn world_bytes(&self) -> (u64, u64) {
         self.scene.chunks.values().fold((0, 0), |(t, a), e| match e {
@@ -607,7 +671,7 @@ fn dense_of<R: Repr>(r: &R) -> DenseChunk {
     r.to_dense()
 }
 
-impl<R: Repr> Renderer for CpuBackend<R> {
+impl<R: Repr, S: Spec> Renderer for CpuBackend<R, S> {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let s = &mut self.scene;
         for u in updates {
@@ -709,7 +773,7 @@ impl<R: Repr> Renderer for CpuBackend<R> {
         });
         let job = Job { scene, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone(), out: OutPtr(pixels.as_mut_ptr()) };
         let rect_list = &self.rects;
-        let work: RowWork = self.pool.pool.install(|| rect_list.par_iter().map(|&r| render_rect_isa(isa, &job, r)).reduce(RowWork::default, |a, b| a + b));
+        let work: RowWork = self.pool.pool.install(|| rect_list.par_iter().map(|&r| render_rect_isa::<R, S>(isa, &job, r)).reduce(RowWork::default, |a, b| a + b));
         drop(job);
         let hw = counters.map(|c| c.stop());
         self.pixels = pixels;
@@ -723,6 +787,10 @@ impl<R: Repr> Renderer for CpuBackend<R> {
             ("world_traversal_mb".into(), trav as f64 / 1048576.0),
             ("world_total_mb".into(), total as f64 / 1048576.0),
         ];
+        if S::NATIVE {
+            // A pipeline compiled for this machine (observations tell it from the generic build).
+            counters.push(("compiled_native".into(), 1.0));
+        }
         if self.scene.traversal != Traversal::Refloor {
             counters.push(("dda_steps_per_pixel".into(), work.steps as f64 / px));
             counters.push(("ascent_tests_per_pixel".into(), work.up as f64 / px));
@@ -764,18 +832,27 @@ impl<R: Repr> Renderer for CpuBackend<R> {
                 }
             }
             "visibility" => drop(require(BACKEND, Slot::Visibility, value.as_str().unwrap_or(""))?),
-            "traversal" => {
-                self.kernel = value.as_str().unwrap_or("refloor").to_string();
-                self.scene.traversal = traversal(&self.kernel, self.exact)?;
-            }
-            "exact" => {
-                self.exact = value.as_bool().unwrap_or(true);
-                self.scene.traversal = traversal(&self.kernel, self.exact)?;
+            "traversal" | "exact" => {
+                let (kernel, exact) = match name {
+                    "traversal" => (value.as_str().unwrap_or("refloor").to_string(), self.exact),
+                    _ => (self.kernel.clone(), value.as_bool().unwrap_or(true)),
+                };
+                let t = traversal(&kernel, exact)?;
+                if let Some(b) = S::TRAVERSAL.filter(|&b| b != t) {
+                    anyhow::bail!("this pipeline was compiled for traversal {b:?}; {t:?} needs another build");
+                }
+                (self.kernel, self.exact, self.scene.traversal) = (kernel, exact, t);
             }
             "shading" => {
                 require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?;
             }
-            "packet" => self.packet = value.as_str().and_then(|s| s.parse().ok()).unwrap_or(8),
+            "packet" => {
+                let n = value.as_str().and_then(|s| s.parse().ok()).unwrap_or(8);
+                if let Some(b) = S::PACKET.filter(|&b| b != n) {
+                    anyhow::bail!("this pipeline was compiled for packets of {b}; {n} needs another build");
+                }
+                self.packet = n;
+            }
             "schedule" => (self.tiles, self.rects) = (parse_schedule(value.as_str().unwrap_or(""))?, vec![]),
             "tile_order" => (self.tile_order, self.rects) = (parse_order(value.as_str().unwrap_or(""))?, vec![]),
             "tile" => (self.tile, self.rects) = (value.as_i64().unwrap_or(16).clamp(4, 256) as u32, vec![]),

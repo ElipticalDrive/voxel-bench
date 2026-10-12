@@ -66,6 +66,17 @@ pub struct RunSpec {
     /// The devices renderers run on (GPU adapters by slot, CPU threads), e.g.
     /// `devices = { gpus = ["nvidia"] }`; a renderer's own `devices` overrides it.
     pub devices: mr_core::DeviceConfig,
+    /// `native`: run `cpu` compositions as pipelines compiled for this machine (PLAN step
+    /// 8, `pipelines`), built before their pass if not cached; `off`: the generic build.
+    pub compile: Compile,
+}
+
+#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Compile {
+    #[default]
+    Off,
+    Native,
 }
 
 impl Default for RunSpec {
@@ -85,6 +96,7 @@ impl Default for RunSpec {
             launcher: vec![],
             repeats: 1,
             devices: Default::default(),
+            compile: Compile::Off,
         }
     }
 }
@@ -142,6 +154,9 @@ pub struct RendererSpec {
     /// Overrides `run.devices` for this renderer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub devices: Option<mr_core::DeviceConfig>,
+    /// Overrides `run.compile` for this renderer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compile: Option<Compile>,
     /// Expanded from a sweep (see the module docs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub swept: bool,
@@ -152,7 +167,7 @@ pub struct RendererSpec {
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), compose: None, label: None, options: Default::default(), view_radius: None, max_lod: None, devices: None, swept: false, compose_label: Default::default() }
+        Self { name: name.into(), compose: None, label: None, options: Default::default(), view_radius: None, max_lod: None, devices: None, compile: None, swept: false, compose_label: Default::default() }
     }
 
     /// A renderer assembled from components.
@@ -263,6 +278,11 @@ impl RendererSpec {
             }
         }
         t
+    }
+
+    /// Whether this renderer runs as a pipeline compiled for this machine.
+    pub fn native(&self, run: &RunSpec) -> bool {
+        self.compile.unwrap_or(run.compile) == Compile::Native && matches!(crate::pipelines::bake(self), Ok(Some(_)))
     }
 
     /// Display label: the explicit one, else the composition, else the renderer name.

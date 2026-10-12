@@ -42,6 +42,8 @@ pub struct SpawnConfig<'a> {
     pub launcher: &'a [String],
     pub log_path: Option<PathBuf>,
     pub slots: u32,
+    /// A compiled pipeline's worker (`pipelines`) instead of this executable.
+    pub exe: Option<PathBuf>,
 }
 
 /// Spawns a worker for `spec` using the plan's run settings.
@@ -55,6 +57,20 @@ pub fn spawn_renderer(
     slots: u32,
 ) -> anyhow::Result<Worker> {
     let [width, height] = resolution;
+    // A pipeline compiled for this machine, if asked for and the renderer has one.
+    let exe = match (spec.compile.unwrap_or(run.compile), crate::pipelines::bake(spec)?) {
+        (crate::plan::Compile::Native, Some(b)) => {
+            if run.isolation != Isolation::Process {
+                anyhow::bail!("{}: compiled pipelines run in their own process (isolation = \"process\")", spec.label());
+            }
+            let c = crate::pipelines::trusted(&b)?;
+            if let Some(s) = c.build_s {
+                tracing::info!("{}: compiled pipeline {} in {s:.1} s", spec.label(), c.key);
+            }
+            Some(c.exe)
+        }
+        _ => None,
+    };
     let params = InitParams {
         width,
         height,
@@ -73,6 +89,7 @@ pub fn spawn_renderer(
         launcher: &run.launcher,
         log_path,
         slots,
+        exe,
     })
 }
 
@@ -95,7 +112,12 @@ impl Worker {
         let mut thread = None;
         match cfg.isolation {
             Isolation::Process => {
-                let exe = std::env::current_exe()?;
+                // A compiled pipeline's worker, else this executable (`MR_WORKER_EXE`
+                // overrides it, e.g. for tests, whose own executable is the test harness).
+                let exe = match &cfg.exe {
+                    Some(e) => e.clone(),
+                    None => std::env::var_os("MR_WORKER_EXE").map(PathBuf::from).map_or_else(std::env::current_exe, Ok)?,
+                };
                 let mut cmd = match cfg.launcher.split_first() {
                     Some((first, rest)) => {
                         let mut c = Command::new(first);

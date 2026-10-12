@@ -10,6 +10,7 @@ members = [
     "crates/mr-world",
     "crates/mr-ipc",
     "crates/mr-worker",
+    "crates/mr-serve",
     "crates/mr-gpu",
     "crates/mr-mesh",
     "renderers/cpu-reference",
@@ -35,6 +36,7 @@ mr-core = { path = "crates/mr-core" }
 mr-world = { path = "crates/mr-world" }
 mr-ipc = { path = "crates/mr-ipc" }
 mr-worker = { path = "crates/mr-worker" }
+mr-serve = { path = "crates/mr-serve" }
 mr-gpu = { path = "crates/mr-gpu" }
 mr-mesh = { path = "crates/mr-mesh" }
 cpu-reference = { path = "renderers/cpu-reference" }
@@ -79,6 +81,7 @@ mr-world.workspace = true
 mr-ipc.workspace = true
 mr-worker.workspace = true
 mr-gpu.workspace = true
+backend-cpu.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 crossbeam-channel.workspace = true

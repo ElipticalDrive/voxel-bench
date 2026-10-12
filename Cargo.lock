@@ -2310,6 +2310,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mr-serve"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "mr-core",
+ "mr-ipc",
+ "tracing",
+]
+
+[[package]]
 name = "mr-worker"
 version = "0.1.0"
 dependencies = [
@@ -2324,11 +2335,10 @@ dependencies = [
  "backend-gpu-splat",
  "backend-gpu-voxelspace",
  "cpu-reference",
- "crossbeam-channel",
  "gpu-compute",
  "mr-core",
  "mr-gpu",
- "mr-ipc",
+ "mr-serve",
  "tracing",
 ]
 
@@ -2348,6 +2358,7 @@ name = "multirenderer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "backend-cpu",
  "clap",
  "crossbeam-channel",
  "eframe",

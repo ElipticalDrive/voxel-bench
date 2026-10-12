@@ -1,0 +1,11 @@
+[package]
+name = "mr-serve"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mr-core.workspace = true
+mr-ipc.workspace = true
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true

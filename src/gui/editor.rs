@@ -5,7 +5,7 @@ use mr_core::{Camera, PassMode, RendererInfo};
 use mr_world::GenSpec;
 use mr_world::scenario::{CameraPathSpec, EnvSpec, EventSpec, LightSpec};
 
-use crate::plan::{CompareSpec, Isolation, Pacing, Plan, Readback, RendererSpec, SaveSpec, Streaming};
+use crate::plan::{CompareSpec, Compile, Isolation, Pacing, Plan, Readback, RendererSpec, SaveSpec, Streaming};
 
 /// Context the editor needs besides the plan itself.
 pub struct EditorCtx<'a> {
@@ -636,6 +636,12 @@ fn run(ui: &mut Ui, plan: &mut Plan) -> Changed {
         ui.label("isolation").on_hover_text("Where renderers run");
         c |= ui.selectable_value(&mut r.isolation, Isolation::Process, "process").on_hover_text("Each renderer in its own process: crashes can't take others down; memory is measured per renderer").changed();
         c |= ui.selectable_value(&mut r.isolation, Isolation::Thread, "thread").on_hover_text("In-process threads: faster to start, easier to debug").changed();
+    });
+    ui.horizontal(|ui| {
+        ui.label("compile").on_hover_text("cpu compositions: the generic build, or a pipeline compiled for this machine");
+        c |= ui.selectable_value(&mut r.compile, Compile::Off, "generic").on_hover_text("The precompiled build: every knob live").changed();
+        let tip = "cpu compositions run as pipelines compiled for this CPU with their choices baked in (seconds to build once, cached; checked against the generic build before use; process isolation). The generic build runs meanwhile, then hot-swaps.";
+        c |= ui.add_enabled_ui(r.isolation == Isolation::Process, |ui| ui.selectable_value(&mut r.compile, Compile::Native, "native").on_hover_text(tip).on_disabled_hover_text("Compiled pipelines run in their own process: choose process isolation")).inner.changed();
     });
     let mut launcher = r.launcher.join(" ");
     ui.horizontal(|ui| {

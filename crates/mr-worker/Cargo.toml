@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 mr-core.workspace = true
 mr-gpu.workspace = true
-mr-ipc.workspace = true
+mr-serve.workspace = true
 cpu-reference.workspace = true
 backend-cpu-raster.workspace = true
 backend-cpu-discover.workspace = true
@@ -19,5 +19,4 @@ gpu-compute.workspace = true
 backend-gpu-raster.workspace = true
 backend-gpu-rt.workspace = true
 anyhow.workspace = true
-crossbeam-channel.workspace = true
 tracing.workspace = true

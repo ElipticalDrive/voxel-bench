@@ -7,6 +7,7 @@ mod features;
 mod catalogue;
 mod gui;
 mod observe;
+mod pipelines;
 mod plan;
 mod report;
 mod session;
@@ -229,7 +230,9 @@ impl Ctx<'_> {
         };
         let (mut lanes, mut failed) = (vec![], vec![]);
         for spec in specs {
-            let label = spec.label().to_string();
+            // Pipelines compiled for this machine are told apart from the generic build.
+            let native = spec.native(run);
+            let label = if native { format!("{} [native]", spec.label()) } else { spec.label().to_string() };
             let mut report = PassReport {
                 label: label.clone(),
                 renderer: spec.name.clone(),

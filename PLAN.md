@@ -59,7 +59,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - Unit tests: `cargo test -q --workspace` (49, including: the component registry
   matches its implementations; storages are exact; the CPU walks agree; every shipped
   plan loads).
-- GPU end-to-end tests: `cargo test -q --release --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve --skip gui_screenshot` (3: the live session, mesh mode, and the headless GUI).
+- GPU end-to-end tests: `cargo build --release && cargo test -q --release --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve --skip gui_screenshot` (4: the live session, mesh mode, the headless GUI, and a compiled pipeline hot-swapping in, which needs the release binary).
 - GUI screenshot (to look at layout changes without a display):
   `cargo test -q --release --bin multirenderer gui_screenshot -- --ignored` writes
   `target/gui-shot.png`; `SHOT_PLAN=plans/x.toml` picks the plan.
@@ -228,7 +228,7 @@ one shading entry point per kind of back end with a `Surface`; one face drawer w
 sources and the host-side `FaceDrawer`; every shadow and bounce ray through a storage
 component, the heightmap as a component; the architecture guard test
 `tests/architecture.rs`). Builds force code alignment (`.cargo/config.toml`). Step 5
-(devices handed to back ends) is done too; step 6 (capability model) is done; step 7 done (7a traversal slot, 7b draw stage, 7c secondary rays as a graph edge); step 8 (CPU pipelines compiled on demand) under way. Open, deferred by the
+(devices handed to back ends) is done too; step 6 (capability model) is done; step 7 done (7a traversal slot, 7b draw stage, 7c secondary rays as a graph edge); step 8 done for the `cpu` back end (compiled on demand, trusted, hot-swapped); the break-in layers beyond `target-cpu=native` remain. Open, deferred by the
 user to a later optimisation pass: gpu-voxelspace's lit cost (column threads shade
 serially; proposed per-pixel deferred shading, sweep entry of 2026-10-12), gpu-compute
 pathtrace codegen variance (accepted), cpu-discover's per-ray `dyn World` call.
@@ -302,7 +302,7 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    combinations such as `prefix + incremental` primary rays with `distance + sphere`
    shadow rays (two storages bound; memory for both). Per-stage devices (step 5's hooks)
    would hang off the same edge later.
-8. **CPU pipelines compiled on demand** (IDEAS §17, option 2): generate Rust for one
+8. **Done for the `cpu` back end 2026-10-12 (progress log; break-in layers open).** **CPU pipelines compiled on demand** (IDEAS §17, option 2): generate Rust for one
    composition, compile it with `rustc` into a library, load it in the worker process;
    cache by source hash, toolchain and CPU. Start with the `cpu` back end, whose ahead-of-
    time product (storage 8 × traversal 3 × packet width 4) it replaces; keep generic
@@ -928,6 +928,44 @@ earlier if meshes become more urgent; 7c depends on 6′.
   now host-side (update) cost, not measurement. Rasterisers win the closed scenes (room,
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
+
+### 2026-10-12: architecture refactor step 8 (CPU pipelines compiled on demand)
+- **8a, the measurement first:** the same code built generic vs `-C target-cpu=native`
+  (both aligned), interleaved, one CCD: cpu-voxelspace +16–18% fps, `cpu: prefix + refloor`
+  +10–11%, bricks + refloor and cpu-raster lit +3–4%, incremental walks within noise. The
+  generic x86-64 target has no hardware `popcnt` (prefix's popcount prefix) and no wide
+  vectors outside the hand-written AVX entry points (voxelspace has none).
+- **8b, the machinery** (`src/pipelines.rs`): for a `cpu` composition, generate a crate
+  whose worker serves only it, with storage, traversal kernel and packet width baked in
+  (`backend_cpu::Spec`: associated consts; `Generic` leaves all open, `entry_for::<R, S>`)
+  and build it with `cargo` (`target-cpu=native`, the workspace's alignment and lock
+  file) into `~/.cache/multirenderer/pipelines` (`$MR_PIPELINE_CACHE`). Cache key: the
+  generated source, the sources it compiles against, `rustc -vV`, CPU model and flags.
+  Generated crates share one target directory: the first build took 16 s, later ones a
+  few seconds. The worker loop moved into `crates/mr-serve` (no back ends, no GPU pool),
+  so a pipeline worker links only the cpu back end; it is an ordinary process worker
+  (`SpawnConfig::exe`). `run.compile = "native"` (and per renderer `compile`), labels
+  ` [native]`, counter `compiled_native`. Live changes of a baked knob are refused.
+- **8c, trust:** a new pipeline renders a short terrain flight (lit, unlit, 4 frames) in a
+  child run next to the generic build and must match it pixel for pixel; the verdict is
+  kept beside the worker (`.trusted` / `.rejected` with the reason). Negative test: a
+  build that blackens one pixel was rejected (8 of 8 frames differ) and stayed rejected.
+- **8d, the GUI:** run settings → compile (generic / native, native needs process
+  isolation). A native lane starts on the generic build and the compiled pipeline
+  hot-swaps in when built and trusted (lane status "compiling for this machine"); a
+  failed build or check leaves the generic build running. `MR_WORKER_EXE` points process
+  workers at another executable (tests). GPU test `live_compiled_pipeline` (needs the
+  release binary built).
+- **Results, interleaved, one CCD, terrain, compiled vs generic:** prefix + refloor
+  +11.4% lit / +12.6% unlit, hier + incremental +6.5 / +2.0, prefix + incremental
+  +6.2 / +1.6, bricks + refloor +3.7 / +2.8; trust check 8 of 8 frames identical.
+- **Zero cost for the generic build** (`Spec` on `CpuBackend`): 30 of 30 frames
+  pixel-identical to the 7c build, fps within ±1.5%.
+- **Not done yet (break-in mode, IDEAS §17):** LTO and run-specific constants (resolution,
+  levels mask, shadow mode), profile-guided optimisation with a short sweep as training,
+  knob autotuning and composition choice (the planner); the other CPU back ends
+  (cpu-voxelspace would gain most, +16–18%; cpu-raster, cpu-discover); on the GPU,
+  specialised constants and persistent pipeline caches; shipping a toolchain.
 
 ### 2026-10-12: architecture refactor step 7c (secondary rays as a graph edge); step 7 done
 - **Stages `shadow_storage`, `shadow_traversal`** (GUI: shadow storage / shadow kernel):

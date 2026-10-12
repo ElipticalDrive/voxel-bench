@@ -499,10 +499,20 @@ impl Session {
     }
 
     fn add_lane(&mut self, spec: RendererSpec) {
-        let lane = self.new_lane(spec.clone());
+        // A pipeline compiled for this machine (PLAN step 8): the generic build runs while
+        // it compiles and is checked, then it hot-swaps in.
+        let native = spec.native(&self.plan.run);
+        let mut first = spec.clone();
+        if native {
+            first.compile = Some(crate::plan::Compile::Off);
+        }
+        let lane = self.new_lane(first.clone());
         self.lanes.push(lane);
-        self.shared.lock().unwrap().lanes.push(LaneView::new(spec));
+        self.shared.lock().unwrap().lanes.push(LaneView::new(first));
         self.publish_params(self.lanes.len() - 1);
+        if native {
+            self.hot_swap(self.lanes.len() - 1, spec);
+        }
         (self.repaint)();
     }
 
@@ -630,7 +640,8 @@ impl Session {
         }
         lane.standby = Some(standby);
         lane.standby_warm = 0;
-        self.shared.lock().unwrap().lanes[i].swap = Some("spawning".into());
+        let native = spec.native(&self.plan.run);
+        self.shared.lock().unwrap().lanes[i].swap = Some(if native { "compiling for this machine (generic build meanwhile)".into() } else { "spawning".into() });
         self.event(i, format!("hot swap → {} {}", spec.name, toml::to_string(&spec.options).unwrap_or_default().replace('\n', " ")));
     }
 
@@ -1436,6 +1447,46 @@ mod tests {
     /// Mesh mode through a live session (needs a GPU; run with `--ignored`): the probe's
     /// reference draws the meshes, so a mesh-capable lane matches it closely and a lane
     /// without mesh support does not.
+    /// A `cpu` lane with `compile = "native"`: the generic build runs first, the pipeline
+    /// compiled for this machine (built and checked in the background) hot-swaps in.
+    #[test]
+    #[ignore]
+    fn live_compiled_pipeline() {
+        let plan = Plan::parse(
+            r#"
+            [scene]
+            generator = { type = "showcase" }
+            camera = { type = "orbit", center = [20, 2, 0], radius = 26, height = 12, period = 120 }
+            [run]
+            resolution = [320, 180]
+            view_radius = 3
+            isolation = "process"
+            compile = "native"
+            [[renderer]]
+            compose = { backend = "cpu", storage = "prefix" }
+            "#,
+            &[],
+        )
+        .unwrap();
+        let control = Control { camera: CameraControl::Path, mode: PassMode::UNLIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.0 };
+        // Process workers start from the real executable, not this test harness
+        // (target/<profile>/deps/<test> -> target/<profile>/multirenderer; build it first).
+        let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("multirenderer");
+        assert!(exe.exists(), "build the binary first ({})", exe.display());
+        // SAFETY: set before any worker thread of this test starts; no other test reads it.
+        unsafe { std::env::set_var("MR_WORKER_EXE", &exe) };
+        let live = LiveHandle::start(plan, control, || {});
+        // The generic build first, then the compiled pipeline swaps in.
+        wait(&live.shared, "the swap to start", 30, |s| s.lanes.len() == 1 && s.lanes[0].events.iter().any(|e| e.1.starts_with("hot swap →")));
+        wait(&live.shared, "the compiled pipeline swapped in", 600, |s| s.lanes[0].events.iter().any(|e| e.1 == "hot swap complete" || e.1.starts_with("hot swap failed")));
+        let sh = live.shared.lock().unwrap();
+        assert!(!sh.log.iter().any(|l| l.contains("failed")), "{:?}", sh.log);
+        assert!(sh.lanes[0].events.iter().any(|e| e.1 == "hot swap complete"), "{:?}", sh.lanes[0].events);
+        assert!(sh.lanes[0].frame.is_some() && !sh.lanes[0].samples.is_empty());
+        drop(sh);
+        live.send(Cmd::Stop);
+    }
+
     #[test]
     #[ignore]
     fn live_meshes_end_to_end() {

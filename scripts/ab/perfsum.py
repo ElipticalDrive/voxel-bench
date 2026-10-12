@@ -6,7 +6,7 @@ for b in ('before', 'after'):
         for p in json.load(open(f)):
             if p.get('error'): print('ERROR', b, p['label'], p['error']); continue
             g = p['gpu_ms']['mean'] if p.get('gpu_ms') else float('nan')
-            res.setdefault((p['label'], p['mode']), {}).setdefault(b, []).append((g, p['fps']))
+            res.setdefault((p['label'].replace(' [native]', ''), p['mode']), {}).setdefault(b, []).append((g, p['fps']))
 print(f"{'pass':60s} {'gpu before':>10s} {'after':>8s} {'Δ%':>6s} {'fps before':>10s} {'after':>8s} {'Δ%':>6s}")
 for k, v in sorted(res.items()):
     if 'before' not in v or 'after' not in v: continue

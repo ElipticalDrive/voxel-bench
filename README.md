@@ -182,6 +182,25 @@ compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", draw
   are now `cpu` compositions; gpu-raster, gpu-raster-naive, gpu-cubes and gpu-visbuffer
   are now `gpu-raster` compositions.
 
+### Pipelines compiled for this machine
+
+`run.compile = "native"` (GUI: run settings → compile) runs `cpu` compositions as
+pipelines compiled on demand (PLAN step 8; `src/pipelines.rs`). For one composition a
+small crate is generated whose worker serves only it, with the storage, traversal kernel
+and packet width baked in as constants (`backend_cpu::Spec`), and `cargo` builds it with
+`-C target-cpu=native` into `~/.cache/multirenderer/pipelines` (or `$MR_PIPELINE_CACHE`).
+The build is cached by the generated source, the sources it compiles against, the
+toolchain and the CPU; the first build fills a shared target directory, later ones take
+seconds. Before a new pipeline is used it renders a short terrain flight next to the
+generic build and must match it pixel for pixel (`.trusted` / `.rejected` beside the
+worker). It runs as an ordinary worker process (process isolation), its label gains
+` [native]` and its frames a `compiled_native` counter. In the GUI the generic build runs
+while the pipeline compiles, then hot-swaps. Live changes of a baked knob are refused
+(another build is needed). Measured on terrain (Zen 5, one CCD): +2 to +13% fps over the
+generic build (prefix + refloor +11–13%; the generic x86-64 target lacks `popcnt` and wide
+vectors outside the hand-written AVX entry points). A per-renderer `compile` overrides
+the run's.
+
 ### Mesh mode
 
 Scenes can contain animated triangle meshes (`scene.meshes`: box, sphere and torus with
