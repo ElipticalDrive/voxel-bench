@@ -500,7 +500,8 @@ mod tests {
             let ok = match c.slot {
                 Slot::Storage => true, // every CPU storage (checked by `grid::CpuWorld::new`)
                 Slot::Visibility => ["quadtree", "cluster"].contains(&c.name),
-                Slot::Shading => c.name == "direct",
+                // Shading runs on its GPU side.
+                Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 _ => false,
             };
             assert!(ok, "cpu-discover {} `{}`", c.slot.name(), c.name);
