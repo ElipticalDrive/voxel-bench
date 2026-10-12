@@ -1413,6 +1413,29 @@ ahead of time, and step 8 does it at run time.
 - *Costs:* `rustc` per new composition (seconds to a minute; cached by source hash,
   toolchain and CPU; the generic build runs meanwhile), shipping a toolchain, and running
   generated code in a worker process.
+- *The user's intent (2026-10-12):* every pipeline compiled at run time eventually (the
+  combinations will outgrow precompilation; the only way to full zero cost), `rustc` in a
+  background or worker process on the user's machine. A common subset ships precompiled;
+  break-in runs PGO and the rest on those; the learning planner's runtime feedback picks
+  which further pipelines to precompile. Not to build now; prepare for it in the
+  architecture. What that asks of the refactor steps:
+  1. *A composition is data:* back end, components and the knob values that get baked in,
+     canonical and hashable (the cache key with toolchain and CPU). `Composition` plus
+     options is most of it; knobs need a declared kind: *specialisable* (a constant in
+     generated code, e.g. levels mask, packet width, shadow mode, bounces) or *live*
+     (changes without recompiling, e.g. tile size, exposure).
+  2. *CPU components as a library a generated crate can instantiate:* generic over their
+     parts (as `CpuBackend<R>` is over the storage), with specialisable knobs reachable
+     as const generics or associated consts, so generated code is little more than
+     `type P = Pipeline<Prefix, Refloor, Direct, Consts>;` and an entry point. No
+     component may depend on being linked into the main binary in a non-generic way.
+  3. *One boundary for every pipeline:* the `Renderer` interface, callable across a
+     process boundary (frames, updates, knobs, counters), so precompiled, generated and
+     generic builds are interchangeable and hot-swappable (the GUI already hot-swaps).
+  4. *Observations the planner can learn from:* runtime usage and per-stage timings on
+     top of sweep observations, machine-tagged (already the observation format).
+  5. *Trust:* each newly compiled pipeline checked against the reference before use
+     (already a requirement).
 
 ## 18. A first-principles design (what the pieces are)
 
