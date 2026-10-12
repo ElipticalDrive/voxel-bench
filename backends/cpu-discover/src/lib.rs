@@ -70,6 +70,7 @@ fn params() -> Vec<ParamSpec> {
     vec![
         ParamSpec::choice("storage", "Storage component: the CPU representation discovery rays walk (refloor)", &names_on(BACKEND, Slot::Storage), "bricks", false),
         ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (IDEAS §10; was cpu-cluster)", &names_on(BACKEND, Slot::Visibility), "quadtree", true),
+        ParamSpec::choice("traversal", "Traversal kernel of the CPU discovery rays and the GPU shadow and bounce rays", &names_on(BACKEND, Slot::Traversal), "refloor", false),
         ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false),
         ParamSpec::choice("shadow_storage", "GPU storage component the GPU's shadow (and bounce) rays walk with refloor; the storage slot is the CPU representation discovery rays walk", &gpu_storages(), "bricks", false).of("shading", &names_on(BACKEND, Slot::Shading)),
         ParamSpec::int("seed_step", "Cluster: coarsest seed lattice spacing (px, rounded to a power of two)", 1, 256, 16, true).of("visibility", &["cluster"]),
@@ -111,6 +112,7 @@ struct Options {
     /// `algorithm` is its name from before the component split.
     #[serde(alias = "algorithm")]
     visibility: String,
+    traversal: String,
     shading: String,
     shadow_storage: String,
     bounces: u32,
@@ -144,6 +146,7 @@ impl Default for Options {
         Self {
             storage: "bricks".into(),
             visibility: "quadtree".into(),
+            traversal: "refloor".into(),
             shading: "direct".into(),
             shadow_storage: "bricks".into(),
             bounces: 1,
@@ -286,6 +289,7 @@ impl CpuDiscover {
         let opts: Options = p.options()?;
         let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
+        require(BACKEND, Slot::Traversal, &opts.traversal)?;
         require(BACKEND, Slot::Shading, &opts.shading)?;
         let st = mr_components::storage::gpu(&opts.shadow_storage).ok_or_else(|| anyhow::anyhow!("shadow_storage `{}` is not a GPU storage (have: {})", opts.shadow_storage, gpu_storages().join(", ")))?;
         // The host hands the device in (GPU slot 0); this back end only states its needs.
@@ -394,10 +398,10 @@ impl CpuDiscover {
             }
             shade_state::fragment_wgsl(&opts.shading, vis)
         };
-        // Shadow and bounce rays: refloor through the composed GPU storage (group 2).
+        // Shadow and bounce rays: the kernel through the composed GPU storage (group 2).
         let st = mr_components::storage::gpu(&opts.shadow_storage).expect("checked in new");
         let source = shader_source(
-            &visibility::occlusion_wgsl(&st, false),
+            &mr_components::traversal::occlusion_wgsl(&st, &opts.traversal, false),
             &format!("{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), visibility::faces_wgsl(true)),
         );
         let module = mr_gpu::shader(&gpu.device, "cpu-discover raster", source);

@@ -169,6 +169,13 @@ impl RendererSpec {
         // `name = "<back end's renderer>"` (older plans, the CLI): the back end's
         // composition, with stages taken from the options where given.
         if self.compose.is_none() {
+            // Before step 7 the traversal kernel was the `visibility` option.
+            if !self.options.contains_key("traversal") {
+                if let Some(v) = self.options.get("visibility").and_then(|v| v.as_str()).filter(|v| mr_components::component(mr_components::Slot::Traversal, v).is_some()).map(String::from) {
+                    self.options.remove("visibility");
+                    self.options.insert("traversal".into(), toml::Value::String(v));
+                }
+            }
             if let Some(b) = mr_components::BACKENDS.iter().find(|b| b.renderer == Some(self.name.as_str())) {
                 let mut c = mr_components::Composition::new(b.name);
                 for slot in c.slots().collect::<Vec<_>>() {
@@ -194,7 +201,8 @@ impl RendererSpec {
 
     /// From the command line: `backend:slot+slot+...` for a composition (a bare back-end
     /// name gives its default composition): the back end's
-    /// required slots in order, then optionally shading, prepass and meshes
+    /// required slots in order, then optionally shading, prepass, meshes and its quiet slots
+    /// (`BackendInfo::quiet`, e.g. `gpu-raster:bricks+greedy+raster+direct+depth+sphere`)
     /// (`gpu-compute:prefix+incremental`, `gpu-compute:tree64+refloor+direct+beam`,
     /// `gpu-raster:bricks+greedy+visbuffer`); otherwise a renderer name (a back end's, giving its default composition, or a
     /// standalone one).
@@ -204,9 +212,11 @@ impl RendererSpec {
         let parts: Vec<&str> = rest.split('+').collect();
         let mut c = mr_components::Composition::new(backend);
         let all: Vec<Slot> = c.slots().collect();
-        let mut order: Vec<Slot> = all.iter().copied().filter(|s| !s.optional()).collect();
+        let b = mr_components::backend(backend).unwrap();
+        let mut order: Vec<Slot> = all.iter().copied().filter(|&s| !b.is_quiet(s)).collect();
         let required = order.len();
         order.extend([Slot::Shading, Slot::Prepass, Slot::Meshes].into_iter().filter(|s| all.contains(s)));
+        order.extend(all.iter().copied().filter(|&s| b.is_quiet(s) && !s.optional()));
         if all.is_empty() || !(required..=order.len()).contains(&parts.len()) {
             let names = |sl: &[Slot]| sl.iter().map(|s| s.name()).collect::<Vec<_>>().join("+");
             bail!("composition `{s}` should be {backend}:{}[+{}]", names(&order[..required]), names(&order[required..]));
@@ -426,7 +436,19 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
             out.push(e);
             continue;
         }
-        let compose = e.get("compose").and_then(|c| c.as_table()).unwrap().clone();
+        let mut compose = e.get("compose").and_then(|c| c.as_table()).unwrap().clone();
+        // Before step 7 the traversal kernel was `visibility` (`visibility = ["refloor", "sphere"]`).
+        if !compose.contains_key("traversal") {
+            let names: Vec<&str> = match compose.get("visibility") {
+                Some(toml::Value::String(v)) => vec![v.as_str()],
+                Some(toml::Value::Array(a)) => a.iter().filter_map(|x| x.as_str()).collect(),
+                _ => vec![],
+            };
+            if !names.is_empty() && names.iter().all(|n| mr_components::component(mr_components::Slot::Traversal, n).is_some()) {
+                let v = compose.remove("visibility").unwrap();
+                compose.insert("traversal".into(), v);
+            }
+        }
         if let Some(k) = compose.keys().find(|k| *k != "backend" && !mr_components::Slot::ALL.iter().any(|s| s.name() == k.as_str())) {
             bail!("compose: unknown field `{k}`");
         }
@@ -549,7 +571,9 @@ mod tests {
         let r = &p.renderers[0];
         assert_eq!(r.name, "gpu-compute");
         assert_eq!(r.options.get("storage").and_then(|v| v.as_str()), Some("prefix"));
-        assert_eq!(r.options.get("visibility").and_then(|v| v.as_str()), Some("incremental"));
+        // Written before step 7 (the kernel as `visibility`): loads with it as `traversal`.
+        assert_eq!(r.options.get("traversal").and_then(|v| v.as_str()), Some("incremental"));
+        assert_eq!(r.options.get("visibility").and_then(|v| v.as_str()), Some("raycast"));
         assert_eq!(r.label(), "gpu-compute: prefix + incremental");
         let saved = p.to_toml().unwrap();
         assert!(!saved.contains("name = \"gpu-compute\"") && saved.contains("compose") && !saved.contains("[renderer.options]\nstorage"), "{saved}");
@@ -568,6 +592,14 @@ mod tests {
         let spec = RendererSpec::from_cli("gpu-raster:hier+naive+visbuffer").unwrap();
         assert_eq!(spec.options.get("geometry").and_then(|v| v.as_str()), Some("naive"));
         assert!(RendererSpec::from_cli("gpu-raster:hier+naive").is_err());
+        let spec = RendererSpec::from_cli("gpu-raster:distance+greedy+raster+direct+depth+sphere").unwrap();
+        assert_eq!(spec.options.get("traversal").and_then(|v| v.as_str()), Some("sphere"));
+        assert_eq!(spec.label(), "gpu-raster: distance + greedy + raster + sphere");
+        // A named renderer with the kernel in the old `visibility` option.
+        let mut old = RendererSpec::new("gpu-compute");
+        old.options.insert("visibility".into(), toml::Value::String("sphere".into()));
+        old.resolve().unwrap();
+        assert_eq!(old.label(), "gpu-compute: bricks + sphere");
         // Naming a back end's renderer gives its composition, stages from the options.
         let named = text.replace("compose = { storage = \"prefix\", visibility = \"incremental\" }", "name = \"gpu-discover\"").replace("options = { exact = false }", "options = { storage = \"prefix\" }");
         let r = &Plan::parse(&named, &[]).unwrap().renderers[0];
@@ -597,10 +629,12 @@ mod tests {
         // gpu-compute: 8 storages x 2 walks.
         assert_eq!(p.renderers.len(), 16);
         assert!(p.renderers.iter().all(|r| r.swept && r.name == "gpu-compute" && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
-        let all = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = \"*\", storage = \"*\", geometry = \"*\", prepass = \"*\", visibility = \"*\", shading = \"*\", meshes = \"*\" }}\n"), &[]).unwrap();
+        let all = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = \"*\", storage = \"*\", geometry = \"*\", prepass = \"*\", visibility = \"*\", traversal = \"*\", shading = \"*\", meshes = \"*\" }}\n"), &[]).unwrap();
         let n = |b: &str| all.renderers.iter().filter(|r| r.compose.as_ref().unwrap().backend == b).count();
         assert_eq!(n("gpu-compute"), 8 * 2 * 4 * 2 * 2);
         assert_eq!(n("gpu-rt"), 3 * 2);
+        // The rasteriser's shadow rays: 8 storages x 4 kernels x 3 geometries x 3 strategies x 2 shadings x 2 meshes.
+        assert_eq!(n("gpu-raster"), 8 * 4 * 3 * 3 * 2 * 2);
         assert_eq!(n("cpu-voxelspace"), 1);
         // Only what a pass can tell apart: unlit collapses shading, meshes and the
         // rasteriser's shadow-ray storage.

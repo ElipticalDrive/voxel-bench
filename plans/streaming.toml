@@ -16,7 +16,7 @@ view_radius = 16
 streaming = { budget = 400 }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
 
 [[renderer]]
 compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", visibility = "raster" }
@@ -25,19 +25,19 @@ compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", vis
 compose = { backend = "cpu-raster", geometry = "greedy", visibility = "raster" }
 
 [[renderer]]
-compose = { backend = "gpu-rt", geometry = "greedy", visibility = "rayquery" }
+compose = { backend = "gpu-rt", geometry = "greedy", traversal = "rayquery" }
 
 [[renderer]]
-compose = { backend = "gpu-rt", geometry = "boxes", visibility = "rayquery" }
+compose = { backend = "gpu-rt", geometry = "boxes", traversal = "rayquery" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "tree64", visibility = "refloor" }
+compose = { backend = "gpu-compute", storage = "tree64", traversal = "refloor" }
 
 [[renderer]]
-compose = { backend = "cpu", storage = "bricks", visibility = "refloor" }
+compose = { backend = "cpu", storage = "bricks", traversal = "refloor" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "distance", visibility = "sphere" }
+compose = { backend = "gpu-compute", storage = "distance", traversal = "sphere" }
 
 [output]
 compare = { every = 100 }

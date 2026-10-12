@@ -18,7 +18,7 @@ use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::{self, StorageData};
-use mr_components::{names_on, require, Slot, storage, visibility};
+use mr_components::{names_on, require, Slot, storage, traversal};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
@@ -35,9 +35,10 @@ fn info() -> RendererInfo {
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         params: mr_components::lighting_knobs(BACKEND, vec![
-            ParamSpec::choice("storage", "Storage component the lit-mode shadow rays walk (refloor)", &names_on(BACKEND, Slot::Storage), "bricks", false),
+            ParamSpec::choice("storage", "Storage component the lit-mode shadow rays walk (with the traversal kernel)", &names_on(BACKEND, Slot::Storage), "bricks", false),
             ParamSpec::choice("geometry", "Geometry component", &names_on(BACKEND, Slot::Geometry), "points", false),
             ParamSpec::choice("visibility", "Visibility component", &names_on(BACKEND, Slot::Visibility), "splat", false),
+            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &names_on(BACKEND, Slot::Traversal), "refloor", false),
             ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false),
             ParamSpec::int("max_splat", "Largest splat side (px)", 1, 64, 8, true).of("visibility", &["splat"]),
             shadows_param(),
@@ -56,6 +57,7 @@ struct Options {
     storage: String,
     geometry: String,
     visibility: String,
+    traversal: String,
     shading: String,
     max_splat: u32,
     bounces: u32,
@@ -68,7 +70,7 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { storage: "bricks".into(), geometry: "points".into(), visibility: "splat".into(), shading: "direct".into(), max_splat: 8, bounces: 1, spp: 1, accumulate: true, shadows: Shadows::All, pool_mb: 2048, frames_in_flight: 3 }
+        Self { storage: "bricks".into(), geometry: "points".into(), visibility: "splat".into(), traversal: "refloor".into(), shading: "direct".into(), max_splat: 8, bounces: 1, spp: 1, accumulate: true, shadows: Shadows::All, pool_mb: 2048, frames_in_flight: 3 }
     }
 }
 
@@ -175,7 +177,7 @@ impl GpuSplat {
     pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         let st = storage::gpu(&require(BACKEND, Slot::Storage, &opts.storage)?).expect("validated");
-        for (slot, name) in [(Slot::Geometry, &opts.geometry), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
+        for (slot, name) in [(Slot::Geometry, &opts.geometry), (Slot::Visibility, &opts.visibility), (Slot::Traversal, &opts.traversal), (Slot::Shading, &opts.shading)] {
             require(BACKEND, slot, name)?;
         }
         // The host hands the device in (GPU slot 0); this back end only states its needs.
@@ -200,7 +202,7 @@ impl GpuSplat {
         let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
         let own = format!("{}\n{}\n{shade}", include_str!("splat.wgsl"), ShadeState::wgsl(0, 5));
-        let source = shader_source(&visibility::occlusion_wgsl(&st, false), &own);
+        let source = shader_source(&traversal::occlusion_wgsl(&st, &opts.traversal, false), &own);
         let module = mr_gpu::shader(&gpu.device, "splat", source);
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("splat"),

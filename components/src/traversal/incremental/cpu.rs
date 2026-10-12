@@ -4,7 +4,7 @@
 use glam::{IVec3, Vec3};
 
 use crate::storage::cpu::{Entry, Grid, Repr, ffloor};
-use crate::visibility::cpu::{Hit, Tally};
+use crate::traversal::cpu::{Hit, Tally};
 
 /// Next level above `level` in the level mask `mask` (5 = chunk is always present).
 #[inline(always)]

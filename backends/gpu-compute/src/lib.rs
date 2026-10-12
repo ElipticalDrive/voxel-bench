@@ -1,11 +1,12 @@
 //! GPU-compute back end: assembles a renderer from components (`mr-components`, IDEAS
-//! §12): a **storage**, a **visibility** walk and a **shading** component, each a WGSL module
+//! §12): a **storage**, a **traversal** kernel walked by ray casting (the visibility
+//! strategy, `raycast`) and a **shading** component, each a WGSL module
 //! from `components/`, pasted into one compute shader before compilation, so the compiler
 //! optimises across them and the split costs nothing at run time.
 //!
 //! Storages answer the interface in `mr_components::storage`; optional capabilities the
 //! chosen storage lacks come from adapters (`mr_components::caps`), so every storage works with every
-//! visibility component. Shadow rays use the same composed walk. The storage's own data
+//! traversal kernel. Shadow rays use the same composed walk. The storage's own data
 //! (per-slot side data, or region blobs) is kept by `storage::gpu_data::StorageData`.
 //! Meshes (mesh mode) are composited by `mr_gpu::meshes::MeshComposite`.
 
@@ -16,7 +17,7 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_components::{Cap, caps, names_on, require, Slot, components, storage, visibility};
+use mr_components::{Cap, caps, names_on, require, Slot, components, storage, traversal};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite, Occlusion};
@@ -34,7 +35,7 @@ const BACKEND: &str = "gpu-compute";
 fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu-compute".into(),
-        description: "GPU-compute back end: renders a composition of components (storage, visibility, shading) fused into one compute shader".into(),
+        description: "GPU-compute back end: renders a composition of components (storage, traversal, shading) fused into one compute shader".into(),
         tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "modular".into(), "wgpu".into(), "meshes".into(), "lod".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         // LOD with pool storages and refloor (cells 2x coarser per level; was gpu-dda-lod).
@@ -51,16 +52,17 @@ fn describe(slot: Slot) -> String {
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
         ParamSpec::choice("storage", &format!("Storage component. {}", describe(Slot::Storage)), &names_on(BACKEND, Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", &format!("Visibility component (any storage works with any; missing fast paths come from adapters). {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "refloor", true),
+        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "raycast", false),
+        ParamSpec::choice("traversal", &format!("Traversal kernel (any storage works with any; missing fast paths come from adapters). {}", describe(Slot::Traversal)), &names_on(BACKEND, Slot::Traversal), "refloor", true),
         ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
         ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &names_on(BACKEND, Slot::Prepass), "none", true),
         ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(BACKEND, Slot::Meshes), "composite", true),
         ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
     ];
     p.extend(shade_state::params());
-    p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true).of("visibility", &["incremental"]));
+    p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
-        p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("visibility", &["incremental"]));
+        p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("traversal", &["incremental"]));
     }
     p.push(ParamSpec::choice("dispatch", "How pixels are run: `compute` (one compute thread per pixel) or `fragment` (a fragment shader over a full-screen triangle; was gpu-frag-dda)", &["compute", "fragment"], "compute", true));
     p.push(ParamSpec::choice("view", "image: the rendered scene. steps: primary-ray loop iterations per pixel on a colour scale (log; white above view_max)", &["image", "steps"], "image", true));
@@ -78,9 +80,8 @@ fn params() -> Vec<ParamSpec> {
 #[serde(default, deny_unknown_fields)]
 struct Options {
     storage: String,
-    /// `traversal` is the step-6′ name of this option.
-    #[serde(alias = "traversal")]
     visibility: String,
+    traversal: String,
     shading: String,
     prepass: String,
     meshes: String,
@@ -106,7 +107,8 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             storage: "bricks".into(),
-            visibility: "refloor".into(),
+            visibility: "raycast".into(),
+            traversal: "refloor".into(),
             shading: "direct".into(),
             prepass: "none".into(),
             meshes: "composite".into(),
@@ -134,7 +136,7 @@ impl Default for Options {
 #[derive(Clone, PartialEq, Debug)]
 struct Composition {
     storage: String,
-    visibility: String,
+    traversal: String,
     shading: String,
     prepass: String,
     /// Prepass tile size in pixels (1 = the prepass is skipped).
@@ -162,11 +164,11 @@ impl Composition {
 
     fn source(&self) -> String {
         let st = self.storage();
-        let vis = visibility::gpu_wgsl(&self.visibility).expect("validated");
+        let vis = traversal::gpu_wgsl(&self.traversal).expect("validated");
         let shade = mr_components::shading::gpu_wgsl(&self.shading).expect("validated");
         let pre = mr_components::prepass::gpu_wgsl(self.prepass()).expect("validated");
         let own = format!(
-            "// Composition: storage = {}, prepass = {}, visibility = {}, shading = {}\n\
+            "// Composition: storage = {}, prepass = {}, traversal = {}, shading = {}\n\
              const PREPASS_TILE: u32 = {}u;\n\
              const LOD: bool = {};\n\
              const EXACT: bool = {};\n\
@@ -176,7 +178,7 @@ impl Composition {
 
             self.storage,
             self.prepass(),
-            self.visibility,
+            self.traversal,
             self.shading,
             self.tile.max(1),
             self.lod,
@@ -188,23 +190,23 @@ impl Composition {
             st.source(),
             include_str!("main.wgsl"),
         );
-        shader_source(visibility::OCCLUDED_WGSL, &own)
+        shader_source(traversal::OCCLUDED_WGSL, &own)
     }
 }
 
 
 /// What LOD needs (`mr_components::caps`): chunks at every level (pool storages), a walk
 /// that scales its cells (refloor) and a prepass that copes (none; the beam reads level 0).
-const LOD_NEEDS: &[(Slot, Cap)] = &[(Slot::Storage, Cap::Lod), (Slot::Visibility, Cap::Lod), (Slot::Prepass, Cap::Lod)];
+const LOD_NEEDS: &[(Slot, Cap)] = &[(Slot::Storage, Cap::Lod), (Slot::Traversal, Cap::Lod), (Slot::Prepass, Cap::Lod)];
 
 /// What `view = "steps"` needs: a walk that counts its iterations.
-const STEPS_NEEDS: &[(Slot, Cap)] = &[(Slot::Visibility, Cap::Steps)];
+const STEPS_NEEDS: &[(Slot, Cap)] = &[(Slot::Traversal, Cap::Steps)];
 
 /// Why this composition cannot meet `needs`, if it can't.
 fn blocker(c: &Composition, needs: &[(Slot, Cap)]) -> Option<String> {
     let mut m = mr_components::Composition::new(BACKEND);
     m.storage = c.storage.clone();
-    m.visibility = c.visibility.clone();
+    m.traversal = c.traversal.clone();
     m.prepass = c.prepass().to_string();
     caps::lacks(&m, needs)
 }
@@ -290,7 +292,10 @@ impl GpuCompose {
         let opts: Options = p.options()?;
         let comp = Composition {
             storage: require(BACKEND, Slot::Storage, &opts.storage)?,
-            visibility: require(BACKEND, Slot::Visibility, &opts.visibility)?,
+            traversal: {
+                require(BACKEND, Slot::Visibility, &opts.visibility)?;
+                require(BACKEND, Slot::Traversal, &opts.traversal)?
+            },
             shading: require(BACKEND, Slot::Shading, &opts.shading)?,
             prepass: require(BACKEND, Slot::Prepass, &opts.prepass)?,
             tile: opts.tile.clamp(1, 64),
@@ -333,7 +338,7 @@ impl GpuCompose {
         let pixel = compute | wgpu::ShaderStages::FRAGMENT;
         // Fragment too: mesh shadows walk the composed storage.
         let layout2 = gpu_data::layout(&gpu, &comp.storage(), compute | wgpu::ShaderStages::FRAGMENT);
-        let occ = visibility::occlusion_wgsl(&comp.storage(), comp.lod);
+        let occ = traversal::occlusion_wgsl(&comp.storage(), &comp.traversal, comp.lod);
         let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Occlusion { wgsl: &occ, layout: &layout2 });
         let rw = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -387,7 +392,7 @@ impl GpuCompose {
         let bind0_frag = Self::bind0(&gpu, &layout0, &camera_buf, &stand_in, &beam, &accum);
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
-        tracing::info!("gpu-compute: storage {}, visibility {}, shading {}", comp.storage, comp.visibility, comp.shading);
+        tracing::info!("gpu-compute: storage {}, traversal {}, shading {}", comp.storage, comp.traversal, comp.shading);
         Ok(Self {
             gpu,
             world,
@@ -615,7 +620,8 @@ impl Renderer for GpuCompose {
                 match name {
                     "prepass" => c.prepass = require(BACKEND, Slot::Prepass, value.as_str().unwrap_or(""))?,
                     "tile" => c.tile = value.as_i64().unwrap_or(8).clamp(1, 64) as u32,
-                    _ => c.visibility = require(BACKEND, Slot::Visibility, value.as_str().unwrap_or(""))?,
+                    "visibility" => drop(require(BACKEND, Slot::Visibility, value.as_str().unwrap_or(""))?),
+                    _ => c.traversal = require(BACKEND, Slot::Traversal, value.as_str().unwrap_or(""))?,
                 }
                 if let Some(why) = feature_blocker(&c) {
                     anyhow::bail!(why);

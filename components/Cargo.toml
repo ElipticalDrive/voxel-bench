@@ -15,3 +15,6 @@ rayon.workspace = true
 anyhow.workspace = true
 pollster.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

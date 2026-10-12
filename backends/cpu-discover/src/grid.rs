@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use glam::{IVec3, Vec3};
 use mr_components::storage::cpu::{Entry, Grid as StorageGrid, Repr};
-use mr_components::visibility::refloor::cpu::trace_packet;
+use mr_components::traversal::refloor::cpu::trace_packet;
 use mr_core::chunk::local_of_block;
 use mr_core::*;
 

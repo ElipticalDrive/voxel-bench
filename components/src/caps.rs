@@ -19,10 +19,10 @@ pub enum Cap {
     Dist,
     /// Storage: `s_row(h, x0, y, z)`, the occupancy of the 32 cells from x0 along x.
     Row,
-    /// Storage: LOD chunks (`s_top_lod`, cells 2^lod blocks wide). Visibility: a walk that
+    /// Storage: LOD chunks (`s_top_lod`, cells 2^lod blocks wide). Traversal: a walk that
     /// reads them with distance. Prepass: correct with them.
     Lod,
-    /// Visibility: the walk counts its loop iterations (`ct_iters`; the `steps` views).
+    /// Traversal: the walk counts its loop iterations (`ct_iters`; the `steps` views).
     Steps,
 }
 

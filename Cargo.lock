@@ -2260,6 +2260,7 @@ dependencies = [
  "pollster",
  "rayon",
  "serde",
+ "toml",
  "tracing",
  "wgpu",
 ]

@@ -23,7 +23,7 @@ use mr_components::geometry::{GpuGeometry, Knobs, Merge};
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::visibility::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
-use mr_components::{names_on, require, Slot, components, storage, visibility};
+use mr_components::{names_on, require, Slot, components, storage, traversal, visibility};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{GpuMeshes, MeshPass, Occlusion};
@@ -41,7 +41,7 @@ pub fn entry() -> RendererEntry {
 fn info() -> RendererInfo {
     RendererInfo {
         name: BACKEND.into(),
-        description: "GPU-raster back end: renders a composition (storage for shadow rays, geometry, raster visibility, shading); faces meshed on the CPU, vertex pulling, multi-draw-indirect, chunk + face culling".into(),
+        description: "GPU-raster back end: renders a composition (storage and traversal kernel for shadow rays, geometry, raster visibility, shading); faces meshed on the CPU, vertex pulling, multi-draw-indirect, chunk + face culling".into(),
         tags: vec!["gpu".into(), "raster".into(), "hybrid".into(), "modular".into(), "wgpu".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
@@ -56,9 +56,10 @@ fn describe(slot: Slot) -> String {
 
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
-        ParamSpec::choice("storage", &format!("Storage component the lit-mode shadow rays walk (refloor). {}", describe(Slot::Storage)), &names_on(BACKEND, Slot::Storage), "bricks", false),
+        ParamSpec::choice("storage", &format!("Storage component the lit-mode shadow rays walk (with the traversal kernel). {}", describe(Slot::Storage)), &names_on(BACKEND, Slot::Storage), "bricks", false),
         ParamSpec::choice("geometry", &format!("Geometry component. {}", describe(Slot::Geometry)), &names_on(BACKEND, Slot::Geometry), "greedy", true),
         ParamSpec::choice("visibility", &format!("Visibility component. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "raster", true),
+        ParamSpec::choice("traversal", &format!("Traversal kernel of the lit-mode shadow rays. {}", describe(Slot::Traversal)), &names_on(BACKEND, Slot::Traversal), "refloor", false),
         ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
         ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(BACKEND, Slot::Meshes), "depth", true),
         ParamSpec::choice("merge", "greedy: merge faces of the same block only (`block`), or any exposed coplanar faces with a per-pixel block lookup (`exposure`)", &["block", "exposure"], "block", true).of("geometry", &["greedy"]),
@@ -81,6 +82,7 @@ struct Options {
     storage: String,
     geometry: String,
     visibility: String,
+    traversal: String,
     shading: String,
     meshes: String,
     merge: String,
@@ -106,6 +108,7 @@ impl Default for Options {
             storage: "bricks".into(),
             geometry: "greedy".into(),
             visibility: "raster".into(),
+            traversal: "refloor".into(),
             shading: "direct".into(),
             meshes: "depth".into(),
             merge: "block".into(),
@@ -139,6 +142,8 @@ struct Composition {
     storage: String,
     geometry: String,
     visibility: String,
+    /// The shadow rays' kernel.
+    traversal: String,
     shading: String,
 }
 
@@ -163,11 +168,12 @@ impl Composition {
     fn source(&self) -> String {
         let st = self.storage();
         let own = format!(
-            "// Composition: storage = {}, geometry = {}, visibility = {}, shading = {}\n\
+            "// Composition: storage = {}, geometry = {}, visibility = {}, traversal = {}, shading = {}\n\
              {}\n{}\n{}\n{}\n{}\n{}",
             self.storage,
             self.geometry,
             self.visibility,
+            self.traversal,
             self.shading,
             self.geometry().wgsl,
             include_str!("main.wgsl"),
@@ -182,7 +188,7 @@ impl Composition {
             mr_components::shading::gpu_wgsl(&self.shading).expect("validated"),
         );
         // Shadow rays: refloor through the composed storage.
-        shader_source(&visibility::occlusion_wgsl(&st, false), &own)
+        shader_source(&traversal::occlusion_wgsl(&st, &self.traversal, false), &own)
     }
 }
 
@@ -348,6 +354,7 @@ impl GpuRasterBackend {
             storage: require(BACKEND, Slot::Storage, &opts.storage)?,
             geometry: require(BACKEND, Slot::Geometry, &opts.geometry)?,
             visibility: require(BACKEND, Slot::Visibility, &opts.visibility)?,
+            traversal: require(BACKEND, Slot::Traversal, &opts.traversal)?,
             shading: require(BACKEND, Slot::Shading, &opts.shading)?,
         };
         // The host hands the device in (GPU slot 0); this back end only states its needs.
@@ -392,11 +399,11 @@ impl GpuRasterBackend {
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
         let data = StorageData::new(&gpu, comp.storage(), gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         // Mesh shadows walk the composed storage too.
-        let occ = visibility::occlusion_wgsl(&comp.storage(), false);
+        let occ = traversal::occlusion_wgsl(&comp.storage(), &comp.traversal, false);
         let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Occlusion { wgsl: &occ, layout: &layouts.aux });
         let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone());
         let accum = ShadeState::new(&gpu, p.width, p.height, &comp.shading, opts.bounces, opts.spp, opts.accumulate);
-        tracing::info!("gpu-raster: storage {}, geometry {}, visibility {}, shading {}", comp.storage, comp.geometry, comp.visibility, comp.shading);
+        tracing::info!("gpu-raster: storage {}, geometry {}, visibility {}, traversal {}, shading {}", comp.storage, comp.geometry, comp.visibility, comp.traversal, comp.shading);
         Ok(Self {
             mesh,
             output: mr_gpu::output_texture(&gpu, p.width, p.height),

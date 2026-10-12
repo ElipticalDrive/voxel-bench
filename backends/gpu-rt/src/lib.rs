@@ -5,7 +5,8 @@
 //!   triangles (traversal and intersection entirely in fixed-function hardware), or `boxes`,
 //!   one AABB per occupied 4^3 brick with a small software DDA inside each candidate
 //!   (procedural geometry);
-//! * **visibility** `rayquery`: primary, shadow and bounce rays are ray queries;
+//! * **visibility** `raycast` with the **traversal** kernel `rayquery`: primary, shadow and
+//!   bounce rays are ray queries;
 //! * **shading**: the same `shade_surface` as the other back ends (`direct`, `pathtrace`).
 //!
 //! The TLAS is rebuilt every frame with instances translated relative to the camera's
@@ -20,7 +21,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use mr_components::geometry::{Knobs, Merge, RtKind};
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_components::{names_on, require, Slot, components, shading, visibility};
+use mr_components::{names_on, require, Slot, components, shading, traversal};
 use mr_core::chunk::cell_of_index;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -55,7 +56,8 @@ fn describe(slot: Slot) -> String {
 fn params() -> Vec<ParamSpec> {
     vec![
         ParamSpec::choice("geometry", &format!("Geometry component (what the BLASes hold). {}", describe(Slot::Geometry)), &names_on(BACKEND, Slot::Geometry), "greedy", false),
-        ParamSpec::choice("visibility", &format!("Visibility component. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "rayquery", false),
+        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "raycast", false),
+        ParamSpec::choice("traversal", &format!("Traversal kernel. {}", describe(Slot::Traversal)), &names_on(BACKEND, Slot::Traversal), "rayquery", false),
         ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
         ParamSpec::choice("merge", "greedy: merge faces of the same block only (`exposure` is raster-only)", &["block"], "block", false).of("geometry", &["greedy"]),
         ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours (false = every face of every solid block)", true, false).of("geometry", &["naive"]),
@@ -87,6 +89,7 @@ enum Cull {
 struct Options {
     geometry: String,
     visibility: String,
+    traversal: String,
     shading: String,
     merge: String,
     cull: bool,
@@ -108,7 +111,8 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             geometry: "greedy".into(),
-            visibility: "rayquery".into(),
+            visibility: "raycast".into(),
+            traversal: "rayquery".into(),
             shading: "direct".into(),
             merge: "block".into(),
             cull: true,
@@ -217,7 +221,8 @@ impl GpuRt {
     fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         let geometry = require(BACKEND, Slot::Geometry, &opts.geometry)?;
-        let vis = require(BACKEND, Slot::Visibility, &opts.visibility)?;
+        require(BACKEND, Slot::Visibility, &opts.visibility)?;
+        let vis = require(BACKEND, Slot::Traversal, &opts.traversal)?;
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
         anyhow::ensure!(opts.merge == "block", "merge = `{}`: gpu-rt has no per-pixel block lookup (only `block`)", opts.merge);
         let (geo_wgsl, rt) = mr_components::geometry::rt(&geometry).expect("validated");
@@ -238,10 +243,10 @@ impl GpuRt {
                 visibility: wgpu::ShaderStages::COMPUTE,
             },
         )?;
-        let vis_wgsl = visibility::rt_wgsl(&vis).expect("validated");
+        let vis_wgsl = traversal::rt_wgsl(&vis).expect("validated");
         let source = Box::new(move |shading: &str| {
-            let own = format!("// Composition: geometry = {geometry}, visibility = {vis}, shading = {shading}\n{}\n{}\n{geo_wgsl}\n{vis_wgsl}\n{}", include_str!("main.wgsl"), ShadeState::wgsl(0, 5), shading::gpu_wgsl(shading).expect("validated"));
-            // Shadow rays come from the visibility component (`occluded`).
+            let own = format!("// Composition: geometry = {geometry}, traversal = {vis}, shading = {shading}\n{}\n{}\n{geo_wgsl}\n{vis_wgsl}\n{}", include_str!("main.wgsl"), ShadeState::wgsl(0, 5), shading::gpu_wgsl(shading).expect("validated"));
+            // Shadow rays come from the traversal kernel (`occluded`).
             format!("enable wgpu_ray_query;\n{}", shader_source("", &own))
         });
         let e = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty, count: None };

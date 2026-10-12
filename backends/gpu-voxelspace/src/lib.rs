@@ -137,7 +137,7 @@ impl GpuVoxelSpace {
         gpu.queue.write_buffer(&hm_info, 0, bytemuck::cast_slice(&hm.info()));
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
         // Shadow and bounce rays walk the heightmap (its `ctrace`).
-        let source = shader_source(mr_components::visibility::OCCLUDED_WGSL, &format!("{}\n{}\n{}\n{shade}", heightmap::gpu_wgsl(0, 2), ShadeState::wgsl(0, 4), include_str!("vs.wgsl")));
+        let source = shader_source(mr_components::traversal::OCCLUDED_WGSL, &format!("{}\n{}\n{}\n{shade}", heightmap::gpu_wgsl(0, 2), ShadeState::wgsl(0, 4), include_str!("vs.wgsl")));
         let module = mr_gpu::shader(&gpu.device, "voxelspace", source);
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("voxelspace"),

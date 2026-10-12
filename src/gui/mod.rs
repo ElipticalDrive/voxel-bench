@@ -36,10 +36,10 @@ streaming = { budget = 512 }
 
 # Renderers are assembled from components (back end, storage, geometry, visibility, shading).
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", visibility = "refloor" }
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "prefix", visibility = "refloor" }
+compose = { backend = "gpu-compute", storage = "prefix", traversal = "refloor" }
 
 [[renderer]]
 compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", visibility = "raster" }
@@ -1492,7 +1492,7 @@ mod tests {
                 view_radius = 3
                 isolation = "thread"
                 [[renderer]]
-                compose = { backend = "gpu-compute", storage = "prefix", visibility = "incremental", shading = "pathtrace" }
+                compose = { backend = "gpu-compute", storage = "prefix", traversal = "incremental", shading = "pathtrace" }
                 [[renderer]]
                 compose = { backend = "gpu-raster", geometry = "naive", visibility = "visbuffer" }
                 "#,

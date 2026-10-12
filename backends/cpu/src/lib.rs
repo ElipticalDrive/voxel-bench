@@ -1,7 +1,7 @@
 //! CPU back end: assembles a renderer from components (`mr-components`, IDEAS §12): a
 //! **storage** (`Repr`, one generic instantiation per storage: monomorphised, so the split
-//! costs nothing), a **visibility** walk (`refloor` with SIMD-friendly ray packets, or
-//! `incremental`) and the **shading** component (`direct`), multi-threaded with rayon.
+//! costs nothing), a **traversal** kernel cast per pixel (`refloor` with SIMD-friendly ray
+//! packets, or `incremental`; the visibility strategy is `raycast`) and the **shading** component (`direct`), multi-threaded with rayon.
 //! Optional hardware counters (`perf` knob) via `perf_event_open` report cycles,
 //! instructions and cache misses per pixel.
 
@@ -20,9 +20,9 @@ use mr_components::storage::hier::cpu::Hier;
 use mr_components::storage::palette::cpu::Palette;
 use mr_components::storage::prefix::cpu::Prefix;
 use mr_components::storage::u8::cpu::U8;
-use mr_components::visibility::cpu::Hit;
-use mr_components::visibility::incremental::cpu::trace_incremental;
-use mr_components::visibility::refloor::cpu::trace_packet;
+use mr_components::traversal::cpu::Hit;
+use mr_components::traversal::incremental::cpu::trace_incremental;
+use mr_components::traversal::refloor::cpu::trace_packet;
 use mr_components::{names_on, require, Slot};
 use mr_core::chunk::local_of_block;
 use mr_core::lighting::encode_srgb;
@@ -34,7 +34,7 @@ pub fn entry() -> RendererEntry {
     RendererEntry {
         info: || RendererInfo {
             name: "cpu".into(),
-            description: "CPU back end: renders a composition of components (storage, visibility, shading), multi-threaded".into(),
+            description: "CPU back end: renders a composition of components (storage, traversal, shading), multi-threaded".into(),
             tags: vec!["cpu".into(), "raycast".into(), "simd".into()],
             modes: vec![RenderMode::Unlit, RenderMode::Lit],
             max_lod: 0,
@@ -65,13 +65,14 @@ const BACKEND: &str = "cpu";
 fn params() -> Vec<ParamSpec> {
     let mut p = cpu_reference::cpu_params();
     p.push(ParamSpec::choice("storage", "Storage component (CPU implementations)", &names_on(BACKEND, Slot::Storage), "bricks", false));
-    p.push(ParamSpec::choice("visibility", "Visibility component. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &names_on(BACKEND, Slot::Visibility), "refloor", true));
+    p.push(ParamSpec::choice("visibility", "Visibility strategy", &names_on(BACKEND, Slot::Visibility), "raycast", false));
+    p.push(ParamSpec::choice("traversal", "Traversal kernel. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &names_on(BACKEND, Slot::Traversal), "refloor", true));
     p.push(ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", true));
-    p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell (no float drift) instead of accumulating them", true, true).of("visibility", &["incremental"]));
-    p.push(ParamSpec::choice("packet", "Rays traced together in lockstep (refloor; measured: no gain on Zen 5)", &["1", "4", "8", "16"], "1", true).of("visibility", &["refloor"]));
+    p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
+    p.push(ParamSpec::choice("packet", "Rays traced together in lockstep (refloor; measured: no gain on Zen 5)", &["1", "4", "8", "16"], "1", true).of("traversal", &["refloor"]));
     p.push(ParamSpec::choice("isa", "Instruction set for the hot loop", &["auto", "scalar", "avx2", "avx512"], "auto", true));
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
-        p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them. Fewer levels mean fewer failed ascent tests but smaller skips"), true, true).of("visibility", &["incremental"]));
+        p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them. Fewer levels mean fewer failed ascent tests but smaller skips"), true, true).of("traversal", &["incremental"]));
     }
     p.push(ParamSpec::choice("schedule", "Work split over the threads: image rows (packets along the row), or screen tiles along a space-filling curve (packets as 2x2 / 4x2 / 4x4 pixel blocks; from cpu-simd-tiles)", &["rows", "tiles"], "rows", true));
     p.push(ParamSpec::choice("tile_order", "schedule = tiles: order tiles are handed out in", &["morton", "hilbert", "linear"], "morton", true));
@@ -89,6 +90,7 @@ struct Options {
     shadows: Shadows,
     storage: String,
     visibility: String,
+    traversal: String,
     shading: String,
     exact: bool,
     packet: String,
@@ -107,11 +109,11 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { threads: 0, shadows: Shadows::All, storage: "bricks".into(), visibility: "refloor".into(), shading: "direct".into(), exact: true, packet: "1".into(), isa: "auto".into(), skip2: true, skip4: true, skip8: true, skip16: true, schedule: "rows".into(), tile_order: "morton".into(), tile: 16, perf: false, view: "image".into(), view_max: 256 }
+        Self { threads: 0, shadows: Shadows::All, storage: "bricks".into(), visibility: "raycast".into(), traversal: "refloor".into(), shading: "direct".into(), exact: true, packet: "1".into(), isa: "auto".into(), skip2: true, skip4: true, skip8: true, skip16: true, schedule: "rows".into(), tile_order: "morton".into(), tile: 16, perf: false, view: "image".into(), view_max: 256 }
     }
 }
 
-/// The visibility walk, with the `exact` knob folded in.
+/// The traversal kernel, with the `exact` knob folded in.
 #[derive(Copy, Clone, PartialEq, Debug)]
 enum Traversal {
     /// `trace_packet`: the probe returns a skip size, and coarse steps re-floor.
@@ -138,12 +140,12 @@ fn parse_schedule(s: &str) -> anyhow::Result<bool> {
     }
 }
 
-fn traversal(visibility: &str, exact: bool) -> anyhow::Result<Traversal> {
-    Ok(match require(BACKEND, Slot::Visibility, visibility)?.as_str() {
+fn traversal(kernel: &str, exact: bool) -> anyhow::Result<Traversal> {
+    Ok(match require(BACKEND, Slot::Traversal, kernel)?.as_str() {
         "refloor" => Traversal::Refloor,
         "incremental" if exact => Traversal::IncrementalExact,
         "incremental" => Traversal::Incremental,
-        v => anyhow::bail!("visibility `{v}` has no CPU implementation"),
+        v => anyhow::bail!("traversal `{v}` has no CPU implementation"),
     })
 }
 
@@ -299,8 +301,8 @@ pub struct CpuBackend<R> {
     packet: usize,
     isa: Isa,
     isa_choice: String,
-    /// `visibility` and `exact` knobs (folded into `scene.traversal`).
-    visibility: String,
+    /// `traversal` and `exact` knobs (folded into `scene.traversal`).
+    kernel: String,
     exact: bool,
     /// `schedule = tiles` and its tile order and size; `rects` is the work list (rebuilt
     /// lazily when any of them or the size changes).
@@ -321,10 +323,11 @@ impl<R: Repr> CpuBackend<R> {
             anyhow::bail!("storage u8 needs <= 256 block types, registry has {}", p.blocks.blocks.len());
         }
         let isa = detect(&o.isa);
-        tracing::info!("cpu: storage {}, visibility {}, {:?} hot loop, packets of {}", o.storage, o.visibility, isa, o.packet);
+        tracing::info!("cpu: storage {}, traversal {}, {:?} hot loop, packets of {}", o.storage, o.traversal, isa, o.packet);
+        require(BACKEND, Slot::Visibility, &o.visibility)?;
         require(BACKEND, Slot::Shading, &o.shading)?;
         Ok(Self {
-            visibility: o.visibility.clone(),
+            kernel: o.traversal.clone(),
             exact: o.exact,
             tiles: parse_schedule(&o.schedule)?,
             tile_order: parse_order(&o.tile_order)?,
@@ -344,7 +347,7 @@ impl<R: Repr> CpuBackend<R> {
                 light_grid: HashMap::new(),
                 lights_dirty: false,
                 shadows: o.shadows,
-                traversal: traversal(&o.visibility, o.exact)?,
+                traversal: traversal(&o.traversal, o.exact)?,
                 levels: [o.skip2, o.skip4, o.skip8, o.skip16].iter().enumerate().fold(0b100001, |m, (i, &on)| m | (on as u32) << (i + 1)),
             },
             pool: Pool::new(p.devices.cpu_threads(o.threads))?,
@@ -760,13 +763,14 @@ impl<R: Repr> Renderer for CpuBackend<R> {
                     self.scene.levels &= !bit;
                 }
             }
-            "visibility" => {
-                self.visibility = value.as_str().unwrap_or("refloor").to_string();
-                self.scene.traversal = traversal(&self.visibility, self.exact)?;
+            "visibility" => drop(require(BACKEND, Slot::Visibility, value.as_str().unwrap_or(""))?),
+            "traversal" => {
+                self.kernel = value.as_str().unwrap_or("refloor").to_string();
+                self.scene.traversal = traversal(&self.kernel, self.exact)?;
             }
             "exact" => {
                 self.exact = value.as_bool().unwrap_or(true);
-                self.scene.traversal = traversal(&self.visibility, self.exact)?;
+                self.scene.traversal = traversal(&self.kernel, self.exact)?;
             }
             "shading" => {
                 require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?;

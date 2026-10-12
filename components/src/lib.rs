@@ -1,12 +1,15 @@
 //! Renderer components (IDEAS §12): instead of choosing a monolithic renderer, a renderer is
 //! assembled from one component per slot and run on a back end:
 //!
-//! `backend` × `storage` × `geometry` × `prepass` × `visibility` × `shading` × `meshes`
+//! `backend` × `storage` × `geometry` × `prepass` × `visibility` × `traversal` × `shading` × `meshes`
 //!
 //! Not every slot applies to every back end: `geometry` (storage turned into drawable faces)
 //! exists only on rasterising back ends, `prepass` (a stage before the walk, e.g. beams)
 //! only on gpu-compute, `meshes` (how polygon meshes join the voxel image) only where a
-//! back end can draw them; slots a back end lacks are left empty.
+//! back end can draw them; slots a back end lacks are left empty. `visibility` is the
+//! strategy that organises primary visibility (ray casting, raster, discovery, splat,
+//! columns); `traversal` is the kernel that answers ray queries against the storage
+//! (primary rays where the strategy casts them, shadow and bounce rays everywhere).
 //!
 //! Lighting and meshes are stages *around* the walk, so storages and walks stay unaware of
 //! them: the pass mode (lit / unlit, meshes on / off) is what the scene asks for, the
@@ -33,6 +36,7 @@ pub mod geometry;
 pub mod prepass;
 pub mod shading;
 pub mod storage;
+pub mod traversal;
 pub mod visibility;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -41,13 +45,14 @@ pub enum Slot {
     Geometry,
     Prepass,
     Visibility,
+    Traversal,
     Shading,
     Meshes,
 }
 
 impl Slot {
     /// In composition order (labels, the GUI chooser).
-    pub const ALL: [Slot; 6] = [Slot::Storage, Slot::Geometry, Slot::Prepass, Slot::Visibility, Slot::Shading, Slot::Meshes];
+    pub const ALL: [Slot; 7] = [Slot::Storage, Slot::Geometry, Slot::Prepass, Slot::Visibility, Slot::Traversal, Slot::Shading, Slot::Meshes];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -55,6 +60,7 @@ impl Slot {
             Slot::Geometry => "geometry",
             Slot::Prepass => "prepass",
             Slot::Visibility => "visibility",
+            Slot::Traversal => "traversal",
             Slot::Shading => "shading",
             Slot::Meshes => "meshes",
         }
@@ -78,6 +84,9 @@ pub struct BackendInfo {
     /// Slots that only matter in lit mode (e.g. the storage of a rasteriser, which only
     /// its shadow rays walk). Sweeps run one of each such variant in unlit passes.
     pub lit_only: &'static [Slot],
+    /// Further slots left out of labels while at their default, and optional in the CLI
+    /// form (e.g. ray casting on gpu-compute, the shadow-ray kernel of a rasteriser).
+    pub quiet: &'static [Slot],
 }
 
 impl BackendInfo {
@@ -85,65 +94,74 @@ impl BackendInfo {
         self.slots.iter().any(|&(s, _)| s == slot)
     }
 
+    /// Left out of labels while at its default: an optional slot or one of `quiet`.
+    pub fn is_quiet(&self, slot: Slot) -> bool {
+        slot.optional() || self.quiet.contains(&slot)
+    }
+
     pub fn default_for(&self, slot: Slot) -> Option<&'static str> {
         self.slots.iter().find(|&&(s, _)| s == slot).map(|&(_, d)| d)
     }
 }
 
-const RAY_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Visibility, "refloor"), (Slot::Shading, "direct")];
-const COMPUTE_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Prepass, "none"), (Slot::Visibility, "refloor"), (Slot::Shading, "direct"), (Slot::Meshes, "composite")];
+const RAY_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Visibility, "raycast"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")];
+const COMPUTE_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Prepass, "none"), (Slot::Visibility, "raycast"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct"), (Slot::Meshes, "composite")];
 
 /// Every back end, including planned ones (shown disabled, with the reason).
 pub const BACKENDS: &[BackendInfo] = &[
-    BackendInfo { name: "gpu-compute", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("gpu-compute"), slots: COMPUTE_SLOTS, lit_only: &[] },
-    BackendInfo { name: "cpu", description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops", renderer: Some("cpu"), slots: RAY_SLOTS, lit_only: &[] },
+    BackendInfo { name: "gpu-compute", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("gpu-compute"), slots: COMPUTE_SLOTS, lit_only: &[], quiet: &[Slot::Visibility] },
+    BackendInfo { name: "cpu", description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops", renderer: Some("cpu"), slots: RAY_SLOTS, lit_only: &[], quiet: &[Slot::Visibility] },
     BackendInfo {
         name: "gpu-raster",
         description: "GPU rasterisation (wgpu): the geometry component turns chunks into faces on the CPU, drawn with vertex pulling and multi-draw-indirect after chunk and face-direction culling. Storage here is what lit-mode shadow rays walk (refloor)",
         renderer: Some("gpu-raster"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct"), (Slot::Meshes, "depth")], lit_only: &[Slot::Storage],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct"), (Slot::Meshes, "depth")],
+        lit_only: &[Slot::Storage, Slot::Traversal],
+        quiet: &[Slot::Traversal],
     },
     BackendInfo {
         name: "gpu-rt",
         description: "GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component, a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries",
         renderer: Some("gpu-rt"),
-        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "rayquery"), (Slot::Shading, "direct")], lit_only: &[],
+        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raycast"), (Slot::Traversal, "rayquery"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Visibility],
     },
     BackendInfo {
         name: "gpu-discover",
         description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
         renderer: Some("gpu-discover"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Shading, "direct")], lit_only: &[],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Traversal],
     },
     BackendInfo {
         name: "cpu-discover",
         description: "CPU discovery + GPU raster (the user's idea): CPU rays discover the visible face set (one frame ahead, pipelined), the GPU rasterises only it. Storage: the CPU representation discovery rays walk",
         renderer: Some("cpu-discover"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Shading, "direct")], lit_only: &[],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Traversal],
     },
     BackendInfo {
         name: "gpu-splat",
         description: "GPU point splatting: one point per exposed block, atomicMin depth + id buffers, ray-box resolve; lit-mode shadow rays walk the composed storage",
         renderer: Some("gpu-splat"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "points"), (Slot::Visibility, "splat"), (Slot::Shading, "direct")], lit_only: &[Slot::Storage],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "points"), (Slot::Visibility, "splat"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")],
+        lit_only: &[Slot::Storage, Slot::Traversal],
+        quiet: &[Slot::Traversal],
     },
     BackendInfo {
         name: "gpu-voxelspace",
         description: "Comanche-style Voxel Space (2.5D, no overhangs) in a compute shader: one thread per screen column marches a heightmap front to back with a y-buffer",
         renderer: Some("gpu-voxelspace"),
-        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[],
+        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
     },
     BackendInfo {
         name: "cpu-voxelspace",
         description: "Comanche-style Voxel Space (2.5D) on the CPU, rayon-parallel over screen columns",
         renderer: Some("cpu-voxelspace"),
-        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[],
+        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
     },
     BackendInfo {
         name: "cpu-raster",
         description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
         renderer: Some("cpu-raster"),
-        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct")], lit_only: &[],
+        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
     },
 ];
 
@@ -162,7 +180,6 @@ pub struct ComponentInfo {
 
 const GPU: &[&str] = &["gpu-compute"];
 const CPU: &[&str] = &["cpu", "cpu-discover"];
-const BOTH: &[&str] = &["gpu-compute", "cpu"];
 /// GPU storages: the ray walks, and the raster back end's shadow rays.
 const GPU_ST: &[&str] = &["gpu-compute", "gpu-raster", "gpu-discover", "gpu-splat"];
 const ALL_ST: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-discover", "cpu-discover", "gpu-splat"];
@@ -174,6 +191,13 @@ const SHADE_ALL: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-rt", "cpu-
 const SPLAT: &[&str] = &["gpu-splat"];
 const VOXELSPACE: &[&str] = &["gpu-voxelspace", "cpu-voxelspace"];
 const DISCOVER: &[&str] = &["gpu-discover", "cpu-discover"];
+/// Primary rays cast per pixel.
+const RAYCAST: &[&str] = &["gpu-compute", "cpu", "gpu-rt"];
+/// Back ends whose rays walk a composed GPU storage (primary, discovery, shadow or bounce rays).
+const WALK_GPU: &[&str] = &["gpu-compute", "gpu-raster", "gpu-discover", "gpu-splat"];
+const INCREMENTAL: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-discover", "gpu-splat"];
+/// cpu-discover: its CPU discovery rays and GPU shadow rays both walk with refloor.
+const REFLOOR: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-discover", "gpu-splat", "cpu-discover"];
 const CPU_DISCOVER: &[&str] = &["cpu-discover"];
 /// Back ends with the shading state (`shading::state`) and a ray walk for bounces.
 const PATHTRACE: &[&str] = &["gpu-compute", "gpu-rt", "gpu-splat", "gpu-raster", "gpu-discover", "gpu-voxelspace", "cpu-discover"];
@@ -197,18 +221,20 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Storage, name: "bits", description: "One occupancy bit per voxel, brick-major (4 KiB per chunk); block ids read only at the hit.", backends: CPU, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Storage, name: "palette", description: "Per-chunk palette with indices packed at 1/2/4/8/16 bits (7x smaller than bricks on terrain).", backends: CPU, provides: &[], needs: &[] },
     // Visibility.
-    ComponentInfo { slot: Slot::Visibility, name: "refloor", description: "Per-pixel DDA: ask the storage for the largest empty cube, step out of it, re-floor (gpu-dda's walk).", backends: BOTH, provides: &[Cap::Lod, Cap::Steps], needs: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", backends: BOTH, provides: &[Cap::Steps], needs: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", backends: GPU, provides: &[Cap::Steps], needs: &[(Slot::Storage, Cap::Dist)] },
-    ComponentInfo { slot: Slot::Visibility, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: GPU, provides: &[Cap::Steps], needs: &[(Slot::Storage, Cap::Row)] },
+    ComponentInfo { slot: Slot::Visibility, name: "raycast", description: "Ray casting: one primary ray per pixel through the traversal kernel, shaded at its hit.", backends: RAYCAST, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "quadtree", description: "Discovery (the user's idea, IDEAS §3): an adaptive screen-space quadtree of corner rays; coherent tiles add every exposed face of the hit plane in their footprint to a face set kept across frames, which is rasterised. Knobs: tile, criterion, incremental, events, merge, order, views tiles/rays/churn/overdraw/quads, ...", backends: DISCOVER, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "cluster", description: "Face-cluster discovery (the user's design, IDEAS §10; was cpu-cluster): seed rays on a coarse-to-fine pixel lattice; from each hit a flood fill over coplanar exposed faces confirmed by corner rays; confirmed faces cover their screen area. Knobs: seed_step, sky, views clusters/kinds.", backends: CPU_DISCOVER, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "splat", description: "Point splatting in compute (from gpu-splat): each point's square footprint (sized from its projected size, capped at max_splat px) atomicMin's its depth, a second pass writes the winning id, a resolve pass ray-boxes the block. Knob: max_splat.", backends: SPLAT, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "columns", description: "Voxel Space column march (Comanche, 1992): per screen column, front to back over the heightmap, drawing spans with a y-buffer.", backends: VOXELSPACE, provides: &[], needs: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "rayquery", description: "Hardware ray queries against the acceleration structure (RT cores) for primary, shadow and bounce rays. Knob: cull (triangle facing culled for primary rays).", backends: RT, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "raster", description: "Depth-tested rasterisation of the geometry; each pixel's ray is intersected with the face plane and shaded. gpu-raster: knob depth_prepass (lit: shade once per pixel). cpu-raster: edge functions into a visibility buffer, then deferred shading; knobs tile_width, band_height.", backends: RASTERS, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "gbuffer", description: "G-buffer (from gpu-hybrid): the raster pass writes the hit point, face and block; a compute pass rebuilds the hit and shades once per pixel. 20 bytes per pixel against visbuffer's 4, but no refetch. Also the `draw` knob of gpu-discover and cpu-discover.", backends: RASTER, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "visbuffer", description: "Visibility buffer: the raster pass writes only a face id and depth; a compute pass reconstructs the hit and shades once per pixel, independent of overdraw. Also the `draw` knob of gpu-discover and cpu-discover.", backends: RASTER, provides: &[], needs: &[] },
+    // Traversal kernels.
+    ComponentInfo { slot: Slot::Traversal, name: "refloor", description: "Per-pixel DDA: ask the storage for the largest empty cube, step out of it, re-floor (gpu-dda's walk).", backends: REFLOOR, provides: &[Cap::Lod, Cap::Steps], needs: &[] },
+    ComponentInfo { slot: Slot::Traversal, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", backends: INCREMENTAL, provides: &[Cap::Steps], needs: &[] },
+    ComponentInfo { slot: Slot::Traversal, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", backends: WALK_GPU, provides: &[Cap::Steps], needs: &[(Slot::Storage, Cap::Dist)] },
+    ComponentInfo { slot: Slot::Traversal, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: WALK_GPU, provides: &[Cap::Steps], needs: &[(Slot::Storage, Cap::Row)] },
+    ComponentInfo { slot: Slot::Traversal, name: "rayquery", description: "Hardware ray queries against the acceleration structure (RT cores) for primary, shadow and bounce rays. Knob: cull (triangle facing culled for primary rays).", backends: RT, provides: &[], needs: &[] },
     // Prepass.
     ComponentInfo { slot: Slot::Prepass, name: "none", description: "No prepass: every ray walks from the camera.", backends: GPU, provides: &[Cap::Lod], needs: &[] },
     ComponentInfo { slot: Slot::Prepass, name: "beam", description: "Conservative per-tile beam (from gpu-beam): one cone per tile marches top cells; rays start where their tile's cone is provably empty. Exact. Knob: tile (pixels, 1 = off).", backends: GPU, provides: &[], needs: &[] },
@@ -230,7 +256,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
 /// A renderer as an assembly of components. Slots left out (empty) take the back end's
 /// default; slots the back end doesn't have stay empty.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, from = "Stored")]
 pub struct Composition {
     #[serde(default = "default_backend")]
     pub backend: String,
@@ -243,6 +269,8 @@ pub struct Composition {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub visibility: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub traversal: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shading: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub meshes: String,
@@ -250,6 +278,40 @@ pub struct Composition {
 
 fn default_backend() -> String {
     "gpu-compute".into()
+}
+
+/// A composition as stored (plans, observations): before step 7 the traversal kernel sat
+/// in `visibility` (`visibility = "refloor"`); such records load with it moved to
+/// `traversal`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Stored {
+    #[serde(default = "default_backend")]
+    backend: String,
+    #[serde(default)]
+    storage: String,
+    #[serde(default)]
+    geometry: String,
+    #[serde(default)]
+    prepass: String,
+    #[serde(default)]
+    visibility: String,
+    #[serde(default)]
+    traversal: String,
+    #[serde(default)]
+    shading: String,
+    #[serde(default)]
+    meshes: String,
+}
+
+impl From<Stored> for Composition {
+    fn from(s: Stored) -> Self {
+        let mut c = Composition { backend: s.backend, storage: s.storage, geometry: s.geometry, prepass: s.prepass, visibility: s.visibility, traversal: s.traversal, shading: s.shading, meshes: s.meshes };
+        if c.traversal.is_empty() && component(Slot::Traversal, &c.visibility).is_some() {
+            c.traversal = std::mem::take(&mut c.visibility);
+        }
+        c
+    }
 }
 
 /// `gpu-compute: bricks + refloor + direct`.
@@ -262,7 +324,7 @@ impl Default for Composition {
 impl Composition {
     /// The back end's default composition (empty slots if the back end is unknown).
     pub fn new(backend: &str) -> Self {
-        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), shading: String::new(), meshes: String::new() };
+        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), traversal: String::new(), shading: String::new(), meshes: String::new() };
         c.fill_defaults();
         c
     }
@@ -273,6 +335,7 @@ impl Composition {
             Slot::Geometry => &self.geometry,
             Slot::Prepass => &self.prepass,
             Slot::Visibility => &self.visibility,
+            Slot::Traversal => &self.traversal,
             Slot::Shading => &self.shading,
             Slot::Meshes => &self.meshes,
         }
@@ -284,6 +347,7 @@ impl Composition {
             Slot::Geometry => &mut self.geometry,
             Slot::Prepass => &mut self.prepass,
             Slot::Visibility => &mut self.visibility,
+            Slot::Traversal => &mut self.traversal,
             Slot::Shading => &mut self.shading,
             Slot::Meshes => &mut self.meshes,
         };
@@ -325,7 +389,7 @@ impl Composition {
         let b = backend(&self.backend);
         let parts: Vec<&str> = self
             .slots()
-            .filter(|&s| !(s.optional() && b.and_then(|b| b.default_for(s)) == Some(self.get(s))))
+            .filter(|&s| !(b.is_some_and(|b| b.is_quiet(s)) && b.and_then(|b| b.default_for(s)) == Some(self.get(s))))
             .map(|s| if s == Slot::Meshes && self.get(s) == "none" { "no meshes" } else { self.get(s) })
             .collect();
         format!("{}: {}", self.backend, parts.join(" + "))
@@ -455,7 +519,8 @@ mod tests {
         for c in COMPONENTS.iter().filter(|c| c.backends.contains(&"gpu-compute")) {
             let ok = match c.slot {
                 Slot::Storage => storage::gpu(c.name).is_some_and(|g| g.has_lod() == matches!(g.kind, storage::Kind::Pool { .. })),
-                Slot::Visibility => visibility::gpu_wgsl(c.name).is_some(),
+                Slot::Visibility => c.name == "raycast",
+                Slot::Traversal => traversal::gpu_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 Slot::Prepass => prepass::gpu_wgsl(c.name).is_some(),
                 Slot::Meshes => ["none", "composite"].contains(&c.name),
@@ -468,6 +533,7 @@ mod tests {
                 Slot::Storage => storage::gpu(c.name).is_some(),
                 Slot::Geometry => geometry::gpu(c.name).is_some(),
                 Slot::Visibility => visibility::raster_wgsl(c.name).is_some(),
+                Slot::Traversal => traversal::gpu_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 Slot::Meshes => ["none", "depth"].contains(&c.name),
                 Slot::Prepass => false,
@@ -506,6 +572,8 @@ mod tests {
             let ok = match c.slot {
                 Slot::Storage => true, // every CPU storage (checked by `grid::CpuWorld::new`)
                 Slot::Visibility => ["quadtree", "cluster"].contains(&c.name),
+                // Discovery rays (CPU) and shadow rays (GPU) both walk with refloor.
+                Slot::Traversal => c.name == "refloor",
                 // Shading runs on its GPU side.
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 _ => false,
@@ -516,6 +584,7 @@ mod tests {
             let ok = match c.slot {
                 Slot::Storage => storage::gpu(c.name).is_some(),
                 Slot::Visibility => c.name == "quadtree",
+                Slot::Traversal => traversal::gpu_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 _ => false,
             };
@@ -533,19 +602,33 @@ mod tests {
         for c in COMPONENTS.iter().filter(|c| c.backends.contains(&"gpu-rt")) {
             let ok = match c.slot {
                 Slot::Geometry => geometry::rt(c.name).is_some(),
-                Slot::Visibility => visibility::rt_wgsl(c.name).is_some(),
+                Slot::Visibility => c.name == "raycast",
+                Slot::Traversal => traversal::rt_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 _ => false,
             };
             assert!(ok, "gpu-rt {} `{}`", c.slot.name(), c.name);
         }
-        let mut raster = Composition { backend: "gpu-raster".into(), storage: String::new(), visibility: String::new(), shading: String::new(), prepass: String::new(), geometry: "cubes".into(), meshes: String::new() };
+        let mut raster = Composition { geometry: "cubes".into(), ..Composition::new("gpu-raster") };
         assert_eq!(raster.resolve().unwrap().0, "gpu-raster");
         assert_eq!(raster.label(), "gpu-raster: bricks + cubes + raster");
-        let mut moved = Composition { storage: "rows".into(), visibility: "sphere".into(), ..Default::default() };
+        let mut moved = Composition { storage: "rows".into(), traversal: "rowrun".into(), ..Default::default() };
         moved.backend = "gpu-raster".into();
         moved.adapt_to_backend();
-        assert_eq!(moved, Composition { backend: "gpu-raster".into(), storage: "rows".into(), geometry: "greedy".into(), prepass: String::new(), visibility: "raster".into(), shading: "direct".into(), meshes: "depth".into() });
+        assert_eq!(moved, Composition { storage: "rows".into(), traversal: "rowrun".into(), ..Composition::new("gpu-raster") });
+        assert_eq!(moved.label(), "gpu-raster: rows + greedy + raster + rowrun", "a quiet slot shows once off its default");
+        moved.backend = "gpu-rt".into();
+        moved.adapt_to_backend();
+        assert_eq!(moved, Composition::new("gpu-rt"));
+        assert_eq!(moved.label(), "gpu-rt: greedy + rayquery");
+        // Records from before the split load with the kernel moved to `traversal`.
+        let old: Composition = toml::from_str("backend = \"gpu-compute\"\nstorage = \"prefix\"\nvisibility = \"incremental\"").unwrap();
+        assert_eq!((old.visibility.as_str(), old.traversal.as_str()), ("", "incremental"));
+        let old: Composition = toml::from_str("backend = \"gpu-rt\"\nvisibility = \"rayquery\"").unwrap();
+        assert_eq!(old.traversal, "rayquery");
+        let mut filled = old.clone();
+        filled.fill_defaults();
+        assert_eq!(filled, Composition::new("gpu-rt"));
         // Mesh passes: only compositions whose meshes stage draws them.
         let lit_meshes = mr_core::PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
         assert!(Composition::default().supports(lit_meshes));
@@ -564,18 +647,19 @@ mod tests {
         assert_eq!(disc.effective(mr_core::PassMode::UNLIT).storage, "prefix", "discovery rays walk the storage");
         assert_eq!(Composition { prepass: "beam".into(), ..Default::default() }.label(), "gpu-compute: bricks + beam + refloor");
         assert!(Composition { storage: "nope".into(), ..Default::default() }.validate().is_err());
-        assert!(caps::adapter_note(&Composition { storage: "bricks".into(), visibility: "sphere".into(), ..Default::default() }).is_some());
-        assert!(caps::adapter_note(&Composition { storage: "distance".into(), visibility: "sphere".into(), ..Default::default() }).is_none());
+        assert!(caps::adapter_note(&Composition { storage: "bricks".into(), traversal: "sphere".into(), ..Default::default() }).is_some());
+        assert!(caps::adapter_note(&Composition { storage: "distance".into(), traversal: "sphere".into(), ..Default::default() }).is_none());
+        assert!(caps::adapter_note(&Composition { storage: "bricks".into(), traversal: "sphere".into(), ..Composition::new("gpu-raster") }).is_some(), "shadow rays too");
         // LOD (gpu-compute) needs every stage on the primary walk to handle it.
-        let lod = [(Slot::Storage, Cap::Lod), (Slot::Visibility, Cap::Lod), (Slot::Prepass, Cap::Lod)];
+        let lod = [(Slot::Storage, Cap::Lod), (Slot::Traversal, Cap::Lod), (Slot::Prepass, Cap::Lod)];
         assert!(caps::lacks(&Composition::default(), &lod).is_none());
         let why = caps::lacks(&Composition { storage: "tree64".into(), prepass: "beam".into(), ..Default::default() }, &lod).unwrap();
         assert!(why.contains("storage `tree64` lacks lod") && why.contains("prepass `beam` lacks lod"), "{why}");
         assert!(conflict(&Composition::default(), Slot::Storage, "tree64").is_none());
         // Hit record fields: every gpu-compute walk counts steps; rayquery does not.
-        for v in names_on("gpu-compute", Slot::Visibility) {
-            assert!(caps::provides(Slot::Visibility, v, Cap::Steps), "{v}");
+        for v in names_on("gpu-compute", Slot::Traversal) {
+            assert!(caps::provides(Slot::Traversal, v, Cap::Steps), "{v}");
         }
-        assert!(!caps::provides(Slot::Visibility, "rayquery", Cap::Steps));
+        assert!(!caps::provides(Slot::Traversal, "rayquery", Cap::Steps));
     }
 }

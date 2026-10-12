@@ -57,7 +57,7 @@ use mr_core::*;
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::visibility::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
-use mr_components::{names_on, require, Slot, storage, visibility};
+use mr_components::{names_on, require, Slot, storage, traversal, visibility};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
@@ -88,8 +88,9 @@ const BACKEND: &str = "gpu-discover";
 
 fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::choice("storage", "Storage component: what discovery rays, exposure tests and shadow rays read (refloor walk)", &names_on(BACKEND, Slot::Storage), "bricks", false),
+        ParamSpec::choice("storage", "Storage component: what discovery rays, exposure tests and shadow rays read (walked with the traversal kernel)", &names_on(BACKEND, Slot::Storage), "bricks", false),
         ParamSpec::choice("visibility", "Visibility component", &names_on(BACKEND, Slot::Visibility), "quadtree", false),
+        ParamSpec::choice("traversal", "Traversal kernel of the discovery, shadow and bounce rays", &names_on(BACKEND, Slot::Traversal), "refloor", false),
         ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false),
         ParamSpec::int("tile", "Initial tile size in pixels (power of two)", 2, MAX_TILE as i64, 8, true).of("visibility", &["quadtree"]),
         ParamSpec::choice("criterion", "Tile coherence: all corners hit the same face plane, or the very same face", &["plane", "face"], "plane", true).of("visibility", &["quadtree"]),
@@ -133,6 +134,7 @@ fn params() -> Vec<ParamSpec> {
 struct Options {
     storage: String,
     visibility: String,
+    traversal: String,
     shading: String,
     tile: u32,
     criterion: String,
@@ -175,6 +177,7 @@ impl Default for Options {
         Self {
             storage: "bricks".into(),
             visibility: "quadtree".into(),
+            traversal: "refloor".into(),
             shading: "direct".into(),
             tile: 8,
             criterion: "plane".into(),
@@ -566,6 +569,7 @@ impl GpuDiscover {
         let opts: Options = p.options()?;
         let st = storage::gpu(&require(BACKEND, Slot::Storage, &opts.storage)?).expect("validated");
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
+        require(BACKEND, Slot::Traversal, &opts.traversal)?;
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
         // The host hands the device in (GPU slot 0); this back end only states its needs.
         let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
@@ -590,7 +594,7 @@ impl GpuDiscover {
         // refloor (rays and shadow rays).
         let layout_st = gpu_data::layout(&gpu, &st, wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT);
         let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
-        let walk = visibility::occlusion_wgsl(&st, false);
+        let walk = traversal::occlusion_wgsl(&st, &opts.traversal, false);
         let disc_mod = module("discover", shader_source(&walk, include_str!("discover.wgsl")));
         let args_mod = module("discover args", include_str!("args.wgsl").to_string());
         let shade = mr_components::shading::gpu_wgsl(&shading).expect("validated");

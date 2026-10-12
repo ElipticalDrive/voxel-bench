@@ -14,8 +14,8 @@ mod tests {
     use crate::storage::hier::cpu::Hier;
     use crate::storage::palette::cpu::Palette;
     use crate::storage::prefix::cpu::Prefix;
-    use crate::visibility::incremental::cpu::{level_above, level_below, trace_incremental};
-    use crate::visibility::refloor::cpu::trace_packet;
+    use crate::traversal::incremental::cpu::{level_above, level_below, trace_incremental};
+    use crate::traversal::refloor::cpu::trace_packet;
 
     fn rng(s: &mut u64) -> u64 {
         *s ^= *s << 13;

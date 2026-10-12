@@ -5,7 +5,7 @@
 use glam::{IVec3, Vec3};
 
 use crate::storage::cpu::{Grid, Repr, ffloor};
-use crate::visibility::cpu::Hit;
+use crate::traversal::cpu::Hit;
 
 /// Traces `N` rays in lockstep from the shared origin `o` (relative to `cam`).
 /// Lanes with `d.x == NaN` are inactive. Each lane ignores the start cell (like the

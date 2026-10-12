@@ -228,7 +228,7 @@ one shading entry point per kind of back end with a `Surface`; one face drawer w
 sources and the host-side `FaceDrawer`; every shadow and bounce ray through a storage
 component, the heightmap as a component; the architecture guard test
 `tests/architecture.rs`). Builds force code alignment (`.cargo/config.toml`). Step 5
-(devices handed to back ends) is done too; step 6 (capability model) is done; 7–8 follow. Open, deferred by the
+(devices handed to back ends) is done too; step 6 (capability model) is done; step 7 under way (7a: traversal slot); 8 follows. Open, deferred by the
 user to a later optimisation pass: gpu-voxelspace's lit cost (column threads shade
 serially; proposed per-pixel deferred shading, sweep entry of 2026-10-12), gpu-compute
 pathtrace codegen variance (accepted), cpu-discover's per-ray `dyn World` call.
@@ -920,6 +920,33 @@ earlier if meshes become more urgent; 7c depends on 6′.
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
 
+### 2026-10-12: architecture refactor step 7a (traversal kernels split from visibility)
+- **New slot `traversal`** (`components/src/traversal/`, moved from `visibility/`): kernels
+  `refloor`, `incremental`, `sphere`, `rowrun` (any GPU storage; refloor and incremental
+  also on the CPU) and `rayquery` (gpu-rt). `visibility` now holds strategies only: new
+  `raycast` (gpu-compute, cpu, gpu-rt), raster / visbuffer / gbuffer, quadtree, cluster,
+  splat, columns. `traversal::occlusion_wgsl(storage, kernel, lod)` gives any back end
+  rays through any kernel (default constants for incremental's knobs).
+- **New combinations:** gpu-raster's and gpu-splat's shadow rays and gpu-discover's
+  discovery and shadow rays walk any GPU kernel (cpu-discover: refloor only; voxelspace
+  walks its heightmap, a fused exception). The terrain wildcard sweep grows from 484 to
+  1,036 passes. Lit PSNR on terrain is the same for every kernel (raster and discovery
+  49.4 dB, splat 22.4 dB as before); kernel costs differ as on gpu-compute (gpu-discover
+  lit GPU ms: refloor 3.6, sphere 6.2, rowrun 7.9, incremental 9.6, sphere/rowrun via
+  adapters on bricks; measured with a dump running alongside, indicative only).
+- **Labels and CLI unchanged at defaults:** `BackendInfo::quiet` slots are left out of
+  labels at their default (`raycast` on gpu-compute / cpu / gpu-rt; the kernel on
+  rasterisers, discovery, splat) and are optional, last, in the CLI form
+  (`gpu-raster:distance+greedy+raster+direct+depth+sphere`).
+- **Old records load:** `Composition` deserialises through `Stored`, moving a kernel named
+  in `visibility` to `traversal`; named renderers' options and sweep `compose` tables
+  migrate the same way. Shipped plans are rewritten to the new form.
+- **Checks:** every one of the 282 distinct shaders the 6b build assembles for the terrain
+  sweep is still assembled byte-identically (ignoring the `// Composition:` comment); 432
+  new ones come from new combinations; no failed pass. Tests 49 + architecture guard + 3
+  GPU end-to-end; GUI screenshot shows the traversal row and the adapter note.
+  `scripts/ab/wgsl.sh` now compares normalised content and accepts `SWEEP_BEFORE`.
+
 ### 2026-10-12: architecture refactor step 6b (the hit record's optional fields); step 6 done
 - **Hit record** (`crates/mr-gpu/src/voxels.wgsl`): core `hit, t, cell, block, axis`;
   optional `lod` (`Cap::Lod`) and the step count `ct_iters` (`Cap::Steps`, refloor,
@@ -937,8 +964,8 @@ earlier if meshes become more urgent; 7c depends on 6′.
   `adapter_note` (screenshot checked). Knob choices are not greyed by capabilities yet
   (no knob has an unmet case); CPU components declare no capabilities yet (agreed: GPU
   first; associated consts on the CPU traits come with step 8's preparation).
-- The headless GUI screenshot test cannot start workers (they are spawned from the test
-  binary): the lane shows "worker exited … 101". The real binary runs the same plan.
+- (Corrected in 7a: a screenshot lane failing with "worker exited … 101" came from a
+  `SHOT_PLAN` with `isolation = "process"`; the screenshot test needs `isolation = "thread"`.)
 
 ### 2026-10-12: architecture refactor step 6a (capabilities and adapters)
 - **`components/src/caps.rs`:** `Cap` (typed: `Dist`, `Row`, `Lod`), components declare
