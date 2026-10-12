@@ -923,6 +923,10 @@ earlier if meshes become more urgent; 7c depends on 6′.
   with forced function / block alignment both builds are within ±1.4%: code layout
   again (second time). Suggestion for the user: build measured binaries with forced
   alignment by default.
+- **Found, not fixed:** cpu-discover's CPU discovery calls the composed storage through
+  `dyn World` (a virtual call per discovery ray; `grid.rs`): a composition cost the `cpu`
+  back end avoids by being generic over the storage. Candidate for a later step (make
+  discovery generic over the storage, or compile it on demand, step 8).
 - **Slip:** 3b was committed with the registry test failing (it hard-coded `direct` for
   cpu-discover's shading); fixed in the next commit. Commits now run only after the
   tests pass.
