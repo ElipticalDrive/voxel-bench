@@ -55,6 +55,7 @@ pub fn layout(gpu: &Gpu, st: &GpuStorage, visibility: wgpu::ShaderStages) -> wgp
 }
 
 /// What a storage needs to know about the run.
+#[derive(Copy, Clone)]
 pub struct Limits {
     /// Side data / own data limit (MiB); pool storages size it per pool slot.
     pub mb: u32,

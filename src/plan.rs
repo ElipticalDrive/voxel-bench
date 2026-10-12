@@ -187,10 +187,13 @@ impl RendererSpec {
             }
         }
         if let Some(c) = &mut self.compose {
-            // Before step 7b discovery's drawer was the `draw` option.
-            if c.draw.is_empty() {
-                if let Some(d) = self.options.get("draw").and_then(|v| v.as_str()) {
-                    c.draw = d.to_string();
+            // Stages that were options before (discovery's `draw`, cpu-discover's
+            // `shadow_storage`): a stage left empty takes the option of its name.
+            for slot in mr_components::Slot::ALL {
+                if c.get(slot).is_empty() {
+                    if let Some(v) = self.options.get(slot.name()).and_then(|v| v.as_str()) {
+                        c.set(slot, v);
+                    }
                 }
             }
             let (name, opts) = c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?;

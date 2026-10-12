@@ -2,16 +2,18 @@
 # wgsl.sh [PLANS...]: dumps every shader the saved "before" build
 # (scripts/ab/save-before.sh) and the current build assemble for every valid composition
 # (a short wildcard sweep, default plans terrain and meshes), then compares the two sets,
-# ignoring `// Composition:` comment lines. A refactor that must not change what runs
-# leaves them identical; one that adds combinations keeps every "before" shader.
+# ignoring comment lines. A refactor that must not change what runs leaves them
+# identical; one that adds combinations keeps every "before" shader.
 # SWEEP_BEFORE: the before build's sweep, when the compose syntax changed in between.
+# WGSL_IGNORE: a regex of lines to drop, WGSL_MAP: "old=>new" replacements (both sides),
+# for a change declared as harmless (e.g. a one-line wrapper the compiler inlines).
 cd "$(dirname "$0")/../.."
 PLANS=${*:-terrain meshes}
 BEFORE=${BEFORE:-target/ab-before/multirenderer}
 T=target/ab/wgsl; rm -rf $T; mkdir -p $T
 # A copy, so rebuilding during the (long) run does not pull the binary from under it.
 cp target/release/multirenderer $T/multirenderer-after || exit 1
-SWEEP='renderer=[{compose={backend="*",storage="*",geometry="*",prepass="*",visibility="*",draw="*",traversal="*",shading="*",meshes="*"}}]'
+SWEEP=${SWEEP:-'renderer=[{compose={backend="*",storage="*",geometry="*",prepass="*",visibility="*",draw="*",traversal="*",shading="*",meshes="*"}}]'}
 for side in before after; do
   BIN=$BEFORE; S=${SWEEP_BEFORE:-$SWEEP}
   [ $side = after ] && BIN=$T/multirenderer-after && S=$SWEEP
@@ -21,12 +23,17 @@ for side in before after; do
   done
 done
 python3 -I - "$T" <<'PY'
-import hashlib, pathlib, sys
+import hashlib, os, pathlib, re, sys
 t = pathlib.Path(sys.argv[1])
+ignore = re.compile(os.environ["WGSL_IGNORE"]) if os.environ.get("WGSL_IGNORE") else None
+maps = [m.split("=>", 1) for m in os.environ.get("WGSL_MAP", "").split(";") if "=>" in m]
 def norm(side):
     out = {}
     for f in (t / side).glob("*.wgsl"):
-        body = "\n".join(l for l in f.read_text().split("\n") if not l.startswith("// Composition:"))
+        lines = [l for l in f.read_text().split("\n") if not l.lstrip().startswith("//") and not (ignore and ignore.search(l))]
+        body = "\n".join(lines)
+        for a, b in maps:
+            body = body.replace(a, b)
         out.setdefault(hashlib.sha1(body.encode()).hexdigest(), f.name)
     return out
 b, a = norm("before"), norm("after")

@@ -72,7 +72,8 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (IDEAS §10; was cpu-cluster)", &names_on(BACKEND, Slot::Visibility), "quadtree", true),
         ParamSpec::choice("traversal", "Traversal kernel of the CPU discovery rays and the GPU shadow and bounce rays", &names_on(BACKEND, Slot::Traversal), "refloor", false),
         ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false),
-        ParamSpec::choice("shadow_storage", "GPU storage component the GPU's shadow (and bounce) rays walk with refloor; the storage slot is the CPU representation discovery rays walk", &gpu_storages(), "bricks", false).of("shading", &names_on(BACKEND, Slot::Shading)),
+        ParamSpec::choice("shadow_storage", "GPU storage the GPU's shadow and bounce rays walk (`same`: the GPU twin of the storage discovery rays walk, if it has one); the storage slot is the CPU representation discovery rays walk", &names_on(BACKEND, Slot::ShadowStorage), "bricks", false),
+        ParamSpec::choice("shadow_traversal", "GPU kernel of the shadow and bounce rays (`same`: the traversal kernel)", &names_on(BACKEND, Slot::ShadowTraversal), "same", false),
         ParamSpec::int("seed_step", "Cluster: coarsest seed lattice spacing (px, rounded to a power of two)", 1, 256, 16, true).of("visibility", &["cluster"]),
         ParamSpec::choice("sky", "Cluster: corners = a lattice cell at spacing <= sky_tile is sky when all four corner seeds miss; sparse = one missed seed covers its cell (cheaper; thin things may take a few frames to appear)", &["corners", "sparse"], "corners", true).of("visibility", &["cluster"]),
         ParamSpec::choice("view", "image: the rendered scene. Cluster discovery only: clusters = one colour per cluster found this pass; kinds = confirmed faces (all corners visible) green, faces with an occluded corner yellow, faces carried over from earlier passes grey", &["image", "clusters", "kinds"], "image", true),
@@ -100,11 +101,6 @@ fn params() -> Vec<ParamSpec> {
     .collect()
 }
 
-/// The GPU storage components (for `shadow_storage`).
-fn gpu_storages() -> Vec<&'static str> {
-    mr_components::components(Slot::Storage).filter(|c| mr_components::storage::gpu(c.name).is_some()).map(|c| c.name).collect()
-}
-
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
@@ -115,6 +111,7 @@ struct Options {
     traversal: String,
     shading: String,
     shadow_storage: String,
+    shadow_traversal: String,
     bounces: u32,
     spp: u32,
     accumulate: bool,
@@ -149,6 +146,7 @@ impl Default for Options {
             traversal: "refloor".into(),
             shading: "direct".into(),
             shadow_storage: "bricks".into(),
+            shadow_traversal: "same".into(),
             bounces: 1,
             spp: 1,
             accumulate: true,
@@ -286,13 +284,19 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
 
 impl CpuDiscover {
     pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
-        let opts: Options = p.options()?;
+        let mut opts: Options = p.options()?;
         let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
+        // The secondary-ray stages, `same` resolved to the primary's components.
+        for (slot, v, primary) in [(Slot::ShadowStorage, &mut opts.shadow_storage, &opts.storage), (Slot::ShadowTraversal, &mut opts.shadow_traversal, &opts.traversal)] {
+            if require(BACKEND, slot, v)? == "same" {
+                *v = primary.clone();
+            }
+        }
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         require(BACKEND, Slot::Traversal, &opts.traversal)?;
         require(BACKEND, Slot::Draw, &opts.draw)?;
         require(BACKEND, Slot::Shading, &opts.shading)?;
-        let st = mr_components::storage::gpu(&opts.shadow_storage).ok_or_else(|| anyhow::anyhow!("shadow_storage `{}` is not a GPU storage (have: {})", opts.shadow_storage, gpu_storages().join(", ")))?;
+        let st = mr_components::storage::gpu(&opts.shadow_storage).ok_or_else(|| anyhow::anyhow!("shadow_storage `{}` has no GPU implementation (have: {})", opts.shadow_storage, names_on(BACKEND, Slot::ShadowStorage).join(", ")))?;
         // The host hands the device in (GPU slot 0); this back end only states its needs.
         let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
         let world = VoxelWorld::new(
@@ -402,7 +406,7 @@ impl CpuDiscover {
         // Shadow and bounce rays: the kernel through the composed GPU storage (group 2).
         let st = mr_components::storage::gpu(&opts.shadow_storage).expect("checked in new");
         let source = shader_source(
-            &mr_components::traversal::occlusion_wgsl(&st, &opts.traversal, false),
+            &mr_components::traversal::occlusion_wgsl(&st, &opts.shadow_traversal, false),
             &format!("{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true)),
         );
         let module = mr_gpu::shader(&gpu.device, "cpu-discover raster", source);

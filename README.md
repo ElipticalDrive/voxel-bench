@@ -60,7 +60,7 @@ display resolution. **O** hides the overlays. The ❓ Keys tab lists everything.
 
 A renderer is assembled from components rather than picked from a list (IDEAS §12):
 **back end** × **storage** × **geometry** × **prepass** × **visibility** × **draw** ×
-**traversal** × **shading** × **meshes**. The pieces live in `components/`, one directory each
+**traversal** × **shadow storage** × **shadow traversal** × **shading** × **meshes**. The pieces live in `components/`, one directory each
 (`storage/prefix/gpu.wgsl`, ...); back ends in `backends/`. Not every back end has every
 slot: `geometry` exists only on the rasterising and RT back ends, `prepass` only on
 gpu-compute, `meshes` only on gpu-compute and gpu-raster.
@@ -84,6 +84,17 @@ quadtree`, and `gpu-raster: distance + greedy + raster + sphere` once changed. P
 records from before the split (`visibility = "refloor"`, gpu-raster's `visibility =
 "visbuffer"`, discovery's `draw` option) load with the choice moved to `traversal` /
 `draw`; `scripts/ab/sweepcmp.py` matches old and new records the same way.
+
+**Secondary rays are an edge of the pipeline graph** (PLAN step 7c): `shadow_storage`
+and `shadow_traversal` choose what shadow and bounce rays (and mesh shadows) walk:
+`same` as the primary rays (the default; nothing changes) or another storage and kernel,
+e.g. `gpu-compute: prefix + incremental + shadow distance + shadow sphere`. The second
+walk is compiled next to the first under names of its own (`traversal::namespaced`,
+bind group 4) and its storage data kept as well (memory for both). On gpu-compute and
+cpu-discover, whose shadow rays always ran on the GPU (`shadow_storage` default
+`bricks`, as before; `same` needs a storage with a GPU twin). Rasterisers and splats
+have no primary rays, so their `storage` / `traversal` stages already are the
+secondary-ray edge.
 
 Lighting and meshes are stages *around* the walk, so storages and walks know nothing of
 them. The pass mode (lit / unlit, meshes on / off) is what the scene asks for. The shading

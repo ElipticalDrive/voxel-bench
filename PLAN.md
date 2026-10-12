@@ -228,7 +228,7 @@ one shading entry point per kind of back end with a `Surface`; one face drawer w
 sources and the host-side `FaceDrawer`; every shadow and bounce ray through a storage
 component, the heightmap as a component; the architecture guard test
 `tests/architecture.rs`). Builds force code alignment (`.cargo/config.toml`). Step 5
-(devices handed to back ends) is done too; step 6 (capability model) is done; step 7 under way (7a: traversal slot, 7b: draw stage); 8 follows. Open, deferred by the
+(devices handed to back ends) is done too; step 6 (capability model) is done; step 7 done (7a traversal slot, 7b draw stage, 7c secondary rays as a graph edge); step 8 (CPU pipelines compiled on demand) under way. Open, deferred by the
 user to a later optimisation pass: gpu-voxelspace's lit cost (column threads shade
 serially; proposed per-pixel deferred shading, sweep entry of 2026-10-12), gpu-compute
 pathtrace codegen variance (accepted), cpu-discover's per-ray `dyn World` call.
@@ -286,7 +286,7 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    hit record (optional: position within the face, LOD level, material layer, step counts,
    mesh id), generalising the existing `s_*` + `fallbacks.wgsl` pattern. Unused
    capabilities compile away.
-7. **Split visibility into traversal kernels and visibility strategies** (§16 step 5,
+7. **Done 2026-10-12 (progress log).** **Split visibility into traversal kernels and visibility strategies** (§16 step 5,
    IDEAS §18): kernels (refloor, incremental, sphere, rowrun, rayquery) answer ray queries
    against any storage with the needed capabilities; strategies (ray cast, raster,
    discovery, splat, columns) organise primary visibility and use kernels. Discovery's
@@ -295,7 +295,7 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    storage; history feeds frames forward). The GUI's stage grid grows with it.
    *7a done (traversal slot), 7b done (draw stage).* Discovery's sampler is already a
    choice (quadtree, cluster); retention and hole detection have one implementation each,
-   so they stay knobs until a second exists. *Proposed 7c (awaiting the user):* secondary
+   so they stay knobs until a second exists. *7c done (agreed by the user):* secondary
    rays as an explicit edge of the graph: shading gets its own storage + kernel, default
    "same as primary". It replaces cpu-discover's `shadow_storage` knob and the
    rasterisers' lit-only storage / traversal slots with one concept, and adds
@@ -928,6 +928,35 @@ earlier if meshes become more urgent; 7c depends on 6′.
   now host-side (update) cost, not measurement. Rasterisers win the closed scenes (room,
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
+
+### 2026-10-12: architecture refactor step 7c (secondary rays as a graph edge); step 7 done
+- **Stages `shadow_storage`, `shadow_traversal`** (GUI: shadow storage / shadow kernel):
+  what shadow and bounce rays (and mesh shadows) walk, `same` as the primary rays or
+  another storage / kernel. They choose from the storage and traversal components
+  (`Slot::source`, `Composition::resolved`, the synthetic `same`); availability comes
+  from `BackendInfo::rays`, the back end whose implementations the rays use (cpu-discover:
+  gpu-discover's). A kernel in `shadow_traversal` takes its storage needs from the shadow
+  storage (`caps::needs_of`); LOD needs the shadow stages too. On gpu-compute (default
+  `same`) and cpu-discover (default `bricks`, its former `shadow_storage` knob, which old
+  plans still set through options; `same` is invalid, with the reason, for CPU-only
+  storages). Rasterisers and splat have no primary rays: their storage / traversal
+  already are this edge.
+- **Shader side:** secondary rays go through `strace()` (bounces) and `occluded()`; with
+  `same` a one-line wrapper over `ctrace`. Otherwise `traversal::secondary_wgsl` compiles
+  the second storage and kernel next to the first under suffixed names
+  (`traversal::namespaced`: every top-level declaration renamed, member accesses kept;
+  bind group 4). A unit test parses and validates (naga) primary + secondary pairs.
+  gpu-compute keeps a second `StorageData` for another storage (both updated; memory and
+  counters reported, `shadow_*`), binds the primary's again for another kernel only, and
+  requires 5 bind groups.
+- **Results (terrain lit):** `prefix + incremental + shadow distance + shadow sphere` 57.8 dB
+  (default 57.9), `tree64 + shadow bricks` 57.9 dB; cpu-discover `shadow sphere` and
+  `shadow distance` 27.7 dB as its default. Distance's rebuild cost shows in load time.
+- **Checks:** all 846 shaders of the 7b build's terrain sweep unchanged apart from the
+  declared `strace` wrapper (and gpu-rt's comment and blank line); `scripts/ab/wgsl.sh`
+  now drops comments and takes `WGSL_IGNORE` / `WGSL_MAP` for declared changes. Pathtrace
+  (bounces through the wrapper) and defaults: GPU ms within ±0.2% (3 interleaved rounds).
+  Tests 50 + guard + 3 GPU end-to-end; GUI screenshot shows the two rows.
 
 ### 2026-10-12: architecture refactor step 7b (the draw stage)
 - **New slot `draw`** (`components/src/draw/`, the face drawer moved from `visibility/`):

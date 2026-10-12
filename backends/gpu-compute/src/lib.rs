@@ -54,6 +54,8 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::choice("storage", &format!("Storage component. {}", describe(Slot::Storage)), &names_on(BACKEND, Slot::Storage), "bricks", false),
         ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "raycast", false),
         ParamSpec::choice("traversal", &format!("Traversal kernel (any storage works with any; missing fast paths come from adapters). {}", describe(Slot::Traversal)), &names_on(BACKEND, Slot::Traversal), "refloor", true),
+        ParamSpec::choice("shadow_storage", "What shadow and bounce rays walk: `same` (the primary storage) or another storage (its data is kept as well)", &names_on(BACKEND, Slot::ShadowStorage), "same", false),
+        ParamSpec::choice("shadow_traversal", "The kernel of shadow and bounce rays: `same` (the primary kernel) or another", &names_on(BACKEND, Slot::ShadowTraversal), "same", false),
         ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
         ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &names_on(BACKEND, Slot::Prepass), "none", true),
         ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(BACKEND, Slot::Meshes), "composite", true),
@@ -82,6 +84,8 @@ struct Options {
     storage: String,
     visibility: String,
     traversal: String,
+    shadow_storage: String,
+    shadow_traversal: String,
     shading: String,
     prepass: String,
     meshes: String,
@@ -109,6 +113,8 @@ impl Default for Options {
             storage: "bricks".into(),
             visibility: "raycast".into(),
             traversal: "refloor".into(),
+            shadow_storage: "same".into(),
+            shadow_traversal: "same".into(),
             shading: "direct".into(),
             prepass: "none".into(),
             meshes: "composite".into(),
@@ -137,6 +143,10 @@ impl Default for Options {
 struct Composition {
     storage: String,
     traversal: String,
+    /// The secondary rays' storage and kernel where they differ from the primary ones
+    /// (`None`: the same; fixed at creation).
+    shadow_storage: Option<String>,
+    shadow_traversal: Option<String>,
     shading: String,
     prepass: String,
     /// Prepass tile size in pixels (1 = the prepass is skipped).
@@ -155,6 +165,19 @@ struct Composition {
 impl Composition {
     fn storage(&self) -> storage::GpuStorage {
         storage::gpu(&self.storage).expect("validated")
+    }
+
+    /// Secondary rays walk their own storage or kernel (bind group 4, [`traversal::secondary_wgsl`]).
+    fn separate(&self) -> bool {
+        self.shadow_storage.is_some() || self.shadow_traversal.is_some()
+    }
+
+    fn shadow_storage(&self) -> storage::GpuStorage {
+        storage::gpu(self.shadow_storage.as_ref().unwrap_or(&self.storage)).expect("validated")
+    }
+
+    fn shadow_traversal(&self) -> &str {
+        self.shadow_traversal.as_ref().unwrap_or(&self.traversal)
     }
 
     /// The prepass in effect: a tile of 1 pixel turns it off.
@@ -190,14 +213,16 @@ impl Composition {
             st.source(),
             include_str!("main.wgsl"),
         );
-        shader_source(traversal::OCCLUDED_WGSL, &own)
+        let secondary = if self.separate() { traversal::secondary_wgsl(&self.shadow_storage(), self.shadow_traversal(), self.lod, 4) } else { traversal::OCCLUDED_WGSL.to_string() };
+        shader_source(&secondary, &own)
     }
 }
 
 
-/// What LOD needs (`mr_components::caps`): chunks at every level (pool storages), a walk
-/// that scales its cells (refloor) and a prepass that copes (none; the beam reads level 0).
-const LOD_NEEDS: &[(Slot, Cap)] = &[(Slot::Storage, Cap::Lod), (Slot::Traversal, Cap::Lod), (Slot::Prepass, Cap::Lod)];
+/// What LOD needs (`mr_components::caps`): chunks at every level (pool storages), walks
+/// that scale their cells (refloor; for shadow rays too) and a prepass that copes (none;
+/// the beam reads level 0).
+const LOD_NEEDS: &[(Slot, Cap)] = &[(Slot::Storage, Cap::Lod), (Slot::Traversal, Cap::Lod), (Slot::ShadowStorage, Cap::Lod), (Slot::ShadowTraversal, Cap::Lod), (Slot::Prepass, Cap::Lod)];
 
 /// What `view = "steps"` needs: a walk that counts its iterations.
 const STEPS_NEEDS: &[(Slot, Cap)] = &[(Slot::Traversal, Cap::Steps)];
@@ -207,6 +232,8 @@ fn blocker(c: &Composition, needs: &[(Slot, Cap)]) -> Option<String> {
     let mut m = mr_components::Composition::new(BACKEND);
     m.storage = c.storage.clone();
     m.traversal = c.traversal.clone();
+    m.shadow_storage = c.shadow_storage.clone().unwrap_or("same".into());
+    m.shadow_traversal = c.shadow_traversal.clone().unwrap_or("same".into());
     m.prepass = c.prepass().to_string();
     caps::lacks(&m, needs)
 }
@@ -215,6 +242,12 @@ fn blocker(c: &Composition, needs: &[(Slot, Cap)]) -> Option<String> {
 fn feature_blocker(c: &Composition) -> Option<String> {
     let lod = c.lod.then(|| blocker(c, LOD_NEEDS).map(|w| format!("this run streams LOD chunks: {w}"))).flatten();
     lod.or_else(|| c.steps_view.then(|| blocker(c, STEPS_NEEDS).map(|w| format!("view = steps: {w}"))).flatten())
+}
+
+/// A secondary-ray stage's choice: `None` for `same` (or the primary's own component).
+fn secondary(slot: Slot, name: &str, primary: &str) -> anyhow::Result<Option<String>> {
+    let name = require(BACKEND, slot, name)?;
+    Ok((name != "same" && name != primary).then_some(name))
 }
 
 fn parse_dispatch(s: &str) -> anyhow::Result<bool> {
@@ -280,6 +313,8 @@ pub struct GpuCompose {
     draw_meshes: bool,
     /// The storage's own data (group 2).
     data: StorageData,
+    /// The secondary rays' storage data and layout (group 4), if they walk another storage.
+    data_s: Option<(StorageData, wgpu::BindGroupLayout)>,
     ring: FrameRing,
     width: u32,
     height: u32,
@@ -296,6 +331,8 @@ impl GpuCompose {
                 require(BACKEND, Slot::Visibility, &opts.visibility)?;
                 require(BACKEND, Slot::Traversal, &opts.traversal)?
             },
+            shadow_storage: secondary(Slot::ShadowStorage, &opts.shadow_storage, &opts.storage)?,
+            shadow_traversal: secondary(Slot::ShadowTraversal, &opts.shadow_traversal, &opts.traversal)?,
             shading: require(BACKEND, Slot::Shading, &opts.shading)?,
             prepass: require(BACKEND, Slot::Prepass, &opts.prepass)?,
             tile: opts.tile.clamp(1, 64),
@@ -324,7 +361,7 @@ impl GpuCompose {
             VoxelWorldConfig {
                 max_lod: if comp.lod { p.max_lod.min(6) } else { 0 },
                 // Region storages (tree64) hold their own data instead of the voxel pool.
-                upload_voxels: matches!(comp.storage().kind, storage::Kind::Pool { .. }),
+                upload_voxels: [comp.storage(), comp.shadow_storage()].iter().any(|st| matches!(st.kind, storage::Kind::Pool { .. })),
                 pool_mb: opts.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
@@ -338,8 +375,14 @@ impl GpuCompose {
         let pixel = compute | wgpu::ShaderStages::FRAGMENT;
         // Fragment too: mesh shadows walk the composed storage.
         let layout2 = gpu_data::layout(&gpu, &comp.storage(), compute | wgpu::ShaderStages::FRAGMENT);
-        let occ = traversal::occlusion_wgsl(&comp.storage(), &comp.traversal, comp.lod);
-        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Occlusion { wgsl: &occ, layout: &layout2 });
+        // The secondary rays' own storage data (bind group 4), if they walk another storage.
+        let layout_s = comp.shadow_storage.is_some().then(|| gpu_data::layout(&gpu, &comp.shadow_storage(), compute | wgpu::ShaderStages::FRAGMENT));
+        if comp.separate() && gpu.device.limits().max_bind_groups < 5 {
+            anyhow::bail!("shadow rays through another storage or kernel need 5 bind groups; this device has {}", gpu.device.limits().max_bind_groups);
+        }
+        // Mesh shadows are secondary rays too.
+        let occ = traversal::occlusion_wgsl(&comp.shadow_storage(), comp.shadow_traversal(), comp.lod);
+        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Occlusion { wgsl: &occ, layout: layout_s.as_ref().unwrap_or(&layout2) });
         let rw = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: pixel,
@@ -373,11 +416,13 @@ impl GpuCompose {
         });
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("compose"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout2), Some(meshes.layout())],
+            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout2), Some(meshes.layout()), comp.separate().then(|| layout_s.as_ref().unwrap_or(&layout2))],
             immediate_size: 0,
         });
         let (pipeline, prepass) = Self::pipeline(&gpu, &pipeline_layout, &comp)?;
-        let data = StorageData::new(&gpu, comp.storage(), gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
+        let limits = gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 };
+        let data = StorageData::new(&gpu, comp.storage(), limits);
+        let data_s = layout_s.map(|l| (StorageData::new(&gpu, comp.shadow_storage(), limits), l));
         let camera_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
             size: size_of::<CameraUniform>() as u64,
@@ -392,7 +437,7 @@ impl GpuCompose {
         let bind0_frag = Self::bind0(&gpu, &layout0, &camera_buf, &stand_in, &beam, &accum);
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
-        tracing::info!("gpu-compute: storage {}, traversal {}, shading {}", comp.storage, comp.traversal, comp.shading);
+        tracing::info!("gpu-compute: storage {}, traversal {}, shadow rays {} + {}, shading {}", comp.storage, comp.traversal, comp.shadow_storage.as_deref().unwrap_or("same"), comp.shadow_traversal(), comp.shading);
         Ok(Self {
             gpu,
             world,
@@ -414,6 +459,7 @@ impl GpuCompose {
             view_max: opts.view_max.clamp(1, 16384),
             draw_meshes: require(BACKEND, Slot::Meshes, &opts.meshes)? != "none",
             data,
+            data_s,
             ring,
             width: p.width,
             height: p.height,
@@ -493,6 +539,9 @@ impl Renderer for GpuCompose {
             self.accum.invalidate();
         }
         let changed = self.world.apply(&self.gpu, updates);
+        if let Some((d, _)) = &mut self.data_s {
+            d.update(&self.gpu, &self.world, &changed)?;
+        }
         self.data.update(&self.gpu, &self.world, &changed)
     }
 
@@ -526,7 +575,13 @@ impl Renderer for GpuCompose {
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         let bind2 = self.data.prepare(&self.gpu, &self.world, &self.layout2).clone();
-        self.meshes.meshes.set_occlusion_bind_group(&bind2);
+        // Secondary rays: their own storage, or the primary one walked by another kernel.
+        let bind_s = match &mut self.data_s {
+            Some((d, l)) => d.prepare(&self.gpu, &self.world, l).clone(),
+            None => bind2.clone(),
+        };
+        let separate = self.built.separate();
+        self.meshes.meshes.set_occlusion_bind_group(&bind_s);
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         // The first pass carries the frame's begin timestamp: meshes, else the prepass.
         let want_meshes = req.meshes && self.draw_meshes;
@@ -545,6 +600,9 @@ impl Renderer for GpuCompose {
             pass.set_bind_group(1, &world_bg, &[]);
             pass.set_bind_group(2, &bind2, &[]);
             pass.set_bind_group(3, self.meshes.bind_group(), &[]);
+            if separate {
+                pass.set_bind_group(4, &bind_s, &[]);
+            }
             pass.dispatch_workgroups(self.width.div_ceil(tile).div_ceil(8), self.height.div_ceil(tile).div_ceil(8), 1);
         }
         let first = !meshes_on && self.prepass.is_none();
@@ -559,6 +617,9 @@ impl Renderer for GpuCompose {
                 pass.set_bind_group(1, &world_bg, &[]);
                 pass.set_bind_group(2, &bind2, &[]);
                 pass.set_bind_group(3, self.meshes.bind_group(), &[]);
+                if separate {
+                    pass.set_bind_group(4, &bind_s, &[]);
+                }
                 pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
             }
             Main::Fragment(pipeline) => {
@@ -583,6 +644,9 @@ impl Renderer for GpuCompose {
                 pass.set_bind_group(1, &world_bg, &[]);
                 pass.set_bind_group(2, &bind2, &[]);
                 pass.set_bind_group(3, self.meshes.bind_group(), &[]);
+                if separate {
+                    pass.set_bind_group(4, &bind_s, &[]);
+                }
                 pass.draw(0..3, 0..1);
             }
         }
@@ -592,6 +656,7 @@ impl Renderer for GpuCompose {
             counters: [("dropped_chunks".to_string(), self.world.dropped_chunks() as f64)]
                 .into_iter()
                 .chain(self.data.counters())
+                .chain(self.data_s.iter().flat_map(|(d, _)| d.counters().into_iter().map(|(k, v)| (format!("shadow_{k}"), v))))
                 .chain(self.prepass.is_some().then(|| ("avg_skip_blocks".to_string(), self.beam.avg_skip)))
                 .chain(self.accum.counter(req.mode))
                 .collect(),
@@ -672,7 +737,7 @@ impl Renderer for GpuCompose {
     }
 
     fn memory(&self) -> MemoryReport {
-        MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + self.data.memory_bytes() + self.accum.memory_bytes() + self.beam.tiles.size() + self.width as u64 * self.height as u64 * 4 }
+        MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + self.data.memory_bytes() + self.data_s.as_ref().map_or(0, |(d, _)| d.memory_bytes()) + self.accum.memory_bytes() + self.beam.tiles.size() + self.width as u64 * self.height as u64 * 4 }
     }
 }
 

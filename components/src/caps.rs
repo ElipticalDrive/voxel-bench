@@ -72,17 +72,17 @@ pub enum Met {
 
 /// How `c` meets need `(slot, cap)`, or why it can't.
 pub fn meet(c: &Composition, slot: Slot, cap: Cap) -> Result<Met, String> {
-    let name = c.get(slot);
+    let name = c.resolved(slot);
     if name.is_empty() {
         return Ok(Met::NoStage);
     }
     if provides(slot, name, cap) {
         return Ok(Met::Native);
     }
-    if let Some(a) = adapter(slot, cap) {
+    if let Some(a) = adapter(slot.source(), cap) {
         return Ok(Met::Adapter(a));
     }
-    let have: Vec<&str> = components(slot).filter(|x| x.provides.contains(&cap)).map(|x| x.name).collect();
+    let have: Vec<&str> = components(slot.source()).filter(|x| x.provides.contains(&cap)).map(|x| x.name).collect();
     Err(format!("{} `{name}` lacks {} (have it: {})", slot.name(), cap.name(), if have.is_empty() { "none".into() } else { have.join(", ") }))
 }
 
@@ -92,26 +92,35 @@ pub fn lacks(c: &Composition, needs: &[(Slot, Cap)]) -> Option<String> {
     (!why.is_empty()).then(|| why.join("; "))
 }
 
+/// The needs of the component in effect in `slot`, as slots of `c`: a kernel walking the
+/// shadow rays needs its storage capabilities from the shadow storage.
+fn needs_of(c: &Composition, slot: Slot) -> Option<(&'static crate::ComponentInfo, Vec<(Slot, Cap)>)> {
+    let x = component(slot.source(), c.resolved(slot))?;
+    let to = |s: Slot| if slot == Slot::ShadowTraversal && s == Slot::Storage { Slot::ShadowStorage } else { s };
+    Some((x, x.needs.iter().map(|&(s, cap)| (to(s), cap)).collect()))
+}
+
 /// Why `c`'s components' needs cannot be met, if they can't.
 pub fn unmet(c: &Composition) -> Option<String> {
     let why: Vec<String> = c
         .slots()
-        .filter_map(|s| component(s, c.get(s)))
-        .filter_map(|x| lacks(c, x.needs).map(|w| format!("`{}` needs it: {w}", x.name)))
+        .filter_map(|s| needs_of(c, s))
+        .filter_map(|(x, needs)| lacks(c, &needs).map(|w| format!("`{}` needs it: {w}", x.name)))
         .collect();
     (!why.is_empty()).then(|| why.join("; "))
 }
 
 /// Advisory note for the needs of `c`'s components met through adapters.
 pub fn adapter_note(c: &Composition) -> Option<String> {
-    let notes: Vec<String> = c
+    let mut notes: Vec<String> = c
         .slots()
-        .filter_map(|s| component(s, c.get(s)))
-        .flat_map(|x| x.needs.iter().map(move |&n| (x, n)))
+        .filter_map(|s| needs_of(c, s))
+        .flat_map(|(x, needs)| needs.into_iter().map(move |n| (x, n)))
         .filter_map(|(x, (s, cap))| match meet(c, s, cap) {
-            Ok(Met::Adapter(a)) => Some(format!("`{}` answers {} for `{}` through an adapter ({}): correct, but slower than a {} with it built in", c.get(s), cap.name(), x.name, a.description, s.name())),
+            Ok(Met::Adapter(a)) => Some(format!("`{}` answers {} for `{}` through an adapter ({}): correct, but slower than a {} with it built in", c.resolved(s), cap.name(), x.name, a.description, s.source().name())),
             _ => None,
         })
         .collect();
+    notes.dedup();
     (!notes.is_empty()).then(|| notes.join("\n"))
 }

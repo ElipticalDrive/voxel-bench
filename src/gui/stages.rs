@@ -45,7 +45,7 @@ pub fn stage_grid(ui: &mut Ui, comp: &Composition, knobs: &[(ParamSpec, ParamVal
     // fixed-width stage label keeps the pickers aligned.
     let label = |ui: &mut Ui, text: &str, strong: bool, tip: &str| {
         let t = if strong { egui::RichText::new(text).strong() } else { egui::RichText::new(text) };
-        ui.add_sized([72.0, 18.0], egui::Label::new(t).truncate()).on_hover_text(tip);
+        ui.add_sized([96.0, 18.0], egui::Label::new(t).truncate()).on_hover_text(tip);
     };
     // Back end, with the knobs that belong to it rather than to a component.
     ui.horizontal_wrapped(|ui| {
@@ -72,7 +72,7 @@ pub fn stage_grid(ui: &mut Ui, comp: &Composition, knobs: &[(ParamSpec, ParamVal
     for slot in comp.slots() {
         let current = comp.get(slot).to_string();
         ui.horizontal_wrapped(|ui| {
-            label(ui, slot.name(), false, "A stage of the renderer: pick the component for it");
+            label(ui, slot.label(), false, "A stage of the renderer: pick the component for it");
             ComboBox::from_id_salt(slot.name())
                 .selected_text(&current)
                 .show_ui(ui, |ui| {

@@ -1,7 +1,7 @@
 // Shading `pathtrace` (from gpu-pathtrace): unlit = the face texel; lit = diffuse path
 // tracing: next-event estimation for sun and point lights with shadow rays (`occluded`),
 // a constant-ambient sky, `sp.bounces` cosine-weighted bounces traced with the composed
-// walk (`ctrace`), `sp.spp` paths per pixel per frame, and progressive accumulation in a
+// secondary walk (`strace`), `sp.spp` paths per pixel per frame, and progressive accumulation in a
 // linear buffer (`accum`, `sp.prev_count` samples so far). `sp` and `accum` are the
 // shading state (`shading::state`), bound by the back end. `bounces = 0` reproduces
 // `direct`'s lit image.
@@ -51,7 +51,7 @@ fn pt_path(s0: Surface) -> vec3<f32> {
         radiance += thr * light;
         if (depth == sp.bounces) { break; }
         let d = pt_cosine_dir(n);
-        let h = ctrace(p, d, vp.max_dist);
+        let h = strace(p, d, vp.max_dist);
         if (!h.hit) {
             radiance += thr * vp.ambient;
             break;

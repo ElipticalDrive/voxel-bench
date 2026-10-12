@@ -49,13 +49,17 @@ pub enum Slot {
     Visibility,
     Draw,
     Traversal,
+    /// What shadow and bounce rays walk (PLAN step 7c, the graph's secondary-ray edge):
+    /// `same` as the primary rays, or another storage / kernel.
+    ShadowStorage,
+    ShadowTraversal,
     Shading,
     Meshes,
 }
 
 impl Slot {
     /// In composition order (labels, the GUI chooser).
-    pub const ALL: [Slot; 8] = [Slot::Storage, Slot::Geometry, Slot::Prepass, Slot::Visibility, Slot::Draw, Slot::Traversal, Slot::Shading, Slot::Meshes];
+    pub const ALL: [Slot; 10] = [Slot::Storage, Slot::Geometry, Slot::Prepass, Slot::Visibility, Slot::Draw, Slot::Traversal, Slot::ShadowStorage, Slot::ShadowTraversal, Slot::Shading, Slot::Meshes];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -65,6 +69,8 @@ impl Slot {
             Slot::Visibility => "visibility",
             Slot::Draw => "draw",
             Slot::Traversal => "traversal",
+            Slot::ShadowStorage => "shadow_storage",
+            Slot::ShadowTraversal => "shadow_traversal",
             Slot::Shading => "shading",
             Slot::Meshes => "meshes",
         }
@@ -75,6 +81,30 @@ impl Slot {
     /// CLI form.
     pub fn optional(self) -> bool {
         matches!(self, Slot::Prepass | Slot::Shading | Slot::Meshes)
+    }
+
+    /// The name shown in the GUI's stage grid.
+    pub fn label(self) -> &'static str {
+        match self {
+            Slot::ShadowStorage => "shadow storage",
+            Slot::ShadowTraversal => "shadow kernel",
+            s => s.name(),
+        }
+    }
+
+    /// The slot whose components this one chooses from (the secondary-ray stages choose a
+    /// storage and a kernel), else itself.
+    pub fn source(self) -> Slot {
+        match self {
+            Slot::ShadowStorage => Slot::Storage,
+            Slot::ShadowTraversal => Slot::Traversal,
+            s => s,
+        }
+    }
+
+    /// A secondary-ray stage: `same` or a component of [`Self::source`].
+    pub fn secondary(self) -> bool {
+        self.source() != self
     }
 }
 
@@ -91,6 +121,9 @@ pub struct BackendInfo {
     /// Further slots left out of labels while at their default, and optional in the CLI
     /// form (e.g. ray casting on gpu-compute, the shadow-ray kernel of a rasteriser).
     pub quiet: &'static [Slot],
+    /// The back end whose storages and kernels its secondary-ray stages offer (itself,
+    /// or for cpu-discover, whose shadow rays run on the GPU, gpu-discover).
+    pub rays: &'static str,
 }
 
 impl BackendInfo {
@@ -109,37 +142,40 @@ impl BackendInfo {
 }
 
 const RAY_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Visibility, "raycast"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")];
-const COMPUTE_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Prepass, "none"), (Slot::Visibility, "raycast"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct"), (Slot::Meshes, "composite")];
+const COMPUTE_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Prepass, "none"), (Slot::Visibility, "raycast"), (Slot::Traversal, "refloor"), (Slot::ShadowStorage, "same"), (Slot::ShadowTraversal, "same"), (Slot::Shading, "direct"), (Slot::Meshes, "composite")];
 
 /// Every back end, including planned ones (shown disabled, with the reason).
 pub const BACKENDS: &[BackendInfo] = &[
-    BackendInfo { name: "gpu-compute", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("gpu-compute"), slots: COMPUTE_SLOTS, lit_only: &[], quiet: &[Slot::Visibility] },
-    BackendInfo { name: "cpu", description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops", renderer: Some("cpu"), slots: RAY_SLOTS, lit_only: &[], quiet: &[Slot::Visibility] },
+    BackendInfo { name: "gpu-compute", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("gpu-compute"), slots: COMPUTE_SLOTS, lit_only: &[Slot::ShadowStorage, Slot::ShadowTraversal], quiet: &[Slot::Visibility, Slot::ShadowStorage, Slot::ShadowTraversal], rays: "gpu-compute" },
+    BackendInfo { name: "cpu", description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops", renderer: Some("cpu"), slots: RAY_SLOTS, lit_only: &[], quiet: &[Slot::Visibility], rays: "cpu" },
     BackendInfo {
         name: "gpu-raster",
         description: "GPU rasterisation (wgpu): the geometry component turns chunks into faces on the CPU, drawn with vertex pulling and multi-draw-indirect after chunk and face-direction culling. Storage here is what lit-mode shadow rays walk (refloor)",
         renderer: Some("gpu-raster"),
         slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "faces"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct"), (Slot::Meshes, "depth")],
         lit_only: &[Slot::Storage, Slot::Traversal],
-        quiet: &[Slot::Visibility, Slot::Traversal],
+        quiet: &[Slot::Visibility, Slot::Traversal], rays: "gpu-raster",
     },
     BackendInfo {
         name: "gpu-rt",
         description: "GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component, a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries",
         renderer: Some("gpu-rt"),
-        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raycast"), (Slot::Traversal, "rayquery"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Visibility],
+        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raycast"), (Slot::Traversal, "rayquery"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Visibility], rays: "gpu-rt",
     },
     BackendInfo {
         name: "gpu-discover",
         description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
         renderer: Some("gpu-discover"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Draw, Slot::Traversal],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Draw, Slot::Traversal], rays: "gpu-discover",
     },
     BackendInfo {
         name: "cpu-discover",
         description: "CPU discovery + GPU raster (the user's idea): CPU rays discover the visible face set (one frame ahead, pipelined), the GPU rasterises only it. Storage: the CPU representation discovery rays walk",
         renderer: Some("cpu-discover"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Draw, Slot::Traversal],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::ShadowStorage, "bricks"), (Slot::ShadowTraversal, "same"), (Slot::Shading, "direct")],
+        lit_only: &[Slot::ShadowStorage, Slot::ShadowTraversal],
+        quiet: &[Slot::Draw, Slot::Traversal, Slot::ShadowStorage, Slot::ShadowTraversal],
+        rays: "gpu-discover",
     },
     BackendInfo {
         name: "gpu-splat",
@@ -147,25 +183,25 @@ pub const BACKENDS: &[BackendInfo] = &[
         renderer: Some("gpu-splat"),
         slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "points"), (Slot::Visibility, "splat"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")],
         lit_only: &[Slot::Storage, Slot::Traversal],
-        quiet: &[Slot::Traversal],
+        quiet: &[Slot::Traversal], rays: "gpu-splat",
     },
     BackendInfo {
         name: "gpu-voxelspace",
         description: "Comanche-style Voxel Space (2.5D, no overhangs) in a compute shader: one thread per screen column marches a heightmap front to back with a y-buffer",
         renderer: Some("gpu-voxelspace"),
-        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
+        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[], rays: "gpu-voxelspace",
     },
     BackendInfo {
         name: "cpu-voxelspace",
         description: "Comanche-style Voxel Space (2.5D) on the CPU, rayon-parallel over screen columns",
         renderer: Some("cpu-voxelspace"),
-        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
+        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[], rays: "cpu-voxelspace",
     },
     BackendInfo {
         name: "cpu-raster",
         description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
         renderer: Some("cpu-raster"),
-        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "faces"), (Slot::Draw, "raster"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Visibility],
+        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "faces"), (Slot::Draw, "raster"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Visibility], rays: "cpu-raster",
     },
 ];
 
@@ -207,6 +243,8 @@ const INCREMENTAL: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-discover
 /// cpu-discover: its CPU discovery rays and GPU shadow rays both walk with refloor.
 const REFLOOR: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-discover", "gpu-splat", "cpu-discover"];
 const CPU_DISCOVER: &[&str] = &["cpu-discover"];
+/// Back ends whose shadow and bounce rays may walk another storage / kernel than the primary rays.
+const SECONDARY: &[&str] = &["gpu-compute", "cpu-discover"];
 /// Back ends with the shading state (`shading::state`) and a ray walk for bounces.
 const PATHTRACE: &[&str] = &["gpu-compute", "gpu-rt", "gpu-splat", "gpu-raster", "gpu-discover", "gpu-voxelspace", "cpu-discover"];
 /// Back ends that can draw meshes (the others have no meshes slot).
@@ -283,6 +321,10 @@ pub struct Composition {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub traversal: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shadow_storage: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shadow_traversal: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shading: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub meshes: String,
@@ -313,6 +355,10 @@ struct Stored {
     #[serde(default)]
     traversal: String,
     #[serde(default)]
+    shadow_storage: String,
+    #[serde(default)]
+    shadow_traversal: String,
+    #[serde(default)]
     shading: String,
     #[serde(default)]
     meshes: String,
@@ -320,7 +366,7 @@ struct Stored {
 
 impl From<Stored> for Composition {
     fn from(s: Stored) -> Self {
-        let mut c = Composition { backend: s.backend, storage: s.storage, geometry: s.geometry, prepass: s.prepass, visibility: s.visibility, draw: s.draw, traversal: s.traversal, shading: s.shading, meshes: s.meshes };
+        let mut c = Composition { backend: s.backend, storage: s.storage, geometry: s.geometry, prepass: s.prepass, visibility: s.visibility, draw: s.draw, traversal: s.traversal, shadow_storage: s.shadow_storage, shadow_traversal: s.shadow_traversal, shading: s.shading, meshes: s.meshes };
         if c.traversal.is_empty() && component(Slot::Traversal, &c.visibility).is_some() {
             c.traversal = std::mem::take(&mut c.visibility);
         }
@@ -342,7 +388,7 @@ impl Default for Composition {
 impl Composition {
     /// The back end's default composition (empty slots if the back end is unknown).
     pub fn new(backend: &str) -> Self {
-        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), draw: String::new(), traversal: String::new(), shading: String::new(), meshes: String::new() };
+        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), draw: String::new(), traversal: String::new(), shadow_storage: String::new(), shadow_traversal: String::new(), shading: String::new(), meshes: String::new() };
         c.fill_defaults();
         c
     }
@@ -355,8 +401,19 @@ impl Composition {
             Slot::Visibility => &self.visibility,
             Slot::Draw => &self.draw,
             Slot::Traversal => &self.traversal,
+            Slot::ShadowStorage => &self.shadow_storage,
+            Slot::ShadowTraversal => &self.shadow_traversal,
             Slot::Shading => &self.shading,
             Slot::Meshes => &self.meshes,
+        }
+    }
+
+    /// The component in effect in `slot`: a secondary-ray stage at `same` is its source
+    /// slot's component.
+    pub fn resolved(&self, slot: Slot) -> &str {
+        match self.get(slot) {
+            "same" if slot.secondary() => self.get(slot.source()),
+            n => n,
         }
     }
 
@@ -368,6 +425,8 @@ impl Composition {
             Slot::Visibility => &mut self.visibility,
             Slot::Draw => &mut self.draw,
             Slot::Traversal => &mut self.traversal,
+            Slot::ShadowStorage => &mut self.shadow_storage,
+            Slot::ShadowTraversal => &mut self.shadow_traversal,
             Slot::Shading => &mut self.shading,
             Slot::Meshes => &mut self.meshes,
         };
@@ -407,10 +466,14 @@ impl Composition {
     /// out, e.g. `gpu-compute: prefix + incremental` or `gpu-raster: bricks + greedy + raster`.
     pub fn label(&self) -> String {
         let b = backend(&self.backend);
-        let parts: Vec<&str> = self
+        let parts: Vec<String> = self
             .slots()
             .filter(|&s| !(b.is_some_and(|b| b.is_quiet(s)) && b.and_then(|b| b.default_for(s)) == Some(self.get(s))))
-            .map(|s| if s == Slot::Meshes && self.get(s) == "none" { "no meshes" } else { self.get(s) })
+            .map(|s| match s {
+                Slot::Meshes if self.get(s) == "none" => "no meshes".to_string(),
+                s if s.secondary() => format!("shadow {}", self.get(s)),
+                s => self.get(s).to_string(),
+            })
             .collect();
         format!("{}: {}", self.backend, parts.join(" + "))
     }
@@ -466,6 +529,11 @@ impl Composition {
                 return Err(why);
             }
         }
+        for slot in Slot::ALL.into_iter().filter(|s| s.secondary() && b.has(*s) && self.get(*s) == "same") {
+            if let Some(why) = unavailable(b.rays, slot.source(), self.get(slot.source())) {
+                return Err(format!("{} `same`: the {} {why}", slot.name(), slot.source().name()));
+            }
+        }
         caps::unmet(self).map_or(Ok(()), Err)
     }
 }
@@ -474,12 +542,19 @@ pub fn backend(name: &str) -> Option<&'static BackendInfo> {
     BACKENDS.iter().find(|b| b.name == name)
 }
 
+/// `same` in the secondary-ray stages: walk what the primary rays walk.
+const SAME: &[ComponentInfo] = &[
+    ComponentInfo { slot: Slot::ShadowStorage, name: "same", description: "Shadow and bounce rays walk the primary storage.", backends: SECONDARY, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::ShadowTraversal, name: "same", description: "Shadow and bounce rays use the primary traversal kernel.", backends: SECONDARY, provides: &[], needs: &[] },
+];
+
+/// A component of `slot` (secondary-ray stages: `same` or a component of their source slot).
 pub fn component(slot: Slot, name: &str) -> Option<&'static ComponentInfo> {
-    COMPONENTS.iter().find(|c| c.slot == slot && c.name == name)
+    SAME.iter().find(|c| c.slot == slot && c.name == name).or_else(|| COMPONENTS.iter().find(|c| c.slot == slot.source() && c.name == name))
 }
 
 pub fn components(slot: Slot) -> impl Iterator<Item = &'static ComponentInfo> {
-    COMPONENTS.iter().filter(move |c| c.slot == slot)
+    SAME.iter().filter(move |c| c.slot == slot).chain(COMPONENTS.iter().filter(move |c| c.slot == slot.source()))
 }
 
 /// Why component `name` cannot fill `slot` on `backend` (`None` = it can).
@@ -490,7 +565,9 @@ pub fn unavailable(backend_name: &str, slot: Slot, name: &str) -> Option<String>
     let Some(c) = component(slot, name) else {
         return Some(format!("unknown {} component `{name}` (have: {})", slot.name(), components(slot).map(|c| c.name).collect::<Vec<_>>().join(", ")));
     };
-    (!c.backends.contains(&backend_name)).then(|| format!("`{name}` has no {backend_name} implementation yet (available on: {})", c.backends.join(", ")))
+    // Secondary-ray stages offer what their rays' back end implements.
+    let on = if slot.secondary() && c.slot != slot { backend(backend_name).map_or(backend_name, |b| b.rays) } else { backend_name };
+    (!c.backends.contains(&on)).then(|| format!("`{name}` has no {on} implementation yet (available on: {})", c.backends.join(", ")))
 }
 
 /// For back ends checking their options: `name` if it is a `slot` component of `backend`,
@@ -504,7 +581,7 @@ pub fn require(backend: &str, slot: Slot, name: &str) -> anyhow::Result<String> 
 
 /// The `slot` components `backend` implements (for its parameter choices).
 pub fn names_on(backend: &str, slot: Slot) -> Vec<&'static str> {
-    components(slot).filter(|c| c.backends.contains(&backend)).map(|c| c.name).collect()
+    components(slot).filter(|c| unavailable(backend, slot, c.name).is_none()).map(|c| c.name).collect()
 }
 
 /// Lighting knobs belong to the shading stage (lit mode is the shading component's job):
@@ -544,7 +621,7 @@ mod tests {
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 Slot::Prepass => prepass::gpu_wgsl(c.name).is_some(),
                 Slot::Meshes => ["none", "composite"].contains(&c.name),
-                Slot::Geometry | Slot::Draw => false,
+                Slot::Geometry | Slot::Draw | Slot::ShadowStorage | Slot::ShadowTraversal => false,
             };
             assert!(ok, "{} `{}`", c.slot.name(), c.name);
         }
@@ -557,7 +634,7 @@ mod tests {
                 Slot::Traversal => traversal::gpu_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 Slot::Meshes => ["none", "depth"].contains(&c.name),
-                Slot::Prepass => false,
+                Slot::Prepass | Slot::ShadowStorage | Slot::ShadowTraversal => false,
             };
             assert!(ok, "gpu-raster {} `{}`", c.slot.name(), c.name);
         }
@@ -573,16 +650,20 @@ mod tests {
                 combos = combos
                     .iter()
                     .flat_map(|c| {
-                        components(slot).filter(|x| x.backends.contains(&b.name)).map(move |x| {
+                        names_on(b.name, slot).into_iter().map(move |x| {
                             let mut c = c.clone();
-                            c.set(slot, x.name);
+                            c.set(slot, x);
                             c
                         })
                     })
                     .collect();
             }
             for comp in combos {
-                assert!(comp.validate().is_ok(), "{comp:?}");
+                // Except `same` shadow rays where the primary storage has no implementation
+                // on the shadow rays' device (cpu-discover: CPU-only storages).
+                if let Err(e) = comp.validate() {
+                    assert!(e.starts_with("shadow_storage `same`") && b.rays != b.name, "{comp:?}: {e}");
+                }
             }
         }
         assert!(Composition { backend: "cpu".into(), storage: "distance".into(), ..Default::default() }.validate().is_err());
