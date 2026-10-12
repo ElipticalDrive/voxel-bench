@@ -40,7 +40,9 @@ use mr_components::{names_on, require, Slot};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::visibility::{self, drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer}};
-use mr_gpu::voxels::{DDA_OCCLUSION_WGSL, Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
+use mr_components::shading::state::{self as shade_state, ShadeState};
+use mr_components::storage::gpu_data::{self, StorageData};
+use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -69,6 +71,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::choice("storage", "Storage component: the CPU representation discovery rays walk (refloor)", &names_on(BACKEND, Slot::Storage), "bricks", false),
         ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (IDEAS §10; was cpu-cluster)", &names_on(BACKEND, Slot::Visibility), "quadtree", true),
         ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false),
+        ParamSpec::choice("shadow_storage", "GPU storage component the GPU's shadow (and bounce) rays walk with refloor; the storage slot is the CPU representation discovery rays walk", &gpu_storages(), "bricks", false).of("shading", &names_on(BACKEND, Slot::Shading)),
         ParamSpec::int("seed_step", "Cluster: coarsest seed lattice spacing (px, rounded to a power of two)", 1, 256, 16, true).of("visibility", &["cluster"]),
         ParamSpec::choice("sky", "Cluster: corners = a lattice cell at spacing <= sky_tile is sky when all four corner seeds miss; sparse = one missed seed covers its cell (cheaper; thin things may take a few frames to appear)", &["corners", "sparse"], "corners", true).of("visibility", &["cluster"]),
         ParamSpec::choice("view", "image: the rendered scene. Cluster discovery only: clusters = one colour per cluster found this pass; kinds = confirmed faces (all corners visible) green, faces with an occluded corner yellow, faces carried over from earlier passes grey", &["image", "clusters", "kinds"], "image", true),
@@ -91,6 +94,14 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB)", 64, 6144, 1536, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ]
+    .into_iter()
+    .chain(shade_state::params())
+    .collect()
+}
+
+/// The GPU storage components (for `shadow_storage`).
+fn gpu_storages() -> Vec<&'static str> {
+    mr_components::components(Slot::Storage).filter(|c| mr_components::storage::gpu(c.name).is_some()).map(|c| c.name).collect()
 }
 
 #[derive(Deserialize)]
@@ -102,6 +113,10 @@ struct Options {
     #[serde(alias = "algorithm")]
     visibility: String,
     shading: String,
+    shadow_storage: String,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
     seed_step: u32,
     sky: String,
     view: String,
@@ -132,6 +147,10 @@ impl Default for Options {
             storage: "bricks".into(),
             visibility: "quadtree".into(),
             shading: "direct".into(),
+            shadow_storage: "bricks".into(),
+            bounces: 1,
+            spp: 1,
+            accumulate: true,
             seed_step: 16,
             sky: "corners".into(),
             view: "image".into(),
@@ -209,8 +228,11 @@ pub struct CpuDiscover {
     pl: wgpu::PipelineLayout,
     pl_shade: wgpu::PipelineLayout,
     images: wgpu::BindGroupLayout,
-    /// Group 2 is empty here (no composed storage on the GPU); deferred images are group 3.
-    empty: wgpu::BindGroup,
+    /// The GPU storage shadow and bounce rays walk (group 2, `shadow_storage`).
+    data: StorageData,
+    layout_st: wgpu::BindGroupLayout,
+    /// Shading state (pathtrace's accumulation).
+    accum: ShadeState,
     frame_buf: wgpu::Buffer,
     rec_buf: GrowableBuffer,
     /// Per-record tags for the diagnostic views (cluster discovery).
@@ -267,11 +289,12 @@ impl CpuDiscover {
         let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         require(BACKEND, Slot::Shading, &opts.shading)?;
+        let st = mr_components::storage::gpu(&opts.shadow_storage).ok_or_else(|| anyhow::anyhow!("shadow_storage `{}` is not a GPU storage (have: {})", opts.shadow_storage, gpu_storages().join(", ")))?;
         let gpu = Gpu::new(GpuRequest {
             experimental: false,
             adapter: opts.adapter.as_deref(),
             required_features: wgpu::Features::empty(),
-            optional_features: wgpu::Features::TIMESTAMP_QUERY,
+            optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE,
             limits: &|a| a.clone(),
         })?;
         let world = VoxelWorld::new(
@@ -280,7 +303,8 @@ impl CpuDiscover {
             p.environment,
             VoxelWorldConfig {
                 max_lod: 0,
-                upload_voxels: true,
+                // Region storages (tree64, ...) hold their own data instead of the voxel pool.
+                upload_voxels: matches!(st.kind, mr_components::storage::Kind::Pool { .. }),
                 pool_mb: opts.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
@@ -300,19 +324,24 @@ impl CpuDiscover {
                 buf_entry(0, wgpu::BufferBindingType::Uniform),
                 buf_entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
                 buf_entry(2, wgpu::BufferBindingType::Storage { read_only: true }),
+                ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE)[0],
+                ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE)[1],
             ],
         });
-        let empty_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("empty"), entries: &[] });
-        let empty = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("empty"), layout: &empty_layout, entries: &[] });
+        // Shadow and bounce rays walk the composed GPU storage (group 2) with refloor.
+        let all = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
+        let layout_st = gpu_data::layout(&gpu, &st, all);
+        let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
+        let accum = ShadeState::new(&gpu, p.width, p.height, &opts.shading, opts.bounces, opts.spp, opts.accumulate);
         let images = FaceDrawer::images_layout(&gpu.device);
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("cpu-discover"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&empty_layout)],
+            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout_st)],
             immediate_size: 0,
         });
         let pl_shade = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("cpu-discover deferred shade"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&empty_layout), Some(&images)],
+            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout_st), Some(&images)],
             immediate_size: 0,
         });
         let drawer = Self::drawer(&gpu, &opts, &pl, &pl_shade, &images, p.width, p.height)?;
@@ -342,7 +371,9 @@ impl CpuDiscover {
             pl,
             pl_shade,
             images,
-            empty,
+            data,
+            layout_st,
+            accum,
             frame_buf,
             rec_buf,
             tag_buf,
@@ -361,9 +392,22 @@ impl CpuDiscover {
     fn drawer(gpu: &Gpu, opts: &Options, pl: &wgpu::PipelineLayout, pl_shade: &wgpu::PipelineLayout, images: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<FaceDrawer> {
         let mode = DrawMode::parse(&opts.draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{}`", opts.draw))?;
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
+        let vis = visibility::raster_wgsl(mode.name()).unwrap();
+        let vis = if mode.deferred() {
+            vis.to_string()
+        } else {
+            if let Some(why) = shade_state::fragment_blocker(&opts.shading, &gpu.device) {
+                anyhow::bail!(why);
+            }
+            shade_state::fragment_wgsl(&opts.shading, vis)
+        };
+        // Shadow and bounce rays: refloor through the composed GPU storage (group 2).
+        let st = mr_components::storage::gpu(&opts.shadow_storage).expect("checked in new");
+        let walk = format!("var<private> ct_iters: u32;\nconst LOD: bool = false;\n{}\n{}", st.source(), visibility::gpu_wgsl("refloor").unwrap());
+        let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
         let source = shader_source(
-            DDA_OCCLUSION_WGSL,
-            &format!("{}\n{}\n{shade}\n{}", include_str!("raster.wgsl"), visibility::faces_wgsl(true), visibility::raster_wgsl(mode.name()).unwrap()),
+            occlusion,
+            &format!("{walk}\n{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), visibility::faces_wgsl(true)),
         );
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("cpu-discover raster"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl, shade_layout: pl_shade, strip: true }, mode, images, width, height)
@@ -415,12 +459,18 @@ impl CpuDiscover {
 
 impl Renderer for CpuDiscover {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        if !updates.is_empty() {
+            self.accum.invalidate();
+        }
         self.cpu.apply(&updates);
-        self.world.apply(&self.gpu, updates);
-        Ok(())
+        let changed = self.world.apply(&self.gpu, updates);
+        self.data.update(&self.gpu, &self.world, &changed)
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        if !self.drawer.mode().deferred() && shade_state::stateful(&self.opts.shading) && req.mode == RenderMode::Lit && !self.opts.depth_prepass {
+            anyhow::bail!("`{}` shading with draw = raster needs depth_prepass in lit mode (exactly one fragment per pixel may update its state)", self.opts.shading);
+        }
         let ticket = self.ring.begin(&self.gpu, sink)?;
         let start = Instant::now();
         let (w, h) = (self.width, self.height);
@@ -531,6 +581,8 @@ impl Renderer for CpuDiscover {
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         let world_bg = self.world.prepare(&self.gpu, &c).clone();
+        let storage_bg = self.data.prepare(&self.gpu, &self.world, &self.layout_st).clone();
+        self.accum.begin(&self.gpu, &c, req.mode);
         if self.bind0.is_none() {
             self.bind0 = Some(self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("cpu-discover frame"),
@@ -539,6 +591,8 @@ impl Renderer for CpuDiscover {
                     wgpu::BindGroupEntry { binding: 0, resource: self.frame_buf.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: self.rec_buf.buffer().as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 2, resource: self.tag_buf.buffer().as_entire_binding() },
+                    self.accum.bind_entries(3)[0].clone(),
+                    self.accum.bind_entries(3)[1].clone(),
                 ],
             }));
         }
@@ -553,7 +607,7 @@ impl Renderer for CpuDiscover {
             clear,
             prepass: self.opts.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
-            binds: &[&bind0, &world_bg, &self.empty],
+            binds: &[&bind0, &world_bg, &storage_bg],
             ring: &self.ring,
             ticket,
             ts: (true, true),
@@ -599,6 +653,8 @@ impl Renderer for CpuDiscover {
             ])),
             _ => None,
         };
+        counters.extend(self.accum.counter(req.mode));
+        counters.extend(self.data.counters());
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
@@ -634,6 +690,7 @@ impl Renderer for CpuDiscover {
             "shadows" => self.world.cfg.shadows.set(value)?,
             "max_steps" => self.world.cfg.max_steps = value.as_i64().unwrap_or(2048) as u32,
             "depth_prepass" => self.opts.depth_prepass = value.as_bool().unwrap_or(true),
+            _ if self.accum.set_param(name, value).is_some() => {}
             "draw" => {
                 let mut opts_draw = value.as_str().unwrap_or("raster").to_string();
                 std::mem::swap(&mut self.opts.draw, &mut opts_draw);
@@ -661,12 +718,14 @@ impl Renderer for CpuDiscover {
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.depth = depth_view(&self.gpu, width, height);
         self.drawer.resize(&self.gpu, width, height);
+        self.accum.resize(&self.gpu, width, height);
+        self.bind0 = None;
         self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
         Ok(())
     }
 
     fn memory(&self) -> MemoryReport {
-        let gpu = self.world.memory_bytes() + self.rec_buf.size() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
+        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + self.accum.memory_bytes() + self.rec_buf.size() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
         let s = self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16);
         MemoryReport { cpu_bytes: self.cpu.memory() + s + (self.width as u64 + 1) * (self.height as u64 + 1) * 36, gpu_bytes: gpu }
     }
