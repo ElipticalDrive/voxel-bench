@@ -1,19 +1,19 @@
 //! GPU-voxelspace back end (components, IDEAS §12): storage `heightmap`, visibility
-//! `columns`, shading `direct` (the reference lit model with heightmap-gradient normals on
-//! column tops; shadow rays walk the GPU voxel pool). Was the gpu-voxelspace renderer.
+//! `columns`, shading `direct` or `pathtrace` (heightmap-gradient normals on column tops;
+//! shadow and bounce rays walk the heightmap, `hm_trace`). Was the gpu-voxelspace renderer.
 //!
 //! Voxel Space (Comanche, 1992) style 2.5D renderer: a CPU-built heightmap ring (top
 //! solid block height + block id per (x, z) column) marched front-to-back per screen
 //! column in a compute shader, drawing spans with a per-column y-buffer.
 
-use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{IVec2, IVec3};
+use mr_components::shading::state::{self as shade_state, ShadeState};
+use mr_components::storage::heightmap::{self, Heightmap};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
-use mr_gpu::voxels::{DDA_OCCLUSION_WGSL, Shadows, VoxelWorld, VoxelWorldConfig, shader_source};
+use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
 use serde::Deserialize;
 
@@ -28,12 +28,16 @@ fn info() -> RendererInfo {
         tags: vec!["gpu".into(), "compute".into(), "heightmap".into(), "2.5d".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
-        params: vec![
+        params: mr_components::lighting_knobs(BACKEND, vec![
             ParamSpec::choice("storage", "Storage component", &mr_components::names_on(BACKEND, mr_components::Slot::Storage), "heightmap", false),
             ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(BACKEND, mr_components::Slot::Visibility), "columns", false),
             ParamSpec::choice("shading", "Shading component", &mr_components::names_on(BACKEND, mr_components::Slot::Shading), "direct", false),
+            shadows_param(),
             ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
-        ],
+        ]
+        .into_iter()
+        .chain(shade_state::params())
+        .collect()),
     }
 }
 
@@ -44,6 +48,10 @@ struct Options {
     storage: String,
     visibility: String,
     shading: String,
+    shadows: Shadows,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
     frames_in_flight: usize,
 }
 
@@ -51,7 +59,7 @@ const BACKEND: &str = "gpu-voxelspace";
 
 impl Default for Options {
     fn default() -> Self {
-        Self { adapter: None, storage: "heightmap".into(), visibility: "columns".into(), shading: "direct".into(), frames_in_flight: 3 }
+        Self { adapter: None, storage: "heightmap".into(), visibility: "columns".into(), shading: "direct".into(), shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true, frames_in_flight: 3 }
     }
 }
 
@@ -68,7 +76,7 @@ struct CameraUniform {
     sky: u32,
     width: u32,
     height: u32,
-    hm_mask: u32,
+    _p0: u32,
     max_cells: u32,
 }
 
@@ -78,12 +86,13 @@ pub struct GpuVoxelSpace {
     pipeline: wgpu::ComputePipeline,
     layout0: wgpu::BindGroupLayout,
     camera_buf: wgpu::Buffer,
+    /// The heightmap storage: built on the CPU, uploaded to `hm_buf`; `hm_info` = mask,
+    /// columns a walk may cross.
+    hm: Heightmap,
     hm_buf: wgpu::Buffer,
-    /// CPU copy of the heightmap ring, `size * size` entries.
-    hm: Vec<u32>,
-    size: i32,
-    /// Loaded chunk y positions per chunk column.
-    columns: HashMap<IVec2, Vec<i32>>,
+    hm_info: wgpu::Buffer,
+    /// Shading state (pathtrace's accumulation).
+    accum: ShadeState,
     output: wgpu::Texture,
     bind0: wgpu::BindGroup,
     ring: FrameRing,
@@ -117,21 +126,25 @@ impl GpuVoxelSpace {
                 upload_voxels: false,
                 pool_mb: 64,
                 view_radius: p.view_radius_chunks,
-                shadows: Shadows::None,
+                shadows: opts.shadows,
                 max_steps: 1,
                 visibility: wgpu::ShaderStages::COMPUTE,
             },
         )?;
-        let size = (((2 * p.view_radius_chunks + 2) * CHUNK_SIZE as u32).next_power_of_two()) as i32;
-        let hm = vec![0u32; (size * size) as usize];
+        let hm = Heightmap::new(p.view_radius_chunks);
         let hm_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("heightmap"),
-            size: hm.len() as u64 * 4,
+            size: hm.hm.len() as u64 * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let hm_info = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("heightmap info"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        gpu.queue.write_buffer(&hm_info, 0, bytemuck::cast_slice(&hm.info()));
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
-        let source = shader_source(DDA_OCCLUSION_WGSL, &format!("{}\n{shade}", include_str!("vs.wgsl")));
+        // Shadow and bounce rays walk the heightmap.
+        let walk = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return hm_trace(p, d, max_t).hit; }\n\
+                    fn ctrace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit { return hm_trace(o, d, max_t); }\n";
+        let source = shader_source(walk, &format!("{}\n{}\n{}\n{shade}", heightmap::gpu_wgsl(0, 2), ShadeState::wgsl(0, 4), include_str!("vs.wgsl")));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("voxelspace"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("voxelspace"),
@@ -158,6 +171,14 @@ impl GpuVoxelSpace {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                ShadeState::layout_entries(4, wgpu::ShaderStages::COMPUTE)[0],
+                ShadeState::layout_entries(4, wgpu::ShaderStages::COMPUTE)[1],
             ],
         });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -180,13 +201,14 @@ impl GpuVoxelSpace {
             mapped_at_creation: false,
         });
         let output = mr_gpu::output_texture(&gpu, p.width, p.height);
-        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &hm_buf);
+        let accum = ShadeState::new(&gpu, p.width, p.height, &opts.shading, opts.bounces, opts.spp, opts.accumulate);
+        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &hm_buf, &hm_info, &accum);
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
-        Ok(Self { gpu, world, pipeline, layout0, camera_buf, hm_buf, hm, size, columns: HashMap::new(), output, bind0, ring, width: p.width, height: p.height, depth, waker })
+        Ok(Self { gpu, world, pipeline, layout0, camera_buf, hm, hm_buf, hm_info, accum, output, bind0, ring, width: p.width, height: p.height, depth, waker })
     }
 
-    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, hm: &wgpu::Buffer) -> wgpu::BindGroup {
+    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, hm: &wgpu::Buffer, hm_info: &wgpu::Buffer, accum: &ShadeState) -> wgpu::BindGroup {
         let view = out.create_view(&Default::default());
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("voxelspace"),
@@ -195,66 +217,27 @@ impl GpuVoxelSpace {
                 wgpu::BindGroupEntry { binding: 0, resource: cam.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
                 wgpu::BindGroupEntry { binding: 2, resource: hm.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: hm_info.as_entire_binding() },
+                accum.bind_entries(4)[0].clone(),
+                accum.bind_entries(4)[1].clone(),
             ],
         })
-    }
-
-    /// Rebuilds the 32x32 heightmap tile of chunk column `c` and uploads it.
-    fn rebuild_tile(&mut self, c: IVec2) {
-        let mut ys = self.columns.get(&c).cloned().unwrap_or_default();
-        ys.sort_unstable_by(|a, b| b.cmp(a));
-        let mask = self.size - 1;
-        for lz in 0..CHUNK_SIZE {
-            for lx in 0..CHUNK_SIZE {
-                let mut entry = 0u32;
-                'found: for &cy in &ys {
-                    if let Some(chunk) = self.world.chunk(IVec3::new(c.x, cy, c.y)) {
-                        for ly in (0..CHUNK_SIZE).rev() {
-                            let b = chunk.get(IVec3::new(lx, ly, lz));
-                            if b != BlockId::AIR {
-                                let y = cy * CHUNK_SIZE + ly;
-                                entry = ((y + 32768).clamp(1, 65535) as u32) | ((b.0 as u32) << 16);
-                                break 'found;
-                            }
-                        }
-                    }
-                }
-                let wx = c.x * CHUNK_SIZE + lx;
-                let wz = c.y * CHUNK_SIZE + lz;
-                self.hm[((wz & mask) * self.size + (wx & mask)) as usize] = entry;
-            }
-        }
-        for lz in 0..CHUNK_SIZE {
-            let wz = c.y * CHUNK_SIZE + lz;
-            let start = ((wz & mask) * self.size + ((c.x * CHUNK_SIZE) & mask)) as usize;
-            self.gpu.queue.write_buffer(&self.hm_buf, start as u64 * 4, bytemuck::cast_slice(&self.hm[start..start + CHUNK_SIZE as usize]));
-        }
     }
 }
 
 impl Renderer for GpuVoxelSpace {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        if !updates.is_empty() {
+            self.accum.invalidate();
+        }
         let changed = self.world.apply(&self.gpu, updates);
-        let mut tiles = HashSet::new();
-        for pos in changed {
-            let c = IVec2::new(pos.x, pos.z);
-            let ys = self.columns.entry(c).or_default();
-            let held = self.world.chunk(pos).is_some();
-            match (held, ys.iter().position(|&y| y == pos.y)) {
-                (true, None) => ys.push(pos.y),
-                (false, Some(i)) => {
-                    ys.swap_remove(i);
-                }
-                _ => {}
+        let world = &self.world;
+        for c in self.hm.apply(changed, |pos| world.chunk(pos)) {
+            for (start, len) in self.hm.dirty_rows(c) {
+                self.gpu.queue.write_buffer(&self.hm_buf, start as u64 * 4, bytemuck::cast_slice(&self.hm.hm[start..start + len]));
             }
-            if ys.is_empty() {
-                self.columns.remove(&c);
-            }
-            tiles.insert(c);
         }
-        for c in tiles {
-            self.rebuild_tile(c);
-        }
+        self.gpu.queue.write_buffer(&self.hm_info, 0, bytemuck::cast_slice(&self.hm.info()));
         Ok(())
     }
 
@@ -274,10 +257,11 @@ impl Renderer for GpuVoxelSpace {
             sky: u32::from_le_bytes(encode_srgb(self.world.env.sky)),
             width: self.width,
             height: self.height,
-            hm_mask: (self.size - 1) as u32,
+            _p0: 0,
             max_cells: (self.world.cfg.view_radius * CHUNK_SIZE as u32) * 2,
         };
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
+        self.accum.begin(&self.gpu, c, req.mode);
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         {
@@ -294,10 +278,19 @@ impl Renderer for GpuVoxelSpace {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
             legend: None,
-            counters: vec![("heightmap_size".into(), self.size as f64), ("chunk_columns".into(), self.columns.len() as f64)],
+            counters: [("heightmap_size".into(), self.hm.size as f64), ("chunk_columns".into(), self.hm.columns() as f64)].into_iter().chain(self.accum.counter(req.mode)).collect(),
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
+    }
+
+    fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
+        match name {
+            "shadows" => self.world.cfg.shadows.set(value)?,
+            _ if self.accum.set_param(name, value).is_some() => {}
+            _ => anyhow::bail!("`{name}` cannot change while running"),
+        }
+        Ok(())
     }
 
     fn poll(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
@@ -312,13 +305,14 @@ impl Renderer for GpuVoxelSpace {
         self.width = width;
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
-        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.hm_buf);
+        self.accum.resize(&self.gpu, width, height);
+        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.hm_buf, &self.hm_info, &self.accum);
         self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
         Ok(())
     }
 
     fn memory(&self) -> MemoryReport {
-        let hm = self.hm.len() as u64 * 4;
-        MemoryReport { cpu_bytes: hm, gpu_bytes: hm + self.world.memory_bytes() + self.width as u64 * self.height as u64 * 4 }
+        let hm = self.hm.hm.len() as u64 * 4;
+        MemoryReport { cpu_bytes: hm, gpu_bytes: hm + self.world.memory_bytes() + self.accum.memory_bytes() + self.width as u64 * self.height as u64 * 4 }
     }
 }

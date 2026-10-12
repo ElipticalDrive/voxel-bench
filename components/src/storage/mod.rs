@@ -33,6 +33,7 @@ pub mod cpu;
 mod cpu_tests;
 pub mod distance;
 pub mod gpu_data;
+pub mod heightmap;
 pub mod hier;
 pub mod layout;
 pub mod morton;

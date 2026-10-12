@@ -172,7 +172,7 @@ const VOXELSPACE: &[&str] = &["gpu-voxelspace", "cpu-voxelspace"];
 const DISCOVER: &[&str] = &["gpu-discover", "cpu-discover"];
 const CPU_DISCOVER: &[&str] = &["cpu-discover"];
 /// Back ends with the shading state (`shading::state`) and a ray walk for bounces.
-const PATHTRACE: &[&str] = &["gpu-compute", "gpu-rt", "gpu-splat", "gpu-raster", "gpu-discover"];
+const PATHTRACE: &[&str] = &["gpu-compute", "gpu-rt", "gpu-splat", "gpu-raster", "gpu-discover", "gpu-voxelspace"];
 /// Back ends that can draw meshes (the others have no meshes slot).
 const MESH: &[&str] = &["gpu-compute", "gpu-raster"];
 

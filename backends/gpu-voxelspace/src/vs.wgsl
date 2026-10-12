@@ -1,29 +1,20 @@
 // gpu-voxelspace: Comanche-style column renderer. One invocation per screen column
-// marches front-to-back over a 2D heightmap ring, drawing spans with a y-buffer.
+// marches front-to-back over the heightmap storage, drawing spans with a y-buffer; shadow
+// and bounce rays walk the same heightmap (`hm_trace`).
 
 struct Camera {
     forward: vec3<f32>, tan_half_fov: f32,
     right: vec3<f32>, aspect: f32,
     up: vec3<f32>, mode: u32,
     origin: vec3<f32>, sky: u32,
-    width: u32, height: u32, hm_mask: u32, max_cells: u32,
+    width: u32, height: u32, _p0: u32, max_cells: u32,
 }
 
 @group(0) @binding(0) var<uniform> cam: Camera;
 @group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
-// Entry: low 16 bits = top y + 32768 (0 = empty column), high 16 bits = block id.
-@group(0) @binding(2) var<storage, read> hm: array<u32>;
+// Bindings 2 and 3: the heightmap storage (`hm`, `hm_info`; storage::heightmap); 4 and 5:
+// the shading state (`sp`, `accum`; shading::state).
 
-fn hm_at(c: vec2<i32>) -> u32 {
-    let a = c + vp.cam_block.xz;
-    let m = i32(cam.hm_mask);
-    return hm[u32((a.y & m) * (m + 1) + (a.x & m))];
-}
-// Top surface height (camera-relative, = top block y + 1), or very low if empty.
-fn top_of(e: u32) -> f32 {
-    if ((e & 0xffffu) == 0u) { return -1e6; }
-    return f32(i32(e & 0xffffu) - 32768 + 1 - vp.cam_block.y);
-}
 fn row_of(p: vec3<f32>) -> f32 {
     let depth = max(dot(p, cam.forward), 1e-4);
     let sy = dot(p, cam.up) / (depth * cam.tan_half_fov);
@@ -58,7 +49,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var i = 0u; i < cam.max_cells && ybuf > 0; i++) {
         let t1 = min(tmax.x, tmax.y);
         let e = hm_at(cell);
-        let H = top_of(e);
+        let H = hm_top(e);
         if (H > -1e5) {
             let p0 = vec3<f32>(o.x + h.x * t0, H, o.z + h.y * t0);
             let p1 = vec3<f32>(o.x + h.x * t1, H, o.z + h.y * t1);
@@ -88,10 +79,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     // Tops shade with the heightmap's slope instead of the face normal.
                     var n = face_normal(face);
                     if (!side) {
-                        let hx0 = top_of(hm_at(cell - vec2<i32>(1, 0)));
-                        let hx1 = top_of(hm_at(cell + vec2<i32>(1, 0)));
-                        let hz0 = top_of(hm_at(cell - vec2<i32>(0, 1)));
-                        let hz1 = top_of(hm_at(cell + vec2<i32>(0, 1)));
+                        let hx0 = hm_top(hm_at(cell - vec2<i32>(1, 0)));
+                        let hx1 = hm_top(hm_at(cell + vec2<i32>(1, 0)));
+                        let hz0 = hm_top(hm_at(cell - vec2<i32>(0, 1)));
+                        let hz1 = hm_top(hm_at(cell + vec2<i32>(0, 1)));
                         let gx = clamp(select(0.0, hx0, hx0 > -1e5) - select(0.0, hx1, hx1 > -1e5), -2.0, 2.0);
                         let gz = clamp(select(0.0, hz0, hz0 > -1e5) - select(0.0, hz1, hz1 > -1e5), -2.0, 2.0);
                         n = normalize(vec3<f32>(gx * 0.5, 2.0, gz * 0.5));

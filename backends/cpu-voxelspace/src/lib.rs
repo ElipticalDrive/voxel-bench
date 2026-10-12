@@ -5,14 +5,15 @@
 //! ring (top solid block height + block id per (x, z) column) is marched front-to-back per
 //! screen column (rayon-parallel over columns), drawing spans with a per-column y-buffer.
 //! Lit mode: the shading component (`direct::cpu::shade`) with the heightmap gradient as
-//! the top faces' normal; ambient, sun and point lights, no shadows (as gpu-voxelspace).
+//! the top faces' normal; ambient, sun and point lights, shadow rays walking the heightmap
+//! storage (`Heightmap::trace`), as gpu-voxelspace.
 
-use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use cpu_reference::{Pool, VoxelScene};
+use cpu_reference::{Pool, Shadows, VoxelScene};
 use glam::{IVec2, IVec3, Vec2, Vec3};
 use mr_components::shading::direct::cpu::{Ctx, Surface, shade};
+use mr_components::storage::heightmap::{Heightmap, entry_top};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use rayon::prelude::*;
@@ -30,6 +31,7 @@ pub fn entry() -> RendererEntry {
                 ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(BACKEND, mr_components::Slot::Visibility), "columns", false),
                 ParamSpec::choice("shading", "Shading component", &mr_components::names_on(BACKEND, mr_components::Slot::Shading), "direct", false),
                 ParamSpec::int("threads", "Worker threads (0 = all cores)", 0, 256, 0, true),
+                ParamSpec::choice("shadows", "Shadow rays in lit mode (walking the heightmap)", &["none", "sun", "all"], "all", true).of("shading", &["direct"]),
             ],
         },
         create: |p, _| Ok(Box::new(CpuVoxelSpace::new(p)?)),
@@ -41,12 +43,10 @@ pub struct CpuVoxelSpace {
     height: u32,
     scene: VoxelScene,
     pool: Pool,
-    /// Heightmap ring, `size * size`: low 16 bits = top y + 32768 (0 = empty), high = block id.
-    hm: Vec<u32>,
-    size: i32,
+    /// The heightmap storage.
+    hm: Heightmap,
     /// Cells marched per column (2 * view radius in blocks, as in gpu-voxelspace).
     max_cells: usize,
-    columns: HashMap<IVec2, Vec<i32>>,
     cols: Vec<u8>,
     pixels: Vec<u8>,
 }
@@ -58,11 +58,12 @@ struct Options {
     visibility: String,
     shading: String,
     threads: usize,
+    shadows: Shadows,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { storage: "heightmap".into(), visibility: "columns".into(), shading: "direct".into(), threads: 0 }
+        Self { storage: "heightmap".into(), visibility: "columns".into(), shading: "direct".into(), threads: 0, shadows: Shadows::All }
     }
 }
 
@@ -77,45 +78,18 @@ impl CpuVoxelSpace {
         for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
             require(BACKEND, slot, name)?;
         }
-        let size = (((2 * p.view_radius_chunks + 2) * CHUNK_SIZE as u32).next_power_of_two()) as i32;
+        let mut scene = VoxelScene::new(&p);
+        scene.shadows = opts.shadows;
         Ok(Self {
             width: p.width,
             height: p.height,
-            scene: VoxelScene::new(&p),
+            scene,
             pool: Pool::new(opts.threads)?,
-            hm: vec![0; (size * size) as usize],
-            size,
+            hm: Heightmap::new(p.view_radius_chunks),
             max_cells: (p.view_radius_chunks * CHUNK_SIZE as u32 * 2) as usize,
-            columns: HashMap::new(),
             cols: vec![0; (p.width * p.height * 4) as usize],
             pixels: vec![0; (p.width * p.height * 4) as usize],
         })
-    }
-
-    fn rebuild_tile(&mut self, c: IVec2) {
-        let mut ys = self.columns.get(&c).cloned().unwrap_or_default();
-        ys.sort_unstable_by(|a, b| b.cmp(a));
-        let mask = self.size - 1;
-        for lz in 0..CHUNK_SIZE {
-            for lx in 0..CHUNK_SIZE {
-                let mut entry = 0u32;
-                'found: for &cy in &ys {
-                    if let Some(chunk) = self.scene.chunk(IVec3::new(c.x, cy, c.y)) {
-                        for ly in (0..CHUNK_SIZE).rev() {
-                            let b = chunk.get(IVec3::new(lx, ly, lz));
-                            if b != BlockId::AIR {
-                                let y = cy * CHUNK_SIZE + ly;
-                                entry = ((y + 32768).clamp(1, 65535) as u32) | ((b.0 as u32) << 16);
-                                break 'found;
-                            }
-                        }
-                    }
-                }
-                let wx = c.x * CHUNK_SIZE + lx;
-                let wz = c.y * CHUNK_SIZE + lz;
-                self.hm[((wz & mask) * self.size + (wx & mask)) as usize] = entry;
-            }
-        }
     }
 
     fn render_inner(&mut self, req: &FrameRequest) -> FrameStats {
@@ -127,26 +101,22 @@ impl CpuVoxelSpace {
         let (fwd, right, up) = (cam.forward(), cam.right(), cam.up());
         let thf = (cam.fov_y * 0.5).tan();
         let aspect = w as f32 / h as f32;
-        let (hm, size, scene) = (&self.hm, self.size, &self.scene);
-        let mask = size - 1;
+        let (hm, scene) = (&self.hm, &self.scene);
         let lit = req.mode == RenderMode::Lit;
         let sky = encode_srgb(scene.env.sky);
         let max_cells = self.max_cells;
-        // No shadow rays: a heightmap walk for them is step 3 of the architecture refactor.
+        // Shadow rays walk the heightmap.
         let ctx = Ctx {
             blocks: &scene.blocks,
             env: &scene.env,
             cam: cam_block,
-            sun_shadows: false,
-            light_shadows: false,
+            sun_shadows: scene.shadows != Shadows::None,
+            light_shadows: scene.shadows == Shadows::All,
             lights_near: |world: IVec3| scene.lights_near(world),
-            occluded: |_: Vec3, _: Vec3, _: f32| false,
+            occluded: |p: Vec3, d: Vec3, dist: f32| hm.trace(cam_block, p, d, dist).is_some(),
         };
-        let hm_at = |c: IVec2| -> u32 {
-            let a = c + IVec2::new(cam_block.x, cam_block.z);
-            hm[((a.y & mask) * size + (a.x & mask)) as usize]
-        };
-        let top_of = |e: u32| -> f32 { if e & 0xffff == 0 { EMPTY } else { ((e & 0xffff) as i32 - 32768 + 1 - cam_block.y) as f32 } };
+        let hm_at = |c: IVec2| -> u32 { hm.at(c.x + cam_block.x, c.y + cam_block.z) };
+        let top_of = |e: u32| -> f32 { entry_top(e).map_or(EMPTY, |y| (y + 1 - cam_block.y) as f32) };
         let row_of = |p: Vec3| -> f32 {
             let depth = p.dot(fwd).max(1e-4);
             let sy = p.dot(up) / (depth * thf);
@@ -262,8 +232,8 @@ impl CpuVoxelSpace {
             gpu_ms: None,
             legend: None,
             counters: vec![
-                ("heightmap_size".into(), size as f64),
-                ("chunk_columns".into(), self.columns.len() as f64),
+                ("heightmap_size".into(), hm.size as f64),
+                ("chunk_columns".into(), hm.columns() as f64),
                 ("march_ms".into(), t_march),
                 ("transpose_ms".into(), total - t_march),
             ],
@@ -273,26 +243,9 @@ impl CpuVoxelSpace {
 
 impl Renderer for CpuVoxelSpace {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        let mut tiles = HashSet::new();
-        for pos in self.scene.apply(updates) {
-            let c = IVec2::new(pos.x, pos.z);
-            let held = self.scene.chunk(pos).is_some();
-            let ys = self.columns.entry(c).or_default();
-            match (held, ys.iter().position(|&y| y == pos.y)) {
-                (true, None) => ys.push(pos.y),
-                (false, Some(i)) => {
-                    ys.swap_remove(i);
-                }
-                _ => {}
-            }
-            if ys.is_empty() {
-                self.columns.remove(&c);
-            }
-            tiles.insert(c);
-        }
-        for c in tiles {
-            self.rebuild_tile(c);
-        }
+        let changed = self.scene.apply(updates);
+        let scene = &self.scene;
+        self.hm.apply(changed, |pos| scene.chunk(pos));
         Ok(())
     }
 
@@ -304,6 +257,7 @@ impl Renderer for CpuVoxelSpace {
                     self.pool = Pool::new(n)?;
                 }
             }
+            "shadows" => self.scene.shadows = value.as_str().and_then(Shadows::parse).ok_or_else(|| anyhow::anyhow!("bad shadows value"))?,
             _ => anyhow::bail!("unknown parameter `{name}`"),
         }
         Ok(())
@@ -331,6 +285,6 @@ impl Renderer for CpuVoxelSpace {
     }
 
     fn memory(&self) -> MemoryReport {
-        MemoryReport { cpu_bytes: self.scene.dense_bytes() + self.hm.len() as u64 * 4 + self.pixels.len() as u64 * 2, gpu_bytes: 0 }
+        MemoryReport { cpu_bytes: self.scene.dense_bytes() + self.hm.hm.len() as u64 * 4 + self.pixels.len() as u64 * 2, gpu_bytes: 0 }
     }
 }
