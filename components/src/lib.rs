@@ -20,12 +20,15 @@
 //! working renderer from a [`Composition`].
 //!
 //! Compatibility rule: a component combines with a back end if the back end has its slot and
-//! the component has an implementation for it. Optional fast-path queries never forbid a
-//! combination (generic fallbacks exist), so within a back end every component pairs with
-//! every other.
+//! the component has an implementation for it, and with the other components if each of its
+//! needs is met, natively or through an adapter ([`caps`]). Today every need has an adapter,
+//! so within a back end every component pairs with every other.
 
 use serde::{Deserialize, Serialize};
 
+pub use caps::Cap;
+
+pub mod caps;
 pub mod geometry;
 pub mod prepass;
 pub mod shading;
@@ -150,10 +153,11 @@ pub struct ComponentInfo {
     pub description: &'static str,
     /// Back ends with an implementation of this component.
     pub backends: &'static [&'static str],
-    /// Optional queries this storage implements fast / this visibility component relies on
-    /// (only advisory: the generic fallbacks cover any gap).
-    pub provides: &'static [&'static str],
-    pub uses: &'static [&'static str],
+    /// Optional capabilities this component provides ([`caps`]).
+    pub provides: &'static [Cap],
+    /// Capabilities it needs from the other stages: met natively, through an adapter, or the
+    /// combination is invalid.
+    pub needs: &'static [(Slot, Cap)],
 }
 
 const GPU: &[&str] = &["gpu-compute"];
@@ -178,49 +182,49 @@ const MESH: &[&str] = &["gpu-compute", "gpu-raster"];
 
 pub const COMPONENTS: &[ComponentInfo] = &[
     // Storage.
-    ComponentInfo { slot: Slot::Storage, name: "bricks", description: "The shared pool: a u16 id per voxel and one bit per 4^3 brick (levels 1, 4). gpu-dda's data.", backends: ALL_ST, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "hier", description: "Bricks plus one bit per 8^3 region (levels 1, 4, 8), as cpu-simd-hier.", backends: ALL_ST, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "prefix", description: "The user's structure (IDEAS §1): Morton-ordered 4^3 masks plus a popcount prefix; any aligned 2..16 cube's emptiness is one compare (levels 1-16).", backends: ALL_ST, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "distance", description: "Per-voxel Chebyshev distance to the nearest solid voxel (from gpu-sdf). Fast `s_dist`.", backends: GPU_ST, provides: &["s_dist"], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "rows", description: "Bricks plus 32x32 occupancy rows per chunk (from gpu-bitmask). Fast `s_row`.", backends: GPU_ST, provides: &["s_row"], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "tree64", description: "Sparse 64-tree per 64^3 region (from gpu-tree64): 4x4x4 child masks, popcount-packed children, compressed leaves, uniform subtrees collapsed (levels 0, 2, 4, 6). Owns its data: no voxel pool, ~15% of its VRAM.", backends: GPU_ST, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "svo_dag", description: "Sparse voxel DAG (from gpu-svo-dag; Kampe et al. 2013): per-chunk binary octrees, identical subtrees shared across all chunks (~3x dedup on terrain). No voxel pool: the smallest GPU footprint.", backends: GPU_ST, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "clipmap", description: "Camera-centred toroidal 3D textures (from gpu-clipmap): block ids, 4^3 brick occupancy and slot tags, read with textureLoad only; no hash table, no voxel pool.", backends: GPU_ST, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "brickmajor", description: "bricks with each 4^3 brick's 64 ids contiguous (128 bytes; from cpu-simd-brickmajor): fewer L1/L2 misses per ray.", backends: CPU, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "morton", description: "bricks with ids in Morton (Z-)order over the chunk (from cpu-simd-morton): bricks contiguous and neighbouring bricks close.", backends: CPU, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "heightmap", description: "Top solid block height and id per (x, z) column, in a ring around the camera (from voxelspace): 2.5D, no overhangs or caves.", backends: VOXELSPACE, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "u8", description: "Brick mask plus a u8 id per voxel: half of bricks' footprint (32 KiB per chunk; at most 256 block types).", backends: CPU, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "bits", description: "One occupancy bit per voxel, brick-major (4 KiB per chunk); block ids read only at the hit.", backends: CPU, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "palette", description: "Per-chunk palette with indices packed at 1/2/4/8/16 bits (7x smaller than bricks on terrain).", backends: CPU, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "bricks", description: "The shared pool: a u16 id per voxel and one bit per 4^3 brick (levels 1, 4). gpu-dda's data.", backends: ALL_ST, provides: &[Cap::Lod], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "hier", description: "Bricks plus one bit per 8^3 region (levels 1, 4, 8), as cpu-simd-hier.", backends: ALL_ST, provides: &[Cap::Lod], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "prefix", description: "The user's structure (IDEAS §1): Morton-ordered 4^3 masks plus a popcount prefix; any aligned 2..16 cube's emptiness is one compare (levels 1-16).", backends: ALL_ST, provides: &[Cap::Lod], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "distance", description: "Per-voxel Chebyshev distance to the nearest solid voxel (from gpu-sdf). Fast `s_dist`.", backends: GPU_ST, provides: &[Cap::Dist, Cap::Lod], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "rows", description: "Bricks plus 32x32 occupancy rows per chunk (from gpu-bitmask). Fast `s_row`.", backends: GPU_ST, provides: &[Cap::Row, Cap::Lod], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "tree64", description: "Sparse 64-tree per 64^3 region (from gpu-tree64): 4x4x4 child masks, popcount-packed children, compressed leaves, uniform subtrees collapsed (levels 0, 2, 4, 6). Owns its data: no voxel pool, ~15% of its VRAM.", backends: GPU_ST, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "svo_dag", description: "Sparse voxel DAG (from gpu-svo-dag; Kampe et al. 2013): per-chunk binary octrees, identical subtrees shared across all chunks (~3x dedup on terrain). No voxel pool: the smallest GPU footprint.", backends: GPU_ST, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "clipmap", description: "Camera-centred toroidal 3D textures (from gpu-clipmap): block ids, 4^3 brick occupancy and slot tags, read with textureLoad only; no hash table, no voxel pool.", backends: GPU_ST, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "brickmajor", description: "bricks with each 4^3 brick's 64 ids contiguous (128 bytes; from cpu-simd-brickmajor): fewer L1/L2 misses per ray.", backends: CPU, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "morton", description: "bricks with ids in Morton (Z-)order over the chunk (from cpu-simd-morton): bricks contiguous and neighbouring bricks close.", backends: CPU, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "heightmap", description: "Top solid block height and id per (x, z) column, in a ring around the camera (from voxelspace): 2.5D, no overhangs or caves.", backends: VOXELSPACE, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "u8", description: "Brick mask plus a u8 id per voxel: half of bricks' footprint (32 KiB per chunk; at most 256 block types).", backends: CPU, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "bits", description: "One occupancy bit per voxel, brick-major (4 KiB per chunk); block ids read only at the hit.", backends: CPU, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "palette", description: "Per-chunk palette with indices packed at 1/2/4/8/16 bits (7x smaller than bricks on terrain).", backends: CPU, provides: &[], needs: &[] },
     // Visibility.
-    ComponentInfo { slot: Slot::Visibility, name: "refloor", description: "Per-pixel DDA: ask the storage for the largest empty cube, step out of it, re-floor (gpu-dda's walk).", backends: BOTH, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", backends: BOTH, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", backends: GPU, provides: &[], uses: &["s_dist"] },
-    ComponentInfo { slot: Slot::Visibility, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: GPU, provides: &[], uses: &["s_row"] },
-    ComponentInfo { slot: Slot::Visibility, name: "quadtree", description: "Discovery (the user's idea, IDEAS §3): an adaptive screen-space quadtree of corner rays; coherent tiles add every exposed face of the hit plane in their footprint to a face set kept across frames, which is rasterised. Knobs: tile, criterion, incremental, events, merge, order, views tiles/rays/churn/overdraw/quads, ...", backends: DISCOVER, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "cluster", description: "Face-cluster discovery (the user's design, IDEAS §10; was cpu-cluster): seed rays on a coarse-to-fine pixel lattice; from each hit a flood fill over coplanar exposed faces confirmed by corner rays; confirmed faces cover their screen area. Knobs: seed_step, sky, views clusters/kinds.", backends: CPU_DISCOVER, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "splat", description: "Point splatting in compute (from gpu-splat): each point's square footprint (sized from its projected size, capped at max_splat px) atomicMin's its depth, a second pass writes the winning id, a resolve pass ray-boxes the block. Knob: max_splat.", backends: SPLAT, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "columns", description: "Voxel Space column march (Comanche, 1992): per screen column, front to back over the heightmap, drawing spans with a y-buffer.", backends: VOXELSPACE, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "rayquery", description: "Hardware ray queries against the acceleration structure (RT cores) for primary, shadow and bounce rays. Knob: cull (triangle facing culled for primary rays).", backends: RT, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "raster", description: "Depth-tested rasterisation of the geometry; each pixel's ray is intersected with the face plane and shaded. gpu-raster: knob depth_prepass (lit: shade once per pixel). cpu-raster: edge functions into a visibility buffer, then deferred shading; knobs tile_width, band_height.", backends: RASTERS, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "gbuffer", description: "G-buffer (from gpu-hybrid): the raster pass writes the hit point, face and block; a compute pass rebuilds the hit and shades once per pixel. 20 bytes per pixel against visbuffer's 4, but no refetch. Also the `draw` knob of gpu-discover and cpu-discover.", backends: RASTER, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "visbuffer", description: "Visibility buffer: the raster pass writes only a face id and depth; a compute pass reconstructs the hit and shades once per pixel, independent of overdraw. Also the `draw` knob of gpu-discover and cpu-discover.", backends: RASTER, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "refloor", description: "Per-pixel DDA: ask the storage for the largest empty cube, step out of it, re-floor (gpu-dda's walk).", backends: BOTH, provides: &[Cap::Lod], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", backends: BOTH, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", backends: GPU, provides: &[], needs: &[(Slot::Storage, Cap::Dist)] },
+    ComponentInfo { slot: Slot::Visibility, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: GPU, provides: &[], needs: &[(Slot::Storage, Cap::Row)] },
+    ComponentInfo { slot: Slot::Visibility, name: "quadtree", description: "Discovery (the user's idea, IDEAS §3): an adaptive screen-space quadtree of corner rays; coherent tiles add every exposed face of the hit plane in their footprint to a face set kept across frames, which is rasterised. Knobs: tile, criterion, incremental, events, merge, order, views tiles/rays/churn/overdraw/quads, ...", backends: DISCOVER, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "cluster", description: "Face-cluster discovery (the user's design, IDEAS §10; was cpu-cluster): seed rays on a coarse-to-fine pixel lattice; from each hit a flood fill over coplanar exposed faces confirmed by corner rays; confirmed faces cover their screen area. Knobs: seed_step, sky, views clusters/kinds.", backends: CPU_DISCOVER, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "splat", description: "Point splatting in compute (from gpu-splat): each point's square footprint (sized from its projected size, capped at max_splat px) atomicMin's its depth, a second pass writes the winning id, a resolve pass ray-boxes the block. Knob: max_splat.", backends: SPLAT, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "columns", description: "Voxel Space column march (Comanche, 1992): per screen column, front to back over the heightmap, drawing spans with a y-buffer.", backends: VOXELSPACE, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "rayquery", description: "Hardware ray queries against the acceleration structure (RT cores) for primary, shadow and bounce rays. Knob: cull (triangle facing culled for primary rays).", backends: RT, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "raster", description: "Depth-tested rasterisation of the geometry; each pixel's ray is intersected with the face plane and shaded. gpu-raster: knob depth_prepass (lit: shade once per pixel). cpu-raster: edge functions into a visibility buffer, then deferred shading; knobs tile_width, band_height.", backends: RASTERS, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "gbuffer", description: "G-buffer (from gpu-hybrid): the raster pass writes the hit point, face and block; a compute pass rebuilds the hit and shades once per pixel. 20 bytes per pixel against visbuffer's 4, but no refetch. Also the `draw` knob of gpu-discover and cpu-discover.", backends: RASTER, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "visbuffer", description: "Visibility buffer: the raster pass writes only a face id and depth; a compute pass reconstructs the hit and shades once per pixel, independent of overdraw. Also the `draw` knob of gpu-discover and cpu-discover.", backends: RASTER, provides: &[], needs: &[] },
     // Prepass.
-    ComponentInfo { slot: Slot::Prepass, name: "none", description: "No prepass: every ray walks from the camera.", backends: GPU, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Prepass, name: "beam", description: "Conservative per-tile beam (from gpu-beam): one cone per tile marches top cells; rays start where their tile's cone is provably empty. Exact. Knob: tile (pixels, 1 = off).", backends: GPU, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Prepass, name: "none", description: "No prepass: every ray walks from the camera.", backends: GPU, provides: &[Cap::Lod], needs: &[] },
+    ComponentInfo { slot: Slot::Prepass, name: "beam", description: "Conservative per-tile beam (from gpu-beam): one cone per tile marches top cells; rays start where their tile's cone is provably empty. Exact. Knob: tile (pixels, 1 = off).", backends: GPU, provides: &[], needs: &[] },
     // Geometry.
-    ComponentInfo { slot: Slot::Geometry, name: "greedy", description: "Greedy quads (CPU, per chunk, incremental): coplanar exposed faces merged into rectangles (on gpu-rt: two triangles each). Knob: merge = block (same block only) or exposure (any block, looked up per fragment; raster only).", backends: RASTER_RT, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Geometry, name: "naive", description: "One quad per exposed block face, no merging (\"Minecraft-style\"). Knob: cull = false emits all six faces of every solid block.", backends: RASTER_RT, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Geometry, name: "points", description: "One point per block with an exposed face (from gpu-splat), rebuilt per chunk.", backends: SPLAT, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Geometry, name: "boxes", description: "One AABB per occupied 4^3 brick (from gpu-rtx-bricks): the RT cores find candidate boxes, a small software DDA through the voxel pool finds the voxel.", backends: RT, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Geometry, name: "cubes", description: "One 36-vertex cube instance per surface block; the hardware back-face culls the hidden half. Knob: cull = false instances every solid block.", backends: RASTER, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Geometry, name: "greedy", description: "Greedy quads (CPU, per chunk, incremental): coplanar exposed faces merged into rectangles (on gpu-rt: two triangles each). Knob: merge = block (same block only) or exposure (any block, looked up per fragment; raster only).", backends: RASTER_RT, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Geometry, name: "naive", description: "One quad per exposed block face, no merging (\"Minecraft-style\"). Knob: cull = false emits all six faces of every solid block.", backends: RASTER_RT, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Geometry, name: "points", description: "One point per block with an exposed face (from gpu-splat), rebuilt per chunk.", backends: SPLAT, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Geometry, name: "boxes", description: "One AABB per occupied 4^3 brick (from gpu-rtx-bricks): the RT cores find candidate boxes, a small software DDA through the voxel pool finds the voxel.", backends: RT, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Geometry, name: "cubes", description: "One 36-vertex cube instance per surface block; the hardware back-face culls the hidden half. Knob: cull = false instances every solid block.", backends: RASTER, provides: &[], needs: &[] },
     // Shading.
-    ComponentInfo { slot: Slot::Shading, name: "pathtrace", description: "Diffuse path tracing (from gpu-pathtrace): NEE for sun and point lights, cosine-weighted bounces through the composed walk, progressive accumulation while the view is still. bounces = 0 reproduces direct. Knobs: bounces, spp, accumulate.", backends: PATHTRACE, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Shading, name: "direct", description: "The reference lighting model: texel (unlit); ambient, sun and point lights with shadow rays through the same walk (lit).", backends: SHADE_ALL, provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Shading, name: "pathtrace", description: "Diffuse path tracing (from gpu-pathtrace): NEE for sun and point lights, cosine-weighted bounces through the composed walk, progressive accumulation while the view is still. bounces = 0 reproduces direct. Knobs: bounces, spp, accumulate.", backends: PATHTRACE, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Shading, name: "direct", description: "The reference lighting model: texel (unlit); ambient, sun and point lights with shadow rays through the same walk (lit).", backends: SHADE_ALL, provides: &[], needs: &[] },
     // Meshes (mesh mode, IDEAS §13): how polygon meshes join the voxel image.
-    ComponentInfo { slot: Slot::Meshes, name: "none", description: "Meshes are not drawn: voxels only. Benchmarks skip the composition in +meshes passes; the GUI labels it \"(no meshes)\".", backends: MESH, provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Meshes, name: "composite", description: "Meshes rasterised first (shaded, voxel shadows in lit mode) into a colour and depth target; each primary ray is cast only up to the mesh depth at its pixel, and the mesh shows where no voxel is nearer. Exact for primary visibility; capped rays trace less (mr_gpu::meshes::MeshComposite).", backends: &["gpu-compute"], provides: &[], uses: &[] },
-    ComponentInfo { slot: Slot::Meshes, name: "depth", description: "Meshes drawn into the same depth buffer as the voxel faces, before them, shaded with the voxel lighting model (voxels shadow meshes). Exact (mr_gpu::meshes::GpuMeshes).", backends: &["gpu-raster"], provides: &[], uses: &[] },
+    ComponentInfo { slot: Slot::Meshes, name: "none", description: "Meshes are not drawn: voxels only. Benchmarks skip the composition in +meshes passes; the GUI labels it \"(no meshes)\".", backends: MESH, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Meshes, name: "composite", description: "Meshes rasterised first (shaded, voxel shadows in lit mode) into a colour and depth target; each primary ray is cast only up to the mesh depth at its pixel, and the mesh shows where no voxel is nearer. Exact for primary visibility; capped rays trace less (mr_gpu::meshes::MeshComposite).", backends: &["gpu-compute"], provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Meshes, name: "depth", description: "Meshes drawn into the same depth buffer as the voxel faces, before them, shaded with the voxel lighting model (voxels shadow meshes). Exact (mr_gpu::meshes::GpuMeshes).", backends: &["gpu-raster"], provides: &[], needs: &[] },
 ];
 
 /// A renderer as an assembly of components. Slots left out (empty) take the back end's
@@ -378,7 +382,7 @@ impl Composition {
                 return Err(why);
             }
         }
-        Ok(())
+        caps::unmet(self).map_or(Ok(()), Err)
     }
 }
 
@@ -429,12 +433,14 @@ pub fn lighting_knobs(backend: &str, mut params: Vec<mr_core::ParamSpec>) -> Vec
     params
 }
 
-/// Advisory note for an allowed pairing that runs through a generic fallback.
-pub fn fallback_note(c: &Composition) -> Option<String> {
-    let st = component(Slot::Storage, &c.storage)?;
-    let vis = component(Slot::Visibility, &c.visibility)?;
-    let missing: Vec<&str> = vis.uses.iter().copied().filter(|q| !st.provides.contains(q)).collect();
-    (!missing.is_empty()).then(|| format!("`{}` answers {} through a generic fallback: correct, but slower than a storage with that fast path", c.storage, missing.join(", ")))
+/// Why `name` cannot fill `slot` in `c` (the rest of `c` kept), if it can't: the back end
+/// lacks it, or a need between it and the other components is unmet.
+pub fn conflict(c: &Composition, slot: Slot, name: &str) -> Option<String> {
+    unavailable(&c.backend, slot, name).or_else(|| {
+        let mut c = c.clone();
+        c.set(slot, name);
+        caps::unmet(&c)
+    })
 }
 
 #[cfg(test)]
@@ -448,7 +454,7 @@ mod tests {
     fn registry_is_consistent() {
         for c in COMPONENTS.iter().filter(|c| c.backends.contains(&"gpu-compute")) {
             let ok = match c.slot {
-                Slot::Storage => storage::gpu(c.name).is_some_and(|g| g.provides == c.provides),
+                Slot::Storage => storage::gpu(c.name).is_some_and(|g| g.has_lod() == matches!(g.kind, storage::Kind::Pool { .. })),
                 Slot::Visibility => visibility::gpu_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 Slot::Prepass => prepass::gpu_wgsl(c.name).is_some(),
@@ -558,7 +564,13 @@ mod tests {
         assert_eq!(disc.effective(mr_core::PassMode::UNLIT).storage, "prefix", "discovery rays walk the storage");
         assert_eq!(Composition { prepass: "beam".into(), ..Default::default() }.label(), "gpu-compute: bricks + beam + refloor");
         assert!(Composition { storage: "nope".into(), ..Default::default() }.validate().is_err());
-        assert!(fallback_note(&Composition { storage: "bricks".into(), visibility: "sphere".into(), ..Default::default() }).is_some());
-        assert!(fallback_note(&Composition { storage: "distance".into(), visibility: "sphere".into(), ..Default::default() }).is_none());
+        assert!(caps::adapter_note(&Composition { storage: "bricks".into(), visibility: "sphere".into(), ..Default::default() }).is_some());
+        assert!(caps::adapter_note(&Composition { storage: "distance".into(), visibility: "sphere".into(), ..Default::default() }).is_none());
+        // LOD (gpu-compute) needs every stage on the primary walk to handle it.
+        let lod = [(Slot::Storage, Cap::Lod), (Slot::Visibility, Cap::Lod), (Slot::Prepass, Cap::Lod)];
+        assert!(caps::lacks(&Composition::default(), &lod).is_none());
+        let why = caps::lacks(&Composition { storage: "tree64".into(), prepass: "beam".into(), ..Default::default() }, &lod).unwrap();
+        assert!(why.contains("storage `tree64` lacks lod") && why.contains("prepass `beam` lacks lod"), "{why}");
+        assert!(conflict(&Composition::default(), Slot::Storage, "tree64").is_none());
     }
 }

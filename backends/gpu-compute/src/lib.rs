@@ -3,8 +3,8 @@
 //! from `components/`, pasted into one compute shader before compilation, so the compiler
 //! optimises across them and the split costs nothing at run time.
 //!
-//! Storages answer the interface in `mr_components::storage`; optional fast-path queries the
-//! chosen storage lacks get generic fallbacks, so every storage works with every
+//! Storages answer the interface in `mr_components::storage`; optional capabilities the
+//! chosen storage lacks come from adapters (`mr_components::caps`), so every storage works with every
 //! visibility component. Shadow rays use the same composed walk. The storage's own data
 //! (per-slot side data, or region blobs) is kept by `storage::gpu_data::StorageData`.
 //! Meshes (mesh mode) are composited by `mr_gpu::meshes::MeshComposite`.
@@ -16,7 +16,7 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_components::{names_on, require, Slot, components, storage, visibility};
+use mr_components::{Cap, caps, names_on, require, Slot, components, storage, visibility};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite, Occlusion};
@@ -51,7 +51,7 @@ fn describe(slot: Slot) -> String {
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
         ParamSpec::choice("storage", &format!("Storage component. {}", describe(Slot::Storage)), &names_on(BACKEND, Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", &format!("Visibility component (any storage works with any; missing fast paths use generic fallbacks). {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "refloor", true),
+        ParamSpec::choice("visibility", &format!("Visibility component (any storage works with any; missing fast paths come from adapters). {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "refloor", true),
         ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
         ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &names_on(BACKEND, Slot::Prepass), "none", true),
         ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(BACKEND, Slot::Meshes), "composite", true),
@@ -193,17 +193,17 @@ impl Composition {
 }
 
 
+/// What LOD needs (`mr_components::caps`): chunks at every level (pool storages), a walk
+/// that scales its cells (refloor) and a prepass that copes (none; the beam reads level 0).
+const LOD_NEEDS: &[(Slot, Cap)] = &[(Slot::Storage, Cap::Lod), (Slot::Visibility, Cap::Lod), (Slot::Prepass, Cap::Lod)];
+
 /// Why LOD cannot run with this composition, if it can't.
 fn lod_blocker(c: &Composition) -> Option<String> {
-    if !c.storage().has_lod() {
-        Some(format!("storage `{}` holds level 0 only (LOD needs a pool storage: bricks, hier, prefix, distance, rows)", c.storage))
-    } else if c.visibility != "refloor" {
-        Some(format!("visibility `{}` has no LOD walk (refloor has)", c.visibility))
-    } else if c.prepass() != "none" {
-        Some(format!("prepass `{}` reads level 0 only", c.prepass()))
-    } else {
-        None
-    }
+    let mut m = mr_components::Composition::new(BACKEND);
+    m.storage = c.storage.clone();
+    m.visibility = c.visibility.clone();
+    m.prepass = c.prepass().to_string();
+    caps::lacks(&m, LOD_NEEDS)
 }
 
 fn parse_dispatch(s: &str) -> anyhow::Result<bool> {
@@ -293,8 +293,6 @@ impl GpuCompose {
         };
         let mut comp = comp;
         if p.max_lod > 0 {
-            // LOD needs chunks at every level (pool storages), a walk that scales its cells
-            // (refloor) and no prepass (the beam reads level 0 only).
             match lod_blocker(&comp) {
                 None => comp.lod = true,
                 Some(why) => tracing::warn!("gpu-compute: running without LOD (max_lod = {}): {why}", p.max_lod),
@@ -411,7 +409,7 @@ impl GpuCompose {
     fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, comp: &Composition) -> anyhow::Result<(Main, Option<wgpu::ComputePipeline>)> {
         let source = comp.source();
         let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("compose"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let module = mr_gpu::shader(&gpu.device, "compose", source);
         let entry = |name| {
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(name),

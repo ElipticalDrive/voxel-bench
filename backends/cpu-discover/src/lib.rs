@@ -400,7 +400,7 @@ impl CpuDiscover {
             &visibility::occlusion_wgsl(&st, false),
             &format!("{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), visibility::faces_wgsl(true)),
         );
-        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("cpu-discover raster"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let module = mr_gpu::shader(&gpu.device, "cpu-discover raster", source);
         FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl, shade_layout: pl_shade, strip: true }, mode, images, width, height)
     }
 

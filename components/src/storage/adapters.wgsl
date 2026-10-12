@@ -1,6 +1,6 @@
-// Generic fallbacks for the optional storage queries (IDEAS §9: every storage answers
-// every query, slowly where it has no fast path). The assembler appends the ones the
-// chosen storage does not provide.
+// Adapters for the optional storage queries (`caps::ADAPTERS`; IDEAS §9: every storage
+// answers every query, slowly where it has no fast path). The assembler appends the ones
+// the chosen storage does not provide. Only the sections are compiled, not this header.
 
 //@s_dist
 // Chebyshev distance lower bound from `s_probe`: 0 if solid, else 1 + the distance from l

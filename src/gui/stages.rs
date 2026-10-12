@@ -5,7 +5,7 @@
 //! why (what they conflict with).
 
 use egui::{ComboBox, Ui};
-use mr_components::{BACKENDS, Composition, Slot, components, unavailable};
+use mr_components::{BACKENDS, Composition, Slot, components};
 use mr_core::{ParamSpec, ParamValue};
 
 /// What the user changed in the grid.
@@ -77,7 +77,7 @@ pub fn stage_grid(ui: &mut Ui, comp: &Composition, knobs: &[(ParamSpec, ParamVal
                 .selected_text(&current)
                 .show_ui(ui, |ui| {
                     for c in components(slot) {
-                        let why = unavailable(&comp.backend, slot, c.name);
+                        let why = mr_components::conflict(comp, slot, c.name);
                         let resp = ui.add_enabled(why.is_none(), egui::Button::selectable(current == c.name, c.name));
                         match why {
                             None => {
@@ -96,7 +96,7 @@ pub fn stage_grid(ui: &mut Ui, comp: &Composition, knobs: &[(ParamSpec, ParamVal
             knob_row(ui, &mut edits, &|s| s.owned_by(slot.name(), &current));
         });
     }
-    if let Some(note) = mr_components::fallback_note(comp) {
+    if let Some(note) = mr_components::caps::adapter_note(comp) {
         ui.weak(format!("ⓘ {note}"));
     }
     edits

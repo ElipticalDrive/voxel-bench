@@ -463,7 +463,8 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
             // Options the back end declares.
             let known: Vec<String> = infos.iter().find(|i| Some(i.name.as_str()) == b.renderer).map(|i| i.params.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
             let options: toml::Table = e.get("options").and_then(|o| o.as_table()).map(|t| t.iter().filter(|(k, _)| known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
-            for c in combos {
+            // Combinations whose components' needs cannot be met do not exist.
+            for c in combos.into_iter().filter(|c| c.validate().is_ok()) {
                 let mut entry = e.as_table().unwrap().clone();
                 entry.insert("compose".into(), toml::Value::try_from(&c)?);
                 entry.insert("options".into(), toml::Value::Table(options.clone()));

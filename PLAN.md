@@ -38,7 +38,7 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
   2026-10-11); steps need not end in something to play with, as long as the project gets
   back to it.
 - Terminology: **adapters** are compile-time code that gives a component a feature it lacks
-  natively (e.g. `storage/fallbacks.wgsl`); combinations with no valid path do not exist
+  natively (e.g. `storage/adapters.wgsl`, registered in `components/src/caps.rs`); combinations with no valid path do not exist
   (greyed with the reason), nothing substitutes silently. Avoid the word "fallback".
 - **Redundancy means the same algorithm the same way** (the user, 2026-10-11): one
   algorithm implemented several ways is fine when the ways differ fundamentally (back end,
@@ -228,7 +228,7 @@ one shading entry point per kind of back end with a `Surface`; one face drawer w
 sources and the host-side `FaceDrawer`; every shadow and bounce ray through a storage
 component, the heightmap as a component; the architecture guard test
 `tests/architecture.rs`). Builds force code alignment (`.cargo/config.toml`). Step 5
-(devices handed to back ends) is done too; steps 6–8 follow. Open, deferred by the
+(devices handed to back ends) is done too; step 6 is under way (6a done); 7–8 follow. Open, deferred by the
 user to a later optimisation pass: gpu-voxelspace's lit cost (column threads shade
 serially; proposed per-pixel deferred shading, sweep entry of 2026-10-12), gpu-compute
 pathtrace codegen variance (accepted), cpu-discover's per-ray `dyn World` call.
@@ -919,6 +919,21 @@ earlier if meshes become more urgent; 7c depends on 6′.
   now host-side (update) cost, not measurement. Rasterisers win the closed scenes (room,
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
+
+### 2026-10-12: architecture refactor step 6a (capabilities and adapters)
+- **`components/src/caps.rs`:** `Cap` (typed: `Dist`, `Row`, `Lod`), components declare
+  `provides` and `needs: &[(Slot, Cap)]` once in the registry (the duplicate list in
+  `GpuStorage` is gone; it reads the registry). `ADAPTERS` lists the compile-time adapters
+  (`storage/adapters.wgsl`, formerly `fallbacks.wgsl`). `caps::meet` says how a need is met
+  (native, adapter, no such stage) or why not; `Composition::validate` rejects unmet needs,
+  `mr_components::conflict` greys a GUI choice against the rest of the composition,
+  sweeps drop invalid combinations, `caps::adapter_note` replaces `fallback_note`.
+- **First derived rule:** gpu-compute's hand-written `lod_blocker` is now the need list
+  `[(Storage, Lod), (Visibility, Lod), (Prepass, Lod)]`.
+- **Check tool:** `mr_gpu::shader` creates every shader module; `MR_DUMP_WGSL=dir` writes
+  each source as `label-hash.wgsl`. `scripts/ab/wgsl.sh` dumps both builds' shaders over a
+  wildcard sweep and compares the sets (13 min for terrain). 6a: all 348 identical.
+- Today every need has an adapter, so no combination changed validity.
 
 ### 2026-10-12: architecture refactor step 5 (devices handed to back ends)
 - **Configuration, not opinion:** `InitParams.devices` (`mr_core::DeviceConfig`: GPU slots by

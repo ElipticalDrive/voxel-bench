@@ -585,7 +585,7 @@ impl GpuDiscover {
             },
         )?;
         let dev = &gpu.device;
-        let module = |label, src: String| dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(src.into()) });
+        let module = |label, src: String| mr_gpu::shader(dev, label, src);
         // Discovery and raster read the world through the composed storage, walked with
         // refloor (rays and shadow rays).
         let layout_st = gpu_data::layout(&gpu, &st, wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT);
@@ -1191,7 +1191,7 @@ impl GpuDiscover {
         let mode = DrawMode::parse(draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`"))?;
         let vis = visibility::raster_wgsl(mode.name()).unwrap();
         let vis = if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis) };
-        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("discover drawer"), source: wgpu::ShaderSource::Wgsl(format!("{draw_src}\n{vis}").into()) });
+        let module = mr_gpu::shader(&gpu.device, "discover drawer", format!("{draw_src}\n{vis}"));
         FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl_draw, shade_layout: pl_shade, strip: true }, mode, images, width, height)
     }
 

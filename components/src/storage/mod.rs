@@ -12,10 +12,10 @@
 //!   cubes `s_occupied` answers), `s_occupied(h, level, c)` (may say occupied for an empty
 //!   cube, never the reverse; exact at level 0), `s_probe(h, l) -> (block or 0, empty
 //!   aligned cube size)`, `s_block(h, l)`;
-//! * optional fast paths (`OPTIONAL_QUERIES`): `s_dist(h, l)` (Chebyshev distance to the
+//! * optional capabilities (`crate::caps`): `s_dist(h, l)` (Chebyshev distance to the
 //!   nearest solid voxel), `s_row(h, x0, y, z)` (occupancy of the 32 cells from local x0
-//!   along x). A storage lists the ones it implements; the assembler appends the generic
-//!   fallbacks for the rest (`fallbacks.wgsl`), so every storage works with every
+//!   along x), LOD. A storage's registry entry lists the ones it implements; the assembler
+//!   appends the adapters for the rest (`adapters.wgsl`), so every storage works with every
 //!   visibility component.
 //!
 //! Host side (`Kind`, managed by `gpu_data::StorageData`): pool storages read the shared
@@ -46,8 +46,7 @@ pub mod u8;
 
 use mr_core::DenseChunk;
 
-/// Optional storage queries; each has a fallback in `fallbacks.wgsl` (`//@name`).
-pub const OPTIONAL_QUERIES: &[&str] = &["s_dist", "s_row"];
+use crate::Cap;
 
 /// What a region storage builds for one region (`get` reads its blocks, local coords).
 pub enum RegionBlob {
@@ -71,17 +70,18 @@ pub enum Kind {
 #[derive(Copy, Clone)]
 pub struct GpuStorage {
     pub wgsl: &'static str,
-    pub provides: &'static [&'static str],
+    /// Its capabilities, from the registry (`ComponentInfo::provides`).
+    pub provides: &'static [Cap],
     pub kind: Kind,
 }
 
 impl GpuStorage {
     /// Whether the storage holds LOD chunks (pool storages).
     pub fn has_lod(&self) -> bool {
-        matches!(self.kind, Kind::Pool { .. })
+        self.provides.contains(&Cap::Lod)
     }
 
-    /// The storage's WGSL with its top level and the fallbacks it needs. Expects the back
+    /// The storage's WGSL with its top level and the adapters it needs. Expects the back
     /// end to bind `aux` and `regions` (group 2, `gpu_data::layout`).
     pub fn source(&self) -> String {
         const NO_LOD: &str = "const S_HAS_LOD: bool = false;\nfn s_top_lod(key: vec3<i32>, lod: u32) -> u32 { return s_top(key); }\n";
@@ -98,27 +98,29 @@ impl GpuStorage {
              const AUX_WORDS: u32 = {}u;\n{top}\n{}\n{}\n{BLOCK_AT}",
             aux_words.max(1),
             self.wgsl,
-            fallbacks(self.provides)
+            adapters(self.provides)
         )
     }
 }
 
-fn pool(wgsl: &'static str, provides: &'static [&'static str], aux_words: usize, build: fn(&DenseChunk) -> Vec<u32>) -> GpuStorage {
-    GpuStorage { wgsl, provides, kind: Kind::Pool { aux_words, build } }
+fn pool(wgsl: &'static str, aux_words: usize, build: fn(&DenseChunk) -> Vec<u32>) -> (&'static str, Kind) {
+    (wgsl, Kind::Pool { aux_words, build })
 }
 
 pub fn gpu(name: &str) -> Option<GpuStorage> {
-    Some(match name {
-        "bricks" => pool(bricks::GPU_WGSL, &[], bricks::AUX_WORDS, bricks::build),
-        "hier" => pool(hier::GPU_WGSL, &[], hier::AUX_WORDS, hier::build),
-        "prefix" => pool(prefix::GPU_WGSL, &[], prefix::AUX_WORDS, prefix::build),
-        "distance" => pool(distance::GPU_WGSL, &["s_dist"], distance::AUX_WORDS, distance::build),
-        "rows" => pool(rows::GPU_WGSL, &["s_row"], rows::AUX_WORDS, rows::build),
-        "clipmap" => GpuStorage { wgsl: clipmap::GPU_WGSL, provides: &[], kind: Kind::Clipmap },
-        "svo_dag" => GpuStorage { wgsl: svo_dag::GPU_WGSL, provides: &[], kind: Kind::Dag },
-        "tree64" => GpuStorage { wgsl: tree64::GPU_WGSL, provides: &[], kind: Kind::Region { shift: 6, build: tree64::build } },
+    let (wgsl, kind) = match name {
+        "bricks" => pool(bricks::GPU_WGSL, bricks::AUX_WORDS, bricks::build),
+        "hier" => pool(hier::GPU_WGSL, hier::AUX_WORDS, hier::build),
+        "prefix" => pool(prefix::GPU_WGSL, prefix::AUX_WORDS, prefix::build),
+        "distance" => pool(distance::GPU_WGSL, distance::AUX_WORDS, distance::build),
+        "rows" => pool(rows::GPU_WGSL, rows::AUX_WORDS, rows::build),
+        "clipmap" => (clipmap::GPU_WGSL, Kind::Clipmap),
+        "svo_dag" => (svo_dag::GPU_WGSL, Kind::Dag),
+        "tree64" => (tree64::GPU_WGSL, Kind::Region { shift: 6, build: tree64::build }),
         _ => return None,
-    })
+    };
+    let provides = crate::component(crate::Slot::Storage, name).map_or(&[][..], |c| c.provides);
+    Some(GpuStorage { wgsl, provides, kind })
 }
 
 /// Derived from the required interface, for every storage: the block at absolute cell `a`
@@ -131,12 +133,13 @@ const BLOCK_AT: &str = "fn s_block_at(a: vec3<i32>) -> u32 {
 }
 ";
 
-/// The fallback WGSL of every optional query `provides` lacks.
-pub fn fallbacks(provides: &[&str]) -> String {
-    let src = include_str!("fallbacks.wgsl");
+/// The adapter WGSL of every storage capability `provides` lacks.
+pub fn adapters(provides: &[Cap]) -> String {
+    let src = include_str!("adapters.wgsl");
     let mut out = String::new();
-    for q in OPTIONAL_QUERIES.iter().filter(|q| !provides.contains(q)) {
-        let start = src.find(&format!("//@{q}\n")).expect("fallback missing");
+    for a in crate::caps::ADAPTERS.iter().filter(|a| a.slot == crate::Slot::Storage && !provides.contains(&a.cap)) {
+        let q = a.cap.name();
+        let start = src.find(&format!("//@{q}\n")).expect("adapter missing");
         let rest = &src[start..];
         let end = rest[3..].find("//@").map_or(rest.len(), |e| e + 3);
         out += &rest[..end];

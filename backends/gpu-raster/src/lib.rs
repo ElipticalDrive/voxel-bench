@@ -333,7 +333,7 @@ impl Layouts {
                 anyhow::bail!(why);
             }
         }
-        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("raster"), source: wgpu::ShaderSource::Wgsl(comp.source().into()) });
+        let module = mr_gpu::shader(&gpu.device, "raster", comp.source());
         let spec = DrawerSpec { module: &module, render_layout: &self.render, shade_layout: &self.shade, strip: comp.geometry().strip };
         FaceDrawer::new(gpu, &spec, DrawMode::parse(&comp.visibility).expect("validated"), &self.images, width, height)
     }

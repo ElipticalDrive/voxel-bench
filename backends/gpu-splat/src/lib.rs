@@ -201,7 +201,7 @@ impl GpuSplat {
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
         let own = format!("{}\n{}\n{shade}", include_str!("splat.wgsl"), ShadeState::wgsl(0, 5));
         let source = shader_source(&visibility::occlusion_wgsl(&st, false), &own);
-        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("splat"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let module = mr_gpu::shader(&gpu.device, "splat", source);
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("splat"),
             entries: &[

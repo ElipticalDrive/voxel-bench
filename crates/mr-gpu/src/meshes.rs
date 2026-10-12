@@ -69,7 +69,7 @@ impl GpuMeshes {
     pub fn new(gpu: &Gpu, world: &VoxelWorld, color: wgpu::TextureFormat, occlusion: Occlusion) -> Self {
         let dev = &gpu.device;
         let occ_src = occlusion.wgsl;
-        let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("meshes"), source: wgpu::ShaderSource::Wgsl(shader_source(occ_src, include_str!("mesh.wgsl")).into()) });
+        let module = crate::shader(dev, "meshes", shader_source(occ_src, include_str!("mesh.wgsl")));
         let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mesh frame"),
             entries: &[wgpu::BindGroupLayoutEntry {

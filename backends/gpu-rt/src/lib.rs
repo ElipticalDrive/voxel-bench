@@ -202,7 +202,7 @@ fn tlas(gpu: &Gpu, cap: u32) -> wgpu::Tlas {
 }
 
 fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: String) -> wgpu::ComputePipeline {
-    let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("gpu-rt"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+    let module = mr_gpu::shader(&gpu.device, "gpu-rt", source);
     gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("gpu-rt"),
         layout: Some(layout),
