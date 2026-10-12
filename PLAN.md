@@ -50,6 +50,8 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 ## How to verify and measure
 
 - Builds, zero warnings: `cargo build` and `cargo build --release`.
+  `.cargo/config.toml` forces code alignment (2026-10-12): unaligned builds moved host-bound
+  fps 5–8% from layout alone. A/B comparisons need both binaries built this way.
 - Unit tests: `cargo test -q --workspace` (44, including: the component registry
   matches its implementations; storages are exact; the CPU walks agree; every shipped
   plan loads).
