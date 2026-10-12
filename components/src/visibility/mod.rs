@@ -32,15 +32,15 @@ pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     })
 }
 
-/// Shadow rays through a composed storage for passes outside the main shader (meshes,
-/// raster shading): the storage (`GpuStorage::source`, bind group 2) walked with
-/// `refloor` (over LOD chunks with `lod`), as `occluded()`.
+/// Shadow rays as the composed walk (`ctrace`) answers them: `occluded()` for lighting.
+pub const OCCLUDED_WGSL: &str = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
+
+/// Secondary rays (shadow and bounce rays) through a composed storage, for back ends whose
+/// primary visibility is not a ray walk (raster, discovery, splat) and for passes outside
+/// the main shader (meshes): the storage (`GpuStorage::source`, bind group 2) walked with
+/// `refloor` (over LOD chunks with `lod`) as `ctrace`, plus `occluded()`.
 pub fn occlusion_wgsl(storage: &crate::storage::GpuStorage, lod: bool) -> String {
-    format!(
-        "var<private> ct_iters: u32;\nconst LOD: bool = {lod};\n{}\n{}\nfn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool {{ return ctrace(p, d, max_t).hit; }}\n",
-        storage.source(),
-        include_str!("refloor/gpu.wgsl")
-    )
+    format!("var<private> ct_iters: u32;\nconst LOD: bool = {lod};\n{}\n{}\n{OCCLUDED_WGSL}", storage.source(), include_str!("refloor/gpu.wgsl"))
 }
 
 /// Visibility components of the gpu-rt back end.

@@ -35,6 +35,20 @@ fn face_normal(face: u32) -> vec3<f32> {
     return n;
 }
 
+// The (unnormalised) primary ray direction through pixel position `px` (pixel centres at
+// +0.5) of a `size` image, for the camera basis `forward`, `right`, `up`, the tangent of
+// half the vertical field of view and the aspect ratio. Every back end builds its primary
+// rays (and pixel reprojections) with it, so rasterisers and ray casters agree exactly.
+fn camera_dir(forward: vec3<f32>, right: vec3<f32>, up: vec3<f32>, tan_half_fov: f32, aspect: f32, px: vec2<f32>, size: vec2<f32>) -> vec3<f32> {
+    let sx = (2.0 * px.x / size.x - 1.0) * tan_half_fov * aspect;
+    let sy = (1.0 - 2.0 * px.y / size.y) * tan_half_fov;
+    return forward + sx * right + sy * up;
+}
+
+fn camera_ray(forward: vec3<f32>, right: vec3<f32>, up: vec3<f32>, tan_half_fov: f32, aspect: f32, px: vec2<f32>, size: vec2<f32>) -> vec3<f32> {
+    return normalize(camera_dir(forward, right, up, tan_half_fov, aspect, px, size));
+}
+
 // (normal axis, u axis, v axis) per face; must match mr_mesh::FACE_AXES.
 fn face_axes(face: u32) -> vec3<u32> {
     switch face {

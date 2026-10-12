@@ -597,16 +597,15 @@ impl GpuDiscover {
         // refloor (rays and shadow rays).
         let layout_st = gpu_data::layout(&gpu, &st, wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT);
         let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
-        let walk = format!("var<private> ct_iters: u32;\nconst LOD: bool = false;\n{}\n{}", st.source(), visibility::gpu_wgsl("refloor").unwrap());
-        let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
-        let disc_mod = module("discover", shader_source(occlusion, &format!("{walk}\n{}", include_str!("discover.wgsl"))));
+        let walk = visibility::occlusion_wgsl(&st, false);
+        let disc_mod = module("discover", shader_source(&walk, include_str!("discover.wgsl")));
         let args_mod = module("discover args", include_str!("args.wgsl").to_string());
         let shade = mr_components::shading::gpu_wgsl(&shading).expect("validated");
         if let Some(why) = shade_state::fragment_blocker(&shading, &gpu.device) {
             anyhow::bail!(why);
         }
         // The face source and everything but the visibility component (the drawer's `draw`).
-        let draw_src = shader_source(occlusion, &format!("{walk}\n{}\n{shade}\n{}\n{}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), visibility::faces_wgsl(true)));
+        let draw_src = shader_source(&walk, &format!("{}\n{shade}\n{}\n{}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), visibility::faces_wgsl(true)));
         let draw_mod = module("discover raster", format!("{draw_src}\n{}", shade_state::fragment_wgsl(&shading, visibility::raster_wgsl("raster").unwrap())));
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {

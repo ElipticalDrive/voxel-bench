@@ -52,7 +52,11 @@ is next. Ideas and their analysis live in `IDEAS.md`; usage and architecture liv
 - Builds, zero warnings: `cargo build` and `cargo build --release`.
   `.cargo/config.toml` forces code alignment (2026-10-12): unaligned builds moved host-bound
   fps 5–8% from layout alone. A/B comparisons need both binaries built this way.
-- Unit tests: `cargo test -q --workspace` (44, including: the component registry
+- Architecture guard: `cargo test -q --test architecture` (part of the workspace tests):
+  no WGSL function defined twice across back ends or redefining shared code, no copied
+  bodies under other names, lighting only through the shading component; exceptions are
+  listed in `tests/architecture.rs` with their reasons.
+- Unit tests: `cargo test -q --workspace` (49, including: the component registry
   matches its implementations; storages are exact; the CPU walks agree; every shipped
   plan loads).
 - GPU end-to-end tests: `cargo test -q --release --bin multirenderer -- --ignored --skip tuner_demo --skip scale_curve --skip gui_screenshot` (3: the live session, mesh mode, and the headless GUI).
@@ -252,7 +256,7 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    discovery back ends.
 3. **Done 2026-10-12 (progress log).** **Shadow and secondary rays through the composed storage everywhere** (§16 step 3):
    cpu-discover's lit mode and gpu-voxelspace walk their own structures today.
-4. **The guard test** (§16 step 4): no WGSL function defined in more than one back end's
+4. **Done 2026-10-12 (progress log).** **The guard test** (§16 step 4): no WGSL function defined in more than one back end's
    shaders; every back end's lighting goes through the shading component.
 5. **Devices handed to back ends** (requirement 2): today seven back ends call `Gpu::new`
    themselves. A device becomes a resource given to a back end (and later to stages), so
@@ -897,6 +901,30 @@ earlier if meshes become more urgent; 7c depends on 6′.
   now host-side (update) cost, not measurement. Rasterisers win the closed scenes (room,
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
+
+### 2026-10-12: architecture refactor step 4 (the guard test)
+- **`tests/architecture.rs`** reads every back end's and every shared `.wgsl`, plus WGSL
+  composed in Rust string literals, and fails on: a WGSL function defined by two back
+  ends (except interface functions every face source implements, `src_*`, and entry
+  points); a back end redefining a shared function; an identical body under another name
+  (as `face_axes_d` was); lighting internals (`shade_lit`, `direct_light`, light lookups,
+  point-light math in Rust) used outside the shading components; a back end without an
+  entry in its table of shading entry points. Exceptions carry reasons: the meshes stage
+  shades vertex-coloured fragments (`mesh.wgsl`), cpu-raster keeps the reference's f64
+  model. A self-test checks the parser; planting a renamed `face_axes` and a `shade_lit`
+  call in gpu-splat made it fail as intended.
+- **What it found, now fixed:** `fn occluded(...) { return ctrace(...).hit; }` written
+  into five back ends (one `visibility::OCCLUDED_WGSL`, and four hand-assembled
+  "storage + refloor" walks now `visibility::occlusion_wgsl`); gpu-voxelspace's own
+  `pixel_ray` and, beyond what the guard sees, the primary-ray formula inline in nine
+  places (gpu-compute, gpu-rt, gpu-splat, beam prepass, discovery ×3, the face drawer,
+  voxelspace): now `camera_ray` / `camera_dir` in `common.wgsl`. The heightmap storage
+  offers its walk as `ctrace`.
+- **Checks:** bit-identical images on every GPU back end (incl. beam, incremental
+  discovery); GPU ms within ±0.8%, fps within ±2.3% (both binaries built with the new
+  forced alignment).
+- **Not covered by the guard:** copies inside function bodies (as the inline ray formula
+  was) and Rust-side duplicates; a body-level similarity check would be the next level.
 
 ### 2026-10-12: architecture refactor step 3 (secondary rays through the composed storage)
 - **Heightmap storage component** (`components/src/storage/heightmap`): the ring building

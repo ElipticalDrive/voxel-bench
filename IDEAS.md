@@ -1322,6 +1322,12 @@ component: the heightmap became a component with a ray walk (CPU and GPU), cpu-d
 GPU side walks a chosen GPU storage (`shadow_storage`), and the voxel world's own DDA is
 gone.
 
+**Status (2026-10-12): step 4 done.** `tests/architecture.rs` guards against backsliding
+(duplicate or renamed WGSL functions across back ends, lighting outside the shading
+component); it found and removed five copies of `occluded` and nine of the primary-ray
+formula. Steps 1–4 of this section are complete; step 5 (traversal kernels vs visibility
+strategies) is PLAN step 7.
+
 ## 17. The pipeline model, the requirements, and compiling on demand
 
 **The user's model (2026-10-11), a picture of the level of genericity wanted, not a

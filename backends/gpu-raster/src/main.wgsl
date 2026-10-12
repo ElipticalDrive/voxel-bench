@@ -17,8 +17,6 @@ struct Frame {
 @group(0) @binding(0) var<uniform> fr: Frame;
 @group(0) @binding(1) var<storage, read> quads: array<vec2<u32>>;
 @group(0) @binding(2) var<storage, read> chunk_pos: array<vec4<i32>>;
-// Loop iterations of the shadow walk (the visibility walks count them; unused here).
-var<private> ct_iters: u32;
 
 // Minimum corner of instance `q`'s `face` (camera-block relative), on the face plane.
 fn quad_base(q: vec2<u32>, face: u32) -> vec3<f32> {

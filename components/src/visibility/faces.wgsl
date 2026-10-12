@@ -54,9 +54,7 @@ fn face_corner(origin: vec3<f32>, face: u32, size: vec2<f32>, c: vec2<f32>) -> v
 // The primary ray through pixel position `px` (pixel centres at +0.5), built exactly like
 // the ray casters build theirs.
 fn pixel_ray(px: vec2<f32>) -> vec3<f32> {
-    let sx = (2.0 * px.x / fr.size.x - 1.0) * fr.tan_half_fov * fr.aspect;
-    let sy = (1.0 - 2.0 * px.y / fr.size.y) * fr.tan_half_fov;
-    return normalize(fr.forward + sx * fr.right + sy * fr.up);
+    return camera_ray(fr.forward, fr.right, fr.up, fr.tan_half_fov, fr.aspect, px, fr.size);
 }
 
 // The hit of primary ray `d` on the plane of `face` at `plane` (its coordinate along the

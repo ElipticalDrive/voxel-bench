@@ -23,9 +23,7 @@ var<private> ct_iters: u32;
 
 // The colour of pixel `px` (or its step count with `view = "steps"`).
 fn pixel_color(px: vec2<u32>) -> vec4<f32> {
-    let sx = (2.0 * (f32(px.x) + 0.5) / f32(cam.width) - 1.0) * cam.tan_half_fov * cam.aspect;
-    let sy = (1.0 - 2.0 * (f32(px.y) + 0.5) / f32(cam.height)) * cam.tan_half_fov;
-    let d = normalize(cam.forward + sx * cam.right + sy * cam.up);
+    let d = camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(px) + 0.5, vec2<f32>(f32(cam.width), f32(cam.height)));
     let o = cam.origin;
     ct_iters = 0u;
     // Mesh mode: rays end at the mesh surface; a voxel in front of it still wins.

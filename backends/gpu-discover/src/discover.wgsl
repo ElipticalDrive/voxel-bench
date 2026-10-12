@@ -127,9 +127,7 @@ fn tid(wg: vec3<u32>, nwg: vec3<u32>, li: u32) -> u32 {
 fn ray_dir(q: vec2<u32>) -> vec3<f32> {
     let px = f32(i32(q.x) - i32(pr.off_x));
     let py = f32(i32(q.y) - i32(pr.off_y));
-    let sx = (2.0 * (px + 0.5) / f32(pr.width) - 1.0) * pr.tan_half_fov * pr.aspect;
-    let sy = (1.0 - 2.0 * (py + 0.5) / f32(pr.height)) * pr.tan_half_fov;
-    return normalize(pr.forward + sx * pr.right + sy * pr.up);
+    return camera_ray(pr.forward, pr.right, pr.up, pr.tan_half_fov, pr.aspect, vec2<f32>(px, py) + 0.5, vec2<f32>(f32(pr.width), f32(pr.height)));
 }
 
 fn normal_i(face: u32) -> vec3<i32> {
@@ -704,9 +702,7 @@ fn mark(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec3
 // parallax rule), in changed blocks / chunks, or at the screen border (no history here).
 fn sky_known(p: vec2<i32>) -> bool {
     if (pr.has_prev == 0u) { return false; }
-    let sx = (2.0 * (f32(p.x) + 0.5) / f32(pr.width) - 1.0) * pr.tan_half_fov * pr.aspect;
-    let sy = (1.0 - 2.0 * (f32(p.y) + 0.5) / f32(pr.height)) * pr.tan_half_fov;
-    let d = pr.forward + sx * pr.right + sy * pr.up;
+    let d = camera_dir(pr.forward, pr.right, pr.up, pr.tan_half_fov, pr.aspect, vec2<f32>(p) + 0.5, vec2<f32>(f32(pr.width), f32(pr.height)));
     let z = dot(d, pr.prev_forward);
     if (z <= 0.0) { return false; }
     let u = dot(d, pr.prev_right) / (z * pr.prev_tan * pr.aspect);
@@ -825,9 +821,7 @@ fn finish_need(i: u32, why: u32) {
 // Whether the direction through image point `px` (pixel units, not pixel centres) lay
 // inside the previous camera's image.
 fn in_prev(px: vec2<f32>) -> bool {
-    let sx = (2.0 * px.x / f32(pr.width) - 1.0) * pr.tan_half_fov * pr.aspect;
-    let sy = (1.0 - 2.0 * px.y / f32(pr.height)) * pr.tan_half_fov;
-    let d = pr.forward + sx * pr.right + sy * pr.up;
+    let d = camera_dir(pr.forward, pr.right, pr.up, pr.tan_half_fov, pr.aspect, px, vec2<f32>(f32(pr.width), f32(pr.height)));
     let z = dot(d, pr.prev_forward);
     if (z <= 0.0) { return false; }
     let u = dot(d, pr.prev_right) / (z * pr.prev_tan * pr.aspect);

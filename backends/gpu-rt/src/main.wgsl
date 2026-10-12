@@ -21,9 +21,7 @@ var<private> ct_iters: u32;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= cam.width || gid.y >= cam.height) { return; }
-    let sx = (2.0 * (f32(gid.x) + 0.5) / f32(cam.width) - 1.0) * cam.tan_half_fov * cam.aspect;
-    let sy = (1.0 - 2.0 * (f32(gid.y) + 0.5) / f32(cam.height)) * cam.tan_half_fov;
-    let d = normalize(cam.forward + sx * cam.right + sy * cam.up);
+    let d = camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(gid.xy) + 0.5, vec2<f32>(f32(cam.width), f32(cam.height)));
     let o = cam.origin;
     let h = ctrace(o, d, vp.max_dist);
     var color = unpack4x8unorm(cam.sky);

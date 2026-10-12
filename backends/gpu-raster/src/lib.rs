@@ -165,14 +165,11 @@ impl Composition {
         let st = self.storage();
         let own = format!(
             "// Composition: storage = {}, geometry = {}, visibility = {}, shading = {}\n\
-             const LOD: bool = false;\n\
-             {}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+             {}\n{}\n{}\n{}\n{}\n{}",
             self.storage,
             self.geometry,
             self.visibility,
             self.shading,
-            st.source(),
-            visibility::gpu_wgsl("refloor").unwrap(),
             self.geometry().wgsl,
             include_str!("main.wgsl"),
             ShadeState::wgsl(0, 3),
@@ -185,8 +182,8 @@ impl Composition {
             },
             mr_components::shading::gpu_wgsl(&self.shading).expect("validated"),
         );
-        let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
-        shader_source(occlusion, &own)
+        // Shadow rays: refloor through the composed storage.
+        shader_source(&visibility::occlusion_wgsl(&st, false), &own)
     }
 }
 

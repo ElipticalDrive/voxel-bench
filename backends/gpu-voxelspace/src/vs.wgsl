@@ -20,10 +20,8 @@ fn row_of(p: vec3<f32>) -> f32 {
     let sy = dot(p, cam.up) / (depth * cam.tan_half_fov);
     return (1.0 - sy) * 0.5 * f32(cam.height);
 }
-fn pixel_ray(x: f32, row: f32) -> vec3<f32> {
-    let sx = (2.0 * x / f32(cam.width) - 1.0) * cam.tan_half_fov * cam.aspect;
-    let sy = (1.0 - 2.0 * row / f32(cam.height)) * cam.tan_half_fov;
-    return normalize(cam.forward + sx * cam.right + sy * cam.up);
+fn column_ray(x: f32, row: f32) -> vec3<f32> {
+    return camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(x, row), vec2<f32>(f32(cam.width), f32(cam.height)));
 }
 
 @compute @workgroup_size(64)
@@ -31,7 +29,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= cam.width) { return; }
     let x = f32(gid.x) + 0.5;
     let o = cam.origin;
-    let dc = pixel_ray(x, f32(cam.height) * 0.5);
+    let dc = column_ray(x, f32(cam.height) * 0.5);
     var h = vec2<f32>(dc.x, dc.z);
     if (length(h) < 1e-5) { h = vec2<f32>(cam.up.x, cam.up.z) * -sign(cam.forward.y); }
     if (length(h) < 1e-5) { h = vec2<f32>(1.0, 0.0); }
@@ -57,7 +55,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let rtop = max(i32(floor(r)), 0);
             let block = e >> 16u;
             for (var row = rtop; row < ybuf; row++) {
-                let d = pixel_ray(x, f32(row) + 0.5);
+                let d = column_ray(x, f32(row) + 0.5);
                 var face = 2u;
                 var t = 0.0;
                 var side = false;

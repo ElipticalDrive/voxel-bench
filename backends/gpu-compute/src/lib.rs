@@ -190,8 +190,7 @@ impl Composition {
             st.source(),
             include_str!("main.wgsl"),
         );
-        let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
-        shader_source(occlusion, &own)
+        shader_source(visibility::OCCLUDED_WGSL, &own)
     }
 }
 

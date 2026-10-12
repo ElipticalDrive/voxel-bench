@@ -4,9 +4,7 @@
 // (`s_top`). Rays of the tile then start where the cone is provably empty. Exact.
 
 fn beam_ray(px: vec2<f32>) -> vec3<f32> {
-    let sx = (2.0 * px.x / f32(cam.width) - 1.0) * cam.tan_half_fov * cam.aspect;
-    let sy = (1.0 - 2.0 * px.y / f32(cam.height)) * cam.tan_half_fov;
-    return normalize(cam.forward + sx * cam.right + sy * cam.up);
+    return camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, px, vec2<f32>(f32(cam.width), f32(cam.height)));
 }
 
 fn beam_cell_solid(c: vec3<i32>) -> bool {

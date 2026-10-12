@@ -141,10 +141,8 @@ impl GpuVoxelSpace {
         let hm_info = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("heightmap info"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         gpu.queue.write_buffer(&hm_info, 0, bytemuck::cast_slice(&hm.info()));
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
-        // Shadow and bounce rays walk the heightmap.
-        let walk = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return hm_trace(p, d, max_t).hit; }\n\
-                    fn ctrace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit { return hm_trace(o, d, max_t); }\n";
-        let source = shader_source(walk, &format!("{}\n{}\n{}\n{shade}", heightmap::gpu_wgsl(0, 2), ShadeState::wgsl(0, 4), include_str!("vs.wgsl")));
+        // Shadow and bounce rays walk the heightmap (its `ctrace`).
+        let source = shader_source(mr_components::visibility::OCCLUDED_WGSL, &format!("{}\n{}\n{}\n{shade}", heightmap::gpu_wgsl(0, 2), ShadeState::wgsl(0, 4), include_str!("vs.wgsl")));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("voxelspace"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("voxelspace"),

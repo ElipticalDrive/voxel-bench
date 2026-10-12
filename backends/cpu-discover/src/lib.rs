@@ -3,7 +3,7 @@
 //! **storage** discovery rays walk (any CPU representation, refloor walk; see `grid`), the
 //! **visibility** component (`quadtree` below, or `cluster`, the user's face-cluster
 //! design of IDEAS §10; was the cpu-cluster renderer) and **shading** `direct` (the GPU
-//! raster's lit model; its shadow rays walk the GPU voxel pool).
+//! raster's lit model; its shadow rays walk the GPU storage `shadow_storage`).
 //!
 //! Instead of one ray per pixel, an adaptive screen-space quadtree of CPU rays decides
 //! where to look so that it casts as few rays as possible while still discovering every
@@ -403,11 +403,9 @@ impl CpuDiscover {
         };
         // Shadow and bounce rays: refloor through the composed GPU storage (group 2).
         let st = mr_components::storage::gpu(&opts.shadow_storage).expect("checked in new");
-        let walk = format!("var<private> ct_iters: u32;\nconst LOD: bool = false;\n{}\n{}", st.source(), visibility::gpu_wgsl("refloor").unwrap());
-        let occlusion = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n";
         let source = shader_source(
-            occlusion,
-            &format!("{walk}\n{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), visibility::faces_wgsl(true)),
+            &visibility::occlusion_wgsl(&st, false),
+            &format!("{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), visibility::faces_wgsl(true)),
         );
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("cpu-discover raster"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl, shade_layout: pl_shade, strip: true }, mode, images, width, height)

@@ -102,3 +102,8 @@ fn hm_trace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit {
     }
     return h;
 }
+
+// The heightmap's walk as the composed walk: what shadow (`occluded`) and bounce rays use.
+fn ctrace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit {
+    return hm_trace(o, d, max_t);
+}
