@@ -67,7 +67,6 @@ fn face_plane_hit(face: u32, plane: f32, d: vec3<f32>, near: vec3<f32>) -> Hit {
     var h: Hit;
     h.hit = true;
     h.axis = ax.x;
-    h.lod = 0u;
     h.block = 0u;
     h.t = length(near - fr.cam_frac);
     if (abs(d[ax.x]) > 1e-6) { h.t = (plane - fr.cam_frac[ax.x]) / d[ax.x]; }

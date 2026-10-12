@@ -98,7 +98,6 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
                 res.cell = cell;
                 res.block = b;
                 res.axis = axis;
-                res.lod = 0u;
                 return res;
             }
         }

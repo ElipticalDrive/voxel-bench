@@ -16,7 +16,6 @@ struct Camera {
 @group(0) @binding(3) var<storage, read> geo: array<u32>;              // quads or brick lists
 @group(0) @binding(4) var<storage, read> chunk_info: array<vec4<u32>>; // per instance slot
 // Bindings 5 and 6: the shading state (`sp`, `accum`; shading::state).
-var<private> ct_iters: u32;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {

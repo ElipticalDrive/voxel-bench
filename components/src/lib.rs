@@ -197,10 +197,10 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Storage, name: "bits", description: "One occupancy bit per voxel, brick-major (4 KiB per chunk); block ids read only at the hit.", backends: CPU, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Storage, name: "palette", description: "Per-chunk palette with indices packed at 1/2/4/8/16 bits (7x smaller than bricks on terrain).", backends: CPU, provides: &[], needs: &[] },
     // Visibility.
-    ComponentInfo { slot: Slot::Visibility, name: "refloor", description: "Per-pixel DDA: ask the storage for the largest empty cube, step out of it, re-floor (gpu-dda's walk).", backends: BOTH, provides: &[Cap::Lod], needs: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", backends: BOTH, provides: &[], needs: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", backends: GPU, provides: &[], needs: &[(Slot::Storage, Cap::Dist)] },
-    ComponentInfo { slot: Slot::Visibility, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: GPU, provides: &[], needs: &[(Slot::Storage, Cap::Row)] },
+    ComponentInfo { slot: Slot::Visibility, name: "refloor", description: "Per-pixel DDA: ask the storage for the largest empty cube, step out of it, re-floor (gpu-dda's walk).", backends: BOTH, provides: &[Cap::Lod, Cap::Steps], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", backends: BOTH, provides: &[Cap::Steps], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", backends: GPU, provides: &[Cap::Steps], needs: &[(Slot::Storage, Cap::Dist)] },
+    ComponentInfo { slot: Slot::Visibility, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", backends: GPU, provides: &[Cap::Steps], needs: &[(Slot::Storage, Cap::Row)] },
     ComponentInfo { slot: Slot::Visibility, name: "quadtree", description: "Discovery (the user's idea, IDEAS §3): an adaptive screen-space quadtree of corner rays; coherent tiles add every exposed face of the hit plane in their footprint to a face set kept across frames, which is rasterised. Knobs: tile, criterion, incremental, events, merge, order, views tiles/rays/churn/overdraw/quads, ...", backends: DISCOVER, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "cluster", description: "Face-cluster discovery (the user's design, IDEAS §10; was cpu-cluster): seed rays on a coarse-to-fine pixel lattice; from each hit a flood fill over coplanar exposed faces confirmed by corner rays; confirmed faces cover their screen area. Knobs: seed_step, sky, views clusters/kinds.", backends: CPU_DISCOVER, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "splat", description: "Point splatting in compute (from gpu-splat): each point's square footprint (sized from its projected size, capped at max_splat px) atomicMin's its depth, a second pass writes the winning id, a resolve pass ray-boxes the block. Knob: max_splat.", backends: SPLAT, provides: &[], needs: &[] },
@@ -572,5 +572,10 @@ mod tests {
         let why = caps::lacks(&Composition { storage: "tree64".into(), prepass: "beam".into(), ..Default::default() }, &lod).unwrap();
         assert!(why.contains("storage `tree64` lacks lod") && why.contains("prepass `beam` lacks lod"), "{why}");
         assert!(conflict(&Composition::default(), Slot::Storage, "tree64").is_none());
+        // Hit record fields: every gpu-compute walk counts steps; rayquery does not.
+        for v in names_on("gpu-compute", Slot::Visibility) {
+            assert!(caps::provides(Slot::Visibility, v, Cap::Steps), "{v}");
+        }
+        assert!(!caps::provides(Slot::Visibility, "rayquery", Cap::Steps));
     }
 }

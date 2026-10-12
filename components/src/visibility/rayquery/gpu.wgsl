@@ -3,7 +3,6 @@
 // bounce and shadow rays all go through it.
 
 fn ctrace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit {
-    ct_iters += 1u;
     return g_rt_trace(o, d, max_t, false);
 }
 

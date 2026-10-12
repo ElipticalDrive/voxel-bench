@@ -40,7 +40,6 @@ fn hm_bound(o: vec2<f32>, dxz: vec2<f32>, inv: vec2<f32>, cell: vec2<i32>) -> ve
 fn hm_trace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit {
     var h: Hit;
     h.hit = false;
-    h.lod = 0u;
     let dxz = d.xz;
     let hlen = length(dxz);
     let global = hm_top(hm_info.w);

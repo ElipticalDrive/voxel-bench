@@ -197,13 +197,22 @@ impl Composition {
 /// that scales its cells (refloor) and a prepass that copes (none; the beam reads level 0).
 const LOD_NEEDS: &[(Slot, Cap)] = &[(Slot::Storage, Cap::Lod), (Slot::Visibility, Cap::Lod), (Slot::Prepass, Cap::Lod)];
 
-/// Why LOD cannot run with this composition, if it can't.
-fn lod_blocker(c: &Composition) -> Option<String> {
+/// What `view = "steps"` needs: a walk that counts its iterations.
+const STEPS_NEEDS: &[(Slot, Cap)] = &[(Slot::Visibility, Cap::Steps)];
+
+/// Why this composition cannot meet `needs`, if it can't.
+fn blocker(c: &Composition, needs: &[(Slot, Cap)]) -> Option<String> {
     let mut m = mr_components::Composition::new(BACKEND);
     m.storage = c.storage.clone();
     m.visibility = c.visibility.clone();
     m.prepass = c.prepass().to_string();
-    caps::lacks(&m, LOD_NEEDS)
+    caps::lacks(&m, needs)
+}
+
+/// Why the features this composition turns on cannot run with its components, if they can't.
+fn feature_blocker(c: &Composition) -> Option<String> {
+    let lod = c.lod.then(|| blocker(c, LOD_NEEDS).map(|w| format!("this run streams LOD chunks: {w}"))).flatten();
+    lod.or_else(|| c.steps_view.then(|| blocker(c, STEPS_NEEDS).map(|w| format!("view = steps: {w}"))).flatten())
 }
 
 fn parse_dispatch(s: &str) -> anyhow::Result<bool> {
@@ -293,10 +302,13 @@ impl GpuCompose {
         };
         let mut comp = comp;
         if p.max_lod > 0 {
-            match lod_blocker(&comp) {
+            match blocker(&comp, LOD_NEEDS) {
                 None => comp.lod = true,
                 Some(why) => tracing::warn!("gpu-compute: running without LOD (max_lod = {}): {why}", p.max_lod),
             }
+        }
+        if let Some(why) = feature_blocker(&comp) {
+            anyhow::bail!(why);
         }
         // The host hands the device in (GPU slot 0); this back end only states its needs.
         let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY })?;
@@ -605,15 +617,22 @@ impl Renderer for GpuCompose {
                     "tile" => c.tile = value.as_i64().unwrap_or(8).clamp(1, 64) as u32,
                     _ => c.visibility = require(BACKEND, Slot::Visibility, value.as_str().unwrap_or(""))?,
                 }
-                if let (true, Some(why)) = (c.lod, lod_blocker(&c)) {
-                    anyhow::bail!("this run streams LOD chunks: {why}");
+                if let Some(why) = feature_blocker(&c) {
+                    anyhow::bail!(why);
                 }
                 self.comp = c;
             }
             "shading" => self.comp.shading = require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?,
             "meshes" => self.draw_meshes = require(BACKEND, Slot::Meshes, value.as_str().unwrap_or(""))? != "none",
             "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,
-            "view" => self.comp.steps_view = parse_view(value.as_str().unwrap_or(""))?,
+            "view" => {
+                let mut c = self.comp.clone();
+                c.steps_view = parse_view(value.as_str().unwrap_or(""))?;
+                if let Some(why) = feature_blocker(&c) {
+                    anyhow::bail!(why);
+                }
+                self.comp = c;
+            }
             "dispatch" => self.comp.fragment = parse_dispatch(value.as_str().unwrap_or(""))?,
             "exact" => self.comp.exact = value.as_bool().unwrap_or(true),
             "skip2" | "skip4" | "skip8" | "skip16" => {

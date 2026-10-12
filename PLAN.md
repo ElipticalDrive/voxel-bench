@@ -228,7 +228,7 @@ one shading entry point per kind of back end with a `Surface`; one face drawer w
 sources and the host-side `FaceDrawer`; every shadow and bounce ray through a storage
 component, the heightmap as a component; the architecture guard test
 `tests/architecture.rs`). Builds force code alignment (`.cargo/config.toml`). Step 5
-(devices handed to back ends) is done too; step 6 is under way (6a done); 7–8 follow. Open, deferred by the
+(devices handed to back ends) is done too; step 6 (capability model) is done; 7–8 follow. Open, deferred by the
 user to a later optimisation pass: gpu-voxelspace's lit cost (column threads shade
 serially; proposed per-pixel deferred shading, sweep entry of 2026-10-12), gpu-compute
 pathtrace codegen variance (accepted), cpu-discover's per-ray `dyn World` call.
@@ -280,7 +280,7 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    themselves. A device becomes a resource given to a back end (and later to stages), so
    several GPUs, or a GPU and the CPU, are a configuration. Also the first step toward
    the library interface (IDEAS §14: render into the caller's device and texture).
-6. **One capability model with adapters:** each interface has a required core and optional
+6. **Done 2026-10-12 (progress log).** **One capability model with adapters:** each interface has a required core and optional
    capabilities; components declare what they provide and need; adapters supply missing
    capabilities at compile time; the registry derives what is valid. First applied to the
    hit record (optional: position within the face, LOD level, material layer, step counts,
@@ -919,6 +919,26 @@ earlier if meshes become more urgent; 7c depends on 6′.
   now host-side (update) cost, not measurement. Rasterisers win the closed scenes (room,
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
+
+### 2026-10-12: architecture refactor step 6b (the hit record's optional fields); step 6 done
+- **Hit record** (`crates/mr-gpu/src/voxels.wgsl`): core `hit, t, cell, block, axis`;
+  optional `lod` (`Cap::Lod`) and the step count `ct_iters` (`Cap::Steps`, refloor,
+  incremental, sphere, rowrun). The adapter for `lod` is WGSL's zero-initialised `var`
+  (level 0): the eight hand-written `lod = 0u` lines are gone. `ct_iters` is declared
+  once beside `Hit` (three copies removed); rayquery no longer counts (one query is not a
+  step).
+- gpu-compute's `view = steps` declares `needs (Visibility, Steps)`; with LOD it goes
+  through one `feature_blocker` (at creation and on knob changes). Every gpu-compute walk
+  counts, so nothing is greyed today.
+- **Checks:** 72 + 24 saved frames pixel-identical (gpu-compute ×4 walks, steps view, LOD on
+  far, gpu-rt greedy/boxes, voxelspace, gpu-discover, gpu-raster gbuffer, cpu-discover,
+  gpu-splat); GPU ms within ±0.5% (3 interleaved rounds, terrain).
+- **6c folded in:** the stage grid already greys choices by `conflict()` and shows
+  `adapter_note` (screenshot checked). Knob choices are not greyed by capabilities yet
+  (no knob has an unmet case); CPU components declare no capabilities yet (agreed: GPU
+  first; associated consts on the CPU traits come with step 8's preparation).
+- The headless GUI screenshot test cannot start workers (they are spawned from the test
+  binary): the lane shows "worker exited … 101". The real binary runs the same plan.
 
 ### 2026-10-12: architecture refactor step 6a (capabilities and adapters)
 - **`components/src/caps.rs`:** `Cap` (typed: `Dist`, `Row`, `Lod`), components declare

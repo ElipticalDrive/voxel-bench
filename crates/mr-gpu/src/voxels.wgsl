@@ -58,7 +58,14 @@ fn brick_occupied(slot: u32, l: vec3<i32>) -> bool {
     return ((bricks[slot * 16u + (bi >> 5u)] >> (bi & 31u)) & 1u) != 0u;
 }
 
+// The hit record walks return. Core: hit, t, cell, block, axis. Optional (`caps::Cap`):
+// `lod`, the level of the hit cell (walks with `Lod`); walks without it leave it at 0, the
+// zero a `var` of a struct starts with (that zero is the adapter: level 0).
 struct Hit { hit: bool, t: f32, cell: vec3<i32>, block: u32, axis: u32, lod: u32 }
+
+// Optional, `Steps`: the walk's loop iterations for the current ray; walks with it count
+// here, consumers (`view = "steps"`) reset and read it. Unread, the counting compiles away.
+var<private> ct_iters: u32;
 
 // What shading reads from visibility (the shading components' `shade_surface`): the
 // camera-relative surface point, its normal (the face's, unless a visibility strategy has

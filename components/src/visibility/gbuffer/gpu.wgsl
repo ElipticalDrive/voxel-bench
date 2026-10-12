@@ -37,7 +37,6 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     h.hit = true;
     h.t = dot(g.xyz - fr.cam_frac, d);
     h.axis = a;
-    h.lod = 0u;
     h.block = id - 1u;
     // The cell behind the face, as `face_hit` computes it.
     h.cell = vec3<i32>(floor(g.xyz));

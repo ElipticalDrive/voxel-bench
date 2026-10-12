@@ -6,7 +6,6 @@
 fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
     var res: Hit;
     res.hit = false;
-    res.lod = 0u;
     let d = select(d_in, vec3<f32>(1e-20), abs(d_in) < vec3<f32>(1e-20));
     let inv = 1.0 / d;
     let stp = select(vec3<i32>(-1), vec3<i32>(1), d > vec3<f32>(0.0));

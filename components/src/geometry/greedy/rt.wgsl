@@ -5,7 +5,6 @@
 fn g_rt_trace(o: vec3<f32>, d: vec3<f32>, max_t: f32, shadow: bool) -> Hit {
     var res: Hit;
     res.hit = false;
-    res.lod = 0u;
     let flags = select(cam.ray_flags, RAY_FLAG_TERMINATE_ON_FIRST_HIT, shadow) | RAY_FLAG_FORCE_OPAQUE;
     var rq: ray_query;
     rayQueryInitialize(&rq, acc, RayDesc(flags, 0xffu, 0.0, max_t, o, d));

@@ -12,8 +12,6 @@ struct Camera {
 }
 
 @group(0) @binding(0) var<uniform> cam: Camera;
-// Loop iterations of the current ray (traversals increment it), for `view = "steps"`.
-var<private> ct_iters: u32;
 
 @group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
 // Prepass output (one start distance per tile) and statistics; see `prepass` components.

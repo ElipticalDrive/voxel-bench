@@ -9,7 +9,6 @@
 fn box_dda(o: vec3<f32>, d: vec3<f32>, origin: vec3<i32>, value: u32, corner: vec3<i32>, size: i32, max_t: f32) -> Hit {
     var r: Hit;
     r.hit = false;
-    r.lod = 0u;
     let dd = select(d, vec3<f32>(1e-20), abs(d) < vec3<f32>(1e-20));
     let inv = 1.0 / dd;
     let t0 = (vec3<f32>(corner) - o) * inv;

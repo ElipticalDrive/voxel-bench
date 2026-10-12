@@ -40,7 +40,7 @@ pub const OCCLUDED_WGSL: &str = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: 
 /// the main shader (meshes): the storage (`GpuStorage::source`, bind group 2) walked with
 /// `refloor` (over LOD chunks with `lod`) as `ctrace`, plus `occluded()`.
 pub fn occlusion_wgsl(storage: &crate::storage::GpuStorage, lod: bool) -> String {
-    format!("var<private> ct_iters: u32;\nconst LOD: bool = {lod};\n{}\n{}\n{OCCLUDED_WGSL}", storage.source(), include_str!("refloor/gpu.wgsl"))
+    format!("const LOD: bool = {lod};\n{}\n{}\n{OCCLUDED_WGSL}", storage.source(), include_str!("refloor/gpu.wgsl"))
 }
 
 /// Visibility components of the gpu-rt back end.

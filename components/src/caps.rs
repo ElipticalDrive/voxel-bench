@@ -7,7 +7,8 @@
 //! reason; nothing substitutes silently. Adapters are compiled in only where the chosen
 //! component lacks the capability, so capabilities nobody needs cost nothing.
 //!
-//! So far the storage interface on the GPU (`storage/adapters.wgsl`). Capabilities are
+//! So far the storage interface on the GPU (`storage/adapters.wgsl`) and the hit record's
+//! optional fields (`Lod`, `Steps`; `crates/mr-gpu/src/voxels.wgsl`). Capabilities are
 //! declared per component, not per back end: `Lod` is gpu-compute's (CPU walks have no LOD).
 
 use crate::{Composition, Slot, component, components};
@@ -21,6 +22,8 @@ pub enum Cap {
     /// Storage: LOD chunks (`s_top_lod`, cells 2^lod blocks wide). Visibility: a walk that
     /// reads them with distance. Prepass: correct with them.
     Lod,
+    /// Visibility: the walk counts its loop iterations (`ct_iters`; the `steps` views).
+    Steps,
 }
 
 impl Cap {
@@ -29,6 +32,7 @@ impl Cap {
             Cap::Dist => "s_dist",
             Cap::Row => "s_row",
             Cap::Lod => "lod",
+            Cap::Steps => "steps",
         }
     }
 }

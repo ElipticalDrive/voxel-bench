@@ -139,7 +139,6 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
         res.t = t;
         res.cell = c - vp.cam_block;
         res.axis = axis;
-        res.lod = 0u;
         if ((ic_val & UNIFORM_BIT) != 0u) {
             res.block = ic_val & 0xffffu;
         } else {
