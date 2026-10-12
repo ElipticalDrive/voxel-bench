@@ -16,10 +16,10 @@ view_radius = 12
 compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
 
 [[renderer]]
-compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", visibility = "raster" }
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
 
 [[renderer]]
-compose = { backend = "cpu-raster", geometry = "greedy", visibility = "raster" }
+compose = { backend = "cpu-raster", geometry = "greedy", draw = "raster" }
 
 [[renderer]]
 compose = { backend = "gpu-rt", geometry = "greedy", traversal = "rayquery" }

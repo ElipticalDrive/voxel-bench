@@ -27,7 +27,7 @@ modes = ["unlit+meshes", "lit+meshes"]
 view_radius = 4
 
 [[renderer]]
-compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", visibility = "raster" }
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
 
 [output]
 compare = { every = 50 }

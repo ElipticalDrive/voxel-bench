@@ -11,7 +11,7 @@ BEFORE=${BEFORE:-target/ab-before/multirenderer}
 T=target/ab/wgsl; rm -rf $T; mkdir -p $T
 # A copy, so rebuilding during the (long) run does not pull the binary from under it.
 cp target/release/multirenderer $T/multirenderer-after || exit 1
-SWEEP='renderer=[{compose={backend="*",storage="*",geometry="*",prepass="*",visibility="*",traversal="*",shading="*",meshes="*"}}]'
+SWEEP='renderer=[{compose={backend="*",storage="*",geometry="*",prepass="*",visibility="*",draw="*",traversal="*",shading="*",meshes="*"}}]'
 for side in before after; do
   BIN=$BEFORE; S=${SWEEP_BEFORE:-$SWEEP}
   [ $side = after ] && BIN=$T/multirenderer-after && S=$SWEEP

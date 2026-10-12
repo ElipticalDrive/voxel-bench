@@ -228,7 +228,7 @@ one shading entry point per kind of back end with a `Surface`; one face drawer w
 sources and the host-side `FaceDrawer`; every shadow and bounce ray through a storage
 component, the heightmap as a component; the architecture guard test
 `tests/architecture.rs`). Builds force code alignment (`.cargo/config.toml`). Step 5
-(devices handed to back ends) is done too; step 6 (capability model) is done; step 7 under way (7a: traversal slot); 8 follows. Open, deferred by the
+(devices handed to back ends) is done too; step 6 (capability model) is done; step 7 under way (7a: traversal slot, 7b: draw stage); 8 follows. Open, deferred by the
 user to a later optimisation pass: gpu-voxelspace's lit cost (column threads shade
 serially; proposed per-pixel deferred shading, sweep entry of 2026-10-12), gpu-compute
 pathtrace codegen variance (accepted), cpu-discover's per-ray `dyn World` call.
@@ -919,6 +919,30 @@ earlier if meshes become more urgent; 7c depends on 6′.
   now host-side (update) cost, not measurement. Rasterisers win the closed scenes (room,
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
+
+### 2026-10-12: architecture refactor step 7b (the draw stage)
+- **New slot `draw`** (`components/src/draw/`, the face drawer moved from `visibility/`):
+  `raster`, `visbuffer`, `gbuffer` on gpu-raster, gpu-discover and cpu-discover (`raster`
+  also on cpu-raster: its edge-function raster into a visibility buffer). The rasterisers'
+  visibility strategy is now `faces` (every face of the geometry); discovery's `draw`
+  knob became the stage (the slot has the knob's name, so options keep working). `order`
+  (depth / painter) now belongs to `draw: raster`.
+- **Labels unchanged:** `faces` and discovery's `raster` draw are quiet at their default
+  (`gpu-raster: bricks + greedy + visbuffer`, `gpu-discover: bricks + quadtree`; new:
+  `gpu-discover: bricks + quadtree + visbuffer`). CLI: optional trailing parts go to the
+  next stage that has a component so named (`gpu-raster:distance+greedy+raster+direct+depth+sphere`).
+- **Old records:** gpu-raster's `visibility = "visbuffer"` and discovery's `draw` option
+  load as the draw stage; sweep `compose` tables migrate the same way.
+  `scripts/ab/sweepcmp.py` now keys rows by a canonical composition (kernels in
+  `traversal`, drawers in `draw`, added slots at their defaults), so sweeps from before
+  and after step 7 compare: all 484 pre-7a terrain rows match post-7a rows, all 1,036
+  post-7a rows match post-7b rows.
+- **Checks:** all 714 distinct shaders of the 7a build kept byte-identical (terrain
+  wildcard sweep); 132 new from discovery's draw choices in sweeps (they existed as a knob
+  before); 1,324 passes, none failed. PSNR as before (gpu-discover visbuffer 49.3 lit,
+  gpu-raster visbuffer + sphere 49.4, cpu-raster 63.1; cpu-discover gbuffer 27.7 dB, the
+  known cpu-discover quality issue). Tests 49 + guard + 3 GPU end-to-end; GUI screenshot
+  shows the draw row.
 
 ### 2026-10-12: architecture refactor step 7a (traversal kernels split from visibility)
 - **New slot `traversal`** (`components/src/traversal/`, moved from `visibility/`): kernels

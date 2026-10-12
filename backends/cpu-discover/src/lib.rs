@@ -39,7 +39,7 @@ use discover::{Output, Settings, State, cast};
 use mr_components::{names_on, require, Slot};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
-use mr_components::visibility::{self, drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer}};
+use mr_components::draw::{self, drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer}};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
@@ -90,7 +90,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("threads", "Discovery threads (0 = all cores)", 0, 256, 0, false),
         shadows_param(),
         ParamSpec::int("max_steps", "Shadow-ray DDA step limit", 32, 16384, 2048, true),
-        ParamSpec::choice("draw", "How the discovered faces are drawn (the raster visibility components): raster = depth-tested and shaded per fragment; visbuffer = face ids, then one compute pass shades each pixel; gbuffer = hit points and blocks, then the same (no diagnostic views)", &DrawMode::NAMES, "raster", true).of("visibility", &["quadtree", "cluster"]),
+        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment; visbuffer = face ids, then one compute pass shades each pixel; gbuffer = hit points and blocks, then the same (no diagnostic views)", &names_on(BACKEND, Slot::Draw), "raster", true),
         ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB)", 64, 6144, 1536, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
@@ -290,6 +290,7 @@ impl CpuDiscover {
         let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         require(BACKEND, Slot::Traversal, &opts.traversal)?;
+        require(BACKEND, Slot::Draw, &opts.draw)?;
         require(BACKEND, Slot::Shading, &opts.shading)?;
         let st = mr_components::storage::gpu(&opts.shadow_storage).ok_or_else(|| anyhow::anyhow!("shadow_storage `{}` is not a GPU storage (have: {})", opts.shadow_storage, gpu_storages().join(", ")))?;
         // The host hands the device in (GPU slot 0); this back end only states its needs.
@@ -389,7 +390,7 @@ impl CpuDiscover {
     fn drawer(gpu: &Gpu, opts: &Options, pl: &wgpu::PipelineLayout, pl_shade: &wgpu::PipelineLayout, images: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<FaceDrawer> {
         let mode = DrawMode::parse(&opts.draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{}`", opts.draw))?;
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
-        let vis = visibility::raster_wgsl(mode.name()).unwrap();
+        let vis = draw::gpu_wgsl(mode.name()).unwrap();
         let vis = if mode.deferred() {
             vis.to_string()
         } else {
@@ -402,7 +403,7 @@ impl CpuDiscover {
         let st = mr_components::storage::gpu(&opts.shadow_storage).expect("checked in new");
         let source = shader_source(
             &mr_components::traversal::occlusion_wgsl(&st, &opts.traversal, false),
-            &format!("{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), visibility::faces_wgsl(true)),
+            &format!("{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true)),
         );
         let module = mr_gpu::shader(&gpu.device, "cpu-discover raster", source);
         FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl, shade_layout: pl_shade, strip: true }, mode, images, width, height)

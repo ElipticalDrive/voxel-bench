@@ -1,13 +1,30 @@
 # sweepcmp.py BASE_SWEEP NEW_SWEEP (e.g. baselines/sweep-20261011 target/sweep/<time>): compares two sweeps per (plan, mode, mesh, composition): GPU ms, fps, PSNR.
 import sys, json, glob, gzip, statistics as st, collections
+KERNELS = {'refloor', 'incremental', 'sphere', 'rowrun', 'rayquery'}
+DRAWS = {'raster', 'visbuffer', 'gbuffer'}
+# Slots added by the architecture refactor (step 7) and their defaults per back end.
+ADDED = {'gpu-compute': {'visibility': 'raycast'}, 'cpu': {'visibility': 'raycast'}, 'gpu-rt': {'visibility': 'raycast'},
+         'gpu-raster': {'visibility': 'faces', 'draw': 'raster', 'traversal': 'refloor'}, 'cpu-raster': {'visibility': 'faces', 'draw': 'raster'},
+         'gpu-discover': {'draw': 'raster', 'traversal': 'refloor'}, 'cpu-discover': {'draw': 'raster', 'traversal': 'refloor'},
+         'gpu-splat': {'traversal': 'refloor'}}
+def canonical(comp, opts):
+    """One form for records from before and after step 7: kernels in `traversal`, the
+    rasterisers' and discovery's drawer in `draw`, added slots at their defaults."""
+    c, opts = dict(comp), dict(opts)
+    if 'traversal' not in c and c.get('visibility') in KERNELS: c['traversal'] = c.pop('visibility')
+    if 'draw' not in c and c.get('visibility') in DRAWS: c['draw'] = c.pop('visibility')
+    if 'draw' in opts and 'draw' not in c: c['draw'] = opts.pop('draw')
+    for k, v in ADDED.get(c.get('backend', 'gpu-compute'), {}).items():
+        if not c.get(k): c[k] = v
+    return c, opts
 def load(d):
     out = {}
     for f in glob.glob(d + '/*/observations.jsonl*'):
         op = gzip.open if f.endswith('.gz') else open
         for line in op(f, 'rt'):
             o = json.loads(line)
-            comp = json.dumps(o['composition'], sort_keys=True)
-            k = (o['plan'], o['mode'], comp, json.dumps(o.get('options') or {}, sort_keys=True))
+            c, opts = canonical(o['composition'], o.get('options') or {})
+            k = (o['plan'], o['mode'], json.dumps(c, sort_keys=True), json.dumps(opts, sort_keys=True))
             out[k] = o
     return out
 base, new = load(sys.argv[1]), load(sys.argv[2])

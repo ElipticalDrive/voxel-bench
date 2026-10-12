@@ -187,6 +187,12 @@ impl RendererSpec {
             }
         }
         if let Some(c) = &mut self.compose {
+            // Before step 7b discovery's drawer was the `draw` option.
+            if c.draw.is_empty() {
+                if let Some(d) = self.options.get("draw").and_then(|v| v.as_str()) {
+                    c.draw = d.to_string();
+                }
+            }
             let (name, opts) = c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?;
             self.name = name.to_string();
             for (k, v) in opts {
@@ -221,8 +227,17 @@ impl RendererSpec {
             let names = |sl: &[Slot]| sl.iter().map(|s| s.name()).collect::<Vec<_>>().join("+");
             bail!("composition `{s}` should be {backend}:{}[+{}]", names(&order[..required]), names(&order[required..]));
         }
-        for (slot, name) in order.into_iter().zip(parts) {
+        for (&slot, name) in order[..required].iter().zip(&parts) {
             c.set(slot, name);
+        }
+        // The optional parts in order, each in the next slot that has a component so named.
+        let mut next = required;
+        for name in &parts[required..] {
+            let Some(i) = (next..order.len()).find(|&i| mr_components::component(order[i], name).is_some()) else {
+                bail!("composition `{s}`: no optional stage after {} has a component `{name}`", order[next - 1].name());
+            };
+            c.set(order[i], name);
+            next = i + 1;
         }
         let mut spec = Self::new("");
         spec.set_compose(c)?;
@@ -449,6 +464,18 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
                 compose.insert("traversal".into(), v);
             }
         }
+        // Before step 7b the rasterisers' draw choice was `visibility` too.
+        if !compose.contains_key("draw") {
+            let names: Vec<&str> = match compose.get("visibility") {
+                Some(toml::Value::String(v)) => vec![v.as_str()],
+                Some(toml::Value::Array(a)) => a.iter().filter_map(|x| x.as_str()).collect(),
+                _ => vec![],
+            };
+            if !names.is_empty() && names.iter().all(|n| mr_components::component(mr_components::Slot::Draw, n).is_some()) {
+                let v = compose.remove("visibility").unwrap();
+                compose.insert("draw".into(), v);
+            }
+        }
         if let Some(k) = compose.keys().find(|k| *k != "backend" && !mr_components::Slot::ALL.iter().any(|s| s.name() == k.as_str())) {
             bail!("compose: unknown field `{k}`");
         }
@@ -600,6 +627,11 @@ mod tests {
         old.options.insert("visibility".into(), toml::Value::String("sphere".into()));
         old.resolve().unwrap();
         assert_eq!(old.label(), "gpu-compute: bricks + sphere");
+        // Discovery's drawer was an option; it is now the draw stage.
+        let named = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n\n[[renderer]]\nname = \"gpu-discover\"\noptions = { draw = \"visbuffer\" }\n";
+        assert_eq!(Plan::parse(named, &[]).unwrap().renderers[0].label(), "gpu-discover: bricks + quadtree + visbuffer");
+        let spec = RendererSpec::from_cli("gpu-raster:hier+naive+gbuffer").unwrap();
+        assert_eq!(spec.options.get("draw").and_then(|v| v.as_str()), Some("gbuffer"));
         // Naming a back end's renderer gives its composition, stages from the options.
         let named = text.replace("compose = { storage = \"prefix\", visibility = \"incremental\" }", "name = \"gpu-discover\"").replace("options = { exact = false }", "options = { storage = \"prefix\" }");
         let r = &Plan::parse(&named, &[]).unwrap().renderers[0];
@@ -629,11 +661,11 @@ mod tests {
         // gpu-compute: 8 storages x 2 walks.
         assert_eq!(p.renderers.len(), 16);
         assert!(p.renderers.iter().all(|r| r.swept && r.name == "gpu-compute" && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
-        let all = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = \"*\", storage = \"*\", geometry = \"*\", prepass = \"*\", visibility = \"*\", traversal = \"*\", shading = \"*\", meshes = \"*\" }}\n"), &[]).unwrap();
+        let all = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = \"*\", storage = \"*\", geometry = \"*\", prepass = \"*\", visibility = \"*\", draw = \"*\", traversal = \"*\", shading = \"*\", meshes = \"*\" }}\n"), &[]).unwrap();
         let n = |b: &str| all.renderers.iter().filter(|r| r.compose.as_ref().unwrap().backend == b).count();
         assert_eq!(n("gpu-compute"), 8 * 2 * 4 * 2 * 2);
         assert_eq!(n("gpu-rt"), 3 * 2);
-        // The rasteriser's shadow rays: 8 storages x 4 kernels x 3 geometries x 3 strategies x 2 shadings x 2 meshes.
+        // The rasteriser's shadow rays: 8 storages x 4 kernels x 3 geometries x 3 draws x 2 shadings x 2 meshes.
         assert_eq!(n("gpu-raster"), 8 * 4 * 3 * 3 * 2 * 2);
         assert_eq!(n("cpu-voxelspace"), 1);
         // Only what a pass can tell apart: unlit collapses shading, meshes and the

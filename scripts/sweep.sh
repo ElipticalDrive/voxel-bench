@@ -11,7 +11,7 @@
 cd "$(dirname "$0")/.."
 OUT=target/sweep/$(date +%Y%m%d-%H%M)
 PLANS=${*:-showcase terrain far edits menger random room many-lights streaming meshes}
-SWEEP='renderer=[{compose={backend="*",storage="*",geometry="*",prepass="*",visibility="*",traversal="*",shading="*",meshes="*"}}]'
+SWEEP='renderer=[{compose={backend="*",storage="*",geometry="*",prepass="*",visibility="*",draw="*",traversal="*",shading="*",meshes="*"}}]'
 ARGS=(-s "$SWEEP" -s run.repeats=1 -s run.parallel=false -s output.compare.every=50 -s "output.dir=\"$OUT\"" -u output.save -u output.window)
 [ -n "$FRAMES" ] && ARGS+=(-s run.frames="$FRAMES" -s run.warmup=10)
 cargo build --release -q || exit 1

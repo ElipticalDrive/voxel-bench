@@ -1,6 +1,6 @@
 //! CPU-raster back end: a software rasteriser on the CPU, assembled from components
 //! (`mr-components`, IDEAS §12): **geometry** (`greedy` or `naive` quads, meshed on the
-//! CPU), **visibility** `raster` (below), **shading** `direct` (here the reference
+//! CPU), **visibility** `faces` with **draw** `raster` (below), **shading** `direct` (here the reference
 //! scene's f64 model, with CPU ray-traced shadows). Was the cpu-raster renderer.
 //!
 //! Shading stays on the reference's f64 model on purpose, not the f32 CPU shading
@@ -56,6 +56,7 @@ struct Options {
     shadows: Shadows,
     geometry: String,
     visibility: String,
+    draw: String,
     shading: String,
     merge: String,
     cull: bool,
@@ -63,7 +64,7 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { tile_width: 64, band_height: 16, threads: 0, shadows: Shadows::All, geometry: "greedy".into(), visibility: "raster".into(), shading: "direct".into(), merge: "block".into(), cull: true }
+        Self { tile_width: 64, band_height: 16, threads: 0, shadows: Shadows::All, geometry: "greedy".into(), visibility: "faces".into(), draw: "raster".into(), shading: "direct".into(), merge: "block".into(), cull: true }
     }
 }
 
@@ -74,11 +75,12 @@ const BACKEND: &str = "cpu-raster";
 fn params() -> Vec<ParamSpec> {
     let mut p = cpu_reference::cpu_params();
     p.push(ParamSpec::choice("geometry", "Geometry component (quads meshed on the CPU)", &names_on(BACKEND, Slot::Geometry), "greedy", true));
-    p.push(ParamSpec::choice("visibility", "Visibility component", &names_on(BACKEND, Slot::Visibility), "raster", false));
+    p.push(ParamSpec::choice("visibility", "Visibility strategy", &names_on(BACKEND, Slot::Visibility), "faces", false));
+    p.push(ParamSpec::choice("draw", "Draw component: `raster` here is edge functions into a visibility buffer, then deferred shading", &names_on(BACKEND, Slot::Draw), "raster", false));
     p.push(ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false));
     p.push(ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours", true, true).of("geometry", &["naive"]));
-    p.push(ParamSpec::int("tile_width", "Raster tile width (pixels)", 8, 1024, 64, true).of("visibility", &["raster"]));
-    p.push(ParamSpec::int("band_height", "Raster band height (pixels); bands are the unit of parallelism", 1, 512, 16, true).of("visibility", &["raster"]));
+    p.push(ParamSpec::int("tile_width", "Raster tile width (pixels)", 8, 1024, 64, true).of("draw", &["raster"]));
+    p.push(ParamSpec::int("band_height", "Raster band height (pixels); bands are the unit of parallelism", 1, 512, 16, true).of("draw", &["raster"]));
     p
 }
 
@@ -112,6 +114,7 @@ impl CpuRaster {
         let mut scene = VoxelScene::new(&p);
         scene.shadows = opts.shadows;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
+        require(BACKEND, Slot::Draw, &opts.draw)?;
         require(BACKEND, Slot::Shading, &opts.shading)?;
         anyhow::ensure!(opts.merge == "block", "merge = `{}`: cpu-raster has no per-pixel block lookup (only `block`)", opts.merge);
         let mesh = mesh_fn(&require(BACKEND, Slot::Geometry, &opts.geometry)?);

@@ -56,8 +56,8 @@ use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_components::visibility::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
-use mr_components::{names_on, require, Slot, storage, traversal, visibility};
+use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
+use mr_components::{draw, names_on, require, Slot, storage, traversal};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shader_source, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
@@ -110,7 +110,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::float("parallax_px", "Incremental: an occlusion edge needs discovery if the camera's translation can reveal more than this many pixels behind it", 0.05, 16.0, false, 0.5, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("events", "Incremental: classify frames by what changed. Unchanged camera and world: skip discovery and redraw (frame_kind 0). Rotation or world changes only: skip seen-marking and the parallax test (1). Translation: the full incremental passes (2). Edits mark only the edited blocks' screen tiles", true, true).of("visibility", &["quadtree"]),
         ParamSpec::choice("merge", "Faces drawn as: none = one quad per face; rows = runs of same-block faces along each face's u axis merged into one quad (one GPU pass over S; ignored with order = painter)", &["none", "rows"], "none", true).of("visibility", &["quadtree"]),
-        ParamSpec::choice("order", "Face drawing order. depth: any order, depth-tested (lit mode adds a depth pre-pass). painter: sorted back to front by Manhattan distance from the camera cell (an exact order for voxels; GPU counting sort), drawn without depth testing, so every fragment is shaded", &["depth", "painter"], "depth", true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("order", "Face drawing order. depth: any order, depth-tested (lit mode adds a depth pre-pass). painter: sorted back to front by Manhattan distance from the camera cell (an exact order for voxels; GPU counting sort), drawn without depth testing, so every fragment is shaded", &["depth", "painter"], "depth", true).of("draw", &["raster"]),
         ParamSpec::choice("still_holes", "Events, rotation-only frames: now = rasterise the old face list first and discover holes (faces that rotation moved onto a pixel centre) in the same frame; late = skip that raster and discover them next frame (cheaper, holes visible for one frame)", &["now", "late"], "now", true).of("visibility", &["quadtree"]),
         ParamSpec::choice("view", "image: the rendered scene. quads: one colour per drawn quad (shows merging). overdraw: fragments shaded per pixel on a colour scale (linear; white above view_max; compare order = depth vs painter). tiles: level-0 tiles tinted by why they were discovered this frame (white full, blue edited block / changed chunk, cyan entering strip (still_holes = late), red uncovered or hole, yellow parallax, green refresh; dark = skipped). rays: a dot per ray cast this frame. churn: faces new to the set this frame in red, carried-over faces grey", &["image", "tiles", "rays", "churn", "overdraw", "quads"], "image", true).of("visibility", &["quadtree"]),
         ParamSpec::int("view_max", "overdraw view: the top of the colour scale (fragments per pixel)", 1, 255, 8, true).of("visibility", &["quadtree"]),
@@ -118,7 +118,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true).of("visibility", &["quadtree"]),
         shadows_param(),
         ParamSpec::int("max_steps", "DDA step limit", 32, 16384, 2048, true),
-        ParamSpec::choice("draw", "How the face set is drawn (the raster visibility components): raster = depth-tested and shaded per fragment (order and the overdraw view apply); visbuffer = face ids, then one compute pass shades each pixel; gbuffer = hit points and blocks, then the same (no diagnostic tints)", &DrawMode::NAMES, "raster", true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment (order and the overdraw view apply); visbuffer = face ids, then one compute pass shades each pixel; gbuffer = hit points and blocks, then the same (no diagnostic tints)", &names_on(BACKEND, Slot::Draw), "raster", true),
         ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("max_faces", "Capacity of the face set S (faces)", 1 << 16, 1 << 24, 1 << 20, false).of("visibility", &["quadtree"]),
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB); for region storages the limit of their own data", 64, 6144, 1536, false),
@@ -570,6 +570,7 @@ impl GpuDiscover {
         let st = storage::gpu(&require(BACKEND, Slot::Storage, &opts.storage)?).expect("validated");
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         require(BACKEND, Slot::Traversal, &opts.traversal)?;
+        require(BACKEND, Slot::Draw, &opts.draw)?;
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
         // The host hands the device in (GPU slot 0); this back end only states its needs.
         let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
@@ -602,8 +603,8 @@ impl GpuDiscover {
             anyhow::bail!(why);
         }
         // The face source and everything but the visibility component (the drawer's `draw`).
-        let draw_src = shader_source(&walk, &format!("{}\n{shade}\n{}\n{}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), visibility::faces_wgsl(true)));
-        let draw_mod = module("discover raster", format!("{draw_src}\n{}", shade_state::fragment_wgsl(&shading, visibility::raster_wgsl("raster").unwrap())));
+        let draw_src = shader_source(&walk, &format!("{}\n{shade}\n{}\n{}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true)));
+        let draw_mod = module("discover raster", format!("{draw_src}\n{}", shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap())));
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {
             binding,
@@ -1193,7 +1194,7 @@ impl GpuDiscover {
     #[allow(clippy::too_many_arguments)]
     fn drawer(gpu: &Gpu, draw_src: &str, shading: &str, draw: &str, pl_draw: &wgpu::PipelineLayout, pl_shade: &wgpu::PipelineLayout, images: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<FaceDrawer> {
         let mode = DrawMode::parse(draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`"))?;
-        let vis = visibility::raster_wgsl(mode.name()).unwrap();
+        let vis = draw::gpu_wgsl(mode.name()).unwrap();
         let vis = if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis) };
         let module = mr_gpu::shader(&gpu.device, "discover drawer", format!("{draw_src}\n{vis}"));
         FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl_draw, shade_layout: pl_shade, strip: true }, mode, images, width, height)

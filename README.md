@@ -59,24 +59,31 @@ display resolution. **O** hides the overlays. The ❓ Keys tab lists everything.
 ### Assembling renderers from components
 
 A renderer is assembled from components rather than picked from a list (IDEAS §12):
-**back end** × **storage** × **geometry** × **prepass** × **visibility** × **traversal** ×
-**shading** × **meshes**. The pieces live in `components/`, one directory each
+**back end** × **storage** × **geometry** × **prepass** × **visibility** × **draw** ×
+**traversal** × **shading** × **meshes**. The pieces live in `components/`, one directory each
 (`storage/prefix/gpu.wgsl`, ...); back ends in `backends/`. Not every back end has every
 slot: `geometry` exists only on the rasterising and RT back ends, `prepass` only on
 gpu-compute, `meshes` only on gpu-compute and gpu-raster.
 
-**Visibility and traversal** (IDEAS §18): the *visibility strategy* organises primary
-visibility (`raycast`: a ray per pixel; `raster` / `visbuffer` / `gbuffer`; discovery
-`quadtree` / `cluster`; `splat`; `columns`). The *traversal kernel* answers ray queries
+**Visibility, draw and traversal** (IDEAS §18): the *visibility strategy* organises primary
+visibility (`raycast`: a ray per pixel; `faces`: every face of the geometry, the
+rasterisers; discovery `quadtree` / `cluster`: the faces found with few rays; `splat`;
+`columns`). Where a strategy hands on a set of faces, the *draw* stage makes the image
+with the shared face drawer (`components/src/draw/`): `raster` (depth-tested, shaded per
+fragment), `visbuffer` (face ids) or `gbuffer` (hit points), the last two shaded once per
+pixel in a compute pass; gpu-raster and both discovery back ends offer all three. The
+*traversal kernel* answers ray queries
 against the storage (`refloor`, `incremental`, `sphere`, `rowrun` on the storages,
 `rayquery` on gpu-rt's BLAS): the primary rays of ray casting, discovery's rays, and every
 shadow and bounce ray. So a rasteriser's shadow rays can walk with `sphere` like
 gpu-compute's primary rays. Kernels live in `components/src/traversal/`. Labels leave out
-a stage that is implied at its default (`raycast` on gpu-compute, the shadow-ray kernel
-of a rasteriser): `gpu-compute: prefix + incremental`, `gpu-raster: bricks + greedy +
-raster`, and `gpu-raster: distance + greedy + raster + sphere` once changed. Plans and
-records from before the split (`visibility = "refloor"`) load with the kernel moved to
-`traversal`.
+a stage that is implied at its default (`raycast` on gpu-compute, `faces` and the
+shadow-ray kernel of a rasteriser, discovery's `raster` draw): `gpu-compute: prefix +
+incremental`, `gpu-raster: bricks + greedy + visbuffer`, `gpu-discover: bricks +
+quadtree`, and `gpu-raster: distance + greedy + raster + sphere` once changed. Plans and
+records from before the split (`visibility = "refloor"`, gpu-raster's `visibility =
+"visbuffer"`, discovery's `draw` option) load with the choice moved to `traversal` /
+`draw`; `scripts/ab/sweepcmp.py` matches old and new records the same way.
 
 Lighting and meshes are stages *around* the walk, so storages and walks know nothing of
 them. The pass mode (lit / unlit, meshes on / off) is what the scene asks for. The shading
@@ -101,7 +108,7 @@ compose = { backend = "gpu-compute", storage = "prefix", traversal = "incrementa
 
 ```toml
 [[renderer]]
-compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", visibility = "visbuffer" }
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", draw = "visbuffer" }
 ```
 
 - *Command line:* the back end's required slots in order, then optionally shading,
@@ -125,8 +132,8 @@ compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", visi
     visibility raycast; traversal refloor, incremental, sphere, rowrun;
   - `cpu`: storages bricks, hier, prefix, u8, bits, palette; visibility raycast; traversal
     refloor, incremental;
-  - `gpu-raster`: geometry greedy, naive, cubes; visibility raster, visbuffer, gbuffer; storage
-    and traversal (what lit-mode shadow rays walk) as on gpu-compute;
+  - `gpu-raster`: geometry greedy, naive, cubes; visibility faces; draw raster, visbuffer,
+    gbuffer; storage and traversal (what lit-mode shadow rays walk) as on gpu-compute;
   - all: shading `direct`; gpu-compute, gpu-rt, gpu-raster, gpu-discover and gpu-splat
     also `pathtrace` (was gpu-pathtrace: diffuse path tracing with NEE for sun and point
     lights, `bounces` cosine-weighted bounces through the composed walk, `spp`,
@@ -144,16 +151,15 @@ compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", visi
 
   - `gpu-rt`: geometry greedy, naive, boxes; visibility raycast; traversal rayquery; shading direct,
     pathtrace (hardware ray queries; needs a GPU with ray-query support);
-  - `cpu-raster`: geometry greedy, naive; visibility raster; shading direct (the CPU
+  - `cpu-raster`: geometry greedy, naive; visibility faces; draw raster (its own edge-function raster into a visibility buffer); shading direct (the CPU
     software rasteriser);
   - `gpu-discover` and `cpu-discover` (discovery, the user's idea: cast few rays to find
     the visible faces, rasterise only those): storage (any GPU / CPU storage), visibility
     `quadtree` (both) or `cluster` (CPU), traversal (gpu-discover: any GPU kernel;
     cpu-discover: refloor), shading direct (gpu-discover also pathtrace);
-    both draw the face set with the shared face drawer (`visibility/faces.wgsl`,
-    `visibility/drawer.rs`) and choose how with `draw` = `raster` (shaded per fragment),
-    `visbuffer` or `gbuffer` (shaded once per pixel in a compute pass: lit 2–4× faster on
-    terrain, unlit a little slower);
+    both draw the face set with the shared face drawer, draw stage `raster` (shaded per
+    fragment), `visbuffer` or `gbuffer` (shaded once per pixel in a compute pass: lit 2–4×
+    faster on terrain, unlit a little slower);
   - `gpu-splat`: storage and traversal (for shadow rays), geometry points, visibility splat, shading
     direct, pathtrace; `gpu-voxelspace` / `cpu-voxelspace`: storage heightmap, visibility
     columns (Voxel Space, 2.5D), shading direct (heightmap-slope normals; shadow rays
@@ -288,7 +294,7 @@ crates/mr-gpu    wgpu helpers: adapter choice, frame ring (readback/timestamps),
 crates/mr-mesh   greedy mesher and quad decoding shared by the raster and triangle-RT renderers
 components/      mr-components: the registry, compatibility rules and `Composition`, plus one
                  directory per component: storage/<name>/{gpu.wgsl,cpu.rs},
-                 geometry/<name>/..., visibility/<name>/..., traversal/<name>/...,
+                 geometry/<name>/..., draw/<name>/..., traversal/<name>/...,
                  shading/<name>/...
 backends/*       back ends that assemble compositions: gpu-compute, cpu, gpu-raster, gpu-rt,
                  cpu-raster, gpu-discover, cpu-discover, gpu-splat, gpu-voxelspace, cpu-voxelspace
@@ -368,7 +374,7 @@ launcher = []
 repeats = 1             # >1: passes repeat round-robin; a median/spread table is added
 
 [[renderer]]
-compose = { backend = "gpu-raster", geometry = "greedy", visibility = "raster" }  # or name = "cpu-reference"
+compose = { backend = "gpu-raster", geometry = "greedy", draw = "raster" }  # or name = "cpu-reference"
 label = "raster-sunshadow"         # optional; lets you run one renderer with several option sets
 options = { shadows = "sun" }      # renderer-specific
 view_radius = 8                    # optional per-renderer override of run.view_radius
@@ -393,7 +399,7 @@ valid combination:
 
 ```toml
 [[renderer]]
-compose = { backend = "*", storage = "*", geometry = "*", prepass = "*", visibility = "*", traversal = "*", shading = "*", meshes = "*" }
+compose = { backend = "*", storage = "*", geometry = "*", prepass = "*", visibility = "*", draw = "*", traversal = "*", shading = "*", meshes = "*" }
 ```
 
 - Stages left out keep their default. `"*"` on a stage a back end lacks is ignored, and a

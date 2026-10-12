@@ -1,14 +1,15 @@
 //! Renderer components (IDEAS §12): instead of choosing a monolithic renderer, a renderer is
 //! assembled from one component per slot and run on a back end:
 //!
-//! `backend` × `storage` × `geometry` × `prepass` × `visibility` × `traversal` × `shading` × `meshes`
+//! `backend` × `storage` × `geometry` × `prepass` × `visibility` × `draw` × `traversal` × `shading` × `meshes`
 //!
 //! Not every slot applies to every back end: `geometry` (storage turned into drawable faces)
 //! exists only on rasterising back ends, `prepass` (a stage before the walk, e.g. beams)
 //! only on gpu-compute, `meshes` (how polygon meshes join the voxel image) only where a
 //! back end can draw them; slots a back end lacks are left empty. `visibility` is the
 //! strategy that organises primary visibility (ray casting, raster, discovery, splat,
-//! columns); `traversal` is the kernel that answers ray queries against the storage
+//! columns); `draw` turns the faces a strategy hands on into the image (raster, visibility
+//! buffer, G-buffer); `traversal` is the kernel that answers ray queries against the storage
 //! (primary rays where the strategy casts them, shadow and bounce rays everywhere).
 //!
 //! Lighting and meshes are stages *around* the walk, so storages and walks stay unaware of
@@ -32,6 +33,7 @@ use serde::{Deserialize, Serialize};
 pub use caps::Cap;
 
 pub mod caps;
+pub mod draw;
 pub mod geometry;
 pub mod prepass;
 pub mod shading;
@@ -45,6 +47,7 @@ pub enum Slot {
     Geometry,
     Prepass,
     Visibility,
+    Draw,
     Traversal,
     Shading,
     Meshes,
@@ -52,7 +55,7 @@ pub enum Slot {
 
 impl Slot {
     /// In composition order (labels, the GUI chooser).
-    pub const ALL: [Slot; 7] = [Slot::Storage, Slot::Geometry, Slot::Prepass, Slot::Visibility, Slot::Traversal, Slot::Shading, Slot::Meshes];
+    pub const ALL: [Slot; 8] = [Slot::Storage, Slot::Geometry, Slot::Prepass, Slot::Visibility, Slot::Draw, Slot::Traversal, Slot::Shading, Slot::Meshes];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -60,6 +63,7 @@ impl Slot {
             Slot::Geometry => "geometry",
             Slot::Prepass => "prepass",
             Slot::Visibility => "visibility",
+            Slot::Draw => "draw",
             Slot::Traversal => "traversal",
             Slot::Shading => "shading",
             Slot::Meshes => "meshes",
@@ -115,9 +119,9 @@ pub const BACKENDS: &[BackendInfo] = &[
         name: "gpu-raster",
         description: "GPU rasterisation (wgpu): the geometry component turns chunks into faces on the CPU, drawn with vertex pulling and multi-draw-indirect after chunk and face-direction culling. Storage here is what lit-mode shadow rays walk (refloor)",
         renderer: Some("gpu-raster"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct"), (Slot::Meshes, "depth")],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "faces"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct"), (Slot::Meshes, "depth")],
         lit_only: &[Slot::Storage, Slot::Traversal],
-        quiet: &[Slot::Traversal],
+        quiet: &[Slot::Visibility, Slot::Traversal],
     },
     BackendInfo {
         name: "gpu-rt",
@@ -129,13 +133,13 @@ pub const BACKENDS: &[BackendInfo] = &[
         name: "gpu-discover",
         description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
         renderer: Some("gpu-discover"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Traversal],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Draw, Slot::Traversal],
     },
     BackendInfo {
         name: "cpu-discover",
         description: "CPU discovery + GPU raster (the user's idea): CPU rays discover the visible face set (one frame ahead, pipelined), the GPU rasterises only it. Storage: the CPU representation discovery rays walk",
         renderer: Some("cpu-discover"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Traversal],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Draw, Slot::Traversal],
     },
     BackendInfo {
         name: "gpu-splat",
@@ -161,7 +165,7 @@ pub const BACKENDS: &[BackendInfo] = &[
         name: "cpu-raster",
         description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
         renderer: Some("cpu-raster"),
-        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raster"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
+        slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "faces"), (Slot::Draw, "raster"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Visibility],
     },
 ];
 
@@ -191,6 +195,10 @@ const SHADE_ALL: &[&str] = &["gpu-compute", "cpu", "gpu-raster", "gpu-rt", "cpu-
 const SPLAT: &[&str] = &["gpu-splat"];
 const VOXELSPACE: &[&str] = &["gpu-voxelspace", "cpu-voxelspace"];
 const DISCOVER: &[&str] = &["gpu-discover", "cpu-discover"];
+/// The face drawer's choices (gpu-raster and both discovery back ends).
+const DRAW_GPU: &[&str] = &["gpu-raster", "gpu-discover", "cpu-discover"];
+/// `raster` also on cpu-raster (its own edge-function raster into a visibility buffer).
+const DRAW_RASTER: &[&str] = &["gpu-raster", "gpu-discover", "cpu-discover", "cpu-raster"];
 /// Primary rays cast per pixel.
 const RAYCAST: &[&str] = &["gpu-compute", "cpu", "gpu-rt"];
 /// Back ends whose rays walk a composed GPU storage (primary, discovery, shadow or bounce rays).
@@ -226,9 +234,11 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Visibility, name: "cluster", description: "Face-cluster discovery (the user's design, IDEAS §10; was cpu-cluster): seed rays on a coarse-to-fine pixel lattice; from each hit a flood fill over coplanar exposed faces confirmed by corner rays; confirmed faces cover their screen area. Knobs: seed_step, sky, views clusters/kinds.", backends: CPU_DISCOVER, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "splat", description: "Point splatting in compute (from gpu-splat): each point's square footprint (sized from its projected size, capped at max_splat px) atomicMin's its depth, a second pass writes the winning id, a resolve pass ray-boxes the block. Knob: max_splat.", backends: SPLAT, provides: &[], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "columns", description: "Voxel Space column march (Comanche, 1992): per screen column, front to back over the heightmap, drawing spans with a y-buffer.", backends: VOXELSPACE, provides: &[], needs: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "raster", description: "Depth-tested rasterisation of the geometry; each pixel's ray is intersected with the face plane and shaded. gpu-raster: knob depth_prepass (lit: shade once per pixel). cpu-raster: edge functions into a visibility buffer, then deferred shading; knobs tile_width, band_height.", backends: RASTERS, provides: &[], needs: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "gbuffer", description: "G-buffer (from gpu-hybrid): the raster pass writes the hit point, face and block; a compute pass rebuilds the hit and shades once per pixel. 20 bytes per pixel against visbuffer's 4, but no refetch. Also the `draw` knob of gpu-discover and cpu-discover.", backends: RASTER, provides: &[], needs: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "visbuffer", description: "Visibility buffer: the raster pass writes only a face id and depth; a compute pass reconstructs the hit and shades once per pixel, independent of overdraw. Also the `draw` knob of gpu-discover and cpu-discover.", backends: RASTER, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Visibility, name: "faces", description: "Every face of the geometry component goes to the draw stage, which depth-tests them (rasterisation).", backends: RASTERS, provides: &[], needs: &[] },
+    // Draw (the face drawer).
+    ComponentInfo { slot: Slot::Draw, name: "raster", description: "Depth-tested rasterisation of the faces; each fragment's pixel ray is intersected with the face plane and shaded. gpu-raster: knob depth_prepass (lit: shade once per pixel); discovery: knob order (depth or painter). cpu-raster: edge functions into a visibility buffer, then deferred shading; knobs tile_width, band_height.", backends: DRAW_RASTER, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Draw, name: "gbuffer", description: "G-buffer (from gpu-hybrid): the raster pass writes the hit point, face and block; a compute pass rebuilds the hit and shades once per pixel. 20 bytes per pixel against visbuffer's 4, but no refetch.", backends: DRAW_GPU, provides: &[], needs: &[] },
+    ComponentInfo { slot: Slot::Draw, name: "visbuffer", description: "Visibility buffer: the raster pass writes only a face id and depth; a compute pass reconstructs the hit and shades once per pixel, independent of overdraw.", backends: DRAW_GPU, provides: &[], needs: &[] },
     // Traversal kernels.
     ComponentInfo { slot: Slot::Traversal, name: "refloor", description: "Per-pixel DDA: ask the storage for the largest empty cube, step out of it, re-floor (gpu-dda's walk).", backends: REFLOOR, provides: &[Cap::Lod, Cap::Steps], needs: &[] },
     ComponentInfo { slot: Slot::Traversal, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", backends: INCREMENTAL, provides: &[Cap::Steps], needs: &[] },
@@ -269,6 +279,8 @@ pub struct Composition {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub visibility: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub draw: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub traversal: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shading: String,
@@ -281,8 +293,8 @@ fn default_backend() -> String {
 }
 
 /// A composition as stored (plans, observations): before step 7 the traversal kernel sat
-/// in `visibility` (`visibility = "refloor"`); such records load with it moved to
-/// `traversal`.
+/// in `visibility` (`visibility = "refloor"`), and the rasterisers' draw choice too
+/// (`visibility = "visbuffer"`); such records load with them moved to `traversal` / `draw`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Stored {
@@ -297,6 +309,8 @@ struct Stored {
     #[serde(default)]
     visibility: String,
     #[serde(default)]
+    draw: String,
+    #[serde(default)]
     traversal: String,
     #[serde(default)]
     shading: String,
@@ -306,9 +320,13 @@ struct Stored {
 
 impl From<Stored> for Composition {
     fn from(s: Stored) -> Self {
-        let mut c = Composition { backend: s.backend, storage: s.storage, geometry: s.geometry, prepass: s.prepass, visibility: s.visibility, traversal: s.traversal, shading: s.shading, meshes: s.meshes };
+        let mut c = Composition { backend: s.backend, storage: s.storage, geometry: s.geometry, prepass: s.prepass, visibility: s.visibility, draw: s.draw, traversal: s.traversal, shading: s.shading, meshes: s.meshes };
         if c.traversal.is_empty() && component(Slot::Traversal, &c.visibility).is_some() {
             c.traversal = std::mem::take(&mut c.visibility);
+        }
+        // Before step 7b the rasterisers' draw choice sat in `visibility`.
+        if c.draw.is_empty() && component(Slot::Draw, &c.visibility).is_some() && backend(&c.backend).is_some_and(|b| b.has(Slot::Draw)) {
+            c.draw = std::mem::take(&mut c.visibility);
         }
         c
     }
@@ -324,7 +342,7 @@ impl Default for Composition {
 impl Composition {
     /// The back end's default composition (empty slots if the back end is unknown).
     pub fn new(backend: &str) -> Self {
-        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), traversal: String::new(), shading: String::new(), meshes: String::new() };
+        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), draw: String::new(), traversal: String::new(), shading: String::new(), meshes: String::new() };
         c.fill_defaults();
         c
     }
@@ -335,6 +353,7 @@ impl Composition {
             Slot::Geometry => &self.geometry,
             Slot::Prepass => &self.prepass,
             Slot::Visibility => &self.visibility,
+            Slot::Draw => &self.draw,
             Slot::Traversal => &self.traversal,
             Slot::Shading => &self.shading,
             Slot::Meshes => &self.meshes,
@@ -347,6 +366,7 @@ impl Composition {
             Slot::Geometry => &mut self.geometry,
             Slot::Prepass => &mut self.prepass,
             Slot::Visibility => &mut self.visibility,
+            Slot::Draw => &mut self.draw,
             Slot::Traversal => &mut self.traversal,
             Slot::Shading => &mut self.shading,
             Slot::Meshes => &mut self.meshes,
@@ -524,7 +544,7 @@ mod tests {
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 Slot::Prepass => prepass::gpu_wgsl(c.name).is_some(),
                 Slot::Meshes => ["none", "composite"].contains(&c.name),
-                Slot::Geometry => false,
+                Slot::Geometry | Slot::Draw => false,
             };
             assert!(ok, "{} `{}`", c.slot.name(), c.name);
         }
@@ -532,7 +552,8 @@ mod tests {
             let ok = match c.slot {
                 Slot::Storage => storage::gpu(c.name).is_some(),
                 Slot::Geometry => geometry::gpu(c.name).is_some(),
-                Slot::Visibility => visibility::raster_wgsl(c.name).is_some(),
+                Slot::Visibility => c.name == "faces",
+                Slot::Draw => draw::gpu_wgsl(c.name).is_some(),
                 Slot::Traversal => traversal::gpu_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 Slot::Meshes => ["none", "depth"].contains(&c.name),
@@ -572,6 +593,7 @@ mod tests {
             let ok = match c.slot {
                 Slot::Storage => true, // every CPU storage (checked by `grid::CpuWorld::new`)
                 Slot::Visibility => ["quadtree", "cluster"].contains(&c.name),
+                Slot::Draw => draw::gpu_wgsl(c.name).is_some(),
                 // Discovery rays (CPU) and shadow rays (GPU) both walk with refloor.
                 Slot::Traversal => c.name == "refloor",
                 // Shading runs on its GPU side.
@@ -584,6 +606,7 @@ mod tests {
             let ok = match c.slot {
                 Slot::Storage => storage::gpu(c.name).is_some(),
                 Slot::Visibility => c.name == "quadtree",
+                Slot::Draw => draw::gpu_wgsl(c.name).is_some(),
                 Slot::Traversal => traversal::gpu_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 _ => false,
@@ -593,7 +616,8 @@ mod tests {
         for c in COMPONENTS.iter().filter(|c| c.backends.contains(&"cpu-raster")) {
             let ok = match c.slot {
                 Slot::Geometry => geometry::gpu(c.name).is_some_and(|g| g.per_face),
-                Slot::Visibility => c.name == "raster",
+                Slot::Visibility => c.name == "faces",
+                Slot::Draw => c.name == "raster",
                 Slot::Shading => c.name == "direct",
                 _ => false,
             };
@@ -612,6 +636,12 @@ mod tests {
         let mut raster = Composition { geometry: "cubes".into(), ..Composition::new("gpu-raster") };
         assert_eq!(raster.resolve().unwrap().0, "gpu-raster");
         assert_eq!(raster.label(), "gpu-raster: bricks + cubes + raster");
+        let vb = Composition { draw: "visbuffer".into(), ..Composition::new("gpu-raster") };
+        assert_eq!(vb.label(), "gpu-raster: bricks + greedy + visbuffer", "labels as before the draw stage");
+        let old: Composition = toml::from_str("backend = \"gpu-raster\"\nvisibility = \"gbuffer\"").unwrap();
+        assert_eq!((old.visibility.as_str(), old.draw.as_str()), ("", "gbuffer"));
+        assert_eq!(Composition { draw: "visbuffer".into(), ..Composition::new("gpu-discover") }.label(), "gpu-discover: bricks + quadtree + visbuffer");
+        assert_eq!(Composition::new("cpu-raster").label(), "cpu-raster: greedy + raster");
         let mut moved = Composition { storage: "rows".into(), traversal: "rowrun".into(), ..Default::default() };
         moved.backend = "gpu-raster".into();
         moved.adapt_to_backend();

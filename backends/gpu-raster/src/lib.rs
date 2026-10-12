@@ -4,11 +4,13 @@
 //! * **geometry** turns each chunk into packed face instances on the CPU (parallel,
 //!   incremental; `greedy`, `naive`, `cubes`), drawn with vertex pulling and one
 //!   multi-draw-indirect call after per-chunk frustum and per-face-direction culling;
-//! * **visibility** decides how the front face of each pixel is found and shaded:
-//!   `raster` (forward, with an optional depth pre-pass in lit mode), `gbuffer` or `visbuffer` (ids,
-//!   then one compute shading pass);
+//! * **visibility** `faces`: every face goes to the draw stage;
+//! * **draw** decides how the front face of each pixel is found and shaded (the shared face
+//!   drawer, `mr_components::draw`): `raster` (forward, with an optional depth pre-pass in
+//!   lit mode), `gbuffer` or `visbuffer` (ids, then one compute shading pass);
 //! * **shading** colours the hit (`shade_surface`, the same component as on the ray-walk back
-//!   ends), with lit-mode shadow rays walking the composed **storage** (refloor).
+//!   ends), with lit-mode shadow rays walking the composed **storage** with the
+//!   **traversal** kernel.
 //!
 //! Replaces the monoliths gpu-raster, gpu-raster-naive, gpu-cubes and gpu-visbuffer.
 //! Meshes (mesh mode) share the depth buffer (`mr_gpu::meshes::GpuMeshes`).
@@ -22,8 +24,8 @@ use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_components::geometry::{GpuGeometry, Knobs, Merge};
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_components::visibility::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
-use mr_components::{names_on, require, Slot, components, storage, traversal, visibility};
+use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
+use mr_components::{draw, names_on, require, Slot, components, storage, traversal};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{GpuMeshes, MeshPass, Occlusion};
@@ -41,7 +43,7 @@ pub fn entry() -> RendererEntry {
 fn info() -> RendererInfo {
     RendererInfo {
         name: BACKEND.into(),
-        description: "GPU-raster back end: renders a composition (storage and traversal kernel for shadow rays, geometry, raster visibility, shading); faces meshed on the CPU, vertex pulling, multi-draw-indirect, chunk + face culling".into(),
+        description: "GPU-raster back end: renders a composition (storage and traversal kernel for shadow rays, geometry, draw, shading); faces meshed on the CPU, vertex pulling, multi-draw-indirect, chunk + face culling".into(),
         tags: vec!["gpu".into(), "raster".into(), "hybrid".into(), "modular".into(), "wgpu".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
@@ -58,13 +60,14 @@ fn params() -> Vec<ParamSpec> {
     let mut p = vec![
         ParamSpec::choice("storage", &format!("Storage component the lit-mode shadow rays walk (with the traversal kernel). {}", describe(Slot::Storage)), &names_on(BACKEND, Slot::Storage), "bricks", false),
         ParamSpec::choice("geometry", &format!("Geometry component. {}", describe(Slot::Geometry)), &names_on(BACKEND, Slot::Geometry), "greedy", true),
-        ParamSpec::choice("visibility", &format!("Visibility component. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "raster", true),
+        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "faces", false),
+        ParamSpec::choice("draw", &format!("Draw component. {}", describe(Slot::Draw)), &names_on(BACKEND, Slot::Draw), "raster", true),
         ParamSpec::choice("traversal", &format!("Traversal kernel of the lit-mode shadow rays. {}", describe(Slot::Traversal)), &names_on(BACKEND, Slot::Traversal), "refloor", false),
         ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
         ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(BACKEND, Slot::Meshes), "depth", true),
         ParamSpec::choice("merge", "greedy: merge faces of the same block only (`block`), or any exposed coplanar faces with a per-pixel block lookup (`exposure`)", &["block", "exposure"], "block", true).of("geometry", &["greedy"]),
         ParamSpec::bool("cull", "naive / cubes: skip faces (blocks) hidden by solid neighbours (false = every face of every solid block)", true, true).of("geometry", &["naive", "cubes"]),
-        ParamSpec::bool("depth_prepass", "raster, lit mode: depth pre-pass so lighting runs once per pixel", true, true).of("visibility", &["raster"]),
+        ParamSpec::bool("depth_prepass", "raster, lit mode: depth pre-pass so lighting runs once per pixel", true, true).of("draw", &["raster"]),
         shadows_param(),
         ParamSpec::int("max_steps", "Shadow-ray step limit", 32, 16384, 2048, true),
         ParamSpec::int("mesh_budget", "Chunks remeshed per frame, nearest first (0 = all)", 0, 100000, 0, true),
@@ -82,6 +85,7 @@ struct Options {
     storage: String,
     geometry: String,
     visibility: String,
+    draw: String,
     traversal: String,
     shading: String,
     meshes: String,
@@ -107,7 +111,8 @@ impl Default for Options {
         Self {
             storage: "bricks".into(),
             geometry: "greedy".into(),
-            visibility: "raster".into(),
+            visibility: "faces".into(),
+            draw: "raster".into(),
             traversal: "refloor".into(),
             shading: "direct".into(),
             meshes: "depth".into(),
@@ -141,7 +146,8 @@ fn parse_merge(s: &str) -> anyhow::Result<Merge> {
 struct Composition {
     storage: String,
     geometry: String,
-    visibility: String,
+    /// The draw component (the visibility strategy is always `faces`).
+    draw: String,
     /// The shadow rays' kernel.
     traversal: String,
     shading: String,
@@ -156,38 +162,38 @@ impl Composition {
         mr_components::geometry::gpu(&self.geometry).expect("validated")
     }
 
-    /// Deferred visibility (ids or a G-buffer, then a compute shading pass).
+    /// Deferred drawing (ids or a G-buffer, then a compute shading pass).
     fn deferred(&self) -> bool {
-        self.visibility == "visbuffer" || self.gbuffer()
+        self.draw == "visbuffer" || self.gbuffer()
     }
 
     fn gbuffer(&self) -> bool {
-        self.visibility == "gbuffer"
+        self.draw == "gbuffer"
     }
 
     fn source(&self) -> String {
         let st = self.storage();
         let own = format!(
-            "// Composition: storage = {}, geometry = {}, visibility = {}, traversal = {}, shading = {}\n\
+            "// Composition: storage = {}, geometry = {}, draw = {}, traversal = {}, shading = {}\n\
              {}\n{}\n{}\n{}\n{}\n{}",
             self.storage,
             self.geometry,
-            self.visibility,
+            self.draw,
             self.traversal,
             self.shading,
             self.geometry().wgsl,
             include_str!("main.wgsl"),
             ShadeState::wgsl(0, 3),
-            visibility::faces_wgsl(false),
-            // Deferred visibility shades in compute; forward raster shades its fragments.
+            draw::faces_wgsl(false),
+            // Deferred drawing shades in compute; forward raster shades its fragments.
             if self.deferred() {
-                visibility::raster_wgsl(&self.visibility).expect("validated").to_string()
+                draw::gpu_wgsl(&self.draw).expect("validated").to_string()
             } else {
-                shade_state::fragment_wgsl(&self.shading, visibility::raster_wgsl(&self.visibility).expect("validated"))
+                shade_state::fragment_wgsl(&self.shading, draw::gpu_wgsl(&self.draw).expect("validated"))
             },
             mr_components::shading::gpu_wgsl(&self.shading).expect("validated"),
         );
-        // Shadow rays: refloor through the composed storage.
+        // Shadow rays: the traversal kernel through the composed storage.
         shader_source(&traversal::occlusion_wgsl(&st, &self.traversal, false), &own)
     }
 }
@@ -248,7 +254,7 @@ pub struct GpuRasterBackend {
     comp: Composition,
     /// Composition the pipelines were built from (rebuilt lazily when knobs change it).
     built: Composition,
-    /// The face drawer with the visibility component's pipelines.
+    /// The face drawer with the draw component's pipelines.
     drawer: FaceDrawer,
     layouts: Layouts,
     /// Mesh mode: drawn into the same depth buffer.
@@ -332,7 +338,7 @@ impl Layouts {
 }
 
 impl Layouts {
-    /// The face drawer for `comp` (its shader module and the visibility component).
+    /// The face drawer for `comp` (its shader module and the draw component).
     fn drawer(&self, gpu: &Gpu, comp: &Composition, width: u32, height: u32) -> anyhow::Result<FaceDrawer> {
         if !comp.deferred() {
             if let Some(why) = shade_state::fragment_blocker(&comp.shading, &gpu.device) {
@@ -341,7 +347,7 @@ impl Layouts {
         }
         let module = mr_gpu::shader(&gpu.device, "raster", comp.source());
         let spec = DrawerSpec { module: &module, render_layout: &self.render, shade_layout: &self.shade, strip: comp.geometry().strip };
-        FaceDrawer::new(gpu, &spec, DrawMode::parse(&comp.visibility).expect("validated"), &self.images, width, height)
+        FaceDrawer::new(gpu, &spec, DrawMode::parse(&comp.draw).expect("validated"), &self.images, width, height)
     }
 }
 
@@ -353,7 +359,10 @@ impl GpuRasterBackend {
         let comp = Composition {
             storage: require(BACKEND, Slot::Storage, &opts.storage)?,
             geometry: require(BACKEND, Slot::Geometry, &opts.geometry)?,
-            visibility: require(BACKEND, Slot::Visibility, &opts.visibility)?,
+            draw: {
+                require(BACKEND, Slot::Visibility, &opts.visibility)?;
+                require(BACKEND, Slot::Draw, &opts.draw)?
+            },
             traversal: require(BACKEND, Slot::Traversal, &opts.traversal)?,
             shading: require(BACKEND, Slot::Shading, &opts.shading)?,
         };
@@ -403,7 +412,7 @@ impl GpuRasterBackend {
         let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Occlusion { wgsl: &occ, layout: &layouts.aux });
         let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone());
         let accum = ShadeState::new(&gpu, p.width, p.height, &comp.shading, opts.bounces, opts.spp, opts.accumulate);
-        tracing::info!("gpu-raster: storage {}, geometry {}, visibility {}, traversal {}, shading {}", comp.storage, comp.geometry, comp.visibility, comp.traversal, comp.shading);
+        tracing::info!("gpu-raster: storage {}, geometry {}, draw {}, traversal {}, shading {}", comp.storage, comp.geometry, comp.draw, comp.traversal, comp.shading);
         Ok(Self {
             mesh,
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
@@ -576,7 +585,7 @@ impl Renderer for GpuRasterBackend {
             self.built = self.comp.clone();
         }
         if !self.built.deferred() && req.mode == RenderMode::Lit && !self.opts.depth_prepass && shade_state::stateful(&self.built.shading) {
-            anyhow::bail!("`{}` shading with `raster` visibility needs depth_prepass in lit mode (exactly one fragment per pixel may update its state)", self.built.shading);
+            anyhow::bail!("`{}` shading with `raster` draw needs depth_prepass in lit mode (exactly one fragment per pixel may update its state)", self.built.shading);
         }
         let ticket = self.ring.begin(&self.gpu, sink)?;
         let start = Instant::now();
@@ -726,7 +735,8 @@ impl Renderer for GpuRasterBackend {
             "depth_prepass" => self.opts.depth_prepass = value.as_bool().unwrap_or(true),
             "mesh_budget" => self.opts.mesh_budget = value.as_i64().unwrap_or(0) as usize,
             "geometry" => self.comp.geometry = require(BACKEND, Slot::Geometry, &s())?,
-            "visibility" => self.comp.visibility = require(BACKEND, Slot::Visibility, &s())?,
+            "visibility" => drop(require(BACKEND, Slot::Visibility, &s())?),
+            "draw" => self.comp.draw = require(BACKEND, Slot::Draw, &s())?,
             "shading" => self.comp.shading = require(BACKEND, Slot::Shading, &s())?,
             "meshes" => self.opts.meshes = require(BACKEND, Slot::Meshes, &s())?,
             "merge" => {

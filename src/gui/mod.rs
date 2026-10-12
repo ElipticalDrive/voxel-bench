@@ -42,7 +42,7 @@ compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
 compose = { backend = "gpu-compute", storage = "prefix", traversal = "refloor" }
 
 [[renderer]]
-compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", visibility = "raster" }
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
 "#;
 
 const SCENE_FPS: f64 = 60.0;
@@ -1494,7 +1494,7 @@ mod tests {
                 [[renderer]]
                 compose = { backend = "gpu-compute", storage = "prefix", traversal = "incremental", shading = "pathtrace" }
                 [[renderer]]
-                compose = { backend = "gpu-raster", geometry = "naive", visibility = "visbuffer" }
+                compose = { backend = "gpu-raster", geometry = "naive", draw = "visbuffer" }
                 "#,
                 &[],
             )
