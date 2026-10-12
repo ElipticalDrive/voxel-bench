@@ -902,6 +902,23 @@ earlier if meshes become more urgent; 7c depends on 6′.
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
 
+### 2026-10-12: the sweep after steps 3–4 (aligned build)
+- `target/sweep/20261012-0057`: 3,854 observations, the same 3 known failures on far, no
+  PSNR drop above 0.5 dB. Against the previous sweep (3,735 shared rows): GPU ms median
+  0.9994, 84% within ±2%, 91% within ±4% (tighter than before); against the baseline
+  (3,047): median 0.9994. Interleaved re-runs of the largest ratios: gpu-compute on room
+  identical (±0.4%); gpu-raster on menger lit bimodal in both builds (1.62 / 2.5 ms,
+  1.21 / 1.45 ms), i.e. noise.
+- **Real, by design: gpu-voxelspace lit** is slower because shadows are now on by
+  default: terrain 2.7 → 7.6 ms, but menger 10.5 → 96 ms (sun) and many-lights 15 → 60 ms
+  (point lights). The CPU twin pays only 3× on menger (3.0 → 10.0 ms) and is faster than
+  the GPU even without shadows (3.0 vs 10.5 ms): gpu-voxelspace runs one thread per screen
+  column (1,920 threads, 30 workgroups), so each thread shades its whole column and the
+  shadow walks run serially. **Proposed fix (not started):** lit mode writes each pixel's
+  surface (point, face, column, block) in the column pass, and a one-thread-per-pixel
+  compute pass shades it, the visbuffer pattern of the face drawer; unlit keeps writing
+  texels directly. Alternatively default voxelspace's `shadows` to `sun` or `none`.
+
 ### 2026-10-12: architecture refactor step 4 (the guard test)
 - **`tests/architecture.rs`** reads every back end's and every shared `.wgsl`, plus WGSL
   composed in Rust string literals, and fails on: a WGSL function defined by two back
