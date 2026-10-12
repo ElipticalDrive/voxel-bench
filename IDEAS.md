@@ -1387,6 +1387,33 @@ settle along the way: the pieces after the split (§16 step 5), one capability m
 interfaces or one per boundary, which data crosses between devices, when the CPU moves
 to on-demand compilation, and how the GUI shows a deeper composition.
 
+**The user's question (2026-10-12): can the CPU do what the GPU does, joining the parts
+into one source before compiling so the abstraction disappears?** Yes; it already happens
+ahead of time, and step 8 does it at run time.
+- *Today, ahead of time:* the `cpu` back end is generic over the storage (`CpuBackend<R:
+  Repr>`, one instantiation per storage) and the walk and shading are generic functions
+  and closures (`trace_packet::<R, N>`, `shade` with closures), so `rustc` sees one
+  composition at a time and inlines across the boundaries: the GPU's text-joining, done by
+  monomorphisation. What stays at run time: a `match` on the traversal per ray (`occluded`,
+  the incremental walk), the shadow mode and the knob values (levels mask, packet layout,
+  view radius), all read from memory, and a generic x86-64 target with hand-selected
+  AVX2 / AVX-512 entry points. Cost: every combination is compiled whether used or not
+  (storage 8 × traversal 3 × packet width 4 ISA variants), so adding parts multiplies build
+  time and binary size.
+- *What compiling one composition on demand adds* (PLAN step 8): only the chosen
+  combination is compiled (the product stops growing with every part); run-time values
+  become constants, as `const LOD` / `EXACT` / `LEVEL_MASK` already do in the GPU shaders
+  (dead branches and loops over known counts fold away); `target-cpu=native` for this
+  machine instead of the generic target; later PGO with a short sweep as training. The
+  gain from removing abstraction itself is small (monomorphisation already removed it);
+  the gain from specialisation and the native target is unknown until measured (often
+  0–15% on such loops). First measurement before building anything: compile today's
+  `cpu` back end with `-C target-cpu=native` and the knobs as constants, interleaved
+  against the generic build.
+- *Costs:* `rustc` per new composition (seconds to a minute; cached by source hash,
+  toolchain and CPU; the generic build runs meanwhile), shipping a toolchain, and running
+  generated code in a worker process.
+
 ## 18. A first-principles design (what the pieces are)
 
 **Context (2026-10-11).** Asked to design as if no architecture existed, from the problem

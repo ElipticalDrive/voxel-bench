@@ -943,8 +943,9 @@ earlier if meshes become more urgent; 7c depends on 6′.
   from step 1; the worst is many-lights `prefix + rowrun + pathtrace` 22.6 → 28.0 ms
   (bricks + refloor +1.8%, gpu-rt +1.0%). Not the bounce loop's shape and not the
   separate `sp` uniform (both tried); most likely NVIDIA register allocation of the
-  largest kernels (walk + 400-light loop + bounces). Open: decide with the user whether to
-  chase it (SASS / register counts) or accept it as codegen variance.
+  largest kernels (walk + 400-light loop + bounces). **Accepted as codegen variance**
+  (the user, 2026-10-12): an optimisation pass over what exists will come after more
+  growth.
 
 ### 2026-10-11: architecture refactor step 1 (one shading implementation per kind)
 - **Interface:** shading reads a `Surface` (camera-relative point, normal, block-local
