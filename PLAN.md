@@ -293,6 +293,15 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    pieces (sampler: quadtree, cluster, heads; hole detection; retention policy; drawer)
    become choices. Pipelines become graphs (shading reads the hit and queries the
    storage; history feeds frames forward). The GUI's stage grid grows with it.
+   *7a done (traversal slot), 7b done (draw stage).* Discovery's sampler is already a
+   choice (quadtree, cluster); retention and hole detection have one implementation each,
+   so they stay knobs until a second exists. *Proposed 7c (awaiting the user):* secondary
+   rays as an explicit edge of the graph: shading gets its own storage + kernel, default
+   "same as primary". It replaces cpu-discover's `shadow_storage` knob and the
+   rasterisers' lit-only storage / traversal slots with one concept, and adds
+   combinations such as `prefix + incremental` primary rays with `distance + sphere`
+   shadow rays (two storages bound; memory for both). Per-stage devices (step 5's hooks)
+   would hang off the same edge later.
 8. **CPU pipelines compiled on demand** (IDEAS §17, option 2): generate Rust for one
    composition, compile it with `rustc` into a library, load it in the worker process;
    cache by source hash, toolchain and CPU. Start with the `cpu` back end, whose ahead-of-
