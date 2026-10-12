@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, bail};
@@ -99,7 +100,10 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let info = (entry.info)();
     tracing::info!("initialising {name} at {}x{}", params.width, params.height);
     let t = Instant::now();
-    let mut renderer: Box<dyn Renderer> = (entry.create)(params, waker)?;
+    // The process's devices, handed to the renderer: GPUs open on request (CPU back ends
+    // open none), in the slots the host's configuration names.
+    let devices = mr_core::Devices { gpus: Some(Arc::new(mr_gpu::GpuPool::new(&params.devices.gpus))) };
+    let mut renderer: Box<dyn Renderer> = (entry.create)(params, &devices, waker)?;
     let mut shm = FrameSlots::open(&shm)?;
     out.send(&WorkerMsg::Ready { info, init_ms: t.elapsed().as_secs_f32() * 1e3 })?;
 

@@ -41,7 +41,7 @@ pub fn entry() -> RendererEntry {
             max_lod: 0,
             params: mr_components::lighting_knobs(BACKEND, params()),
         },
-        create: |p, _| Ok(Box::new(CpuRaster::new(p)?)),
+        create: |p, _, _| Ok(Box::new(CpuRaster::new(p)?)),
     }
 }
 
@@ -119,7 +119,7 @@ impl CpuRaster {
         Ok(Self {
             width: p.width,
             height: p.height,
-            pool: Pool::new(opts.threads)?,
+            pool: Pool::new(p.devices.cpu_threads(opts.threads))?,
             opts,
             scene,
             meshes: HashMap::new(),

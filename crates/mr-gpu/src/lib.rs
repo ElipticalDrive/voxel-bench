@@ -19,6 +19,10 @@ pub struct Gpu {
     pub queue: wgpu::Queue,
     pub info: wgpu::AdapterInfo,
     pub timestamps: bool,
+    /// The adapter's features (what a device on it could have been opened with).
+    adapter_features: wgpu::Features,
+    /// Opened with wgpu's experimental features.
+    experimental: bool,
     /// First uncaptured wgpu error (validation, OOM, ...). Any error fails the renderer:
     /// a renderer with an invalid pipeline must not report a frame rate.
     error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
@@ -55,13 +59,33 @@ impl Gpu {
             experimental_features: if req.experimental { unsafe { wgpu::ExperimentalFeatures::enabled() } } else { wgpu::ExperimentalFeatures::disabled() },
             ..Default::default()
         }))?;
+        let mut gpu = Self::from_parts(device, queue, info);
+        gpu.adapter_features = available;
+        gpu.experimental = req.experimental;
+        Ok(gpu)
+    }
+
+    /// Wraps a device someone else opened (a library caller's): back ends render with it as
+    /// long as it has the features they need.
+    pub fn from_parts(device: wgpu::Device, queue: wgpu::Queue, info: wgpu::AdapterInfo) -> Self {
         let error = Arc::new(std::sync::Mutex::new(None));
         let e2 = error.clone();
         device.on_uncaptured_error(Arc::new(move |e| {
             tracing::error!("wgpu: {e}");
             e2.lock().unwrap().get_or_insert_with(|| e.to_string());
         }));
-        Ok(Self { device, queue, info, timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY), error })
+        let features = device.features();
+        Self { device, queue, info, timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY), adapter_features: features, experimental: false, error }
+    }
+
+    /// Why this device cannot serve `needs`, if it can't.
+    pub fn lacks(&self, needs: &GpuNeeds) -> Option<String> {
+        let have = self.device.features();
+        let want = needs.required_features | (needs.optional_features & self.adapter_features);
+        if !have.contains(want) {
+            return Some(format!("device on {} lacks features {:?}", self.info.name, want - have));
+        }
+        (needs.experimental && !self.experimental).then(|| format!("device on {} was opened without wgpu's experimental features", self.info.name))
     }
 
     /// Fails if wgpu reported an error since the device was created.
@@ -71,6 +95,66 @@ impl Gpu {
             None => Ok(()),
         }
     }
+}
+
+/// What a back end needs of a GPU device (all of them take the adapter's limits).
+#[derive(Clone, Debug, Default)]
+pub struct GpuNeeds {
+    /// wgpu's experimental features (ray queries).
+    pub experimental: bool,
+    pub required_features: wgpu::Features,
+    /// Used when the adapter has them.
+    pub optional_features: wgpu::Features,
+}
+
+/// The GPU devices of one process (IDEAS §17, requirement 2): handed to renderers through
+/// `mr_core::Devices`, indexed by slot (the configuration's `DeviceConfig::gpus`). A
+/// request is served by an open device of that slot that has what it needs, else by a new
+/// device opened with them; renderers in one process (thread isolation, a library) share
+/// devices that way. A fixed pool (a library caller's devices) never opens one: a request
+/// its devices cannot serve fails with the reason.
+pub struct GpuPool {
+    adapters: Vec<String>,
+    open: std::sync::Mutex<Vec<(usize, Arc<Gpu>)>>,
+    fixed: bool,
+}
+
+impl GpuPool {
+    /// Devices opened on request; slot `k` on the adapter matching `adapters[k]` (empty or
+    /// missing: the default choice).
+    pub fn new(adapters: &[String]) -> Self {
+        Self { adapters: adapters.to_vec(), open: Default::default(), fixed: false }
+    }
+
+    /// Exactly these devices, slot `k` = `gpus[k]`.
+    pub fn fixed(gpus: Vec<Arc<Gpu>>) -> Self {
+        Self { adapters: vec![], open: std::sync::Mutex::new(gpus.into_iter().enumerate().collect()), fixed: true }
+    }
+
+    /// A device of slot `slot` that serves `needs`.
+    pub fn gpu(&self, slot: usize, needs: &GpuNeeds) -> anyhow::Result<Arc<Gpu>> {
+        let mut open = self.open.lock().unwrap();
+        let mut why = vec![];
+        for (s, g) in open.iter().filter(|(s, _)| *s == slot) {
+            match g.lacks(needs) {
+                None => return Ok(g.clone()),
+                Some(w) => why.push(format!("slot {s}: {w}")),
+            }
+        }
+        if self.fixed {
+            bail!("no handed-in GPU device serves this renderer{}", if why.is_empty() { format!(" (no device in slot {slot})") } else { format!(": {}", why.join("; ")) });
+        }
+        let adapter = self.adapters.get(slot).map(String::as_str).filter(|a| !a.is_empty());
+        let gpu = Arc::new(Gpu::new(GpuRequest { experimental: needs.experimental, adapter, required_features: needs.required_features, optional_features: needs.optional_features, limits: &|a| a.clone() })?);
+        open.push((slot, gpu.clone()));
+        Ok(gpu)
+    }
+}
+
+/// The GPU of slot `slot` from the devices handed to a renderer.
+pub fn gpu(devices: &mr_core::Devices, slot: usize, needs: &GpuNeeds) -> anyhow::Result<Arc<Gpu>> {
+    let pool = devices.gpus.as_ref().and_then(|p| p.downcast_ref::<GpuPool>()).context("no GPU devices were handed to this renderer")?;
+    pool.gpu(slot, needs)
 }
 
 struct Slot {
@@ -503,4 +587,31 @@ pub fn pick_adapter(filter: Option<&str>) -> anyhow::Result<wgpu::Adapter> {
 /// machine a measurement came from).
 pub fn adapter_info(filter: Option<&str>) -> anyhow::Result<wgpu::AdapterInfo> {
     Ok(pick_adapter(filter)?.get_info())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pool shares a device between equal needs, opens another for needs it lacks, and
+    /// a fixed pool (a library caller's devices) refuses those with the reason. Needs a GPU.
+    #[test]
+    #[ignore]
+    fn pool_shares_and_refuses() {
+        let pool = GpuPool::new(&[]);
+        let plain = GpuNeeds { optional_features: wgpu::Features::TIMESTAMP_QUERY, ..Default::default() };
+        let a = pool.gpu(0, &plain).unwrap();
+        let b = pool.gpu(0, &plain).unwrap();
+        assert!(Arc::ptr_eq(&a, &b), "equal needs share the device");
+        let more = GpuNeeds { required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE, ..plain.clone() };
+        if a.lacks(&more).is_some() {
+            assert!(!Arc::ptr_eq(&a, &pool.gpu(0, &more).unwrap()), "needs the device lacks get another device");
+        }
+        let fixed = GpuPool::fixed(vec![a.clone()]);
+        assert!(Arc::ptr_eq(&a, &fixed.gpu(0, &GpuNeeds::default()).unwrap()));
+        let rt = GpuNeeds { experimental: true, required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY, ..Default::default() };
+        let err = fixed.gpu(0, &rt).err().expect("a fixed pool cannot open a device").to_string();
+        assert!(err.contains("no handed-in GPU device serves"), "{err}");
+        assert!(fixed.gpu(1, &plain).is_err(), "no device in slot 1");
+    }
 }

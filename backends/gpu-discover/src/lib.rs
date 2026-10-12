@@ -59,11 +59,11 @@ use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::visibility::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
 use mr_components::{names_on, require, Slot, storage, visibility};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shader_source, shadows_param};
-use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
+use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
 pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, w| Ok(Box::new(GpuDiscover::new(p, w)?)) }
+    RendererEntry { info, create: |p, d, w| Ok(Box::new(GpuDiscover::new(p, d, w)?)) }
 }
 
 fn info() -> RendererInfo {
@@ -131,7 +131,6 @@ fn params() -> Vec<ParamSpec> {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
-    adapter: Option<String>,
     storage: String,
     visibility: String,
     shading: String,
@@ -174,7 +173,6 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            adapter: None,
             storage: "bricks".into(),
             visibility: "quadtree".into(),
             shading: "direct".into(),
@@ -384,7 +382,7 @@ struct Stage {
 }
 
 pub struct GpuDiscover {
-    gpu: Gpu,
+    gpu: Arc<Gpu>,
     world: VoxelWorld,
     /// The storage's own data (group 2 of the discovery and raster passes).
     data: StorageData,
@@ -564,18 +562,13 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
 }
 
 impl GpuDiscover {
-    pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
+    pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         let st = storage::gpu(&require(BACKEND, Slot::Storage, &opts.storage)?).expect("validated");
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
-        let gpu = Gpu::new(GpuRequest {
-            experimental: false,
-            adapter: opts.adapter.as_deref(),
-            required_features: wgpu::Features::empty(),
-            optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE,
-            limits: &|a| a.clone(),
-        })?;
+        // The host hands the device in (GPU slot 0); this back end only states its needs.
+        let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
         let world = VoxelWorld::new(
             &gpu,
             &p.blocks,

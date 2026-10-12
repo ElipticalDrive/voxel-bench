@@ -63,6 +63,9 @@ pub struct RunSpec {
     /// medians and spread. GPU boost clocks and temperature drift between runs (notably on
     /// laptops), so single runs can differ by tens of percent.
     pub repeats: u32,
+    /// The devices renderers run on (GPU adapters by slot, CPU threads), e.g.
+    /// `devices = { gpus = ["nvidia"] }`; a renderer's own `devices` overrides it.
+    pub devices: mr_core::DeviceConfig,
 }
 
 impl Default for RunSpec {
@@ -81,6 +84,7 @@ impl Default for RunSpec {
             isolation: Isolation::Process,
             launcher: vec![],
             repeats: 1,
+            devices: Default::default(),
         }
     }
 }
@@ -135,6 +139,9 @@ pub struct RendererSpec {
     /// Overrides `run.max_lod` for this renderer (still capped by what it supports).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_lod: Option<u8>,
+    /// Overrides `run.devices` for this renderer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devices: Option<mr_core::DeviceConfig>,
     /// Expanded from a sweep (see the module docs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub swept: bool,
@@ -145,7 +152,7 @@ pub struct RendererSpec {
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), compose: None, label: None, options: Default::default(), view_radius: None, max_lod: None, swept: false, compose_label: Default::default() }
+        Self { name: name.into(), compose: None, label: None, options: Default::default(), view_radius: None, max_lod: None, devices: None, swept: false, compose_label: Default::default() }
     }
 
     /// A renderer assembled from components.
@@ -252,6 +259,10 @@ impl RendererSpec {
 
     pub fn view_radius(&self, run: &RunSpec) -> u32 {
         self.view_radius.unwrap_or(run.view_radius)
+    }
+
+    pub fn devices(&self, run: &RunSpec) -> mr_core::DeviceConfig {
+        self.devices.clone().unwrap_or_else(|| run.devices.clone())
     }
 
     /// LOD levels to stream, given what the renderer supports.
@@ -449,9 +460,9 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
                     c
                 })).collect();
             }
-            // Options the back end declares (plus `adapter`, an option of every GPU back end).
+            // Options the back end declares.
             let known: Vec<String> = infos.iter().find(|i| Some(i.name.as_str()) == b.renderer).map(|i| i.params.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
-            let options: toml::Table = e.get("options").and_then(|o| o.as_table()).map(|t| t.iter().filter(|(k, _)| *k == "adapter" || known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+            let options: toml::Table = e.get("options").and_then(|o| o.as_table()).map(|t| t.iter().filter(|(k, _)| known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
             for c in combos {
                 let mut entry = e.as_table().unwrap().clone();
                 entry.insert("compose".into(), toml::Value::try_from(&c)?);

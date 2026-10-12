@@ -13,6 +13,7 @@
 //! gpu-rtx-bricks.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
@@ -24,7 +25,7 @@ use mr_core::chunk::cell_of_index;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
-use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, RangeAlloc, wgpu};
+use mr_gpu::{FrameRing, Gpu, GpuNeeds, GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
 use wgpu::util::DeviceExt;
@@ -32,7 +33,7 @@ use wgpu::util::DeviceExt;
 const BACKEND: &str = "gpu-rt";
 
 pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, w| Ok(Box::new(GpuRt::new(p, w)?)) }
+    RendererEntry { info, create: |p, d, w| Ok(Box::new(GpuRt::new(p, d, w)?)) }
 }
 
 fn info() -> RendererInfo {
@@ -84,7 +85,6 @@ enum Cull {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
-    adapter: Option<String>,
     geometry: String,
     visibility: String,
     shading: String,
@@ -107,7 +107,6 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            adapter: None,
             geometry: "greedy".into(),
             visibility: "rayquery".into(),
             shading: "direct".into(),
@@ -162,7 +161,7 @@ enum Built {
 }
 
 pub struct GpuRt {
-    gpu: Gpu,
+    gpu: Arc<Gpu>,
     world: VoxelWorld,
     rt: RtKind,
     knobs: Knobs,
@@ -215,20 +214,15 @@ fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: String) -> wgpu::C
 }
 
 impl GpuRt {
-    fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
+    fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         let geometry = require(BACKEND, Slot::Geometry, &opts.geometry)?;
         let vis = require(BACKEND, Slot::Visibility, &opts.visibility)?;
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
         anyhow::ensure!(opts.merge == "block", "merge = `{}`: gpu-rt has no per-pixel block lookup (only `block`)", opts.merge);
         let (geo_wgsl, rt) = mr_components::geometry::rt(&geometry).expect("validated");
-        let gpu = Gpu::new(GpuRequest {
-            experimental: true,
-            adapter: opts.adapter.as_deref(),
-            required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY,
-            optional_features: wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
-            limits: &|a| a.clone(),
-        })?;
+        // The host hands the device in (GPU slot 0); this back end only states its needs.
+        let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: true, required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY, optional_features: wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS })?;
         let world = VoxelWorld::new(
             &gpu,
             &p.blocks,

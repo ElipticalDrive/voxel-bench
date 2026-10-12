@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 mr-core.workspace = true
+mr-gpu.workspace = true
 mr-ipc.workspace = true
 cpu-reference.workspace = true
 backend-cpu-raster.workspace = true

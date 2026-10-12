@@ -34,7 +34,7 @@ pub fn entry() -> RendererEntry {
                 ParamSpec::choice("shadows", "Shadow rays in lit mode (walking the heightmap)", &["none", "sun", "all"], "all", true).of("shading", &["direct"]),
             ],
         },
-        create: |p, _| Ok(Box::new(CpuVoxelSpace::new(p)?)),
+        create: |p, _, _| Ok(Box::new(CpuVoxelSpace::new(p)?)),
     }
 }
 
@@ -84,7 +84,7 @@ impl CpuVoxelSpace {
             width: p.width,
             height: p.height,
             scene,
-            pool: Pool::new(opts.threads)?,
+            pool: Pool::new(p.devices.cpu_threads(opts.threads))?,
             hm: Heightmap::new(p.view_radius_chunks),
             max_cells: (p.view_radius_chunks * CHUNK_SIZE as u32 * 2) as usize,
             cols: vec![0; (p.width * p.height * 4) as usize],

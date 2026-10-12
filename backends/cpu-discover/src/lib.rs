@@ -43,12 +43,12 @@ use mr_components::visibility::{self, drawer::{DrawFrame, DrawMode, DrawerSpec, 
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
-use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, wgpu};
+use mr_gpu::{FrameRing, Gpu, GpuNeeds, GrowableBuffer, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
 
 pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, w| Ok(Box::new(CpuDiscover::new(p, w)?)) }
+    RendererEntry { info, create: |p, d, w| Ok(Box::new(CpuDiscover::new(p, d, w)?)) }
 }
 
 const BACKEND: &str = "cpu-discover";
@@ -107,7 +107,6 @@ fn gpu_storages() -> Vec<&'static str> {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
-    adapter: Option<String>,
     storage: String,
     /// `algorithm` is its name from before the component split.
     #[serde(alias = "algorithm")]
@@ -143,7 +142,6 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            adapter: None,
             storage: "bricks".into(),
             visibility: "quadtree".into(),
             shading: "direct".into(),
@@ -215,7 +213,7 @@ struct FrameUniform {
 const REC_BYTES: u64 = 8;
 
 pub struct CpuDiscover {
-    gpu: Gpu,
+    gpu: Arc<Gpu>,
     world: VoxelWorld,
     cpu: grid::CpuWorld,
     opts: Options,
@@ -284,19 +282,14 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
 }
 
 impl CpuDiscover {
-    pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
+    pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         require(BACKEND, Slot::Shading, &opts.shading)?;
         let st = mr_components::storage::gpu(&opts.shadow_storage).ok_or_else(|| anyhow::anyhow!("shadow_storage `{}` is not a GPU storage (have: {})", opts.shadow_storage, gpu_storages().join(", ")))?;
-        let gpu = Gpu::new(GpuRequest {
-            experimental: false,
-            adapter: opts.adapter.as_deref(),
-            required_features: wgpu::Features::empty(),
-            optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE,
-            limits: &|a| a.clone(),
-        })?;
+        // The host hands the device in (GPU slot 0); this back end only states its needs.
+        let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
         let world = VoxelWorld::new(
             &gpu,
             &p.blocks,
@@ -353,7 +346,7 @@ impl CpuDiscover {
         });
         let rec_buf = GrowableBuffer::new(&gpu, "face records", 1 << 22, 2040 << 20, wgpu::BufferUsages::STORAGE);
         let tag_buf = GrowableBuffer::new(&gpu, "face tags", 1 << 21, 1020 << 20, wgpu::BufferUsages::STORAGE);
-        let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(opts.threads).thread_name(|i| format!("discover-{i}")).build()?);
+        let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(p.devices.cpu_threads(opts.threads)).thread_name(|i| format!("discover-{i}")).build()?);
         let fif = opts.frames_in_flight.max(1);
         Ok(Self {
             output: mr_gpu::output_texture(&gpu, p.width, p.height),

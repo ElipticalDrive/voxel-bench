@@ -9,6 +9,7 @@
 //! against the winning block to texture (and N.L-light) the hit face.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
@@ -19,11 +20,11 @@ use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::{names_on, require, Slot, storage, visibility};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
-use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
+use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
 pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, w| Ok(Box::new(GpuSplat::new(p, w)?)) }
+    RendererEntry { info, create: |p, d, w| Ok(Box::new(GpuSplat::new(p, d, w)?)) }
 }
 
 fn info() -> RendererInfo {
@@ -52,7 +53,6 @@ fn info() -> RendererInfo {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
-    adapter: Option<String>,
     storage: String,
     geometry: String,
     visibility: String,
@@ -68,7 +68,7 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { adapter: None, storage: "bricks".into(), geometry: "points".into(), visibility: "splat".into(), shading: "direct".into(), max_splat: 8, bounces: 1, spp: 1, accumulate: true, shadows: Shadows::All, pool_mb: 2048, frames_in_flight: 3 }
+        Self { storage: "bricks".into(), geometry: "points".into(), visibility: "splat".into(), shading: "direct".into(), max_splat: 8, bounces: 1, spp: 1, accumulate: true, shadows: Shadows::All, pool_mb: 2048, frames_in_flight: 3 }
     }
 }
 
@@ -132,7 +132,7 @@ const BACKEND: &str = "gpu-splat";
 
 
 pub struct GpuSplat {
-    gpu: Gpu,
+    gpu: Arc<Gpu>,
     world: VoxelWorld,
     /// The storage's own data for shadow rays (group 2).
     data: StorageData,
@@ -172,19 +172,14 @@ fn pixel_buffer(gpu: &Gpu, w: u32, h: u32) -> wgpu::Buffer {
 }
 
 impl GpuSplat {
-    pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
+    pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         let st = storage::gpu(&require(BACKEND, Slot::Storage, &opts.storage)?).expect("validated");
         for (slot, name) in [(Slot::Geometry, &opts.geometry), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
             require(BACKEND, slot, name)?;
         }
-        let gpu = Gpu::new(GpuRequest {
-            experimental: false,
-            adapter: opts.adapter.as_deref(),
-            required_features: wgpu::Features::empty(),
-            optional_features: wgpu::Features::TIMESTAMP_QUERY,
-            limits: &|a| a.clone(),
-        })?;
+        // The host hands the device in (GPU slot 0); this back end only states its needs.
+        let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY })?;
         let world = VoxelWorld::new(
             &gpu,
             &p.blocks,

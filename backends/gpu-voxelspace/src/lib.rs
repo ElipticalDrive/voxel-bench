@@ -6,6 +6,7 @@
 //! solid block height + block id per (x, z) column) marched front-to-back per screen
 //! column in a compute shader, drawing spans with a per-column y-buffer.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
@@ -14,11 +15,11 @@ use mr_components::storage::heightmap::{self, Heightmap};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
-use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
+use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
 pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, w| Ok(Box::new(GpuVoxelSpace::new(p, w)?)) }
+    RendererEntry { info, create: |p, d, w| Ok(Box::new(GpuVoxelSpace::new(p, d, w)?)) }
 }
 
 fn info() -> RendererInfo {
@@ -44,7 +45,6 @@ fn info() -> RendererInfo {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
-    adapter: Option<String>,
     storage: String,
     visibility: String,
     shading: String,
@@ -59,7 +59,7 @@ const BACKEND: &str = "gpu-voxelspace";
 
 impl Default for Options {
     fn default() -> Self {
-        Self { adapter: None, storage: "heightmap".into(), visibility: "columns".into(), shading: "direct".into(), shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true, frames_in_flight: 3 }
+        Self { storage: "heightmap".into(), visibility: "columns".into(), shading: "direct".into(), shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true, frames_in_flight: 3 }
     }
 }
 
@@ -81,7 +81,7 @@ struct CameraUniform {
 }
 
 pub struct GpuVoxelSpace {
-    gpu: Gpu,
+    gpu: Arc<Gpu>,
     world: VoxelWorld,
     pipeline: wgpu::ComputePipeline,
     layout0: wgpu::BindGroupLayout,
@@ -103,19 +103,14 @@ pub struct GpuVoxelSpace {
 }
 
 impl GpuVoxelSpace {
-    pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
+    pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         use mr_components::{Slot, require};
         for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
             require(BACKEND, slot, name)?;
         }
-        let gpu = Gpu::new(GpuRequest {
-            experimental: false,
-            adapter: opts.adapter.as_deref(),
-            required_features: wgpu::Features::empty(),
-            optional_features: wgpu::Features::TIMESTAMP_QUERY,
-            limits: &|a| a.clone(),
-        })?;
+        // The host hands the device in (GPU slot 0); this back end only states its needs.
+        let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY })?;
         // Used for CPU chunk storage, the texture atlas and lighting parameters only.
         let world = VoxelWorld::new(
             &gpu,

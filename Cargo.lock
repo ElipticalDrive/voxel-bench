@@ -2326,6 +2326,7 @@ dependencies = [
  "crossbeam-channel",
  "gpu-compute",
  "mr-core",
+ "mr-gpu",
  "mr-ipc",
  "tracing",
 ]

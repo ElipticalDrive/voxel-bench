@@ -14,6 +14,7 @@
 //! Meshes (mesh mode) share the depth buffer (`mr_gpu::meshes::GpuMeshes`).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
@@ -27,14 +28,14 @@ use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{GpuMeshes, MeshPass, Occlusion};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
-use mr_gpu::{FrameRing, Gpu, GpuRequest, GrowableBuffer, RangeAlloc, wgpu};
+use mr_gpu::{FrameRing, Gpu, GpuNeeds, GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
 
 const BACKEND: &str = "gpu-raster";
 
 pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, w| Ok(Box::new(GpuRasterBackend::new(p, w)?)) }
+    RendererEntry { info, create: |p, d, w| Ok(Box::new(GpuRasterBackend::new(p, d, w)?)) }
 }
 
 fn info() -> RendererInfo {
@@ -77,7 +78,6 @@ fn params() -> Vec<ParamSpec> {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
-    adapter: Option<String>,
     storage: String,
     geometry: String,
     visibility: String,
@@ -103,7 +103,6 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            adapter: None,
             storage: "bricks".into(),
             geometry: "greedy".into(),
             visibility: "raster".into(),
@@ -237,7 +236,7 @@ struct Layouts {
 }
 
 pub struct GpuRasterBackend {
-    gpu: Gpu,
+    gpu: Arc<Gpu>,
     world: VoxelWorld,
     opts: Options,
     comp: Composition,
@@ -341,7 +340,7 @@ impl Layouts {
 }
 
 impl GpuRasterBackend {
-    pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
+    pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         require(BACKEND, Slot::Meshes, &opts.meshes)?;
         parse_merge(&opts.merge)?;
@@ -351,13 +350,8 @@ impl GpuRasterBackend {
             visibility: require(BACKEND, Slot::Visibility, &opts.visibility)?,
             shading: require(BACKEND, Slot::Shading, &opts.shading)?,
         };
-        let gpu = Gpu::new(GpuRequest {
-            experimental: false,
-            adapter: opts.adapter.as_deref(),
-            required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE,
-            optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE,
-            limits: &|a| a.clone(),
-        })?;
+        // The host hands the device in (GPU slot 0); this back end only states its needs.
+        let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE, optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
         let world = VoxelWorld::new(
             &gpu,
             &p.blocks,

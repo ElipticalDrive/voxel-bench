@@ -40,7 +40,7 @@ pub fn entry() -> RendererEntry {
             max_lod: 0,
             params: mr_components::lighting_knobs(BACKEND, params()),
         },
-        create: |p, _| {
+        create: |p, _, _| {
             let opts: Options = p.options()?;
             let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
             Ok(match storage.as_str() {
@@ -347,7 +347,7 @@ impl<R: Repr> CpuBackend<R> {
                 traversal: traversal(&o.visibility, o.exact)?,
                 levels: [o.skip2, o.skip4, o.skip8, o.skip16].iter().enumerate().fold(0b100001, |m, (i, &on)| m | (on as u32) << (i + 1)),
             },
-            pool: Pool::new(o.threads)?,
+            pool: Pool::new(p.devices.cpu_threads(o.threads))?,
             packet: o.packet.parse().unwrap_or(1),
             isa,
             isa_choice: o.isa,

@@ -93,7 +93,7 @@ struct Options {
 }
 
 pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, _| Ok(Box::new(CpuReference::new(p)?)) }
+    RendererEntry { info, create: |p, _, _| Ok(Box::new(CpuReference::new(p)?)) }
 }
 
 fn info() -> RendererInfo {
@@ -144,7 +144,7 @@ impl CpuReference {
         let opts: Options = p.options()?;
         let mut scene = VoxelScene::new(&p);
         scene.shadows = opts.shadows;
-        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], scene, meshes: Default::default(), pool: Pool::new(opts.threads)? })
+        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], scene, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))? })
     }
 }
 

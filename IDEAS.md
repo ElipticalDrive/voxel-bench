@@ -1388,7 +1388,7 @@ is valid when every connection has a communication path both sides support.
   checked against the reference before it is trusted; compiled variants are keyed by
   source hash, toolchain, CPU and driver; the generic build runs while the optimised one
   compiles, then hot-swaps (the live session already can); generated code runs in worker
-  processes, so a bad build only kills its worker.
+  processes, so a bad build only kills its worker. *Done 2026-10-12 (PLAN step 5): `DeviceConfig` in `InitParams`, devices handed in through `mr_core::Devices` / `mr_gpu::GpuPool`, `GpuPool::fixed` for a caller's own devices.*
 
 **Status (2026-10-11).** The user agrees this is the direction and agrees the condition:
 grow it in steps, each useful on its own and checked against the zero-cost definition,

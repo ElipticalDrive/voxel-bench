@@ -44,6 +44,45 @@ pub struct InitParams {
     pub max_lod: u8,
     /// Renderer-specific options from the run plan, as a JSON object string.
     pub options_json: String,
+    /// The devices to run on: a configuration from the host, not an option of the renderer.
+    #[serde(default)]
+    pub devices: DeviceConfig,
+}
+
+/// Which devices a renderer runs on (IDEAS §17, requirement 2: no hardware opinion in the
+/// renderers). Several GPUs, or a GPU and the CPU, are a configuration; a back end's
+/// stages pick their device by slot (today every GPU back end uses GPU slot 0, and the CPU
+/// stages the CPU).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DeviceConfig {
+    /// GPU slots: a case-insensitive substring of the adapter name (e.g. "nvidia"), or
+    /// empty for the default (the discrete GPU on hybrid laptops). Missing slots take the
+    /// default.
+    pub gpus: Vec<String>,
+    /// CPU threads for CPU stages whose own `threads` knob is 0 (0 = all cores).
+    pub cpu_threads: usize,
+}
+
+impl DeviceConfig {
+    /// The adapter filter of GPU slot `slot` (`None` = the default choice).
+    pub fn gpu(&self, slot: usize) -> Option<&str> {
+        self.gpus.get(slot).map(String::as_str).filter(|s| !s.is_empty())
+    }
+
+    /// Threads for a CPU stage: its own knob if set, else the configuration's.
+    pub fn cpu_threads(&self, knob: usize) -> usize {
+        if knob > 0 { knob } else { self.cpu_threads }
+    }
+}
+
+/// The device resources handed to a renderer when it is created. The host owns them:
+/// renderers ask for a GPU from `gpus` (an `mr_gpu::GpuPool`, kept type-erased so that
+/// `mr-core` depends on no GPU API) instead of opening one, so renderers can share a
+/// device, and a library caller can hand in its own.
+#[derive(Clone, Default)]
+pub struct Devices {
+    pub gpus: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl InitParams {
@@ -177,5 +216,5 @@ pub trait Renderer {
 /// How the worker discovers and constructs a renderer.
 pub struct RendererEntry {
     pub info: fn() -> RendererInfo,
-    pub create: fn(InitParams, Waker) -> anyhow::Result<Box<dyn Renderer>>,
+    pub create: fn(InitParams, &Devices, Waker) -> anyhow::Result<Box<dyn Renderer>>,
 }

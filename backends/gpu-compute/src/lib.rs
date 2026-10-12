@@ -21,11 +21,11 @@ use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite, Occlusion};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
-use mr_gpu::{FrameRing, Gpu, GpuRequest, wgpu};
+use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
 pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, w| Ok(Box::new(GpuCompose::new(p, w)?)) }
+    RendererEntry { info, create: |p, d, w| Ok(Box::new(GpuCompose::new(p, d, w)?)) }
 }
 
 
@@ -77,7 +77,6 @@ fn params() -> Vec<ParamSpec> {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
-    adapter: Option<String>,
     storage: String,
     /// `traversal` is the step-6′ name of this option.
     #[serde(alias = "traversal")]
@@ -106,7 +105,6 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            adapter: None,
             storage: "bricks".into(),
             visibility: "refloor".into(),
             shading: "direct".into(),
@@ -242,7 +240,7 @@ struct CameraUniform {
 }
 
 pub struct GpuCompose {
-    gpu: Gpu,
+    gpu: Arc<Gpu>,
     world: VoxelWorld,
     /// Mesh mode: meshes rasterised first, rays capped at their depth.
     meshes: MeshComposite,
@@ -279,7 +277,7 @@ pub struct GpuCompose {
 }
 
 impl GpuCompose {
-    pub fn new(p: InitParams, waker: Waker) -> anyhow::Result<Self> {
+    pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         let comp = Composition {
             storage: require(BACKEND, Slot::Storage, &opts.storage)?,
@@ -302,13 +300,8 @@ impl GpuCompose {
                 Some(why) => tracing::warn!("gpu-compute: running without LOD (max_lod = {}): {why}", p.max_lod),
             }
         }
-        let gpu = Gpu::new(GpuRequest {
-            experimental: false,
-            adapter: opts.adapter.as_deref(),
-            required_features: wgpu::Features::empty(),
-            optional_features: wgpu::Features::TIMESTAMP_QUERY,
-            limits: &|a| a.clone(),
-        })?;
+        // The host hands the device in (GPU slot 0); this back end only states its needs.
+        let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY })?;
         let world = VoxelWorld::new(
             &gpu,
             &p.blocks,

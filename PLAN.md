@@ -219,19 +219,19 @@ stage grid) are in the progress log below, with their measurements.
 
 ### Next: the architecture refactor (IDEAS §16–§18)
 
-**Where we are (2026-10-12):** steps 1–4 are done (progress log entries of 2026-10-11/12:
+**Where we are (2026-10-12):** steps 1–5 are done (progress log entries of 2026-10-11/12:
 one shading entry point per kind of back end with a `Surface`; one face drawer with face
 sources and the host-side `FaceDrawer`; every shadow and bounce ray through a storage
 component, the heightmap as a component; the architecture guard test
 `tests/architecture.rs`). Builds force code alignment (`.cargo/config.toml`). Step 5
-(devices handed to back ends) is in progress; steps 6–8 follow. Open, deferred by the
+(devices handed to back ends) is done too; steps 6–8 follow. Open, deferred by the
 user to a later optimisation pass: gpu-voxelspace's lit cost (column threads shade
 serially; proposed per-pixel deferred shading, sweep entry of 2026-10-12), gpu-compute
 pathtrace codegen variance (accepted), cpu-discover's per-ray `dyn World` call.
-A/B tooling used for the zero-cost checks lived in the session's temporary directory;
-the method: save a release build before a step, then render with both builds and
-compare saved frames pixel by pixel (`output.save`), and interleave `run` invocations of
-both for GPU ms / fps (`-u output.compare -u output.save`, 3+ rounds, 300 frames).
+Zero-cost checks: `scripts/ab/save-before.sh` before a change, then
+`scripts/ab/pixels.sh PLAN RENDERERS` (saved frames compared pixel by pixel) and
+`scripts/ab/perf.sh PLAN RENDERERS ROUNDS -s run.frames=300` (interleaved GPU ms / fps);
+`scripts/ab/sweepcmp.py BASE NEW` compares two sweeps.
 
 The goal and requirements are in IDEAS §17 (agreed 2026-10-11): no cost from composability
 while a pipeline runs; no opinion on hardware configuration; maximum practical code reuse;
@@ -272,7 +272,7 @@ Steps, in order; one at a time (verify, commit and push, report, wait for the go
    cpu-discover's lit mode and gpu-voxelspace walk their own structures today.
 4. **Done 2026-10-12 (progress log).** **The guard test** (§16 step 4): no WGSL function defined in more than one back end's
    shaders; every back end's lighting goes through the shading component.
-5. **Devices handed to back ends** (requirement 2): today seven back ends call `Gpu::new`
+5. **Done 2026-10-12 (progress log).** **Devices handed to back ends** (requirement 2): today seven back ends call `Gpu::new`
    themselves. A device becomes a resource given to a back end (and later to stages), so
    several GPUs, or a GPU and the CPU, are a configuration. Also the first step toward
    the library interface (IDEAS §14: render into the caller's device and texture).
@@ -915,6 +915,33 @@ earlier if meshes become more urgent; 7c depends on 6′.
   now host-side (update) cost, not measurement. Rasterisers win the closed scenes (room,
   meshes, showcase); `tree64` wins edits; `hier + refloor` wins menger; `gpu-rt: greedy`
   wins many-lights. This catalogue is the first to read with the user.
+
+### 2026-10-12: architecture refactor step 5 (devices handed to back ends)
+- **Configuration, not opinion:** `InitParams.devices` (`mr_core::DeviceConfig`: GPU slots by
+  adapter-name substring, CPU threads) comes from the plan, `run.devices` or a renderer's
+  `devices` (e.g. `run.devices = { gpus = ["amd"] }`). The per-back-end `adapter` option is
+  gone. CPU stages whose `threads` knob is 0 take `cpu_threads` (`cpu`, `cpu-raster`,
+  `cpu-voxelspace`, `cpu-reference`, cpu-discover's discovery pool).
+- **Devices are handed in:** `RendererEntry::create(params, &Devices, waker)`. `Devices`
+  carries the process's `mr_gpu::GpuPool` (type-erased, so `mr-core` stays free of a GPU
+  API). Back ends state their needs (`GpuNeeds`: features, experimental) and get an
+  `Arc<Gpu>` with `mr_gpu::gpu(devices, slot, needs)`; none calls `Gpu::new` any more. The
+  pool opens a device per slot on request and shares it with later requests it serves;
+  each worker has its own pool (sharing between renderers would share wgpu's error
+  capture). `GpuPool::fixed` takes a caller's devices (`Gpu::from_parts`, the library path
+  of IDEAS §14) and refuses needs they cannot meet, with the reason. GPU test
+  `pool_shares_and_refuses` (`cargo test -p mr-gpu -- --ignored`).
+- **Checks:** pixel-identical on all ten back ends; GPU ms within ±0.2% (cpu-discover
+  unlit +1.8%, 3 µs). The same back ends run on the integrated AMD GPU by configuration
+  (gpu-compute 25.8 ms, gpu-raster 6.9 ms unlit on terrain; same PSNR as on the NVIDIA),
+  and on llvmpipe (Mesa's CPU Vulkan), where PSNR falls to 17 dB with 147 MB of GPU memory:
+  the pools are sized from device limits and drop chunks (an existing limit, not fixed).
+  A wrong adapter name fails with the list of adapters. `cpu_threads = 4` takes `cpu`
+  from 31.5 to 6.7 fps.
+- **A/B tooling committed:** `scripts/ab/` (save-before, pixels, perf, sweepcmp).
+- **Next steps' hooks:** stages will pick devices by slot (step 7: per-stage slots), and a
+  composition spanning a GPU and the CPU, or two GPUs, is a `DeviceConfig` plus the
+  stages' slots; transfers between adapters go through the host (wgpu shares no memory).
 
 ### 2026-10-12: the sweep after steps 3–4 (aligned build)
 - `target/sweep/20261012-0057`: 3,854 observations, the same 3 known failures on far, no
