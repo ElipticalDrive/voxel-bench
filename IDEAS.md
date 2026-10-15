@@ -1561,6 +1561,20 @@ Today's sweeps reward techniques that assume everything is resident at once.
 **Status.** Scheduled 2026-10-14 as PLAN step 14 (after the executor, step 13); step 9's
 graph model treats the world as a node so the link is just an edge.
 
+## 20. Path tracing on incremental discovery (an observation, tricks to come)
+
+**The observation (user, 2026-10-14).** Playing in the GUI with incremental discovery
+(gpu-discover, `quadtree`, incremental face set) and `pathtrace` shading: "I've never seen
+real time path tracing as fast as that". The user has tricks for later that would make it
+faster still; to be recorded when shared, and implemented only after asking.
+
+**Why it may be fast (my reading, unmeasured).** Discovery rasterises a face set kept
+across frames, so primary visibility costs little and most of the frame goes to the bounce
+and shadow rays, which walk the composed storage (refloor over bricks by default).
+Progressive accumulation while the view is still (`accumulate`) adds samples over frames.
+Worth measuring once step 11 (per-stage timing) exists: primary visibility and shading
+time separately, against gpu-compute `raycast + pathtrace` on the same scene.
+
 ---
 
 ## Suggested order
