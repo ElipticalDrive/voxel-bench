@@ -1577,6 +1577,36 @@ time separately, against gpu-compute `raycast + pathtrace` on the same scene.
 
 ---
 
+## 21. Device and API per node (the finished design)
+
+**The requirement (user, 2026-10-15).** Device and API are a knob of every component
+(node), so each one runs where and how it suits its purpose and the distribution of work.
+Cross-device edges have a known, accepted cost. A node runs on one device (indivisible);
+splittable nodes would be nice but are rarely useful (the intercommunication they demand)
+and not essential: a possible later extension.
+
+**What it means for the design.**
+- A node has `device` (a slot of the run's `DeviceConfig`: `cpu`, `gpu`, `gpu1`, ...; the
+  host maps slots to real adapters, so components keep no hardware opinion) and `api`
+  (how it runs there: wgpu/Vulkan compute, wgpu raster, ray queries; scalar, AVX2,
+  AVX-512, ...). Unset, both default: fused nodes (storages, kernels) take their caller's;
+  others the executor's default for the role.
+- Components declare implementations per (device kind, API), replacing today's per-back-end
+  lists; the registry and validation grey choices without one, with the reason (as now).
+- Fused data never crosses devices (a walk reads its storage every step); every other edge
+  may, through a compile-time transfer adapter (readback, upload, peer copy), measured like
+  any node once step 11 exists.
+- Executors (PLAN step 13) place nodes on devices and run them; a planner can later choose
+  placements from per-node timings (§14, §15).
+- Later, optional: a node split over several devices by a rule (screen tiles, ray batches,
+  world regions) plus a merge.
+
+**State (2026-10-15).** `device` exists on graph nodes (step 9a) and is validated (fused
+nodes with their callers), but back ends do not act on it yet; there is no `api` yet.
+Folded into PLAN steps 10 and 13 and the plan's goal.
+
+---
+
 ## Suggested order
 
 The live plan, with estimates and progress, is in `PLAN.md`.

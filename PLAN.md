@@ -13,7 +13,17 @@ The user's architecture, settled with finality and without limits for later (IDE
 - **A pipeline is a graph, not a fixed list of stages.** Any valid path from the input to
   the output is a viable pipeline; pipelines need not share the same kinds of components.
 - **Every place rays are cast picks its own ray-casting method and storage** (primary,
-  discovery, exposure tests, shadow, bounce, later AO), independently or shared.
+  discovery, shadow, bounce, mesh shadows, later AO; exposure tests pick their storage),
+  independently or shared.
+- **Every node picks its device and API** (IDEAS §21): a knob per node, `device` (a slot
+  of the run's device configuration: `cpu`, `gpu`, `gpu1`, ...) and `api` (how it runs
+  there: e.g. wgpu/Vulkan compute, wgpu raster, ray queries, scalar, AVX2, AVX-512), so
+  each component runs where and how it suits its work and the distribution of work.
+  Components declare their implementations per (device kind, API); a choice without one
+  is greyed with the reason. Fused data (storages, kernels) runs with its caller; any
+  other edge may cross devices, through a compile-time transfer adapter with its known,
+  accepted cost. A node runs on one device (indivisible); splittable nodes are a possible
+  later extension, not part of this plan.
 - The §17 requirements: no cost from composability while a pipeline runs (compiling
   before it runs is fine); no opinion on hardware configuration; maximum practical reuse;
   maximum practical combinations, grown with compile-time adapters; combinations without a
@@ -76,8 +86,10 @@ The user's architecture, settled with finality and without limits for later (IDE
    cover a common set, other graphs run compiled on demand (step 8's machinery; the
    user's intent that every pipeline is eventually compiled at run time).
 10. **Composition fully data:** knobs declared as baked-in (specialisable) or live; CPU
-    components declare capabilities (associated consts, as `backend_cpu::Spec`); the
-    graph hash is the compile cache key everywhere.
+    components declare capabilities (associated consts, as `backend_cpu::Spec`);
+    components declare their implementations per (device kind, API) instead of per back
+    end, and nodes carry `api` beside `device` (IDEAS §21); the graph hash is the compile
+    cache key everywhere.
 11. **Per-stage measurement:** every node reports its own GPU time (timestamps per pass)
     and CPU time; observations carry them.
 12. **A common visibility buffer:** every strategy outputs one hit record; shading
@@ -85,8 +97,9 @@ The user's architecture, settled with finality and without limits for later (IDE
     writing into it, no longer a special stage.
 13. **Strategies as components, back ends as executors:** discovery's pieces (sampler,
     hole detection, retention, drawer), splat and columns become components; back ends
-    become executors placing nodes on devices (a device per node), so cpu-discover is a
-    configuration of CPU and GPU nodes, and its `dyn World` call goes.
+    become executors placing nodes on devices (a device and API per node, IDEAS §21), with
+    transfer adapters on edges that cross devices, so cpu-discover is a configuration of
+    CPU and GPU nodes, two GPUs combine, and its `dyn World` call goes.
 14. **The served split (IDEAS §19):** the world (generator, authoritative store, change
     log) becomes a node on a *server* device; a modelled *link* (latency, bandwidth,
     jitter, reordering, compression; zero cost as one setting) is a graph edge; the
