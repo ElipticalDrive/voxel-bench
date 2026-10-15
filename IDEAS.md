@@ -1525,6 +1525,42 @@ is measured separately from per-frame cost.
 uses); capability contracts must stay small or fusion gets harder (§17's capability
 model with adapters is the answer the user chose).
 
+## 19. A strict local / remote split (the served-game test)
+
+**The idea (user, 2026-10-14).** Force a stricter separation between what is local to the
+renderer and what need not be: if this ran as a served game, what would be the server?
+Imposing that line on every renderer would compartmentalise the generator and the world,
+and be a better test of the techniques in a practical setting.
+
+**What exists already.** Renderers never depend on `mr-world` (generators, the
+authoritative chunk store, scenes); they see only `InitParams`, `WorldUpdate` deltas
+(chunk load / unload, block edits, lights, environment), meshes and `FrameRequest`s, over
+the `mr-ipc` protocol in another process. So the line is drawn in the code, but under
+an unrealistic model:
+- the link is free: no latency, unlimited bandwidth, nothing arrives late or out of order;
+  updates arrive before the frame that needs them;
+- the host streams per renderer, tailored to it (`Streamer`: radius, `max_lod`), and
+  computes the LOD chunks; a server would send the same stream to every client, and the
+  client would derive anything renderer-specific;
+- the data the line carries is uncompressed, full chunks, with no cost accounting.
+
+**Proposed shape.** Three places, not two: *server* (authoritative world, generator,
+simulation, validating edits), *link* (a modelled network: latency, bandwidth, jitter,
+reordering, loss; compression), and *client* (the renderer plus client-side derivation:
+its storages, LOD pyramids, face sets, and possibly local generation). Where the generator
+runs is a choice: on the server and streamed, or on the client from a shared seed, with
+the server sending only edits. This is §18 piece 1 (world and change log) given a device,
+and the network is one more communication path between devices in the step-9 graph,
+so it adds no special case.
+
+**What it would test.** Renderers would have to tolerate data that has not arrived yet
+(holes, far LOD arriving first). It would measure update cost against bytes on the wire,
+time to the first complete frame, and how each technique behaves while data streams in.
+Today's sweeps reward techniques that assume everything is resident at once.
+
+**Status.** Recorded; not scheduled. It touches step 9 (the link as an edge) and step 13
+(the executor), so it fits after the graph model exists.
+
 ---
 
 ## Suggested order
