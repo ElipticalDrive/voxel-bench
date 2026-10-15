@@ -1607,6 +1607,34 @@ Folded into PLAN steps 10 and 13 and the plan's goal.
 
 ---
 
+## 22. Fusion first, state exchanged both ways, one implementation per algorithm (refinements)
+
+**The user's decisions (2026-10-15)**, after a review of the target architecture:
+- *Not every combination can be checked, and that is fine.* Correctness rests on per-port
+  contracts and the exact reference; graphs are sampled, not enumerated.
+- *Every effort goes into reducing the cost of fused nodes,* above all within one device and
+  API. The executor (PLAN step 13) must fuse adjacent nodes on one device into one pass
+  where the result is no slower than the hand-written equivalent: inline shading inside
+  raster or ray casting, merged passes, buffers kept across frames, pipelining across
+  devices (cpu-discover runs one frame ahead). "Back ends as executors" must not cost
+  speed; this is a design point of step 13, not an afterthought.
+- *Data flow between nodes is not one-directional:* nodes may exchange state freely, both
+  ways. (Today's graph validation rejects cycles, a 9a choice to be revised.) Examples
+  already in the code: incremental discovery reads the drawer's depth and ids from the
+  previous frame; pathtrace accumulates across frames; streaming feeds back what is
+  resident. The design must say how two-way edges are scheduled: across frames (the
+  value of the previous frame, i.e. history, step 15) and within a frame (an
+  iteration or a fused pair), and what latency each edge has.
+- *No redundant implementations.* The architecture must scale without writing an
+  algorithm five times for slightly different compositions (see §16, and the definition of
+  redundancy: a fundamentally different implementation is fine, a copy is not). Refining
+  continues until the user is satisfied it scales this way.
+- Priorities agreed: steps 9 → 16 in order; per-node timing (step 11) before executors
+  (step 13); stateful nodes and two-way edges designed before step 13; the architecture
+  phase ends at explicit exit criteria (PLAN).
+
+---
+
 ## Suggested order
 
 The live plan, with estimates and progress, is in `PLAN.md`.

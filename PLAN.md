@@ -24,6 +24,12 @@ The user's architecture, settled with finality and without limits for later (IDE
   other edge may cross devices, through a compile-time transfer adapter with its known,
   accepted cost. A node runs on one device (indivisible); splittable nodes are a possible
   later extension, not part of this plan.
+- **Nodes exchange state freely, both ways** (IDEAS §22): edges may run in both directions
+  and form cycles; each says when its value arrives (this frame, through iteration or a
+  fused pair; or the previous frame). Fused nodes cost nothing, above all within one device
+  and API, and the executor fuses whatever it can.
+- **One implementation per algorithm:** no copies for slightly different compositions
+  (IDEAS §16, §22).
 - The §17 requirements: no cost from composability while a pipeline runs (compiling
   before it runs is fine); no opinion on hardware configuration; maximum practical reuse;
   maximum practical combinations, grown with compile-time adapters; combinations without a
@@ -95,7 +101,9 @@ The user's architecture, settled with finality and without limits for later (IDE
 12. **A common visibility buffer:** every strategy outputs one hit record; shading
     placement (inline or deferred) a choice for every strategy; meshes a surface source
     writing into it, no longer a special stage.
-13. **Strategies as components, back ends as executors:** discovery's pieces (sampler,
+13. **Strategies as components, back ends as executors** (first: design stateful nodes and
+    two-way edges, and the executor's fusion and pipelining, IDEAS §22; needs step 11's
+    timing to show executors cost nothing): discovery's pieces (sampler,
     hole detection, retention, drawer), splat and columns become components; back ends
     become executors placing nodes on devices (a device and API per node, IDEAS §21), with
     transfer adapters on edges that cross devices, so cpu-discover is a configuration of
@@ -113,6 +121,15 @@ The user's architecture, settled with finality and without limits for later (IDE
     mapping and diagnostic views with colour scales written once.
 16. **Compiled on demand everywhere:** every CPU graph (generated Rust), and on the GPU
     specialised constants and persistent pipeline caches; then the break-in layers.
+
+## Exit criteria (when the architecture is done; then optimisation starts)
+
+- No hand-written back ends remain: executors run graphs, a device and API per node.
+- cpu-discover is a graph of CPU and GPU nodes; two GPUs render one frame together.
+- Stateful nodes and two-way edges work (incremental discovery, accumulation).
+- The served split runs over a modelled lossy link.
+- Every old composition renders identically and is no slower (pixel and timing A/B).
+- No algorithm is implemented twice the same way.
 
 ## Estimate (2026-10-12)
 
