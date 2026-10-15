@@ -1642,6 +1642,28 @@ Folded into PLAN steps 10 and 13 and the plan's goal.
 
 ---
 
+## 23. Scope of animation; transparency next (after the architecture)
+
+**Scope (user, 2026-10-15).** Only meshes are animated; voxels are not animated at scale.
+The aim is performance enough for a fair number of meshes together with very large
+amounts of voxels, not huge amounts of both.
+
+**Transparency is the major hurdle left once the architecture is done** (the user's view;
+see §16: transparency would have touched ~7 lighting paths and 3 face drawers before the
+refactor; §18 pieces 7–8: translucent layers, an opaque-only mask). Wanted with it,
+"maybe": shading effects on transparent surfaces, e.g. ripples (a surface's normal or
+appearance perturbed by a function, for water and the like). After that, the requirements
+on renderers are largely set, and each new renderer inherits the cost a little at a time.
+
+**What it asks of the architecture now.** Step 12's common hit record must not assume one
+opaque surface per pixel: transparency needs layers (several hits per pixel, or a
+continuation: a ray that goes on past a translucent hit) and an opaque-only query for
+shadow rays. Designing the hit record and the ray-query ports with that in mind costs
+little now and avoids a second rewrite. Surface effects (ripples) fit as a component on the
+surface's shading input (a perturbation of normal and texel), so every strategy gets them.
+
+---
+
 ## Suggested order
 
 The live plan, with estimates and progress, is in `PLAN.md`.

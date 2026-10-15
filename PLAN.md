@@ -103,7 +103,8 @@ The user's architecture, settled with finality and without limits for later (IDE
     cache key everywhere.
 11. **Per-stage measurement:** every node reports its own GPU time (timestamps per pass)
     and CPU time; observations carry them.
-12. **A common visibility buffer:** every strategy outputs one hit record; shading
+12. **A common visibility buffer** (designed so transparency fits later, IDEAS §23:
+    several hits per pixel or continued rays, an opaque-only query for shadow rays): every strategy outputs one hit record; shading
     placement (inline or deferred) a choice for every strategy; meshes a surface source
     writing into it, no longer a special stage.
 13. **Strategies as components, back ends as executors** (first: design stateful nodes and
