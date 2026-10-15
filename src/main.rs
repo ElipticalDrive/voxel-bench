@@ -76,6 +76,9 @@ enum Cmd {
     },
     /// List available renderers.
     List,
+    /// A pipeline as a graph (PLAN step 9): its nodes (TOML, for a plan's
+    /// `[renderer.graph]`), canonical form and cache key. The renderer as for `view -r`.
+    Graph { renderer: String },
     /// Compare two PNG images.
     Diff {
         a: PathBuf,
@@ -107,6 +110,15 @@ fn main() -> anyhow::Result<()> {
     match cmd {
         Cmd::Gui { plan } => gui::run(plan),
         Cmd::Worker { socket } => mr_worker::run(&socket),
+        Cmd::Graph { renderer } => {
+            let mut spec = plan::RendererSpec::from_cli(&renderer)?;
+            spec.resolve()?;
+            let c = spec.compose.with_context(|| format!("`{renderer}` is not a composition"))?;
+            let g = mr_components::graph::Graph::from_composition(&c).map_err(anyhow::Error::msg)?;
+            println!("# {}\n{}", c.label(), toml::to_string(&g)?);
+            println!("# canonical: {}\n# key: {}", g.canonical().map_err(anyhow::Error::msg)?, g.key().map_err(anyhow::Error::msg)?);
+            Ok(())
+        }
         Cmd::List => {
             println!("Renderers are assembled from components (plan: compose = {{ backend, storage, geometry, prepass, visibility, shading, meshes }};\nCLI: -r backend:<its required slots in order>[+shading[+prepass[+meshes]]], e.g. gpu-compute:prefix+incremental, gpu-compute:bricks+refloor+direct+beam).\n\nBack ends:");
             for b in mr_components::BACKENDS {

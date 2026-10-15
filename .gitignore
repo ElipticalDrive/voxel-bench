@@ -1,3 +1,5 @@
 /target
 /runs
 .idea/
+/.agent/
+/CLAUDE.local.md

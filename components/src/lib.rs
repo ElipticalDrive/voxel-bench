@@ -35,6 +35,7 @@ pub use caps::Cap;
 pub mod caps;
 pub mod draw;
 pub mod geometry;
+pub mod graph;
 pub mod prepass;
 pub mod shading;
 pub mod storage;

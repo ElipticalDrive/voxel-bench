@@ -243,7 +243,9 @@ fn verify(b: &Bake, c: &Compiled) -> anyhow::Result<String> {
         dir.join("run"),
     );
     std::fs::write(dir.join("check.toml"), &plan)?;
-    let out = Command::new(std::env::current_exe()?).arg("run").arg(dir.join("check.toml")).env("MR_PIPELINE_CHECK", "1").output()?;
+    // This executable (`MR_WORKER_EXE` where the current one is a test harness, as for workers).
+    let exe = std::env::var_os("MR_WORKER_EXE").map(PathBuf::from).map_or_else(std::env::current_exe, Ok)?;
+    let out = Command::new(exe).arg("run").arg(dir.join("check.toml")).env("MR_PIPELINE_CHECK", "1").output()?;
     if !out.status.success() {
         bail!("check run failed:\n{}", String::from_utf8_lossy(&out.stderr).lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"));
     }

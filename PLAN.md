@@ -152,6 +152,8 @@ took about 1.5–2.5 hours each), with wide uncertainty on the large steps:
   `target/gui-shot.png`; `SHOT_PLAN=plans/x.toml` picks the plan.
 - `multirenderer list`: back ends with their slots and defaults, components by slot,
   standalone renderers (cpu-reference).
+- `multirenderer graph gpu-compute:prefix+incremental`: a composition as a graph (TOML for a
+  plan's `[renderer.graph]`), its canonical form and cache key.
 - One composition against the reference:
   `./target/release/multirenderer run plans/terrain.toml -s 'renderer=[{compose={backend="gpu-compute",storage="prefix",visibility="refloor"}}]' -s output.dir=\"target/check\"`
   - Further knobs go in `options={...}`. The reference: `{name="cpu-reference"}`.
@@ -172,3 +174,38 @@ took about 1.5–2.5 hours each), with wide uncertainty on the large steps:
 ## Progress log (steps 9–16)
 
 (Entries are added as steps land; steps 1–8 are in the archive.)
+
+**2026-10-14, step 9a done: the graph model.** `components/src/graph.rs`:
+- Nodes are component instances (`role`, `component`, optional `device`, `inputs` port →
+  node, own `knobs`); a `Graph` is an executor (the back end, until step 13) plus nodes.
+  Typed ports (`Data`: changes, storage, faces, ray starts, ray queries, hits, mesh
+  surfaces, image); every ray-casting site is a `Rays` port of the caster (`primary`;
+  discovery `rays` and `exposure`; shading `shadow` and `bounce`). The world is a node
+  (implicit when left out; unbound `changes` inputs read it), so step 14's link is an edge.
+- Validation with reasons: unknown components and ports, type mismatches, unbound
+  required inputs, capability needs (native or adapter), one image output, cycles,
+  nodes leading to no image, devices (storages and kernels are fused into their caller
+  and run on its device; a fused node shared by callers on two devices is rejected).
+- Canonical form (nodes renamed in visiting order from the output, devices resolved,
+  knobs sorted) and a stable 64-bit key (FNV-1a): the cache key for 9d / step 10.
+- `Graph::from_composition`: every flat composition (so every stored record, old forms
+  included) loads as a graph; `same` secondary stages share nodes; cpu-discover's GPU
+  shadow rays get their own nodes. `to_composition` is the executor's acceptance: a graph
+  runs if its back end has a composition with exactly that graph (else the reason and
+  the nearest composition), until 9c makes back ends consume graphs.
+- Plans: `[renderer.graph]` instead of `compose` (node knobs become the back end's flat
+  options; conflicting values of one knob rejected until 9c). CLI: `multirenderer graph
+  <backend:a+b+...>` prints the graph (TOML), canonical form and key.
+- Verified: all 16,975 valid compositions of all back ends round-trip (12,699 distinct
+  graphs; compositions share a key only when they differ in spelling `same`); tests for
+  renamed ids, a hand-written graph, every rejection reason, plan loading; a graph renderer
+  and its `compose` twin give the same psnr and fps in a real run; builds without warnings,
+  56 unit tests, architecture guard, 4 GPU end-to-end tests. No back-end or runtime code
+  changed (load time only), so no pixel / timing A/B was needed.
+- Bug found on the way (fixed): the step-8 trust check re-ran `current_exe()`, the test
+  harness under `cargo test`, which saved no frames, so a fresh compiled pipeline was
+  falsely rejected and the `.rejected` file stuck. It now uses `MR_WORKER_EXE` like the
+  workers. It only showed because 9a changed the source hash (new cache key).
+- Not yet: devices are inferred, not checked against where components have
+  implementations (the executor check covers it today); knobs per node are flattened;
+  the GUI, sweeps and observations still use compositions (9d).

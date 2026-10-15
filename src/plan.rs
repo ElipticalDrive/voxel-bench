@@ -141,6 +141,10 @@ pub struct RendererSpec {
     /// The components this renderer is assembled from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compose: Option<mr_components::Composition>,
+    /// The pipeline as a graph (PLAN step 9; `mr_components::graph`), instead of
+    /// `compose`: loaded as the composition its back end runs, its nodes' knobs as options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<mr_components::graph::Graph>,
     /// Display label, to run the same renderer twice with different options.
     pub label: Option<String>,
     #[serde(default)]
@@ -167,7 +171,7 @@ pub struct RendererSpec {
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), compose: None, label: None, options: Default::default(), view_radius: None, max_lod: None, devices: None, compile: None, swept: false, compose_label: Default::default() }
+        Self { name: name.into(), compose: None, graph: None, label: None, options: Default::default(), view_radius: None, max_lod: None, devices: None, compile: None, swept: false, compose_label: Default::default() }
     }
 
     /// A renderer assembled from components.
@@ -181,6 +185,19 @@ impl RendererSpec {
     /// For compositions: checks them and sets `name` (the back end's renderer) and the
     /// options that select the components.
     pub fn resolve(&mut self) -> anyhow::Result<()> {
+        if let Some(g) = self.graph.take() {
+            if self.compose.is_some() {
+                bail!("a renderer has `graph` or `compose`, not both");
+            }
+            let c = g.to_composition().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
+            for (k, v) in g.flat_knobs().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
+                if self.options.get(&k).is_some_and(|o| *o != v) {
+                    bail!("renderer graph: knob `{k}` is set in the graph and in `options`");
+                }
+                self.options.insert(k, v);
+            }
+            self.compose = Some(c);
+        }
         // `name = "<back end's renderer>"` (older plans, the CLI): the back end's
         // composition, with stages taken from the options where given.
         if self.compose.is_none() {
@@ -674,6 +691,30 @@ mod tests {
         assert!(!spec.supports(&info, lit_meshes) && spec.supports(&info, PassMode::LIT));
         assert!(RendererSpec::from_cli("gpu-compute:bricks+refloor").unwrap().supports(&info, lit_meshes));
         assert_eq!(RendererSpec::from_cli("gpu-raster:bricks+greedy+raster+direct+none").unwrap().options.get("meshes").and_then(|v| v.as_str()), Some("none"));
+    }
+
+    /// A renderer written as a graph (PLAN step 9a) loads as the composition it is.
+    #[test]
+    fn graph_renderers() {
+        let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
+        let graph = r#"
+[[renderer]]
+[renderer.graph]
+executor = "gpu-compute"
+nodes.s = { role = "storage", component = "prefix" }
+nodes.k = { role = "traversal", component = "incremental", inputs = { storage = "s" }, knobs = { exact = false } }
+nodes.v = { role = "visibility", component = "raycast", inputs = { primary = "k" } }
+nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", shadow = "k" } }
+"#;
+        let compose = "[[renderer]]\ncompose = { storage = \"prefix\", traversal = \"incremental\", meshes = \"none\" }\noptions = { exact = false }\n";
+        let g = Plan::parse(&format!("{base}{graph}"), &[]).unwrap();
+        let c = Plan::parse(&format!("{base}{compose}"), &[]).unwrap();
+        let (g, c) = (&g.renderers[0], &c.renderers[0]);
+        assert_eq!((&g.name, g.label(), &g.options), (&c.name, c.label(), &c.options));
+        assert!(g.graph.is_none() && g.compose == c.compose);
+        let bad = graph.replace("primary = \"k\"", "primary = \"s\"");
+        let e = Plan::parse(&format!("{base}{bad}"), &[]).unwrap_err().to_string();
+        assert!(e.contains("takes ray queries"), "{e}");
     }
 
     /// Sweeps expand into every valid combination, with options only where they apply.
