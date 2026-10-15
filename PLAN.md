@@ -28,8 +28,13 @@ The user's architecture, settled with finality and without limits for later (IDE
   and form cycles; each says when its value arrives (this frame, through iteration or a
   fused pair; or the previous frame). Fused nodes cost nothing, above all within one device
   and API, and the executor fuses whatever it can.
-- **One implementation per algorithm:** no copies for slightly different compositions
-  (IDEAS §16, §22).
+- **No redundant implementations** (IDEAS §16, §22): the same algorithm implemented once per
+  device / API or mechanism is necessary, not redundant; redundant is an algorithm written
+  again to accommodate some combination of features. Combinations are chosen and compiled
+  in, never hand-written per combination.
+- **Every renderer fits the graph** (else the space cannot be explored); a pipeline may
+  span devices, so two GPUs render one frame by splitting the pipeline between them
+  (required; splitting a node over devices can wait).
 - The §17 requirements: no cost from composability while a pipeline runs (compiling
   before it runs is fine); no opinion on hardware configuration; maximum practical reuse;
   maximum practical combinations, grown with compile-time adapters; combinations without a
@@ -109,8 +114,10 @@ The user's architecture, settled with finality and without limits for later (IDE
     transfer adapters on edges that cross devices, so cpu-discover is a configuration of
     CPU and GPU nodes, two GPUs combine, and its `dyn World` call goes.
 14. **The served split (IDEAS §19):** the world (generator, authoritative store, change
-    log) becomes a node on a *server* device; a modelled *link* (latency, bandwidth,
-    jitter, reordering, compression; zero cost as one setting) is a graph edge; the
+    log) becomes a node on a *server* device; a *link* is a graph edge, the bottleneck
+    between them (the point is the separation, not realistic networking; latency,
+    bandwidth, loss and reordering are knobs that stress an algorithm's resilience, zero
+    cost as one setting); the
     *client* derives everything renderer-specific (storages, LOD levels) from one stream
     shared by all clients. Generator placement is a choice: streamed from the server, or
     on the client from a shared seed with the server sending only edits. The renderer
@@ -124,12 +131,14 @@ The user's architecture, settled with finality and without limits for later (IDE
 
 ## Exit criteria (when the architecture is done; then optimisation starts)
 
-- No hand-written back ends remain: executors run graphs, a device and API per node.
-- cpu-discover is a graph of CPU and GPU nodes; two GPUs render one frame together.
+- No hand-written back ends remain: executors run graphs, a device and API per node. (Every
+  renderer then is a graph, cpu-discover included, and a pipeline split over two GPUs
+  renders one frame: outcomes of the architecture, checked as such.)
 - Stateful nodes and two-way edges work (incremental discovery, accumulation).
-- The served split runs over a modelled lossy link.
+- The served split exists as a separation with a bottleneck between server and client.
 - Every old composition renders identically and is no slower (pixel and timing A/B).
-- No algorithm is implemented twice the same way.
+- No implementation exists to accommodate a combination of features: combinations are
+  compiled in (one implementation per algorithm and device / API or mechanism).
 
 ## Estimate (2026-10-12)
 

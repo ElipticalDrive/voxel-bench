@@ -1626,9 +1626,16 @@ Folded into PLAN steps 10 and 13 and the plan's goal.
   value of the previous frame, i.e. history, step 15) and within a frame (an
   iteration or a fused pair), and what latency each edge has.
 - *No redundant implementations.* The architecture must scale without writing an
-  algorithm five times for slightly different compositions (see §16, and the definition of
-  redundancy: a fundamentally different implementation is fine, a copy is not). Refining
-  continues until the user is satisfied it scales this way.
+  algorithm five times for slightly different compositions. The same algorithm once per
+  device / API or mechanism is necessary, not redundant; redundant is an implementation
+  written to accommodate a combination of features. Combinations are chosen and compiled in.
+  Refining continues until the user is satisfied it scales this way.
+- *Every renderer fits the graph*, or the space cannot be explored. Two GPUs rendering one
+  frame is an outcome of the architecture: by splitting the pipeline between devices
+  (required) or splitting nodes over devices (can wait).
+- *The served split (§19)* is about the separation and the bottleneck between server and
+  client, not realistic networking; link knobs (loss, latency, ...) stay as a way to stress
+  an algorithm's resilience.
 - Priorities agreed: steps 9 → 16 in order; per-node timing (step 11) before executors
   (step 13); stateful nodes and two-way edges designed before step 13; the architecture
   phase ends at explicit exit criteria (PLAN).
