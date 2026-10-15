@@ -167,11 +167,15 @@ pub struct RendererSpec {
     /// Cache of the composition's label (derived; not part of the plan).
     #[serde(skip)]
     pub compose_label: std::sync::OnceLock<String>,
+    /// The graph this renderer was given (`graph`, after `resolve`), when it is not just
+    /// its composition: what the back end runs (derived; not part of the plan).
+    #[serde(skip)]
+    pub ran_graph: Option<mr_components::graph::Graph>,
 }
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), compose: None, graph: None, label: None, options: Default::default(), view_radius: None, max_lod: None, devices: None, compile: None, swept: false, compose_label: Default::default() }
+        Self { name: name.into(), compose: None, graph: None, label: None, options: Default::default(), view_radius: None, max_lod: None, devices: None, compile: None, swept: false, compose_label: Default::default(), ran_graph: None }
     }
 
     /// A renderer assembled from components.
@@ -189,13 +193,19 @@ impl RendererSpec {
             if self.compose.is_some() {
                 bail!("a renderer has `graph` or `compose`, not both");
             }
-            let c = g.to_composition().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
+            let (c, exact) = g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
             for (k, v) in g.flat_knobs().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
                 if self.options.get(&k).is_some_and(|o| *o != v) {
                     bail!("renderer graph: knob `{k}` is set in the graph and in `options`");
                 }
                 self.options.insert(k, v);
             }
+            // A graph its composition does not express is labelled as the nearest
+            // composition and the graph's key.
+            if !exact && self.label.is_none() {
+                self.label = Some(format!("{} [graph {}]", c.label(), &g.key().map_err(anyhow::Error::msg)?[..8]));
+            }
+            self.ran_graph = Some(g);
             self.compose = Some(c);
         }
         // `name = "<back end's renderer>"` (older plans, the CLI): the back end's
@@ -283,7 +293,14 @@ impl RendererSpec {
     pub fn set_compose(&mut self, c: mr_components::Composition) -> anyhow::Result<()> {
         self.compose = Some(c);
         self.compose_label = Default::default();
+        self.ran_graph = None;
         self.resolve()
+    }
+
+    /// The graph the back end runs: the one given, else the composition's (`None` for
+    /// standalone renderers).
+    pub fn pipeline(&self) -> Option<mr_components::graph::Graph> {
+        self.ran_graph.clone().or_else(|| self.compose.as_ref().and_then(|c| mr_components::graph::Graph::from_composition(c).ok()))
     }
 
     /// Options as the user sees them: without the keys a composition derives.
@@ -715,6 +732,15 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let bad = graph.replace("primary = \"k\"", "primary = \"s\"");
         let e = Plan::parse(&format!("{base}{bad}"), &[]).unwrap_err().to_string();
         assert!(e.contains("takes ray queries"), "{e}");
+        // Step 9c: shadow rays through a kernel of their own (its knob stays with it) run as
+        // the graph, labelled as their nearest composition and the graph's key.
+        let own = graph.replace("shadow = \"k\" } }", "shadow = \"k2\" } }\nnodes.k2 = { role = \"traversal\", component = \"incremental\", inputs = { storage = \"s\" }, knobs = { exact = true, skip8 = false } }");
+        let p = Plan::parse(&format!("{base}{own}"), &[]).unwrap();
+        let r = &p.renderers[0];
+        assert!(r.label().starts_with("gpu-compute: prefix + incremental + no meshes [graph "), "{}", r.label());
+        assert_eq!(r.options.get("exact"), Some(&toml::Value::Boolean(false)), "the primary kernel's knob");
+        assert!(r.options.get("skip8").is_none());
+        assert!(r.pipeline().unwrap().nodes.contains_key("k2"));
     }
 
     /// Sweeps expand into every valid combination, with options only where they apply.

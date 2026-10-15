@@ -17,8 +17,10 @@ use glam::IVec3;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_components::storage::gpu_data::{self, StorageData};
-use mr_components::{names_on, require, Slot, storage};
+use mr_components::graph::{self, Role};
+use mr_components::shaders::Walks;
+use mr_components::storage::gpu_data::{self, StorageSet};
+use mr_components::{names_on, require, Slot};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
@@ -136,9 +138,8 @@ const BACKEND: &str = "gpu-splat";
 pub struct GpuSplat {
     gpu: Arc<Gpu>,
     world: VoxelWorld,
-    /// The storage's own data for shadow rays (group 2).
-    data: StorageData,
-    layout_st: wgpu::BindGroupLayout,
+    /// The storage instances' data: the shadow rays' (group 2), the bounces' if their own.
+    storages: StorageSet,
     pipes: [wgpu::ComputePipeline; 4],
     layout0: wgpu::BindGroupLayout,
     camera_buf: wgpu::Buffer,
@@ -176,10 +177,15 @@ fn pixel_buffer(gpu: &Gpu, w: u32, h: u32) -> wgpu::Buffer {
 impl GpuSplat {
     pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
-        let st = storage::gpu(&require(BACKEND, Slot::Storage, &opts.storage)?).expect("validated");
-        for (slot, name) in [(Slot::Geometry, &opts.geometry), (Slot::Visibility, &opts.visibility), (Slot::Traversal, &opts.traversal), (Slot::Shading, &opts.shading)] {
+        for (slot, name) in [(Slot::Geometry, &opts.geometry), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
             require(BACKEND, slot, name)?;
         }
+        // The sites' walks (PLAN step 9c): shadow rays (the storage and traversal stages),
+        // bounces their own or the same.
+        let g = graph::of_init(BACKEND, &p)?;
+        let mut walks = Walks::default();
+        let shadow = walks.site(&g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("gpu-splat: shadow rays are not bound"))?, &[2, 3, 4], false);
+        let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&g, s, &[2, 3, 4], false));
         // The host hands the device in (GPU slot 0); this back end only states its needs.
         let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY })?;
         let world = VoxelWorld::new(
@@ -189,7 +195,7 @@ impl GpuSplat {
             VoxelWorldConfig {
                 max_lod: 0,
                 // Region storages (tree64, ...) hold their own data instead of the voxel pool.
-                upload_voxels: matches!(st.kind, storage::Kind::Pool { .. }),
+                upload_voxels: StorageSet::needs_pool(&walks),
                 pool_mb: opts.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
@@ -197,13 +203,11 @@ impl GpuSplat {
                 visibility: wgpu::ShaderStages::COMPUTE,
             },
         )?;
-        // Shadow rays walk the composed storage with refloor.
-        let layout_st = gpu_data::layout(&gpu, &st, wgpu::ShaderStages::COMPUTE);
-        let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
+        let storages = StorageSet::new(&gpu, &walks, wgpu::ShaderStages::COMPUTE, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
         let own = format!("{}\n{}\n{shade}", include_str!("splat.wgsl"), ShadeState::wgsl(0, 5));
-        let (program, walk) = mr_components::shaders::walk_program(&st, &opts.traversal, false);
-        let module = mr_gpu::program::compile(&gpu.device, "splat", &program, &own, &mr_components::shaders::root_deps(&walk, &[]));
+        let (program, deps) = mr_components::shaders::sites_program(&walks, 0, 0, 0, bounce);
+        let module = mr_gpu::program::compile(&gpu.device, "splat", &program, &own, &deps.iter().map(String::as_str).collect::<Vec<_>>());
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("splat"),
             entries: &[
@@ -232,7 +236,7 @@ impl GpuSplat {
         });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("splat"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout_st)],
+            bind_group_layouts: &storages.layouts(&[Some(&layout0), Some(world.layout())]),
             immediate_size: 0,
         });
         let pipe = |e: &str| {
@@ -261,8 +265,7 @@ impl GpuSplat {
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
         Ok(Self {
-            data,
-            layout_st,
+            storages,
             gpu,
             world,
             pipes,
@@ -337,7 +340,7 @@ impl Renderer for GpuSplat {
             self.accum.invalidate();
         }
         let changed = self.world.apply(&self.gpu, updates);
-        self.data.update(&self.gpu, &self.world, &changed)?;
+        self.storages.update(&self.gpu, &self.world, &changed)?;
         // Exposure depends on neighbours, so rebuild the 6-neighbourhood too.
         let mut todo = HashSet::new();
         for c in changed {
@@ -383,7 +386,7 @@ impl Renderer for GpuSplat {
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
         self.accum.begin(&self.gpu, c, req.mode);
         let world_bg = self.world.prepare(&self.gpu, c).clone();
-        let storage_bg = self.data.prepare(&self.gpu, &self.world, &self.layout_st).clone();
+        let bound = self.storages.prepare(&self.gpu, &self.world);
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         let groups = self.count.div_ceil(64);
         let (gx, gy) = (groups.min(65535), groups.div_ceil(65535));
@@ -391,7 +394,7 @@ impl Renderer for GpuSplat {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("splat"), timestamp_writes: self.ring.compute_timestamps(ticket, true, true) });
             pass.set_bind_group(0, &self.bind0, &[]);
             pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &storage_bg, &[]);
+            bound.compute(&mut pass);
             pass.set_pipeline(&self.pipes[0]);
             pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
             if groups > 0 {
@@ -445,6 +448,6 @@ impl Renderer for GpuSplat {
 
     fn memory(&self) -> MemoryReport {
         let cpu = self.chunks.values().map(|v| v.len() as u64 * 16).sum();
-        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.world.memory_bytes() + self.data.memory_bytes() + self.points_buf.size() + self.accum.memory_bytes() + self.width as u64 * self.height as u64 * 12 }
+        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.world.memory_bytes() + self.storages.memory_bytes() + self.points_buf.size() + self.accum.memory_bytes() + self.width as u64 * self.height as u64 * 12 }
     }
 }

@@ -14,3 +14,6 @@ wgpu.workspace = true
 pollster.workspace = true
 mr-gpu.workspace = true
 mr-components.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

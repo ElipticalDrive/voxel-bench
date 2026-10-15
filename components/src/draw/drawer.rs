@@ -82,8 +82,11 @@ pub struct DrawFrame<'a> {
     pub prepass: bool,
     /// Keep the depth after drawing (read later, e.g. by incremental discovery).
     pub keep_depth: bool,
-    /// The render layout's groups, in order (also set for the deferred shade pass).
+    /// The render layout's groups, in order (also set for the deferred shade pass, whose
+    /// images follow them at group 3).
     pub binds: &'a [&'a wgpu::BindGroup],
+    /// Further groups after the images (storages of rays walking their own, PLAN step 9c).
+    pub more: &'a [(u32, &'a wgpu::BindGroup)],
     pub ring: &'a FrameRing,
     pub ticket: Ticket,
     /// Whether these passes carry the frame's (begin, end) timestamps.
@@ -250,6 +253,9 @@ impl FaceDrawer {
             for (i, g) in f.binds.iter().enumerate() {
                 pass.set_bind_group(i as u32, *g, &[]);
             }
+            for (i, g) in f.more {
+                pass.set_bind_group(*i, *g, &[]);
+            }
             draw(pass);
         };
         match &self.pipes {
@@ -322,6 +328,9 @@ impl FaceDrawer {
                         pass.set_bind_group(i as u32, *g, &[]);
                     }
                     pass.set_bind_group(f.binds.len() as u32, &images, &[]);
+                    for (i, g) in f.more {
+                        pass.set_bind_group(*i, *g, &[]);
+                    }
                     pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
                 }
                 if let Some(extra) = extra {

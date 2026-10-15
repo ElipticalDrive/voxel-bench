@@ -27,7 +27,8 @@ The user's architecture, settled with finality and without limits for later (IDE
   field per slot, `BackendInfo` a fixed slot list per back end. A pipeline cannot have
   stages another lacks beyond that list, nor bind a different kernel at each place rays
   are cast. Step 7c's `shadow_storage` / `shadow_traversal` are a hard-coded special case
-  of what should be general.
+  of what should be general. (9a–9c: graphs exist, and back ends bind every ray-casting
+  site from them; `Slot` / `Composition` remain for the GUI, CLI, labels and sweeps until 9d.)
 - **Strategies inside back ends:** discovery (quadtree, cluster and their pieces), splat
   and voxelspace columns are back-end code, not components; the ten back ends are
   hand-written assemblers, not executors placing pieces on devices (§18).
@@ -250,3 +251,57 @@ took about 1.5–2.5 hours each), with wide uncertainty on the large steps:
   ms to ~25 ms per shader at creation (validation included), not per frame.
 - `scripts/ab/wgsl.sh` (byte-identical dumps) cannot compare across 9b (the text changed
   by construction); it works again between later builds.
+
+**2026-10-15, step 9c done: back ends consume graphs.** `components/src/graph.rs`,
+`components/src/shaders.rs` (`Walks`), `components/src/storage/gpu_data.rs` (`StorageSet`):
+- The host hands every back end its graph (`InitParams::graph_json`; `RendererSpec::pipeline`:
+  the graph given, else the composition's); `graph::of_init` reads it (or builds it from the
+  flat options), and back ends take each site's kernel and storage from `Checked::site`.
+- Model fixes: discovery's exposure tests are a storage port (they look blocks up, they cast
+  no rays; 9a had them as rays); meshes have a `shadow` ray port; unbound secondary rays
+  follow the rays before them (shadow rays the strategy's own on the same device, bounces
+  the shadow rays, mesh shadows the shading's), so implicit and explicit edges have one
+  canonical form.
+- Acceptance (`Graph::accept`, replacing the 9a round trip): each back end has a lead site
+  (its strategy's rays, or a rasteriser's shadow rays: its storage and traversal stages) and
+  binds the others freely (gpu-compute: shadow, bounce, mesh shadows; gpu-raster: bounce,
+  mesh shadows; gpu-splat: bounce; gpu-discover: exposure storage, shadow, bounce;
+  cpu-discover: GPU shadow and bounce), over the lead's storage only (`cpu`: its shadow
+  kernel; one storage type per precompiled instance), or only to the lead (gpu-rt: one
+  acceleration structure; cpu-discover's exposure: the discovery storage, its `dyn World`
+  until step 13). Free sites' components must be implemented where their rays run; the rest
+  (the skeleton) must be one of the back end's compositions. It returns the nearest
+  composition (labels, flat options) and whether it is exact; inexact graphs are labelled
+  `<composition> [graph <key>]`. Knobs of free-site nodes stay per node (`exact`, `skip*`
+  per kernel instance), the skeleton's flatten as before.
+- GPU: `Walks` gives one module per storage node and per kernel node (shared nodes shared),
+  each storage at its own bind group (gpu-compute 2, 4, 5, 6; drawer back ends 2, then after
+  the deferred images at 3), and per-site ray services `rays::shadow` (`occluded`) and
+  `rays::bounce` (`strace`; without a bounce site, through the shadow kernel, so a live
+  switch to pathtrace works). `StorageSet` keeps one `StorageData` per storage instance;
+  face drawers bind the extra groups (`DrawFrame::more`). Mesh shadows compile their own
+  site's walk (`Walks::shadow_program`). CPU: the `cpu` back end's shadow rays may use a
+  kernel node of their own (`Scene::shadow`). gpu-rt, the voxelspace back ends and
+  cpu-raster read no sites (their only rays are their own).
+- Verified: builds without warnings, 64 unit tests (new: `free_sites`; every composition
+  still round-trips exactly), architecture guard, 4 GPU end-to-end tests; headless
+  `programs_compose` per GPU back end now also composes graphs with bounces, mesh shadows,
+  exposure and shadow walks of their own. Pixel A/B against the build before: 102/102
+  frames identical (16 compositions over all 10 back ends, lit + unlit), 36/36 in mesh
+  mode, 24/24 with LOD chunks. GPU-time A/B (3 rounds interleaved, 10 compositions over 7
+  GPU back ends, lit + unlit) within ±0.4%; `cpu` fps (pinned) within −0.4…+1.6%. Six
+  graphs no composition expresses run on terrain against the reference (gpu-compute with
+  three walks, and two instances of one kernel with different knobs; gpu-raster bounces;
+  gpu-discover exposure, discovery and shadow rays on three storages; cpu-discover GPU
+  bounces; `cpu` shadow kernel): each matches its nearest composition's psnr and bad
+  pixels (the kernels are exact, so the hits agree).
+- Small changes in what runs: a separate shadow kernel over the primary storage no longer
+  binds that storage twice (one storage module, group 2 only); mesh shadows sharing the
+  primary kernel use its constants (before: the kernel's defaults; differs only in mesh
+  mode with non-default `incremental` knobs).
+- Seen on the way (pre-existing, same on the build before, not fixed: not blocking): a
+  `distance` storage caps the terrain flight at ~40 fps while its CPU and GPU frame times
+  are as low as `bricks` (host-side side-data build per streamed chunk, presumably).
+- Not yet: the GUI, CLI form, sweeps and observations still use compositions (9d); the
+  `cpu` back end's shadow rays over another storage need a compiled pipeline (step 16).
+

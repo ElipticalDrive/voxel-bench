@@ -54,10 +54,12 @@ use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
-use mr_components::storage::gpu_data::{self, StorageData};
+use mr_components::graph::{self, Role};
+use mr_components::shaders::Walks;
+use mr_components::storage::gpu_data::{self, Bound, StorageSet};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
-use mr_components::{draw, names_on, require, Slot, storage};
+use mr_components::{draw, names_on, require, Slot};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
@@ -384,14 +386,18 @@ struct Stage {
     tag: (u32, u32),
 }
 
+/// Bind groups of the storage instances: the discovery rays' at 2, the other sites' after
+/// the deferred drawers' images (group 3).
+const STORAGE_GROUPS: &[u32] = &[2, 4, 5, 6];
+
 pub struct GpuDiscover {
     gpu: Arc<Gpu>,
     world: VoxelWorld,
-    /// The storage's own data (group 2 of the discovery and raster passes).
-    data: StorageData,
-    layout_st: wgpu::BindGroupLayout,
-    /// This frame's group 2 (set in `render`).
-    bind_st: Option<wgpu::BindGroup>,
+    /// The storage instances' data (PLAN step 9c): the discovery rays' at group 2 of the
+    /// discovery and raster passes, the other sites' own after the drawers' images.
+    storages: StorageSet,
+    /// This frame's storage groups (set in `render`).
+    bind_st: Option<Bound>,
     opts: Options,
     pipe_survive: wgpu::ComputePipeline,
     pipe_rays: wgpu::ComputePipeline,
@@ -571,10 +577,17 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
 impl GpuDiscover {
     pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
-        let st = storage::gpu(&require(BACKEND, Slot::Storage, &opts.storage)?).expect("validated");
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
-        require(BACKEND, Slot::Traversal, &opts.traversal)?;
         require(BACKEND, Slot::Draw, &opts.draw)?;
+        // The sites' walks (PLAN step 9c): discovery rays (the storage and traversal stages),
+        // the storage exposure tests read, shadow and bounce rays; each its own or shared.
+        let g = graph::of_init(BACKEND, &p)?;
+        let mut walks = Walks::default();
+        let bound = |role, port: &str| g.site(role, port).ok_or_else(|| anyhow::anyhow!("gpu-discover: `{port}` rays are not bound"));
+        let rays = walks.site(&g, bound(Role::Visibility, "rays")?, STORAGE_GROUPS, false);
+        let exposure = walks.storage(&g, g.input(Role::Visibility, "exposure").ok_or_else(|| anyhow::anyhow!("gpu-discover: exposure is not bound"))?, STORAGE_GROUPS);
+        let shadow = walks.site(&g, bound(Role::Shading, "shadow")?, STORAGE_GROUPS, false);
+        let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&g, s, STORAGE_GROUPS, false));
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
         // The host hands the device in (GPU slot 0); this back end only states its needs.
         let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
@@ -585,7 +598,7 @@ impl GpuDiscover {
             VoxelWorldConfig {
                 max_lod: 0,
                 // Region storages (tree64, ...) hold their own data instead of the voxel pool.
-                upload_voxels: matches!(st.kind, storage::Kind::Pool { .. }),
+                upload_voxels: StorageSet::needs_pool(&walks),
                 pool_mb: opts.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
@@ -595,14 +608,16 @@ impl GpuDiscover {
         )?;
         let dev = &gpu.device;
         let module = |label, src: String| mr_gpu::shader(dev, label, src);
-        // The walk's modules (`walk::`): the composed storage at group 2 and the kernel.
-        let (program, walk) = mr_components::shaders::walk_program(&st, &opts.traversal, false);
-        let deps: Vec<String> = mr_components::shaders::root_deps(&walk, &[]).into_iter().map(String::from).collect();
+        // The walks' modules: the roots cast through the discovery rays' kernel and read the
+        // exposure storage; shading's rays through theirs.
+        let (program, deps) = mr_components::shaders::sites_program(&walks, rays, exposure, shadow, bounce);
         let modules = |label, root: &str| mr_gpu::program::compile(dev, label, &program, root, &deps.iter().map(String::as_str).collect::<Vec<_>>());
         // Discovery and raster read the world through the composed storage, walked with
         // refloor (rays and shadow rays).
-        let layout_st = gpu_data::layout(&gpu, &st, wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT);
-        let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
+        let storages = StorageSet::new(&gpu, &walks, wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
+        if storages.groups_end() > gpu.device.limits().max_bind_groups {
+            anyhow::bail!("{} storages need {} bind groups; this device has {}", walks.storages.len(), storages.groups_end(), gpu.device.limits().max_bind_groups);
+        }
         let disc_mod = modules("discover", include_str!("discover.wgsl"));
         let args_mod = module("discover args", include_str!("args.wgsl").to_string());
         let shade = mr_components::shading::gpu_wgsl(&shading).expect("validated");
@@ -665,7 +680,7 @@ impl GpuDiscover {
                 ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | c)[1],
             ],
         });
-        let pl_disc = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover"), bind_group_layouts: &[Some(&layout_disc), Some(world.layout()), Some(&layout_st)], immediate_size: 0 });
+        let pl_disc = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover"), bind_group_layouts: &storages.layouts(&[Some(&layout_disc), Some(world.layout())]), immediate_size: 0 });
         let pl_args = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover args"), bind_group_layouts: &[Some(&layout_args)], immediate_size: 0 });
         let compute = |pl: &wgpu::PipelineLayout, m: &wgpu::ShaderModule, entry: &str| {
             dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -726,7 +741,7 @@ impl GpuDiscover {
             cache: None,
         });
 
-        let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover draw"), bind_group_layouts: &[Some(&layout_draw), Some(world.layout()), Some(&layout_st)], immediate_size: 0 });
+        let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover draw"), bind_group_layouts: &storages.layouts(&[Some(&layout_draw), Some(world.layout())]), immediate_size: 0 });
         let pipeline = |label, write: bool, compare, fragment: bool| {
             let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
             dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -755,7 +770,7 @@ impl GpuDiscover {
         let images = FaceDrawer::images_layout(dev);
         let pl_shade = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("discover deferred shade"),
-            bind_group_layouts: &[Some(&layout_draw), Some(world.layout()), Some(&layout_st), Some(&images)],
+            bind_group_layouts: &storages.layouts(&[Some(&layout_draw), Some(world.layout()), None, Some(&images)]),
             immediate_size: 0,
         });
         let drawer = Self::drawer(&gpu, &program, &deps, &draw_src, &shading, &opts.draw, &pl_draw, &pl_shade, &images, p.width, p.height)?;
@@ -845,8 +860,7 @@ impl GpuDiscover {
         let depth = opts.frames_in_flight.max(1);
         let sized = make_sized(&gpu, p.width, p.height);
         Ok(Self {
-            data,
-            layout_st,
+            storages,
             bind_st: None,
             ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()),
             sized,
@@ -1177,7 +1191,7 @@ impl GpuDiscover {
         } else {
             &self.bind_draw[parity]
         };
-        let st = self.bind_st.as_ref().expect("set in render");
+        let (st, more) = self.bind_st.as_ref().expect("set in render").split();
         let frame = DrawFrame {
             out: &out_view,
             depth: &self.sized.depth,
@@ -1185,6 +1199,7 @@ impl GpuDiscover {
             prepass,
             keep_depth: self.opts.incremental,
             binds: &[bind_draw, world_bg, st],
+            more: &more,
             ring: &self.ring,
             ticket,
             ts,
@@ -1287,8 +1302,8 @@ impl GpuDiscover {
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
-        let storage_bg = self.data.prepare(&self.gpu, &self.world, &self.layout_st).clone();
-        self.bind_st = Some(storage_bg.clone());
+        let storage_bg = self.storages.prepare(&self.gpu, &self.world);
+        self.bind_st = Some(Bound(storage_bg.0.clone()));
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         self.encode_shade(&mut enc, parity, &world_bg, req.mode, (true, true), ticket);
         let tile = self.opts.tile;
@@ -1324,7 +1339,7 @@ impl Renderer for GpuDiscover {
             }
         }
         let changed = self.world.apply(&self.gpu, updates);
-        self.data.update(&self.gpu, &self.world, &changed)?;
+        self.storages.update(&self.gpu, &self.world, &changed)?;
         self.update_slots(changed);
         Ok(())
     }
@@ -1495,8 +1510,8 @@ impl Renderer for GpuDiscover {
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         let world_bg = self.world.prepare(&self.gpu, c).clone();
-        let storage_bg = self.data.prepare(&self.gpu, &self.world, &self.layout_st).clone();
-        self.bind_st = Some(storage_bg.clone());
+        let storage_bg = self.storages.prepare(&self.gpu, &self.world);
+        self.bind_st = Some(Bound(storage_bg.0.clone()));
         if self.bind_disc.is_none() {
             self.bind_disc = Some(self.make_bind_disc());
         }
@@ -1530,7 +1545,7 @@ impl Renderer for GpuDiscover {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("still needs"), timestamp_writes: None });
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &storage_bg, &[]);
+            storage_bg.compute(&mut pass);
             pass.set_pipeline(&self.pipe_need_still);
             pass.dispatch_workgroups((cols * rows).div_ceil(256), 1, 1);
         } else if self.opts.incremental {
@@ -1558,13 +1573,13 @@ impl Renderer for GpuDiscover {
                 pass.set_pipeline(&self.pipe_id);
                 pass.set_bind_group(0, &self.bind_draw[1 - parity], &[]);
                 pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &storage_bg, &[]);
+                storage_bg.render(&mut pass);
                 pass.draw_indirect(&self.args, aofs(72 + (1 - parity as u64) * 4));
             }
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("incremental needs"), timestamp_writes: None });
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &storage_bg, &[]);
+            storage_bg.compute(&mut pass);
             if kind != FrameKind::Still {
                 // Still frames count faces in view as seen in `survive` instead.
                 pass.set_pipeline(&self.pipe_mark);
@@ -1579,7 +1594,7 @@ impl Renderer for GpuDiscover {
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("survive"), timestamp_writes: None });
             pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &storage_bg, &[]);
+            storage_bg.compute(&mut pass);
             // Temporal survivors from last frame's list.
             pass.set_pipeline(&self.pipe_survive);
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
@@ -1599,7 +1614,7 @@ impl Renderer for GpuDiscover {
                 }
                 pass.set_bind_group(0, &bind_disc, &[lofs(l)]);
                 pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &storage_bg, &[]);
+            storage_bg.compute(&mut pass);
                 pass.set_pipeline(&self.pipe_rays);
                 if l == 0 {
                     pass.dispatch_workgroups(l0_items(cols + 1, rows + 1).div_ceil(256), 1, 1);
@@ -1612,7 +1627,7 @@ impl Renderer for GpuDiscover {
                 let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover classify"), timestamp_writes: None });
                 pass.set_bind_group(0, &bind_disc, &[lofs(l)]);
                 pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &storage_bg, &[]);
+            storage_bg.compute(&mut pass);
                 pass.set_pipeline(&self.pipe_classify);
                 if l == 0 {
                     pass.dispatch_workgroups(l0_items(cols, rows).div_ceil(256), 1, 1);
@@ -1645,7 +1660,7 @@ impl Renderer for GpuDiscover {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("row merge"), timestamp_writes: None });
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &storage_bg, &[]);
+            storage_bg.compute(&mut pass);
             pass.set_pipeline(&self.pipe_merge);
             pass.dispatch_workgroups_indirect(&self.args, aofs(64 + parity as u64 * 4));
             pass.set_pipeline(&self.pipe_merge_args);
@@ -1658,7 +1673,7 @@ impl Renderer for GpuDiscover {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("painter sort"), timestamp_writes: None });
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &storage_bg, &[]);
+            storage_bg.compute(&mut pass);
             pass.set_pipeline(&self.pipe_sort_hist);
             pass.dispatch_workgroups_indirect(&self.args, aofs(64 + parity as u64 * 4));
             pass.set_pipeline(&self.pipe_sort_scan);
@@ -1673,7 +1688,7 @@ impl Renderer for GpuDiscover {
             pass.set_pipeline(&self.pipe_sky);
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &storage_bg, &[]);
+            storage_bg.compute(&mut pass);
             let g = (self.width * self.height).div_ceil(256);
             pass.dispatch_workgroups(g.min(32768), g.div_ceil(32768), 1);
         }
@@ -1684,7 +1699,7 @@ impl Renderer for GpuDiscover {
             pass.set_pipeline(&self.pipe_audit);
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
             pass.set_bind_group(1, &world_bg, &[]);
-            pass.set_bind_group(2, &storage_bg, &[]);
+            storage_bg.compute(&mut pass);
             let g = (self.width * self.height).div_ceil(256);
             pass.dispatch_workgroups(g.min(32768), g.div_ceil(32768), 1);
         }
@@ -1800,7 +1815,7 @@ impl Renderer for GpuDiscover {
     fn memory(&self) -> MemoryReport {
         let s = &self.sized;
         let set = (self.keys[0].size() + self.vals[0].size() + self.lists[0].size()) * 2 + self.jobs.size() + self.seen.size() + s.changed_tiles.size() + s.need.size() + self.width as u64 * self.height as u64 * 4;
-        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size() + self.accum.memory_bytes() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
+        let gpu = self.world.memory_bytes() + self.storages.memory_bytes() + set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size() + self.accum.memory_bytes() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
 }
@@ -1872,20 +1887,51 @@ mod tests {
             let m = p.naga(root, &deps).unwrap_or_else(|e| panic!("{what}: {e}"));
             Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));
         };
+        use mr_components::graph::{Graph, Node};
         for st in names_on(BACKEND, Slot::Storage) {
             for k in names_on(BACKEND, Slot::Traversal) {
-                let (program, walk) = mr_components::shaders::walk_program(&storage::gpu(st).unwrap(), k, false);
-                let deps: Vec<String> = mr_components::shaders::root_deps(&walk, &[]).into_iter().map(String::from).collect();
-                check(&program, include_str!("discover.wgsl"), &deps, &format!("discover {st} {k}"));
-                for shading in names_on(BACKEND, Slot::Shading) {
-                    let shade = mr_components::shading::gpu_wgsl(shading).unwrap();
-                    let draw_src = format!("{}\n{shade}\n{}\n{}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true));
-                    check(&program, &format!("{draw_src}\n{}", shade_state::fragment_wgsl(shading, draw::gpu_wgsl("raster").unwrap())), &deps, &format!("raster {st} {k} {shading}"));
-                    for d in names_on(BACKEND, Slot::Draw) {
-                        let mode = DrawMode::parse(d).unwrap();
-                        let vis = draw::gpu_wgsl(mode.name()).unwrap();
-                        let vis = if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis) };
-                        check(&program, &format!("{draw_src}\n{vis}"), &deps, &format!("drawer {st} {k} {shading} {d}"));
+                let flat = mr_components::Composition { storage: st.into(), traversal: k.into(), shading: "pathtrace".into(), ..mr_components::Composition::new(BACKEND) };
+                let mut graphs = vec![Graph::from_composition(&flat).unwrap()];
+                // Exposure, shadow and bounce rays through storages and kernels of their own
+                // (PLAN step 9c).
+                if k == "refloor" {
+                    let mut g = graphs[0].clone();
+                    let node = |role, c: &str, ins: &[(&str, &str)]| {
+                        let mut n = Node::new(role, c);
+                        n.inputs.extend(ins.iter().map(|&(p, s)| (p.to_string(), s.to_string())));
+                        n
+                    };
+                    g.nodes.insert("x".into(), node(Role::Storage, "bricks", &[]));
+                    g.nodes.insert("s.storage".into(), node(Role::Storage, "rows", &[]));
+                    g.nodes.insert("s.kernel".into(), node(Role::Traversal, "rowrun", &[("storage", "s.storage")]));
+                    g.nodes.insert("b.kernel".into(), node(Role::Traversal, "sphere", &[("storage", "storage")]));
+                    g.nodes.get_mut("visibility").unwrap().inputs.insert("exposure".into(), "x".into());
+                    g.nodes.get_mut("shading").unwrap().inputs.insert("shadow".into(), "s.kernel".into());
+                    g.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "b.kernel".into());
+                    graphs.push(g);
+                }
+                for g in graphs {
+                    g.validate().unwrap_or_else(|e| panic!("{g:?}: {e}"));
+                    let ck = g.check().unwrap();
+                    let mut walks = Walks::default();
+                    let rays = walks.site(&ck, ck.site(Role::Visibility, "rays").unwrap(), STORAGE_GROUPS, false);
+                    let exposure = walks.storage(&ck, ck.input(Role::Visibility, "exposure").unwrap(), STORAGE_GROUPS);
+                    let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), STORAGE_GROUPS, false);
+                    // Direct shading, and pathtrace with its bounces.
+                    let mut with_bounce = walks.clone();
+                    let bounce = with_bounce.site(&ck, ck.site(Role::Shading, "bounce").unwrap(), STORAGE_GROUPS, false);
+                    for (walks, bounce, shading) in [(walks, shadow, "direct"), (with_bounce, bounce, "pathtrace")] {
+                        let (program, deps) = mr_components::shaders::sites_program(&walks, rays, exposure, shadow, bounce);
+                        check(&program, include_str!("discover.wgsl"), &deps, &format!("discover {st} {k}"));
+                        let shade = mr_components::shading::gpu_wgsl(shading).unwrap();
+                        let draw_src = format!("{}\n{shade}\n{}\n{}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true));
+                        check(&program, &format!("{draw_src}\n{}", shade_state::fragment_wgsl(shading, draw::gpu_wgsl("raster").unwrap())), &deps, &format!("raster {st} {k} {shading}"));
+                        for d in names_on(BACKEND, Slot::Draw) {
+                            let mode = DrawMode::parse(d).unwrap();
+                            let vis = draw::gpu_wgsl(mode.name()).unwrap();
+                            let vis = if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis) };
+                            check(&program, &format!("{draw_src}\n{vis}"), &deps, &format!("drawer {st} {k} {shading} {d}"));
+                        }
                     }
                 }
             }

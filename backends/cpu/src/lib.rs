@@ -20,6 +20,7 @@ use mr_components::storage::hier::cpu::Hier;
 use mr_components::storage::palette::cpu::Palette;
 use mr_components::storage::prefix::cpu::Prefix;
 use mr_components::storage::u8::cpu::U8;
+use mr_components::graph::Role;
 use mr_components::traversal::cpu::Hit;
 use mr_components::traversal::incremental::cpu::trace_incremental;
 use mr_components::traversal::refloor::cpu::trace_packet;
@@ -241,6 +242,14 @@ struct Scene<R> {
     traversal: Traversal,
     /// Levels the incremental traversals may use (bit k = 2^k cubes), from the `skip*` knobs.
     levels: u32,
+    /// The shadow rays' own kernel and levels (PLAN step 9c: a kernel node of their own over
+    /// the same storage), `None`: the primary rays' kernel.
+    shadow: Option<(Traversal, u32)>,
+}
+
+/// The skip knobs as a level mask (levels 0 and 5 always allowed).
+fn level_mask(skips: [bool; 4]) -> u32 {
+    skips.iter().enumerate().fold(0b100001, |m, (i, &on)| m | (on as u32) << (i + 1))
 }
 
 const LIGHT_CELL_BITS: i32 = 4;
@@ -291,10 +300,11 @@ impl<R: Repr> Scene<R> {
 
     fn occluded(&self, cam: IVec3, p: Vec3, d: Vec3, dist: f32) -> bool {
         let (bmin, bmax) = self.bounds_rel(cam);
-        match self.traversal {
+        let (kernel, levels) = self.shadow.unwrap_or((self.traversal, self.levels));
+        match kernel {
             Traversal::Refloor => {}
-            Traversal::Incremental => return trace_incremental::<R, false>(&self.grid, self.levels, cam, p, d, dist, bmin, bmax).0.is_some(),
-            Traversal::IncrementalExact => return trace_incremental::<R, true>(&self.grid, self.levels, cam, p, d, dist, bmin, bmax).0.is_some(),
+            Traversal::Incremental => return trace_incremental::<R, false>(&self.grid, levels, cam, p, d, dist, bmin, bmax).0.is_some(),
+            Traversal::IncrementalExact => return trace_incremental::<R, true>(&self.grid, levels, cam, p, d, dist, bmin, bmax).0.is_some(),
         }
         let mut out = [None];
         trace_packet::<R, 1>(&self.grid, cam, p, &[d.x], &[d.y], &[d.z], dist, bmin, bmax, &mut out);
@@ -370,6 +380,18 @@ impl<R: Repr, S: Spec> CpuBackend<R, S> {
         tracing::info!("cpu: storage {}, traversal {}, {:?} hot loop, packets of {}", o.storage, o.traversal, isa, o.packet);
         require(BACKEND, Slot::Visibility, &o.visibility)?;
         require(BACKEND, Slot::Shading, &o.shading)?;
+        // Shadow rays through a kernel node of their own (its knobs, defaults otherwise).
+        let g = mr_components::graph::of_init(BACKEND, &p)?;
+        let primary = g.site(Role::Visibility, "primary").map(|s| s.kernel);
+        let shadow = match g.site(Role::Shading, "shadow") {
+            Some(s) if Some(s.kernel) != primary => {
+                let n = g.node(s.kernel);
+                let on = |k: &str| n.knobs.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
+                tracing::info!("cpu: shadow rays through their own {}", n.component);
+                Some((traversal(&n.component, on("exact"))?, level_mask(["skip2", "skip4", "skip8", "skip16"].map(on))))
+            }
+            _ => None,
+        };
         let b = Self {
             spec: std::marker::PhantomData,
             kernel: o.traversal.clone(),
@@ -393,7 +415,8 @@ impl<R: Repr, S: Spec> CpuBackend<R, S> {
                 lights_dirty: false,
                 shadows: o.shadows,
                 traversal: traversal(&o.traversal, o.exact)?,
-                levels: [o.skip2, o.skip4, o.skip8, o.skip16].iter().enumerate().fold(0b100001, |m, (i, &on)| m | (on as u32) << (i + 1)),
+                levels: level_mask([o.skip2, o.skip4, o.skip8, o.skip16]),
+                shadow,
             },
             pool: Pool::new(p.devices.cpu_threads(o.threads))?,
             packet: o.packet.parse().unwrap_or(1),

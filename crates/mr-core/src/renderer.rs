@@ -44,6 +44,11 @@ pub struct InitParams {
     pub max_lod: u8,
     /// Renderer-specific options from the run plan, as a JSON object string.
     pub options_json: String,
+    /// The pipeline graph to run (`mr_components::graph::Graph` as JSON; PLAN step 9c),
+    /// empty for renderers that are not back ends or to run the flat composition in
+    /// `options_json`.
+    #[serde(default)]
+    pub graph_json: String,
     /// The devices to run on: a configuration from the host, not an option of the renderer.
     #[serde(default)]
     pub devices: DeviceConfig,

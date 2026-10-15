@@ -335,3 +335,104 @@ impl StorageData {
         }
     }
 }
+
+/// A pipeline's GPU storage instances (PLAN step 9c, [`crate::shaders::Walks`]): each its
+/// own data, bind group layout and bind group index.
+pub struct StorageSet {
+    items: Vec<Instance>,
+}
+
+struct Instance {
+    data: StorageData,
+    layout: wgpu::BindGroupLayout,
+    group: u32,
+    /// Counter prefix (empty for the first; else the node id's first part, `shadow_`).
+    prefix: String,
+}
+
+/// The storages' bind groups of one frame, by group index.
+pub struct Bound(pub Vec<(u32, wgpu::BindGroup)>);
+
+impl Bound {
+    pub fn compute(&self, pass: &mut wgpu::ComputePass<'_>) {
+        for (g, b) in &self.0 {
+            pass.set_bind_group(*g, b, &[]);
+        }
+    }
+
+    pub fn render(&self, pass: &mut wgpu::RenderPass<'_>) {
+        for (g, b) in &self.0 {
+            pass.set_bind_group(*g, b, &[]);
+        }
+    }
+
+    /// The first storage's bind group and the others' by group (a face drawer's `binds`
+    /// and `more`).
+    pub fn split(&self) -> (&wgpu::BindGroup, Vec<(u32, &wgpu::BindGroup)>) {
+        (&self.0[0].1, self.0[1..].iter().map(|(g, b)| (*g, b)).collect())
+    }
+
+    /// Storage `i`'s bind group.
+    pub fn get(&self, i: usize) -> &wgpu::BindGroup {
+        &self.0[i].1
+    }
+}
+
+impl StorageSet {
+    pub fn new(gpu: &Gpu, walks: &crate::shaders::Walks, visibility: wgpu::ShaderStages, limits: Limits) -> Self {
+        let items = walks
+            .storages
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let st = walks.gpu_storage(i);
+                let prefix = if i == 0 { String::new() } else { format!("{}_", s.node.split('.').next().unwrap_or(&s.node)) };
+                Instance { layout: layout(gpu, &st, visibility), data: StorageData::new(gpu, st, limits), group: s.group, prefix }
+            })
+            .collect();
+        Self { items }
+    }
+
+    /// Whether any storage reads the shared voxel pool.
+    pub fn needs_pool(walks: &crate::shaders::Walks) -> bool {
+        (0..walks.storages.len()).any(|i| matches!(walks.gpu_storage(i).kind, Kind::Pool { .. }))
+    }
+
+    pub fn layout(&self, i: usize) -> &wgpu::BindGroupLayout {
+        &self.items[i].layout
+    }
+
+    /// `base` (a pipeline's bind group layouts) with the storages' at their groups.
+    pub fn layouts<'a>(&'a self, base: &[Option<&'a wgpu::BindGroupLayout>]) -> Vec<Option<&'a wgpu::BindGroupLayout>> {
+        let mut v = base.to_vec();
+        for it in &self.items {
+            let g = it.group as usize;
+            if v.len() <= g {
+                v.resize(g + 1, None);
+            }
+            v[g] = Some(&it.layout);
+        }
+        v
+    }
+
+    /// The highest bind group index used, plus one.
+    pub fn groups_end(&self) -> u32 {
+        self.items.iter().map(|i| i.group + 1).max().unwrap_or(0)
+    }
+
+    pub fn update(&mut self, gpu: &Gpu, world: &VoxelWorld, changed: &[IVec3]) -> anyhow::Result<()> {
+        self.items.iter_mut().try_for_each(|it| it.data.update(gpu, world, changed))
+    }
+
+    pub fn prepare(&mut self, gpu: &Gpu, world: &VoxelWorld) -> Bound {
+        Bound(self.items.iter_mut().map(|it| (it.group, it.data.prepare(gpu, world, &it.layout).clone())).collect())
+    }
+
+    pub fn memory_bytes(&self) -> u64 {
+        self.items.iter().map(|it| it.data.memory_bytes()).sum()
+    }
+
+    pub fn counters(&self) -> Vec<(String, f64)> {
+        self.items.iter().flat_map(|it| it.data.counters().into_iter().map(|(k, v)| (format!("{}{k}", it.prefix), v))).collect()
+    }
+}

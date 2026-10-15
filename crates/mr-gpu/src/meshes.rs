@@ -71,7 +71,7 @@ impl GpuMeshes {
     pub fn new(gpu: &Gpu, world: &VoxelWorld, color: wgpu::TextureFormat, occlusion: Occlusion) -> Self {
         let dev = &gpu.device;
         use crate::program::{COMMON, LIGHTING, VOXELS};
-        let module = crate::program::compile(dev, "meshes", occlusion.program, include_str!("mesh.wgsl"), &[occlusion.rays, LIGHTING, VOXELS, COMMON]);
+        let module = crate::program::compile(dev, "meshes", occlusion.program, MESH_WGSL, &[occlusion.rays, LIGHTING, VOXELS, COMMON]);
         let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mesh frame"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -200,6 +200,9 @@ impl GpuMeshes {
         pass.draw(0..self.vcount, 0..1);
     }
 }
+
+/// The mesh pass's shader (the root of its program; shadow rays from the occlusion module).
+pub const MESH_WGSL: &str = include_str!("mesh.wgsl");
 
 /// WGSL for ray casters compositing meshes (bind group 3, see [`MeshComposite`]):
 /// `mesh_t(pixel, d, forward)` is the distance along the unit primary ray `d` to the mesh

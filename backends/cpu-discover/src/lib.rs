@@ -41,7 +41,9 @@ use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::draw::{self, drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer}};
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_components::storage::gpu_data::{self, StorageData};
+use mr_components::graph::{self, Role};
+use mr_components::shaders::Walks;
+use mr_components::storage::gpu_data::{self, StorageSet};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, GrowableBuffer, wgpu};
 use rayon::prelude::*;
@@ -227,9 +229,11 @@ pub struct CpuDiscover {
     pl: wgpu::PipelineLayout,
     pl_shade: wgpu::PipelineLayout,
     images: wgpu::BindGroupLayout,
-    /// The GPU storage shadow and bounce rays walk (group 2, `shadow_storage`).
-    data: StorageData,
-    layout_st: wgpu::BindGroupLayout,
+    /// The GPU walks of the shadow and bounce rays (PLAN step 9c; kernel 0 the shadow
+    /// rays', its storage at group 2, the bounces' own after the drawers' images).
+    walks: Walks,
+    bounce: usize,
+    storages: StorageSet,
     /// Shading state (pathtrace's accumulation).
     accum: ShadeState,
     frame_buf: wgpu::Buffer,
@@ -247,6 +251,10 @@ pub struct CpuDiscover {
     waker: Waker,
     overflowed: bool,
 }
+
+/// Bind groups of the GPU storage instances: the shadow rays' at 2, the bounces' after the
+/// deferred drawers' images (group 3).
+const STORAGE_GROUPS: &[u32] = &[2, 4];
 
 fn depth_view(gpu: &Gpu, w: u32, h: u32) -> wgpu::TextureView {
     gpu.device
@@ -284,19 +292,17 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
 
 impl CpuDiscover {
     pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
-        let mut opts: Options = p.options()?;
+        let opts: Options = p.options()?;
         let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
-        // The secondary-ray stages, `same` resolved to the primary's components.
-        for (slot, v, primary) in [(Slot::ShadowStorage, &mut opts.shadow_storage, &opts.storage), (Slot::ShadowTraversal, &mut opts.shadow_traversal, &opts.traversal)] {
-            if require(BACKEND, slot, v)? == "same" {
-                *v = primary.clone();
-            }
-        }
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         require(BACKEND, Slot::Traversal, &opts.traversal)?;
         require(BACKEND, Slot::Draw, &opts.draw)?;
         require(BACKEND, Slot::Shading, &opts.shading)?;
-        let st = mr_components::storage::gpu(&opts.shadow_storage).ok_or_else(|| anyhow::anyhow!("shadow_storage `{}` has no GPU implementation (have: {})", opts.shadow_storage, names_on(BACKEND, Slot::ShadowStorage).join(", ")))?;
+        // The GPU sites' walks: shadow rays (the shadow stages), bounces their own or the same.
+        let g = graph::of_init(BACKEND, &p)?;
+        let mut walks = Walks::default();
+        let shadow = walks.site(&g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("cpu-discover: GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
+        let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&g, s, STORAGE_GROUPS, false));
         // The host hands the device in (GPU slot 0); this back end only states its needs.
         let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
         let world = VoxelWorld::new(
@@ -306,7 +312,7 @@ impl CpuDiscover {
             VoxelWorldConfig {
                 max_lod: 0,
                 // Region storages (tree64, ...) hold their own data instead of the voxel pool.
-                upload_voxels: matches!(st.kind, mr_components::storage::Kind::Pool { .. }),
+                upload_voxels: StorageSet::needs_pool(&walks),
                 pool_mb: opts.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
@@ -332,21 +338,20 @@ impl CpuDiscover {
         });
         // Shadow and bounce rays walk the composed GPU storage (group 2) with refloor.
         let all = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
-        let layout_st = gpu_data::layout(&gpu, &st, all);
-        let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
+        let storages = StorageSet::new(&gpu, &walks, all, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         let accum = ShadeState::new(&gpu, p.width, p.height, &opts.shading, opts.bounces, opts.spp, opts.accumulate);
         let images = FaceDrawer::images_layout(&gpu.device);
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("cpu-discover"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout_st)],
+            bind_group_layouts: &storages.layouts(&[Some(&layout0), Some(world.layout())]),
             immediate_size: 0,
         });
         let pl_shade = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("cpu-discover deferred shade"),
-            bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(&layout_st), Some(&images)],
+            bind_group_layouts: &storages.layouts(&[Some(&layout0), Some(world.layout()), None, Some(&images)]),
             immediate_size: 0,
         });
-        let drawer = Self::drawer(&gpu, &opts, &pl, &pl_shade, &images, p.width, p.height)?;
+        let drawer = Self::drawer(&gpu, &opts, &walks, bounce, &pl, &pl_shade, &images, p.width, p.height)?;
         let frame_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame"),
             size: size_of::<FrameUniform>() as u64,
@@ -373,8 +378,9 @@ impl CpuDiscover {
             pl,
             pl_shade,
             images,
-            data,
-            layout_st,
+            walks,
+            bounce,
+            storages,
             accum,
             frame_buf,
             rec_buf,
@@ -391,7 +397,8 @@ impl CpuDiscover {
 
     /// The face drawer for `opts.draw` (shader module: the face source, the drawer, the
     /// shading and the visibility component).
-    fn drawer(gpu: &Gpu, opts: &Options, pl: &wgpu::PipelineLayout, pl_shade: &wgpu::PipelineLayout, images: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<FaceDrawer> {
+    #[allow(clippy::too_many_arguments)]
+    fn drawer(gpu: &Gpu, opts: &Options, walks: &Walks, bounce: usize, pl: &wgpu::PipelineLayout, pl_shade: &wgpu::PipelineLayout, images: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<FaceDrawer> {
         let mode = DrawMode::parse(&opts.draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{}`", opts.draw))?;
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
         let vis = draw::gpu_wgsl(mode.name()).unwrap();
@@ -403,11 +410,10 @@ impl CpuDiscover {
             }
             shade_state::fragment_wgsl(&opts.shading, vis)
         };
-        // Shadow and bounce rays: the kernel through the composed GPU storage (group 2).
-        let st = mr_components::storage::gpu(&opts.shadow_storage).expect("checked in new");
-        let (program, walk) = mr_components::shaders::walk_program(&st, &opts.shadow_traversal, false);
+        // Shadow and bounce rays through their GPU walks (the shadow rays' storage at group 2).
+        let (program, deps) = mr_components::shaders::sites_program(walks, 0, 0, 0, bounce);
         let root = format!("{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true));
-        let module = mr_gpu::program::compile(&gpu.device, "cpu-discover raster", &program, &root, &mr_components::shaders::root_deps(&walk, &[]));
+        let module = mr_gpu::program::compile(&gpu.device, "cpu-discover raster", &program, &root, &deps.iter().map(String::as_str).collect::<Vec<_>>());
         FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl, shade_layout: pl_shade, strip: true }, mode, images, width, height)
     }
 
@@ -462,7 +468,7 @@ impl Renderer for CpuDiscover {
         }
         self.cpu.apply(&updates);
         let changed = self.world.apply(&self.gpu, updates);
-        self.data.update(&self.gpu, &self.world, &changed)
+        self.storages.update(&self.gpu, &self.world, &changed)
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
@@ -579,7 +585,8 @@ impl Renderer for CpuDiscover {
         };
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         let world_bg = self.world.prepare(&self.gpu, &c).clone();
-        let storage_bg = self.data.prepare(&self.gpu, &self.world, &self.layout_st).clone();
+        let bound = self.storages.prepare(&self.gpu, &self.world);
+        let (storage_bg, more) = bound.split();
         self.accum.begin(&self.gpu, &c, req.mode);
         if self.bind0.is_none() {
             self.bind0 = Some(self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -605,7 +612,8 @@ impl Renderer for CpuDiscover {
             clear,
             prepass: self.opts.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
-            binds: &[&bind0, &world_bg, &storage_bg],
+            binds: &[&bind0, &world_bg, storage_bg],
+            more: &more,
             ring: &self.ring,
             ticket,
             ts: (true, true),
@@ -652,7 +660,7 @@ impl Renderer for CpuDiscover {
             _ => None,
         };
         counters.extend(self.accum.counter(req.mode));
-        counters.extend(self.data.counters());
+        counters.extend(self.storages.counters());
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
@@ -692,7 +700,7 @@ impl Renderer for CpuDiscover {
             "draw" => {
                 let mut opts_draw = value.as_str().unwrap_or("raster").to_string();
                 std::mem::swap(&mut self.opts.draw, &mut opts_draw);
-                match Self::drawer(&self.gpu, &self.opts, &self.pl, &self.pl_shade, &self.images, self.width, self.height) {
+                match Self::drawer(&self.gpu, &self.opts, &self.walks, self.bounce, &self.pl, &self.pl_shade, &self.images, self.width, self.height) {
                     Ok(d) => self.drawer = d,
                     Err(e) => {
                         self.opts.draw = opts_draw;
@@ -723,7 +731,7 @@ impl Renderer for CpuDiscover {
     }
 
     fn memory(&self) -> MemoryReport {
-        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + self.accum.memory_bytes() + self.rec_buf.size() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
+        let gpu = self.world.memory_bytes() + self.storages.memory_bytes() + self.accum.memory_bytes() + self.rec_buf.size() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
         let s = self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16);
         MemoryReport { cpu_bytes: self.cpu.memory() + s + (self.width as u64 + 1) * (self.height as u64 + 1) * 36, gpu_bytes: gpu }
     }

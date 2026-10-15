@@ -22,10 +22,12 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_components::geometry::{GpuGeometry, Knobs, Merge};
-use mr_components::storage::gpu_data::{self, StorageData};
+use mr_components::graph::{self, Role};
+use mr_components::shaders::Walks;
+use mr_components::storage::gpu_data::{self, StorageSet};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
-use mr_components::{draw, names_on, require, Slot, components, storage};
+use mr_components::{draw, names_on, require, Slot, components};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{GpuMeshes, MeshPass, Occlusion};
@@ -144,18 +146,40 @@ fn parse_merge(s: &str) -> anyhow::Result<Merge> {
 /// The compile-time part of a composition: everything baked into the shaders.
 #[derive(Clone, PartialEq, Debug)]
 struct Composition {
-    storage: String,
+    /// The ray-casting sites' walks (PLAN step 9c): kernel 0 the shadow rays' (the storage
+    /// and traversal stages), bounces and mesh shadows their own or the same.
+    walks: Walks,
+    bounce: usize,
+    mesh_shadow: usize,
     geometry: String,
     /// The draw component (the visibility strategy is always `faces`).
     draw: String,
-    /// The shadow rays' kernel.
-    traversal: String,
     shading: String,
 }
 
+/// Bind groups of the storage instances: the shadow rays' at 2, the others' after the
+/// deferred drawers' images (group 3).
+const STORAGE_GROUPS: &[u32] = &[2, 4, 5];
+
 impl Composition {
-    fn storage(&self) -> storage::GpuStorage {
-        storage::gpu(&self.storage).expect("validated")
+    /// The composition of graph `g` with geometry, draw and shading from the options.
+    fn of(g: &graph::Checked, opts: &Options) -> anyhow::Result<Self> {
+        let mut walks = Walks::default();
+        let shadow = g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("gpu-raster: shadow rays are not bound"))?;
+        let shadow = walks.site(g, shadow, STORAGE_GROUPS, false);
+        let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+        let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(0, |s| walks.site(g, s, STORAGE_GROUPS, false));
+        Ok(Self {
+            walks,
+            bounce,
+            mesh_shadow,
+            geometry: require(BACKEND, Slot::Geometry, &opts.geometry)?,
+            draw: {
+                require(BACKEND, Slot::Visibility, &opts.visibility)?;
+                require(BACKEND, Slot::Draw, &opts.draw)?
+            },
+            shading: require(BACKEND, Slot::Shading, &opts.shading)?,
+        })
     }
 
     fn geometry(&self) -> GpuGeometry {
@@ -171,18 +195,17 @@ impl Composition {
         self.draw == "gbuffer"
     }
 
-    /// The shader: the shadow rays' walk as modules (`walk::`, the composed storage at group
-    /// 2 and the traversal kernel), this back end's code with geometry, draw and shading as
-    /// the root.
+    /// The shader: the sites' walks as modules (the shadow rays' storage at group 2), this
+    /// back end's code with geometry, draw and shading as the root.
     fn program(&self) -> (mr_gpu::program::Program, String, Vec<String>) {
-        let (p, walk) = mr_components::shaders::walk_program(&self.storage(), &self.traversal, false);
+        let (p, deps) = mr_components::shaders::sites_program(&self.walks, 0, 0, 0, self.bounce);
         let own = format!(
             "// Composition: storage = {}, geometry = {}, draw = {}, traversal = {}, shading = {}\n\
              {}\n{}\n{}\n{}\n{}\n{}",
-            self.storage,
+            self.walks.storages[0].component,
             self.geometry,
             self.draw,
-            self.traversal,
+            self.walks.kernels[0].component,
             self.shading,
             self.geometry().wgsl,
             include_str!("main.wgsl"),
@@ -196,7 +219,6 @@ impl Composition {
             },
             mr_components::shading::gpu_wgsl(&self.shading).expect("validated"),
         );
-        let deps = mr_components::shaders::root_deps(&walk, &[]).into_iter().map(String::from).collect();
         (p, own, deps)
     }
 }
@@ -244,7 +266,6 @@ impl ChunkMesh {
 
 struct Layouts {
     frame: wgpu::BindGroupLayout,
-    aux: wgpu::BindGroupLayout,
     images: wgpu::BindGroupLayout,
     render: wgpu::PipelineLayout,
     shade: wgpu::PipelineLayout,
@@ -269,8 +290,8 @@ pub struct GpuRasterBackend {
     bind0: Option<wgpu::BindGroup>,
     /// Shading state (pathtrace's accumulation).
     accum: ShadeState,
-    /// The storage's own data for the shadow walk (group 2).
-    data: StorageData,
+    /// The storage instances' data (the shadow walk's at group 2).
+    storages: StorageSet,
     output: wgpu::Texture,
     depth: wgpu::TextureView,
     ring: FrameRing,
@@ -304,7 +325,7 @@ fn depth_view(gpu: &Gpu, w: u32, h: u32) -> wgpu::TextureView {
 }
 
 impl Layouts {
-    fn new(gpu: &Gpu, world: &VoxelWorld, st: &storage::GpuStorage) -> Self {
+    fn new(gpu: &Gpu, world: &VoxelWorld, storages: &StorageSet) -> Self {
         let all = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
         let buf = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
@@ -324,19 +345,18 @@ impl Layouts {
                 ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE)[1],
             ],
         });
-        let aux = gpu_data::layout(gpu, st, all);
         let images = FaceDrawer::images_layout(&gpu.device);
         let render = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("raster"),
-            bind_group_layouts: &[Some(&frame), Some(world.layout()), Some(&aux)],
+            bind_group_layouts: &storages.layouts(&[Some(&frame), Some(world.layout())]),
             immediate_size: 0,
         });
         let shade = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("deferred shade"),
-            bind_group_layouts: &[Some(&frame), Some(world.layout()), Some(&aux), Some(&images)],
+            bind_group_layouts: &storages.layouts(&[Some(&frame), Some(world.layout()), None, Some(&images)]),
             immediate_size: 0,
         });
-        Self { frame, aux, images, render, shade }
+        Self { frame, images, render, shade }
     }
 }
 
@@ -360,16 +380,7 @@ impl GpuRasterBackend {
         let opts: Options = p.options()?;
         require(BACKEND, Slot::Meshes, &opts.meshes)?;
         parse_merge(&opts.merge)?;
-        let comp = Composition {
-            storage: require(BACKEND, Slot::Storage, &opts.storage)?,
-            geometry: require(BACKEND, Slot::Geometry, &opts.geometry)?,
-            draw: {
-                require(BACKEND, Slot::Visibility, &opts.visibility)?;
-                require(BACKEND, Slot::Draw, &opts.draw)?
-            },
-            traversal: require(BACKEND, Slot::Traversal, &opts.traversal)?,
-            shading: require(BACKEND, Slot::Shading, &opts.shading)?,
-        };
+        let comp = Composition::of(&graph::of_init(BACKEND, &p)?, &opts)?;
         // The host hands the device in (GPU slot 0); this back end only states its needs.
         let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE, optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
         let world = VoxelWorld::new(
@@ -379,7 +390,7 @@ impl GpuRasterBackend {
             VoxelWorldConfig {
                 max_lod: 0,
                 // Region storages (tree64) hold their own data instead of the voxel pool.
-                upload_voxels: matches!(comp.storage().kind, storage::Kind::Pool { .. }),
+                upload_voxels: StorageSet::needs_pool(&comp.walks),
                 pool_mb: opts.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: opts.shadows,
@@ -387,7 +398,12 @@ impl GpuRasterBackend {
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
             },
         )?;
-        let layouts = Layouts::new(&gpu, &world, &comp.storage());
+        let all = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
+        let storages = StorageSet::new(&gpu, &comp.walks, all, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
+        if storages.groups_end() > gpu.device.limits().max_bind_groups {
+            anyhow::bail!("{} storages need {} bind groups; this device has {}", comp.walks.storages.len(), storages.groups_end(), gpu.device.limits().max_bind_groups);
+        }
+        let layouts = Layouts::new(&gpu, &world, &storages);
         let drawer = layouts.drawer(&gpu, &comp, p.width, p.height)?;
         let max_bytes = (gpu.device.limits().max_storage_buffer_binding_size as u64).min(gpu.device.limits().max_buffer_size);
         // Capped below 2 GiB: GrowableBuffer rounds sizes up to powers of two, which would
@@ -410,13 +426,12 @@ impl GpuRasterBackend {
         let quad_buf = GrowableBuffer::new(&gpu, "quads", 1 << 20, quad_capacity as u64 * QUAD_BYTES, wgpu::BufferUsages::STORAGE);
         let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
-        let data = StorageData::new(&gpu, comp.storage(), gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
-        // Mesh shadows walk the composed storage too.
-        let (occ, walk) = mr_components::shaders::walk_program(&comp.storage(), &comp.traversal, false);
-        let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Occlusion { program: &occ, rays: &walk.rays, layout: &layouts.aux });
+        // Mesh shadows: their site's walk (by default the shadow rays').
+        let (occ, rays) = comp.walks.shadow_program(comp.mesh_shadow);
+        let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Occlusion { program: &occ, rays: &rays, layout: storages.layout(comp.walks.kernels[comp.mesh_shadow].storage) });
         let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone());
         let accum = ShadeState::new(&gpu, p.width, p.height, &comp.shading, opts.bounces, opts.spp, opts.accumulate);
-        tracing::info!("gpu-raster: storage {}, geometry {}, draw {}, traversal {}, shading {}", comp.storage, comp.geometry, comp.draw, comp.traversal, comp.shading);
+        tracing::info!("gpu-raster: storage {}, geometry {}, draw {}, traversal {}, shading {}, {} walks", comp.walks.storages[0].component, comp.geometry, comp.draw, comp.walks.kernels[0].component, comp.shading, comp.walks.kernels.len());
         Ok(Self {
             mesh,
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
@@ -434,7 +449,7 @@ impl GpuRasterBackend {
             indirect,
             bind0: None,
             accum,
-            data,
+            storages,
             meshes: HashMap::new(),
             dirty: HashSet::new(),
             alloc: RangeAlloc::new(((1 << 20) / QUAD_BYTES) as u32),
@@ -557,7 +572,7 @@ impl Renderer for GpuRasterBackend {
             self.accum.invalidate();
         }
         let changed = self.world.apply(&self.gpu, updates);
-        self.data.update(&self.gpu, &self.world, &changed)?;
+        self.storages.update(&self.gpu, &self.world, &changed)?;
         for pos in changed {
             self.dirty.insert(pos);
             for f in Face::ALL {
@@ -679,8 +694,9 @@ impl Renderer for GpuRasterBackend {
                 ],
             }));
         }
-        let bind2 = self.data.prepare(&self.gpu, &self.world, &self.layouts.aux).clone();
-        self.mesh.set_occlusion_bind_group(&bind2);
+        let bound = self.storages.prepare(&self.gpu, &self.world);
+        self.mesh.set_occlusion_bind_group(bound.get(self.built.walks.kernels[self.built.mesh_shadow].storage));
+        let (bind2, more) = bound.split();
         let bind0 = self.bind0.clone().unwrap();
         let clear = wgpu::Color { r: fu.sky[0] as f64, g: fu.sky[1] as f64, b: fu.sky[2] as f64, a: 1.0 };
         let out_view = self.output.create_view(&Default::default());
@@ -692,7 +708,8 @@ impl Renderer for GpuRasterBackend {
             clear,
             prepass: self.opts.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
-            binds: &[&bind0, &world_bg, &bind2],
+            binds: &[&bind0, &world_bg, bind2],
+            more: &more,
             ring: &self.ring,
             ticket,
             ts: (true, true),
@@ -719,7 +736,7 @@ impl Renderer for GpuRasterBackend {
                 ("mesh_triangles".into(), if want_meshes { self.mesh.triangles() as f64 } else { 0.0 }),
             ]
             .into_iter()
-            .chain(self.data.counters())
+            .chain(self.storages.counters())
             .chain(self.accum.counter(req.mode))
             .collect(),
         };
@@ -780,7 +797,7 @@ impl Renderer for GpuRasterBackend {
     }
 
     fn memory(&self) -> MemoryReport {
-        let gpu = self.world.memory_bytes() + self.data.memory_bytes() + self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size() + self.accum.memory_bytes() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
+        let gpu = self.world.memory_bytes() + self.storages.memory_bytes() + self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size() + self.accum.memory_bytes() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
 }
@@ -799,12 +816,37 @@ mod tests {
                 for g in names_on(BACKEND, Slot::Geometry) {
                     for d in names_on(BACKEND, Slot::Draw) {
                         for shading in names_on(BACKEND, Slot::Shading) {
-                            let c = Composition { storage: st.into(), geometry: g.into(), draw: d.into(), traversal: k.into(), shading: shading.into() };
-                            let (p, root, deps) = c.program();
-                            let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
-                            let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{c:?}: {e}"));
-                            Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{c:?}: {e:?}"));
-                            n += 1;
+                            let flat = mr_components::Composition { storage: st.into(), geometry: g.into(), draw: d.into(), traversal: k.into(), shading: shading.into(), ..mr_components::Composition::new(BACKEND) };
+                            let mut graphs = vec![mr_components::graph::Graph::from_composition(&flat).unwrap()];
+                            // Bounces and mesh shadows through walks of their own (PLAN step 9c).
+                            if shading == "pathtrace" && g == "greedy" {
+                                let mut gr = graphs[0].clone();
+                                let node = |role, c: &str, ins: &[(&str, &str)]| {
+                                    let mut n = mr_components::graph::Node::new(role, c);
+                                    n.inputs.extend(ins.iter().map(|&(p, s)| (p.to_string(), s.to_string())));
+                                    n
+                                };
+                                gr.nodes.insert("b.storage".into(), node(Role::Storage, "distance", &[]));
+                                gr.nodes.insert("b.kernel".into(), node(Role::Traversal, "sphere", &[("storage", "b.storage")]));
+                                gr.nodes.insert("m.kernel".into(), node(Role::Traversal, "incremental", &[("storage", "storage")]));
+                                gr.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "b.kernel".into());
+                                gr.nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), "m.kernel".into());
+                                graphs.push(gr);
+                            }
+                            for gr in graphs {
+                                let ck = gr.check().unwrap();
+                                gr.validate().unwrap_or_else(|e| panic!("{gr:?}: {e}"));
+                                let opts = Options { storage: st.into(), geometry: g.into(), draw: d.into(), traversal: k.into(), shading: shading.into(), ..Default::default() };
+                                let c = Composition::of(&ck, &opts).unwrap();
+                                let (p, root, deps) = c.program();
+                                let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+                                let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+                                Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{c:?}: {e:?}"));
+                                let (p, rays) = c.walks.shadow_program(c.mesh_shadow);
+                                let m = p.naga(mr_gpu::meshes::MESH_WGSL, &[&rays, mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON]).unwrap_or_else(|e| panic!("meshes {c:?}: {e}"));
+                                Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("meshes {c:?}: {e:?}"));
+                                n += 1;
+                            }
                         }
                     }
                 }

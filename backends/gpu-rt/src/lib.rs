@@ -218,7 +218,7 @@ fn program(geometry: &str, vis: &str, geo_wgsl: &str, vis_wgsl: &str, shading: &
          virtual fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit { var h: Hit; return h; }\n",
         &[mr_gpu::program::VOXELS],
     );
-    shaders::shading(&mut p, shading, "rt::rays", 0, 5);
+    shaders::shading(&mut p, shading, &["rt::rays"], 0, 5);
     let root = format!("enable wgpu_ray_query;\n// Composition: geometry = {geometry}, traversal = {vis}, shading = {shading}\n{}\n{geo_wgsl}\n{vis_wgsl}\n", include_str!("main.wgsl"));
     (p, root)
 }
