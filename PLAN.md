@@ -28,6 +28,10 @@ The user's architecture, settled with finality and without limits for later (IDE
   and form cycles; each says when its value arrives (this frame, through iteration or a
   fused pair; or the previous frame). Fused nodes cost nothing, above all within one device
   and API, and the executor fuses whatever it can.
+- **A feature costs only the pipelines that use it** (IDEAS §23): supporting more features
+  (transparency, layers, effects) must add no run-time cost to pipelines without them.
+  Features are capabilities compiled in where chosen and absent elsewhere (no runtime
+  flags in hot paths, no wider records or extra passes for everyone).
 - **No redundant implementations** (IDEAS §16, §22): the same algorithm implemented once per
   device / API or mechanism is necessary, not redundant; redundant is an algorithm written
   again to accommodate some combination of features. Combinations are chosen and compiled
@@ -104,7 +108,9 @@ The user's architecture, settled with finality and without limits for later (IDE
 11. **Per-stage measurement:** every node reports its own GPU time (timestamps per pass)
     and CPU time; observations carry them.
 12. **A common visibility buffer** (designed so transparency fits later, IDEAS §23:
-    several hits per pixel or continued rays, an opaque-only query for shadow rays): every strategy outputs one hit record; shading
+    several hits per pixel or continued rays, an opaque-only query for shadow rays, all
+    as optional capabilities: opaque-only pipelines compile without them and cost nothing
+    more): every strategy outputs one hit record; shading
     placement (inline or deferred) a choice for every strategy; meshes a surface source
     writing into it, no longer a special stage.
 13. **Strategies as components, back ends as executors** (first: design stateful nodes and

@@ -1662,6 +1662,15 @@ shadow rays. Designing the hit record and the ray-query ports with that in mind 
 little now and avoids a second rewrite. Surface effects (ripples) fit as a component on the
 surface's shading input (a perturbation of normal and texel), so every strategy gets them.
 
+**The rule (user, 2026-10-15): accepting a feature must cost the other pipelines nothing at
+run time.** A pipeline that can do transparency must not make everything else slower so it
+can exist. So layers, continued rays, the opaque-only query and surface effects are
+optional capabilities of the hit record, ray queries and shading, compiled in only where a
+graph chooses them (as `Lod` and `Steps` are today): no runtime flag in a hot path (measured
+earlier: a shared shade call with a runtime flag cost 4–6% on NVIDIA), no wider hit record,
+no extra pass, no extra binding for opaque-only pipelines. Checked like every step: opaque
+pipelines keep their pixels and speed (A/B) after the feature lands.
+
 ---
 
 ## Suggested order
