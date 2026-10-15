@@ -1558,8 +1558,8 @@ so it adds no special case.
 time to the first complete frame, and how each technique behaves while data streams in.
 Today's sweeps reward techniques that assume everything is resident at once.
 
-**Status.** Recorded; not scheduled. It touches step 9 (the link as an edge) and step 13
-(the executor), so it fits after the graph model exists.
+**Status.** Scheduled 2026-10-14 as PLAN step 14 (after the executor, step 13); step 9's
+graph model treats the world as a node so the link is just an edge.
 
 ---
 

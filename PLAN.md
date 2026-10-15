@@ -1,6 +1,6 @@
 # Plan
 
-**THE PLAN (2026-10-12): finish the architecture, steps 9–15 below. It is the only thing
+**THE PLAN (2026-10-12; step 14 added 2026-10-14): finish the architecture, steps 9–16 below. It is the only thing
 on the plan. Optimisation, bug fixes, new techniques and the backlog wait until it is done;
 a bug is fixed only if it blocks this work.** The previous plan document (status,
 findings, known issues, backlog, steps 1–8 and their progress log) is archived in
@@ -41,6 +41,9 @@ The user's architecture, settled with finality and without limits for later (IDE
 - **Composition not fully data:** knobs not declared as baked-in or live; CPU components
   declare no capabilities; only the `cpu` back end compiles on demand (§17).
 - **A known composition cost:** cpu-discover calls its storage through `dyn World` per ray.
+- **No realistic server / client line** (IDEAS §19): renderers already see only change
+  messages over IPC, but the host streams per renderer, builds its LOD chunks, and the link
+  is free (no latency, bandwidth, reordering; everything resident before the frame).
 - **Shader assembly by text-joining** strains: 7c needed a hand-written renaming pass
   (`traversal::namespaced`); the plan said to adopt an existing module system then.
 
@@ -50,7 +53,8 @@ The user's architecture, settled with finality and without limits for later (IDE
    outputs they provide (e.g. a ray-query service with its capabilities: closest or any
    hit, LOD, step counts; a storage; a face set; a hit record / visibility buffer; an
    image; history), each on a device. A pipeline is a graph of component instances
-   (each with its own knobs) and edges; it is valid when every input is connected to a
+   (each with its own knobs) and edges (the world and its change log is a node too, so
+   step 14's link is just an edge); it is valid when every input is connected to a
    compatible output (capabilities met natively or by an adapter, devices joined by a
    communication path), with no fixed list of stages. Every ray-casting site is an input
    port of the component that casts (primary rays of ray casting, discovery's rays and
@@ -82,9 +86,18 @@ The user's architecture, settled with finality and without limits for later (IDE
     hole detection, retention, drawer), splat and columns become components; back ends
     become executors placing nodes on devices (a device per node), so cpu-discover is a
     configuration of CPU and GPU nodes, and its `dyn World` call goes.
-14. **History and post as nodes:** earlier frames' products as explicit inputs; tone
+14. **The served split (IDEAS §19):** the world (generator, authoritative store, change
+    log) becomes a node on a *server* device; a modelled *link* (latency, bandwidth,
+    jitter, reordering, compression; zero cost as one setting) is a graph edge; the
+    *client* derives everything renderer-specific (storages, LOD levels) from one stream
+    shared by all clients. Generator placement is a choice: streamed from the server, or
+    on the client from a shared seed with the server sending only edits. The renderer
+    contract becomes strict: change messages only, nothing guaranteed to have arrived.
+    Measured: bytes on the wire, update cost per byte, time to the first complete frame,
+    holes while streaming.
+15. **History and post as nodes:** earlier frames' products as explicit inputs; tone
     mapping and diagnostic views with colour scales written once.
-15. **Compiled on demand everywhere:** every CPU graph (generated Rust), and on the GPU
+16. **Compiled on demand everywhere:** every CPU graph (generated Rust), and on the GPU
     specialised constants and persistent pipeline caches; then the break-in layers.
 
 ## Estimate (2026-10-12)
@@ -99,9 +112,10 @@ took about 1.5–2.5 hours each), with wide uncertainty on the large steps:
 | 11 per-stage measurement | 3–5 h |
 | 12 common visibility buffer, meshes as surfaces | 10–20 h |
 | 13 strategies as components, back ends as executors | 15–30 h |
-| 14 history and post | 4–8 h |
-| 15 compiled on demand everywhere | 8–15 h |
-| **total** | **about 60–110 h** |
+| 14 served split: server, link, client (added 2026-10-14) | 8–15 h |
+| 15 history and post | 4–8 h |
+| 16 compiled on demand everywhere | 8–15 h |
+| **total** | **about 70–125 h** |
 
 ## How we work
 
@@ -155,6 +169,6 @@ took about 1.5–2.5 hours each), with wide uncertainty on the large steps:
   `python3 scripts/summarise.py target/catalogue`.
 - Tuner on real terrain: `ALGO=bayes TARGET_FPS=900 SECONDS=60 cargo test --release --bin multirenderer tuner_demo -- --ignored --nocapture`.
 
-## Progress log (steps 9–15)
+## Progress log (steps 9–16)
 
 (Entries are added as steps land; steps 1–8 are in the archive.)
