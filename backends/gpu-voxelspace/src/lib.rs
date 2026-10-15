@@ -14,7 +14,7 @@ use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::heightmap::{self, Heightmap};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
-use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
+use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
@@ -135,10 +135,9 @@ impl GpuVoxelSpace {
         });
         let hm_info = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("heightmap info"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         gpu.queue.write_buffer(&hm_info, 0, bytemuck::cast_slice(&hm.info()));
-        let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
         // Shadow and bounce rays walk the heightmap (its `ctrace`).
-        let source = shader_source(mr_components::traversal::OCCLUDED_WGSL, &format!("{}\n{}\n{}\n{shade}", heightmap::gpu_wgsl(0, 2), ShadeState::wgsl(0, 4), include_str!("vs.wgsl")));
-        let module = mr_gpu::shader(&gpu.device, "voxelspace", source);
+        let (program, root, deps) = program(&opts.shading);
+        let module = mr_gpu::program::compile(&gpu.device, "voxelspace", &program, &root, &deps);
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("voxelspace"),
             entries: &[
@@ -307,5 +306,32 @@ impl Renderer for GpuVoxelSpace {
     fn memory(&self) -> MemoryReport {
         let hm = self.hm.hm.len() as u64 * 4;
         MemoryReport { cpu_bytes: hm, gpu_bytes: hm + self.world.memory_bytes() + self.accum.memory_bytes() + self.width as u64 * self.height as u64 * 4 }
+    }
+}
+
+/// The shader: the heightmap storage (group 2) is its own kernel (`ctrace`; storage and walk
+/// in one, IDEAS §18's exceptions), the ray services through it, this back end's column
+/// march and the shading component as the root.
+fn program(shading: &str) -> (mr_gpu::program::Program, String, [&'static str; 5]) {
+    use mr_gpu::program::{COMMON, LIGHTING, Program, VOXELS};
+    let mut p = Program::world(Some("heightmap::rays"));
+    p.add("heightmap", heightmap::gpu_wgsl(0, 2), &[VOXELS]);
+    mr_components::shaders::rays(&mut p, "heightmap::rays", "heightmap");
+    let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
+    let root = format!("{}\n{}\n{shade}", ShadeState::wgsl(0, 4), include_str!("vs.wgsl"));
+    (p, root, ["heightmap", "heightmap::rays", LIGHTING, VOXELS, COMMON])
+}
+
+#[cfg(test)]
+mod tests {
+    /// The shader composes from its modules and validates for every shading (no GPU needed).
+    #[test]
+    fn programs_compose() {
+        use mr_gpu::wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+        for shading in mr_components::names_on("gpu-voxelspace", mr_components::Slot::Shading) {
+            let (p, root, deps) = super::program(shading);
+            let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{shading}: {e}"));
+            Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{shading}: {e:?}"));
+        }
     }
 }

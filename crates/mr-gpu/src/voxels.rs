@@ -19,11 +19,6 @@ use crate::{Gpu, GrowableBuffer};
 pub const VOXELS_WGSL: &str = include_str!("voxels.wgsl");
 pub const LIGHTING_WGSL: &str = include_str!("lighting.wgsl");
 
-/// Full shader source: shared helpers, voxel world, an occlusion module, lighting and
-/// the renderer's own code.
-pub fn shader_source(occlusion: &str, own: &str) -> String {
-    format!("{}\n{}\n{}\n{}\n{}", crate::COMMON_WGSL, VOXELS_WGSL, occlusion, LIGHTING_WGSL, own)
-}
 
 const EMPTY: u32 = 0xffff_ffff;
 const TOMB: u32 = 0xffff_fffe;

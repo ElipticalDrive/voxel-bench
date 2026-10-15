@@ -18,8 +18,8 @@ use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::{self, StorageData};
-use mr_components::{names_on, require, Slot, storage, traversal};
-use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
+use mr_components::{names_on, require, Slot, storage};
+use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
@@ -202,8 +202,8 @@ impl GpuSplat {
         let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
         let own = format!("{}\n{}\n{shade}", include_str!("splat.wgsl"), ShadeState::wgsl(0, 5));
-        let source = shader_source(&traversal::occlusion_wgsl(&st, &opts.traversal, false), &own);
-        let module = mr_gpu::shader(&gpu.device, "splat", source);
+        let (program, walk) = mr_components::shaders::walk_program(&st, &opts.traversal, false);
+        let module = mr_gpu::program::compile(&gpu.device, "splat", &program, &own, &mr_components::shaders::root_deps(&walk, &[]));
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("splat"),
             entries: &[

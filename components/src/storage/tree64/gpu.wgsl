@@ -23,7 +23,7 @@ fn t64_leaf(h: u32, idx: u32) -> u32 {
 
 // Nodes are one 16-byte load each: (mask lo, mask hi, child pointer, uniform block).
 fn s_probe(h: u32, l: vec3<i32>) -> vec2<u32> {
-    var n = aux4[h >> 2u];
+    var n = aux_v4[h >> 2u];
     var shift = 6u;
     loop {
         if (n.w != 0u) { return vec2<u32>(n.w, 1u); }
@@ -31,7 +31,7 @@ fn s_probe(h: u32, l: vec3<i32>) -> vec2<u32> {
         let c = t64_child(n, t64_bit((l >> vec3<u32>(shift)) & vec3<i32>(3)));
         if (c.x == 0u) { return vec2<u32>(0u, 1u << shift); }
         if (shift == 0u) { return vec2<u32>(t64_leaf(h, n.z + c.y), 1u); }
-        n = aux4[(h + n.z) / 4u + c.y];
+        n = aux_v4[(h + n.z) / 4u + c.y];
     }
     return vec2<u32>(0u, 1u);
 }
@@ -39,7 +39,7 @@ fn s_probe(h: u32, l: vec3<i32>) -> vec2<u32> {
 // Whether the level-`level` (0, 2 or 4) node at level coords `c` exists (is non-empty).
 fn s_occupied(h: u32, level: u32, c: vec3<i32>) -> bool {
     let l = c << vec3<u32>(level);
-    var n = aux4[h >> 2u];
+    var n = aux_v4[h >> 2u];
     var shift = 6u;
     loop {
         if (n.w != 0u || shift == level) { return true; }
@@ -47,7 +47,7 @@ fn s_occupied(h: u32, level: u32, c: vec3<i32>) -> bool {
         let ch = t64_child(n, t64_bit((l >> vec3<u32>(shift)) & vec3<i32>(3)));
         if (ch.x == 0u) { return false; }
         if (shift == 0u) { return true; }
-        n = aux4[(h + n.z) / 4u + ch.y];
+        n = aux_v4[(h + n.z) / 4u + ch.y];
     }
     return false;
 }

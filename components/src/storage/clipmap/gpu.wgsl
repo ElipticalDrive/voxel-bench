@@ -7,10 +7,10 @@ const S_TOP: u32 = 5u;
 const S_LEVELS: u32 = 0x5u;
 
 struct Clip { slots: vec3<i32>, _p: u32 }   // chunk slots per axis
-@group(2) @binding(4) var<uniform> clip: Clip;
-@group(2) @binding(5) var clip_vox: texture_3d<u32>;   // block ids, slots * 32 per axis
-@group(2) @binding(6) var clip_occ: texture_3d<u32>;   // 1 per non-empty 4^3 brick, slots * 8 per axis
-@group(2) @binding(7) var clip_tags: texture_3d<u32>;  // per chunk slot: owner tag (0 = empty)
+@group(S_GROUP) @binding(4) var<uniform> clip: Clip;
+@group(S_GROUP) @binding(5) var clip_vox: texture_3d<u32>;   // block ids, slots * 32 per axis
+@group(S_GROUP) @binding(6) var clip_occ: texture_3d<u32>;   // 1 per non-empty 4^3 brick, slots * 8 per axis
+@group(S_GROUP) @binding(7) var clip_tags: texture_3d<u32>;  // per chunk slot: owner tag (0 = empty)
 
 fn clip_tag(c: vec3<i32>) -> u32 {
     let u = bitcast<vec3<u32>>(c) & vec3<u32>(1023u);

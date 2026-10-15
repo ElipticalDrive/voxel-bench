@@ -42,7 +42,7 @@ use mr_core::*;
 use mr_components::draw::{self, drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer}};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::{self, StorageData};
-use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
+use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, GrowableBuffer, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -405,11 +405,9 @@ impl CpuDiscover {
         };
         // Shadow and bounce rays: the kernel through the composed GPU storage (group 2).
         let st = mr_components::storage::gpu(&opts.shadow_storage).expect("checked in new");
-        let source = shader_source(
-            &mr_components::traversal::occlusion_wgsl(&st, &opts.shadow_traversal, false),
-            &format!("{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true)),
-        );
-        let module = mr_gpu::shader(&gpu.device, "cpu-discover raster", source);
+        let (program, walk) = mr_components::shaders::walk_program(&st, &opts.shadow_traversal, false);
+        let root = format!("{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true));
+        let module = mr_gpu::program::compile(&gpu.device, "cpu-discover raster", &program, &root, &mr_components::shaders::root_deps(&walk, &[]));
         FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl, shade_layout: pl_shade, strip: true }, mode, images, width, height)
     }
 

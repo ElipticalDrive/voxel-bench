@@ -21,11 +21,11 @@ use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use mr_components::geometry::{Knobs, Merge, RtKind};
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_components::{names_on, require, Slot, components, shading, traversal};
+use mr_components::{names_on, require, Slot, components, traversal};
 use mr_core::chunk::cell_of_index;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
-use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
+use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -173,7 +173,7 @@ pub struct GpuRt {
     /// Shading the pipeline was built with (rebuilt lazily on a live switch).
     built_shading: String,
     opts: Options,
-    source: Box<dyn Fn(&str) -> String + Send + Sync>,
+    source: Box<dyn Fn(&str) -> (mr_gpu::program::Program, String) + Send + Sync>,
     pipeline: wgpu::ComputePipeline,
     pipeline_layout: wgpu::PipelineLayout,
     layout0: wgpu::BindGroupLayout,
@@ -205,8 +205,28 @@ fn tlas(gpu: &Gpu, cap: u32) -> wgpu::Tlas {
     })
 }
 
-fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: String) -> wgpu::ComputePipeline {
-    let module = mr_gpu::shader(&gpu.device, "gpu-rt", source);
+/// The shader: the world, lighting and the shading component as modules; the ray services
+/// (`rt::rays`) virtual functions the root overrides with the ray-query kernel, which (like
+/// the geometry's `g_rt_trace`) stays in the root: naga cannot write ray queries back into
+/// a module.
+fn program(geometry: &str, vis: &str, geo_wgsl: &str, vis_wgsl: &str, shading: &str) -> (mr_gpu::program::Program, String) {
+    use mr_components::shaders;
+    let mut p = mr_gpu::program::Program::world(Some("rt::rays"));
+    p.add(
+        "rt::rays",
+        "virtual fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return false; }\n\
+         virtual fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit { var h: Hit; return h; }\n",
+        &[mr_gpu::program::VOXELS],
+    );
+    shaders::shading(&mut p, shading, "rt::rays", 0, 5);
+    let root = format!("enable wgpu_ray_query;\n// Composition: geometry = {geometry}, traversal = {vis}, shading = {shading}\n{}\n{geo_wgsl}\n{vis_wgsl}\n", include_str!("main.wgsl"));
+    (p, root)
+}
+
+const ROOT_DEPS: &[&str] = &[mr_components::shaders::SHADING, mr_components::shaders::STATE, "rt::rays", mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON];
+
+fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, (program, root): (mr_gpu::program::Program, String)) -> wgpu::ComputePipeline {
+    let module = mr_gpu::program::compile(&gpu.device, "gpu-rt", &program, &root, ROOT_DEPS);
     gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("gpu-rt"),
         layout: Some(layout),
@@ -244,11 +264,7 @@ impl GpuRt {
             },
         )?;
         let vis_wgsl = traversal::rt_wgsl(&vis).expect("validated");
-        let source = Box::new(move |shading: &str| {
-            let own = format!("// Composition: geometry = {geometry}, traversal = {vis}, shading = {shading}\n{}\n{}\n{geo_wgsl}\n{vis_wgsl}\n{}", include_str!("main.wgsl"), ShadeState::wgsl(0, 5), shading::gpu_wgsl(shading).expect("validated"));
-            // Shadow rays come from the traversal kernel (`occluded`).
-            format!("enable wgpu_ray_query;\n{}", shader_source("", &own))
-        });
+        let source = Box::new(move |shading: &str| program(&geometry, &vis, geo_wgsl, vis_wgsl, shading));
         let e = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty, count: None };
         let storage = |read_only| wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None };
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -646,6 +662,26 @@ impl Drop for GpuRt {
         let positions: Vec<IVec3> = self.chunks.keys().copied().collect();
         for p in positions {
             self.drop_chunk(p);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shader composes from its modules (ray services overridden by the root's ray
+    /// queries) and validates for every geometry and shading (no GPU needed).
+    #[test]
+    fn programs_compose() {
+        use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+        for g in names_on(BACKEND, Slot::Geometry) {
+            let (geo_wgsl, _) = mr_components::geometry::rt(g).unwrap();
+            for shading in names_on(BACKEND, Slot::Shading) {
+                let (p, root) = program(g, "rayquery", geo_wgsl, traversal::rt_wgsl("rayquery").unwrap(), shading);
+                let m = p.naga(&root, ROOT_DEPS).unwrap_or_else(|e| panic!("{g} {shading}: {e}"));
+                Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{g} {shading}: {e:?}"));
+            }
         }
     }
 }

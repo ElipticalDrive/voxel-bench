@@ -9,6 +9,7 @@ anyhow.workspace = true
 pollster.workspace = true
 tracing.workspace = true
 wgpu.workspace = true
+naga_oil.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 serde.workspace = true

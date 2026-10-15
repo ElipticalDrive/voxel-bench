@@ -44,8 +44,8 @@ The user's architecture, settled with finality and without limits for later (IDE
 - **No realistic server / client line** (IDEAS §19): renderers already see only change
   messages over IPC, but the host streams per renderer, builds its LOD chunks, and the link
   is free (no latency, bandwidth, reordering; everything resident before the frame).
-- **Shader assembly by text-joining** strains: 7c needed a hand-written renaming pass
-  (`traversal::namespaced`); the plan said to adopt an existing module system then.
+- **Shader assembly by text-joining** strained (7c's renaming pass); 9b replaced it with
+  naga_oil modules for storages, kernels, ray services, lighting (back-end roots remain).
 
 ## The steps (in dependency order; each verified and zero-cost-checked, one at a time)
 9. **Pipelines as graphs** (the foundation; replaces `Slot`, `Composition`'s fixed fields
@@ -209,3 +209,44 @@ took about 1.5–2.5 hours each), with wide uncertainty on the large steps:
 - Not yet: devices are inferred, not checked against where components have
   implementations (the executor check covers it today); knobs per node are flattened;
   the GUI, sweeps and observations still use compositions (9d).
+
+**2026-10-14, step 9b done: shaders as modules (naga_oil).** `crates/mr-gpu/src/program.rs`,
+`components/src/shaders.rs`:
+- Module system chosen: **naga_oil 0.23** (Bevy's composer; built on naga 30.0.1, the same as
+  our wgpu). WESL was ruled out: 0.4.3+ needs rustc 1.97.1 (this machine: 1.96 nightly; not
+  changed), and 0.4.2 cannot resolve the ray-query built-ins gpu-rt uses.
+- A `Program` is a set of modules (path, plain WGSL, dependencies); each module's
+  `#import`s are generated from the names it uses, taken from the nearest dependency that
+  declares them (its own first, breadth first), so a caller reaches only the kernel it is
+  bound to. Composed into a naga module and handed to wgpu as IR (`ShaderSource::Naga`;
+  wgpu feature `naga-ir`). `MR_DUMP_WGSL` now dumps the program text (modules + root).
+- Every storage instance, kernel instance (its own `LOD`, `EXACT`, `LEVEL_MASK`), ray
+  service (`occluded`, `strace` through one kernel) is its own module; storages bind at
+  `@group(S_GROUP)`, a constant of the instance. Shared modules `mr::common`, `mr::voxels`,
+  `mr::lighting` (its shadow rays through the bound ray service). gpu-compute's second walk
+  is `shadow::storage`/`shadow::kernel` beside `primary::`: no renaming.
+  `traversal::namespaced`, `secondary_wgsl`, `occlusion_wgsl`, `OCCLUDED_WGSL` and
+  `voxels::shader_source` are gone; mesh passes take a program (`Occlusion { program, rays }`).
+- naga_oil's limits, met: module-level names and struct members must not end in a digit
+  (renamed in shared WGSL only: `hash3`→`hash_cell`, `aux4`→`aux_v4`, prefix's
+  `morton3`/`spread3`, padding fields); ray queries cannot be in a module (naga cannot
+  write them back), so gpu-rt's ray-query kernel stays in its root and overrides the
+  program's virtual ray services `rt::rays` (naga_oil `virtual` / `override fn`); `enable`
+  directives are hoisted above the imports.
+- Still in back-end roots (not yet modules): each back end's own code and, except on
+  gpu-compute and gpu-rt, the shading component and shading state (gpu-raster and the
+  discovery drawers wrap shading per draw mode with `fragment_wgsl`); the prepass (reads
+  gpu-compute's own `beam` bindings); draw and geometry WGSL. Converting them is
+  mechanical (give each its bindings) and fits 9c / step 12.
+- Verified: a headless `programs_compose` test per GPU back end composes and validates
+  every combination (gpu-compute 512, gpu-raster, gpu-discover incl. every drawer, gpu-rt,
+  gpu-voxelspace) plus every primary × secondary storage × kernel pairing; pixel A/B
+  against the build before: 90/90 frames identical (14 compositions over all GPU back
+  ends, lit + unlit, incl. separate shadow walks, pathtrace, beam, gbuffer, boxes), 30/30
+  in mesh mode, 24/24 with LOD chunks; GPU-time A/B (3 rounds interleaved, 7 back ends, lit
+  + unlit) within ±1.2% (one +2.6% on gpu-splat lit re-measured over 6 rounds: −1.3%,
+  noise); builds without warnings, 63 unit tests, architecture guard (gpu-compute and
+  gpu-rt shade through `shaders::shading`), 4 GPU end-to-end tests. Composing costs a few
+  ms to ~25 ms per shader at creation (validation included), not per frame.
+- `scripts/ab/wgsl.sh` (byte-identical dumps) cannot compare across 9b (the text changed
+  by construction); it works again between later builds.

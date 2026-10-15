@@ -89,8 +89,8 @@ records from before the split (`visibility = "refloor"`, gpu-raster's `visibilit
 and `shadow_traversal` choose what shadow and bounce rays (and mesh shadows) walk:
 `same` as the primary rays (the default; nothing changes) or another storage and kernel,
 e.g. `gpu-compute: prefix + incremental + shadow distance + shadow sphere`. The second
-walk is compiled next to the first under names of its own (`traversal::namespaced`,
-bind group 4) and its storage data kept as well (memory for both). On gpu-compute and
+walk is compiled next to the first as modules of its own (each storage and kernel
+instance is a shader module, PLAN step 9b; `mr_components::shaders`, bind group 4) and its storage data kept as well (memory for both). On gpu-compute and
 cpu-discover, whose shadow rays always ran on the GPU (`shadow_storage` default
 `bricks`, as before; `same` needs a storage with a GPU twin). Rasterisers and splats
 have no primary rays, so their `storage` / `traversal` stages already are the

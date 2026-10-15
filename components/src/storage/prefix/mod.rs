@@ -63,7 +63,7 @@ mod tests {
     use mr_core::chunk::{cell_index, cell_of_index};
     use mr_core::{BlockId, CHUNK_VOLUME};
 
-    /// Morton index of up to 3 bits per axis, x lowest (matches `morton3` in the WGSL).
+    /// Morton index of up to 3 bits per axis, x lowest (matches `morton_xyz` in the WGSL).
     fn morton3(x: u32, y: u32, z: u32) -> u32 {
         fn spread(v: u32) -> u32 {
             (v & 1) | (v & 2) << 2 | (v & 4) << 4

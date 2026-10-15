@@ -14,7 +14,7 @@ use glam::{IVec3, Vec3};
 use mr_core::{Camera, MeshData, MeshInstance, MeshUpdate, RenderMode};
 
 use crate::Gpu;
-use crate::voxels::{VoxelWorld, shader_source};
+use crate::voxels::VoxelWorld;
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -32,10 +32,12 @@ struct MeshFrame {
     mode: u32,
 }
 
-/// A renderer's own shadow-ray module for the mesh pass: WGSL defining `occluded()` (and
-/// whatever it needs), reading bind group 2 with `layout` (visible to the fragment stage).
+/// A renderer's shadow rays for the mesh pass: a program with the world, lighting and the
+/// ray services at `rays` (`occluded()`, reading bind group 2 with `layout`, visible to the
+/// fragment stage).
 pub struct Occlusion<'a> {
-    pub wgsl: &'a str,
+    pub program: &'a crate::program::Program,
+    pub rays: &'a str,
     pub layout: &'a wgpu::BindGroupLayout,
 }
 
@@ -68,8 +70,8 @@ impl GpuMeshes {
     /// composed storage (bind group 2, see [`Self::set_occlusion_bind_group`]).
     pub fn new(gpu: &Gpu, world: &VoxelWorld, color: wgpu::TextureFormat, occlusion: Occlusion) -> Self {
         let dev = &gpu.device;
-        let occ_src = occlusion.wgsl;
-        let module = crate::shader(dev, "meshes", shader_source(occ_src, include_str!("mesh.wgsl")));
+        use crate::program::{COMMON, LIGHTING, VOXELS};
+        let module = crate::program::compile(dev, "meshes", occlusion.program, include_str!("mesh.wgsl"), &[occlusion.rays, LIGHTING, VOXELS, COMMON]);
         let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mesh frame"),
             entries: &[wgpu::BindGroupLayoutEntry {

@@ -30,7 +30,7 @@ const EMPTY: u32 = 0xffff_ffff;
 const UNIFORM_BIT: u32 = 0x8000_0000;
 
 /// Bind group 2 of a GPU back end's pipelines: `aux` (binding 0), `regions` (binding 1),
-/// `aux4`, the same buffer as `aux` seen as 16-byte words (binding 2; region blobs are
+/// `aux_v4`, the same buffer as `aux` seen as 16-byte words (binding 2; region blobs are
 /// 16-byte aligned, so 4-word records load in one access) and `region_head` (binding 3,
 /// uniform: the table's mask and longest probe).
 /// Texture storages add their own bindings (`clipmap`: 4-7).
@@ -224,7 +224,7 @@ impl StorageData {
                 RegionBlob::Empty => continue,
                 RegionBlob::Uniform(b) => Region { words: None, handle: UNIFORM_BIT | b as u32 },
                 RegionBlob::Words(w) => {
-                    // In 16-byte units: blobs start 16-byte aligned (`aux4`).
+                    // In 16-byte units: blobs start 16-byte aligned (`aux_v4`).
                     let units = w.len().div_ceil(4) as u32;
                     let off = match self.aux.alloc(gpu, &mut self.alloc, units, 16) {
                         Ok((off, grew)) => {

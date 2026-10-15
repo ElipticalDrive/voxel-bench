@@ -57,8 +57,8 @@ use mr_core::*;
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
-use mr_components::{draw, names_on, require, Slot, storage, traversal};
-use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shader_source, shadows_param};
+use mr_components::{draw, names_on, require, Slot, storage};
+use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
@@ -432,7 +432,11 @@ pub struct GpuDiscover {
     /// The face drawer (`draw`: the raster visibility component's pipelines); painter
     /// order and the overdraw view replace its forward pipeline.
     drawer: FaceDrawer,
+    /// The face source and everything but the visibility component (for a draw change),
+    /// compiled against `program` (the walk's modules) with `deps`.
     draw_src: String,
+    program: mr_gpu::program::Program,
+    deps: Vec<String>,
     pl_draw: wgpu::PipelineLayout,
     pl_shade: wgpu::PipelineLayout,
     images: wgpu::BindGroupLayout,
@@ -591,20 +595,23 @@ impl GpuDiscover {
         )?;
         let dev = &gpu.device;
         let module = |label, src: String| mr_gpu::shader(dev, label, src);
+        // The walk's modules (`walk::`): the composed storage at group 2 and the kernel.
+        let (program, walk) = mr_components::shaders::walk_program(&st, &opts.traversal, false);
+        let deps: Vec<String> = mr_components::shaders::root_deps(&walk, &[]).into_iter().map(String::from).collect();
+        let modules = |label, root: &str| mr_gpu::program::compile(dev, label, &program, root, &deps.iter().map(String::as_str).collect::<Vec<_>>());
         // Discovery and raster read the world through the composed storage, walked with
         // refloor (rays and shadow rays).
         let layout_st = gpu_data::layout(&gpu, &st, wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT);
         let data = StorageData::new(&gpu, st, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
-        let walk = traversal::occlusion_wgsl(&st, &opts.traversal, false);
-        let disc_mod = module("discover", shader_source(&walk, include_str!("discover.wgsl")));
+        let disc_mod = modules("discover", include_str!("discover.wgsl"));
         let args_mod = module("discover args", include_str!("args.wgsl").to_string());
         let shade = mr_components::shading::gpu_wgsl(&shading).expect("validated");
         if let Some(why) = shade_state::fragment_blocker(&shading, &gpu.device) {
             anyhow::bail!(why);
         }
         // The face source and everything but the visibility component (the drawer's `draw`).
-        let draw_src = shader_source(&walk, &format!("{}\n{shade}\n{}\n{}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true)));
-        let draw_mod = module("discover raster", format!("{draw_src}\n{}", shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap())));
+        let draw_src = format!("{}\n{shade}\n{}\n{}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true));
+        let draw_mod = modules("discover raster", &format!("{draw_src}\n{}", shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap())));
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {
             binding,
@@ -751,7 +758,7 @@ impl GpuDiscover {
             bind_group_layouts: &[Some(&layout_draw), Some(world.layout()), Some(&layout_st), Some(&images)],
             immediate_size: 0,
         });
-        let drawer = Self::drawer(&gpu, &draw_src, &shading, &opts.draw, &pl_draw, &pl_shade, &images, p.width, p.height)?;
+        let drawer = Self::drawer(&gpu, &program, &deps, &draw_src, &shading, &opts.draw, &pl_draw, &pl_shade, &images, p.width, p.height)?;
         // Painter order: no depth test, but depth is still written (the last fragment is the
         // nearest), since incremental mode reads it.
         let pipe_paint = pipeline("painter", true, wgpu::CompareFunction::Always, true);
@@ -880,6 +887,8 @@ impl GpuDiscover {
             pipe_id,
             drawer,
             draw_src,
+            program,
+            deps,
             pl_draw,
             pl_shade,
             images,
@@ -1192,11 +1201,11 @@ impl GpuDiscover {
 
     /// The face drawer for `draw` (`draw_src` plus the visibility component).
     #[allow(clippy::too_many_arguments)]
-    fn drawer(gpu: &Gpu, draw_src: &str, shading: &str, draw: &str, pl_draw: &wgpu::PipelineLayout, pl_shade: &wgpu::PipelineLayout, images: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<FaceDrawer> {
+    fn drawer(gpu: &Gpu, program: &mr_gpu::program::Program, deps: &[String], draw_src: &str, shading: &str, draw: &str, pl_draw: &wgpu::PipelineLayout, pl_shade: &wgpu::PipelineLayout, images: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<FaceDrawer> {
         let mode = DrawMode::parse(draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`"))?;
         let vis = draw::gpu_wgsl(mode.name()).unwrap();
         let vis = if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis) };
-        let module = mr_gpu::shader(&gpu.device, "discover drawer", format!("{draw_src}\n{vis}"));
+        let module = mr_gpu::program::compile(&gpu.device, "discover drawer", program, &format!("{draw_src}\n{vis}"), &deps.iter().map(String::as_str).collect::<Vec<_>>());
         FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl_draw, shade_layout: pl_shade, strip: true }, mode, images, width, height)
     }
 
@@ -1756,7 +1765,7 @@ impl Renderer for GpuDiscover {
             "draw" => {
                 // Drawing only: the face set is unaffected.
                 let draw = value.as_str().unwrap_or("raster");
-                self.drawer = Self::drawer(&self.gpu, &self.draw_src, &self.shading, draw, &self.pl_draw, &self.pl_shade, &self.images, self.width, self.height)?;
+                self.drawer = Self::drawer(&self.gpu, &self.program, &self.deps, &self.draw_src, &self.shading, draw, &self.pl_draw, &self.pl_shade, &self.images, self.width, self.height)?;
                 self.opts.draw = draw.into();
                 return Ok(());
             }
@@ -1847,4 +1856,39 @@ fn box_rect(view_proj: &glam::Mat4, min: IVec3, size: i32, cam: glam::DVec3, wid
     let x1 = ((hi.x / t) as u32).min(cols - 1);
     let y1 = ((hi.y / t) as u32).min(rows - 1);
     Some(Some([x0, y0, x1, y1]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Discovery, raster and every drawer compose from their modules and validate for every
+    /// storage, kernel and shading (no GPU needed), as `GpuDiscover::new` assembles them.
+    #[test]
+    fn programs_compose() {
+        use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+        let check = |p: &mr_gpu::program::Program, root: &str, deps: &[String], what: &str| {
+            let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+            let m = p.naga(root, &deps).unwrap_or_else(|e| panic!("{what}: {e}"));
+            Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        };
+        for st in names_on(BACKEND, Slot::Storage) {
+            for k in names_on(BACKEND, Slot::Traversal) {
+                let (program, walk) = mr_components::shaders::walk_program(&storage::gpu(st).unwrap(), k, false);
+                let deps: Vec<String> = mr_components::shaders::root_deps(&walk, &[]).into_iter().map(String::from).collect();
+                check(&program, include_str!("discover.wgsl"), &deps, &format!("discover {st} {k}"));
+                for shading in names_on(BACKEND, Slot::Shading) {
+                    let shade = mr_components::shading::gpu_wgsl(shading).unwrap();
+                    let draw_src = format!("{}\n{shade}\n{}\n{}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true));
+                    check(&program, &format!("{draw_src}\n{}", shade_state::fragment_wgsl(shading, draw::gpu_wgsl("raster").unwrap())), &deps, &format!("raster {st} {k} {shading}"));
+                    for d in names_on(BACKEND, Slot::Draw) {
+                        let mode = DrawMode::parse(d).unwrap();
+                        let vis = draw::gpu_wgsl(mode.name()).unwrap();
+                        let vis = if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis) };
+                        check(&program, &format!("{draw_src}\n{vis}"), &deps, &format!("drawer {st} {k} {shading} {d}"));
+                    }
+                }
+            }
+        }
+    }
 }

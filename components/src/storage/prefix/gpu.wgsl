@@ -6,13 +6,13 @@
 
 const S_LEVELS: u32 = 0x1fu;
 
-fn spread3(v: u32) -> u32 {
+fn spread_bits(v: u32) -> u32 {
     return (v & 1u) | ((v & 2u) << 2u) | ((v & 4u) << 4u);
 }
 
 // Morton index of up to 3 bits per axis, x lowest (matches `prefix::morton3`).
-fn morton3(c: vec3<u32>) -> u32 {
-    return spread3(c.x) | (spread3(c.y) << 1u) | (spread3(c.z) << 2u);
+fn morton_xyz(c: vec3<u32>) -> u32 {
+    return spread_bits(c.x) | (spread_bits(c.y) << 1u) | (spread_bits(c.z) << 2u);
 }
 
 fn p_mask(slot: u32, m: u32) -> vec2<u32> {
@@ -38,10 +38,10 @@ fn p_empty(slot: u32, m: u32, n: u32) -> bool {
 
 fn s_occupied(slot: u32, level: u32, c: vec3<i32>) -> bool {
     let l = vec3<u32>(c << vec3<u32>(level));
-    let m = morton3(l >> vec3<u32>(2u));
+    let m = morton_xyz(l >> vec3<u32>(2u));
     switch level {
-        case 0u: { return p_bits(p_mask(slot, m), morton3(l & vec3<u32>(3u)), 1u) != 0u; }
-        case 1u: { return p_bits(p_mask(slot, m), morton3(l & vec3<u32>(3u)), 0xffu) != 0u; }
+        case 0u: { return p_bits(p_mask(slot, m), morton_xyz(l & vec3<u32>(3u)), 1u) != 0u; }
+        case 1u: { return p_bits(p_mask(slot, m), morton_xyz(l & vec3<u32>(3u)), 0xffu) != 0u; }
         case 2u: { let w = p_mask(slot, m); return (w.x | w.y) != 0u; }
         case 3u: { return !p_empty(slot, m, 8u); }
         default: { return !p_empty(slot, m, 64u); }
@@ -51,8 +51,8 @@ fn s_occupied(slot: u32, level: u32, c: vec3<i32>) -> bool {
 // Bottom-up: the cell, then the largest empty aligned cube containing it.
 fn s_probe(slot: u32, li: vec3<i32>) -> vec2<u32> {
     let l = vec3<u32>(li);
-    let m = morton3(l >> vec3<u32>(2u));
-    let k = morton3(l & vec3<u32>(3u));
+    let m = morton_xyz(l >> vec3<u32>(2u));
+    let k = morton_xyz(l & vec3<u32>(3u));
     let w = p_mask(slot, m);
     if (p_bits(w, k, 1u) != 0u) { return vec2<u32>(voxel(slot, li), 1u); }
     if (p_bits(w, k & ~7u, 0xffu) != 0u) { return vec2<u32>(0u, 1u); }

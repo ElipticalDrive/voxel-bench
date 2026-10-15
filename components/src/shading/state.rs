@@ -94,7 +94,7 @@ impl ShadeState {
     /// WGSL declarations at `group`, bindings `binding` and `binding + 1`.
     pub fn wgsl(group: u32, binding: u32) -> String {
         format!(
-            "struct ShadeParams {{ width: u32, frame: u32, prev_count: u32, bounces: u32, spp: u32, _p0: u32, _p1: u32, _p2: u32 }}\n\
+            "struct ShadeParams {{ width: u32, frame: u32, prev_count: u32, bounces: u32, spp: u32, _pa: u32, _pb: u32, _pc: u32 }}\n\
              @group({group}) @binding({binding}) var<uniform> sp: ShadeParams;\n\
              @group({group}) @binding({}) var<storage, read_write> accum: array<vec4<f32>>;\n",
             binding + 1

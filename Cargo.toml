@@ -68,7 +68,8 @@ softbuffer = "0.4"
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-wgpu = "30"
+wgpu = { version = "30", features = ["naga-ir"] }
+naga_oil = { version = "=0.23.0", default-features = false }
 winit = "0.30"
 eframe = "0.36"
 egui = "0.36"

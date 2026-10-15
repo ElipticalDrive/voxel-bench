@@ -158,7 +158,7 @@ fn exposed(a: vec3<i32>, face: u32) -> u32 {
 }
 
 fn chunk_slot(c: vec3<i32>) -> i32 {
-    var i = hash3(c) & pr.chunk_mask;
+    var i = hash_cell(c) & pr.chunk_mask;
     for (var n = 0u; n <= pr.chunk_probe; n++) {
         let e = ctable[i];
         if (e.w < 0) { return -1; }

@@ -37,6 +37,7 @@ pub mod draw;
 pub mod geometry;
 pub mod graph;
 pub mod prepass;
+pub mod shaders;
 pub mod shading;
 pub mod storage;
 pub mod traversal;

@@ -25,11 +25,11 @@ use mr_components::geometry::{GpuGeometry, Knobs, Merge};
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
-use mr_components::{draw, names_on, require, Slot, components, storage, traversal};
+use mr_components::{draw, names_on, require, Slot, components, storage};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{GpuMeshes, MeshPass, Occlusion};
-use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
+use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -171,8 +171,11 @@ impl Composition {
         self.draw == "gbuffer"
     }
 
-    fn source(&self) -> String {
-        let st = self.storage();
+    /// The shader: the shadow rays' walk as modules (`walk::`, the composed storage at group
+    /// 2 and the traversal kernel), this back end's code with geometry, draw and shading as
+    /// the root.
+    fn program(&self) -> (mr_gpu::program::Program, String, Vec<String>) {
+        let (p, walk) = mr_components::shaders::walk_program(&self.storage(), &self.traversal, false);
         let own = format!(
             "// Composition: storage = {}, geometry = {}, draw = {}, traversal = {}, shading = {}\n\
              {}\n{}\n{}\n{}\n{}\n{}",
@@ -193,8 +196,8 @@ impl Composition {
             },
             mr_components::shading::gpu_wgsl(&self.shading).expect("validated"),
         );
-        // Shadow rays: the traversal kernel through the composed storage.
-        shader_source(&traversal::occlusion_wgsl(&st, &self.traversal, false), &own)
+        let deps = mr_components::shaders::root_deps(&walk, &[]).into_iter().map(String::from).collect();
+        (p, own, deps)
     }
 }
 
@@ -345,7 +348,8 @@ impl Layouts {
                 anyhow::bail!(why);
             }
         }
-        let module = mr_gpu::shader(&gpu.device, "raster", comp.source());
+        let (program, root, deps) = comp.program();
+        let module = mr_gpu::program::compile(&gpu.device, "raster", &program, &root, &deps.iter().map(String::as_str).collect::<Vec<_>>());
         let spec = DrawerSpec { module: &module, render_layout: &self.render, shade_layout: &self.shade, strip: comp.geometry().strip };
         FaceDrawer::new(gpu, &spec, DrawMode::parse(&comp.draw).expect("validated"), &self.images, width, height)
     }
@@ -408,8 +412,8 @@ impl GpuRasterBackend {
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
         let data = StorageData::new(&gpu, comp.storage(), gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         // Mesh shadows walk the composed storage too.
-        let occ = traversal::occlusion_wgsl(&comp.storage(), &comp.traversal, false);
-        let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Occlusion { wgsl: &occ, layout: &layouts.aux });
+        let (occ, walk) = mr_components::shaders::walk_program(&comp.storage(), &comp.traversal, false);
+        let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Occlusion { program: &occ, rays: &walk.rays, layout: &layouts.aux });
         let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone());
         let accum = ShadeState::new(&gpu, p.width, p.height, &comp.shading, opts.bounces, opts.spp, opts.accumulate);
         tracing::info!("gpu-raster: storage {}, geometry {}, draw {}, traversal {}, shading {}", comp.storage, comp.geometry, comp.draw, comp.traversal, comp.shading);
@@ -778,5 +782,34 @@ impl Renderer for GpuRasterBackend {
     fn memory(&self) -> MemoryReport {
         let gpu = self.world.memory_bytes() + self.data.memory_bytes() + self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size() + self.accum.memory_bytes() + self.drawer.memory_bytes() + self.width as u64 * self.height as u64 * 8;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every composition's shader composes from its modules and validates (no GPU needed).
+    #[test]
+    fn programs_compose() {
+        use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+        let mut n = 0;
+        for st in names_on(BACKEND, Slot::Storage) {
+            for k in names_on(BACKEND, Slot::Traversal) {
+                for g in names_on(BACKEND, Slot::Geometry) {
+                    for d in names_on(BACKEND, Slot::Draw) {
+                        for shading in names_on(BACKEND, Slot::Shading) {
+                            let c = Composition { storage: st.into(), geometry: g.into(), draw: d.into(), traversal: k.into(), shading: shading.into() };
+                            let (p, root, deps) = c.program();
+                            let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+                            let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+                            Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{c:?}: {e:?}"));
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(n > 100, "{n}");
     }
 }

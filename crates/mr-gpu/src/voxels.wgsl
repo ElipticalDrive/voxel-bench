@@ -9,11 +9,11 @@ struct VoxelParams {
     sun_color: vec3<f32>, max_dist: f32,
     ambient: vec3<f32>, exposure: f32,
     light_mask: u32, light_max_probe: u32, shadows: u32, max_lod: u32, // shadows: 0 none, 1 sun, 2 all
-    lod_radius: u32, _l0: u32, _l1: u32, _l2: u32,   // streamed Chebyshev radius per LOD (chunks)
+    lod_radius: u32, _la: u32, _lb: u32, _lc: u32,   // streamed Chebyshev radius per LOD (chunks)
 }
 
 struct Light { block: vec3<i32>, radius: f32, frac: vec3<f32>, intensity: f32, color: vec3<f32>, _pad: f32 }
-struct LightCell { key: vec3<i32>, start: u32, count: u32, _p0: u32, _p1: u32, _p2: u32 }
+struct LightCell { key: vec3<i32>, start: u32, count: u32, _pa: u32, _pb: u32, _pc: u32 }
 
 @group(1) @binding(0) var<uniform> vp: VoxelParams;
 @group(1) @binding(1) var<storage, read> table: array<vec4<u32>>;
@@ -29,14 +29,14 @@ const EMPTY: u32 = 0xffffffffu;
 const TOMB: u32 = 0xfffffffeu;
 const UNIFORM_BIT: u32 = 0x80000000u;
 
-fn hash3(c: vec3<i32>) -> u32 {
+fn hash_cell(c: vec3<i32>) -> u32 {
     let v = bitcast<vec3<u32>>(c);
     var h = (v.x * 0x8da6b343u) ^ (v.y * 0xd8163841u) ^ (v.z * 0xcb1ab31fu);
     return h ^ (h >> 16u);
 }
 
 fn lookup_chunk(c: vec3<i32>) -> u32 {
-    var i = hash3(c) & vp.table_mask;
+    var i = hash_cell(c) & vp.table_mask;
     for (var n = 0u; n <= vp.max_probe; n++) {
         let e = table[i];
         if (e.w == EMPTY) { return EMPTY; }
@@ -101,7 +101,7 @@ fn lod_of(abs_cell: vec3<i32>) -> u32 {
 
 
 fn lookup_light_cell(c: vec3<i32>) -> vec2<u32> {
-    var i = hash3(c) & vp.light_mask;
+    var i = hash_cell(c) & vp.light_mask;
     for (var n = 0u; n <= vp.light_max_probe; n++) {
         let e = light_cells[i];
         if (e.count == 0u) { return vec2<u32>(0u); }

@@ -42,13 +42,15 @@ const LIGHTING_ALLOWED: &[(&str, &str)] = &[
     ("crates/mr-world/", "scene description (sun direction, ambient), not lighting"),
     ("crates/mr-core/", "the lighting model's shared math and the environment type"),
     ("renderers/cpu-reference/", "the reference renderer's f64 model"),
+    ("crates/mr-gpu/src/program.rs", "the module system's test links a root to the lighting module"),
 ];
 
 /// Each back end's shading entry point (a string its sources must contain).
 const SHADING_USE: &[(&str, &str)] = &[
-    ("gpu-compute", "shading::gpu_wgsl("),
+    // `shaders::shading`: the shading component's module (`shading::gpu_wgsl`; PLAN step 9b).
+    ("gpu-compute", "shaders::shading("),
     ("gpu-raster", "shading::gpu_wgsl("),
-    ("gpu-rt", "shading::gpu_wgsl("),
+    ("gpu-rt", "shaders::shading("),
     ("gpu-discover", "shading::gpu_wgsl("),
     ("cpu-discover", "shading::gpu_wgsl("),
     ("gpu-splat", "shading::gpu_wgsl("),

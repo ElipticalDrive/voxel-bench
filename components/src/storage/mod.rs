@@ -81,8 +81,9 @@ impl GpuStorage {
         self.provides.contains(&Cap::Lod)
     }
 
-    /// The storage's WGSL with its top level and the adapters it needs. Expects the back
-    /// end to bind `aux` and `regions` (group 2, `gpu_data::layout`).
+    /// The storage's WGSL with its top level and the adapters it needs: one storage
+    /// instance's module (`crate::shaders::storage`), its bindings at group `S_GROUP` (a
+    /// constant of the instance; `gpu_data::layout`).
     pub fn source(&self) -> String {
         const NO_LOD: &str = "const S_HAS_LOD: bool = false;\nfn s_top_lod(key: vec3<i32>, lod: u32) -> u32 { return s_top(key); }\n";
         let (top, aux_words) = match self.kind {
@@ -91,10 +92,10 @@ impl GpuStorage {
             Kind::Clipmap => (NO_LOD.to_string(), 0),
         };
         format!(
-            "@group(2) @binding(0) var<storage, read> aux: array<u32>;\n\
-             @group(2) @binding(1) var<storage, read> regions: array<vec4<u32>>;\n\
-             @group(2) @binding(2) var<storage, read> aux4: array<vec4<u32>>;\n\
-             @group(2) @binding(3) var<uniform> region_head: vec4<u32>;\n\
+            "@group(S_GROUP) @binding(0) var<storage, read> aux: array<u32>;\n\
+             @group(S_GROUP) @binding(1) var<storage, read> regions: array<vec4<u32>>;\n\
+             @group(S_GROUP) @binding(2) var<storage, read> aux_v4: array<vec4<u32>>;\n\
+             @group(S_GROUP) @binding(3) var<uniform> region_head: vec4<u32>;\n\
              const AUX_WORDS: u32 = {}u;\n{top}\n{}\n{}\n{BLOCK_AT}",
             aux_words.max(1),
             self.wgsl,

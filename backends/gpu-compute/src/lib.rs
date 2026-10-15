@@ -17,11 +17,11 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use mr_components::storage::gpu_data::{self, StorageData};
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_components::{Cap, caps, names_on, require, Slot, components, storage, traversal};
+use mr_components::{Cap, caps, names_on, require, Slot, components, storage};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite, Occlusion};
-use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shader_source, shadows_param};
+use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
@@ -167,7 +167,7 @@ impl Composition {
         storage::gpu(&self.storage).expect("validated")
     }
 
-    /// Secondary rays walk their own storage or kernel (bind group 4, [`traversal::secondary_wgsl`]).
+    /// Secondary rays walk their own storage or kernel (bind group 4, the `shadow::` modules of [`Composition::program`]).
     fn separate(&self) -> bool {
         self.shadow_storage.is_some() || self.shadow_traversal.is_some()
     }
@@ -185,36 +185,38 @@ impl Composition {
         if self.tile <= 1 { "none" } else { &self.prepass }
     }
 
-    fn source(&self) -> String {
-        let st = self.storage();
-        let vis = traversal::gpu_wgsl(&self.traversal).expect("validated");
-        let shade = mr_components::shading::gpu_wgsl(&self.shading).expect("validated");
+    /// The shader as modules (PLAN step 9b): the primary walk (`primary::storage` at
+    /// group 2, `primary::kernel`), the secondary rays' own walk where they differ
+    /// (`shadow::`, storage at group 4), the shading component, and this back end's own
+    /// code as the root. Returns the program, the root and its dependencies.
+    fn program(&self) -> (mr_gpu::program::Program, String, Vec<String>) {
+        use mr_components::shaders::{self, KernelConsts};
+        let consts = KernelConsts { lod: self.lod, exact: self.exact, levels: self.levels };
+        let separate = self.separate();
+        let rays = if separate { "shadow::rays" } else { "primary::rays" };
+        let mut p = mr_gpu::program::Program::world(Some(rays));
+        let primary = shaders::walk(&mut p, "primary", &self.storage(), 2, &self.traversal, &consts);
+        if separate {
+            shaders::walk(&mut p, "shadow", &self.shadow_storage(), 4, self.shadow_traversal(), &KernelConsts::defaults(self.lod));
+        }
+        shaders::shading(&mut p, &self.shading, rays, 0, 4);
         let pre = mr_components::prepass::gpu_wgsl(self.prepass()).expect("validated");
-        let own = format!(
+        let root = format!(
             "// Composition: storage = {}, prepass = {}, traversal = {}, shading = {}\n\
              const PREPASS_TILE: u32 = {}u;\n\
-             const LOD: bool = {};\n\
-             const EXACT: bool = {};\n\
              const VIEW_STEPS: bool = {};\n\
-             const LEVEL_MASK: u32 = (S_LEVELS & {:#x}u) | 1u | (1u << S_TOP);\n\
-             {MESH_COMPOSITE_WGSL}\n{}\n{}\n{}\n{vis}\n{shade}\n{}\n{pre}",
-
+             {MESH_COMPOSITE_WGSL}\n{}\n{}\n{pre}",
             self.storage,
             self.prepass(),
             self.traversal,
             self.shading,
             self.tile.max(1),
-            self.lod,
-            self.exact,
             self.steps_view,
-            self.levels,
             mr_core::legend::ramp_wgsl(),
-            ShadeState::wgsl(0, 4),
-            st.source(),
             include_str!("main.wgsl"),
         );
-        let secondary = if self.separate() { traversal::secondary_wgsl(&self.shadow_storage(), self.shadow_traversal(), self.lod, 4) } else { traversal::OCCLUDED_WGSL.to_string() };
-        shader_source(&secondary, &own)
+        let deps = shaders::root_deps(&primary, &[shaders::SHADING, shaders::STATE]).into_iter().map(String::from).chain([rays.to_string()]).collect();
+        (p, root, deps)
     }
 }
 
@@ -381,8 +383,8 @@ impl GpuCompose {
             anyhow::bail!("shadow rays through another storage or kernel need 5 bind groups; this device has {}", gpu.device.limits().max_bind_groups);
         }
         // Mesh shadows are secondary rays too.
-        let occ = traversal::occlusion_wgsl(&comp.shadow_storage(), comp.shadow_traversal(), comp.lod);
-        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Occlusion { wgsl: &occ, layout: layout_s.as_ref().unwrap_or(&layout2) });
+        let (occ, walk) = mr_components::shaders::walk_program(&comp.shadow_storage(), comp.shadow_traversal(), comp.lod);
+        let meshes = MeshComposite::new(&gpu, &world, p.width, p.height, Occlusion { program: &occ, rays: &walk.rays, layout: layout_s.as_ref().unwrap_or(&layout2) });
         let rw = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: pixel,
@@ -470,9 +472,10 @@ impl GpuCompose {
 
     /// The main pipeline and, if the prepass has one, its pass.
     fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, comp: &Composition) -> anyhow::Result<(Main, Option<wgpu::ComputePipeline>)> {
-        let source = comp.source();
+        let (program, root, deps) = comp.program();
+        let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
         let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = mr_gpu::shader(&gpu.device, "compose", source);
+        let module = mr_gpu::program::compile(&gpu.device, "compose", &program, &root, &deps);
         let entry = |name| {
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(name),
@@ -798,4 +801,51 @@ impl Beam {
 enum Main {
     Compute(wgpu::ComputePipeline),
     Fragment(wgpu::RenderPipeline),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every composition's shader composes from its modules and validates (no GPU needed):
+    /// every storage and kernel, shadow rays through the same or another walk, every
+    /// shading and prepass, LOD on and off.
+    #[test]
+    fn programs_compose() {
+        use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+        let storages = names_on(BACKEND, Slot::Storage);
+        let kernels = names_on(BACKEND, Slot::Traversal);
+        let mut n = 0;
+        for st in &storages {
+            for k in &kernels {
+                for (ss, sk) in [(None, None), (Some("tree64"), None), (None, Some("sphere")), (Some("distance"), Some("incremental"))] {
+                    for shading in names_on(BACKEND, Slot::Shading) {
+                        for (prepass, tile) in [("none", 1), ("beam", 8)] {
+                            let lod = *st == "bricks" && *k == "refloor" && ss.is_none() && sk.is_none();
+                            let c = Composition {
+                                storage: st.to_string(),
+                                traversal: k.to_string(),
+                                shadow_storage: ss.filter(|s| s != st).map(String::from),
+                                shadow_traversal: sk.filter(|s| s != k).map(String::from),
+                                shading: shading.to_string(),
+                                prepass: prepass.into(),
+                                tile,
+                                exact: false,
+                                levels: 0x15,
+                                steps_view: true,
+                                lod,
+                                fragment: false,
+                            };
+                            let (p, root, deps) = c.program();
+                            let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+                            let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+                            Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{c:?}: {e:?}"));
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(n > 100, "{n}");
+    }
 }

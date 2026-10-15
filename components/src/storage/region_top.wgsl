@@ -4,7 +4,7 @@
 // comes from the storage.
 
 fn s_top(key: vec3<i32>) -> u32 {
-    var i = hash3(key) & region_head.x;
+    var i = hash_cell(key) & region_head.x;
     for (var n = 0u; n <= region_head.y; n++) {
         let e = regions[i];
         if (e.w == EMPTY) { return EMPTY; }

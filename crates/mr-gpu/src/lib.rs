@@ -10,6 +10,7 @@ use anyhow::{Context, bail};
 use mr_core::{CompletedFrame, FrameSink, FrameStats, Waker};
 
 pub mod meshes;
+pub mod program;
 pub mod voxels;
 
 pub use wgpu;
@@ -102,14 +103,19 @@ impl Gpu {
 /// refactor that must not change what runs leaves the set of files identical).
 pub fn shader(dev: &wgpu::Device, label: &str, src: String) -> wgpu::ShaderModule {
     if let Some(dir) = std::env::var_os("MR_DUMP_WGSL") {
-        // FNV-1a: stable across builds and runs (unlike std's hasher).
-        let h = src.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
-        let path = std::path::Path::new(&dir).join(format!("{}-{h:016x}.wgsl", label.replace([' ', '/'], "_")));
-        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &src)) {
-            tracing::warn!("MR_DUMP_WGSL: {}: {e}", path.display());
-        }
+        dump_wgsl(&dir, label, &src);
     }
     dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(src.into()) })
+}
+
+/// Writes `src` to `dir/<label>-<hash>.wgsl` (`MR_DUMP_WGSL`).
+pub(crate) fn dump_wgsl(dir: &std::ffi::OsStr, label: &str, src: &str) {
+    // FNV-1a: stable across builds and runs (unlike std's hasher).
+    let h = src.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    let path = std::path::Path::new(dir).join(format!("{}-{h:016x}.wgsl", label.replace([' ', '/'], "_")));
+    if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, src)) {
+        tracing::warn!("MR_DUMP_WGSL: {}: {e}", path.display());
+    }
 }
 
 /// What a back end needs of a GPU device (all of them take the adapter's limits).
