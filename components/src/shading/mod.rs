@@ -3,6 +3,9 @@
 //! view ray; `px`: the pixel, for per-pixel state such as random sequences and
 //! accumulation) and `shade` on the CPU (`direct::cpu`). Lit / unlit is
 //! the pass mode, not a component; a shading component decides how either is computed.
+//!
+//! Placement (PLAN step 12): inline, called where the strategy finds the hit, or deferred,
+//! the common pass `deferred.wgsl` over the hit records the strategy wrote.
 
 pub mod direct {
     pub mod cpu;

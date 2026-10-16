@@ -57,6 +57,12 @@ fn pixel_ray(px: vec2<f32>) -> vec3<f32> {
     return camera_ray(fr.forward, fr.right, fr.up, fr.tan_half_fov, fr.aspect, px, fr.size);
 }
 
+// The deferred shading pass's view of the frame (`shading/deferred.wgsl`).
+fn view_ray(px: vec2<u32>) -> vec3<f32> { return pixel_ray(vec2<f32>(px) + 0.5); }
+fn view_origin() -> vec3<f32> { return fr.cam_frac; }
+fn view_sky() -> vec4<f32> { return fr.sky; }
+fn view_lit() -> bool { return fr.mode == 1u; }
+
 // The hit of primary ray `d` on the plane of `face` at `plane` (its coordinate along the
 // face's normal axis, camera-block relative): analytic, rather than interpolated
 // attributes, so texel selection matches the reference even far away. `near` (a point on

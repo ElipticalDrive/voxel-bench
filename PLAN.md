@@ -117,7 +117,20 @@ The user's architecture, settled with finality and without limits for later (IDE
     as optional capabilities: opaque-only pipelines compile without them and cost nothing
     more): every strategy outputs one hit record; shading
     placement (inline or deferred) a choice for every strategy; meshes a surface source
-    writing into it, no longer a special stage.
+    writing into it, no longer a special stage. Sub-steps (2026-10-16):
+    - 12a: the stored hit record defined once (`pack_hit` / `record_surface` in
+      `mr::voxels`: distance + block + face, 8 bytes, high bits reserved for optional
+      capabilities) and one deferred shading pass for every strategy
+      (`shading/deferred.wgsl`); the face drawer's `gbuffer` rebuilt on them.
+    - 12b: placement a choice for ray casting (gpu-compute, gpu-rt, `cpu`): the walk writes
+      records, the common pass shades; the CPU record and shade loop.
+    - 12c: the other strategies on the record (splat's resolve, columns on GPU and CPU,
+      cpu-raster's buffer, `visbuffer` as the face-id encoding decoded by its face source),
+      with placement wherever a strategy lacks it.
+    - 12d: meshes as a surface source writing records (a mesh capability in the reserved
+      bits, compiled in only with meshes), replacing `MeshComposite` and the drawer's
+      after-shading mesh pass; transparency's capabilities (layers, continued rays, the
+      opaque-only query) named in the registry, built after the architecture.
 13. **Strategies as components, back ends as executors** (first: design stateful nodes and
     two-way edges, and the executor's fusion and pipelining, IDEAS §22; needs step 11's
     timing to show executors cost nothing): discovery's pieces (sampler,
@@ -507,3 +520,30 @@ speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/
 - Not yet: per-node update cost (world deltas into storages and geometry) is measured per
   frame as a whole (`update_ms`), not per node; stages inside one fused pass cannot be
   split (they are one node set by construction).
+
+**2026-10-16, step 12a: the common hit record and the deferred shading pass.**
+`crates/mr-gpu/src/voxels.wgsl` (`pack_hit`, `record_surface`), `components/src/shading/deferred.wgsl`,
+`components/src/draw/{gbuffer/gpu.wgsl,faces.wgsl,drawer.rs}`:
+- **The record** (GPU): one rg32uint texel per pixel: `t` along the pixel's unit primary ray
+  (f32 bits) and an id word: 0 = sky, else bit 0, face (bits 1-3), block (bits 4-19); bits
+  20-31 are for optional capabilities (mesh surfaces, transparency's layers) and stay 0 in
+  pipelines without them. `record_surface(r, o, d)` rebuilds the `Surface` as
+  `face_plane_hit` does (cell's normal axis from the face plane, the others from the point;
+  one block per cell whatever the LOD, as `surface_of` tiles textures).
+- **The deferred pass**, written once: a compute thread per pixel reads the record, rebuilds
+  the surface and calls the shading component. A back end provides `HITS_GROUP` and its view
+  (`view_ray`, `view_origin`, `view_sky`, `view_lit`); the face drawer's are in `faces.wgsl`.
+- **`gbuffer` rebuilt on it**: the raster pass writes `pack_hit` (8 bytes per pixel, one
+  target) instead of the hit point, face and block (20 bytes, two targets); its own shade
+  entry is gone. `visbuffer` keeps its face-id encoding for now (12c).
+- Verified: builds without warnings, 71 unit tests, 4 GPU end-to-end tests. Pixel A/B: raster
+  and visbuffer identical (gpu-raster, gpu-discover; lit + unlit); gbuffer differs at 80-220
+  grazing pixels per frame on all three drawer back ends, because `t` is now stored rather
+  than re-derived from the stored point: psnr against the reference equal or up 0.1 dB
+  (gpu-raster unlit 52.8 -> 52.9, now equal to forward `raster`; gpu-discover lit 49.3 ->
+  49.4), and the gbuffer image is closer to forward `raster`'s (125-169 differing pixels,
+  down from 148-224; the three drawers inherently differ by 150-250 such pixels). Mesh mode
+  (gpu-raster gbuffer): psnr unchanged (63.5 / 71.2). Timing A/B (3 rounds, 300 frames):
+  gbuffer GPU time -5.2% lit / -10.8% unlit on gpu-raster, -3.6% / -4.2% on gpu-discover,
+  -48% / -68% on cpu-discover, whose face set has much overdraw (its draw stage 0.73 -> 0.19 ms:
+  8 bytes written per fragment instead of 20); raster and visbuffer within ±0.2%.

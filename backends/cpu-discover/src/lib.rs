@@ -93,7 +93,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("threads", "Discovery threads (0 = all cores)", 0, 256, 0, false),
         shadows_param(),
         ParamSpec::int("max_steps", "Shadow-ray DDA step limit", 32, 16384, 2048, true),
-        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment; visbuffer = face ids, then one compute pass shades each pixel; gbuffer = hit points and blocks, then the same (no diagnostic views)", &names_on(BACKEND, Slot::Draw), "raster", true),
+        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment; visbuffer = face ids, then one compute pass shades each pixel; gbuffer = the common hit records, then the common deferred pass (no diagnostic views)", &names_on(BACKEND, Slot::Draw), "raster", true),
         ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB)", 64, 6144, 1536, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),

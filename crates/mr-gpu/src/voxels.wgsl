@@ -82,6 +82,29 @@ fn surface_of(h: Hit, o: vec3<f32>, d: vec3<f32>) -> Surface {
     return Surface(p, face_normal(face), local, h.block, face);
 }
 
+// The stored hit record (the visibility buffer, PLAN step 12): what a visibility strategy
+// writes per pixel when shading is deferred, and all a shading pass needs to rebuild the
+// `Surface`. Core, 8 bytes (an rg32uint texel): x = `t`, the distance along the pixel's unit
+// primary ray (f32 bits); y = 0 for no hit (sky), else bit 0 set, the face in bits 1-3 and
+// the block in bits 4-19. Bits 20-31 belong to optional capabilities (mesh surfaces, layers
+// for transparency; IDEAS §23) and are 0 in pipelines without them.
+fn pack_hit(t: f32, block: u32, face: u32) -> vec2<u32> {
+    return vec2<u32>(bitcast<u32>(t), 1u | (face << 1u) | ((block & 0xffffu) << 4u));
+}
+
+// The surface of record `r` on ray (`o`, `d`): the point at `t`, the face's normal and the
+// cell behind the face (the normal axis from the face plane, the others from the point),
+// as `face_plane_hit` finds it; a cell spans one block whatever the walk's LOD, so textures
+// tile per block as `surface_of` makes them.
+fn record_surface(r: vec2<u32>, o: vec3<f32>, d: vec3<f32>) -> Surface {
+    let face = (r.y >> 1u) & 7u;
+    let a = face / 2u;
+    let p = o + d * bitcast<f32>(r.x);
+    var cell = floor(p);
+    cell[a] = round(p[a]) - select(0.0, 1.0, (face & 1u) == 0u);
+    return Surface(p, face_normal(face), p - cell, (r.y >> 4u) & 0xffffu, face);
+}
+
 // Chunk-table key: LOD folded into y, mirroring `voxels::table_key`.
 fn chunk_key(c: vec3<i32>, lod: u32) -> vec3<i32> {
     return vec3<i32>(c.x, c.y * 8 + i32(lod), c.z);

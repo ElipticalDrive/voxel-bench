@@ -2,7 +2,8 @@
 //! §16 step 2). The faces come from the visibility strategy: every face of the geometry
 //! component (`faces`, the rasterisers) or the face set discovery found (`quadtree`,
 //! `cluster`). `raster` depth-tests and shades each fragment; `visbuffer` writes face ids
-//! and `gbuffer` hit points, then one compute pass shades each pixel (`drawer::FaceDrawer`).
+//! and `gbuffer` the common hit record (`pack_hit`), then one compute pass shades each pixel
+//! (`drawer::FaceDrawer`; `gbuffer`'s is the common deferred pass, `crate::shading`).
 
 pub mod drawer;
 
@@ -19,7 +20,8 @@ pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {
         "raster" => include_str!("raster/gpu.wgsl"),
         "visbuffer" => include_str!("visbuffer/gpu.wgsl"),
-        "gbuffer" => include_str!("gbuffer/gpu.wgsl"),
+        // The face drawer's images are group 3 (`drawer::FaceDrawer::images_layout`).
+        "gbuffer" => concat!(include_str!("gbuffer/gpu.wgsl"), "\nconst HITS_GROUP: u32 = 3u;\n", include_str!("../shading/deferred.wgsl")),
         _ => return None,
     })
 }

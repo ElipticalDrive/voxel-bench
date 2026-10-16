@@ -4,8 +4,8 @@
 //!
 //! * `raster` (forward): faces drawn and shaded in one pass (`fill`); in lit mode with a
 //!   depth prepass first, then shaded where the depth is equal (`depth`, `equal`).
-//! * `visbuffer` / `gbuffer` (deferred): faces drawn into an id (or hit point and block)
-//!   target, then one compute pass shades each pixel once (`shade`), reading the targets
+//! * `visbuffer` / `gbuffer` (deferred): faces drawn into an id (or hit record, PLAN step
+//!   12) target, then one compute pass shades each pixel once (`shade`), reading the target
 //!   through the images group ([`FaceDrawer::images_layout`], the shade layout's last
 //!   group).
 //!
@@ -65,10 +65,9 @@ pub struct FaceDrawer {
     mode: DrawMode,
     pipes: Pipes,
     images_layout: wgpu::BindGroupLayout,
-    /// visbuffer: face ids; gbuffer: block ids (1x1 while forward).
+    /// visbuffer: face ids (r32uint); gbuffer: hit records (rg32uint, `pack_hit`); 1x1 while
+    /// forward.
     ids: wgpu::TextureView,
-    /// gbuffer: hit point and face (1x1 otherwise).
-    gpos: wgpu::TextureView,
     width: u32,
     height: u32,
 }
@@ -120,7 +119,7 @@ fn target(gpu: &Gpu, label: &str, w: u32, h: u32, format: wgpu::TextureFormat) -
 }
 
 impl FaceDrawer {
-    /// The deferred shade pass's images group: ids (0), output (1), G-buffer points (2).
+    /// The deferred shade pass's images group: ids or hit records (0), output (1).
     pub fn images_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         let compute = wgpu::ShaderStages::COMPUTE;
         let tex = |binding, sample_type| wgpu::BindGroupLayoutEntry {
@@ -143,7 +142,6 @@ impl FaceDrawer {
                     },
                     count: None,
                 },
-                tex(2, wgpu::TextureSampleType::Float { filterable: false }),
             ],
         })
     }
@@ -151,7 +149,7 @@ impl FaceDrawer {
     /// `images_layout` is the one the shade layout was built with.
     pub fn new(gpu: &Gpu, spec: &DrawerSpec, mode: DrawMode, images_layout: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<Self> {
         let pipes = Self::pipes(gpu, spec, mode)?;
-        let mut d = Self { mode, pipes, images_layout: images_layout.clone(), ids: target(gpu, "ids", 1, 1, wgpu::TextureFormat::R32Uint), gpos: target(gpu, "gbuffer points", 1, 1, wgpu::TextureFormat::Rgba32Float), width, height };
+        let mut d = Self { mode, pipes, images_layout: images_layout.clone(), ids: target(gpu, "ids", 1, 1, wgpu::TextureFormat::R32Uint), width, height };
         d.resize(gpu, width, height);
         Ok(d)
     }
@@ -171,19 +169,20 @@ impl FaceDrawer {
     /// Deferred targets at full size only while used.
     pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) {
         (self.width, self.height) = (width, height);
-        let size = |used: bool| if used { (width, height) } else { (1, 1) };
-        let (w, h) = size(self.mode.deferred());
-        self.ids = target(gpu, "ids", w, h, wgpu::TextureFormat::R32Uint);
-        let (w, h) = size(self.mode == DrawMode::Gbuffer);
-        self.gpos = target(gpu, "gbuffer points", w, h, wgpu::TextureFormat::Rgba32Float);
+        let (w, h) = if self.mode.deferred() { (width, height) } else { (1, 1) };
+        self.ids = target(gpu, "ids", w, h, self.ids_format());
     }
 
     pub fn memory_bytes(&self) -> u64 {
         match self.mode {
             DrawMode::Raster => 0,
             DrawMode::Visbuffer => self.width as u64 * self.height as u64 * 4,
-            DrawMode::Gbuffer => self.width as u64 * self.height as u64 * 20,
+            DrawMode::Gbuffer => self.width as u64 * self.height as u64 * 8,
         }
+    }
+
+    fn ids_format(&self) -> wgpu::TextureFormat {
+        if self.mode == DrawMode::Gbuffer { wgpu::TextureFormat::Rg32Uint } else { wgpu::TextureFormat::R32Uint }
     }
 
     fn pipes(gpu: &Gpu, spec: &DrawerSpec, mode: DrawMode) -> anyhow::Result<Pipes> {
@@ -213,7 +212,7 @@ impl FaceDrawer {
             })
         };
         use wgpu::CompareFunction::{Equal, Greater};
-        use wgpu::TextureFormat::{R32Uint, Rgba8Unorm, Rgba32Float};
+        use wgpu::TextureFormat::{R32Uint, Rg32Uint, Rgba8Unorm};
         let color = [Some(wgpu::ColorTargetState { format: Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
         let pipes = match mode {
             DrawMode::Raster => Pipes::Forward {
@@ -223,7 +222,7 @@ impl FaceDrawer {
             },
             DrawMode::Visbuffer | DrawMode::Gbuffer => {
                 let ids = if mode == DrawMode::Gbuffer {
-                    render("gbuffer", &[Some(Rgba32Float.into()), Some(R32Uint.into())], true, Greater, true)
+                    render("hit records", &[Some(Rg32Uint.into())], true, Greater, true)
                 } else {
                     render("visibility ids", &[Some(R32Uint.into())], true, Greater, true)
                 };
@@ -314,11 +313,9 @@ impl FaceDrawer {
                     let attach = |view| {
                         Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })
                     };
-                    let gbuffer = [attach(&self.gpos), attach(&self.ids)];
-                    let idbuffer = [attach(&self.ids)];
                     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("visibility ids"),
-                        color_attachments: if self.mode == DrawMode::Gbuffer { &gbuffer } else { &idbuffer },
+                        color_attachments: &[attach(&self.ids)],
                         depth_stencil_attachment: depth_attachment(wgpu::LoadOp::Clear(0.0), keep(f.keep_depth || extra.is_some())),
                         timestamp_writes: if f.ts.0 { f.ring.render_timestamps(f.ticket, true, false) } else { None },
                         occlusion_query_set: None,
@@ -332,7 +329,6 @@ impl FaceDrawer {
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.ids) },
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(f.out) },
-                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.gpos) },
                     ],
                 });
                 f.ring.stage(enc, f.ticket, "shade", &f.nodes.shade);
