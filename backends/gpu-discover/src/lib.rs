@@ -58,7 +58,7 @@ use mr_components::graph::{self, Role};
 use mr_components::shaders::Walks;
 use mr_components::storage::gpu_data::{self, Bound, StorageSet};
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
+use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawNodes, DrawerSpec, FaceDrawer};
 use mr_components::{draw, names_on, require, Slot};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
@@ -484,6 +484,9 @@ pub struct GpuDiscover {
     last_stats: Option<Vec<u32>>,
     last_parity: usize,
     ring: FrameRing,
+    /// The nodes of the timed stages (PLAN step 11): discovery's, then the drawer's.
+    vis_nodes: Vec<String>,
+    draw_nodes: DrawNodes,
     slots: HashMap<IVec3, u16>,
     free_slots: Vec<u16>,
     slots_dirty: bool,
@@ -862,7 +865,9 @@ impl GpuDiscover {
         Ok(Self {
             storages,
             bind_st: None,
-            ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()),
+            ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()).with_stages(p.stage_times),
+            vis_nodes: g.ids(&[Role::Visibility]),
+            draw_nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
             sized,
             world,
             opts,
@@ -1203,6 +1208,7 @@ impl GpuDiscover {
             ring: &self.ring,
             ticket,
             ts,
+            nodes: &self.draw_nodes,
         };
         let draw = |pass: &mut wgpu::RenderPass<'_>| pass.draw_indirect(&self.args, draw_ofs);
         let main = match (overdraw, painter) {
@@ -1232,11 +1238,13 @@ impl GpuDiscover {
     /// `view = tiles | rays`: blends the diagnostic overlay over the output (`overdraw`:
     /// replaces the counts with their colours). `frame` is the
     /// discovery frame to show (0: nothing was discovered this frame).
-    fn encode_overlay(&mut self, enc: &mut wgpu::CommandEncoder, frame: u32, off_x: u32, off_y: u32, cols: u32, rows: u32) {
+    fn encode_overlay(&mut self, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, frame: u32, off_x: u32, off_y: u32, cols: u32, rows: u32) {
         let view = view_code(&self.opts.view);
         if view < 2 {
             return;
         }
+        // A diagnostic, not a node's work.
+        self.ring.stage(enc, ticket, "view", &[]);
         let u = OverlayUniform { view, frame, tile: self.opts.tile, cols, rows, need_off: self.sized.need_off, lat_w: self.sized.lat_w, off_x, off_y, view_max: self.opts.view_max.clamp(1, 255), _p: [0; 2] };
         if view == 4 {
             // The overlay ramps the counts, so it reads them from a copy of the output.
@@ -1307,8 +1315,8 @@ impl GpuDiscover {
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         self.encode_shade(&mut enc, parity, &world_bg, req.mode, (true, true), ticket);
         let tile = self.opts.tile;
-        self.encode_overlay(&mut enc, 0, 0, 0, self.width.div_ceil(tile), self.height.div_ceil(tile));
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(req.mode), legend: self.legend() };
+        self.encode_overlay(&mut enc, ticket, 0, 0, 0, self.width.div_ceil(tile), self.height.div_ceil(tile));
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(req.mode), legend: self.legend(), stages: Vec::new() };
         self.ring.submit(&self.gpu, enc, ticket, &self.sized.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
     }
@@ -1531,6 +1539,7 @@ impl Renderer for GpuDiscover {
         };
         // Empty pass carrying the frame's begin timestamp, so the clears below are timed.
         enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("frame begin"), timestamp_writes: self.ring.compute_timestamps(ticket, true, false) });
+        self.ring.stage(&mut enc, ticket, "discover", &self.vis_nodes);
         mark(&mut enc, 0);
         enc.clear_buffer(&self.stats, 0, None);
         enc.clear_buffer(&self.keys[parity], 0, None);
@@ -1656,6 +1665,7 @@ impl Renderer for GpuDiscover {
         }
         mark(&mut enc, 2 + 2 * MAX_LEVELS as u32);
         if self.merging() {
+            self.ring.stage(&mut enc, ticket, "merge", &self.vis_nodes);
             // Merge rows of faces into runs (timed with the raster).
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("row merge"), timestamp_writes: None });
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
@@ -1669,6 +1679,7 @@ impl Renderer for GpuDiscover {
         }
         if self.opts.order == "painter" {
             // Sort the list back to front (timed with the raster).
+            self.ring.stage(&mut enc, ticket, "sort", &self.draw_nodes.draw);
             enc.clear_buffer(&self.hist, 0, None);
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("painter sort"), timestamp_writes: None });
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
@@ -1684,6 +1695,7 @@ impl Renderer for GpuDiscover {
         self.encode_shade(&mut enc, parity, &world_bg, req.mode, (false, true), ticket);
         mark(&mut enc, 3 + 2 * MAX_LEVELS as u32);
         if self.opts.incremental {
+            self.ring.stage(&mut enc, ticket, "sky mask", &self.vis_nodes);
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sky mask"), timestamp_writes: None });
             pass.set_pipeline(&self.pipe_sky);
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
@@ -1692,9 +1704,10 @@ impl Renderer for GpuDiscover {
             let g = (self.width * self.height).div_ceil(256);
             pass.dispatch_workgroups(g.min(32768), g.div_ceil(32768), 1);
         }
-        self.encode_overlay(&mut enc, self.frame, off_x, off_y, cols, rows);
+        self.encode_overlay(&mut enc, ticket, self.frame, off_x, off_y, cols, rows);
         // Audit runs after the timed passes so it does not inflate gpu_ms.
         if self.opts.audit {
+            self.ring.stage(&mut enc, ticket, "audit", &[]);
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover audit"), timestamp_writes: None });
             pass.set_pipeline(&self.pipe_audit);
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
@@ -1715,7 +1728,7 @@ impl Renderer for GpuDiscover {
             }
             self.stages[i].tag = (self.frame, parity as u32);
         }
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(req.mode), legend: self.legend() };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(req.mode), legend: self.legend(), stages: Vec::new() };
         self.ring.submit(&self.gpu, enc, ticket, &self.sized.output, req.frame_id, req.readback, stats);
         if let Some(i) = stage {
             let st = &self.stages[i];
@@ -1808,7 +1821,7 @@ impl Renderer for GpuDiscover {
         self.bind_disc = None;
         self.bind_ov = None;
         self.force_full = true;
-        self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
+        self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone()).with_stages(self.ring.stages());
         Ok(())
     }
 

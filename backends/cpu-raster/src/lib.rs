@@ -92,6 +92,8 @@ struct Tri {
 }
 
 pub struct CpuRaster {
+    /// The nodes of the timed stages (PLAN step 11): meshing, transform, raster, shading.
+    stage_nodes: [Vec<String>; 4],
     width: u32,
     height: u32,
     opts: Options,
@@ -119,7 +121,10 @@ impl CpuRaster {
         anyhow::ensure!(opts.merge == "block", "merge = `{}`: cpu-raster has no per-pixel block lookup (only `block`)", opts.merge);
         let mesh = mesh_fn(&require(BACKEND, Slot::Geometry, &opts.geometry)?);
         let knobs = Knobs { cull: opts.cull, ..Default::default() };
+        let g = mr_components::graph::of_init(BACKEND, &p)?;
+        use mr_components::graph::Role;
         Ok(Self {
+            stage_nodes: [g.ids(&[Role::Geometry]), g.ids(&[Role::Visibility]), g.ids(&[Role::Draw]), g.ids(&[Role::Shading])],
             width: p.width,
             height: p.height,
             pool: Pool::new(p.devices.cpu_threads(opts.threads))?,
@@ -382,6 +387,11 @@ impl CpuRaster {
                 ("raster_ms".into(), t_raster - t_geom),
                 ("shade_ms".into(), total - t_raster),
             ],
+            stages: [("geometry", t_mesh), ("transform", t_geom - t_mesh), ("raster", t_raster - t_geom), ("shade", total - t_raster)]
+                .into_iter()
+                .zip(&self.stage_nodes)
+                .map(|((name, ms), nodes)| StageTime::cpu(name, nodes, ms as f32))
+                .collect(),
         };
         stats
     }

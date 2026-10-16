@@ -70,6 +70,9 @@ pub struct RunSpec {
     /// `native`: run `cpu` compositions as pipelines compiled for this machine (PLAN step
     /// 8, `pipelines`), built before their pass if not cached; `off`: the generic build.
     pub compile: Compile,
+    /// Time every stage of every frame (PLAN step 11): each GPU stage costs a timestamp
+    /// (measured: +0.1–0.6% GPU time); `false` runs exactly as before step 11.
+    pub stage_times: bool,
 }
 
 #[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -98,6 +101,7 @@ impl Default for RunSpec {
             repeats: 1,
             devices: Default::default(),
             compile: Compile::Off,
+            stage_times: true,
         }
     }
 }

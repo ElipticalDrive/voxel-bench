@@ -14,8 +14,8 @@ use crate::plan::Plan;
 use crate::report::PassReport;
 
 /// Bumped when fields change meaning or are added (2: `features`; 3: `sites`, `graph`,
-/// `graph_key`).
-pub const VERSION: u32 = 3;
+/// `graph_key`; 4: `stages`).
+pub const VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
@@ -112,6 +112,23 @@ pub struct Observation {
     pub bad_pct: Option<f64>,
     /// The renderer's own counters, averaged over the frames.
     pub counters: BTreeMap<String, f64>,
+    /// Time per stage (PLAN step 11; version 4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<ObservedStage>,
+}
+
+/// A stage's mean times over the frames that ran it, and the nodes it ran.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ObservedStage {
+    pub name: String,
+    /// Node ids in the pipeline's graph, and what each is (`role.component`).
+    pub nodes: Vec<String>,
+    pub components: Vec<String>,
+    pub frames: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_ms: Option<f64>,
 }
 
 impl Observation {
@@ -164,7 +181,27 @@ impl Observation {
             psnr_min: q.map(|q| q.psnr.min),
             bad_pct: q.map(|q| q.bad_pct.mean),
             counters: sums.into_iter().map(|(k, (s, n))| (k, s / n.max(1) as f64)).collect(),
+            stages: Vec::new(),
         }
+        .with_stages(r)
+    }
+
+    fn with_stages(mut self, r: &PassReport) -> Self {
+        let g = self.pipeline();
+        let what = |id: &String| g.as_ref().and_then(|g| g.nodes.get(id)).map_or_else(|| id.clone(), |n| format!("{}.{}", n.role.name(), n.component));
+        self.stages = r
+            .stages
+            .iter()
+            .map(|s| ObservedStage {
+                name: s.name.clone(),
+                components: s.nodes.iter().map(what).collect(),
+                nodes: s.nodes.clone(),
+                frames: s.frames,
+                cpu_ms: s.cpu_ms.as_ref().map(|x| x.mean),
+                gpu_ms: s.gpu_ms.as_ref().map(|x| x.mean),
+            })
+            .collect();
+        self
     }
 }
 

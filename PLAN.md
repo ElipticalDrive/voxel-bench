@@ -66,6 +66,7 @@ The user's architecture, settled with finality and without limits for later (IDE
   end, not a configuration; two GPUs cannot be combined (requirement 2).
 - **No history and no post stages** (§18 pieces 7 and 8).
 - **No per-stage measurement** (§18: every piece reports its own time; the planner needs it).
+  (Step 11 done: every frame reports its stages, their nodes and CPU / GPU times.)
 - **Only the `cpu` back end compiles on demand** (§17; step 16). (Step 10 done: knobs are
   declared specialisable or not, CPU components declare capabilities, components declare
   implementations per device kind and API, nodes carry `api`, the graph key is the compile
@@ -454,3 +455,55 @@ speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/
 - Not yet: executor-level knobs without a node (e.g. `cpu`'s `view`, `schedule`) cannot be
   baked into a graph (none is baked today; step 16 decides where they live); GPU builds
   have no compile cache yet (step 16); `hosts` lists remain until step 13.
+
+**2026-10-16, step 11 done: per-stage measurement.** `crates/mr-core/src/renderer.rs`
+(`StageTime`, `FrameStats::stages`), `crates/mr-gpu/src/lib.rs` (`FrameRing::stage`),
+`components/src/draw/drawer.rs` (`DrawNodes`), `src/report.rs` (`StageSummary`, `stage_table`):
+- **A stage** is a timed part of a frame and the graph nodes it runs: callers only, since
+  storages and kernels are fused into their callers and timed with them (`Checked::ids`).
+  Inline-fused work is one stage (`cast+shade` = visibility + shading); nodes in separate
+  passes are separate stages. Work no node owns has no nodes (gpu-discover's `view`
+  overlay and `audit`, cpu-voxelspace's `transpose`).
+- **GPU stages**: `FrameRing::stage(enc, ticket, name, nodes)` writes a timestamp between
+  the commands before and after (an empty compute pass; up to 15 stages a frame); the last
+  stage ends at submit; times are read back with the frame. **CPU stages**: timed by the
+  back end (`StageTime::cpu`). A stage may have both (gpu-rt's `geometry`: BLAS inputs on
+  the CPU, builds on the GPU).
+- Every back end: gpu-compute `meshes`, `prepass`, `cast+shade`; gpu-raster `geometry` and
+  `cull` (CPU), then the drawer's `draw+shade` (forward, meshes included) or `draw`,
+  `shade`, `meshes` (deferred); gpu-discover `discover`, `merge`, `sort`, the drawer's,
+  `sky mask`, `view`, `audit`; cpu-discover `discover` (CPU) and the drawer's; gpu-rt
+  `geometry`, `cast+shade`; gpu-splat `splat+shade`; gpu-voxelspace `columns+shade`; `cpu`
+  `storage` (grid rebuilds, some frames) and `cast+shade`; cpu-raster `geometry`,
+  `transform`, `raster`, `shade`; cpu-voxelspace `columns+shade`, `transpose`. Stage times
+  add up to the frame's GPU time (e.g. gpu-compute + beam: 0.388 + 0.696 vs 1.08 ms).
+- Reports: `per_frame[].stages`, pass `stages` (summaries over the frames that ran each,
+  CPU and GPU parts and repeats summed per frame), a stage table after the run summary,
+  `.agent/bin/report` prints them. Observations version 4 carry `stages` (mean ms, nodes
+  and what each is, `role.component`). The live GUI shows smoothed stage rows in the stats
+  (hover: the nodes).
+- `run.stage_times` (default true): GPU stages cost a timestamp each, measured +0.1–0.6% GPU
+  time; `false` writes no marks (GPU time then identical to the build before, ±0.1%). CPU
+  stages are always reported.
+- Verified: builds without warnings, 71 unit tests (new: stage summaries; a postcard round
+  trip of frame stats with stages: a `skip_serializing_if` there broke every worker, caught
+  on the first run), 4 GPU end-to-end tests (now asserting stages on gpu-compute,
+  gpu-raster, and meshes in the forward drawer's stage); runs exercising every stage path
+  (meshes, deferred meshes, incremental, merge, painter, views, audit); pixel A/B 72/72
+  frames identical (all 10 back ends, lit + unlit), 18/18 in mesh mode; GUI screenshot.
+- **Timing A/B, an unresolved loss**: GPU time within −0.4…+0.7% (all GPU back ends);
+  fps of CPU back ends within ±0.8%, of GPU back ends within noise except the two whose
+  frame is bound by CPU geometry building: gpu-raster −1.3…−4.6% and gpu-rt −1.6…−2.3% fps
+  over seven A/Bs (A/A noise ±1.5%). The extra time is in their remesh / BLAS-input code
+  (same chunks per frame, +2–4% per chunk), whose hot function (`mr_mesh::mesh_chunk_merge`)
+  is instruction-identical in both builds. Not the marks (stages on vs off: no difference),
+  not the shared infrastructure (a build with it and the old back ends: no loss), not a
+  relink (the old build with a meaningless change: no loss; the new code with it: loss).
+  Removing the per-frame CPU stage records from those two back ends recovered about half,
+  within noise; their execution costs well under a microsecond against a ~100 µs loss, so
+  it is presumably how the surrounding frame code compiles. Without a profiler on this
+  machine the bisect could not go further. `scripts/ab/perf.sh` gained `AFTER_BIN` for
+  such probes.
+- Not yet: per-node update cost (world deltas into storages and geometry) is measured per
+  frame as a whole (`update_ms`), not per node; stages inside one fused pass cannot be
+  split (they are one node set by construction).

@@ -91,6 +91,17 @@ pub struct DrawFrame<'a> {
     pub ticket: Ticket,
     /// Whether these passes carry the frame's (begin, end) timestamps.
     pub ts: (bool, bool),
+    /// The graph nodes of the drawer's timed stages.
+    pub nodes: &'a DrawNodes,
+}
+
+/// The graph nodes the drawer's stages run (PLAN step 11): drawing the faces, deferred
+/// shading, and what `extra` draws (meshes). A forward drawer runs them in one stage.
+#[derive(Clone, Debug, Default)]
+pub struct DrawNodes {
+    pub draw: Vec<String>,
+    pub shade: Vec<String>,
+    pub extra: Vec<String>,
 }
 
 fn target(gpu: &Gpu, label: &str, w: u32, h: u32, format: wgpu::TextureFormat) -> wgpu::TextureView {
@@ -260,6 +271,9 @@ impl FaceDrawer {
         };
         match &self.pipes {
             Pipes::Forward { fill, depth, equal } => {
+                let n = f.nodes;
+                let nodes: Vec<String> = n.draw.iter().chain(&n.shade).chain(extra.map_or(&[][..], |_| &n.extra[..])).cloned().collect();
+                f.ring.stage(enc, f.ticket, "draw+shade", &nodes);
                 let prepass = f.prepass && main.is_none();
                 if prepass {
                     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -295,6 +309,7 @@ impl FaceDrawer {
                 }
             }
             Pipes::Deferred { ids, shade } => {
+                f.ring.stage(enc, f.ticket, "draw", &f.nodes.draw);
                 {
                     let attach = |view| {
                         Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })
@@ -320,6 +335,7 @@ impl FaceDrawer {
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.gpos) },
                     ],
                 });
+                f.ring.stage(enc, f.ticket, "shade", &f.nodes.shade);
                 {
                     let end = f.ts.1 && extra.is_none();
                     let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: if end { f.ring.compute_timestamps(f.ticket, false, true) } else { None } });
@@ -334,6 +350,7 @@ impl FaceDrawer {
                     pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
                 }
                 if let Some(extra) = extra {
+                    f.ring.stage(enc, f.ticket, "meshes", &f.nodes.extra);
                     // Drawn after shading, depth-tested against the faces.
                     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("after shading"),

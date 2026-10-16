@@ -39,6 +39,8 @@ pub fn entry() -> RendererEntry {
 }
 
 pub struct CpuVoxelSpace {
+    /// The nodes of the timed stage (PLAN step 11).
+    stage_nodes: Vec<String>,
     width: u32,
     height: u32,
     scene: VoxelScene,
@@ -80,7 +82,9 @@ impl CpuVoxelSpace {
         }
         let mut scene = VoxelScene::new(&p);
         scene.shadows = opts.shadows;
+        let stage_nodes = mr_components::graph::of_init(BACKEND, &p)?.ids(&[mr_components::graph::Role::Visibility, mr_components::graph::Role::Shading]);
         Ok(Self {
+            stage_nodes,
             width: p.width,
             height: p.height,
             scene,
@@ -237,6 +241,8 @@ impl CpuVoxelSpace {
                 ("march_ms".into(), t_march),
                 ("transpose_ms".into(), total - t_march),
             ],
+            // The transpose is the executor's (column-major to rows), no node's.
+            stages: vec![StageTime::cpu("columns+shade", &self.stage_nodes, t_march as f32), StageTime::cpu("transpose", &[], (total - t_march) as f32)],
         }
     }
 }

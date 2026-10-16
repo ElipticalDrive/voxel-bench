@@ -151,6 +151,8 @@ pub struct GpuSplat {
     /// Shading state (pathtrace's accumulation).
     accum: ShadeState,
     ring: FrameRing,
+    /// The nodes of the timed stage (PLAN step 11).
+    stage_nodes: Vec<String>,
     chunks: HashMap<IVec3, Vec<Point>>,
     dirty: bool,
     count: u32,
@@ -263,7 +265,7 @@ impl GpuSplat {
         let accum = ShadeState::new(&gpu, p.width, p.height, &opts.shading, opts.bounces, opts.spp, opts.accumulate);
         let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &points_buf, &zbuf, &idbuf, &accum);
         let depth = opts.frames_in_flight.max(1);
-        let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
+        let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()).with_stages(p.stage_times);
         Ok(Self {
             storages,
             gpu,
@@ -278,6 +280,7 @@ impl GpuSplat {
             bind0,
             accum,
             ring,
+            stage_nodes: g.ids(&[Role::Visibility, Role::Shading]),
             chunks: HashMap::new(),
             dirty: false,
             count: 0,
@@ -390,6 +393,7 @@ impl Renderer for GpuSplat {
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         let groups = self.count.div_ceil(64);
         let (gx, gy) = (groups.min(65535), groups.div_ceil(65535));
+        self.ring.stage(&mut enc, ticket, "splat+shade", &self.stage_nodes);
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("splat"), timestamp_writes: self.ring.compute_timestamps(ticket, true, true) });
             pass.set_bind_group(0, &self.bind0, &[]);
@@ -411,6 +415,7 @@ impl Renderer for GpuSplat {
             gpu_ms: None,
             legend: None,
             counters: [("points".into(), self.count as f64), ("dropped_chunks".into(), self.world.dropped_chunks() as f64)].into_iter().chain(self.accum.counter(req.mode)).collect(),
+            stages: Vec::new(),
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
@@ -442,7 +447,7 @@ impl Renderer for GpuSplat {
         self.idbuf = pixel_buffer(&self.gpu, width, height);
         self.accum.resize(&self.gpu, width, height);
         self.rebind();
-        self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
+        self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone()).with_stages(self.ring.stages());
         Ok(())
     }
 

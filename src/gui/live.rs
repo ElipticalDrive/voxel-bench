@@ -127,6 +127,10 @@ pub struct LaneView {
     pub frame: Option<LiveFrame>,
     pub samples: VecDeque<Sample>,
     pub counters: Vec<(String, f64)>,
+    /// Time per stage (PLAN step 11), smoothed over recent frames, with the frame each
+    /// last ran in.
+    pub stages: Vec<mr_core::StageTime>,
+    stage_seen: Vec<u64>,
     /// What the colours of the latest frame mean (a diagnostic `view` is active).
     pub legend: Option<mr_core::Legend>,
     pub rss_mb: Option<f64>,
@@ -147,6 +151,41 @@ pub struct LaneView {
 }
 
 impl LaneView {
+    /// Folds a frame's stage times into the shown ones (exponential average). A stage the
+    /// frame did not run keeps its value for a while (some run only in some frames), then
+    /// goes (a swap or a knob removed it).
+    fn smooth_stages(&mut self, frame: Vec<mr_core::StageTime>) {
+        const A: f32 = 0.1;
+        const KEEP: u64 = 300;
+        let mix = |old: Option<f32>, new: Option<f32>| match (old, new) {
+            (Some(o), Some(n)) => Some(o + A * (n - o)),
+            (o, n) => n.or(o),
+        };
+        for s in frame {
+            match self.stages.iter().position(|o| o.name == s.name && o.nodes == s.nodes) {
+                Some(k) => {
+                    let o = &mut self.stages[k];
+                    o.cpu_ms = mix(o.cpu_ms, s.cpu_ms);
+                    o.gpu_ms = mix(o.gpu_ms, s.gpu_ms);
+                    self.stage_seen[k] = self.frames;
+                }
+                None => {
+                    self.stages.push(s);
+                    self.stage_seen.push(self.frames);
+                }
+            }
+        }
+        let mut k = 0;
+        while k < self.stages.len() {
+            if self.stage_seen[k] + KEEP < self.frames {
+                self.stages.remove(k);
+                self.stage_seen.remove(k);
+            } else {
+                k += 1;
+            }
+        }
+    }
+
     fn new(spec: RendererSpec) -> Self {
         Self {
             spec,
@@ -154,6 +193,8 @@ impl LaneView {
             frame: None,
             samples: VecDeque::new(),
             counters: vec![],
+            stages: vec![],
+            stage_seen: vec![],
             legend: None,
             rss_mb: None,
             gpu_mb: None,
@@ -1204,6 +1245,7 @@ impl Session {
                                     v.samples.pop_front();
                                 }
                                 v.counters = stats.counters;
+                                v.smooth_stages(stats.stages);
                                 v.legend = stats.legend;
                                 v.frames += 1;
                                 if let Some(px) = pixels {
@@ -1387,6 +1429,13 @@ mod tests {
         let live = LiveHandle::start(plan.clone(), control, || {});
         wait(&live.shared, "frames from all lanes", 60, |s| s.lanes.len() == 3 && s.lanes.iter().all(|l| l.frame.is_some() && l.samples.len() > 20));
         assert!(live.shared.lock().unwrap().lanes[0].params.iter().any(|(p, _)| p.name == "max_steps"));
+        // Stage times (PLAN step 11): GPU stages from timestamps, CPU stages timed by the back end.
+        {
+            let sh = live.shared.lock().unwrap();
+            let has = |lane: usize, name: &str, nodes: &[&str], gpu: bool| sh.lanes[lane].stages.iter().any(|s| s.name == name && s.nodes == nodes && if gpu { s.gpu_ms.is_some_and(|x| x > 0.0) } else { s.cpu_ms.is_some() });
+            assert!(has(0, "cast+shade", &["visibility", "shading"], true), "{:?}", sh.lanes[0].stages);
+            assert!(has(1, "geometry", &["geometry"], false) && has(1, "draw+shade", &["visibility", "draw", "shading"], true), "{:?}", sh.lanes[1].stages);
+        }
 
         let cam = live.shared.lock().unwrap().camera.unwrap();
         live.control.lock().unwrap().camera = CameraControl::Free(Camera { position: cam.position + DVec3::new(0.0, 2.0, 0.0), ..cam });
@@ -1505,6 +1554,9 @@ mod tests {
             (sh.lanes[0].quality.back().unwrap().psnr, sh.lanes[1].quality.back().unwrap().psnr)
         };
         println!("mesh mode probe: gpu-raster {with:.1} dB, cpu (no meshes) {without:.1} dB");
+        // The forward drawer draws the meshes in its stage.
+        let stages = live.shared.lock().unwrap().lanes[0].stages.clone();
+        assert!(stages.iter().any(|s| s.name == "draw+shade" && s.nodes.iter().any(|n| n == "meshes")), "{stages:?}");
         assert!(with > 45.0, "gpu-raster with meshes vs reference: {with:.1} dB");
         assert!(with > without + 5.0, "meshes should matter: gpu-raster {with:.1} dB, cpu (no meshes) {without:.1} dB");
         drop(live);

@@ -342,7 +342,7 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
         if let Some(rx) = quality {
             lane.pending_quality.push((lane.report.per_frame.len(), rx));
         }
-        lane.report.per_frame.push(FrameRecord { frame: f.frame, latency_ms, cpu_ms: stats.cpu_ms, gpu_ms: stats.gpu_ms, update_ms, counters: stats.counters, quality: None });
+        lane.report.per_frame.push(FrameRecord { frame: f.frame, latency_ms, cpu_ms: stats.cpu_ms, gpu_ms: stats.gpu_ms, update_ms, counters: stats.counters, stages: stats.stages, quality: None });
     }
     Ok(())
 }

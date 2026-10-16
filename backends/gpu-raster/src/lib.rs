@@ -26,7 +26,7 @@ use mr_components::graph::{self, Role};
 use mr_components::shaders::Walks;
 use mr_components::storage::gpu_data::{self, StorageSet};
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer};
+use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawNodes, DrawerSpec, FaceDrawer};
 use mr_components::{draw, names_on, require, Slot, components};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -295,6 +295,11 @@ pub struct GpuRasterBackend {
     output: wgpu::Texture,
     depth: wgpu::TextureView,
     ring: FrameRing,
+    /// The nodes of the timed stages (PLAN step 11): geometry and culling on the CPU, then
+    /// the drawer's.
+    geometry_nodes: Vec<String>,
+    cull_nodes: Vec<String>,
+    draw_nodes: DrawNodes,
     meshes: HashMap<IVec3, ChunkMesh>,
     dirty: HashSet<IVec3>,
     alloc: RangeAlloc,
@@ -380,7 +385,8 @@ impl GpuRasterBackend {
         let opts: Options = p.options()?;
         require(BACKEND, Slot::Meshes, &opts.meshes)?;
         parse_merge(&opts.merge)?;
-        let comp = Composition::of(&graph::of_init(BACKEND, &p)?, &opts)?;
+        let g = graph::of_init(BACKEND, &p)?;
+        let comp = Composition::of(&g, &opts)?;
         // The host hands the device in (GPU slot 0); this back end only states its needs.
         let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE, optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
         let world = VoxelWorld::new(
@@ -429,7 +435,7 @@ impl GpuRasterBackend {
         // Mesh shadows: their site's walk (by default the shadow rays').
         let (occ, rays) = comp.walks.shadow_program(comp.mesh_shadow);
         let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Occlusion { program: &occ, rays: &rays, layout: storages.layout(comp.walks.kernels[comp.mesh_shadow].storage) });
-        let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone());
+        let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone()).with_stages(p.stage_times);
         let accum = ShadeState::new(&gpu, p.width, p.height, &comp.shading, opts.bounces, opts.spp, opts.accumulate);
         tracing::info!("gpu-raster: storage {}, geometry {}, draw {}, traversal {}, shading {}, {} walks", comp.walks.storages[0].component, comp.geometry, comp.draw, comp.walks.kernels[0].component, comp.shading, comp.walks.kernels.len());
         Ok(Self {
@@ -437,6 +443,9 @@ impl GpuRasterBackend {
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
             depth: depth_view(&gpu, p.width, p.height),
             ring,
+            geometry_nodes: g.ids(&[Role::Geometry]),
+            cull_nodes: g.ids(&[Role::Draw]),
+            draw_nodes: DrawNodes { draw: g.ids(&[Role::Visibility, Role::Draw]), shade: g.ids(&[Role::Shading]), extra: g.ids(&[Role::Meshes]) },
             world,
             opts,
             built: comp.clone(),
@@ -610,6 +619,7 @@ impl Renderer for GpuRasterBackend {
         let start = Instant::now();
         let remeshed = self.remesh(req.camera.split_position().0 >> 5);
         let mesh_ms = start.elapsed().as_secs_f64() * 1e3;
+        let cull_start = Instant::now();
         let c = &req.camera;
         let (cam_block, frac) = c.split_position();
         let view_proj = c.projection(self.width as f32 / self.height as f32) * c.view_rotation();
@@ -680,6 +690,7 @@ impl Renderer for GpuRasterBackend {
         if !draws.is_empty() {
             self.gpu.queue.write_buffer(&self.indirect, 0, bytemuck::cast_slice(&draws));
         }
+        let cull_ms = cull_start.elapsed().as_secs_f32() * 1e3;
 
         if self.bind0.is_none() {
             self.bind0 = Some(self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -713,6 +724,7 @@ impl Renderer for GpuRasterBackend {
             ring: &self.ring,
             ticket,
             ts: (true, true),
+            nodes: &self.draw_nodes,
         };
         let draw = |pass: &mut wgpu::RenderPass<'_>| {
             if n > 0 {
@@ -739,6 +751,7 @@ impl Renderer for GpuRasterBackend {
             .chain(self.storages.counters())
             .chain(self.accum.counter(req.mode))
             .collect(),
+            stages: vec![StageTime::cpu("geometry", &self.geometry_nodes, mesh_ms as f32), StageTime::cpu("cull", &self.cull_nodes, cull_ms)],
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
@@ -792,7 +805,7 @@ impl Renderer for GpuRasterBackend {
         self.drawer.resize(&self.gpu, width, height);
         self.accum.resize(&self.gpu, width, height);
         self.bind0 = None;
-        self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
+        self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone()).with_stages(self.ring.stages());
         Ok(())
     }
 

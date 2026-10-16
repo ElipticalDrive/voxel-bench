@@ -477,6 +477,7 @@ impl Renderer for CpuReference {
                 ("lights".into(), self.scene.light_count() as f64),
                 ("mesh_triangles".into(), if req.meshes { self.meshes.triangle_count() as f64 } else { 0.0 }),
             ],
+            stages: Vec::new(),
         };
         sink.complete(CompletedFrame { frame_id: req.frame_id, stats, pixels: Some(&self.pixels) });
         Ok(())

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::{Context, bail};
-use mr_core::{CompletedFrame, FrameSink, FrameStats, Waker};
+use mr_core::{CompletedFrame, FrameSink, FrameStats, StageTime, Waker};
 
 pub mod meshes;
 pub mod program;
@@ -182,6 +182,9 @@ struct Slot {
     readback: wgpu::Buffer,
     ts_resolve: Option<wgpu::Buffer>,
     ts_read: Option<wgpu::Buffer>,
+    /// The stage marks' timestamps (resolved, then read back).
+    marks_resolve: Option<wgpu::Buffer>,
+    marks_read: Option<wgpu::Buffer>,
 }
 
 struct Pending {
@@ -190,7 +193,13 @@ struct Pending {
     readback: bool,
     remaining: Arc<AtomicU32>,
     stats: FrameStats,
+    /// The frame's GPU stages, timed from mark `k` to mark `k + 1`.
+    stages: Vec<StageTime>,
 }
+
+/// Timestamps per frame at the boundaries between GPU stages (at most `MAX_MARKS - 1`
+/// stages per frame).
+const MAX_MARKS: u32 = 16;
 
 /// Index of the frame-ring slot a frame is recorded into.
 #[derive(Copy, Clone)]
@@ -202,6 +211,10 @@ pub struct FrameRing {
     free: Vec<usize>,
     pending: VecDeque<Pending>,
     query_set: Option<wgpu::QuerySet>,
+    /// Stage marks (PLAN step 11): `MAX_MARKS` per slot.
+    marks: Option<wgpu::QuerySet>,
+    /// The GPU stages of the frame being recorded.
+    recording: std::sync::Mutex<Vec<StageTime>>,
     timestamp_period: f32,
     width: u32,
     height: u32,
@@ -234,8 +247,14 @@ impl FrameRing {
         let query_set = gpu.timestamps.then(|| {
             gpu.device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("frame timestamps"), ty: wgpu::QueryType::Timestamp, count: depth as u32 * 2 })
         });
+        let marks = gpu.timestamps.then(|| {
+            gpu.device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("stage marks"), ty: wgpu::QueryType::Timestamp, count: depth as u32 * MAX_MARKS })
+        });
+        let buffer = |label, usage| gpu.timestamps.then(|| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: MAX_MARKS as u64 * 8, usage, mapped_at_creation: false }));
         let slots = (0..depth)
             .map(|_| Slot {
+                marks_resolve: buffer("marks resolve", wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC),
+                marks_read: buffer("marks read", wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ),
                 readback: gpu.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("readback"),
                     size: padded_row as u64 * height as u64,
@@ -265,6 +284,8 @@ impl FrameRing {
             free: (0..depth).rev().collect(),
             pending: VecDeque::new(),
             query_set,
+            marks,
+            recording: Default::default(),
             timestamp_period: gpu.queue.get_timestamp_period(),
             width,
             height,
@@ -309,6 +330,40 @@ impl FrameRing {
         })
     }
 
+    /// Times stages (`stage` marks them) or not (`stage` does nothing).
+    pub fn with_stages(mut self, on: bool) -> Self {
+        if !on {
+            self.marks = None;
+        }
+        self
+    }
+
+    pub fn stages(&self) -> bool {
+        self.marks.is_some()
+    }
+
+    /// Starts GPU stage `name`, running graph nodes `nodes`, on `enc`: a timestamp
+    /// between the commands before (the previous stage's) and after. The last stage ends
+    /// when the frame is submitted. Commands before the first stage are not attributed.
+    /// Costs an empty pass per stage; nothing without timestamp support.
+    pub fn stage(&self, enc: &mut wgpu::CommandEncoder, t: Ticket, name: &str, nodes: &[String]) {
+        let Some(q) = &self.marks else { return };
+        let mut rec = self.recording.lock().unwrap();
+        if rec.len() as u32 + 1 >= MAX_MARKS {
+            debug_assert!(false, "more than {} GPU stages in a frame", MAX_MARKS - 1);
+            return;
+        }
+        Self::mark(enc, q, t.0 as u32 * MAX_MARKS + rec.len() as u32);
+        rec.push(StageTime { name: name.into(), nodes: nodes.to_vec(), cpu_ms: None, gpu_ms: None });
+    }
+
+    fn mark(enc: &mut wgpu::CommandEncoder, q: &wgpu::QuerySet, index: u32) {
+        enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("stage mark"),
+            timestamp_writes: Some(wgpu::ComputePassTimestampWrites { query_set: q, beginning_of_pass_write_index: Some(index), end_of_pass_write_index: None }),
+        });
+    }
+
     /// Records read-back of `output` (an RGBA8 texture of the ring's size) if requested,
     /// submits the encoder, and tracks the frame until the GPU is done with it.
     pub fn submit(
@@ -331,6 +386,14 @@ impl FrameRing {
                 },
                 wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
             );
+        }
+        let stages = std::mem::take(&mut *self.recording.lock().unwrap());
+        if let (false, Some(q), Some(res), Some(read)) = (stages.is_empty(), &self.marks, &slot.marks_resolve, &slot.marks_read) {
+            let b = t.0 as u32 * MAX_MARKS;
+            let n = stages.len() as u32 + 1;
+            Self::mark(&mut encoder, q, b + n - 1);
+            encoder.resolve_query_set(q, b..b + n, res, 0);
+            encoder.copy_buffer_to_buffer(res, 0, read, 0, n as u64 * 8);
         }
         if let (Some(q), Some(res), Some(read)) = (&self.query_set, &slot.ts_resolve, &slot.ts_read) {
             let b = t.0 as u32 * 2;
@@ -356,6 +419,9 @@ impl FrameRing {
         if let Some(read) = &slot.ts_read {
             track(read);
         }
+        if let (false, Some(read)) = (stages.is_empty(), &slot.marks_read) {
+            track(read);
+        }
         if remaining.load(Ordering::SeqCst) == 0 {
             remaining.fetch_add(1, Ordering::SeqCst);
             let r = remaining.clone();
@@ -363,7 +429,7 @@ impl FrameRing {
                 r.fetch_sub(1, Ordering::SeqCst);
             });
         }
-        self.pending.push_back(Pending { frame_id, slot: t.0, readback, remaining, stats });
+        self.pending.push_back(Pending { frame_id, slot: t.0, readback, remaining, stats, stages });
         if let Some(s) = &self.submitted {
             let _ = s.send(());
         }
@@ -392,6 +458,18 @@ impl FrameRing {
                     let ts: [u64; 2] = [u64::from_le_bytes(v[0..8].try_into()?), u64::from_le_bytes(v[8..16].try_into()?)];
                     if ts[1] > ts[0] {
                         p.stats.gpu_ms = Some((ts[1] - ts[0]) as f32 * self.timestamp_period / 1e6);
+                    }
+                }
+                read.unmap();
+            }
+            if let (false, Some(read)) = (p.stages.is_empty(), &slot.marks_read) {
+                {
+                    let v = read.get_mapped_range(..)?;
+                    let ts = |k: usize| u64::from_le_bytes(v[k * 8..k * 8 + 8].try_into().unwrap());
+                    for (k, mut s) in std::mem::take(&mut p.stages).into_iter().enumerate() {
+                        let (a, b) = (ts(k), ts(k + 1));
+                        s.gpu_ms = Some(if b > a { (b - a) as f32 * self.timestamp_period / 1e6 } else { 0.0 });
+                        p.stats.stages.push(s);
                     }
                 }
                 read.unmap();

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
+use mr_components::graph::{self, Role};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::heightmap::{self, Heightmap};
 use mr_core::lighting::encode_srgb;
@@ -96,6 +97,8 @@ pub struct GpuVoxelSpace {
     output: wgpu::Texture,
     bind0: wgpu::BindGroup,
     ring: FrameRing,
+    /// The nodes of the timed stage (PLAN step 11).
+    stage_nodes: Vec<String>,
     width: u32,
     height: u32,
     depth: usize,
@@ -196,8 +199,9 @@ impl GpuVoxelSpace {
         let accum = ShadeState::new(&gpu, p.width, p.height, &opts.shading, opts.bounces, opts.spp, opts.accumulate);
         let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &hm_buf, &hm_info, &accum);
         let depth = opts.frames_in_flight.max(1);
-        let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
-        Ok(Self { gpu, world, pipeline, layout0, camera_buf, hm, hm_buf, hm_info, accum, output, bind0, ring, width: p.width, height: p.height, depth, waker })
+        let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()).with_stages(p.stage_times);
+        let stage_nodes = graph::of_init(BACKEND, &p)?.ids(&[Role::Visibility, Role::Shading]);
+        Ok(Self { gpu, world, pipeline, layout0, camera_buf, hm, hm_buf, hm_info, accum, output, bind0, ring, stage_nodes, width: p.width, height: p.height, depth, waker })
     }
 
     fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, hm: &wgpu::Buffer, hm_info: &wgpu::Buffer, accum: &ShadeState) -> wgpu::BindGroup {
@@ -256,6 +260,7 @@ impl Renderer for GpuVoxelSpace {
         self.accum.begin(&self.gpu, c, req.mode);
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
+        self.ring.stage(&mut enc, ticket, "columns+shade", &self.stage_nodes);
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("voxelspace"),
@@ -271,6 +276,7 @@ impl Renderer for GpuVoxelSpace {
             gpu_ms: None,
             legend: None,
             counters: [("heightmap_size".into(), self.hm.size as f64), ("chunk_columns".into(), self.hm.columns() as f64)].into_iter().chain(self.accum.counter(req.mode)).collect(),
+            stages: Vec::new(),
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
@@ -299,7 +305,7 @@ impl Renderer for GpuVoxelSpace {
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.accum.resize(&self.gpu, width, height);
         self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.hm_buf, &self.hm_info, &self.accum);
-        self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
+        self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone()).with_stages(self.ring.stages());
         Ok(())
     }
 

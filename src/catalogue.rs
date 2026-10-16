@@ -406,6 +406,7 @@ mod tests {
             psnr_min: None,
             bad_pct: None,
             counters: Default::default(),
+            stages: Vec::new(),
         }
     }
 

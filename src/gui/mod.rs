@@ -971,6 +971,13 @@ impl App {
                     ui.label("streaming").on_hover_text("Chunks sent to this renderer so far, and chunks queued for it (limited per frame)");
                     ui.monospace(format!("{} chunks sent · {} pending", l.chunks_sent, l.pending_chunks));
                     ui.end_row();
+                    for s in &l.stages {
+                        let ms = |x: Option<f32>, what| x.map(|x| format!("{what} {x:.3} ms"));
+                        let nodes = if s.nodes.is_empty() { "no node (the executor's own work)".to_string() } else { s.nodes.join(", ") };
+                        ui.label(format!("stage {}", s.name)).on_hover_text(format!("Time of this stage per frame (averaged), and the graph nodes it runs: {nodes}. Storages and kernels run inside their callers and are timed with them."));
+                        ui.monospace([ms(s.gpu_ms, "gpu"), ms(s.cpu_ms, "cpu")].into_iter().flatten().collect::<Vec<_>>().join(" · "));
+                        ui.end_row();
+                    }
                     for (k, v) in &l.counters {
                         ui.label(k).on_hover_text("Renderer-specific counter");
                         ui.monospace(if v.fract() == 0.0 { format!("{v:.0}") } else { format!("{v:.3}") });

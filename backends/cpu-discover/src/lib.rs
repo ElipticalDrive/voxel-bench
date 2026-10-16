@@ -39,7 +39,7 @@ use discover::{Output, Settings, State, cast};
 use mr_components::{names_on, require, Slot};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
-use mr_components::draw::{self, drawer::{DrawFrame, DrawMode, DrawerSpec, FaceDrawer}};
+use mr_components::draw::{self, drawer::{DrawFrame, DrawMode, DrawNodes, DrawerSpec, FaceDrawer}};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::graph::{self, Role};
 use mr_components::shaders::Walks;
@@ -246,6 +246,10 @@ pub struct CpuDiscover {
     output: wgpu::Texture,
     depth: wgpu::TextureView,
     ring: FrameRing,
+    /// The nodes of the timed stages (PLAN step 11): discovery on the CPU, then the
+    /// drawer's on the GPU.
+    vis_nodes: Vec<String>,
+    draw_nodes: DrawNodes,
     width: u32,
     height: u32,
     waker: Waker,
@@ -365,7 +369,9 @@ impl CpuDiscover {
         Ok(Self {
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
             depth: depth_view(&gpu, p.width, p.height),
-            ring: FrameRing::new(&gpu, p.width, p.height, fif, waker.clone()),
+            ring: FrameRing::new(&gpu, p.width, p.height, fif, waker.clone()).with_stages(p.stage_times),
+            vis_nodes: g.ids(&[Role::Visibility]),
+            draw_nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
             gpu,
             world,
             cpu: grid::CpuWorld::new(&storage)?,
@@ -617,6 +623,7 @@ impl Renderer for CpuDiscover {
             ring: &self.ring,
             ticket,
             ts: (true, true),
+            nodes: &self.draw_nodes,
         };
         let draw = |pass: &mut wgpu::RenderPass<'_>| {
             if n > 0 {
@@ -661,7 +668,9 @@ impl Renderer for CpuDiscover {
         };
         counters.extend(self.accum.counter(req.mode));
         counters.extend(self.storages.counters());
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend };
+        // Discovery's own time (pipelined: overlapping the previous frame's drawing).
+        let stages = vec![StageTime::cpu("discover", &self.vis_nodes, out.ms)];
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
     }
@@ -726,7 +735,7 @@ impl Renderer for CpuDiscover {
         self.drawer.resize(&self.gpu, width, height);
         self.accum.resize(&self.gpu, width, height);
         self.bind0 = None;
-        self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
+        self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone()).with_stages(self.ring.stages());
         Ok(())
     }
 

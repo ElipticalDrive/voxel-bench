@@ -362,6 +362,8 @@ pub struct CpuBackend<R, S: Spec = Generic> {
     tile: u32,
     rects: Vec<Rect>,
     pixels: Vec<u8>,
+    /// The nodes of the timed stages (PLAN step 11): the storage's rebuild, rays and shading.
+    stage_nodes: [Vec<String>; 2],
     /// `view = steps` and the top of its scale.
     steps_view: bool,
     view_max: u32,
@@ -425,6 +427,7 @@ impl<R: Repr, S: Spec> CpuBackend<R, S> {
             steps_view: parse_view(&o.view)?,
             view_max: o.view_max.clamp(1, 16384),
             pixels: vec![0; (p.width * p.height * 4) as usize],
+            stage_nodes: [g.ids(&[Role::Storage]), g.ids(&[Role::Visibility, Role::Shading])],
         };
         b.check_baked()?;
         Ok(b)
@@ -769,8 +772,10 @@ impl<R: Repr, S: Spec> Renderer for CpuBackend<R, S> {
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         let start = Instant::now();
+        let mut stages = Vec::new();
         if self.scene.grid_dirty {
             self.scene.rebuild_grid();
+            stages.push(StageTime::cpu("storage", &self.stage_nodes[0], start.elapsed().as_secs_f32() * 1e3));
         }
         if self.scene.lights_dirty {
             self.scene.rebuild_lights();
@@ -796,8 +801,10 @@ impl<R: Repr, S: Spec> Renderer for CpuBackend<R, S> {
         });
         let job = Job { scene, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone(), out: OutPtr(pixels.as_mut_ptr()) };
         let rect_list = &self.rects;
+        let cast = Instant::now();
         let work: RowWork = self.pool.pool.install(|| rect_list.par_iter().map(|&r| render_rect_isa::<R, S>(isa, &job, r)).reduce(RowWork::default, |a, b| a + b));
         drop(job);
+        stages.push(StageTime::cpu("cast+shade", &self.stage_nodes[1], cast.elapsed().as_secs_f32() * 1e3));
         let hw = counters.map(|c| c.stop());
         self.pixels = pixels;
         let px = (w * h) as f64;
@@ -829,7 +836,7 @@ impl<R: Repr, S: Spec> Renderer for CpuBackend<R, S> {
                 counters.push(("ipc".into(), hw[1] / hw[0]));
             }
         }
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
         sink.complete(CompletedFrame { frame_id: req.frame_id, stats, pixels: Some(&self.pixels) });
         Ok(())
     }

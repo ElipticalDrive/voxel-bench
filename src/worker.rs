@@ -81,6 +81,7 @@ pub fn spawn_renderer(
         options_json: serde_json::to_string(&spec.options)?,
         graph_json: spec.pipeline().map(|g| serde_json::to_string(&g)).transpose()?.unwrap_or_default(),
         devices: spec.devices(run),
+        stage_times: run.stage_times,
     };
     Worker::spawn(SpawnConfig {
         renderer: &spec.name,

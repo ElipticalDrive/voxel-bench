@@ -52,6 +52,10 @@ pub struct InitParams {
     /// The devices to run on: a configuration from the host, not an option of the renderer.
     #[serde(default)]
     pub devices: DeviceConfig,
+    /// Time each stage of a frame (PLAN step 11; `FrameStats::stages`). GPU stages cost a
+    /// timestamp each (a few µs per frame).
+    #[serde(default)]
+    pub stage_times: bool,
 }
 
 /// Which devices a renderer runs on (IDEAS §17, requirement 2: no hardware opinion in the
@@ -146,6 +150,27 @@ pub struct FrameStats {
     /// What the colours mean while a diagnostic `view` is active (`None`: the image).
     #[serde(default)]
     pub legend: Option<crate::Legend>,
+    /// The frame's time per stage (PLAN step 11): CPU stages as the renderer timed them,
+    /// GPU stages from timestamps between them (filled in when the frame completes).
+    #[serde(default)]
+    pub stages: Vec<StageTime>,
+}
+
+/// One stage of a frame and the graph nodes it ran: callers only, since fused nodes
+/// (storages, kernels) run inside their callers and are timed with them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StageTime {
+    pub name: String,
+    pub nodes: Vec<String>,
+    // (No `skip_serializing_if`: postcard, the worker protocol, is not self-describing.)
+    pub cpu_ms: Option<f32>,
+    pub gpu_ms: Option<f32>,
+}
+
+impl StageTime {
+    pub fn cpu(name: &str, nodes: &[String], ms: f32) -> Self {
+        Self { name: name.into(), nodes: nodes.to_vec(), cpu_ms: Some(ms), gpu_ms: None }
+    }
 }
 
 pub struct CompletedFrame<'a> {

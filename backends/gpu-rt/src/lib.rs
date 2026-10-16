@@ -21,6 +21,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use mr_components::geometry::{Knobs, Merge, RtKind};
 use mr_components::shading::state::{self as shade_state, ShadeState};
+use mr_components::graph::{self, Role};
 use mr_components::{names_on, require, Slot, components, traversal};
 use mr_core::chunk::cell_of_index;
 use mr_core::lighting::encode_srgb;
@@ -180,6 +181,8 @@ pub struct GpuRt {
     camera_buf: wgpu::Buffer,
     output: wgpu::Texture,
     ring: FrameRing,
+    /// The nodes of the timed stages (PLAN step 11): acceleration structures, rays and shading.
+    stage_nodes: [Vec<String>; 2],
     waker: Waker,
     width: u32,
     height: u32,
@@ -244,6 +247,7 @@ impl GpuRt {
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         let vis = require(BACKEND, Slot::Traversal, &opts.traversal)?;
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
+        let g = graph::of_init(BACKEND, &p)?;
         anyhow::ensure!(opts.merge == "block", "merge = `{}`: gpu-rt has no per-pixel block lookup (only `block`)", opts.merge);
         let (geo_wgsl, rt) = mr_components::geometry::rt(&geometry).expect("validated");
         // The host hands the device in (GPU slot 0); this back end only states its needs.
@@ -302,7 +306,8 @@ impl GpuRt {
         tracing::info!("gpu-rt: geometry {}, shading {shading}", opts.geometry);
         Ok(Self {
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
-            ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()),
+            ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()).with_stages(p.stage_times),
+            stage_nodes: [g.ids(&[Role::Geometry]), g.ids(&[Role::Visibility, Role::Shading])],
             tlas: tlas(&gpu, tlas_cap),
             tlas_cap,
             accum: ShadeState::new(&gpu, p.width, p.height, &shading, opts.bounces, opts.spp, opts.accumulate),
@@ -538,6 +543,7 @@ impl Renderer for GpuRt {
         if let (true, Some((qs, begin, _))) = (encoder_ts, self.ring.timestamps(ticket)) {
             enc.write_timestamp(qs, begin);
         }
+        self.ring.stage(&mut enc, ticket, "geometry", &self.stage_nodes[0]);
         let rebuilt = self.rebuild(&mut enc, cam_block >> 5);
         let build_ms = start.elapsed().as_secs_f64() * 1e3;
 
@@ -597,6 +603,7 @@ impl Renderer for GpuRt {
                 ],
             }));
         }
+        self.ring.stage(&mut enc, ticket, "cast+shade", &self.stage_nodes[1]);
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("gpu-rt"), timestamp_writes: self.ring.compute_timestamps(ticket, !encoder_ts, true) });
             pass.set_pipeline(&self.pipeline);
@@ -606,7 +613,8 @@ impl Renderer for GpuRt {
         }
         let mut counters = vec![("instances".into(), n as f64), ("blas_rebuilt".into(), rebuilt as f64), ("build_ms".into(), build_ms)];
         counters.extend(self.accum.counter(req.mode));
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend: None };
+        let stages = vec![StageTime::cpu("geometry", &self.stage_nodes[0], build_ms as f32)];
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend: None, stages };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
         self.ring.poll(&self.gpu, sink, false)
     }
@@ -642,7 +650,7 @@ impl Renderer for GpuRt {
         self.width = width;
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
-        self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone());
+        self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone()).with_stages(self.ring.stages());
         self.accum.resize(&self.gpu, width, height);
         self.bind0 = None;
         Ok(())

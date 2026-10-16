@@ -333,6 +333,8 @@ pub struct GpuCompose {
     draw_meshes: bool,
     /// The storage instances' data (the primary's at group 2, the other sites' at 4..).
     storages: StorageSet,
+    /// The nodes of the timed stages: meshes, prepass, walk and shade (PLAN step 11).
+    stage_nodes: [Vec<String>; 3],
     ring: FrameRing,
     width: u32,
     height: u32,
@@ -428,7 +430,7 @@ impl GpuCompose {
         let stand_in = mr_gpu::output_texture(&gpu, 1, 1);
         let bind0_frag = Self::bind0(&gpu, &layout0, &camera_buf, &stand_in, &beam, &accum);
         let depth = opts.frames_in_flight.max(1);
-        let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone());
+        let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()).with_stages(p.stage_times);
         let walk = |k: usize| format!("{} over {}", comp.walks.kernels[k].component, comp.walks.storages[comp.walks.kernels[k].storage].component);
         tracing::info!("gpu-compute: primary {}, shadow {}, bounce {}, shading {}", walk(0), walk(comp.shadow), walk(comp.bounce), comp.shading);
         Ok(Self {
@@ -451,6 +453,7 @@ impl GpuCompose {
             view_max: opts.view_max.clamp(1, 16384),
             draw_meshes: require(BACKEND, Slot::Meshes, &opts.meshes)? != "none",
             storages,
+            stage_nodes: [g.ids(&[Role::Meshes]), g.ids(&[Role::Prepass]), g.ids(&[Role::Visibility, Role::Shading])],
             ring,
             width: p.width,
             height: p.height,
@@ -570,9 +573,13 @@ impl Renderer for GpuCompose {
         let want_meshes = req.meshes && self.draw_meshes;
         let meshes_on = self.meshes.active(want_meshes);
         let ts = if meshes_on { self.ring.render_timestamps(ticket, true, false) } else { None };
+        if meshes_on {
+            self.ring.stage(&mut enc, ticket, "meshes", &self.stage_nodes[0]);
+        }
         self.meshes.encode(&self.gpu, &mut enc, c, self.width as f32 / self.height as f32, req.mode, want_meshes, &world_bg, ts);
         let copy_stats = self.beam.begin(&mut enc, self.prepass.is_some());
         if let Some(pre) = &self.prepass {
+            self.ring.stage(&mut enc, ticket, "prepass", &self.stage_nodes[1]);
             let tile = self.comp.tile.max(1);
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("prepass"),
@@ -586,6 +593,7 @@ impl Renderer for GpuCompose {
             pass.dispatch_workgroups(self.width.div_ceil(tile).div_ceil(8), self.height.div_ceil(tile).div_ceil(8), 1);
         }
         let first = !meshes_on && self.prepass.is_none();
+        self.ring.stage(&mut enc, ticket, "cast+shade", &self.stage_nodes[2]);
         match &self.pipeline {
             Main::Compute(pipeline) => {
                 let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -634,6 +642,7 @@ impl Renderer for GpuCompose {
                 .chain(self.accum.counter(req.mode))
                 .collect(),
             legend: self.built.steps_view.then(|| Legend::ramp("loop iterations (primary ray)", self.view_max as f64, true)),
+            stages: Vec::new(),
         };
         if copy_stats {
             self.beam.copy(&mut enc);
@@ -706,7 +715,7 @@ impl Renderer for GpuCompose {
         self.beam = Beam::new(&self.gpu, width, height);
         self.accum.resize(&self.gpu, width, height);
         self.rebind();
-        self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone());
+        self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone()).with_stages(self.ring.stages());
         Ok(())
     }
 

@@ -155,3 +155,25 @@ impl Drop for FrameSlots {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Frame stats cross the worker protocol intact, stage times included (postcard is not
+    /// self-describing: a skipped field breaks every message after it).
+    #[test]
+    fn frame_stats_round_trip() {
+        let stats = mr_core::FrameStats {
+            cpu_ms: 1.5,
+            gpu_ms: Some(0.5),
+            counters: vec![("rays".into(), 3.0)],
+            legend: None,
+            stages: vec![mr_core::StageTime::cpu("geometry", &["geometry".into()], 2.0), mr_core::StageTime { name: "draw".into(), nodes: vec!["draw".into()], cpu_ms: None, gpu_ms: Some(0.25) }],
+        };
+        let msg = WorkerMsg::FrameDone { frame_id: 7, stats: stats.clone(), slot: Some(1), update_ms: 0.125 };
+        let back: WorkerMsg = postcard::from_bytes(&postcard::to_allocvec(&msg).unwrap()).unwrap();
+        let WorkerMsg::FrameDone { frame_id: 7, stats: s, slot: Some(1), update_ms } = back else { panic!("{back:?}") };
+        assert_eq!((s.stages, s.counters, s.gpu_ms, update_ms), (stats.stages, stats.counters, stats.gpu_ms, 0.125));
+    }
+}
