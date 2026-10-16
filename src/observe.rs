@@ -13,8 +13,9 @@ use crate::features::SceneFeatures;
 use crate::plan::Plan;
 use crate::report::PassReport;
 
-/// Bumped when fields change meaning or are added (2: `features`).
-pub const VERSION: u32 = 2;
+/// Bumped when fields change meaning or are added (2: `features`; 3: `sites`, `graph`,
+/// `graph_key`).
+pub const VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
@@ -77,6 +78,16 @@ pub struct Observation {
     pub label: String,
     pub renderer: String,
     pub composition: Option<mr_components::Composition>,
+    /// Sites bound otherwise (PLAN step 9d; absent before version 3).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sites: BTreeMap<String, String>,
+    /// The graph, when composition and sites cannot express it (version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<mr_components::graph::Graph>,
+    /// The canonical graph's key: records of one pipeline share it (version 3; older
+    /// records: `pipeline()`'s key, or `multirenderer graph --keys`).
+    #[serde(default)]
+    pub graph_key: Option<String>,
     pub options: serde_json::Value,
     pub repeat: u32,
     pub error: Option<String>,
@@ -132,6 +143,9 @@ impl Observation {
             label: r.label.clone(),
             renderer: r.renderer.clone(),
             composition: r.composition.clone(),
+            sites: r.sites.clone(),
+            graph: r.graph.clone(),
+            graph_key: r.graph_key.clone(),
             options: serde_json::to_value(&r.options).unwrap_or_default(),
             repeat: r.repeat,
             error: r.error.clone(),
@@ -151,6 +165,17 @@ impl Observation {
             bad_pct: q.map(|q| q.bad_pct.mean),
             counters: sums.into_iter().map(|(k, (s, n))| (k, s / n.max(1) as f64)).collect(),
         }
+    }
+}
+
+impl Observation {
+    /// The pipeline it measured: its graph, or its composition with its sites (`None` for
+    /// standalone renderers).
+    pub fn pipeline(&self) -> Option<mr_components::graph::Graph> {
+        if let Some(g) = &self.graph {
+            return Some(g.clone());
+        }
+        mr_components::graph::Graph::from_composition(self.composition.as_ref()?).and_then(|g| g.with_sites(&self.sites)).ok()
     }
 }
 

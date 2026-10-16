@@ -77,8 +77,15 @@ enum Cmd {
     /// List available renderers.
     List,
     /// A pipeline as a graph (PLAN step 9): its nodes (TOML, for a plan's
-    /// `[renderer.graph]`), canonical form and cache key. The renderer as for `view -r`.
-    Graph { renderer: String },
+    /// `[renderer.graph]`), sites form, canonical form and cache key. The renderer as for
+    /// `view -r` (`gpu-compute:prefix+incremental,shadow=tree64/sphere`).
+    /// With `--keys`: reads observations (JSON lines) on stdin and prints each one's graph
+    /// key (`-` if it has none), for records written before they carried one.
+    Graph {
+        renderer: Option<String>,
+        #[arg(long)]
+        keys: bool,
+    },
     /// Compare two PNG images.
     Diff {
         a: PathBuf,
@@ -110,17 +117,32 @@ fn main() -> anyhow::Result<()> {
     match cmd {
         Cmd::Gui { plan } => gui::run(plan),
         Cmd::Worker { socket } => mr_worker::run(&socket),
-        Cmd::Graph { renderer } => {
+        Cmd::Graph { keys: true, .. } => {
+            for line in std::io::stdin().lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let key = serde_json::from_str::<observe::Observation>(&line).ok().and_then(|o| o.pipeline()).and_then(|g| g.key().ok());
+                println!("{}", key.as_deref().unwrap_or("-"));
+            }
+            Ok(())
+        }
+        Cmd::Graph { renderer, .. } => {
+            let renderer = renderer.context("which renderer? e.g. `graph gpu-compute:prefix+incremental`")?;
             let mut spec = plan::RendererSpec::from_cli(&renderer)?;
             spec.resolve()?;
-            let c = spec.compose.with_context(|| format!("`{renderer}` is not a composition"))?;
-            let g = mr_components::graph::Graph::from_composition(&c).map_err(anyhow::Error::msg)?;
-            println!("# {}\n{}", c.label(), toml::to_string(&g)?);
+            let g = spec.pipeline().with_context(|| format!("`{renderer}` is not a composition"))?;
+            println!("# {}\n{}", spec.label(), toml::to_string(&g)?);
+            if let Some((c, sites)) = g.sites_form().map_err(anyhow::Error::msg)? {
+                let sites: Vec<String> = sites.iter().map(|(k, v)| format!(",{k}={v}")).collect();
+                println!("# sites form: compose = {} {}", serde_json::to_string(&c)?, sites.concat());
+            }
             println!("# canonical: {}\n# key: {}", g.canonical().map_err(anyhow::Error::msg)?, g.key().map_err(anyhow::Error::msg)?);
             Ok(())
         }
         Cmd::List => {
-            println!("Renderers are assembled from components (plan: compose = {{ backend, storage, geometry, prepass, visibility, shading, meshes }};\nCLI: -r backend:<its required slots in order>[+shading[+prepass[+meshes]]], e.g. gpu-compute:prefix+incremental, gpu-compute:bricks+refloor+direct+beam).\n\nBack ends:");
+            println!("Renderers are assembled from components (plan: compose = {{ backend, storage, geometry, prepass, visibility, shading, meshes }};\nCLI: -r backend:<its required slots in order>[+shading[+prepass[+meshes]]], e.g. gpu-compute:prefix+incremental, gpu-compute:bricks+refloor+direct+beam).\nSites bound otherwise (shadow, bounce, exposure, meshes-shadow; plan: sites = {{ ... }}; CLI: after commas):\n  gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere — a site's value is another site (shared), <kernel> (over the lead's storage),\n  <storage>/<kernel> or <site>/<kernel>; `multirenderer graph <renderer>` shows the graph.\n\nBack ends:");
             for b in mr_components::BACKENDS {
                 let slots: Vec<String> = b.slots.iter().map(|(s, d)| format!("{}={d}", s.name())).collect();
                 println!("  {:<12} {}{}\n               slots: {}", b.name, b.description, if b.renderer.is_none() { "  [not available yet]" } else { "" }, slots.join(", "));
@@ -249,6 +271,9 @@ impl Ctx<'_> {
                 label: label.clone(),
                 renderer: spec.name.clone(),
                 composition: spec.compose.clone(),
+                sites: spec.sites.clone(),
+                graph: spec.graph.clone(),
+                graph_key: spec.pipeline().and_then(|g| g.key().ok()),
                 options: spec.extra_options(),
                 view_radius: spec.view_radius(run),
                 mode,
@@ -385,9 +410,10 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
                 ok
             })
             .filter_map(|s| {
-                let Some(c) = s.compose.as_ref().filter(|_| s.swept) else { return Some(s.clone()) };
-                let mut e = s.clone();
-                e.set_compose(c.effective(mode)).ok()?;
+                if !s.swept {
+                    return Some(s.clone());
+                }
+                let e = s.effective(mode).ok()?;
                 if seen.insert((e.label().to_string(), toml::to_string(&e.extra_options()).unwrap_or_default())) {
                     Some(e)
                 } else {

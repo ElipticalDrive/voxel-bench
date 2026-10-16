@@ -481,7 +481,8 @@ fn composition(ui: &mut Ui, r: &mut RendererSpec, infos: &[RendererInfo]) -> Cha
     let Some(mut comp) = r.compose.clone() else { return false };
     let params: &[mr_core::ParamSpec] = infos.iter().find(|i| i.name == r.name).map_or(&[], |i| &i.params);
     let knobs: Vec<_> = params.iter().map(|p| (p.clone(), option_value(p, &r.options))).collect();
-    let edits = stage_grid(ui, &comp, &knobs, false, &mut |_, _| {});
+    let edits = stage_grid(ui, r, &knobs, false, &mut |_, _| {});
+    let mut sites = None;
     let mut changed = false;
     for e in edits {
         match e {
@@ -496,6 +497,7 @@ fn composition(ui: &mut Ui, r: &mut RendererSpec, infos: &[RendererInfo]) -> Cha
                 }
             }
             StageEdit::Slot(slot, name) => comp.set(slot, &name),
+            StageEdit::Sites(s) => sites = Some(s),
             StageEdit::Knob { name, value, .. } => {
                 r.options.insert(name, super::param_to_toml(&value));
                 changed = true;
@@ -503,8 +505,19 @@ fn composition(ui: &mut Ui, r: &mut RendererSpec, infos: &[RendererInfo]) -> Cha
         }
     }
     if comp != *r.compose.as_ref().unwrap() {
-        if let Err(e) = r.set_compose(comp) {
-            tracing::warn!("composition: {e:#}");
+        // Sites the new composition cannot keep are dropped (with a note).
+        if let Err(e) = r.set_compose(comp.clone()) {
+            tracing::warn!("composition: {e:#}; its sites dropped");
+            r.sites.clear();
+            if let Err(e) = r.set_compose(comp) {
+                tracing::warn!("composition: {e:#}");
+            }
+        }
+        changed = true;
+    }
+    if let Some(s) = sites {
+        if let Err(e) = r.set_sites(s) {
+            tracing::warn!("sites: {e:#}");
         }
         changed = true;
     }

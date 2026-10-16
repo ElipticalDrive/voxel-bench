@@ -10,6 +10,7 @@
 //! combination whose back end declares them. In each pass, swept combinations that the
 //! pass mode cannot tell apart run once (`Composition::effective`).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, bail};
@@ -141,8 +142,15 @@ pub struct RendererSpec {
     /// The components this renderer is assembled from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compose: Option<mr_components::Composition>,
+    /// Sites of the composition bound otherwise (PLAN step 9d, the sites form of
+    /// `mr_components::graph`): site → `<site>`, `<kernel>`, `<storage>/<kernel>` or
+    /// `<site>/<kernel>` (exposure tests: `<storage>` or `<site>`), e.g.
+    /// `sites = { bounce = "tree64/sphere" }`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sites: BTreeMap<String, String>,
     /// The pipeline as a graph (PLAN step 9; `mr_components::graph`), instead of
-    /// `compose`: loaded as the composition its back end runs, its nodes' knobs as options.
+    /// `compose`: run as such; `compose` becomes the nearest composition (labels, the flat
+    /// options), its skeleton nodes' knobs the options.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<mr_components::graph::Graph>,
     /// Display label, to run the same renderer twice with different options.
@@ -167,15 +175,15 @@ pub struct RendererSpec {
     /// Cache of the composition's label (derived; not part of the plan).
     #[serde(skip)]
     pub compose_label: std::sync::OnceLock<String>,
-    /// The graph this renderer was given (`graph`, after `resolve`), when it is not just
-    /// its composition: what the back end runs (derived; not part of the plan).
+    /// The graph this renderer runs when it is not just its composition (`graph`, or the
+    /// composition with `sites`; derived by `resolve`, not part of the plan).
     #[serde(skip)]
     pub ran_graph: Option<mr_components::graph::Graph>,
 }
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), compose: None, graph: None, label: None, options: Default::default(), view_radius: None, max_lod: None, devices: None, compile: None, swept: false, compose_label: Default::default(), ran_graph: None }
+        Self { name: name.into(), compose: None, sites: BTreeMap::new(), graph: None, label: None, options: Default::default(), view_radius: None, max_lod: None, devices: None, compile: None, swept: false, compose_label: Default::default(), ran_graph: None }
     }
 
     /// A renderer assembled from components.
@@ -189,24 +197,28 @@ impl RendererSpec {
     /// For compositions: checks them and sets `name` (the back end's renderer) and the
     /// options that select the components.
     pub fn resolve(&mut self) -> anyhow::Result<()> {
-        if let Some(g) = self.graph.take() {
-            if self.compose.is_some() {
-                bail!("a renderer has `graph` or `compose`, not both");
-            }
-            let (c, exact) = g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
+        self.ran_graph = None;
+        self.compose_label = Default::default();
+        if let Some(g) = &self.graph {
+            let (c, _) = g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
             for (k, v) in g.flat_knobs().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
                 if self.options.get(&k).is_some_and(|o| *o != v) {
                     bail!("renderer graph: knob `{k}` is set in the graph and in `options`");
                 }
                 self.options.insert(k, v);
             }
-            // A graph its composition does not express is labelled as the nearest
-            // composition and the graph's key.
-            if !exact && self.label.is_none() {
-                self.label = Some(format!("{} [graph {}]", c.label(), &g.key().map_err(anyhow::Error::msg)?[..8]));
+            // Written in the sites form where it has one (one form per pipeline).
+            match g.sites_form().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
+                Some((c, sites)) => {
+                    self.graph = None;
+                    self.compose = Some(c);
+                    self.sites = sites;
+                }
+                None => {
+                    self.ran_graph = Some(g.clone());
+                    self.compose = Some(c);
+                }
             }
-            self.ran_graph = Some(g);
-            self.compose = Some(c);
         }
         // `name = "<back end's renderer>"` (older plans, the CLI): the back end's
         // composition, with stages taken from the options where given.
@@ -243,6 +255,10 @@ impl RendererSpec {
             for (k, v) in opts {
                 self.options.insert(k.into(), toml::Value::String(v));
             }
+            if self.graph.is_none() && !self.sites.is_empty() {
+                let g = mr_components::graph::Graph::from_composition(c).and_then(|g| g.with_sites(&self.sites)).and_then(|g| g.accept().map(|_| g)).map_err(|e| anyhow::anyhow!("renderer {}: sites: {e}", c.label()))?;
+                self.ran_graph = Some(g);
+            }
         }
         if self.name.is_empty() {
             bail!("a renderer needs `compose = {{ ... }}` or a `name`");
@@ -257,9 +273,26 @@ impl RendererSpec {
     /// (`gpu-compute:prefix+incremental`, `gpu-compute:tree64+refloor+direct+beam`,
     /// `gpu-raster:bricks+greedy+visbuffer`); otherwise a renderer name (a back end's, giving its default composition, or a
     /// standalone one).
+    ///
+    /// Sites bound otherwise follow after commas (PLAN step 9d):
+    /// `gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere`.
     pub fn from_cli(s: &str) -> anyhow::Result<Self> {
         use mr_components::Slot;
-        let Some((backend, rest)) = s.split_once(':') else { return Ok(Self::new(s)) };
+        let mut parts = s.split(',');
+        let s = parts.next().unwrap_or_default();
+        let mut sites = BTreeMap::new();
+        for p in parts {
+            let (k, v) = p.split_once('=').with_context(|| format!("`{p}`: sites are written `site=value` (e.g. `bounce=tree64/sphere`)"))?;
+            sites.insert(k.trim().to_string(), v.trim().to_string());
+        }
+        let Some((backend, rest)) = s.split_once(':') else {
+            let mut spec = Self::new(s);
+            if !sites.is_empty() {
+                spec.sites = sites;
+                spec.resolve()?;
+            }
+            return Ok(spec);
+        };
         let parts: Vec<&str> = rest.split('+').collect();
         let mut c = mr_components::Composition::new(backend);
         let all: Vec<Slot> = c.slots().collect();
@@ -285,16 +318,48 @@ impl RendererSpec {
             next = i + 1;
         }
         let mut spec = Self::new("");
+        spec.sites = sites;
         spec.set_compose(c)?;
         Ok(spec)
     }
 
-    /// Replaces the composition (and the cached label) and re-resolves.
+    /// Replaces the composition (a graph given becomes this composition; sites stay) and
+    /// re-resolves.
     pub fn set_compose(&mut self, c: mr_components::Composition) -> anyhow::Result<()> {
         self.compose = Some(c);
-        self.compose_label = Default::default();
-        self.ran_graph = None;
+        self.graph = None;
         self.resolve()
+    }
+
+    /// Replaces the sites bound otherwise and re-resolves (on failure the old ones stay),
+    /// then writes the result in its sites form.
+    pub fn set_sites(&mut self, sites: BTreeMap<String, String>) -> anyhow::Result<()> {
+        let old = std::mem::replace(&mut self.sites, sites);
+        self.graph = None;
+        if let Err(e) = self.resolve() {
+            self.sites = old;
+            self.resolve()?;
+            return Err(e);
+        }
+        // In its sites form: e.g. shadow rays a composition's own stages express move there.
+        if let Some(Ok(Some((c, sites)))) = self.ran_graph.as_ref().map(|g| g.sites_form()) {
+            self.compose = Some(c);
+            self.sites = sites;
+            self.resolve()?;
+        }
+        Ok(())
+    }
+
+    /// The renderer as far as a pass of mode `m` can tell (`Composition::effective`; sites
+    /// only lit passes cast rays at, or mesh passes, dropped). Graphs without a sites form
+    /// stay as they are.
+    pub fn effective(&self, m: PassMode) -> anyhow::Result<Self> {
+        let (Some(c), None) = (&self.compose, &self.graph) else { return Ok(self.clone()) };
+        let mut e = self.clone();
+        let unlit = m.lighting == mr_core::RenderMode::Unlit;
+        e.sites.retain(|k, _| !(unlit && matches!(k.as_str(), "shadow" | "bounce" | "meshes-shadow")) && (m.meshes || k != "meshes-shadow"));
+        e.set_compose(c.effective(m))?;
+        Ok(e)
     }
 
     /// The graph the back end runs: the one given, else the composition's (`None` for
@@ -319,14 +384,16 @@ impl RendererSpec {
         self.compile.unwrap_or(run.compile) == Compile::Native && matches!(crate::pipelines::bake(self), Ok(Some(_)))
     }
 
-    /// Display label: the explicit one, else the composition, else the renderer name.
+    /// Display label: the explicit one, else the graph's (the composition's and the sites
+    /// bound otherwise), else the renderer name.
     pub fn label(&self) -> &str {
         if let Some(l) = &self.label {
             return l;
         }
-        match &self.compose {
-            Some(c) => self.compose_label.get_or_init(|| c.label()),
-            None => &self.name,
+        match (&self.compose, &self.ran_graph) {
+            (_, Some(g)) => self.compose_label.get_or_init(|| g.label().unwrap_or_else(|e| format!("{} [invalid graph: {e}]", self.name))),
+            (Some(c), None) => self.compose_label.get_or_init(|| c.label()),
+            (None, None) => &self.name,
         }
     }
 
@@ -445,6 +512,9 @@ impl Plan {
         expand_sweeps(&mut table)?;
         let mut plan: Plan = table.try_into()?;
         for r in &mut plan.renderers {
+            if r.graph.is_some() && (r.compose.is_some() || !r.sites.is_empty()) {
+                bail!("a renderer has `graph` or `compose` (with `sites`), not both");
+            }
             r.resolve()?;
         }
         if plan.run.frames == 0 {
@@ -463,6 +533,13 @@ impl Plan {
             if r.compose.is_some() {
                 r.name.clear();
                 for k in mr_components::Slot::ALL.map(|s| s.name()) {
+                    r.options.remove(k);
+                }
+            }
+            // A graph is written as such: its knobs stay in its nodes.
+            if let Some(g) = &r.graph {
+                r.compose = None;
+                for k in g.flat_knobs().unwrap_or_default().keys() {
                     r.options.remove(k);
                 }
             }
@@ -497,7 +574,8 @@ impl Pick {
 /// renderer per valid combination.
 fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
     let Some(toml::Value::Array(entries)) = table.get_mut("renderer") else { return Ok(()) };
-    let swept = |e: &toml::Value| e.get("compose").and_then(|c| c.as_table()).is_some_and(|c| c.values().any(|v| v.is_array() || v.as_str() == Some("*")));
+    let picks = |t: Option<&toml::Value>| t.and_then(|c| c.as_table()).is_some_and(|c| c.values().any(|v| v.is_array() || v.as_str() == Some("*")));
+    let swept = |e: &toml::Value| picks(e.get("compose")) || picks(e.get("sites"));
     if !entries.iter().any(swept) {
         return Ok(());
     }
@@ -508,7 +586,10 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
             out.push(e);
             continue;
         }
-        let mut compose = e.get("compose").and_then(|c| c.as_table()).unwrap().clone();
+        let mut compose = e.get("compose").and_then(|c| c.as_table()).cloned().unwrap_or_default();
+        let site_axes: Vec<(String, Pick)> = e.get("sites").and_then(|s| s.as_table()).map(|t| t.iter().map(|(k, v)| Ok((k.clone(), Pick::of(Some(v), &format!("sites.{k}"))?))).collect::<anyhow::Result<_>>()).transpose()?.unwrap_or_default();
+        // Distinct pipelines once each (several spellings can give one graph).
+        let mut keys = std::collections::HashSet::new();
         // Before step 7 the traversal kernel was `visibility` (`visibility = ["refloor", "sphere"]`).
         if !compose.contains_key("traversal") {
             let names: Vec<&str> = match compose.get("visibility") {
@@ -571,12 +652,23 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
             let options: toml::Table = e.get("options").and_then(|o| o.as_table()).map(|t| t.iter().filter(|(k, _)| known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
             // Combinations whose components' needs cannot be met do not exist.
             for c in combos.into_iter().filter(|c| c.validate().is_ok()) {
-                let mut entry = e.as_table().unwrap().clone();
-                entry.insert("compose".into(), toml::Value::try_from(&c)?);
-                entry.insert("options".into(), toml::Value::Table(options.clone()));
-                entry.insert("swept".into(), toml::Value::Boolean(true));
-                entry.remove("label");
-                out.push(toml::Value::Table(entry));
+                for (c, sites) in expand_sites(&c, &site_axes)? {
+                    let key = mr_components::graph::Graph::from_composition(&c).and_then(|g| g.with_sites(&sites)).and_then(|g| g.key()).map_err(anyhow::Error::msg)?;
+                    if !keys.insert(key) {
+                        continue;
+                    }
+                    let mut entry = e.as_table().unwrap().clone();
+                    entry.insert("compose".into(), toml::Value::try_from(&c)?);
+                    if sites.is_empty() {
+                        entry.remove("sites");
+                    } else {
+                        entry.insert("sites".into(), toml::Value::try_from(&sites)?);
+                    }
+                    entry.insert("options".into(), toml::Value::Table(options.clone()));
+                    entry.insert("swept".into(), toml::Value::Boolean(true));
+                    entry.remove("label");
+                    out.push(toml::Value::Table(entry));
+                }
             }
         }
         if out.len() == before {
@@ -585,6 +677,54 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
     }
     *entries = out;
     Ok(())
+}
+
+/// Most pipelines one swept entry may expand into per composition (sweeps are bounded).
+const MAX_SITE_COMBOS: usize = 100_000;
+
+/// The site bindings of composition `c` a sweep's `sites` picks: every combination that
+/// runs, in its sites form (composition and sites). `"*"` on a site the pipeline lacks is
+/// ignored; a named value there gives nothing (as `compose` names a stage the back end
+/// lacks).
+fn expand_sites(c: &mr_components::Composition, axes: &[(String, Pick)]) -> anyhow::Result<Vec<(mr_components::Composition, BTreeMap<String, String>)>> {
+    if axes.is_empty() {
+        return Ok(vec![(c.clone(), BTreeMap::new())]);
+    }
+    let base = mr_components::graph::Graph::from_composition(c).map_err(anyhow::Error::msg)?;
+    let names: Vec<String> = base.site_ports().into_iter().map(|(n, ..)| n).collect();
+    let mut lists: Vec<(&str, Vec<String>)> = vec![];
+    for (site, pick) in axes {
+        let values = match pick {
+            Pick::Default => continue,
+            _ if !names.contains(site) => match pick {
+                Pick::All => continue,
+                _ => return Ok(vec![]),
+            },
+            Pick::All => base.site_choices(site),
+            Pick::Some(l) => l.clone(),
+        };
+        lists.push((site, values));
+    }
+    let n: usize = lists.iter().map(|(_, v)| v.len()).product();
+    if n > MAX_SITE_COMBOS {
+        bail!("sites: {n} combinations for {} (at most {MAX_SITE_COMBOS}); name fewer values", c.label());
+    }
+    let mut maps = vec![BTreeMap::new()];
+    for (site, values) in &lists {
+        maps = maps.iter().flat_map(|m| values.iter().map(move |v| {
+            let mut m = m.clone();
+            m.insert(site.to_string(), v.clone());
+            m
+        })).collect();
+    }
+    let mut out = vec![];
+    for m in maps {
+        let Ok(g) = base.with_sites(&m) else { continue };
+        if let Ok(Some(form)) = g.accept().and_then(|_| g.sites_form()) {
+            out.push(form);
+        }
+    }
+    Ok(out)
 }
 
 fn apply_override(table: &mut toml::Table, ov: &str) -> anyhow::Result<()> {
@@ -741,6 +881,46 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert_eq!(r.options.get("exact"), Some(&toml::Value::Boolean(false)), "the primary kernel's knob");
         assert!(r.options.get("skip8").is_none());
         assert!(r.pipeline().unwrap().nodes.contains_key("k2"));
+        // Saved as the graph it is (its knobs in its nodes), and loads back the same.
+        let saved = p.to_toml().unwrap();
+        assert!(saved.contains("[renderer.graph]") && !saved.contains("compose"), "{saved}");
+        let again = Plan::parse(&saved, &[]).unwrap();
+        assert_eq!(again.renderers[0].pipeline().unwrap().key(), r.pipeline().unwrap().key());
+        assert_eq!(again.renderers[0].label(), r.label());
+        // Without knobs on its own kernel, the same graph has a sites form and is kept so.
+        let plain = own.replace(", knobs = { exact = true, skip8 = false }", "");
+        let p = Plan::parse(&format!("{base}{plain}"), &[]).unwrap();
+        let r = &p.renderers[0];
+        assert!(r.graph.is_none() && r.sites.get("shadow").map(String::as_str) == Some("incremental"), "{:?}", r.sites);
+        assert_eq!(r.label(), "gpu-compute: prefix + incremental + no meshes, shadow = incremental");
+        assert!(p.to_toml().unwrap().contains("[renderer.sites]"));
+        let both = graph.replace("[[renderer]]\n", "[[renderer]]\nsites = { bounce = \"rows/rowrun\" }\n");
+        assert!(Plan::parse(&format!("{base}{both}"), &[]).unwrap_err().to_string().contains("not both"));
+    }
+
+    /// Step 9d: sites from the command line and in plans, run as graphs.
+    #[test]
+    fn sites() {
+        let r = RendererSpec::from_cli("gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere").unwrap();
+        assert_eq!(r.label(), "gpu-compute: bricks + refloor + pathtrace, bounce = tree64/sphere");
+        let g = r.pipeline().unwrap();
+        assert!(g.nodes.values().any(|n| n.component == "tree64"));
+        // Effective in unlit passes: the bounces are moot, so is the shading.
+        let u = r.effective(PassMode::UNLIT).unwrap();
+        assert!(u.sites.is_empty() && u.ran_graph.is_none() && u.label() == "gpu-compute: bricks + refloor", "{}", u.label());
+        assert_eq!(r.effective(PassMode::LIT).unwrap().label(), r.label());
+        // Errors say why.
+        let e = RendererSpec::from_cli("gpu-compute:bricks+refloor,bounce=tree64/sphere").unwrap_err().to_string();
+        assert!(e.contains("no site `bounce`"), "{e}");
+        let e = RendererSpec::from_cli("gpu-rt,bounce=bricks/refloor").unwrap_err().to_string();
+        assert!(e.contains("no site `bounce`") || e.contains("through its primary kernel"), "{e}");
+        let e = RendererSpec::from_cli("cpu:bricks+refloor,shadow=hier/refloor").unwrap_err().to_string();
+        assert!(e.contains("over the storage of its primary rays"), "{e}");
+        assert!(RendererSpec::from_cli("cpu:bricks+refloor,shadow=incremental").is_ok());
+        // set_sites keeps the old ones when the new ones cannot run.
+        let mut r = r;
+        assert!(r.set_sites(BTreeMap::from([("bounce".into(), "x/y".into())])).is_err());
+        assert_eq!(r.sites.get("bounce").map(String::as_str), Some("tree64/sphere"));
     }
 
     /// Sweeps expand into every valid combination, with options only where they apply.
@@ -773,6 +953,18 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert_eq!(names, ["cpu", "cpu-discover"], "named components: only back ends that have them");
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = [\"palette\"] }}\n"), &[]).is_err());
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = \"*\", nope = \"x\" }}\n"), &[]).is_err());
+        // Step 9d: sweeps over sites, once per distinct graph.
+        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ shading = \"pathtrace\" }}\nsites = {{ bounce = \"*\" }}\n"), &[]).unwrap();
+        let keys: std::collections::HashSet<String> = p.renderers.iter().map(|r| r.pipeline().unwrap().key().unwrap()).collect();
+        assert_eq!(keys.len(), p.renderers.len());
+        // shared with the shadow rays, 4 kernels over the primary storage, 8 storages x 4 kernels.
+        assert!(p.renderers.len() == 37 && p.renderers.iter().any(|r| r.sites.is_empty()), "{}", p.renderers.len());
+        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = [\"gpu-compute\", \"gpu-raster\"], shading = \"pathtrace\" }}\nsites = {{ bounce = [\"shadow\", \"rows/rowrun\"] }}\n"), &[]).unwrap();
+        let labels: Vec<&str> = p.renderers.iter().map(|r| r.label()).collect();
+        assert_eq!(labels.len(), 4, "{labels:?}");
+        assert!(labels.contains(&"gpu-raster: bricks + greedy + raster + pathtrace, bounce = rows/rowrun"), "{labels:?}");
+        // A named site a pipeline lacks skips it.
+        assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ shading = \"direct\" }}\nsites = {{ bounce = [\"rows/rowrun\"] }}\n"), &[]).is_err());
     }
 
     /// Every shipped plan parses, and its compositions validate and resolve.

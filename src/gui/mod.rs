@@ -995,7 +995,7 @@ impl App {
             // Values being dragged are shown before they are applied.
             let knobs: Vec<(mr_core::ParamSpec, mr_core::ParamValue)> = l.params.iter().map(|(s, v)| (s.clone(), self.knob_edits.get(&(i, s.name.clone())).cloned().unwrap_or(v.clone()))).collect();
             let edits = match &l.spec.compose {
-                Some(comp) => stages::stage_grid(ui, comp, &knobs, true, &mut lock_box),
+                Some(_) => stages::stage_grid(ui, &l.spec, &knobs, true, &mut lock_box),
                 // A standalone renderer: its knobs only.
                 None => {
                     let mut edits = vec![];
@@ -1025,8 +1025,28 @@ impl App {
                             self.knob_edits.insert(key, value);
                         }
                     }
-                    // Live where the back end can switch the component, else a hot swap.
+                    // Live where the back end can switch the component, else a hot swap. A
+                    // pipeline with sites of its own is swapped whole (its graph changes).
+                    stages::StageEdit::Slot(slot, name) if l.spec.ran_graph.is_some() => {
+                        let mut spec = l.spec.clone();
+                        if let Some(mut c) = spec.compose.clone() {
+                            c.set(slot, &name);
+                            if spec.set_compose(c.clone()).is_err() {
+                                spec.sites.clear();
+                                if spec.set_compose(c).is_err() {
+                                    continue;
+                                }
+                            }
+                            actions.push(LaneAction::Swap(i, spec));
+                        }
+                    }
                     stages::StageEdit::Slot(slot, name) => actions.push(LaneAction::Set(i, slot.name().into(), mr_core::ParamValue::Choice(name))),
+                    stages::StageEdit::Sites(sites) => {
+                        let mut spec = l.spec.clone();
+                        if spec.set_sites(sites).is_ok() {
+                            actions.push(LaneAction::Swap(i, spec));
+                        }
+                    }
                     stages::StageEdit::Backend(b) => {
                         let mut spec = l.spec.clone();
                         if let Some(mut comp) = spec.compose.clone() {
@@ -1036,6 +1056,7 @@ impl App {
                             if let Some(info) = self.infos.iter().find(|x| Some(x.name.as_str()) == renderer) {
                                 stages::prune_options(&mut spec.options, &info.params);
                             }
+                            spec.sites.clear();
                             if spec.set_compose(comp).is_ok() {
                                 actions.push(LaneAction::Swap(i, spec));
                             }
@@ -1493,6 +1514,7 @@ mod tests {
                 isolation = "thread"
                 [[renderer]]
                 compose = { backend = "gpu-compute", storage = "prefix", traversal = "incremental", shading = "pathtrace" }
+                sites = { bounce = "tree64/sphere" }
                 [[renderer]]
                 compose = { backend = "gpu-raster", geometry = "naive", draw = "visbuffer" }
                 "#,

@@ -52,8 +52,10 @@ The user's architecture, settled with finality and without limits for later (IDE
   field per slot, `BackendInfo` a fixed slot list per back end. A pipeline cannot have
   stages another lacks beyond that list, nor bind a different kernel at each place rays
   are cast. Step 7c's `shadow_storage` / `shadow_traversal` are a hard-coded special case
-  of what should be general. (9a–9c: graphs exist, and back ends bind every ray-casting
-  site from them; `Slot` / `Composition` remain for the GUI, CLI, labels and sweeps until 9d.)
+  of what should be general. (Step 9 done: graphs exist, back ends bind every ray-casting
+  site from them, and the GUI, CLI, plans, labels, sweeps and observations speak graphs
+  through the sites form. `Slot` / `Composition` remain as the skeleton a back end
+  accepts until step 13 makes back ends executors.)
 - **Strategies inside back ends:** discovery (quadtree, cluster and their pieces), splat
   and voxelspace columns are back-end code, not components; the ten back ends are
   hand-written assemblers, not executors placing pieces on devices (§18).
@@ -351,3 +353,42 @@ took about 1.5–2.5 hours each), with wide uncertainty on the large steps:
 - Not yet: the GUI, CLI form, sweeps and observations still use compositions (9d); the
   `cpu` back end's shadow rays over another storage need a compiled pipeline (step 16).
 
+**2026-10-16, step 9d done (step 9 complete): the GUI, CLI, plans, sweeps and observations
+speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/stages.rs`:
+- **Sites form**: a graph written as its flat composition plus the sites it binds otherwise
+  (`Graph::sites_form`, `with_sites`, `site_values`, `site_choices`). Sites are named by port
+  (`primary`, `rays`, `exposure`, `shadow`, `bounce`, `meshes-shadow`); a value is another
+  site (shared), `<kernel>` (its own kernel over the lead's storage), `<storage>/<kernel>`
+  or `<site>/<kernel>`, and for exposure tests `<storage>` or a site. Unlisted sites follow
+  the rays before them, as unbound ports do. Graphs whose own kernels carry knobs have no
+  sites form and stay graphs.
+- **CLI**: `-r 'gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere'`; `multirenderer
+  graph <renderer>` also prints the sites form; `graph --keys` gives old observation
+  records their graph key. **Plans**: `sites = { bounce = "tree64/sphere" }`; a
+  `[renderer.graph]` is normalised to the sites form when it has one. Bug fixed on the
+  way: saving a plan wrote a graph renderer as its nearest composition (the graph was lost);
+  it is now saved as the graph.
+- **Labels**: `gpu-compute: bricks + refloor + pathtrace, bounce = tree64/sphere`; only graphs
+  without a sites form keep `[graph <key>]`.
+- **Sweeps over graphs**: `sites = { bounce = "*" }` or a list, crossed with `compose`
+  sweeps, bounded (at most 100,000 per composition), each distinct graph once (by key);
+  `"*"` = the other sites, each kernel over the lead's storage, each storage × kernel. Unlit
+  passes drop shadow / bounce / mesh-shadow sites as moot (`RendererSpec::effective`).
+- **Observations** (version 3) carry `sites`, `graph` (when there is no sites form) and
+  `graph_key`; `scripts/ab/sweepcmp.py` keys pipelines by graph key (older records keyed
+  through `graph --keys`).
+- **GUI**: the stage grid is a tree from the output: each port expands into its node
+  (component picker and its knobs beside it), nodes reached twice show as shared, off-lead
+  sites pick "shared: <site>" or "own kernel" with kernel and storage pickers below; every
+  choice is listed and greyed with the reason it cannot run. Stages the tree does not reach
+  (no prepass, no meshes) follow as rows. Live: site edits hot-swap the renderer.
+- Verified: builds without warnings, 67 unit tests (new: every site binding one or two away
+  from each back end's compositions round-trips through the sites form, 930 bindings;
+  sites in plans, CLI and sweeps; graph plans save and reload), architecture guard, 4 GPU
+  end-to-end tests; GUI screenshot with a sites renderer running live; a terrain run of
+  gpu-compute bounces over tree64/sphere, gpu-raster bounces over prefix/incremental and
+  `cpu` with its own shadow kernel: each matches its nearest composition's psnr and bad
+  pixels; the 2026-10-11 baseline sweep's 3047 records all get graph keys (self-comparison
+  100%). Back-end and shader code unchanged, so no pixel / timing A/B was needed.
+- Not yet: knobs of a site's own kernel are edited in the plan's graph form only (the GUI
+  shows them as such); the catalogue still groups by composition (the nearest).

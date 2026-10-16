@@ -1,5 +1,7 @@
-# sweepcmp.py BASE_SWEEP NEW_SWEEP (e.g. baselines/sweep-20261011 target/sweep/<time>): compares two sweeps per (plan, mode, mesh, composition): GPU ms, fps, PSNR.
-import sys, json, glob, gzip, statistics as st, collections
+# sweepcmp.py BASE_SWEEP NEW_SWEEP (e.g. baselines/sweep-20261011 target/sweep/<time>): compares two sweeps per (plan, mode, pipeline, options): GPU ms, fps, PSNR.
+# Pipelines are keyed by their canonical graph (`graph_key`, PLAN step 9d); records written before they carried
+# one get it from `multirenderer graph --keys` (MR_BIN, default target/release/multirenderer).
+import sys, json, glob, gzip, os, subprocess, statistics as st, collections
 KERNELS = {'refloor', 'incremental', 'sphere', 'rowrun', 'rayquery'}
 DRAWS = {'raster', 'visbuffer', 'gbuffer'}
 # Slots added by the architecture refactor (step 7) and their defaults per back end.
@@ -17,17 +19,36 @@ def canonical(comp, opts):
     for k, v in ADDED.get(c.get('backend', 'gpu-compute'), {}).items():
         if not c.get(k): c[k] = v
     return c, opts
+def graph_keys(records):
+    """Graph keys for records without one, computed by the binary (one call for all)."""
+    need = [o for o in records if not o.get('graph_key') and o.get('composition')]
+    if need:
+        exe = os.environ.get('MR_BIN', 'target/release/multirenderer')
+        text = ''.join(json.dumps(o) + '\n' for o in need)
+        keys = subprocess.run([exe, 'graph', '--keys'], input=text, capture_output=True, text=True, check=True).stdout.split()
+        assert len(keys) == len(need), (len(keys), len(need))
+        for o, k in zip(need, keys):
+            if k != '-': o['graph_key'] = k
 def load(d):
-    out = {}
+    records = []
     for f in glob.glob(d + '/*/observations.jsonl*'):
         op = gzip.open if f.endswith('.gz') else open
         for line in op(f, 'rt'):
             o = json.loads(line)
-            c, opts = canonical(o['composition'], o.get('options') or {})
-            k = (o['plan'], o['mode'], json.dumps(c, sort_keys=True), json.dumps(opts, sort_keys=True))
-            out[k] = o
+            if not o.get('composition'): continue
+            o['composition'], o['options'] = canonical(o['composition'], o.get('options') or {})
+            records.append(o)
+    graph_keys(records)
+    out = {}
+    for o in records:
+        # The composition stays in the key's display part (labels below); the graph key decides.
+        k = (o['plan'], o['mode'], o.get('graph_key') or json.dumps(o['composition'], sort_keys=True), json.dumps(o['options'], sort_keys=True), json.dumps(o['composition'], sort_keys=True))
+        out[k[:4]] = (o, k[4])
     return out
 base, new = load(sys.argv[1]), load(sys.argv[2])
+shown = {k: v[1] for d in (base, new) for k, v in d.items()}
+base = {k: v[0] for k, v in base.items()}
+new = {k: v[0] for k, v in new.items()}
 common = [k for k in base if k in new]
 print(f'base {len(base)} obs, new {len(new)} obs, common {len(common)}, only new {len(set(new)-set(base))}, only base {len(set(base)-set(new))}')
 rg, rf, dq = [], [], []
@@ -51,13 +72,13 @@ summ('GPU ms new/base', rg)
 summ('fps   new/base', rf)
 print('PSNR drops > 0.5 dB:', sum(1 for d in dq if d[0] < -0.5), 'of', len(dq))
 for d, k, a, b in sorted(dq)[:12]:
-    if d < -0.5: print(f'  {d:+.2f} dB  {k[0]} {k[1]} {json.loads(k[2])} {k[3]}  {a:.1f} -> {b:.1f}')
+    if d < -0.5: print(f'  {d:+.2f} dB  {k[0]} {k[1]} {json.loads(shown[k])} {k[3]}  {a:.1f} -> {b:.1f}')
 print('GPU ms worst 20:')
 for r, _, k, a, b in sorted(worst, reverse=True)[:20]:
-    print(f'  {r:.3f}  {k[0]:15s} {k[1]:10s} {a:7.3f} -> {b:7.3f}  {json.loads(k[2])} {k[3] if k[3] != "{}" else ""}')
+    print(f'  {r:.3f}  {k[0]:15s} {k[1]:10s} {a:7.3f} -> {b:7.3f}  {json.loads(shown[k])} {k[3] if k[3] != "{}" else ""}')
 print('new failures:', len(fails))
-for k, e in fails[:10]: print('  ', k[0], k[1], json.loads(k[2]), e)
+for k, e in fails[:10]: print('  ', k[0], k[1], json.loads(shown[k]), e)
 # per back end medians
 byb = collections.defaultdict(list)
-for r, _, k, a, b in worst: byb[json.loads(k[2])['backend']].append(r)
+for r, _, k, a, b in worst: byb[json.loads(shown[k])['backend']].append(r)
 print('GPU ms median ratio by back end:', {b: round(st.median(v), 4) for b, v in sorted(byb.items())})

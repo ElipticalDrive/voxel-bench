@@ -64,6 +64,15 @@ pub struct PassReport {
     /// The composition and the options beyond it (knobs), when composed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub composition: Option<mr_components::Composition>,
+    /// Sites bound otherwise than the composition binds them (PLAN step 9d).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub sites: std::collections::BTreeMap<String, String>,
+    /// The graph run, when it has no sites form (else composition and sites give it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph: Option<mr_components::graph::Graph>,
+    /// The canonical graph's key (`Graph::key`): what the pass ran, for comparisons.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_key: Option<String>,
     #[serde(skip_serializing_if = "toml::Table::is_empty")]
     pub options: toml::Table,
     pub view_radius: u32,
