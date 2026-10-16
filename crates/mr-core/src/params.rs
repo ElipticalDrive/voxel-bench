@@ -4,6 +4,14 @@
 //! A parameter's initial value comes from the plan's renderer `options` (same key). `live`
 //! parameters can then be changed between frames with [`crate::Renderer::set_param`];
 //! the others need a restart (the live session hot-swaps a fresh worker).
+//!
+//! Independently, a parameter is *baked* (specialisable, PLAN step 10, IDEAS §17) or not: a
+//! baked knob's value may be compiled in as a constant where a pipeline is compiled for its
+//! values (GPU shader constants; CPU pipelines compiled on demand), so a different value is
+//! a different compiled pipeline and part of its cache key. The generic builds still read
+//! it at run time (and may change it live). By default switches and choices are baked (they
+//! select code) and numbers are not (quantities read at run time); [`ParamSpec::baked`]
+//! overrides it per knob (e.g. a loop count such as `bounces`).
 
 use serde::{Deserialize, Serialize};
 
@@ -89,19 +97,22 @@ pub struct ParamSpec {
     /// cannot skip fields.)
     #[serde(default)]
     pub owner: Option<(String, Vec<String>)>,
+    /// Specialisable: compiled pipelines may bake its value in (see the module docs).
+    #[serde(default)]
+    pub baked: bool,
 }
 
 impl ParamSpec {
     pub fn bool(name: &str, description: &str, default: bool, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Bool, default: ParamValue::Bool(default), live, owner: None }
+        Self { name: name.into(), description: description.into(), kind: ParamKind::Bool, default: ParamValue::Bool(default), live, owner: None, baked: true }
     }
 
     pub fn int(name: &str, description: &str, min: i64, max: i64, default: i64, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Int { min, max }, default: ParamValue::Int(default), live, owner: None }
+        Self { name: name.into(), description: description.into(), kind: ParamKind::Int { min, max }, default: ParamValue::Int(default), live, owner: None, baked: false }
     }
 
     pub fn float(name: &str, description: &str, min: f64, max: f64, log: bool, default: f64, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Float { min, max, log }, default: ParamValue::Float(default), live, owner: None }
+        Self { name: name.into(), description: description.into(), kind: ParamKind::Float { min, max, log }, default: ParamValue::Float(default), live, owner: None, baked: false }
     }
 
     pub fn choice(name: &str, description: &str, options: &[&str], default: &str, live: bool) -> Self {
@@ -112,7 +123,14 @@ impl ParamSpec {
             default: ParamValue::Choice(default.into()),
             live,
             owner: None,
+            baked: true,
         }
+    }
+
+    /// Declares the knob specialisable or not, against its kind's default.
+    pub fn baked(mut self, baked: bool) -> Self {
+        self.baked = baked;
+        self
     }
 
     /// Marks the knob as belonging to `components` of `slot` (see `owner`).

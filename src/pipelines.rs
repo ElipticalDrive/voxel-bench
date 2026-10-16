@@ -5,10 +5,12 @@
 //! result is an ordinary worker executable spoken to over the usual protocol, so a bad
 //! build only fails its worker and the host can swap it for the generic build.
 //!
-//! Builds are cached by a key over the generated source, the sources it compiles against,
-//! the toolchain (`rustc -vV`) and the CPU (`/proc/cpuinfo` model and flags): a pipeline
-//! is compiled once per machine and source state. Generated crates share one target
-//! directory, so the workspace's crates are compiled once for all of them.
+//! Builds are cached by the pipeline's graph key (step 10: the renderer's graph with the
+//! values of the knobs the generated code bakes placed on their nodes, [`Bake::graph`]) and
+//! a hash over the generated source, the sources it compiles against, the toolchain
+//! (`rustc -vV`) and the CPU (`/proc/cpuinfo` model and flags): a pipeline is compiled once
+//! per machine and source state. Generated crates share one target directory, so the
+//! workspace's crates are compiled once for all of them.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -18,14 +20,22 @@ use anyhow::{Context, bail};
 
 use crate::plan::RendererSpec;
 
-/// What a generated `cpu` pipeline bakes in.
+/// What a generated `cpu` pipeline bakes in: the pipeline (its graph, with the values of
+/// the knobs in [`BAKES`] on the nodes they belong to: its identity, the cache key) and the
+/// constants read off it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bake {
+    pub graph: mr_components::graph::Graph,
     pub storage: String,
-    /// `backend_cpu::Traversal` variant (the `traversal` and `exact` knobs).
+    /// `backend_cpu::Traversal` variant (the primary kernel and its `exact` knob).
     pub traversal: String,
-    pub packet: usize,
+    /// The packet width (`refloor`'s knob; `None` where it is moot).
+    pub packet: Option<usize>,
 }
+
+/// The knobs the generated `cpu` pipeline bakes in (each declared specialisable, a test
+/// checks); the others stay run-time values in it.
+pub const BAKES: &[&str] = &["exact", "packet"];
 
 /// A built pipeline worker.
 #[derive(Clone, Debug)]
@@ -36,18 +46,33 @@ pub struct Compiled {
     pub build_s: Option<f64>,
 }
 
-/// The values a `cpu` renderer bakes in (`None` for other renderers).
+/// What a `cpu` renderer bakes in (`None` for other renderers).
 pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
+    use mr_components::graph::Role;
     if spec.name != "cpu" {
         return Ok(None);
     }
-    let opt = |k: &str| spec.options.get(k).and_then(|v| v.as_str()).map(String::from);
-    let storage = opt("storage").unwrap_or("bricks".into());
-    let kernel = opt("traversal").unwrap_or("refloor".into());
-    let exact = spec.options.get("exact").and_then(|v| v.as_bool()).unwrap_or(true);
-    let traversal = format!("{:?}", backend_cpu::traversal(&kernel, exact)?);
-    let packet = opt("packet").and_then(|p| p.parse().ok()).unwrap_or(1);
-    Ok(Some(Bake { storage, traversal, packet }))
+    let graph = spec.pipeline().context("the renderer has no graph")?;
+    let params = (backend_cpu::entry().info)().params;
+    let knobs: Vec<(&mr_core::ParamSpec, toml::Value)> = BAKES
+        .iter()
+        .map(|k| {
+            let p = params.iter().find(|p| p.name == *k).with_context(|| format!("`cpu` has no knob `{k}`"))?;
+            let v = spec.options.get(*k).cloned().map_or_else(|| toml::Value::try_from(p.default.to_json()), Ok)?;
+            Ok((p, v))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let graph = graph.with_knobs(&knobs).map_err(anyhow::Error::msg)?;
+    let ck = graph.check().map_err(anyhow::Error::msg)?;
+    // The primary walk: the strategy's kernel and its storage.
+    let kernel = ck.input(Role::Visibility, "primary").context("no primary rays")?;
+    let k = ck.node(kernel);
+    let storage = ck.node(k.inputs.get("storage").context("the kernel walks no storage")?).component.clone();
+    let knob = |n: &str| k.knobs.get(n);
+    let exact = knob("exact").and_then(|v| v.as_bool()).unwrap_or(true);
+    let traversal = format!("{:?}", backend_cpu::traversal(&k.component, exact)?);
+    let packet = knob("packet").map(|v| v.as_str().and_then(|p| p.parse().ok()).context("packet: a width")).transpose()?;
+    Ok(Some(Bake { graph, storage, traversal, packet }))
 }
 
 /// The generated crate's `src/main.rs`.
@@ -59,7 +84,7 @@ pub fn source(b: &Bake) -> anyhow::Result<String> {
          impl backend_cpu::Spec for Baked {{\n\
          \x20   const STORAGE: Option<&'static str> = Some({storage:?});\n\
          \x20   const TRAVERSAL: Option<backend_cpu::Traversal> = Some(backend_cpu::Traversal::{traversal});\n\
-         \x20   const PACKET: Option<usize> = Some({packet});\n\
+         \x20   const PACKET: Option<usize> = {packet:?};\n\
          \x20   const NATIVE: bool = true;\n\
          }}\n\
          \n\
@@ -142,13 +167,14 @@ fn machine_id() -> anyhow::Result<String> {
     Ok(format!("{}\n{}", String::from_utf8_lossy(&rustc.stdout), model.join("\n")))
 }
 
-/// The cache key of `b` on this machine and source state.
+/// The cache key of `b` on this machine and source state: the pipeline's graph key, then a
+/// hash of what builds it here.
 pub fn key(b: &Bake) -> anyhow::Result<String> {
     let mut h = fnv(0xcbf2_9ce4_8422_2325, source(b)?.as_bytes());
     h = fnv(h, manifest(repo()).as_bytes());
     h = fnv(h, &sources_hash(repo())?.to_le_bytes());
     h = fnv(h, machine_id()?.as_bytes());
-    Ok(format!("cpu-{}-{}-{}-{h:016x}", b.storage, b.traversal.to_lowercase(), b.packet))
+    Ok(format!("cpu-{}-{h:016x}", b.graph.key().map_err(anyhow::Error::msg)?))
 }
 
 /// Returns the worker for `b`, building it first if it is not cached (blocking; minutes
@@ -230,16 +256,22 @@ fn verify(b: &Bake, c: &Compiled) -> anyhow::Result<String> {
     let dir = cache_dir().join("check").join(&c.key);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
-    let compose = format!("{{ backend = \"cpu\", storage = {:?}, traversal = {:?} }}", b.storage, if b.traversal == "Refloor" { "refloor" } else { "incremental" });
-    let options = format!("{{ exact = {}, packet = \"{}\" }}", b.traversal != "Incremental", b.packet);
+    // The pipeline twice, as its graph: the generic build and the compiled one.
+    let lane = |compile: &str| -> anyhow::Result<toml::Value> {
+        let mut t = toml::Table::new();
+        t.insert("graph".into(), toml::Value::try_from(&b.graph)?);
+        t.insert("compile".into(), compile.into());
+        Ok(toml::Value::Table(t))
+    };
+    let mut lanes = toml::Table::new();
+    lanes.insert("renderer".into(), toml::Value::Array(vec![lane("off")?, lane("native")?]));
+    let renderers = toml::to_string(&lanes)?;
     let plan = format!(
         "name = \"pipeline-check\"\n\n[scene]\ngenerator = {{ type = \"terrain\", seed = 7 }}\n\
          camera = {{ type = \"flythrough\", points = [[0, 110, 0], [260, 140, 120], [520, 95, -80]] }}\n\
          lights = [{{ type = \"scatter\", count = 40, seed = 1, center = [260, 80, 0], extent = [300, 60, 200], on_surface = true, intensity = 25.0, radius = 18.0 }}]\n\n\
          [run]\nframes = 4\nwarmup = 1\nresolution = [480, 270]\nmodes = [\"unlit\", \"lit\"]\nview_radius = 6\n\n\
-         [[renderer]]\ncompose = {compose}\noptions = {options}\ncompile = \"off\"\n\n\
-         [[renderer]]\ncompose = {compose}\noptions = {options}\ncompile = \"native\"\n\n\
-         [output]\ndir = {:?}\nsave = {{ every = 1 }}\n",
+         [output]\ndir = {:?}\nsave = {{ every = 1 }}\n\n{renderers}",
         dir.join("run"),
     );
     std::fs::write(dir.join("check.toml"), &plan)?;
@@ -280,16 +312,51 @@ fn verify(b: &Bake, c: &Compiled) -> anyhow::Result<String> {
 mod tests {
     use super::*;
 
-    /// Every CPU storage and kernel of the `cpu` back end has generated code.
+    fn spec(r: &str, options: &[(&str, toml::Value)]) -> RendererSpec {
+        let mut s = RendererSpec::from_cli(r).unwrap();
+        s.options.extend(options.iter().map(|(k, v)| (k.to_string(), v.clone())));
+        s.resolve().unwrap();
+        s
+    }
+
+    /// Every CPU storage and kernel of the `cpu` back end has generated code; the knobs it
+    /// bakes are declared specialisable.
     #[test]
     fn every_cpu_composition_has_a_source() {
         for st in mr_components::names_on("cpu", mr_components::Slot::Storage) {
             for k in mr_components::names_on("cpu", mr_components::Slot::Traversal) {
-                let b = Bake { storage: st.into(), traversal: format!("{:?}", backend_cpu::traversal(k, true).unwrap()), packet: 4 };
+                let b = bake(&spec(&format!("cpu:{st}+{k}"), &[("packet", "4".into())])).unwrap().unwrap();
+                assert_eq!((b.storage.as_str(), b.packet), (st, (k == "refloor").then_some(4)));
                 let s = source(&b).unwrap();
                 assert!(s.contains("NATIVE: bool = true") && s.contains(backend_cpu::storage_type(st).unwrap()), "{s}");
             }
         }
+        let params = (backend_cpu::entry().info)().params;
+        for k in BAKES {
+            assert!(params.iter().any(|p| p.name == *k && p.baked && p.owner.is_some()), "`{k}` is declared specialisable and belongs to a node");
+        }
         assert!(manifest(repo()).contains("[workspace]"), "the generated crate is its own workspace");
+    }
+
+    /// The cache key is the pipeline's graph with its baked values: knobs it does not use
+    /// leave it alone, and the check run's plan (the graph twice) bakes the same pipeline.
+    #[test]
+    fn the_graph_is_the_key() {
+        let key = |r: &str, o: &[(&str, toml::Value)]| bake(&spec(r, o)).unwrap().unwrap().graph.key().unwrap();
+        assert_ne!(key("cpu:prefix+refloor", &[("packet", "4".into())]), key("cpu:prefix+refloor", &[("packet", "8".into())]));
+        assert_eq!(key("cpu:prefix+incremental", &[("packet", "4".into())]), key("cpu:prefix+incremental", &[("packet", "8".into())]), "packet is moot for incremental");
+        assert_ne!(key("cpu:prefix+incremental", &[("exact", false.into())]), key("cpu:prefix+incremental", &[]));
+        assert_eq!(key("cpu:prefix+refloor", &[("exact", false.into())]), key("cpu:prefix+refloor", &[]), "exact is moot for refloor");
+        assert_eq!(key("cpu:prefix+refloor", &[("view", "steps".into())]), key("cpu:prefix+refloor", &[]), "not baked by the generated code");
+        assert_ne!(key("cpu:prefix+refloor", &[]), key("cpu:bricks+refloor", &[]));
+        assert_ne!(key("cpu:prefix+refloor", &[]), key("cpu:prefix+refloor,shadow=incremental", &[]), "the shadow rays' own kernel");
+        // The check run's lanes: the bake's graph in a plan bakes the same pipeline.
+        for (r, o) in [("cpu:hier+incremental", vec![("exact", toml::Value::from(false))]), ("cpu:bits+refloor,shadow=incremental", vec![("packet", "8".into())])] {
+            let b = bake(&spec(r, &o)).unwrap().unwrap();
+            let mut s = RendererSpec::new("cpu");
+            s.graph = Some(b.graph.clone());
+            s.resolve().unwrap();
+            assert_eq!(bake(&s).unwrap().unwrap(), b, "{r}");
+        }
     }
 }

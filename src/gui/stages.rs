@@ -165,7 +165,7 @@ impl Tree<'_> {
             if ui.available_size_before_wrap().x < knob_width(ui, &label, spec) {
                 ui.end_row();
             }
-            ui.add(egui::Label::new(egui::RichText::new(label).weak()).wrap_mode(egui::TextWrapMode::Extend)).on_hover_text(&spec.description);
+            ui.add(egui::Label::new(egui::RichText::new(label).weak()).wrap_mode(egui::TextWrapMode::Extend)).on_hover_text(knob_tip(spec));
             if let Some((v, commit)) = knob_widget(ui, spec, value) {
                 self.edits.push(StageEdit::Knob { name: spec.name.clone(), value: v, commit });
             }
@@ -358,6 +358,18 @@ impl Tree<'_> {
 }
 
 /// Roughly how wide a knob's label, widget and extras are (for wrapping them as a unit).
+/// A knob's description, and whether it needs a restart and is specialisable.
+pub fn knob_tip(spec: &ParamSpec) -> String {
+    let mut t = spec.description.clone();
+    if !spec.live {
+        t += "\n\n↻ Takes effect on a restart.";
+    }
+    if spec.baked {
+        t += "\n\nSpecialisable: a pipeline compiled for its value bakes it in as a constant (another value is another compiled pipeline).";
+    }
+    t
+}
+
 fn knob_width(ui: &Ui, label: &str, spec: &ParamSpec) -> f32 {
     use mr_core::ParamKind;
     let text = ui.painter().layout_no_wrap(label.to_string(), egui::TextStyle::Body.resolve(ui.style()), egui::Color32::WHITE).size().x;

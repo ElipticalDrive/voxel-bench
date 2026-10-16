@@ -63,7 +63,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours (false = every face of every solid block)", true, false).of("geometry", &["naive"]),
         ParamSpec::choice("cull_faces", "Triangle facing culled for primary rays (triangle geometries)", &["back", "front", "none"], "back", true).of("geometry", &["greedy", "naive"]),
         shadows_param(),
-        ParamSpec::bool("fast_build", "Prefer fast BVH builds over fast traversal", false, true),
+        ParamSpec::bool("fast_build", "Prefer fast BVH builds over fast traversal (a build flag, not code)", false, true).baked(false),
         ParamSpec::int("build_budget", "Chunk BLAS rebuilds per frame, nearest first (0 = all)", 0, 100000, 0, true),
     ]
     .into_iter()

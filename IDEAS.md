@@ -1605,6 +1605,12 @@ and not essential: a possible later extension.
 nodes with their callers), but back ends do not act on it yet; there is no `api` yet.
 Folded into PLAN steps 10 and 13 and the plan's goal.
 
+**State (2026-10-16, step 10).** Components declare implementations per (kind, API)
+(`components/src/impls.rs`); nodes carry `api`, validated against device, implementations
+and executor; back ends declare places per slot. The only API choices back ends offer today
+are `cpu`'s ISA and gpu-compute's compute / fragment dispatch, both mapped from the nodes'
+API. Executors acting on devices: step 13.
+
 ---
 
 ## 22. Fusion first, state exchanged both ways, one implementation per algorithm (refinements)

@@ -865,6 +865,29 @@ impl Graph {
     }
 }
 
+impl Graph {
+    /// The graph with flat knob values placed on the nodes they belong to (step 10: what a
+    /// compiled build bakes in, for its cache key): each `(spec, value)` goes to the
+    /// skeleton's nodes its `owner` names (the back end's stages; nodes on free sites keep
+    /// their own knobs). A knob whose owner is not in the graph is moot here and left out;
+    /// a knob without an owner (the back end's own) has no node and is an error.
+    pub fn with_knobs(&self, knobs: &[(&mr_core::ParamSpec, toml::Value)]) -> Result<Graph, String> {
+        let mut g = self.normalised()?;
+        let skel = g.skeleton();
+        for (spec, v) in knobs {
+            let Some((slot, comps)) = &spec.owner else {
+                return Err(format!("knob `{}` belongs to the back end, not to a node", spec.name));
+            };
+            for (_, n) in g.nodes.iter_mut().filter(|(id, _)| skel.nodes.contains_key(*id)) {
+                if n.role.name() == slot && comps.iter().any(|c| *c == n.component) {
+                    n.knobs.entry(spec.name.clone()).or_insert_with(|| v.clone());
+                }
+            }
+        }
+        Ok(g)
+    }
+}
+
 /// Why the APIs set in `ck` cannot run on back end `b` running composition `c`, if they
 /// can't: a non-fused node's API must be the one the back end runs its stage with, or one
 /// of its choices; the stages its `api_choice` sets run with one API.

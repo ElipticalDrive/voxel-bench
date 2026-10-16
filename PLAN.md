@@ -66,8 +66,10 @@ The user's architecture, settled with finality and without limits for later (IDE
   end, not a configuration; two GPUs cannot be combined (requirement 2).
 - **No history and no post stages** (§18 pieces 7 and 8).
 - **No per-stage measurement** (§18: every piece reports its own time; the planner needs it).
-- **Composition not fully data:** knobs not declared as baked-in or live; CPU components
-  declare no capabilities; only the `cpu` back end compiles on demand (§17).
+- **Only the `cpu` back end compiles on demand** (§17; step 16). (Step 10 done: knobs are
+  declared specialisable or not, CPU components declare capabilities, components declare
+  implementations per device kind and API, nodes carry `api`, the graph key is the compile
+  cache key.)
 - **A known composition cost:** cpu-discover calls its storage through `dyn World` per ray.
 - **No realistic server / client line** (IDEAS §19): renderers already see only change
   messages over IPC, but the host streams per renderer, builds its LOD chunks, and the link
@@ -392,3 +394,63 @@ speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/
   100%). Back-end and shader code unchanged, so no pixel / timing A/B was needed.
 - Not yet: knobs of a site's own kernel are edited in the plan's graph form only (the GUI
   shows them as such); the catalogue still groups by composition (the nearest).
+
+**2026-10-16, step 10 done: composition fully data.** `components/src/impls.rs`,
+`components/src/lib.rs` (registry), `components/src/graph.rs`, `crates/mr-core/src/params.rs`,
+`src/pipelines.rs`:
+- **Implementations per device kind and API** (10a): every component lists its
+  implementations (`Impl`: `gpu`/`cpu`, the APIs it runs under, the capabilities it provides
+  there) instead of the back ends it is on. APIs: `compute`, `raster`, `rayquery` (GPU);
+  `scalar`, `avx2`, `avx512` (CPU). WGSL modules (storages, kernels, shading) run under any
+  GPU API; generic Rust under every ISA; geometry builders are CPU code (scalar). Back ends
+  declare where they run each slot (`runs` / `at`: a `Place`, a kind and its APIs), what
+  their own hand-written code hosts (`hosts`: their strategy, the geometry their drawer
+  reads, their mesh drawing; executors lift these in step 13), the storage interface they
+  read (`reads`), and their API choice (`api_choice`: `cpu`'s `isa`, and gpu-compute's
+  `dispatch`, found to be one: its walk in a compute or fragment shader). A component fills
+  a slot if it has an implementation of the place's kind covering its APIs. Availability is
+  exactly as before (compared against the old lists), except: cpu-discover's GPU shadow
+  stages are now its own places (before: borrowed from gpu-discover through `rays`, same
+  result).
+- **Capabilities per implementation**: `bricks` has `lod` on the GPU, not the CPU. Two new
+  ones name the storage interfaces, `voxels` (`s_probe`: walks, exposure tests, prepasses)
+  and `heights` (the column march); kernels, discovery and beam need `voxels`, columns
+  `heights` (no adapter between them yet), so a graph putting a heightmap under a walk is
+  rejected with that reason.
+- **CPU capabilities as associated consts** (10b): `Repr::CAPS` (every CPU storage: `voxels`)
+  and a `Kernel` trait with unit types `refloor::cpu::Refloor`, `incremental::cpu::Incremental`
+  (`steps`); the registry reads them (`<Prefix as Repr>::CAPS`), so they are declared once.
+- **Nodes carry `api`** beside `device`: checked against the device's kind, the component's
+  implementations and the executor (an API a back end does not run that stage with is
+  rejected with the reason; a face drawer's shading runs `raster` with the `raster` drawer,
+  else `compute`); fused nodes inherit their callers' API when all agree (a kernel shared by
+  gpu-compute's compute walk and its raster mesh shadows is compiled into both). Where the
+  back end offers a choice, the nodes' API is its knob (`isa = "avx2"`, `dispatch =
+  "fragment"`) and enters the canonical form unless it is the choice's default; elsewhere it
+  says nothing new and stays out, so keys are unchanged. Devices default from the places:
+  **geometry now runs on the CPU** in the graphs of gpu-raster, gpu-rt and gpu-splat (true:
+  faces are built on the CPU), which changes those graphs' keys; `sweepcmp.py` now
+  recomputes every record's key. The GUI tree's hover says where each node runs; `list`
+  shows implementations and places.
+- **Knobs declared specialisable** (10c): `ParamSpec::baked`: switches and choices select code
+  and are specialisable by default, numbers are quantities read at run time; overridden where
+  that is wrong (`bounces`, a loop count: baked; gpu-rt's `fast_build`, a build flag: not).
+  The GUI's knob hover says so. Independent of `live` (the generic builds still change a
+  baked knob live; a compiled pipeline refuses, as before).
+- **The graph key is the compile cache key** (10d): a compiled `cpu` pipeline is the renderer's
+  graph with the values of the knobs its generated code bakes (`BAKES`: `exact`, `packet`,
+  each checked to be declared specialisable) placed on the nodes they belong to
+  (`Graph::with_knobs`; a knob whose node is absent is moot and left out, so `packet` no
+  longer splits incremental pipelines); key = `cpu-<graph key>-<source/toolchain/CPU hash>`.
+  The trust check renders that graph twice (generic and compiled).
+- Verified: builds without warnings, 69 unit tests (new: `apis`, `the_graph_is_the_key`;
+  registry consistency now checks the CPU capabilities against their consts; every
+  composition still round-trips), architecture guard, 4 GPU end-to-end tests (a pipeline
+  compiled and trusted under the new key); a terrain run with APIs set in graphs (`cpu`
+  nodes `avx512`, gpu-compute's walk `raster`) matches the flat-knob twins (the fragment
+  graph has the fragment twin's psnr, 58.9, not compute's 58.6). Render code unchanged
+  (except a compiled incremental pipeline's packet width, now unset where unused), so no
+  pixel / timing A/B was needed.
+- Not yet: executor-level knobs without a node (e.g. `cpu`'s `view`, `schedule`) cannot be
+  baked into a graph (none is baked today; step 16 decides where they live); GPU builds
+  have no compile cache yet (step 16); `hosts` lists remain until step 13.

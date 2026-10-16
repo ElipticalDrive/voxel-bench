@@ -1002,7 +1002,7 @@ impl App {
                     egui::Grid::new("knobs").num_columns(3).striped(true).show(ui, |ui| {
                         for (spec, value) in &knobs {
                             let label = if spec.live { spec.name.clone() } else { format!("{} ↻", spec.name) };
-                            ui.label(label).on_hover_text(&spec.description);
+                            ui.label(label).on_hover_text(stages::knob_tip(spec));
                             if let Some((v, commit)) = stages::knob_widget(ui, spec, value) {
                                 edits.push(stages::StageEdit::Knob { name: spec.name.clone(), value: v, commit });
                             }
