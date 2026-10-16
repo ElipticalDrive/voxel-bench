@@ -808,7 +808,7 @@ mod tests {
         let cpu = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"palette\"");
         assert_eq!(Plan::parse(&cpu, &[]).unwrap().renderers[0].name, "cpu");
         let bad = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"rows\"");
-        assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("no cpu implementation"));
+        assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("has no cpu scalar/avx2/avx512 implementation"));
         let raster = text.replace("storage = \"prefix\", visibility = \"incremental\"", "backend = \"gpu-raster\", geometry = \"cubes\"");
         let r = &Plan::parse(&raster, &[]).unwrap().renderers[0];
         assert_eq!((r.name.as_str(), r.label()), ("gpu-raster", "gpu-raster: bricks + cubes + raster"));

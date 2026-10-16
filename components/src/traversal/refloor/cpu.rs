@@ -7,6 +7,14 @@ use glam::{IVec3, Vec3};
 use crate::storage::cpu::{Grid, Repr, ffloor};
 use crate::traversal::cpu::Hit;
 
+/// The kernel's declaration: `trace_packet` returns its lockstep iterations (the `steps` view).
+pub struct Refloor;
+
+impl crate::traversal::cpu::Kernel for Refloor {
+    const NAME: &'static str = "refloor";
+    const CAPS: &'static [crate::Cap] = &[crate::Cap::Steps];
+}
+
 /// Traces `N` rays in lockstep from the shared origin `o` (relative to `cam`).
 /// Lanes with `d.x == NaN` are inactive. Each lane ignores the start cell (like the
 /// reference) and stops at `tfar`.

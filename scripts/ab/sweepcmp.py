@@ -1,6 +1,7 @@
 # sweepcmp.py BASE_SWEEP NEW_SWEEP (e.g. baselines/sweep-20261011 target/sweep/<time>): compares two sweeps per (plan, mode, pipeline, options): GPU ms, fps, PSNR.
-# Pipelines are keyed by their canonical graph (`graph_key`, PLAN step 9d); records written before they carried
-# one get it from `multirenderer graph --keys` (MR_BIN, default target/release/multirenderer).
+# Pipelines are keyed by their canonical graph (`graph_key`, PLAN step 9d), recomputed for every record by
+# `multirenderer graph --keys` (MR_BIN, default target/release/multirenderer), so records written before they
+# carried one, or under an older canonical form (step 10 placed geometry on the CPU), compare by one key.
 import sys, json, glob, gzip, os, subprocess, statistics as st, collections
 KERNELS = {'refloor', 'incremental', 'sphere', 'rowrun', 'rayquery'}
 DRAWS = {'raster', 'visbuffer', 'gbuffer'}
@@ -20,8 +21,9 @@ def canonical(comp, opts):
         if not c.get(k): c[k] = v
     return c, opts
 def graph_keys(records):
-    """Graph keys for records without one, computed by the binary (one call for all)."""
-    need = [o for o in records if not o.get('graph_key') and o.get('composition')]
+    """Graph keys for every record, computed by the binary (one call for all; a stored key may
+    come from an older canonical form)."""
+    need = [o for o in records if o.get('composition')]
     if need:
         exe = os.environ.get('MR_BIN', 'target/release/multirenderer')
         text = ''.join(json.dumps(o) + '\n' for o in need)

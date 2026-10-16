@@ -90,6 +90,25 @@ pub fn stage_grid(ui: &mut Ui, spec: &RendererSpec, knobs: &[(ParamSpec, ParamVa
 }
 
 /// A fixed-width row label, indented by tree depth (the pickers stay aligned per level).
+/// Where node `id` runs: its device and API (set, inherited from its callers, or the back
+/// end's for its stage; "with its callers" for a module compiled into callers on two APIs).
+fn runs_on(g: &Graph, comp: &Composition, id: &str) -> Option<String> {
+    let ck = g.check().ok()?;
+    let n = &ck.graph.nodes[id];
+    let b = mr_components::backend(&g.executor)?;
+    let fused = mr_components::graph::output(n.role, &n.component).fused();
+    let api = match ck.apis.get(id) {
+        Some(a) => a.name().to_string(),
+        None if fused => "with its callers".into(),
+        None => match n.role.slot().map(|s| (b.api(s, comp), b.place(s))) {
+            Some((Some(a), _)) => a.name().to_string(),
+            Some((None, p)) => format!("{} (knob `{}`)", p.apis.iter().map(|a| a.name()).collect::<Vec<_>>().join("/"), b.api_choice.map_or("-", |ch| ch.knob)),
+            None => return Some(ck.devices[id].to_string()),
+        },
+    };
+    Some(format!("{} ({api})", ck.devices[id]))
+}
+
 fn label(ui: &mut Ui, depth: usize, text: &str, strong: bool, tip: &str) {
     if depth > 0 {
         ui.add_space(INDENT * depth as f32 - ui.spacing().item_spacing.x);
@@ -221,7 +240,10 @@ impl Tree<'_> {
         if n.role == Role::World {
             return;
         }
-        let tip = format!("{port}: {} `{}`", n.role.name(), n.component);
+        let mut tip = format!("{port}: {} `{}`", n.role.name(), n.component);
+        if let Some(on) = runs_on(&g, self.comp, id) {
+            tip += &format!("\nRuns on {on}");
+        }
         // A storage under a site's own kernel: shared with a site, or its own.
         if let (Some(s), Role::Storage | Role::Geometry) = (site, n.role) {
             self.site_storage(ui, s, port, depth, &tip);

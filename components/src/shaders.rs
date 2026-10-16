@@ -152,9 +152,9 @@ impl Walks {
 
     /// Every storage has LOD chunks and every kernel walks them, else why not.
     pub fn lod_blocker(&self) -> Option<String> {
-        use crate::{Cap, Slot, caps::provides};
-        let why: Vec<String> = (self.storages.iter().filter(|s| !provides(Slot::Storage, &s.component, Cap::Lod)).map(|s| format!("storage `{}` (`{}`) lacks lod", s.component, s.node)))
-            .chain(self.kernels.iter().filter(|k| !provides(Slot::Traversal, &k.component, Cap::Lod)).map(|k| format!("traversal `{}` (`{}`) lacks lod", k.component, k.node)))
+        use crate::{Cap, Kind::Gpu, Slot, caps::provides};
+        let why: Vec<String> = (self.storages.iter().filter(|s| !provides(Gpu, Slot::Storage, &s.component, Cap::Lod)).map(|s| format!("storage `{}` (`{}`) lacks lod", s.component, s.node)))
+            .chain(self.kernels.iter().filter(|k| !provides(Gpu, Slot::Traversal, &k.component, Cap::Lod)).map(|k| format!("traversal `{}` (`{}`) lacks lod", k.component, k.node)))
             .collect();
         (!why.is_empty()).then(|| why.join("; "))
     }

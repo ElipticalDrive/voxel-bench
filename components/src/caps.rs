@@ -9,12 +9,23 @@
 //!
 //! So far the storage interface on the GPU (`storage/adapters.wgsl`) and the hit record's
 //! optional fields (`Lod`, `Steps`; `crates/mr-gpu/src/voxels.wgsl`). Capabilities are
-//! declared per component, not per back end: `Lod` is gpu-compute's (CPU walks have no LOD).
+//! declared per implementation ([`crate::Impl`], step 10), not per back end: `bricks` has
+//! `Lod` on the GPU, not on the CPU (CPU walks have no LOD). CPU implementations declare
+//! theirs as associated consts (`Repr::CAPS`, `Kernel::CAPS`), which the registry reads.
+//!
+//! Storages come with one of two query interfaces, also capabilities: `Voxels` (`s_probe`,
+//! the walks', exposure tests' and prepasses' core) and `Heights` (a heightmap's columns,
+//! the column march's). No adapter turns one into the other yet.
 
-use crate::{Composition, Slot, component, components};
+use crate::{Composition, Kind, Slot, backend, component, components};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Cap {
+    /// Storage: the voxel query interface (`s_probe`, `s_occupied`, `s_block`; on the CPU
+    /// `Repr`): what ray walks, exposure tests and prepasses read.
+    Voxels,
+    /// Storage: the column interface (`hm_top`, `hm_trace`): the top block per (x, z).
+    Heights,
     /// Storage: `s_dist(h, l)`, the Chebyshev distance to the nearest solid voxel.
     Dist,
     /// Storage: `s_row(h, x0, y, z)`, the occupancy of the 32 cells from x0 along x.
@@ -29,6 +40,8 @@ pub enum Cap {
 impl Cap {
     pub fn name(self) -> &'static str {
         match self {
+            Cap::Voxels => "voxels",
+            Cap::Heights => "heights",
             Cap::Dist => "s_dist",
             Cap::Row => "s_row",
             Cap::Lod => "lod",
@@ -55,9 +68,14 @@ pub fn adapter(slot: Slot, cap: Cap) -> Option<&'static Adapter> {
     ADAPTERS.iter().find(|a| a.slot == slot && a.cap == cap)
 }
 
-/// Whether `slot` component `name` provides `cap` natively.
-pub fn provides(slot: Slot, name: &str, cap: Cap) -> bool {
-    component(slot, name).is_some_and(|c| c.provides.contains(&cap))
+/// Whether `slot` component `name` provides `cap` natively on device kind `kind`.
+pub fn provides(kind: Kind, slot: Slot, name: &str, cap: Cap) -> bool {
+    component(slot, name).and_then(|c| c.on(kind)).is_some_and(|i| i.provides.contains(&cap))
+}
+
+/// The device kind `c`'s back end runs `slot` on (GPU if the back end is unknown).
+fn kind_of(c: &Composition, slot: Slot) -> Kind {
+    backend(&c.backend).map_or(Kind::Gpu, |b| b.place(slot).kind)
 }
 
 /// How a composition meets one need.
@@ -76,13 +94,14 @@ pub fn meet(c: &Composition, slot: Slot, cap: Cap) -> Result<Met, String> {
     if name.is_empty() {
         return Ok(Met::NoStage);
     }
-    if provides(slot, name, cap) {
+    let kind = kind_of(c, slot);
+    if provides(kind, slot, name, cap) {
         return Ok(Met::Native);
     }
     if let Some(a) = adapter(slot.source(), cap) {
         return Ok(Met::Adapter(a));
     }
-    let have: Vec<&str> = components(slot.source()).filter(|x| x.provides.contains(&cap)).map(|x| x.name).collect();
+    let have: Vec<&str> = components(slot.source()).filter(|x| x.on(kind).is_some_and(|i| i.provides.contains(&cap))).map(|x| x.name).collect();
     Err(format!("{} `{name}` lacks {} (have it: {})", slot.name(), cap.name(), if have.is_empty() { "none".into() } else { have.join(", ") }))
 }
 

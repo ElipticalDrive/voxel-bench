@@ -30,7 +30,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Composition, Slot, backend, caps, component};
+use crate::{Api, Composition, Kind, Slot, backend, caps, component};
 
 /// What a node does: the roles of IDEAS §18's pieces that exist so far.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -121,6 +121,15 @@ impl Data {
 pub enum Device {
     Cpu,
     Gpu(u8),
+}
+
+impl Device {
+    pub fn kind(self) -> Kind {
+        match self {
+            Device::Cpu => Kind::Cpu,
+            Device::Gpu(_) => Kind::Gpu,
+        }
+    }
 }
 
 impl fmt::Display for Device {
@@ -228,13 +237,13 @@ fn known(role: Role, name: &str) -> bool {
 }
 
 /// Where a node runs unless the graph says otherwise: fused nodes run with their callers;
-/// the rest where the back end runs that role.
+/// the rest where the back end runs that role (its [`crate::Place`]; GPU slot 0).
 fn default_device(executor: &str, role: Role) -> Device {
-    match (executor, role) {
-        (_, Role::World) => Device::Cpu,
-        ("cpu-discover", Role::Draw | Role::Shading | Role::Meshes) => Device::Gpu(0),
-        (e, _) if e.starts_with("cpu") => Device::Cpu,
-        _ => Device::Gpu(0),
+    match (backend(executor), role.slot()) {
+        (Some(b), Some(slot)) if b.place(slot).kind == Kind::Gpu => Device::Gpu(0),
+        (Some(_), Some(_)) => Device::Cpu,
+        (None, Some(_)) => Device::Gpu(0),
+        (_, None) => Device::Cpu,
     }
 }
 
@@ -248,6 +257,10 @@ pub struct Node {
     /// back end runs the role).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<Device>,
+    /// How it runs there (default: with its callers for storages and kernels, else as the
+    /// executor chooses; `cpu`: its `isa` knob).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<Api>,
     /// Input port → the node bound to it. Unbound `changes` inputs read the world.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, String>,
@@ -257,7 +270,7 @@ pub struct Node {
 
 impl Node {
     pub fn new(role: Role, component: &str) -> Self {
-        Self { role, component: component.into(), device: None, inputs: BTreeMap::new(), knobs: toml::Table::new() }
+        Self { role, component: component.into(), device: None, api: None, inputs: BTreeMap::new(), knobs: toml::Table::new() }
     }
 
     fn with(mut self, inputs: &[(&str, &str)]) -> Self {
@@ -280,6 +293,9 @@ pub struct Graph {
 pub struct Checked {
     pub graph: Graph,
     pub devices: HashMap<String, Device>,
+    /// The API of every node that has one set (its own, or a fused node's callers');
+    /// the others run as the executor chooses.
+    pub apis: HashMap<String, Api>,
     pub output: String,
 }
 
@@ -335,7 +351,7 @@ impl Graph {
         }
         let shadow = if b.has(Slot::ShadowTraversal) {
             // On the primary rays' device, a secondary stage naming the primary's component is `same`.
-            let apart = b.rays != b.name;
+            let apart = b.place(Slot::ShadowTraversal).kind != b.place(Slot::Traversal).kind;
             let shared = |s: Slot| !apart && c.resolved(s) == c.get(s.source());
             if shared(Slot::ShadowStorage) && shared(Slot::ShadowTraversal) {
                 Some("kernel")
@@ -453,13 +469,6 @@ impl Graph {
                     why.push(format!("`{id}`.{p} takes {}, but `{src}` ({} `{}`) gives {}", port.data.name(), s.role.name(), s.component, out.name()));
                     continue;
                 }
-                // Capability needs on what this port reads: met natively, by an adapter, or not at all.
-                let needs = n.role.slot().and_then(|sl| component(sl, &n.component)).map_or(&[][..], |c| c.needs);
-                for &(slot, cap) in needs.iter().filter(|(slot, _)| s.role.slot() == Some(*slot)) {
-                    if !caps::provides(slot, &s.component, cap) && caps::adapter(slot, cap).is_none() {
-                        why.push(format!("`{id}` ({}) needs {} from `{src}`: {} `{}` lacks it and no adapter gives it", n.component, cap.name(), slot.name(), s.component));
-                    }
-                }
             }
             for p in ports.iter().filter(|p| p.required && !n.inputs.contains_key(p.name)) {
                 why.push(format!("`{id}` ({} `{}`): input `{}` ({}) is not bound", n.role.name(), n.component, p.name, p.description));
@@ -496,6 +505,7 @@ impl Graph {
             return Err(format!("nodes that lead to no image: {}", dangling.join(", ")));
         }
         // Devices, consumers first: a fused node runs with its callers.
+        let mut why = Vec::new();
         let mut devices: HashMap<String, Device> = HashMap::new();
         for &id in order.iter().rev() {
             let n = &g.nodes[id];
@@ -521,14 +531,62 @@ impl Graph {
                 }
             }
         }
+        // Capability needs on what each port reads (on the reader's device): met natively,
+        // by an adapter, or not at all.
+        for (id, n) in &g.nodes {
+            let needs = n.role.slot().and_then(|sl| component(sl, &n.component)).map_or(&[][..], |c| c.needs);
+            for src in n.inputs.values() {
+                let s = &g.nodes[src];
+                for &(slot, cap) in needs.iter().filter(|(slot, _)| s.role.slot() == Some(*slot)) {
+                    if !caps::provides(devices[src].kind(), slot, &s.component, cap) && caps::adapter(slot, cap).is_none() {
+                        why.push(format!("`{id}` ({}) needs {} from `{src}`: {} `{}` lacks it on the {} and no adapter gives it", n.component, cap.name(), slot.name(), s.component, devices[src].kind().name()));
+                    }
+                }
+            }
+        }
+        // APIs: a node's own, else (fused) its callers', else the executor's choice.
+        let mut apis: HashMap<String, Api> = HashMap::new();
+        for &id in order.iter().rev() {
+            let n = &g.nodes[id];
+            let fused = output(n.role, &n.component).fused();
+            // Inherited when every caller runs one API (a module compiled into callers on two
+            // APIs of one device runs as each of them).
+            let inherited = || {
+                let mut callers = g.nodes.iter().filter(|(_, c)| c.inputs.values().any(|s| s == id)).map(|(k, _)| apis.get(k.as_str()).copied());
+                let first = callers.next().flatten();
+                callers.all(|a| a == first).then_some(first).flatten()
+            };
+            let api = match n.api {
+                Some(a) => {
+                    if a.kind() != devices[id].kind() {
+                        why.push(format!("`{id}`: api {} runs on a {}, the node is on {}", a.name(), a.kind().name(), devices[id]));
+                    } else if let Some(c) = n.role.slot().and_then(|sl| component(sl, &n.component)).filter(|c| !c.impls.iter().any(|i| i.kind == a.kind() && i.apis.contains(&a))) {
+                        why.push(format!("`{id}`: {} `{}` has no {} implementation (has: {})", n.role.name(), c.name, a.name(), c.impls_label()));
+                    }
+                    if let Some(ca) = inherited().filter(|ca| fused && *ca != a) {
+                        why.push(format!("`{id}` (api {}) is compiled into callers running {}", a.name(), ca.name()));
+                    }
+                    Some(a)
+                }
+                None if fused => inherited(),
+                None => None,
+            };
+            if let Some(a) = api {
+                apis.insert(id.to_string(), a);
+            }
+        }
+        if !why.is_empty() {
+            return Err(why.join("; "));
+        }
         if b.renderer.is_none() {
             return Err(format!("back end `{}` is not available yet", b.name));
         }
-        Ok(Checked { graph: g, devices, output: out })
+        Ok(Checked { graph: g, devices, apis, output: out })
     }
 
     /// The canonical form: nodes renamed in visiting order from the output (inputs by port
-    /// name), devices resolved, knobs sorted; equal for graphs that differ only in node ids.
+    /// name), devices resolved, APIs where set and a choice, knobs sorted; equal for graphs
+    /// that differ only in node ids.
     pub fn canonical(&self) -> Result<String, String> {
         let c = self.check()?;
         let g = &c.graph;
@@ -544,12 +602,17 @@ impl Graph {
             // Reversed so the first port by name is visited first.
             stack.extend(g.nodes[id].inputs.values().rev().map(|s| s.as_str()));
         }
+        // APIs only where the executor offers a choice (elsewhere a set API is checked to be
+        // the one it runs, so it says nothing more).
+        // (and not the choice's default: an API set to it is the same pipeline as one unset).
+        let chosen = |n: &Node, a: &Api| backend(&g.executor).is_some_and(|b| n.role.slot().is_some_and(|sl| b.chooses(sl)) && b.api_choice.is_some_and(|ch| ch.default != Some(*a)));
         let mut s = format!("{}|", g.executor);
         for id in &order {
             let n = &g.nodes[*id];
             let ins: Vec<String> = n.inputs.iter().map(|(p, src)| format!("{p}=n{}", ids[src.as_str()])).collect();
             let knobs: Vec<String> = n.knobs.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            s += &format!("n{}={}.{}@{}({}){{{}}};", ids[id], n.role.name(), n.component, c.devices[*id], ins.join(","), knobs.join(","));
+            let api = c.apis.get(*id).filter(|a| chosen(n, a)).map_or(String::new(), |a| format!(":{}", a.name()));
+            s += &format!("n{}={}.{}@{}{api}({}){{{}}};", ids[id], n.role.name(), n.component, c.devices[*id], ins.join(","), knobs.join(","));
         }
         Ok(s)
     }
@@ -635,9 +698,17 @@ impl Graph {
                     }
                 }
                 bind => {
-                    // Secondary rays run where the shading runs (cpu-discover: on the GPU).
-                    let on = if matches!(role, Role::Shading | Role::Meshes) { b.rays } else { b.name };
-                    let need = |slot: Slot, id: &str| crate::unavailable(on, slot, &g.nodes[id].component).map(|w| format!("{at} → `{id}`: {w}"));
+                    // Secondary rays run where the back end runs its shadow stages (cpu-discover:
+                    // on the GPU), the others with its storage and kernel.
+                    let secondary = matches!(role, Role::Shading | Role::Meshes);
+                    let need = |slot: Slot, id: &str| {
+                        let at_slot = match slot {
+                            Slot::Storage if secondary => Slot::ShadowStorage,
+                            Slot::Traversal if secondary => Slot::ShadowTraversal,
+                            s => s,
+                        };
+                        crate::unimplemented_at(&b.place(at_slot), slot, &g.nodes[id].component).map(|w| format!("{at} → `{id}`: {w}"))
+                    };
                     if port == "exposure" {
                         why.extend(need(Slot::Storage, &src));
                         continue;
@@ -676,9 +747,13 @@ impl Graph {
         }
         let skel = ck.graph.skeleton();
         let mut c = skel.skeleton_composition()?;
+        // Without knobs and APIs (the composition has neither; `cpu` reads its API as `isa`).
         let strip = |g: &Graph| {
             let mut g = g.clone();
-            g.nodes.values_mut().for_each(|n| n.knobs.clear());
+            g.nodes.values_mut().for_each(|n| {
+                n.knobs.clear();
+                n.api = None;
+            });
             g.canonical()
         };
         if strip(&Graph::from_composition(&c)?.skeleton())? != strip(&skel)? {
@@ -701,6 +776,9 @@ impl Graph {
             if e.validate().is_ok() {
                 c = e;
             }
+        }
+        if let Some(why) = api_blocker(b, &ck, &c) {
+            return Err(why);
         }
         let exact = strip(&Graph::from_composition(&c)?)? == strip(self)?;
         Ok((c, exact))
@@ -771,6 +849,11 @@ impl Graph {
     pub fn flat_knobs(&self) -> Result<toml::Table, String> {
         let skel = self.normalised()?.skeleton();
         let mut t = toml::Table::new();
+        if let Some((b, ch)) = backend(&self.executor).and_then(|b| b.api_choice.map(|ch| (b, ch))) {
+            if let Some(v) = self.nodes.values().filter(|n| n.role.slot().is_some_and(|sl| b.chooses(sl))).find_map(|n| n.api).and_then(|a| ch.value(a)) {
+                t.insert(ch.knob.into(), v.into());
+            }
+        }
         for (id, n) in self.nodes.iter().filter(|(id, _)| skel.nodes.contains_key(*id)) {
             for (k, v) in &n.knobs {
                 if let Some(old) = t.insert(k.clone(), v.clone()).filter(|old| old != v) {
@@ -780,6 +863,43 @@ impl Graph {
         }
         Ok(t)
     }
+}
+
+/// Why the APIs set in `ck` cannot run on back end `b` running composition `c`, if they
+/// can't: a non-fused node's API must be the one the back end runs its stage with, or one
+/// of its choices; the stages its `api_choice` sets run with one API.
+fn api_blocker(b: &crate::BackendInfo, ck: &Checked, c: &Composition) -> Option<String> {
+    let g = &ck.graph;
+    let mut why = Vec::new();
+    for (id, &a) in ck.apis.iter().filter(|(id, _)| g.nodes[*id].api.is_some()) {
+        // A fused node runs as the stages calling it (through other fused nodes) do.
+        let mut stages = vec![id.as_str()];
+        while let Some(i) = stages.iter().position(|s| output(g.nodes[*s].role, &g.nodes[*s].component).fused()) {
+            let s = stages.remove(i);
+            stages.extend(g.nodes.iter().filter(|(_, n)| n.inputs.values().any(|x| x == s)).map(|(k, _)| k.as_str()));
+        }
+        stages.sort();
+        stages.dedup();
+        for st in stages {
+            let Some(slot) = g.nodes[st].role.slot() else { continue };
+            let place = b.place(slot);
+            let at = if st == id { format!("`{id}`") } else { format!("`{id}` (in `{st}`)") };
+            match b.api(slot, c) {
+                Some(x) if x != a => why.push(format!("{at}: `{}` runs its {} with {} here, not {}", b.name, slot.name(), x.name(), a.name())),
+                None if !place.apis.contains(&a) => why.push(format!("{at}: `{}` runs its {} with {}, not {}", b.name, slot.name(), place.label(), a.name())),
+                _ => {}
+            }
+        }
+    }
+    if let Some(ch) = b.api_choice {
+        let mut set: Vec<Api> = ck.apis.iter().filter(|(id, _)| g.nodes[*id].role.slot().is_some_and(|sl| b.chooses(sl))).map(|(_, a)| *a).collect();
+        set.sort();
+        set.dedup();
+        if set.len() > 1 {
+            why.push(format!("`{}` runs its {} with one api, its `{}` (have: {})", b.name, ch.slots.iter().map(|s| s.name()).collect::<Vec<_>>().join(", "), ch.knob, set.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")));
+        }
+    }
+    (!why.is_empty()).then(|| why.join("; "))
 }
 
 /// Whether `p` is a site: a ray-casting port, or discovery's exposure tests (their storage).
@@ -1325,6 +1445,72 @@ mod tests {
 
     /// Step 9c: sites off the lead bind their own kernel and storage where the back end
     /// runs them so; elsewhere they are rejected with the reason.
+    /// Step 10: a node's `api`, checked against its device, its component's implementations
+    /// and the executor; written into the canonical form only where it is a choice.
+    #[test]
+    fn apis() {
+        let set = |c: &Composition, at: &[(&str, Api)]| {
+            let mut g = Graph::from_composition(c).unwrap();
+            for (id, a) in at {
+                g.nodes.get_mut(*id).unwrap().api = Some(*a);
+            }
+            g
+        };
+        // cpu: one API for its one loop, read as its `isa` knob; fused nodes follow.
+        let cpu = Composition::new("cpu");
+        let g = set(&cpu, &[("visibility", Api::Avx2), ("shading", Api::Avx2)]);
+        let (c, exact) = g.accept().unwrap();
+        assert!(exact && c == Composition::new("cpu"));
+        assert_eq!(g.flat_knobs().unwrap().get("isa"), Some(&toml::Value::String("avx2".into())));
+        let ck = g.check().unwrap();
+        assert_eq!(ck.apis.get("kernel"), Some(&Api::Avx2), "the kernel runs with its caller");
+        assert!(g.canonical().unwrap().contains(":avx2") && g.key().unwrap() != Graph::from_composition(&cpu).unwrap().key().unwrap());
+        let e = set(&cpu, &[("visibility", Api::Avx2), ("shading", Api::Avx512)]).validate().unwrap_err();
+        assert!(e.contains("with one api, its `isa`"), "{e}");
+        let e = set(&cpu, &[("visibility", Api::Avx2), ("shading", Api::Avx2), ("kernel", Api::Scalar)]).validate().unwrap_err();
+        assert!(e.contains("`kernel` (api scalar) is compiled into callers running avx2"), "{e}");
+        let e = set(&cpu, &[("shading", Api::Compute)]).validate().unwrap_err();
+        assert!(e.contains("runs on a gpu"), "{e}");
+        // GPU back ends: the API they run the stage with, and only that.
+        let gc = Composition::default();
+        assert!(set(&gc, &[("visibility", Api::Compute)]).validate().is_ok());
+        assert_eq!(set(&gc, &[("visibility", Api::Compute)]).key(), Graph::from_composition(&gc).unwrap().key(), "the default: not in the key");
+        // gpu-compute's walk: a compute thread or a fragment shader per pixel (`dispatch`).
+        let frag = set(&gc, &[("visibility", Api::Raster)]);
+        assert_eq!(frag.flat_knobs().unwrap().get("dispatch"), Some(&toml::Value::String("fragment".into())));
+        assert!(frag.validate().is_ok() && frag.key() != Graph::from_composition(&gc).unwrap().key());
+        let e = set(&gc, &[("visibility", Api::Raster), ("shading", Api::Compute)]).validate().unwrap_err();
+        assert!(e.contains("with one api, its `dispatch`"), "{e}");
+        let e = set(&Composition { prepass: "beam".into(), ..Default::default() }, &[("prepass", Api::Raster)]).validate().unwrap_err();
+        assert!(e.contains("`beam` has no raster implementation"), "{e}");
+        let e = set(&Composition::new("gpu-rt"), &[("visibility", Api::Compute)]).validate().unwrap_err();
+        assert!(e.contains("runs its visibility with rayquery here, not compute"), "{e}");
+        let e = set(&Composition::new("gpu-raster"), &[("shading", Api::Compute)]).validate().unwrap_err();
+        assert!(e.contains("runs its shading with raster here, not compute"), "{e}");
+        let e = set(&gc, &[("kernel", Api::RayQuery)]).validate().unwrap_err();
+        assert!(e.contains("`kernel` (in `meshes`): `gpu-compute` runs its meshes with raster here, not rayquery"), "{e}");
+        // A face drawer's shading: in the fragment shader for `raster`, else deferred compute.
+        let r = Composition::new("gpu-raster");
+        assert!(set(&r, &[("shading", Api::Raster)]).validate().is_ok());
+        assert_eq!(set(&r, &[("shading", Api::Raster)]).key(), Graph::from_composition(&r).unwrap().key(), "no choice: not in the key");
+        assert!(set(&r, &[("shading", Api::Compute)]).validate().is_err());
+        let vb = Composition { draw: "visbuffer".into(), ..Composition::new("gpu-raster") };
+        assert!(set(&vb, &[("shading", Api::Compute)]).validate().is_ok());
+        // Implementations: cpu-raster is scalar only; pathtrace has no CPU implementation.
+        let e = set(&Composition::new("cpu-raster"), &[("shading", Api::Avx2)]).validate().unwrap_err();
+        assert!(e.contains("runs its shading with scalar here, not avx2"), "{e}");
+        let mut g = Graph::from_composition(&Composition::new("cpu")).unwrap();
+        g.nodes.get_mut("shading").unwrap().component = "pathtrace".into();
+        assert!(g.validate().is_err());
+        // Devices follow where the back end runs a role: rasterisers build faces on the CPU.
+        let ck = Graph::from_composition(&r).unwrap().check().unwrap();
+        assert_eq!((ck.devices["geometry"], ck.devices["draw"], ck.devices["kernel"]), (Device::Cpu, Device::Gpu(0), Device::Gpu(0)));
+        // Plans and records: `api` round-trips through TOML.
+        let t = toml::to_string(&set(&cpu, &[("visibility", Api::Avx512)])).unwrap();
+        assert!(t.contains("api = \"avx512\""), "{t}");
+        assert_eq!(toml::from_str::<Graph>(&t).unwrap(), set(&cpu, &[("visibility", Api::Avx512)]));
+    }
+
     #[test]
     fn free_sites() {
         let with = |c: Composition, f: &dyn Fn(&mut Graph)| {
@@ -1364,7 +1550,7 @@ mod tests {
         })
         .validate()
         .unwrap_err();
-        assert!(e.contains("no gpu-raster implementation"), "{e}");
+        assert!(e.contains("no gpu raster/compute implementation"), "{e}");
         // gpu-discover: exposure tests read another storage than the discovery rays walk.
         let d = with(Composition { storage: "distance".into(), traversal: "sphere".into(), ..Composition::new("gpu-discover") }, &|g| {
             g.nodes.insert("x".into(), Node::new(Role::Storage, "bricks"));

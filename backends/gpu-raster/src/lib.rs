@@ -55,7 +55,7 @@ fn info() -> RendererInfo {
 
 
 fn describe(slot: Slot) -> String {
-    components(slot).filter(|c| c.backends.contains(&BACKEND)).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
+    components(slot).filter(|c| mr_components::unavailable(BACKEND, slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
 }
 
 fn params() -> Vec<ParamSpec> {

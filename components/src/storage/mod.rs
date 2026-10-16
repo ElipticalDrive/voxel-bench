@@ -70,7 +70,7 @@ pub enum Kind {
 #[derive(Copy, Clone)]
 pub struct GpuStorage {
     pub wgsl: &'static str,
-    /// Its capabilities, from the registry (`ComponentInfo::provides`).
+    /// Its capabilities, from the registry (its GPU implementation's `provides`).
     pub provides: &'static [Cap],
     pub kind: Kind,
 }
@@ -120,7 +120,7 @@ pub fn gpu(name: &str) -> Option<GpuStorage> {
         "tree64" => (tree64::GPU_WGSL, Kind::Region { shift: 6, build: tree64::build }),
         _ => return None,
     };
-    let provides = crate::component(crate::Slot::Storage, name).map_or(&[][..], |c| c.provides);
+    let provides = crate::component(crate::Slot::Storage, name).and_then(|c| c.on(crate::Kind::Gpu)).map_or(&[][..], |i| i.provides);
     Some(GpuStorage { wgsl, provides, kind })
 }
 

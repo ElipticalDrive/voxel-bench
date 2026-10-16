@@ -6,6 +6,14 @@ use glam::{IVec3, Vec3};
 use crate::storage::cpu::{Entry, Grid, Repr, ffloor};
 use crate::traversal::cpu::{Hit, Tally};
 
+/// The kernel's declaration: `trace_incremental` returns its work (`Tally`, the `steps` view).
+pub struct Incremental;
+
+impl crate::traversal::cpu::Kernel for Incremental {
+    const NAME: &'static str = "incremental";
+    const CAPS: &'static [crate::Cap] = &[crate::Cap::Steps];
+}
+
 /// Next level above `level` in the level mask `mask` (5 = chunk is always present).
 #[inline(always)]
 pub fn level_above(mask: u32, level: u32) -> u32 {

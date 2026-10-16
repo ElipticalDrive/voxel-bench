@@ -16,6 +16,9 @@ pub trait Repr: Clone + Send + Sync + 'static {
     /// Levels `k` (bit k set) at which `occupied` answers directly for aligned 2^k cubes.
     /// Always includes 0; the chunk level (5) is answered by the chunk grid instead.
     const LEVELS: u32;
+    /// The capabilities this CPU storage provides (PLAN step 10; the registry reads them):
+    /// every `Repr` answers the voxel queries; none has LOD, distances or rows yet.
+    const CAPS: &'static [crate::Cap] = &[crate::Cap::Voxels];
     /// Whether the aligned 2^`level` cube at level coordinates `c` (chunk-local,
     /// `0..32 >> level` per axis) holds a solid voxel. Exact; only called for `LEVELS`.
     fn occupied(&self, level: u32, c: IVec3) -> bool;
