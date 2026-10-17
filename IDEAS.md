@@ -1646,6 +1646,11 @@ API. Executors acting on devices: step 13.
   (step 13); stateful nodes and two-way edges designed before step 13; the architecture
   phase ends at explicit exit criteria (PLAN).
 
+**State (2026-10-17, step 13a).** The design is in PLAN step 13: edges carry a timing (`now`,
+`prev`, `iterate = n`), stateful nodes declare their state, and a schedule computed at
+creation lists passes, loops, transfers between devices and kept values. Graphs express it
+and validate it with reasons; back ends do not run timings yet (13b-13e).
+
 ---
 
 ## 23. Scope of animation; transparency next (after the architecture)

@@ -25,7 +25,7 @@
 //! skeleton) is one of the back end's compositions; it returns that composition and whether
 //! it is exactly the graph.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -182,6 +182,11 @@ const RAYCAST: &[Port] = &[
     port("meshes", Data::Surfaces, false, "meshes capping the rays (mesh mode)"),
 ];
 const DISCOVER: &[Port] = &[port("rays", Data::Rays, true, "discovery rays"), port("exposure", Data::Storage, true, "the storage exposure tests read (which faces are exposed, their blocks)")];
+const QUADTREE: &[Port] = &[
+    port("rays", Data::Rays, true, "discovery rays"),
+    port("exposure", Data::Storage, true, "the storage exposure tests read (which faces are exposed, their blocks)"),
+    port("covered", Data::Hits, false, "what the drawer covered: incremental discovery looks only where the faces it already has leave holes (a feedback edge: `iterate`, the drawer first drawing last frame's faces)"),
+];
 const MESHES: &[Port] = &[port("changes", Data::Changes, true, "the world's change log"), port("shadow", Data::Rays, false, "shadow rays onto meshes (unbound: the shading's)")];
 const FACES: &[Port] = &[port("faces", Data::Faces, true, "the faces to draw")];
 const SPLAT: &[Port] = &[port("points", Data::Faces, true, "the points to splat")];
@@ -203,7 +208,8 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
         (Role::Traversal, "rayquery") => ON_GEOMETRY,
         (Role::Traversal, _) => ON_STORAGE,
         (Role::Visibility, "raycast") => RAYCAST,
-        (Role::Visibility, "quadtree" | "cluster") => DISCOVER,
+        (Role::Visibility, "quadtree") => QUADTREE,
+        (Role::Visibility, "cluster") => DISCOVER,
         (Role::Visibility, "splat") => SPLAT,
         (Role::Visibility, "columns") => ON_STORAGE,
         (Role::Visibility, _) => FACES,
@@ -225,6 +231,51 @@ pub fn output(role: Role, name: &str) -> Data {
         (Role::Visibility | Role::Draw, _) => Data::Hits,
         (Role::Shading, _) => Data::Image,
         (Role::Meshes, _) => Data::Surfaces,
+    }
+}
+
+/// What a stateful component keeps across frames (PLAN step 13, IDEAS §22): owned by the
+/// node instance on its device, kept by the executor, reset on resize or a structural
+/// change. State only the node reads is not an edge; another node reads it through an
+/// output edge with timing [`When::Prev`].
+pub fn state(role: Role, name: &str) -> Option<&'static str> {
+    Some(match (role, name) {
+        (Role::World, _) => "the authoritative chunks and their change log",
+        (Role::Storage, _) => "the representation, patched from the change log",
+        (Role::Geometry, _) => "the faces, remeshed per changed chunk",
+        (Role::Meshes, _) => "the mesh instances",
+        (Role::Traversal, "rayquery") => "acceleration structures built from its geometry",
+        (Role::Visibility, "quadtree" | "cluster") => "the discovered face set (faces kept `keep_frames` passes)",
+        (Role::Shading, "pathtrace") => "accumulated radiance (restarted when the view changes)",
+        _ => return None,
+    })
+}
+
+/// When the value on an edge arrives (PLAN step 13, IDEAS §22: state flows both ways).
+/// Written per input port in a node's `timing`; unset ports are [`When::Now`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum When {
+    /// This frame's value: the producer runs first in the frame (or is compiled in).
+    Now,
+    /// The previous frame's value, kept by the executor across frames. Closes cycles over
+    /// frames (history); between devices it lets producer and consumer overlap (pipelining:
+    /// the consumer's frame N runs while the producer computes frame N+1).
+    Prev,
+    /// Within one frame, closing a cycle: the consumer runs `n` times (n >= 2), first on
+    /// the producer's value of the previous frame, then on each new one; the nodes between
+    /// run n - 1 times. E.g. incremental discovery: the drawer draws last frame's faces,
+    /// discovery fills the holes, the drawer draws again (`draw.faces` iterates, 2).
+    Iterate(u8),
+}
+
+impl When {
+    pub fn label(self) -> String {
+        match self {
+            When::Now => "now".into(),
+            When::Prev => "prev".into(),
+            When::Iterate(n) => format!("iterate {n}"),
+        }
     }
 }
 
@@ -264,18 +315,26 @@ pub struct Node {
     /// Input port → the node bound to it. Unbound `changes` inputs read the world.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, String>,
+    /// Input port → when its value arrives, where not this frame's ([`When`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub timing: BTreeMap<String, When>,
     #[serde(default, skip_serializing_if = "toml::Table::is_empty")]
     pub knobs: toml::Table,
 }
 
 impl Node {
     pub fn new(role: Role, component: &str) -> Self {
-        Self { role, component: component.into(), device: None, api: None, inputs: BTreeMap::new(), knobs: toml::Table::new() }
+        Self { role, component: component.into(), device: None, api: None, inputs: BTreeMap::new(), timing: BTreeMap::new(), knobs: toml::Table::new() }
     }
 
     fn with(mut self, inputs: &[(&str, &str)]) -> Self {
         self.inputs.extend(inputs.iter().map(|&(p, n)| (p.to_string(), n.to_string())));
         self
+    }
+
+    /// When input `port`'s value arrives.
+    pub fn when(&self, port: &str) -> When {
+        self.timing.get(port).copied().unwrap_or(When::Now)
     }
 }
 
@@ -396,6 +455,7 @@ impl Graph {
             _ => return Err(format!("one world per graph (have: {})", worlds.join(", "))),
         };
         for n in g.nodes.values_mut() {
+            n.timing.retain(|_, w| *w != When::Now);
             for p in inputs(n.role, &n.component).iter().filter(|p| p.data == Data::Changes) {
                 n.inputs.entry(p.name.into()).or_insert_with(|| world.clone());
             }
@@ -439,6 +499,63 @@ impl Graph {
         inputs(vis.role, &vis.component).iter().filter(|p| p.casts).find_map(|p| vis.inputs.get(p.name).cloned())
     }
 
+    /// This frame's edges into `id`: inputs with timing `now` (`prev` and `iterate` edges
+    /// carry values from before; they close cycles).
+    fn now_inputs<'a>(&'a self, id: &'a str) -> impl Iterator<Item = (&'a str, &'a str)> + 'a {
+        let n = &self.nodes[id];
+        n.inputs.iter().filter(|(p, _)| n.when(p) == When::Now).map(|(p, s)| (p.as_str(), s.as_str()))
+    }
+
+    /// Whether `id` depends on `on` within the frame (through `now` edges; a node on itself).
+    fn depends(&self, id: &str, on: &str) -> bool {
+        let mut seen = HashSet::new();
+        let mut stack = vec![id];
+        while let Some(x) = stack.pop() {
+            if x == on {
+                return true;
+            }
+            if seen.insert(x) {
+                stack.extend(self.now_inputs(x).map(|(_, s)| s));
+            }
+        }
+        false
+    }
+
+    /// Producers before consumers over this frame's edges (post-order from the output,
+    /// then from nodes only reached through `prev` / `iterate` edges); a cycle of `now`
+    /// edges is an error.
+    fn frame_order<'a>(&'a self, out: &'a str) -> Result<Vec<&'a str>, String> {
+        let mut order = Vec::new();
+        let mut state: HashMap<&str, bool> = HashMap::new(); // false: on the stack, true: done
+        fn visit<'a>(g: &'a Graph, id: &'a str, state: &mut HashMap<&'a str, bool>, order: &mut Vec<&'a str>) -> Result<(), String> {
+            match state.get(id) {
+                Some(true) => return Ok(()),
+                Some(false) => return Err(format!("the graph has a cycle through `{id}` within one frame: give one of its edges the timing `prev` (the previous frame's value) or `iterate` (passes within the frame)")),
+                None => {}
+            }
+            state.insert(id, false);
+            for (_, src) in g.now_inputs(id) {
+                visit(g, src, state, order)?;
+            }
+            state.insert(id, true);
+            order.push(id);
+            Ok(())
+        }
+        visit(self, out, &mut state, &mut order)?;
+        // Nodes only reached through earlier values, latest first (from the output's side).
+        let mut stack: Vec<&str> = vec![out];
+        let mut seen: HashSet<&str> = HashSet::new();
+        while let Some(id) = stack.pop() {
+            if seen.insert(id) {
+                if !state.contains_key(id) {
+                    visit(self, id, &mut state, &mut order)?;
+                }
+                stack.extend(self.nodes[id].inputs.values().map(String::as_str));
+            }
+        }
+        Ok(order)
+    }
+
     /// Checks the graph is well formed (not yet whether its back end runs it: see
     /// [`Self::validate`]), with the reasons when it isn't.
     pub fn check(&self) -> Result<Checked, String> {
@@ -470,6 +587,16 @@ impl Graph {
                     continue;
                 }
             }
+            for (p, w) in &n.timing {
+                match (ports.iter().find(|x| x.name == p), n.inputs.contains_key(p)) {
+                    (Some(port), true) if port.data.fused() => why.push(format!("`{id}`.{p}: {} are compiled into their caller, so they arrive within the frame (no timing)", port.data.name())),
+                    (_, true) => {}
+                    _ => why.push(format!("`{id}`: a timing for `{p}`, which is not a bound input")),
+                }
+                if matches!(w, When::Iterate(k) if *k < 2) {
+                    why.push(format!("`{id}`.{p}: an iteration runs its consumer at least twice (iterate >= 2)"));
+                }
+            }
             for p in ports.iter().filter(|p| p.required && !n.inputs.contains_key(p.name)) {
                 why.push(format!("`{id}` ({} `{}`): input `{}` ({}) is not bound", n.role.name(), n.component, p.name, p.description));
             }
@@ -482,27 +609,29 @@ impl Graph {
             return Err(format!("a graph has one image output (have: {})", if outs.is_empty() { "none".into() } else { outs.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ") }));
         };
         let out = out.to_string();
-        // Producers before consumers (post-order from the output), rejecting cycles.
-        let mut order = Vec::new();
-        let mut state: HashMap<&str, bool> = HashMap::new(); // false: on the stack, true: done
-        fn visit<'a>(g: &'a Graph, id: &'a str, state: &mut HashMap<&'a str, bool>, order: &mut Vec<&'a str>) -> Result<(), String> {
-            match state.get(id) {
-                Some(true) => return Ok(()),
-                Some(false) => return Err(format!("the graph has a cycle through `{id}`")),
-                None => {}
+        // Every node leads to the image, through edges of any timing.
+        let mut reached: HashSet<&str> = HashSet::new();
+        let mut stack = vec![out.as_str()];
+        while let Some(id) = stack.pop() {
+            if reached.insert(id) {
+                stack.extend(g.nodes[id].inputs.values().map(String::as_str));
             }
-            state.insert(id, false);
-            for src in g.nodes[id].inputs.values() {
-                visit(g, src, state, order)?;
-            }
-            state.insert(id, true);
-            order.push(id);
-            Ok(())
         }
-        visit(&g, &out, &mut state, &mut order)?;
-        let dangling: Vec<&str> = g.nodes.keys().map(|k| k.as_str()).filter(|k| !state.contains_key(k)).collect();
+        let dangling: Vec<&str> = g.nodes.keys().map(|k| k.as_str()).filter(|k| !reached.contains(k)).collect();
         if !dangling.is_empty() {
             return Err(format!("nodes that lead to no image: {}", dangling.join(", ")));
+        }
+        let order = g.frame_order(&out)?;
+        // An iteration closes a cycle of this frame's edges.
+        for (id, n) in &g.nodes {
+            for (p, src) in n.inputs.iter().filter(|(p, _)| matches!(n.when(p), When::Iterate(_))) {
+                if !g.depends(src, id) {
+                    why.push(format!("`{id}`.{p} iterates, but `{src}` does not depend on `{id}` within the frame (no cycle to iterate: use `prev`)"));
+                }
+            }
+        }
+        if !why.is_empty() {
+            return Err(why.join("; "));
         }
         // Devices, consumers first: a fused node runs with its callers.
         let mut why = Vec::new();
@@ -609,7 +738,12 @@ impl Graph {
         let mut s = format!("{}|", g.executor);
         for id in &order {
             let n = &g.nodes[*id];
-            let ins: Vec<String> = n.inputs.iter().map(|(p, src)| format!("{p}=n{}", ids[src.as_str()])).collect();
+            let when = |p: &str| match n.when(p) {
+                When::Now => String::new(),
+                When::Prev => "~prev".into(),
+                When::Iterate(k) => format!("~iterate{k}"),
+            };
+            let ins: Vec<String> = n.inputs.iter().map(|(p, src)| format!("{p}=n{}{}", ids[src.as_str()], when(p))).collect();
             let knobs: Vec<String> = n.knobs.iter().map(|(k, v)| format!("{k}={v}")).collect();
             let api = c.apis.get(*id).filter(|a| chosen(n, a)).map_or(String::new(), |a| format!(":{}", a.name()));
             s += &format!("n{}={}.{}@{}{api}({}){{{}}};", ids[id], n.role.name(), n.component, c.devices[*id], ins.join(","), knobs.join(","));
@@ -742,6 +876,12 @@ impl Graph {
     /// cannot run the graph.
     pub fn accept(&self) -> Result<(Composition, bool), String> {
         let ck = self.check()?;
+        // Back ends run every edge within the frame; their knobs say what timings would
+        // (cpu-discover `pipelined`, gpu-discover `incremental`) until executors run them.
+        let timed: Vec<String> = ck.graph.nodes.iter().flat_map(|(id, n)| n.timing.iter().map(move |(p, w)| format!("`{id}`.{p} ({})", w.label()))).collect();
+        if !timed.is_empty() {
+            return Err(format!("`{}` runs every edge within the frame (its knobs set what timings would), not {}", self.executor, timed.join(", ")));
+        }
         if let Some(why) = self.site_blocker(&ck) {
             return Err(why);
         }
@@ -1297,6 +1437,189 @@ impl Checked {
     }
 }
 
+/// How an executor runs a checked graph (PLAN step 13): computed once when the pipeline is
+/// created, so it costs nothing per frame. A *pass* is a node that does work of its own
+/// (it has an input that is not fused data, or no inputs: the world); nodes whose inputs
+/// and output are all fused data (traversal kernels) are only compiled into the passes that
+/// call them, with the storages they read (a storage is both: its update from the change
+/// log is a pass, its data is compiled into its readers). Whether two adjacent passes on
+/// one device and API run as one (shading `placement = inline` in ray casting) is the
+/// executor's fusion, decided when the pipeline is compiled, not part of the schedule.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Schedule {
+    /// In frame order: producers before consumers over this frame's edges.
+    pub steps: Vec<Step>,
+    /// Edges between devices (never fused data): the executor's transfer adapters.
+    pub transfers: Vec<Edge>,
+    /// Values kept across frames: `prev` edges, and `iterate` edges' first pass.
+    pub kept: Vec<Edge>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Step {
+    Pass(Pass),
+    /// An iteration (a cycle closed by an `iterate` edge, `passes` its count): the body
+    /// starts at the edge's consumer, which runs `passes` times, the rest `passes - 1`.
+    Loop { passes: u8, body: Vec<Pass> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pass {
+    pub node: String,
+    pub device: Device,
+    pub api: Option<Api>,
+    /// Fused nodes compiled into it (the kernels and storages it reads, transitively).
+    pub fused: Vec<String>,
+    /// What it keeps across frames ([`state`]).
+    pub state: Option<&'static str>,
+}
+
+/// An edge `from` → `to`.`port`, with its data, timing and devices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Edge {
+    pub from: String,
+    pub to: String,
+    pub port: String,
+    pub data: Data,
+    pub when: When,
+    pub from_device: Device,
+    pub to_device: Device,
+}
+
+impl Schedule {
+    /// Whether devices overlap frames: a `prev` edge between devices lets the consumer's
+    /// device run frame N while the producer's computes frame N + 1.
+    pub fn pipelined(&self) -> bool {
+        self.transfers.iter().any(|e| e.when == When::Prev)
+    }
+
+    /// Every pass, loops flattened, in frame order.
+    pub fn passes(&self) -> impl Iterator<Item = &Pass> {
+        self.steps.iter().flat_map(|s| match s {
+            Step::Pass(p) => std::slice::from_ref(p),
+            Step::Loop { body, .. } => body.as_slice(),
+        })
+    }
+}
+
+impl fmt::Display for Schedule {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let pass = |f: &mut fmt::Formatter, p: &Pass, indent: &str| {
+            let api = p.api.map_or(String::new(), |a| format!(":{}", a.name()));
+            let fused = if p.fused.is_empty() { String::new() } else { format!(" [{}]", p.fused.join(", ")) };
+            let state = p.state.map_or(String::new(), |s| format!("  (keeps {s})"));
+            writeln!(f, "{indent}{} @{}{api}{fused}{state}", p.node, p.device)
+        };
+        for s in &self.steps {
+            match s {
+                Step::Pass(p) => pass(f, p, "  ")?,
+                Step::Loop { passes, body } => {
+                    writeln!(f, "  loop, {passes} passes:")?;
+                    for p in body {
+                        pass(f, p, "    ")?;
+                    }
+                }
+            }
+        }
+        let edge = |e: &Edge| format!("{} -> {}.{} ({}, {})", e.from, e.to, e.port, e.data.name(), e.when.label());
+        for e in &self.transfers {
+            writeln!(f, "  transfer {}: {} -> {}", edge(e), e.from_device, e.to_device)?;
+        }
+        for e in &self.kept {
+            writeln!(f, "  kept across frames: {}", edge(e))?;
+        }
+        if self.pipelined() {
+            writeln!(f, "  pipelined: devices overlap one frame")?;
+        }
+        Ok(())
+    }
+}
+
+impl Checked {
+    /// The executor's schedule of the graph ([`Schedule`]).
+    pub fn schedule(&self) -> Result<Schedule, String> {
+        let g = &self.graph;
+        let out_of = |id: &str| output(g.nodes[id].role, &g.nodes[id].component);
+        // Work of its own: a non-fused output, or an update from a non-fused input.
+        let is_pass = |id: &str| {
+            let n = &g.nodes[id];
+            !out_of(id).fused() || n.inputs.is_empty() || n.inputs.values().any(|s| !out_of(s).fused())
+        };
+        let pass = |id: &str| {
+            let n = &g.nodes[id];
+            let mut fused = Vec::new();
+            let mut stack: Vec<&str> = n.inputs.values().map(String::as_str).filter(|s| out_of(s).fused()).collect();
+            while let Some(x) = stack.pop() {
+                if !fused.iter().any(|f| f == x) {
+                    fused.push(x.to_string());
+                    stack.extend(g.nodes[x].inputs.values().map(String::as_str).filter(|s| out_of(s).fused()));
+                }
+            }
+            fused.sort();
+            Pass { node: id.to_string(), device: self.devices[id], api: self.apis.get(id).copied(), fused, state: state(n.role, &n.component) }
+        };
+        // Loop bodies: the nodes on this frame's paths from an iterate edge's consumer to its producer.
+        let mut loop_of: HashMap<&str, usize> = HashMap::new();
+        let mut loops: Vec<(u8, &str)> = Vec::new();
+        for (id, n) in &g.nodes {
+            for (p, src) in &n.inputs {
+                let When::Iterate(k) = n.when(p) else { continue };
+                let li = loops.len();
+                loops.push((k, id.as_str()));
+                for x in g.nodes.keys().filter(|x| g.depends(x, id) && g.depends(src, x)) {
+                    if let Some(other) = loop_of.insert(x.as_str(), li) {
+                        return Err(format!("`{x}` is in two iterations (through `{}` and `{id}`): nested or overlapping iterations are not supported yet", loops[other].1));
+                    }
+                }
+            }
+        }
+        // Frame order with each loop contracted to one step (group n + loop index; node i of
+        // the frame order is group i): producers first.
+        let order = g.frame_order(&self.output)?;
+        let n = order.len();
+        let at: HashMap<&str, usize> = order.iter().enumerate().map(|(i, &x)| (x, i)).collect();
+        let group = |i: usize| loop_of.get(order[i]).map_or(i, |&li| n + li);
+        let members = |gr: usize| -> Vec<usize> { (0..n).filter(|&i| group(i) == gr).collect() };
+        let inputs = |gr: usize| -> Vec<usize> { members(gr).into_iter().flat_map(|m| g.now_inputs(order[m]).map(|(_, s)| group(at[s])).collect::<Vec<_>>()).filter(|&x| x != gr).collect() };
+        fn visit(gr: usize, done: &mut HashSet<usize>, groups: &mut Vec<usize>, inputs: &dyn Fn(usize) -> Vec<usize>) {
+            if done.insert(gr) {
+                for i in inputs(gr) {
+                    visit(i, done, groups, inputs);
+                }
+                groups.push(gr);
+            }
+        }
+        let (mut done, mut groups) = (HashSet::new(), Vec::new());
+        for i in 0..n {
+            visit(group(i), &mut done, &mut groups, &inputs);
+        }
+        let mut steps = Vec::new();
+        for gr in groups {
+            if gr < n {
+                if is_pass(order[gr]) {
+                    steps.push(Step::Pass(pass(order[gr])));
+                }
+            } else {
+                // In frame order the consumer comes first (every body node depends on it).
+                steps.push(Step::Loop { passes: loops[gr - n].0, body: members(gr).into_iter().filter(|&i| is_pass(order[i])).map(|i| pass(order[i])).collect() });
+            }
+        }
+        let (mut transfers, mut kept) = (Vec::new(), Vec::new());
+        for (id, n) in &g.nodes {
+            for (p, src) in &n.inputs {
+                let e = Edge { from: src.clone(), to: id.clone(), port: p.clone(), data: out_of(src), when: n.when(p), from_device: self.devices[src.as_str()], to_device: self.devices[id] };
+                if e.when != When::Now {
+                    kept.push(e.clone());
+                }
+                if !e.data.fused() && e.from_device != e.to_device {
+                    transfers.push(e);
+                }
+            }
+        }
+        Ok(Schedule { steps, transfers, kept })
+    }
+}
+
 /// A ray-casting site's binding: node ids of its kernel and of the storage (or geometry)
 /// the kernel walks.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1695,5 +2018,114 @@ mod tests {
         g.nodes.retain(|k, _| !k.starts_with("shadow."));
         let e = g.validate().unwrap_err();
         assert!(e.contains("input `shadow`"), "{e}");
+    }
+
+    /// Step 13a: edge timings. Incremental discovery as an iteration (the drawer draws last
+    /// frame's faces, discovery fills the holes, the drawer draws again), holes found a frame
+    /// late as a `prev` edge, and the reasons for what is not a pipeline.
+    #[test]
+    fn timings() {
+        let base = Graph::from_composition(&Composition::new("gpu-discover")).unwrap();
+        let with = |covered: Option<When>, faces: Option<When>| {
+            let mut g = base.clone();
+            if let Some(w) = covered {
+                g.nodes.get_mut("visibility").unwrap().inputs.insert("covered".into(), "draw".into());
+                g.nodes.get_mut("visibility").unwrap().timing.insert("covered".into(), w);
+            }
+            if let Some(w) = faces {
+                g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), w);
+            }
+            g
+        };
+        // A cycle within the frame says how to break it.
+        let e = with(Some(When::Now), None).check().unwrap_err();
+        assert!(e.contains("cycle through") && e.contains("`prev`"), "{e}");
+        // An iteration: written as TOML and as JSON (the worker's form), canonical with its timing.
+        let it = with(Some(When::Now), Some(When::Iterate(2)));
+        let toml_text = toml::to_string(&it).unwrap();
+        assert!(toml_text.contains("iterate = 2"), "{toml_text}");
+        assert_eq!(toml::from_str::<Graph>(&toml_text).unwrap(), it);
+        assert_eq!(serde_json::from_str::<Graph>(&serde_json::to_string(&it).unwrap()).unwrap(), it);
+        let canon = it.canonical().unwrap();
+        assert!(canon.contains("faces=n") && canon.contains("~iterate2"), "{canon}");
+        assert_ne!(it.key().unwrap(), base.key().unwrap());
+        // An explicit `now` is the same pipeline as none.
+        let mut now = base.clone();
+        now.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Now);
+        assert_eq!(now.key().unwrap(), base.key().unwrap());
+        let sched = it.check().unwrap().schedule().unwrap();
+        let names = |ps: &[Pass]| ps.iter().map(|p| p.node.clone()).collect::<Vec<_>>();
+        let li = sched.steps.iter().position(|s| matches!(s, Step::Loop { .. })).expect("a loop");
+        let Step::Loop { passes, body } = &sched.steps[li] else { unreachable!() };
+        assert_eq!((*passes, names(body)), (2, vec!["draw".to_string(), "visibility".to_string()]), "{sched}");
+        // The shading reads the loop's last pass: after the loop.
+        assert!(matches!(sched.steps.last(), Some(Step::Pass(p)) if p.node == "shading"), "{sched}");
+        assert!(sched.kept.iter().any(|e| e.to == "draw" && e.port == "faces"), "{sched}");
+        // Back ends do not run timings yet: greyed with the reason.
+        let e = it.validate().unwrap_err();
+        assert!(e.contains("runs every edge within the frame") && e.contains("`draw`.faces (iterate 2)"), "{e}");
+        // Holes found a frame late: coverage from the previous frame, no loop.
+        let late = with(Some(When::Prev), None);
+        let sched = late.check().unwrap().schedule().unwrap();
+        assert!(sched.steps.iter().all(|s| matches!(s, Step::Pass(_))), "{sched}");
+        assert!(sched.kept.iter().any(|e| e.to == "visibility" && e.port == "covered" && e.when == When::Prev), "{sched}");
+        // Reasons.
+        let e = with(None, Some(When::Iterate(2))).check().unwrap_err();
+        assert!(e.contains("no cycle to iterate"), "{e}");
+        let e = with(Some(When::Now), Some(When::Iterate(1))).check().unwrap_err();
+        assert!(e.contains("at least twice"), "{e}");
+        let mut g = base.clone();
+        g.nodes.get_mut("kernel").unwrap().timing.insert("storage".into(), When::Prev);
+        let e = g.check().unwrap_err();
+        assert!(e.contains("compiled into their caller") && e.contains("no timing"), "{e}");
+        let mut g = base.clone();
+        g.nodes.get_mut("visibility").unwrap().timing.insert("covered".into(), When::Prev);
+        let e = g.check().unwrap_err();
+        assert!(e.contains("not a bound input"), "{e}");
+    }
+
+    /// Step 13a: the schedule across devices. cpu-discover: discovery on the CPU, drawing
+    /// on the GPU; faces and the change log cross devices; with the faces a frame late the
+    /// devices overlap (what its `pipelined` knob does today).
+    #[test]
+    fn schedule_across_devices() {
+        let g = Graph::from_composition(&Composition::new("cpu-discover")).unwrap();
+        let sched = g.check().unwrap().schedule().unwrap();
+        let crosses = |s: &Schedule, from: &str, to: &str| s.transfers.iter().find(|e| e.from == from && e.to == to).map(|e| (e.from_device, e.to_device, e.when));
+        assert_eq!(crosses(&sched, "visibility", "draw"), Some((Device::Cpu, Device::Gpu(0), When::Now)), "{sched}");
+        assert_eq!(crosses(&sched, "world", "shadow.storage"), Some((Device::Cpu, Device::Gpu(0), When::Now)), "{sched}");
+        assert!(!sched.pipelined());
+        let vis = sched.passes().find(|p| p.node == "visibility").unwrap();
+        assert_eq!((vis.device, vis.fused.clone()), (Device::Cpu, vec!["kernel".to_string(), "storage".to_string()]));
+        assert!(vis.state.is_some());
+        let mut piped = g.clone();
+        piped.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
+        let sched = piped.check().unwrap().schedule().unwrap();
+        assert_eq!(crosses(&sched, "visibility", "draw"), Some((Device::Cpu, Device::Gpu(0), When::Prev)), "{sched}");
+        assert!(sched.pipelined(), "{sched}");
+    }
+
+    /// Every composition schedules: the output last, walking kernels only compiled in, every other
+    /// node a pass of its own, fused nodes compiled into a pass on their device.
+    #[test]
+    fn every_composition_schedules() {
+        for c in every_composition() {
+            let ck = Graph::from_composition(&c).unwrap().check().unwrap();
+            let s = ck.schedule().unwrap_or_else(|e| panic!("{}: {e}", c.label()));
+            let passes: Vec<&Pass> = s.passes().collect();
+            assert_eq!(passes.last().map(|p| p.node.as_str()), Some(ck.output.as_str()), "{}\n{s}", c.label());
+            assert!(s.kept.is_empty() && s.steps.iter().all(|x| matches!(x, Step::Pass(_))), "{}", c.label());
+            for (id, n) in &ck.graph.nodes {
+                let is_pass = passes.iter().any(|p| p.node == *id);
+                // Ray queries build their acceleration structures from faces: a pass too.
+                assert_eq!(is_pass, n.role != Role::Traversal || n.component == "rayquery", "{}: `{id}`\n{s}", c.label());
+                if output(n.role, &n.component).fused() {
+                    assert!(passes.iter().any(|p| p.fused.contains(id) && p.device == ck.devices[id.as_str()]), "{}: `{id}` compiled into nothing\n{s}", c.label());
+                }
+            }
+            for e in &s.transfers {
+                assert!(!e.data.fused() && e.from_device != e.to_device);
+            }
+        }
     }
 }

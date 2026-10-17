@@ -139,6 +139,9 @@ fn main() -> anyhow::Result<()> {
                 println!("# sites form: compose = {} {}", serde_json::to_string(&c)?, sites.concat());
             }
             println!("# canonical: {}\n# key: {}", g.canonical().map_err(anyhow::Error::msg)?, g.key().map_err(anyhow::Error::msg)?);
+            let schedule = g.check().and_then(|c| c.schedule()).map_err(anyhow::Error::msg)?;
+            println!("# schedule (passes in frame order, [fused nodes compiled in]):");
+            print!("{}", schedule.to_string().lines().map(|l| format!("#{l}\n")).collect::<String>());
             Ok(())
         }
         Cmd::List => {

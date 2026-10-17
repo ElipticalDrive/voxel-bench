@@ -283,6 +283,16 @@ impl Tree<'_> {
             }
             let name = mr_components::graph::site_name(n.role, p.name);
             let is_site = self.values.contains_key(&name) && self.lead.as_deref() != Some(&name);
+            // An edge carrying an earlier value (previous frame, or an iteration's first pass).
+            if let (Some(src), w) = (n.inputs.get(p.name), n.when(p.name)) {
+                if w != mr_components::graph::When::Now {
+                    ui.horizontal_wrapped(|ui| {
+                        label(ui, depth + 1, p.name, false, p.description);
+                        ui.weak(format!("← {src} ({})", w.label()));
+                    });
+                    continue;
+                }
+            }
             match n.inputs.get(p.name) {
                 Some(src) if is_site => self.site(ui, &name, src, depth + 1),
                 Some(src) => self.node(ui, src, p.name, depth + 1, site),

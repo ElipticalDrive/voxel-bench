@@ -140,6 +140,55 @@ The user's architecture, settled with finality and without limits for later (IDE
     become executors placing nodes on devices (a device and API per node, IDEAS §21), with
     transfer adapters on edges that cross devices, so cpu-discover is a configuration of
     CPU and GPU nodes, two GPUs combine, and its `dyn World` call goes.
+    **The design (2026-10-17):**
+    - *Edges have a timing* (a node's `timing`, per input; default `now`): `now` = this
+      frame's value (the producer runs first, or is compiled in); `prev` = the previous
+      frame's value, kept by the executor (closes cycles over frames; between devices it
+      lets them overlap a frame: pipelining); `iterate = n` = within the frame, closing a
+      cycle: the consumer runs n times, first on the producer's previous-frame value, the
+      nodes between n - 1 times. Fused data (storages, ray queries) is always `now`. A cycle
+      of `now` edges, or an `iterate` edge closing none, is invalid with the reason. Today's
+      knobs are timings: cpu-discover's `pipelined` = the drawer's faces `prev`;
+      gpu-discover's `incremental` = discovery's `covered` input from the drawer with the
+      drawer's faces iterating twice (draw last frame's faces, discover the holes, draw);
+      its `still_holes = late` = `covered` read `prev` instead.
+    - *Stateful nodes* declare what they keep across frames (`graph::state`: storages,
+      geometry, discovered face sets, path-tracing accumulation, acceleration structures).
+      The executor owns it per instance on the node's device and resets it on resize or a
+      structural change. State only the node reads is not an edge; another node reads it
+      through an output edge `prev`.
+    - *The schedule* (`Checked::schedule`, computed once at creation: no per-frame cost):
+      passes in frame order, each a node doing work of its own with the fused nodes it
+      reads compiled in (kernels; a storage is both an update pass and compiled-in data;
+      `rayquery` builds its structures as a pass); loops for iterations; a transfer
+      adapter per non-fused edge between devices (upload, readback, peer copy), with its
+      timing; kept values for `prev` / `iterate` edges. `multirenderer graph` prints it.
+    - *Fusion*: beyond fused data, adjacent passes on one device and API joined by a `now`
+      edge run as one where the consumer can run inline (shading `placement = inline` in
+      ray casting or raster), else as separate passes in one submission with buffers kept
+      across frames. Fusion is decided when the pipeline is compiled (naga_oil modules and
+      shader defs, Rust monomorphisation), never a run-time branch, and only where it is
+      no slower than the hand-written equivalent (checked with step 11's stage times).
+    - *Executors*: one per device kind (GPU: wgpu; CPU), each a library of pass
+      implementations per (component, API) driven by the schedule; lanes per device; a
+      pipeline over two devices is the schedule's transfers, so cpu-discover and two GPUs
+      are configurations, not back ends.
+    Sub-steps:
+    - 13a: the model: timings on edges, cycles with reasons, stateful nodes, the
+      schedule (passes, loops, transfers, kept values), printed by `multirenderer graph`;
+      back ends reject timings with the reason until they run them; no behaviour change,
+      every existing graph key unchanged. (Done 2026-10-17.)
+    - 13b: discovery's pieces as components (sampler `quadtree` / `cluster`, hole
+      detection, retention, the drawer), CPU and GPU; `incremental`, `still_holes` and
+      `pipelined` become the timings above (old records load as the graphs they mean).
+    - 13c: one discovery executor: gpu-discover and cpu-discover become one, discovery on
+      `cpu` or `gpu` by its node's device, transfers from the schedule, the CPU storage
+      monomorphised (no `dyn World`).
+    - 13d: splat and columns as components; the voxelspace back ends as configurations.
+    - 13e: GPU and CPU executors run every graph from the schedule (ray casting, raster,
+      ray queries, splat, columns, discovery); hand-written back ends removed; a pipeline
+      split over `gpu` and `gpu1` through a transfer adapter; pixel and timing A/B of every
+      old composition.
 14. **The served split (IDEAS §19):** the world (generator, authoritative store, change
     log) becomes a node on a *server* device; a *link* is a graph edge, the bottleneck
     between them (the point is the separation, not realistic networking; latency,
@@ -715,3 +764,39 @@ speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/
   gpu-discover and cpu-discover have no meshes stage (their drawer now supports one); CPU back
   ends have no meshes.
 
+
+**2026-10-17, step 13a: the model for stateful nodes, two-way edges and the schedule.**
+`components/src/graph.rs` (`When`, `Node::timing`, `state`, `Schedule`, `Checked::schedule`),
+`src/main.rs` (`graph` prints the schedule), `src/gui/stages.rs`:
+- **Edge timings** per input (`timing = { faces = "prev" }` or `{ faces = { iterate = 2 } }` in a
+  graph; JSON alike for the worker): `now` (default), `prev`, `iterate = n`, as designed above.
+  Validation with reasons: a cycle of `now` edges (says to mark an edge `prev` or `iterate`), an
+  `iterate` edge closing no cycle, fewer than 2 passes, a timing on fused data or on an unbound
+  port. The frame order follows `now` edges only; reachability (nodes leading to no image)
+  follows every edge. The canonical form writes a timing after its input (`faces=n2~iterate2`),
+  so every existing graph's form and key is unchanged: all 16,975 compositions compared before
+  and after, byte-identical.
+- **A feedback port**: `quadtree`'s optional `covered` (hits from the drawer), so incremental
+  discovery is expressible as a graph (`covered` = draw, the drawer's faces iterating twice;
+  `still_holes = late` as `covered` read `prev`).
+- **Stateful nodes** (`graph::state`) and **the schedule** (`Checked::schedule`): passes in frame
+  order with their compiled-in fused nodes and their state, loops contracted to one step in the
+  order (the consumer first; nodes reading the loop after it), transfers for non-fused edges
+  between devices, kept values; `pipelined()` when a `prev` edge crosses devices. The schedule
+  is a pure function of the checked graph. `multirenderer graph <renderer>` prints it, e.g.
+  cpu-discover: world, storage @cpu, visibility @cpu [kernel, storage], draw @gpu,
+  shadow.storage @gpu, shading @gpu [shadow.kernel, shadow.storage]; transfers faces cpu -> gpu
+  and the change log cpu -> gpu.
+- **Back ends reject timings** with the reason (`accept`: they run every edge within the frame;
+  their knobs set what timings would). The GUI's pipeline tree shows a timed edge as
+  `← node (timing)` instead of descending (it cannot loop: shared nodes were already cut).
+- Verified: builds without warnings (dev, release), 78 unit tests (new: timings and their
+  reasons, TOML / JSON round trips, an explicit `now` keyed as none; the iteration's schedule
+  with the shading after the loop; cpu-discover's transfers, pipelined with faces `prev`; every
+  composition schedules, with walking kernels only compiled in, `rayquery` a pass too, every
+  fused node compiled into a pass on its device), 4 GPU end-to-end tests. No renderer code
+  changed, so no pixel or timing A/B was needed.
+- Not yet: nothing runs from the schedule; cpu-discover's graph says its faces arrive `now`
+  while its `pipelined` knob (default on) makes them `prev` (13b turns such knobs into timings);
+  the GUI cannot set timings (shows them); nested or overlapping iterations are rejected with
+  the reason.
