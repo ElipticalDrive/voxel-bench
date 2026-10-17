@@ -20,8 +20,7 @@ pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {
         "raster" => include_str!("raster/gpu.wgsl"),
         "visbuffer" => include_str!("visbuffer/gpu.wgsl"),
-        // The face drawer's images are group 3 (`drawer::FaceDrawer::images_layout`).
-        "gbuffer" => concat!(include_str!("gbuffer/gpu.wgsl"), "\nconst HITS_GROUP: u32 = 3u;\n", include_str!("../shading/deferred.wgsl")),
+        "gbuffer" => concat!(include_str!("gbuffer/gpu.wgsl"), "\n", include_str!("../shading/deferred.wgsl")),
         _ => return None,
     })
 }

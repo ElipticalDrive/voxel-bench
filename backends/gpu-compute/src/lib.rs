@@ -8,7 +8,9 @@
 //! chosen storage lacks come from adapters (`mr_components::caps`), so every storage works with every
 //! traversal kernel. Shadow rays use the same composed walk. The storage's own data
 //! (per-slot side data, or region blobs) is kept by `storage::gpu_data::StorageData`.
-//! Meshes (mesh mode) are composited by `mr_gpu::meshes::MeshComposite`.
+//! Meshes (mesh mode) are composited by `mr_gpu::meshes::MeshComposite`. Shading is placed
+//! inline (in the walk's pass) or deferred (`placement`, PLAN step 12: the walk writes hit
+//! records, the common pass `shading/deferred.wgsl` shades them).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -20,7 +22,7 @@ use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::graph::{self, Role};
 use mr_components::shaders::{KernelInst, Walks};
 use mr_components::storage::gpu_data::StorageSet;
-use mr_components::{Cap, caps, names_on, require, Slot, components};
+use mr_components::{Cap, caps, names_on, parse_placement, placement_param, require, Slot, components};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::meshes::{MESH_COMPOSITE_WGSL, MeshComposite, Occlusion};
@@ -69,6 +71,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
     ];
     p.extend(shade_state::params());
+    p.push(placement_param(BACKEND));
     p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("traversal", &["incremental"]));
@@ -94,6 +97,7 @@ struct Options {
     shadow_storage: String,
     shadow_traversal: String,
     shading: String,
+    placement: String,
     prepass: String,
     meshes: String,
     tile: u32,
@@ -123,6 +127,7 @@ impl Default for Options {
             shadow_storage: "same".into(),
             shadow_traversal: "same".into(),
             shading: "direct".into(),
+            placement: "inline".into(),
             prepass: "none".into(),
             meshes: "composite".into(),
             tile: 8,
@@ -166,6 +171,9 @@ struct Composition {
     lod: bool,
     /// `dispatch = "fragment"`: pixels in a fragment shader over a full-screen triangle.
     fragment: bool,
+    /// `placement = "deferred"`: the walk writes hit records, the common pass shades them
+    /// (fixed at creation: only then does group 0 carry the records).
+    deferred: bool,
 }
 
 /// Bind groups of the storage instances: the primary rays' at 2 (3 is the meshes'), the
@@ -197,6 +205,7 @@ impl Composition {
             steps_view: parse_view(&opts.view)?,
             lod: false,
             fragment: parse_dispatch(&opts.dispatch)?,
+            deferred: parse_placement(&opts.placement)?,
         };
         if max_lod > 0 {
             comp.set_lod(true);
@@ -206,6 +215,12 @@ impl Composition {
             }
         }
         Ok(comp)
+    }
+
+    /// Whether shading is deferred this frame: `view = "steps"` shows the walk itself, so it
+    /// runs inline whatever the placement.
+    fn shade_deferred(&self) -> bool {
+        self.deferred && !self.steps_view
     }
 
     fn primary(&self) -> &KernelInst {
@@ -240,7 +255,7 @@ impl Composition {
             "// Composition: storage = {}, prepass = {}, traversal = {}, shading = {}\n\
              const PREPASS_TILE: u32 = {}u;\n\
              const VIEW_STEPS: bool = {};\n\
-             {MESH_COMPOSITE_WGSL}\n{}\n{}\n{pre}",
+             {MESH_COMPOSITE_WGSL}\n{}\n{}\n{pre}\n{}",
             self.walks.storages[primary.storage].component,
             self.prepass(),
             primary.component,
@@ -249,6 +264,7 @@ impl Composition {
             self.steps_view,
             mr_core::legend::ramp_wgsl(),
             include_str!("main.wgsl"),
+            if self.shade_deferred() { format!("{}\n{}", include_str!("deferred.wgsl"), mr_components::shading::DEFERRED_WGSL) } else { String::new() },
         );
         let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string(), self.walks.kernel_path(0), self.walks.storage_path(primary.storage)];
         deps.extend(rays);
@@ -315,6 +331,10 @@ pub struct GpuCompose {
     pipeline: Main,
     /// The prepass component's own pass, if it has one.
     prepass: Option<wgpu::ComputePipeline>,
+    /// placement = deferred: the common shading pass, and the hit records it reads (one
+    /// `pack_hit` per pixel; created with the back end, so present whenever placement is).
+    shade: Option<wgpu::ComputePipeline>,
+    records: Option<wgpu::Buffer>,
     pipeline_layout: wgpu::PipelineLayout,
     layout0: wgpu::BindGroupLayout,
     camera_buf: wgpu::Buffer,
@@ -333,8 +353,9 @@ pub struct GpuCompose {
     draw_meshes: bool,
     /// The storage instances' data (the primary's at group 2, the other sites' at 4..).
     storages: StorageSet,
-    /// The nodes of the timed stages: meshes, prepass, walk and shade (PLAN step 11).
-    stage_nodes: [Vec<String>; 3],
+    /// The nodes of the timed stages: meshes, prepass, walk and shade (PLAN step 11), and
+    /// when deferred, walk and shade apart.
+    stage_nodes: [Vec<String>; 5],
     ring: FrameRing,
     width: u32,
     height: u32,
@@ -386,37 +407,40 @@ impl GpuCompose {
             ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None },
             count: None,
         };
-        let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("compose camera"),
-            entries: &[
-                rw(2),
-                rw(3),
-                ShadeState::layout_entries(4, pixel)[0],
-                ShadeState::layout_entries(4, pixel)[1],
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: pixel,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                    count: None,
+        let mut entries = vec![
+            rw(2),
+            rw(3),
+            ShadeState::layout_entries(4, pixel)[0],
+            ShadeState::layout_entries(4, pixel)[1],
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: pixel,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: compute,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D2,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: compute,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-            ],
-        });
+                count: None,
+            },
+        ];
+        // placement = deferred: the hit records (inline pipelines do without).
+        if comp.deferred {
+            entries.push(rw(6));
+        }
+        let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("compose camera"), entries: &entries });
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("compose"),
             bind_group_layouts: &storages.layouts(&[Some(&layout0), Some(world.layout()), None, Some(meshes.layout())]),
             immediate_size: 0,
         });
-        let (pipeline, prepass) = Self::pipeline(&gpu, &pipeline_layout, &comp)?;
+        let (pipeline, prepass, shade) = Self::pipeline(&gpu, &pipeline_layout, &comp)?;
+        let records = comp.deferred.then(|| Self::records(&gpu, p.width, p.height));
         let camera_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
             size: size_of::<CameraUniform>() as u64,
@@ -426,9 +450,9 @@ impl GpuCompose {
         let output = mr_gpu::output_texture(&gpu, p.width, p.height);
         let beam = Beam::new(&gpu, p.width, p.height);
         let accum = ShadeState::new(&gpu, p.width, p.height, &comp.shading, opts.bounces, opts.spp, opts.accumulate);
-        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &beam, &accum);
+        let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &beam, &accum, records.as_ref());
         let stand_in = mr_gpu::output_texture(&gpu, 1, 1);
-        let bind0_frag = Self::bind0(&gpu, &layout0, &camera_buf, &stand_in, &beam, &accum);
+        let bind0_frag = Self::bind0(&gpu, &layout0, &camera_buf, &stand_in, &beam, &accum, records.as_ref());
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()).with_stages(p.stage_times);
         let walk = |k: usize| format!("{} over {}", comp.walks.kernels[k].component, comp.walks.storages[comp.walks.kernels[k].storage].component);
@@ -441,6 +465,8 @@ impl GpuCompose {
             comp,
             pipeline,
             prepass,
+            shade,
+            records,
             pipeline_layout,
             layout0,
             camera_buf,
@@ -453,7 +479,7 @@ impl GpuCompose {
             view_max: opts.view_max.clamp(1, 16384),
             draw_meshes: require(BACKEND, Slot::Meshes, &opts.meshes)? != "none",
             storages,
-            stage_nodes: [g.ids(&[Role::Meshes]), g.ids(&[Role::Prepass]), g.ids(&[Role::Visibility, Role::Shading])],
+            stage_nodes: [g.ids(&[Role::Meshes]), g.ids(&[Role::Prepass]), g.ids(&[Role::Visibility, Role::Shading]), g.ids(&[Role::Visibility]), g.ids(&[Role::Shading])],
             ring,
             width: p.width,
             height: p.height,
@@ -462,8 +488,10 @@ impl GpuCompose {
         })
     }
 
-    /// The main pipeline and, if the prepass has one, its pass.
-    fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, comp: &Composition) -> anyhow::Result<(Main, Option<wgpu::ComputePipeline>)> {
+    /// The main pipeline (the walk, shading inline or writing records), the prepass's pass
+    /// if it has one, and the deferred shading pass when shading is deferred.
+    #[allow(clippy::type_complexity)]
+    fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, comp: &Composition) -> anyhow::Result<(Main, Option<wgpu::ComputePipeline>, Option<wgpu::ComputePipeline>)> {
         let (program, root, deps) = comp.program();
         let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
         let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -478,8 +506,12 @@ impl GpuCompose {
                 cache: None,
             })
         };
+        let deferred = comp.shade_deferred();
         let pipeline = if comp.fragment {
-            let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+            // Deferred: the fragments write records, not colour (the output is attached
+            // untouched).
+            let write_mask = if deferred { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::ALL };
+            let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask })];
             Main::Fragment(gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("compose fragment"),
                 layout: Some(layout),
@@ -487,39 +519,43 @@ impl GpuCompose {
                 primitive: Default::default(),
                 depth_stencil: None,
                 multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_full"), compilation_options: Default::default(), targets: &targets }),
+                fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some(if deferred { "fs_cast" } else { "fs_full" }), compilation_options: Default::default(), targets: &targets }),
                 multiview_mask: None,
                 cache: None,
             }))
         } else {
-            Main::Compute(entry("main"))
+            Main::Compute(entry(if deferred { "walk_records" } else { "main" }))
         };
         let prepass = mr_components::prepass::has_pass(comp.prepass()).then(|| entry("prepass"));
+        let shade = deferred.then(|| entry("shade"));
         if let Some(e) = pollster::block_on(scope.pop()) {
             anyhow::bail!("compiling {comp:?}: {e}");
         }
-        Ok((pipeline, prepass))
+        Ok((pipeline, prepass, shade))
+    }
+
+    /// The hit records of `placement = deferred` (8 bytes per pixel).
+    fn records(gpu: &Gpu, width: u32, height: u32) -> wgpu::Buffer {
+        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("hit records"), size: (width as u64 * height as u64 * 8).max(16), usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
     }
 
     fn rebind(&mut self) {
-        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam, &self.accum);
-        self.bind0_frag = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.stand_in, &self.beam, &self.accum);
+        self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.beam, &self.accum, self.records.as_ref());
+        self.bind0_frag = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.stand_in, &self.beam, &self.accum, self.records.as_ref());
     }
 
-    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, beam: &Beam, accum: &ShadeState) -> wgpu::BindGroup {
+    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, beam: &Beam, accum: &ShadeState, records: Option<&wgpu::Buffer>) -> wgpu::BindGroup {
         let view = out.create_view(&Default::default());
-        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("compose camera"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: cam.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 2, resource: beam.tiles.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: beam.stats.as_entire_binding() },
-                accum.bind_entries(4)[0].clone(),
-                accum.bind_entries(4)[1].clone(),
-            ],
-        })
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: cam.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 2, resource: beam.tiles.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: beam.stats.as_entire_binding() },
+            accum.bind_entries(4)[0].clone(),
+            accum.bind_entries(4)[1].clone(),
+        ];
+        entries.extend(records.map(|r| wgpu::BindGroupEntry { binding: 6, resource: r.as_entire_binding() }));
+        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("compose camera"), layout, entries: &entries })
     }
 }
 
@@ -539,7 +575,7 @@ impl Renderer for GpuCompose {
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         if self.comp != self.built {
-            (self.pipeline, self.prepass) = Self::pipeline(&self.gpu, &self.pipeline_layout, &self.comp)?;
+            (self.pipeline, self.prepass, self.shade) = Self::pipeline(&self.gpu, &self.pipeline_layout, &self.comp)?;
             if self.accum.set_shading(&self.gpu, &self.comp.shading) {
                 self.rebind();
             }
@@ -593,12 +629,18 @@ impl Renderer for GpuCompose {
             pass.dispatch_workgroups(self.width.div_ceil(tile).div_ceil(8), self.height.div_ceil(tile).div_ceil(8), 1);
         }
         let first = !meshes_on && self.prepass.is_none();
-        self.ring.stage(&mut enc, ticket, "cast+shade", &self.stage_nodes[2]);
+        // The walk's pass ends the frame unless the deferred shading pass follows.
+        let last = self.shade.is_none();
+        if last {
+            self.ring.stage(&mut enc, ticket, "cast+shade", &self.stage_nodes[2]);
+        } else {
+            self.ring.stage(&mut enc, ticket, "cast", &self.stage_nodes[3]);
+        }
         match &self.pipeline {
             Main::Compute(pipeline) => {
                 let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("compose"),
-                    timestamp_writes: self.ring.compute_timestamps(ticket, first, true),
+                    timestamp_writes: self.ring.compute_timestamps(ticket, first, last),
                 });
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &self.bind0, &[]);
@@ -618,7 +660,7 @@ impl Renderer for GpuCompose {
                         ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
                     })],
                     depth_stencil_attachment: None,
-                    timestamp_writes: self.ring.render_timestamps(ticket, first, true),
+                    timestamp_writes: self.ring.render_timestamps(ticket, first, last),
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
@@ -631,6 +673,16 @@ impl Renderer for GpuCompose {
                 bound.render(&mut pass);
                 pass.draw(0..3, 0..1);
             }
+        }
+        if let Some(shade) = &self.shade {
+            self.ring.stage(&mut enc, ticket, "shade", &self.stage_nodes[4]);
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: self.ring.compute_timestamps(ticket, false, true) });
+            pass.set_pipeline(shade);
+            pass.set_bind_group(0, &self.bind0, &[]);
+            pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(3, self.meshes.bind_group(), &[]);
+            bound.compute(&mut pass);
+            pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
         }
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
@@ -714,13 +766,16 @@ impl Renderer for GpuCompose {
         self.meshes.resize(&self.gpu, width, height);
         self.beam = Beam::new(&self.gpu, width, height);
         self.accum.resize(&self.gpu, width, height);
+        if self.records.is_some() {
+            self.records = Some(Self::records(&self.gpu, width, height));
+        }
         self.rebind();
         self.ring = FrameRing::new(&self.gpu, width, height, self.depth, self.waker.clone()).with_stages(self.ring.stages());
         Ok(())
     }
 
     fn memory(&self) -> MemoryReport {
-        MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + self.storages.memory_bytes() + self.accum.memory_bytes() + self.beam.tiles.size() + self.width as u64 * self.height as u64 * 4 }
+        MemoryReport { cpu_bytes: 0, gpu_bytes: self.world.memory_bytes() + self.storages.memory_bytes() + self.accum.memory_bytes() + self.beam.tiles.size() + self.records.as_ref().map_or(0, |r| r.size()) + self.width as u64 * self.height as u64 * 4 }
     }
 }
 
@@ -832,6 +887,13 @@ mod tests {
                                 let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
                                 let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{c:?}: {e}"));
                                 Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{c:?}: {e:?}"));
+                                // Deferred shading: the record-writing walk and the common pass.
+                                let mut dc = c.clone();
+                                (dc.deferred, dc.steps_view) = (true, false);
+                                let (p, root, deps) = dc.program();
+                                let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+                                let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("deferred {dc:?}: {e}"));
+                                Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("deferred {dc:?}: {e:?}"));
                                 let (p, rays) = c.walks.shadow_program(c.mesh_shadow);
                                 let m = p.naga(mr_gpu::meshes::MESH_WGSL, &[&rays, mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON]).unwrap_or_else(|e| panic!("meshes {c:?}: {e}"));
                                 Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("meshes {c:?}: {e:?}"));

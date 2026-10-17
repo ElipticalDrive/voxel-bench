@@ -26,6 +26,11 @@ const INTERFACE: &[(&str, &str)] = &[
     ("src_block", "face source"),
     ("src_lookup", "face source"),
     ("src_view", "face source: each source's diagnostic views"),
+    ("record_at", "deferred shading pass (shading/deferred.wgsl): where the back end keeps its hit records"),
+    ("view_ray", "deferred shading pass: the back end's primary ray"),
+    ("view_origin", "deferred shading pass: the back end's camera"),
+    ("view_miss", "deferred shading pass: what the back end shows where nothing was hit"),
+    ("view_lit", "deferred shading pass: the back end's mode"),
 ];
 
 /// Lighting internals only the shading components (and the lighting model) may call.

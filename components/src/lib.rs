@@ -683,6 +683,30 @@ pub fn lighting_knobs(backend: &str, mut params: Vec<mr_core::ParamSpec>) -> Vec
     params
 }
 
+/// The shading node's placement knob (PLAN step 12) for back ends that offer it: `inline`
+/// shades where the strategy finds the hit, in the same pass; `deferred` has the strategy
+/// write hit records and one common pass shade each pixel. Fixed at creation: inline
+/// pipelines carry nothing of the deferred one (no record buffer, binding or pass).
+pub fn placement_param(backend: &str) -> mr_core::ParamSpec {
+    mr_core::ParamSpec::choice(
+        "placement",
+        "Shading placement: inline = shaded where the ray hits, in the same pass; deferred = the walk writes hit records (8 bytes per pixel), then one common pass shades each pixel",
+        &["inline", "deferred"],
+        "inline",
+        false,
+    )
+    .of(Slot::Shading.name(), &names_on(backend, Slot::Shading))
+}
+
+/// Parses a placement value: `true` for deferred.
+pub fn parse_placement(s: &str) -> anyhow::Result<bool> {
+    match s {
+        "inline" => Ok(false),
+        "deferred" => Ok(true),
+        _ => anyhow::bail!("placement must be `inline` or `deferred`, got `{s}`"),
+    }
+}
+
 /// Why `name` cannot fill `slot` in `c` (the rest of `c` kept), if it can't: the back end
 /// lacks it, or a need between it and the other components is unmet.
 pub fn conflict(c: &Composition, slot: Slot, name: &str) -> Option<String> {

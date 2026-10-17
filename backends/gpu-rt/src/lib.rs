@@ -22,7 +22,7 @@ use glam::IVec3;
 use mr_components::geometry::{Knobs, Merge, RtKind};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::graph::{self, Role};
-use mr_components::{names_on, require, Slot, components, traversal};
+use mr_components::{parse_placement, placement_param, names_on, require, Slot, components, traversal};
 use mr_core::chunk::cell_of_index;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -70,6 +70,7 @@ fn params() -> Vec<ParamSpec> {
     .into_iter()
     .chain(shade_state::params())
     .chain([
+        placement_param(BACKEND),
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB; boxes geometry)", 64, 6144, 2048, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ])
@@ -92,6 +93,7 @@ struct Options {
     visibility: String,
     traversal: String,
     shading: String,
+    placement: String,
     merge: String,
     cull: bool,
     /// Triangle facing culled for primary rays.
@@ -115,6 +117,7 @@ impl Default for Options {
             visibility: "raycast".into(),
             traversal: "rayquery".into(),
             shading: "direct".into(),
+            placement: "inline".into(),
             merge: "block".into(),
             cull: true,
             cull_faces: Cull::Back,
@@ -176,13 +179,18 @@ pub struct GpuRt {
     opts: Options,
     source: Box<dyn Fn(&str) -> (mr_gpu::program::Program, String) + Send + Sync>,
     pipeline: wgpu::ComputePipeline,
+    /// placement = deferred (fixed at creation): the common shading pass and the hit
+    /// records it reads (one `pack_hit` per pixel).
+    shade: Option<wgpu::ComputePipeline>,
+    records: Option<wgpu::Buffer>,
     pipeline_layout: wgpu::PipelineLayout,
     layout0: wgpu::BindGroupLayout,
     camera_buf: wgpu::Buffer,
     output: wgpu::Texture,
     ring: FrameRing,
-    /// The nodes of the timed stages (PLAN step 11): acceleration structures, rays and shading.
-    stage_nodes: [Vec<String>; 2],
+    /// The nodes of the timed stages (PLAN step 11): acceleration structures, rays and
+    /// shading, and when deferred, rays and shading apart.
+    stage_nodes: [Vec<String>; 4],
     waker: Waker,
     width: u32,
     height: u32,
@@ -212,7 +220,7 @@ fn tlas(gpu: &Gpu, cap: u32) -> wgpu::Tlas {
 /// (`rt::rays`) virtual functions the root overrides with the ray-query kernel, which (like
 /// the geometry's `g_rt_trace`) stays in the root: naga cannot write ray queries back into
 /// a module.
-fn program(geometry: &str, vis: &str, geo_wgsl: &str, vis_wgsl: &str, shading: &str) -> (mr_gpu::program::Program, String) {
+fn program(geometry: &str, vis: &str, geo_wgsl: &str, vis_wgsl: &str, shading: &str, deferred: bool) -> (mr_gpu::program::Program, String) {
     use mr_components::shaders;
     let mut p = mr_gpu::program::Program::world(Some("rt::rays"));
     p.add(
@@ -222,22 +230,33 @@ fn program(geometry: &str, vis: &str, geo_wgsl: &str, vis_wgsl: &str, shading: &
         &[mr_gpu::program::VOXELS],
     );
     shaders::shading(&mut p, shading, &["rt::rays"], 0, 5);
-    let root = format!("enable wgpu_ray_query;\n// Composition: geometry = {geometry}, traversal = {vis}, shading = {shading}\n{}\n{geo_wgsl}\n{vis_wgsl}\n", include_str!("main.wgsl"));
+    let deferred = if deferred { format!("{}\n{}", include_str!("deferred.wgsl"), mr_components::shading::DEFERRED_WGSL) } else { String::new() };
+    let root = format!("enable wgpu_ray_query;\n// Composition: geometry = {geometry}, traversal = {vis}, shading = {shading}\n{}\n{geo_wgsl}\n{vis_wgsl}\n{deferred}", include_str!("main.wgsl"));
     (p, root)
 }
 
 const ROOT_DEPS: &[&str] = &[mr_components::shaders::SHADING, mr_components::shaders::STATE, "rt::rays", mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON];
 
-fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, (program, root): (mr_gpu::program::Program, String)) -> wgpu::ComputePipeline {
+/// The rays' pipeline (shading inline, or writing records when `deferred`) and the deferred
+/// shading pass.
+fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, (program, root): (mr_gpu::program::Program, String), deferred: bool) -> (wgpu::ComputePipeline, Option<wgpu::ComputePipeline>) {
     let module = mr_gpu::program::compile(&gpu.device, "gpu-rt", &program, &root, ROOT_DEPS);
-    gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("gpu-rt"),
-        layout: Some(layout),
-        module: &module,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    })
+    let entry = |name| {
+        gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(name),
+            layout: Some(layout),
+            module: &module,
+            entry_point: Some(name),
+            compilation_options: Default::default(),
+            cache: None,
+        })
+    };
+    (entry(if deferred { "walk_records" } else { "main" }), deferred.then(|| entry("shade")))
+}
+
+/// The hit records of `placement = deferred` (8 bytes per pixel).
+fn records(gpu: &Gpu, width: u32, height: u32) -> wgpu::Buffer {
+    gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("hit records"), size: (width as u64 * height as u64 * 8).max(16), usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
 }
 
 impl GpuRt {
@@ -247,6 +266,7 @@ impl GpuRt {
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         let vis = require(BACKEND, Slot::Traversal, &opts.traversal)?;
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
+        let deferred = parse_placement(&opts.placement)?;
         let g = graph::of_init(BACKEND, &p)?;
         anyhow::ensure!(opts.merge == "block", "merge = `{}`: gpu-rt has no per-pixel block lookup (only `block`)", opts.merge);
         let (geo_wgsl, rt) = mr_components::geometry::rt(&geometry).expect("validated");
@@ -268,34 +288,36 @@ impl GpuRt {
             },
         )?;
         let vis_wgsl = traversal::rt_wgsl(&vis).expect("validated");
-        let source = Box::new(move |shading: &str| program(&geometry, &vis, geo_wgsl, vis_wgsl, shading));
+        let source = Box::new(move |shading: &str| program(&geometry, &vis, geo_wgsl, vis_wgsl, shading, deferred));
         let e = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty, count: None };
         let storage = |read_only| wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None };
-        let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("gpu-rt"),
-            entries: &[
-                e(0, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }),
-                e(
-                    1,
-                    wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                ),
-                e(2, wgpu::BindingType::AccelerationStructure { vertex_return: false }),
-                e(3, storage(true)),
-                e(4, storage(true)),
-                ShadeState::layout_entries(5, wgpu::ShaderStages::COMPUTE)[0],
-                ShadeState::layout_entries(5, wgpu::ShaderStages::COMPUTE)[1],
-            ],
-        });
+        let mut entries = vec![
+            e(0, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }),
+            e(
+                1,
+                wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+            ),
+            e(2, wgpu::BindingType::AccelerationStructure { vertex_return: false }),
+            e(3, storage(true)),
+            e(4, storage(true)),
+            ShadeState::layout_entries(5, wgpu::ShaderStages::COMPUTE)[0],
+            ShadeState::layout_entries(5, wgpu::ShaderStages::COMPUTE)[1],
+        ];
+        // placement = deferred: the hit records (inline pipelines do without).
+        if deferred {
+            entries.push(e(7, storage(false)));
+        }
+        let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("gpu-rt"), entries: &entries });
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu-rt"),
             bind_group_layouts: &[Some(&layout0), Some(world.layout())],
             immediate_size: 0,
         });
-        let pipeline = pipeline(&gpu, &pipeline_layout, source(&shading));
+        let (pipeline, shade) = pipeline(&gpu, &pipeline_layout, source(&shading), deferred);
         let buf = |label, size: u64, usage| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
         let camera_buf = buf("camera", size_of::<CameraUniform>() as u64, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
         let geo_buf = GrowableBuffer::new(&gpu, "geometry", 1 << 20, 1 << 30, wgpu::BufferUsages::STORAGE);
@@ -307,7 +329,9 @@ impl GpuRt {
         Ok(Self {
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
             ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()).with_stages(p.stage_times),
-            stage_nodes: [g.ids(&[Role::Geometry]), g.ids(&[Role::Visibility, Role::Shading])],
+            stage_nodes: [g.ids(&[Role::Geometry]), g.ids(&[Role::Visibility, Role::Shading]), g.ids(&[Role::Visibility]), g.ids(&[Role::Shading])],
+            records: deferred.then(|| records(&gpu, p.width, p.height)),
+            shade,
             tlas: tlas(&gpu, tlas_cap),
             tlas_cap,
             accum: ShadeState::new(&gpu, p.width, p.height, &shading, opts.bounces, opts.spp, opts.accumulate),
@@ -527,7 +551,7 @@ impl Renderer for GpuRt {
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         if self.shading != self.built_shading {
-            self.pipeline = pipeline(&self.gpu, &self.pipeline_layout, (self.source)(&self.shading));
+            (self.pipeline, self.shade) = pipeline(&self.gpu, &self.pipeline_layout, (self.source)(&self.shading), self.shade.is_some());
             self.accum.set_shading(&self.gpu, &self.shading);
             self.built_shading = self.shading.clone();
             self.bind0 = None;
@@ -589,25 +613,38 @@ impl Renderer for GpuRt {
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         if self.bind0.is_none() {
             let view = self.output.create_view(&Default::default());
-            self.bind0 = Some(self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("gpu-rt"),
-                layout: &self.layout0,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.camera_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::AccelerationStructure(&self.tlas) },
-                    wgpu::BindGroupEntry { binding: 3, resource: self.geo_buf.buffer().as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: self.chunk_info.as_entire_binding() },
-                    self.accum.bind_entries(5)[0].clone(),
-                    self.accum.bind_entries(5)[1].clone(),
-                ],
-            }));
+            let mut entries = vec![
+                wgpu::BindGroupEntry { binding: 0, resource: self.camera_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::AccelerationStructure(&self.tlas) },
+                wgpu::BindGroupEntry { binding: 3, resource: self.geo_buf.buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: self.chunk_info.as_entire_binding() },
+                self.accum.bind_entries(5)[0].clone(),
+                self.accum.bind_entries(5)[1].clone(),
+            ];
+            entries.extend(self.records.as_ref().map(|r| wgpu::BindGroupEntry { binding: 7, resource: r.as_entire_binding() }));
+            self.bind0 = Some(self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("gpu-rt"), layout: &self.layout0, entries: &entries }));
         }
-        self.ring.stage(&mut enc, ticket, "cast+shade", &self.stage_nodes[1]);
+        // The rays' pass ends the frame unless the deferred shading pass follows.
+        let last = self.shade.is_none();
+        if last {
+            self.ring.stage(&mut enc, ticket, "cast+shade", &self.stage_nodes[1]);
+        } else {
+            self.ring.stage(&mut enc, ticket, "cast", &self.stage_nodes[2]);
+        }
+        let bind0 = self.bind0.as_ref().unwrap();
         {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("gpu-rt"), timestamp_writes: self.ring.compute_timestamps(ticket, !encoder_ts, true) });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("gpu-rt"), timestamp_writes: self.ring.compute_timestamps(ticket, !encoder_ts, last) });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, self.bind0.as_ref().unwrap(), &[]);
+            pass.set_bind_group(0, bind0, &[]);
+            pass.set_bind_group(1, &world_bg, &[]);
+            pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
+        }
+        if let Some(shade) = &self.shade {
+            self.ring.stage(&mut enc, ticket, "shade", &self.stage_nodes[3]);
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: self.ring.compute_timestamps(ticket, false, true) });
+            pass.set_pipeline(shade);
+            pass.set_bind_group(0, bind0, &[]);
             pass.set_bind_group(1, &world_bg, &[]);
             pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
         }
@@ -652,6 +689,9 @@ impl Renderer for GpuRt {
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.ring = FrameRing::new(&self.gpu, width, height, self.opts.frames_in_flight.max(1), self.waker.clone()).with_stages(self.ring.stages());
         self.accum.resize(&self.gpu, width, height);
+        if self.records.is_some() {
+            self.records = Some(records(&self.gpu, width, height));
+        }
         self.bind0 = None;
         Ok(())
     }
@@ -659,7 +699,7 @@ impl Renderer for GpuRt {
     fn memory(&self) -> MemoryReport {
         // BLAS sizes are driver-internal; BLAS input buffers are a lower bound.
         let inputs: u64 = self.chunks.values().flat_map(|c| c._inputs.iter()).map(|b| b.size()).sum();
-        let gpu = self.world.memory_bytes() + self.geo_buf.size() + self.chunk_info.size() + self.accum.memory_bytes() + inputs;
+        let gpu = self.world.memory_bytes() + self.geo_buf.size() + self.chunk_info.size() + self.accum.memory_bytes() + self.records.as_ref().map_or(0, |r| r.size()) + inputs;
         MemoryReport { cpu_bytes: 0, gpu_bytes: gpu }
     }
 }
@@ -686,9 +726,11 @@ mod tests {
         for g in names_on(BACKEND, Slot::Geometry) {
             let (geo_wgsl, _) = mr_components::geometry::rt(g).unwrap();
             for shading in names_on(BACKEND, Slot::Shading) {
-                let (p, root) = program(g, "rayquery", geo_wgsl, traversal::rt_wgsl("rayquery").unwrap(), shading);
-                let m = p.naga(&root, ROOT_DEPS).unwrap_or_else(|e| panic!("{g} {shading}: {e}"));
-                Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{g} {shading}: {e:?}"));
+                for deferred in [false, true] {
+                    let (p, root) = program(g, "rayquery", geo_wgsl, traversal::rt_wgsl("rayquery").unwrap(), shading, deferred);
+                    let m = p.naga(&root, ROOT_DEPS).unwrap_or_else(|e| panic!("{g} {shading} {deferred}: {e}"));
+                    Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{g} {shading} {deferred}: {e:?}"));
+                }
             }
         }
     }

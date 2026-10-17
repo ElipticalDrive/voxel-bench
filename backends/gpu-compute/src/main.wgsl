@@ -19,13 +19,15 @@ struct Camera {
 @group(0) @binding(3) var<storage, read_write> beam_stats: array<atomic<u32>, 2>;
 // Bindings 4 and 5: the shading state (`sp`, `accum`; shading::state).
 
-// The colour of pixel `px` (or its step count with `view = "steps"`).
-fn pixel_color(px: vec2<u32>) -> vec4<f32> {
-    let d = camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(px) + 0.5, vec2<f32>(f32(cam.width), f32(cam.height)));
+// The unit primary ray through pixel `px` (also the deferred pass's view).
+fn view_ray(px: vec2<u32>) -> vec3<f32> {
+    return camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(px) + 0.5, vec2<f32>(f32(cam.width), f32(cam.height)));
+}
+
+// What the primary ray `d` through pixel `px` hits (mesh mode: rays end at the mesh
+// surface, `mt`; a voxel in front of it still wins).
+fn pixel_hit(px: vec2<u32>, d: vec3<f32>, mt: f32) -> Hit {
     let o = cam.origin;
-    ct_iters = 0u;
-    // Mesh mode: rays end at the mesh surface; a voxel in front of it still wins.
-    let mt = mesh_t(px, d, cam.forward);
     // The prepass may let the ray start further out (its tile's cone is empty up to
     // there); the walk then starts at that point, and the hit's t is shifted back.
     let t0 = start_t(px);
@@ -36,13 +38,22 @@ fn pixel_color(px: vec2<u32>) -> vec4<f32> {
     } else {
         h = ctrace(o, d, min(vp.max_dist, mt));
     }
+    return h;
+}
+
+// The colour of pixel `px` (or its step count with `view = "steps"`), shaded inline.
+fn pixel_color(px: vec2<u32>) -> vec4<f32> {
+    let d = view_ray(px);
+    ct_iters = 0u;
+    let mt = mesh_t(px, d, cam.forward);
+    let h = pixel_hit(px, d, mt);
     if (VIEW_STEPS) {
         // Primary-ray loop iterations on the shared colour scale (log; white above the top).
         return ramp_value(f32(ct_iters), f32(cam.view_max), true);
     }
     var color = unpack4x8unorm(cam.sky);
     if (!h.hit && mt < 1e29) { color = mesh_color(px); }
-    if (h.hit) { color = shade_surface(surface_of(h, o, d), d, cam.mode == 1u, px); }
+    if (h.hit) { color = shade_surface(surface_of(h, cam.origin, d), d, cam.mode == 1u, px); }
     return color;
 }
 

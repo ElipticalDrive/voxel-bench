@@ -12,6 +12,9 @@ pub mod direct {
 }
 pub mod state;
 
+/// The common deferred shading pass (entry point `shade`; see the file for what it expects).
+pub const DEFERRED_WGSL: &str = include_str!("deferred.wgsl");
+
 pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {
         "direct" => include_str!("direct/gpu.wgsl"),

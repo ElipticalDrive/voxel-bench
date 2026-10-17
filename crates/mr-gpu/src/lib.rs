@@ -315,7 +315,8 @@ impl FrameRing {
     }
 
     pub fn compute_timestamps(&self, t: Ticket, begin: bool, end: bool) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
-        self.timestamps(t).map(|(q, b, e)| wgpu::ComputePassTimestampWrites {
+        // A pass writing neither is no timestamp pass (wgpu rejects one without indices).
+        self.timestamps(t).filter(|_| begin || end).map(|(q, b, e)| wgpu::ComputePassTimestampWrites {
             query_set: q,
             beginning_of_pass_write_index: begin.then_some(b),
             end_of_pass_write_index: end.then_some(e),
@@ -323,7 +324,8 @@ impl FrameRing {
     }
 
     pub fn render_timestamps(&self, t: Ticket, begin: bool, end: bool) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
-        self.timestamps(t).map(|(q, b, e)| wgpu::RenderPassTimestampWrites {
+        // A pass writing neither is no timestamp pass (wgpu rejects one without indices).
+        self.timestamps(t).filter(|_| begin || end).map(|(q, b, e)| wgpu::RenderPassTimestampWrites {
             query_set: q,
             beginning_of_pass_write_index: begin.then_some(b),
             end_of_pass_write_index: end.then_some(e),

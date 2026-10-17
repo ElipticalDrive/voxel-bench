@@ -24,7 +24,8 @@ use mr_components::graph::Role;
 use mr_components::traversal::cpu::Hit;
 use mr_components::traversal::incremental::cpu::trace_incremental;
 use mr_components::traversal::refloor::cpu::trace_packet;
-use mr_components::{names_on, require, Slot};
+use mr_components::visibility::record::Record;
+use mr_components::{names_on, parse_placement, placement_param, require, Slot};
 use mr_core::chunk::local_of_block;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -90,6 +91,7 @@ fn params() -> Vec<ParamSpec> {
     p.push(ParamSpec::choice("visibility", "Visibility strategy", &names_on(BACKEND, Slot::Visibility), "raycast", false));
     p.push(ParamSpec::choice("traversal", "Traversal kernel. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &names_on(BACKEND, Slot::Traversal), "refloor", true));
     p.push(ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", true));
+    p.push(placement_param(BACKEND));
     p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
     p.push(ParamSpec::choice("packet", "Rays traced together in lockstep (refloor; measured: no gain on Zen 5)", &["1", "4", "8", "16"], "1", true).of("traversal", &["refloor"]));
     p.push(ParamSpec::choice("isa", "Instruction set for the hot loop", &["auto", "scalar", "avx2", "avx512"], "auto", true));
@@ -114,6 +116,7 @@ struct Options {
     visibility: String,
     traversal: String,
     shading: String,
+    placement: String,
     exact: bool,
     packet: String,
     isa: String,
@@ -131,7 +134,7 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { threads: 0, shadows: Shadows::All, storage: "bricks".into(), visibility: "raycast".into(), traversal: "refloor".into(), shading: "direct".into(), exact: true, packet: "1".into(), isa: "auto".into(), skip2: true, skip4: true, skip8: true, skip16: true, schedule: "rows".into(), tile_order: "morton".into(), tile: 16, perf: false, view: "image".into(), view_max: 256 }
+        Self { threads: 0, shadows: Shadows::All, storage: "bricks".into(), visibility: "raycast".into(), traversal: "refloor".into(), shading: "direct".into(), placement: "inline".into(), exact: true, packet: "1".into(), isa: "auto".into(), skip2: true, skip4: true, skip8: true, skip16: true, schedule: "rows".into(), tile_order: "morton".into(), tile: 16, perf: false, view: "image".into(), view_max: 256 }
     }
 }
 
@@ -311,9 +314,18 @@ impl<R: Repr> Scene<R> {
         out[0].is_some()
     }
 
+    /// The block and face of walk hit `h` on ray direction `d`.
+    #[inline]
+    fn hit_face(&self, cam: IVec3, d: Vec3, h: &Hit) -> (u16, Face) {
+        (self.grid.block_at(h.cell + cam), Face::entered(h.axis as usize, if d[h.axis as usize] > 0.0 { 1 } else { -1 }))
+    }
+
     fn shade(&self, cam: IVec3, o: Vec3, d: Vec3, h: &Hit, mode: RenderMode) -> [u8; 4] {
-        let block = self.grid.block_at(h.cell + cam);
-        let face = Face::entered(h.axis as usize, if d[h.axis as usize] > 0.0 { 1 } else { -1 });
+        let (block, face) = self.hit_face(cam, d, h);
+        self.shade_surface(cam, &mr_components::shading::direct::cpu::Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
+    }
+
+    fn shade_surface(&self, cam: IVec3, s: &mr_components::shading::direct::cpu::Surface, mode: RenderMode) -> [u8; 4] {
         let ctx = mr_components::shading::direct::cpu::Ctx {
             blocks: &self.blocks,
             env: &self.env,
@@ -323,8 +335,7 @@ impl<R: Repr> Scene<R> {
             lights_near: |world: IVec3| self.light_grid.get(&(world >> LIGHT_CELL_BITS)).map(|v| v.as_slice()),
             occluded: |p: Vec3, d: Vec3, dist: f32| self.occluded(cam, p, d, dist),
         };
-        use mr_components::shading::direct::cpu::{Surface, shade};
-        shade(&ctx, &Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
+        mr_components::shading::direct::cpu::shade(&ctx, s, mode)
     }
 }
 
@@ -362,8 +373,13 @@ pub struct CpuBackend<R, S: Spec = Generic> {
     tile: u32,
     rects: Vec<Rect>,
     pixels: Vec<u8>,
-    /// The nodes of the timed stages (PLAN step 11): the storage's rebuild, rays and shading.
-    stage_nodes: [Vec<String>; 2],
+    /// The nodes of the timed stages (PLAN step 11): the storage's rebuild, rays and shading,
+    /// and when deferred, rays and shading apart.
+    stage_nodes: [Vec<String>; 4],
+    /// `placement = deferred`: the walk writes one hit record per pixel here, then a second
+    /// pass shades them (empty while inline).
+    records: Vec<Record>,
+    deferred: bool,
     /// `view = steps` and the top of its scale.
     steps_view: bool,
     view_max: u32,
@@ -427,7 +443,9 @@ impl<R: Repr, S: Spec> CpuBackend<R, S> {
             steps_view: parse_view(&o.view)?,
             view_max: o.view_max.clamp(1, 16384),
             pixels: vec![0; (p.width * p.height * 4) as usize],
-            stage_nodes: [g.ids(&[Role::Storage]), g.ids(&[Role::Visibility, Role::Shading])],
+            stage_nodes: [g.ids(&[Role::Storage]), g.ids(&[Role::Visibility, Role::Shading]), g.ids(&[Role::Visibility]), g.ids(&[Role::Shading])],
+            records: vec![],
+            deferred: parse_placement(&o.placement)?,
         };
         b.check_baked()?;
         Ok(b)
@@ -461,6 +479,22 @@ struct OutPtr(*mut u8);
 unsafe impl Send for OutPtr {}
 unsafe impl Sync for OutPtr {}
 
+/// `placement = deferred`: the frame's hit records (one per pixel).
+struct RecPtr(*mut Record);
+// SAFETY: as `OutPtr`.
+unsafe impl Send for RecPtr {}
+unsafe impl Sync for RecPtr {}
+
+/// The unit primary ray through pixel (`x`, `y`) of a `w` x `h` image, for the camera basis
+/// `f`, `rt`, `u`, `tan` (of half the vertical field of view) and `aspect`.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn pixel_dir(f: Vec3, rt: Vec3, u: Vec3, tan: f32, aspect: f32, w: u32, h: u32, x: u32, y: u32) -> Vec3 {
+    let sy = (1.0 - 2.0 * (y as f32 + 0.5) / h as f32) * tan;
+    let sx = (2.0 * (x as f32 + 0.5) / w as f32 - 1.0) * tan * aspect;
+    (f + sy * u + sx * rt).normalize()
+}
+
 /// What every rectangle of a frame shares.
 struct Job<'a, R> {
     scene: &'a Scene<R>,
@@ -474,13 +508,16 @@ struct Job<'a, R> {
     /// `view = steps`: pixels show the walk's work on this scale instead of the image.
     steps: Option<Legend>,
     out: OutPtr,
+    /// Where deferred rectangles write their records instead of pixels.
+    records: RecPtr,
 }
 
 /// The pixels of `r`, `N` rays per packet: `N` along a row, or with `two_d` a 1x1, 2x2,
-/// 4x2 or 4x4 block. `#[inline(always)]` so each ISA wrapper below compiles its own copy
-/// with its target features.
+/// 4x2 or 4x4 block; shaded, or with `D` (`placement = deferred`) their hit records.
+/// `#[inline(always)]` so each ISA wrapper below compiles its own copy with its target
+/// features.
 #[inline(always)]
-fn render_rect<R: Repr, S: Spec, const N: usize>(job: &Job<R>, r: Rect) -> RowWork {
+fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r: Rect) -> RowWork {
     let (scene, w, h, mode) = (job.scene, job.w, job.h, job.mode);
     let mut work = RowWork::default();
     let (cam_block, o) = job.cam.split_position();
@@ -510,9 +547,7 @@ fn render_rect<R: Repr, S: Spec, const N: usize>(job: &Job<R>, r: Rect) -> RowWo
             for l in 0..N {
                 let (x, y) = (bx + l as u32 % bw, by + l as u32 / bw);
                 if x < r.x1 && y < r.y1 {
-                    let sy = (1.0 - 2.0 * (y as f32 + 0.5) / h as f32) * tan;
-                    let sx = (2.0 * (x as f32 + 0.5) / w as f32 - 1.0) * tan * aspect;
-                    let d = (f + sy * u + sx * rt).normalize();
+                    let d = pixel_dir(f, rt, u, tan, aspect, w, h, x, y);
                     (dx[l], dy[l], dz[l]) = (d.x, d.y, d.z);
                     dirs[l] = d;
                     pix[l] = y * w + x;
@@ -553,6 +588,18 @@ fn render_rect<R: Repr, S: Spec, const N: usize>(job: &Job<R>, r: Rect) -> RowWo
                 if pix[l] == u32::MAX {
                     continue;
                 }
+                if D {
+                    let rec = match &hits[l] {
+                        Some(hit) => {
+                            let (block, face) = scene.hit_face(cam_block, dirs[l], hit);
+                            Record::hit(hit.t, block, face, hit.cell)
+                        }
+                        None => Record::SKY,
+                    };
+                    // SAFETY: as for the pixels below.
+                    unsafe { *job.records.0.add(pix[l] as usize) = rec };
+                    continue;
+                }
                 let px = match &hits[l] {
                     Some(hit) => scene.shade(cam_block, o, dirs[l], hit, mode),
                     None => sky,
@@ -577,36 +624,57 @@ fn render_rect<R: Repr, S: Spec, const N: usize>(job: &Job<R>, r: Rect) -> RowWo
 }
 
 #[inline(always)]
-fn render_rect_dyn<R: Repr, S: Spec>(job: &Job<R>, r: Rect) -> RowWork {
+fn render_rect_dyn<R: Repr, S: Spec, const D: bool>(job: &Job<R>, r: Rect) -> RowWork {
     match S::PACKET.unwrap_or(job.packet) {
-        1 => render_rect::<R, S, 1>(job, r),
-        4 => render_rect::<R, S, 4>(job, r),
-        16 => render_rect::<R, S, 16>(job, r),
-        _ => render_rect::<R, S, 8>(job, r),
+        1 => render_rect::<R, S, 1, D>(job, r),
+        4 => render_rect::<R, S, 4, D>(job, r),
+        16 => render_rect::<R, S, 16, D>(job, r),
+        _ => render_rect::<R, S, 8, D>(job, r),
     }
 }
 
 #[target_feature(enable = "avx2,fma")]
-fn render_rect_avx2<R: Repr, S: Spec>(job: &Job<R>, r: Rect) -> RowWork {
-    render_rect_dyn::<R, S>(job, r)
+fn render_rect_avx2<R: Repr, S: Spec, const D: bool>(job: &Job<R>, r: Rect) -> RowWork {
+    render_rect_dyn::<R, S, D>(job, r)
 }
 
 #[target_feature(enable = "avx512f,avx512vl,avx512bw,avx2,fma")]
-fn render_rect_avx512<R: Repr, S: Spec>(job: &Job<R>, r: Rect) -> RowWork {
-    render_rect_dyn::<R, S>(job, r)
+fn render_rect_avx512<R: Repr, S: Spec, const D: bool>(job: &Job<R>, r: Rect) -> RowWork {
+    render_rect_dyn::<R, S, D>(job, r)
 }
 
-fn render_rect_isa<R: Repr, S: Spec>(isa: Isa, job: &Job<R>, r: Rect) -> RowWork {
+fn render_rect_isa<R: Repr, S: Spec, const D: bool>(isa: Isa, job: &Job<R>, r: Rect) -> RowWork {
     if S::NATIVE {
         // The whole crate is compiled for this CPU.
-        return render_rect_dyn::<R, S>(job, r);
+        return render_rect_dyn::<R, S, D>(job, r);
     }
     match isa {
         // SAFETY: only selected when the CPU reports these features.
-        Isa::Avx512 => unsafe { render_rect_avx512::<R, S>(job, r) },
-        Isa::Avx2 => unsafe { render_rect_avx2::<R, S>(job, r) },
-        Isa::Scalar => render_rect_dyn::<R, S>(job, r),
+        Isa::Avx512 => unsafe { render_rect_avx512::<R, S, D>(job, r) },
+        Isa::Avx2 => unsafe { render_rect_avx2::<R, S, D>(job, r) },
+        Isa::Scalar => render_rect_dyn::<R, S, D>(job, r),
     }
+}
+
+/// `placement = deferred`: shades every pixel from its hit record (the common deferred
+/// pass on the CPU), rows in parallel.
+fn shade_records<R: Repr>(scene: &Scene<R>, cam: &Camera, w: u32, h: u32, mode: RenderMode, records: &[Record], pixels: &mut [u8]) {
+    let (cam_block, o) = cam.split_position();
+    let (f, rt, u) = (cam.forward(), cam.right(), cam.up());
+    let tan = (cam.fov_y * 0.5).tan();
+    let aspect = w as f32 / h as f32;
+    let sky = encode_srgb(scene.env.sky);
+    pixels.par_chunks_mut(w as usize * 4).zip(records.par_chunks(w as usize)).enumerate().for_each(|(y, (row, recs))| {
+        for (x, (px, rec)) in row.chunks_exact_mut(4).zip(recs).enumerate() {
+            let c = if rec.is_hit() {
+                let d = pixel_dir(f, rt, u, tan, aspect, w, h, x as u32, y as u32);
+                scene.shade_surface(cam_block, &rec.surface(o, d), mode)
+            } else {
+                sky
+            };
+            px.copy_from_slice(&c);
+        }
+    });
 }
 
 // ------------------------------------------------------------------------- schedule
@@ -799,12 +867,26 @@ impl<R: Repr, S: Spec> Renderer for CpuBackend<R, S> {
             let quantity = if self.scene.traversal == Traversal::Refloor { "lockstep loop iterations (packet)" } else { "occupancy tests (ray)" };
             Legend::ramp(quantity, self.view_max as f64, true)
         });
-        let job = Job { scene, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone(), out: OutPtr(pixels.as_mut_ptr()) };
+        // `view = steps` shows the walk itself, so it runs inline whatever the placement.
+        let deferred = self.deferred && legend.is_none();
+        if deferred {
+            self.records.resize((w * h) as usize, Record::SKY);
+        }
+        let job = Job { scene, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone(), out: OutPtr(pixels.as_mut_ptr()), records: RecPtr(self.records.as_mut_ptr()) };
         let rect_list = &self.rects;
         let cast = Instant::now();
-        let work: RowWork = self.pool.pool.install(|| rect_list.par_iter().map(|&r| render_rect_isa::<R, S>(isa, &job, r)).reduce(RowWork::default, |a, b| a + b));
+        let rect: fn(Isa, &Job<R>, Rect) -> RowWork = if deferred { render_rect_isa::<R, S, true> } else { render_rect_isa::<R, S, false> };
+        let work: RowWork = self.pool.pool.install(|| rect_list.par_iter().map(|&r| rect(isa, &job, r)).reduce(RowWork::default, |a, b| a + b));
         drop(job);
-        stages.push(StageTime::cpu("cast+shade", &self.stage_nodes[1], cast.elapsed().as_secs_f32() * 1e3));
+        if deferred {
+            stages.push(StageTime::cpu("cast", &self.stage_nodes[2], cast.elapsed().as_secs_f32() * 1e3));
+            let shade = Instant::now();
+            let records = &self.records;
+            self.pool.pool.install(|| shade_records(scene, &cam, w, h, mode, records, &mut pixels));
+            stages.push(StageTime::cpu("shade", &self.stage_nodes[3], shade.elapsed().as_secs_f32() * 1e3));
+        } else {
+            stages.push(StageTime::cpu("cast+shade", &self.stage_nodes[1], cast.elapsed().as_secs_f32() * 1e3));
+        }
         let hw = counters.map(|c| c.stop());
         self.pixels = pixels;
         let px = (w * h) as f64;

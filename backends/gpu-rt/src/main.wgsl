@@ -17,10 +17,15 @@ struct Camera {
 @group(0) @binding(4) var<storage, read> chunk_info: array<vec4<u32>>; // per instance slot
 // Bindings 5 and 6: the shading state (`sp`, `accum`; shading::state).
 
+// The unit primary ray through pixel `px` (also the deferred pass's view).
+fn view_ray(px: vec2<u32>) -> vec3<f32> {
+    return camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(px) + 0.5, vec2<f32>(f32(cam.width), f32(cam.height)));
+}
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= cam.width || gid.y >= cam.height) { return; }
-    let d = camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(gid.xy) + 0.5, vec2<f32>(f32(cam.width), f32(cam.height)));
+    let d = view_ray(gid.xy);
     let o = cam.origin;
     let h = ctrace(o, d, vp.max_dist);
     var color = unpack4x8unorm(cam.sky);

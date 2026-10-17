@@ -1,6 +1,6 @@
 # Plan
 
-**THE PLAN (2026-10-12; step 14 added 2026-10-14): finish the architecture, steps 9–16 below. It is the only thing
+**THE PLAN (2026-10-12; step 14 added 2026-10-14, step 17 2026-10-16): finish the architecture, steps 9–17 below. It is the only thing
 on the plan. Optimisation, bug fixes, new techniques and the backlog wait until it is done;
 a bug is fixed only if it blocks this work.** The previous plan document (status,
 findings, known issues, backlog, steps 1–8 and their progress log) is archived in
@@ -119,11 +119,11 @@ The user's architecture, settled with finality and without limits for later (IDE
     placement (inline or deferred) a choice for every strategy; meshes a surface source
     writing into it, no longer a special stage. Sub-steps (2026-10-16):
     - 12a: the stored hit record defined once (`pack_hit` / `record_surface` in
-      `mr::voxels`: distance + block + face, 8 bytes, high bits reserved for optional
-      capabilities) and one deferred shading pass for every strategy
-      (`shading/deferred.wgsl`); the face drawer's `gbuffer` rebuilt on them.
+      `mr::voxels`: distance + block + face + cell parity, 8 bytes, high bits reserved for
+      optional capabilities) and one deferred shading pass for every strategy
+      (`shading/deferred.wgsl`); the face drawer's `gbuffer` rebuilt on them. (Done 2026-10-16.)
     - 12b: placement a choice for ray casting (gpu-compute, gpu-rt, `cpu`): the walk writes
-      records, the common pass shades; the CPU record and shade loop.
+      records, the common pass shades; the CPU record and shade loop. (Done 2026-10-17.)
     - 12c: the other strategies on the record (splat's resolve, columns on GPU and CPU,
       cpu-raster's buffer, `visbuffer` as the face-id encoding decoded by its face source),
       with placement wherever a strategy lacks it.
@@ -153,6 +153,17 @@ The user's architecture, settled with finality and without limits for later (IDE
     mapping and diagnostic views with colour scales written once.
 16. **Compiled on demand everywhere:** every CPU graph (generated Rust), and on the GPU
     specialised constants and persistent pipeline caches; then the break-in layers.
+17. **Windows and Linux both build and run** (user, 2026-10-16; after step 16, before
+    optimisation and bug fixes): today only Linux compiles. Known Unix-only code: the
+    worker IPC (`std::os::unix::net` Unix sockets in `mr-ipc`, `mr-serve`, `src/worker.rs`),
+    shared-memory frame slots under `/dev/shm` (`mr-ipc`), the `cpu` back end's hardware
+    counters (`perf_event_open` through `libc`, `backends/cpu/src/perf.rs`), and the
+    compiled-on-demand pipelines (dynamic libraries, toolchain paths, `.so` names;
+    `src/pipelines.rs`) plus shell scripts used by tools. Each gets a portable form or a
+    per-OS implementation behind one interface (e.g. local sockets / named pipes, a named
+    file mapping, Windows performance counters or the knob greyed with the reason), with
+    no cost to the Linux build. Verified by cross-compiling for `x86_64-pc-windows-msvc`
+    or `-gnu` (zero warnings) and, where a Windows machine is available, running the tests.
 
 ## Exit criteria (when the architecture is done; then optimisation starts)
 
@@ -164,6 +175,7 @@ The user's architecture, settled with finality and without limits for later (IDE
 - Every old composition renders identically and is no slower (pixel and timing A/B).
 - No implementation exists to accommodate a combination of features: combinations are
   compiled in (one implementation per algorithm and device / API or mechanism).
+- Windows and Linux both build (step 17).
 
 ## Estimate (2026-10-12)
 
@@ -180,7 +192,8 @@ took about 1.5–2.5 hours each), with wide uncertainty on the large steps:
 | 14 served split: server, link, client (added 2026-10-14) | 8–15 h |
 | 15 history and post | 4–8 h |
 | 16 compiled on demand everywhere | 8–15 h |
-| **total** | **about 70–125 h** |
+| 17 Windows and Linux builds (added 2026-10-16) | 4–8 h |
+| **total** | **about 75–135 h** |
 
 ## How we work
 
@@ -547,3 +560,41 @@ speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/
   gbuffer GPU time -5.2% lit / -10.8% unlit on gpu-raster, -3.6% / -4.2% on gpu-discover,
   -48% / -68% on cpu-discover, whose face set has much overdraw (its draw stage 0.73 -> 0.19 ms:
   8 bytes written per fragment instead of 20); raster and visbuffer within ±0.2%.
+
+**2026-10-17, step 12b: shading placement for ray casting.** `components/src/lib.rs`
+(`placement_param`, `parse_placement`), `components/src/visibility/record.rs`,
+`components/src/shading/deferred.wgsl`, `backends/{gpu-compute,gpu-rt}/src/deferred.wgsl`, `backends/cpu/src/lib.rs`:
+- **`placement = inline | deferred`**, a knob of the shading node on gpu-compute, gpu-rt and
+  `cpu` (baked; fixed at creation, so inline pipelines carry no record buffer, binding or
+  pass). Deferred: the walk writes one record per pixel (a storage buffer on the GPU, so
+  gpu-compute's `dispatch = "fragment"` writes them from fragments too), then the common
+  pass shades. Stages `cast` and `shade` instead of `cast+shade`. `view = "steps"` shows
+  the walk, so it runs inline whatever the placement. Like other knobs (`bounces`,
+  `exact`), placement is in the options of reports and observations, not in labels or the
+  structural graph key.
+- **The record carries the cell's parity** (bits 20-22, one per axis; capabilities keep
+  23-31): the point alone cannot tell a cell from its neighbour on block edges (3-88
+  pixels per frame differed); with the parity the surface is rebuilt exactly. `pack_hit`
+  now takes the `Surface` (the record is a packed surface). The deferred pass reads
+  records through `record_at(px)` and shows `view_miss(px)` where nothing was hit
+  (gpu-compute: the composited mesh, as inline).
+- **The CPU record** (`Record`, same layout as the GPU's, so a record could cross devices)
+  and the CPU deferred pass (`shade_records`). The `cpu` back end's rectangle renderer is
+  monomorphised over placement (`const D`), chosen once per frame: no flag in the hot loop.
+- Fixed on the way: `FrameRing::{compute,render}_timestamps` returned a timestamp write
+  with neither index when asked for neither (wgpu rejects it); now `None`.
+- Verified: builds without warnings, 72 unit tests (new: the CPU record round trip, edges
+  included; every gpu-compute and gpu-rt composition's deferred shader composes and
+  validates), architecture guard (the deferred pass's hooks registered as an interface), 4
+  GPU end-to-end tests. Pixel A/B against the build before 12a: every inline pipeline
+  identical (gpu-compute plain, pathtrace, beam, fragment; gpu-rt; `cpu` refloor and
+  incremental; mesh mode); gbuffer as in 12a, now closer still to forward `raster` (74-151
+  differing pixels per frame, from 80-169). Deferred against inline: `cpu` identical (12/12
+  frames); gpu-compute and gpu-rt differ at 39-77 pixels per frame, the same when the
+  inline path also packs and unpacks a record, so not the record but the walk compiled in
+  two shaders (as `dispatch = fragment` against `compute`); psnr equal or +0.1 dB. Timing
+  A/B, inline: GPU time within ±0.2% (gpu-compute plain, pathtrace, fragment; gpu-rt), `cpu`
+  fps within ±0.7% (pinned; refloor, incremental, packets of 8 in tiles). Deferred against
+  inline (interleaved, 3 repeats): gpu-compute +7-8% GPU time with `direct` (+3-5% with
+  fragment dispatch), -2..-3% with lit `pathtrace` (its shading is 3/4 of the frame and
+  runs more coherently on its own); gpu-rt +7-9%; `cpu` +2-4% frame time.
