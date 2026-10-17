@@ -1,5 +1,5 @@
 [package]
-name = "backend-cpu-discover"
+name = "backend-discover"
 version.workspace = true
 edition.workspace = true
 

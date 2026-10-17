@@ -63,8 +63,8 @@ const SHADING_USE: &[(&str, &str)] = &[
     ("gpu-compute", "shaders::shading("),
     ("gpu-raster", "shading::gpu_wgsl("),
     ("gpu-rt", "shaders::shading("),
-    ("gpu-discover", "shading::gpu_wgsl("),
-    ("cpu-discover", "shading::gpu_wgsl("),
+    // The discovery executor (gpu-discover and cpu-discover; PLAN step 13c).
+    ("discover", "shading::gpu_wgsl("),
     ("gpu-splat", "shading::gpu_wgsl("),
     ("gpu-voxelspace", "shading::gpu_wgsl("),
     ("cpu", "direct::cpu::"),

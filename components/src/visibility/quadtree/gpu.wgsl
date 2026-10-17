@@ -19,14 +19,14 @@ fn survive(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: v
     // Incremental: unseen faces inside the view (sub-pixel, briefly hidden) are kept long;
     // faces outside it (behind or beside the camera) expire quickly.
     var keep = pr.keep;
-    if (pr.incr != 0u) {
-        let v = vec3<f32>(a - vp.cam_block) + vec3<f32>(0.5) - pr.origin;
-        let z = dot(v, pr.forward);
-        let inside = z > -1.0 && abs(dot(v, pr.right)) <= z * pr.tan_half_fov * pr.aspect + 1.0 && abs(dot(v, pr.up)) <= z * pr.tan_half_fov + 1.0;
-        if (!inside) { keep = pr.keep_out; }
-        // Rotation (or world changes) only: what was visible and is still in view still is.
-        if (pr.still != 0u && inside) { last = pr.frame; }
-    }
+#ifdef HOLES
+    let v = vec3<f32>(a - vp.cam_block) + vec3<f32>(0.5) - pr.origin;
+    let z = dot(v, pr.forward);
+    let inside = z > -1.0 && abs(dot(v, pr.right)) <= z * pr.tan_half_fov * pr.aspect + 1.0 && abs(dot(v, pr.up)) <= z * pr.tan_half_fov + 1.0;
+    if (!inside) { keep = pr.keep_out; }
+    // Rotation (or world changes) only: what was visible and is still in view still is.
+    if (pr.still != 0u && inside) { last = pr.frame; }
+#endif
     if (pr.frame - last >= keep) { return; }
     let face = key & 7u;
     let b = exposed(a, face);
@@ -57,22 +57,24 @@ fn rays(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: vec3
     var q: vec2<u32>;
     if (lv.level == 0u) {
         let n = (pr.cols + 1u) * (pr.rows + 1u);
-        if (pr.incr == 0u && i == 0u) { atomicStore(&st[C_RAYS], n); }
+#ifndef HOLES
+        if (i == 0u) { atomicStore(&st[C_RAYS], n); }
+#endif
         let g = grid_of(i, pr.cols + 1u);
         let cx = g.x;
         let cy = g.y;
         if (cx > pr.cols || cy > pr.rows) { return; }
-        if (pr.incr != 0u) {
-            // Only corners of tiles that need discovery.
-            var any = false;
-            for (var k = 0u; k < 4u; k++) {
-                let tx = i32(cx) - i32(k & 1u);
-                let ty = i32(cy) - i32(k >> 1u);
-                if (tx >= 0 && ty >= 0 && tx < i32(pr.cols) && ty < i32(pr.rows) && need[pr.need_off + u32(ty) * pr.cols + u32(tx)] != 0u) { any = true; }
-            }
-            if (!any) { return; }
-            atomicAdd(&st[C_RAYS], 1u);
+#ifdef HOLES
+        // Only corners of tiles that need discovery.
+        var any = false;
+        for (var k = 0u; k < 4u; k++) {
+            let tx = i32(cx) - i32(k & 1u);
+            let ty = i32(cy) - i32(k >> 1u);
+            if (tx >= 0 && ty >= 0 && tx < i32(pr.cols) && ty < i32(pr.rows) && need[pr.need_off + u32(ty) * pr.cols + u32(tx)] != 0u) { any = true; }
         }
+        if (!any) { return; }
+        atomicAdd(&st[C_RAYS], 1u);
+#endif
         q = vec2<u32>(cx, cy) * pr.tile;
     } else {
         let n = min(atomicLoad(&st[C_RAYS + lv.level]), pr.queue_cap);
@@ -258,7 +260,9 @@ fn classify_tile(i: u32) {
     if (lv.level == 0u) {
         let g = grid_of(i, pr.cols);
         if (g.x >= pr.cols || g.y >= pr.rows) { return; }
-        if (pr.incr != 0u && need[pr.need_off + g.y * pr.cols + g.x] == 0u) { return; }
+#ifdef HOLES
+        if (need[pr.need_off + g.y * pr.cols + g.x] == 0u) { return; }
+#endif
         t = g * pr.tile;
     } else {
         let n = min(atomicLoad(&st[C_TILES + lv.level]), pr.queue_cap);

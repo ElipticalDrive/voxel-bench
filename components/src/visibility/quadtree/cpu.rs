@@ -8,10 +8,10 @@ use glam::{IVec3, Vec3};
 use mr_core::{Camera, Face};
 use rayon::prelude::*;
 
-use crate::visibility::discover::grid::{Grid, ffloor};
+use crate::visibility::discover::grid::{World, ffloor};
 use crate::visibility::discover::{MISS, Output, Rays, Sample, Settings, State, Verdict, cast, face_key, finalize, unpack_key};
 
-pub(crate) fn quadtree(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
+pub(crate) fn quadtree<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
     let start = Instant::now();
     let rays = Rays::new(cam, w, h, set.margin);
     let (bmin, bmax) = grid.bounds_rel(rays.cb);
@@ -147,7 +147,7 @@ pub(crate) fn quadtree(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32,
 
 /// Enumerates exposed faces on the common plane of the four corner samples inside the
 /// bounding box of their hit points. Returns false (tile must split) if it is too large.
-fn footprint(grid: &Grid, cb: IVec3, c: &[Sample; 4], max_cells: u32, out: &mut Vec<u64>) -> bool {
+fn footprint<G: World>(grid: &G, cb: IVec3, c: &[Sample; 4], max_cells: u32, out: &mut Vec<u64>) -> bool {
     let face = (c[0].plane & 7) as u32;
     let a = (face / 2) as usize;
     let coord = (c[0].plane >> 3) as u32 as i32;
@@ -183,7 +183,7 @@ fn footprint(grid: &Grid, cb: IVec3, c: &[Sample; 4], max_cells: u32, out: &mut 
 
 /// Adds the camera-facing exposed faces of the cells around a hit (catches sub-pixel
 /// faces that the next frame's slightly different rays land on).
-fn dilate_faces(grid: &Grid, key: u64, cb: IVec3, o: Vec3, level: u32, out: &mut Vec<u64>) {
+fn dilate_faces<G: World>(grid: &G, key: u64, cb: IVec3, o: Vec3, level: u32, out: &mut Vec<u64>) {
     let (cell, _) = unpack_key(key);
     let mut visit = |c: IVec3| {
         if grid.block(c) == 0 {

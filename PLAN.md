@@ -187,7 +187,8 @@ The user's architecture, settled with finality and without limits for later (IDE
       GPU discovery code in components; retention stays the face set's policy, see the log.)
     - 13c: one discovery executor: gpu-discover and cpu-discover become one, discovery on
       `cpu` or `gpu` by its node's device, transfers from the schedule, the CPU storage
-      monomorphised (no `dyn World`).
+      monomorphised (no `dyn World`). (Done 2026-10-17: one crate `backends/discover`, the two
+      names its configurations; see the log.)
     - 13d: splat and columns as components; the voxelspace back ends as configurations.
     - 13e: GPU and CPU executors run every graph from the schedule (ray casting, raster,
       ray queries, splat, columns, discovery); hand-written back ends removed; a pipeline
@@ -873,3 +874,55 @@ speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/
   implementation and no hole detection; `merge` and the painter's sort are still knobs of the
   sampler / drawer, not nodes.
 
+
+**2026-10-17, step 13c: one discovery executor.**
+`backends/discover/` (crate `backend-discover`, replaces `backends/gpu-discover` and
+`backends/cpu-discover`; `lib.rs` the executor, `gpu.rs` / `cpu.rs` the samplers, `frame.wgsl`,
+`set_faces.wgsl`, `records.wgsl`), `components/src/visibility/{discover,quadtree,cluster}/`,
+`tests/architecture.rs`, `crates/mr-worker`:
+- **One executor, two configurations**: `gpu-discover` and `cpu-discover` stay the registry's
+  names (their graphs, keys, labels and knobs unchanged), but both create one `Discover`, which
+  picks the sampler by the visibility node's device in the checked graph (`cpu`: `CpuSampler`,
+  `gpu`: `GpuSampler`). Everything else is one `Core`: the GPU device, the voxel world, the
+  storages the GPU's rays walk, the shading state, the face drawer (`draw`) compiled over the
+  shared frame (`frame.wgsl`, one `Frame` for both face sources) and the sampler's face source,
+  the frame uniform, output, depth and frame ring; drawer changes, lighting knobs, resize and
+  memory once. The two face sources stay two (the GPU set's list entries with chunk slots, the
+  CPU's anchor-relative 8-byte records): two encodings of the face set, not a combination.
+- **Transfers from the schedule**: the CPU sampler finds the faces' transfer (visibility on the
+  CPU to the drawer on the GPU) in `Checked::schedule`; the upload is that transfer's adapter
+  (`CpuSampler::upload`) and its timing is the pipelining (`prev`: discovered a frame ahead).
+  A graph whose faces do not cross devices is refused with the reason.
+- **The CPU storage monomorphised**: discovery is generic over the world it walks
+  (`discover`, `cast`, `finalize`, the quadtree and cluster samplers, the new `audit`:
+  `<G: World>`); a snapshot is the storage's own grid behind `grid::Snapshot`, so the one
+  dynamic call is per discovery pass or audit, never per ray (was `dyn World` per ray).
+- **Hole detection's input compiled in**: the GPU sampler's `survive`, `rays` and `classify`
+  read hole detection's tiles under the shader def `HOLES` (pipelines without and with,
+  chosen per frame by the live `holes` knob) instead of the runtime flag `incr` (now an unused
+  uniform word), as 13b left open.
+- Behaviour changed: lighting knobs (`shadows`, `max_steps`, `depth_prepass`) set live no
+  longer force a full re-discovery on gpu-discover (they never changed visibility).
+- Verified: builds without warnings (dev, release), 79 unit tests (new: the CPU sampler's
+  drawing lane composes for every GPU shadow storage and shading; the GPU compose test also
+  compiles the sampler with `HOLES`; the cluster completeness test through `Snapshot`), 4 GPU
+  end-to-end tests. Pixel A/B against the build before (terrain and edits, lit + unlit, frames
+  0/20/39, each option variant in its own run since frame folders are keyed by label):
+  gpu-discover plain, coverage, still_holes late, events off, painter, merge rows, overdraw
+  view, tiles view, churn view on prefix, visbuffer with coverage, gbuffer, pathtrace with
+  coverage; cpu-discover pipelined, synchronous, cluster with the kinds view and audit,
+  visbuffer on hier; gpu-compute: all identical. Timing A/B (GPU time, interleaved, 4-8
+  rounds): gpu-discover plain +0.0 / +0.1%, coverage -0.2 / +0.0%, painter +0.2%, merge +0.0%
+  lit (8 rounds; a first 4-round run showed +3.3%, every round of the rerun lay within
+  3.55-3.58 ms in both builds), gbuffer +0.3 / -0.9%, visbuffer +0.4 / -0.8%. cpu-discover
+  (one CCD): fps +1.5 / +1.8% (quadtree), +1.5 / +0.8% (cluster), +1.7 / +1.2% (synchronous):
+  the monomorphised walk.
+- **CPU-bound fps of gpu-discover, a small unresolved loss (log)**: -0.2 .. -1.2% fps
+  (plain unlit -1.2%, painter -0.9 / -1.0%, merge -0.6% unlit) with GPU time unchanged; some
+  configurations +0.3 .. +1.0%. At 250-360 fps this is 0.03 ms of host time per frame, near
+  the noise of earlier steps (±0.8%); candidates: one dynamic call into the sampler per frame,
+  the frame uniform written through the core, code layout. Not explained.
+- Not yet: the two names remain registry entries with their own slot lists (a graph cannot
+  move gpu-discover's sampler to the CPU or the reverse; the executor would run it, the
+  registry's acceptance does not); the GPU sampler still owns its own raster passes (face ids,
+  painter, overdraw) beside the drawer's; cluster has no GPU implementation.

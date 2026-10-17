@@ -1,19 +1,8 @@
-// gpu-discover raster: the face source of the face drawer (`visibility/faces.wgsl`) for
-// the discovered face set, one instanced quad per face or merged run (list built on the
-// GPU). The drawer's visibility component shades (`shade_surface`); lit-mode shadow rays
-// walk the composed storage (group 2).
+// The GPU face set's face source for the face drawer (`visibility/faces.wgsl`): one
+// instanced quad per face or merged run of the list built on the GPU (`view`: 1 churn
+// (tint faces new this frame), 2 quads (colour per drawn quad)). The drawer's visibility
+// component shades (`shade_surface`); lit-mode shadow rays walk their storage.
 
-struct Frame {
-    view_proj: mat4x4<f32>,
-    cam_frac: vec3<f32>, mode: u32,   // camera position within vp.cam_block; 0 unlit, 1 lit
-    forward: vec3<f32>, tan_half_fov: f32,
-    right: vec3<f32>, aspect: f32,
-    up: vec3<f32>, view: u32,         // view: 0 image, 1 churn (tint faces new this frame), 2 quads (colour per drawn quad)
-    size: vec2<f32>, _p1: vec2<f32>,
-    sky: vec4<f32>,                   // deferred drawing: the colour of uncovered pixels
-}
-
-@group(0) @binding(0) var<uniform> fr: Frame;
 @group(0) @binding(1) var<storage, read> faces: array<vec4<u32>>; // key, table index, block, fresh | run length << 1 (merged runs; 0 = one face)
 @group(0) @binding(2) var<storage, read> chunk_pos: array<vec4<i32>>;
 

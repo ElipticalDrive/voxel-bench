@@ -1,13 +1,18 @@
 //! The CPU voxel world for discovery rays: the composed CPU **storage** (any
 //! `mr_components` representation) in the components' dense chunk grid, walked with the
 //! `refloor` visibility walk, plus the chunk bookkeeping that keeps it in sync with the
-//! `WorldUpdate` stream. Discovery jobs hold immutable snapshots (`Arc<Grid>`) while the
-//! render thread applies new updates. (Was a copy of cpu-simd's grid and DDA.)
+//! `WorldUpdate` stream. Discovery jobs hold immutable snapshots (`Arc<dyn Snapshot>`) while
+//! the render thread applies new updates. (Was a copy of cpu-simd's grid and DDA.)
+//!
+//! Monomorphised per storage (PLAN step 13c): discovery is generic over the [`World`] it
+//! walks, and a snapshot is the storage's own grid behind [`Snapshot`], so the one dynamic
+//! call is per frame (a discovery pass, an audit), never per ray.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use glam::{IVec3, Vec3};
+use super::{FaceMap, Output, Settings, State};
 use crate::storage::cpu::{Entry, Grid as StorageGrid, Repr};
 use crate::traversal::refloor::cpu::trace_packet;
 use mr_core::chunk::local_of_block;
@@ -32,8 +37,24 @@ pub trait World: Send + Sync {
     fn bounds_rel(&self, cam: IVec3) -> (IVec3, IVec3);
 }
 
-/// A world snapshot, whatever the storage.
-pub type Grid = dyn World;
+/// A world snapshot, whatever the storage: discovery and the audit compiled for it.
+pub trait Snapshot: Send + Sync {
+    /// One discovery pass (the sampler `set.cluster` chooses) from `cam`.
+    fn discover(&self, st: State, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output;
+    /// One ray per pixel for `cam`: (pixels whose face is missing from `s`, distinct missing
+    /// faces, pixels hitting geometry). Parallel over rows (rayon's current pool).
+    fn audit(&self, s: &FaceMap, cam: &Camera, w: u32, h: u32) -> (u64, u64, u64);
+}
+
+impl<G: World> Snapshot for G {
+    fn discover(&self, st: State, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
+        super::discover(st, self, cam, w, h, set)
+    }
+
+    fn audit(&self, s: &FaceMap, cam: &Camera, w: u32, h: u32) -> (u64, u64, u64) {
+        super::audit(self, s, cam, w, h)
+    }
+}
 
 impl<R: Repr> World for StorageGrid<R> {
     #[inline]
@@ -59,7 +80,7 @@ impl<R: Repr> World for StorageGrid<R> {
 /// The chunk map of one storage representation.
 trait Store: Send {
     fn apply(&mut self, updates: &[WorldUpdate]);
-    fn snapshot(&mut self) -> Arc<Grid>;
+    fn snapshot(&mut self) -> Arc<dyn Snapshot>;
     fn memory(&self) -> u64;
 }
 
@@ -127,7 +148,7 @@ impl<R: Repr> Store for Chunks<R> {
         }
     }
 
-    fn snapshot(&mut self) -> Arc<Grid> {
+    fn snapshot(&mut self) -> Arc<dyn Snapshot> {
         if self.dirty {
             self.dirty = false;
             let mut it = self.chunks.keys();
@@ -159,8 +180,6 @@ impl<R: Repr> Store for Chunks<R> {
 /// Chunk map mirrored from the update stream, in the chosen CPU storage.
 pub struct CpuWorld {
     store: Box<dyn Store>,
-    /// The last snapshot.
-    pub grid: Arc<Grid>,
 }
 
 fn store<R: Repr>() -> Box<dyn Store> {
@@ -182,7 +201,7 @@ impl CpuWorld {
             "morton" => store::<s::morton::Cpu>(),
             other => anyhow::bail!("storage `{other}` has no CPU implementation"),
         };
-        Ok(Self { store, grid: Arc::new(StorageGrid::<s::bricks::cpu::U16>::default()) })
+        Ok(Self { store })
     }
 
     pub fn apply(&mut self, updates: &[WorldUpdate]) {
@@ -190,9 +209,8 @@ impl CpuWorld {
     }
 
     /// Current grid snapshot (rebuilt if the world changed since the last call).
-    pub fn snapshot(&mut self) -> Arc<Grid> {
-        self.grid = self.store.snapshot();
-        self.grid.clone()
+    pub fn snapshot(&mut self) -> Arc<dyn Snapshot> {
+        self.store.snapshot()
     }
 
     pub fn memory(&self) -> u64 {

@@ -31,7 +31,7 @@ use rayon::prelude::*;
 
 pub mod grid;
 
-use grid::Grid;
+use grid::World;
 
 /// Multiplicative hasher for the packed u64 face keys (std SipHash is ~3x slower here).
 #[derive(Default)]
@@ -196,7 +196,7 @@ impl Rays {
 
 /// Traces one ray; returns (face key, plane id, hit point) or a miss.
 #[inline]
-pub fn cast(grid: &Grid, rays: &Rays, bmin: IVec3, bmax: IVec3, x: f32, y: f32) -> Option<(u64, u64, Vec3)> {
+pub fn cast<G: World>(grid: &G, rays: &Rays, bmin: IVec3, bmax: IVec3, x: f32, y: f32) -> Option<(u64, u64, Vec3)> {
     let d = rays.dir(x, y);
     let h = grid.trace(rays.cb, rays.o, d, bmin, bmax)?;
     if h.axis > 2 {
@@ -214,7 +214,7 @@ pub(crate) enum Verdict {
     Split,
 }
 
-pub fn discover(st: State, grid: &Grid, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
+pub fn discover<G: World>(st: State, grid: &G, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
     if set.cluster {
         return crate::visibility::cluster::cpu::discover(st, grid, cam, w, h, set);
     }
@@ -224,7 +224,7 @@ pub fn discover(st: State, grid: &Grid, cam: &Camera, w: u32, h: u32, set: &Sett
 /// Merges this pass's faces into the temporal set S (expiring faces not confirmed for
 /// `keep_frames` passes), then validates S against the current world and builds the raster
 /// records relative to `anchor`; with `tags`, also each record's tag (0 if absent).
-pub fn finalize(st: &mut State, mut found: Vec<u64>, grid: &Grid, anchor: IVec3, keep_frames: u32, tags: Option<&FaceMap>) -> (Vec<[u32; 2]>, Vec<u32>) {
+pub fn finalize<G: World>(st: &mut State, mut found: Vec<u64>, grid: &G, anchor: IVec3, keep_frames: u32, tags: Option<&FaceMap>) -> (Vec<[u32; 2]>, Vec<u32>) {
     let frame = st.frame;
     found.par_sort_unstable();
     found.dedup();
@@ -244,4 +244,33 @@ pub fn finalize(st: &mut State, mut found: Vec<u64>, grid: &Grid, anchor: IVec3,
             record(cell - anchor, face, block).map(|r| (r, tags.and_then(|t| t.get(&k).copied()).unwrap_or(0)))
         })
         .unzip()
+}
+
+/// One ray per pixel for `cam`: (pixels whose face is missing from `s`, distinct missing
+/// faces, pixels hitting geometry); `audit = true` measures discovery's holes with it.
+pub fn audit<G: World>(grid: &G, s: &FaceMap, cam: &Camera, w: u32, h: u32) -> (u64, u64, u64) {
+    let rays = Rays::new(cam, w, h, 0.0);
+    let (bmin, bmax) = grid.bounds_rel(rays.cb);
+    let (px, hit, mut keys) = (0..h)
+        .into_par_iter()
+        .map(|y| {
+            let (mut miss, mut hit, mut keys) = (0u64, 0u64, vec![]);
+            for x in 0..w {
+                if let Some((k, _, _)) = cast(grid, &rays, bmin, bmax, x as f32 + 0.5, y as f32 + 0.5) {
+                    hit += 1;
+                    if !s.contains_key(&k) {
+                        miss += 1;
+                        keys.push(k);
+                    }
+                }
+            }
+            (miss, hit, keys)
+        })
+        .reduce(|| (0, 0, vec![]), |mut a, mut b| {
+            a.2.append(&mut b.2);
+            (a.0 + b.0, a.1 + b.1, a.2)
+        });
+    keys.sort_unstable();
+    keys.dedup();
+    (px, keys.len() as u64, hit)
 }

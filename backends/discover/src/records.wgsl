@@ -1,20 +1,8 @@
-// cpu-discover: the face source of the face drawer (`visibility/faces.wgsl`) for the face
-// list discovered on the CPU, one unit quad (4-vertex strip) per face. The drawer's
-// visibility component shades (`shade_surface`); lit-mode shadow rays walk the voxel
-// world (group 1).
+// The CPU sampler's face source for the face drawer (`visibility/faces.wgsl`): one unit
+// quad (4-vertex strip) per face record uploaded from the CPU (`view`: 1 clusters, 2 kinds,
+// cluster discovery). The drawer's visibility component shades (`shade_surface`); lit-mode
+// shadow rays walk their GPU storage.
 
-struct Frame {
-    view_proj: mat4x4<f32>,
-    cam_frac: vec3<f32>, mode: u32,   // camera position within vp.cam_block; 0 unlit, 1 lit
-    forward: vec3<f32>, tan_half_fov: f32,
-    right: vec3<f32>, aspect: f32,
-    up: vec3<f32>, view: u32,        // 0 image, 1 clusters, 2 kinds (cluster discovery)
-    size: vec2<f32>, _p1: vec2<f32>,
-    anchor: vec4<i32>,               // absolute block the face records are relative to
-    sky: vec4<f32>,                  // deferred drawing: the colour of uncovered pixels
-}
-
-@group(0) @binding(0) var<uniform> fr: Frame;
 @group(0) @binding(1) var<storage, read> quads: array<vec2<u32>>;
 @group(0) @binding(2) var<storage, read> tags: array<u32>;  // views: kind << 30 | cluster id
 

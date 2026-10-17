@@ -29,7 +29,7 @@ use mr_core::{Camera, Face};
 use rayon::prelude::*;
 
 use crate::visibility::discover::{FaceMap, Output, Rays, Settings, State, cast, face_key, finalize};
-use crate::visibility::discover::grid::Grid;
+use crate::visibility::discover::grid::World;
 
 /// How a face of S was found this frame (`view = kinds` colours them).
 pub const KIND_CONFIRMED: u8 = 1;
@@ -41,8 +41,8 @@ const MIN_LEN: usize = 256;
 /// Coverage value of a pixel whose own seed ray missed (sky); other covered pixels are 1.
 const SKY_RAY: u8 = 2;
 
-struct Ctx<'a> {
-    grid: &'a Grid,
+struct Ctx<'a, G: World> {
+    grid: &'a G,
     rays: &'a Rays,
     bmin: IVec3,
     bmax: IVec3,
@@ -52,7 +52,7 @@ struct Ctx<'a> {
 
 /// Exposed face (cell solid, neighbour along the normal air)?
 #[inline]
-fn exposed(grid: &Grid, cell: IVec3, face: u32) -> bool {
+fn exposed<G: World>(grid: &G, cell: IVec3, face: u32) -> bool {
     grid.block(cell) != 0 && grid.block(cell + Face::from_index(face as usize).normal()) == 0
 }
 
@@ -73,7 +73,7 @@ fn corners(cell: IVec3, face: u32) -> [IVec3; 4] {
 }
 
 /// Whether the lattice point `p` (absolute) is visible from the camera.
-fn corner_visible(cx: &Ctx, p: IVec3) -> bool {
+fn corner_visible<G: World>(cx: &Ctx<G>, p: IVec3) -> bool {
     let rel = (p - cx.rays.cb).as_vec3();
     let d = rel - cx.rays.o;
     let dist = d.length();
@@ -89,7 +89,7 @@ fn corner_visible(cx: &Ctx, p: IVec3) -> bool {
 
 /// Pixel indices whose centres lie inside the projection of a face (appended to `out`);
 /// false if a corner lies behind the camera.
-fn covered_pixels(cx: &Ctx, c: &[IVec3; 4], out: &mut Vec<u32>) -> bool {
+fn covered_pixels<G: World>(cx: &Ctx<G>, c: &[IVec3; 4], out: &mut Vec<u32>) -> bool {
     let mut q = [Vec3::ZERO; 4];
     for k in 0..4 {
         match cx.rays.project((c[k] - cx.rays.cb).as_vec3()) {
@@ -119,7 +119,7 @@ fn covered_pixels(cx: &Ctx, c: &[IVec3; 4], out: &mut Vec<u32>) -> bool {
     true
 }
 
-pub fn discover(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
+pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
     let start = std::time::Instant::now();
     let rays = Rays::new(cam, w, h, set.margin);
     let (bmin, bmax) = grid.bounds_rel(rays.cb);
@@ -333,11 +333,11 @@ mod tests {
 
     use super::*;
     use crate::visibility::discover::Settings;
-    use crate::visibility::discover::grid::CpuWorld;
+    use crate::visibility::discover::grid::{CpuWorld, Snapshot};
 
     /// One chunk: a floor, a back wall, a pillar in front of the wall, and a floating
     /// block — the pillar-in-front-of-a-wall case of IDEAS §5.
-    fn world() -> Arc<Grid> {
+    fn world() -> Arc<dyn Snapshot> {
         let mut d = DenseChunk(Box::new([BlockId::AIR; CHUNK_VOLUME]));
         for i in 0..CHUNK_VOLUME {
             let l = mr_core::chunk::cell_of_index(i);
@@ -366,19 +366,8 @@ mod tests {
         for (pos, target) in [([16.0, 6.0, 2.0], [16.0, 6.0, 24.0]), ([3.0, 12.0, 4.0], [18.0, 4.0, 20.0]), ([28.5, 2.5, 9.0], [10.0, 8.0, 22.0])] {
             let cam = Camera::look_at(DVec3::from_array(pos), DVec3::from_array(target), 70.0);
             for step in [16, 4] {
-                let out = discover(State::default(), &*grid, &cam, w, h, &settings(step));
-                let rays = Rays::new(&cam, w, h, 0.0);
-                let (bmin, bmax) = grid.bounds_rel(rays.cb);
-                let mut missing = 0;
-                for y in 0..h {
-                    for x in 0..w {
-                        if let Some((k, _, _)) = cast(&*grid, &rays, bmin, bmax, x as f32 + 0.5, y as f32 + 0.5) {
-                            if !out.state.s.contains_key(&k) {
-                                missing += 1;
-                            }
-                        }
-                    }
-                }
+                let out = grid.discover(State::default(), &cam, w, h, &settings(step));
+                let (missing, _, _) = grid.audit(&out.state.s, &cam, w, h);
                 assert_eq!(missing, 0, "camera at {pos:?}, seed_step {step}: {missing} pixels see faces missing from S");
                 // And it must actually save rays over one per pixel.
                 assert!(out.rays < (w * h) as u64, "{} rays for {} pixels", out.rays, w * h);
