@@ -1611,6 +1611,12 @@ and executor; back ends declare places per slot. The only API choices back ends 
 are `cpu`'s ISA and gpu-compute's compute / fragment dispatch, both mapped from the nodes'
 API. Executors acting on devices: step 13.
 
+**State (2026-10-17, steps 13e4c-d).** Executors act on devices: a node's GPU slot picks the
+adapter (`devices = { gpus = [...] }`); a pipeline runs on its drawer's or visibility node's
+GPU, and a ray-casting pipeline may run its deferred shading on a second GPU, the hit records
+crossing each frame through the host (`plans/two-gpus.toml`: RTX 5060 + Radeon iGPU). Other
+splits (an edge `prev` overlapping the GPUs, other record writers, peer copies) are open.
+
 ---
 
 ## 22. Fusion first, state exchanged both ways, one implementation per algorithm (refinements)
