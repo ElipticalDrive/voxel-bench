@@ -71,7 +71,7 @@ impl Pool {
 
     /// Handles the shared `threads` / `shadows` parameters; returns false if `name` is
     /// not one of them.
-    pub fn set_common(&mut self, scene: &mut VoxelScene, name: &str, value: &ParamValue) -> anyhow::Result<bool> {
+    pub fn set_common(&mut self, world: &mut World, name: &str, value: &ParamValue) -> anyhow::Result<bool> {
         match name {
             "threads" => {
                 let n = value.as_i64().unwrap_or(0) as usize;
@@ -81,7 +81,7 @@ impl Pool {
                 Ok(true)
             }
             "shadows" => {
-                scene.shadows = parse_shadows(value)?;
+                world.shadows = parse_shadows(value)?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -118,24 +118,99 @@ fn info() -> RendererInfo {
 
 const LIGHT_CELL_BITS: i32 = 4;
 
-/// World state + the reference lighting model, reusable by other CPU renderers.
-pub struct VoxelScene {
+/// The world every CPU renderer shares (the CPU executor's core keeps one, PLAN step 13e4d):
+/// the block registry, the environment, the point lights (and their grid) and the shadow
+/// setting. The chunks are each renderer's own representation ([`Chunks`]: dense blocks).
+pub struct World {
     pub blocks: Arc<BlockRegistry>,
     pub env: Environment,
-    view_radius: u32,
-    chunks: HashMap<IVec3, ChunkData>,
-    bounds: Option<(IVec3, IVec3)>,
-    bounds_dirty: bool,
+    pub shadows: Shadows,
     lights: HashMap<u32, Light>,
     light_grid: HashMap<IVec3, Vec<Light>>,
     lights_dirty: bool,
-    pub shadows: Shadows,
+}
+
+impl World {
+    pub fn new(p: &InitParams) -> Self {
+        Self { blocks: p.blocks.clone(), env: p.environment, shadows: Shadows::All, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false }
+    }
+
+    /// Applies the updates that are the world's (lights, environment); returns the others
+    /// (chunks, edits) for the renderer's chunks.
+    pub fn apply(&mut self, updates: Vec<WorldUpdate>) -> Vec<WorldUpdate> {
+        let mut rest = Vec::with_capacity(updates.len());
+        for u in updates {
+            match u {
+                WorldUpdate::LightUpsert(ls) => {
+                    for l in ls {
+                        self.lights.insert(l.id, l);
+                    }
+                    self.lights_dirty = true;
+                }
+                WorldUpdate::LightRemove(ids) => {
+                    for id in ids {
+                        self.lights.remove(&id);
+                    }
+                    self.lights_dirty = true;
+                }
+                WorldUpdate::SetEnvironment(e) => self.env = e,
+                u => rest.push(u),
+            }
+        }
+        rest
+    }
+
+    /// Rebuilds the light grid after updates; call before shading.
+    pub fn prepare(&mut self) {
+        if self.lights_dirty {
+            self.light_grid.clear();
+            for l in self.lights.values() {
+                let lo = (l.position - l.radius as f64).floor().as_ivec3() >> LIGHT_CELL_BITS;
+                let hi = (l.position + l.radius as f64).floor().as_ivec3() >> LIGHT_CELL_BITS;
+                for z in lo.z..=hi.z {
+                    for y in lo.y..=hi.y {
+                        for x in lo.x..=hi.x {
+                            self.light_grid.entry(IVec3::new(x, y, z)).or_default().push(*l);
+                        }
+                    }
+                }
+            }
+            self.lights_dirty = false;
+        }
+    }
+
+    /// Point lights that may reach world block `world` (a coarse candidate list).
+    pub fn lights_near(&self, world: IVec3) -> Option<&[Light]> {
+        self.light_grid.get(&(world >> LIGHT_CELL_BITS)).map(|v| v.as_slice())
+    }
+
+    pub fn light_count(&self) -> usize {
+        self.lights.len()
+    }
+}
+
+/// Dense chunks: the reference's representation of the world's blocks (and the CPU
+/// rasteriser's and voxelspace's), traced with a two-level DDA.
+#[derive(Default)]
+pub struct Chunks {
+    chunks: HashMap<IVec3, ChunkData>,
+    bounds: Option<(IVec3, IVec3)>,
+    bounds_dirty: bool,
+}
+
+/// The world with its chunks: the reference lighting model, reusable by other CPU
+/// renderers.
+#[derive(Copy, Clone)]
+pub struct VoxelScene<'a> {
+    pub world: &'a World,
+    pub chunks: &'a Chunks,
 }
 
 pub struct CpuReference {
     width: u32,
     height: u32,
-    scene: VoxelScene,
+    world: World,
+    chunks: Chunks,
     meshes: mesh::Meshes,
     pool: Pool,
     pixels: Vec<u8>,
@@ -151,28 +226,13 @@ pub struct Hit {
 impl CpuReference {
     pub fn new(p: InitParams) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
-        let mut scene = VoxelScene::new(&p);
-        scene.shadows = opts.shadows;
-        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], scene, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))? })
+        let mut world = World::new(&p);
+        world.shadows = opts.shadows;
+        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks: Chunks::default(), meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))? })
     }
 }
 
-impl VoxelScene {
-    pub fn new(p: &InitParams) -> Self {
-        Self {
-            blocks: p.blocks.clone(),
-            env: p.environment,
-            view_radius: p.view_radius_chunks,
-            chunks: HashMap::new(),
-            bounds: None,
-            bounds_dirty: false,
-            lights: HashMap::new(),
-            light_grid: HashMap::new(),
-            lights_dirty: false,
-            shadows: Shadows::All,
-        }
-    }
-
+impl Chunks {
     pub fn chunk(&self, pos: IVec3) -> Option<&ChunkData> {
         self.chunks.get(&pos)
     }
@@ -181,22 +241,10 @@ impl VoxelScene {
         self.chunks.len()
     }
 
-    /// Point lights that may reach world block `world` (a coarse candidate list).
-    pub fn lights_near(&self, world: IVec3) -> Option<&[Light]> {
-        self.light_grid.get(&(world >> LIGHT_CELL_BITS)).map(|v| v.as_slice())
-    }
-
-    pub fn light_count(&self) -> usize {
-        self.lights.len()
-    }
-
     /// Rebuilds derived structures after updates; call before tracing.
     pub fn prepare(&mut self) {
         if self.bounds_dirty {
             self.rebuild_bounds();
-        }
-        if self.lights_dirty {
-            self.rebuild_light_grid();
         }
     }
 
@@ -204,7 +252,8 @@ impl VoxelScene {
         self.chunks.values().filter(|c| matches!(c, ChunkData::Dense(_))).count() as u64 * CHUNK_VOLUME as u64 * 2
     }
 
-    /// Applies updates; returns the LOD-0 chunk positions whose contents changed.
+    /// Applies the chunk updates (the world's others are ignored: [`World::apply`]); returns
+    /// the LOD-0 chunk positions whose contents changed.
     pub fn apply(&mut self, updates: Vec<WorldUpdate>) -> Vec<IVec3> {
         let mut changed = vec![];
         for u in updates {
@@ -233,19 +282,7 @@ impl VoxelScene {
                         }
                     }
                 }
-                WorldUpdate::LightUpsert(ls) => {
-                    for l in ls {
-                        self.lights.insert(l.id, l);
-                    }
-                    self.lights_dirty = true;
-                }
-                WorldUpdate::LightRemove(ids) => {
-                    for id in ids {
-                        self.lights.remove(&id);
-                    }
-                    self.lights_dirty = true;
-                }
-                WorldUpdate::SetEnvironment(e) => self.env = e,
+                WorldUpdate::LightUpsert(_) | WorldUpdate::LightRemove(_) | WorldUpdate::SetEnvironment(_) => {}
             }
         }
         changed.sort_unstable_by_key(|p| (p.x, p.y, p.z));
@@ -257,22 +294,6 @@ impl VoxelScene {
         let mut it = self.chunks.keys();
         self.bounds = it.next().map(|&first| it.fold((first, first), |(lo, hi), &k| (lo.min(k), hi.max(k))));
         self.bounds_dirty = false;
-    }
-
-    fn rebuild_light_grid(&mut self) {
-        self.light_grid.clear();
-        for l in self.lights.values() {
-            let lo = (l.position - l.radius as f64).floor().as_ivec3() >> LIGHT_CELL_BITS;
-            let hi = (l.position + l.radius as f64).floor().as_ivec3() >> LIGHT_CELL_BITS;
-            for z in lo.z..=hi.z {
-                for y in lo.y..=hi.y {
-                    for x in lo.x..=hi.x {
-                        self.light_grid.entry(IVec3::new(x, y, z)).or_default().push(*l);
-                    }
-                }
-            }
-        }
-        self.lights_dirty = false;
     }
 
     /// Two-level DDA. Ignores the cell containing `o` (so rays starting inside a block,
@@ -364,6 +385,26 @@ impl VoxelScene {
         self.trace(p, dir, dist).is_some()
     }
 
+    pub fn max_dist(&self) -> f64 {
+        // Rays are clipped to the loaded region; no artificial distance limit, so the view
+        // radius can change at runtime.
+        1e7
+    }
+}
+
+impl VoxelScene<'_> {
+    pub fn trace(&self, o: DVec3, d: DVec3, max_t: f64) -> Option<Hit> {
+        self.chunks.trace(o, d, max_t)
+    }
+
+    pub fn occluded(&self, p: DVec3, dir: DVec3, dist: f64) -> bool {
+        self.chunks.occluded(p, dir, dist)
+    }
+
+    pub fn max_dist(&self) -> f64 {
+        self.chunks.max_dist()
+    }
+
     pub fn shade(&self, o: DVec3, d: DVec3, hit: &Hit, mode: RenderMode) -> [u8; 4] {
         let local = (o - hit.cell.as_dvec3() + d * hit.t).as_vec3();
         self.shade_surface(o + d * hit.t, local, hit.face, hit.block, mode)
@@ -373,13 +414,13 @@ impl VoxelScene {
     /// block) with the reference model.
     pub fn shade_surface(&self, p: DVec3, local: Vec3, face: Face, block: BlockId, mode: RenderMode) -> [u8; 4] {
         let uv = face.uv(local);
-        let tex = self.blocks.texture_of(block, face);
+        let tex = self.world.blocks.texture_of(block, face);
         let texel = tex.texel(texel_coord(uv.x), texel_coord(uv.y));
         if mode == RenderMode::Unlit {
             return texel;
         }
         let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
-        encode_srgb(albedo * self.light_at(p, face.normal().as_vec3()) * self.env.exposure)
+        encode_srgb(albedo * self.light_at(p, face.normal().as_vec3()) * self.world.env.exposure)
     }
 
     /// Shades a mesh surface (mesh mode): `color` is the interpolated sRGB vertex colour,
@@ -391,41 +432,35 @@ impl VoxelScene {
             return [q(color.x), q(color.y), q(color.z), 255];
         }
         let albedo = Vec3::new(srgb_to_linear_f(color.x), srgb_to_linear_f(color.y), srgb_to_linear_f(color.z));
-        encode_srgb(albedo * self.light_at(p, n) * self.env.exposure)
+        encode_srgb(albedo * self.light_at(p, n) * self.world.env.exposure)
     }
 
     /// Incoming light (linear) at surface point `p` with normal `n`: ambient, sun and
     /// point lights, each with its shadow ray through the voxel world.
     pub fn light_at(&self, p: DVec3, n: Vec3) -> Vec3 {
         let p = p + n.as_dvec3() * 1e-4;
-        let mut light = self.env.ambient;
+        let w = self.world;
+        let mut light = w.env.ambient;
         let max_dist = self.max_dist();
-        if let Some(sun) = self.env.sun {
+        if let Some(sun) = w.env.sun {
             let ndl = n.dot(-sun.direction);
-            if ndl > 0.0 && (self.shadows == Shadows::None || !self.occluded(p, -sun.direction.as_dvec3(), max_dist)) {
+            if ndl > 0.0 && (w.shadows == Shadows::None || !self.occluded(p, -sun.direction.as_dvec3(), max_dist)) {
                 light += sun.color * ndl;
             }
         }
-        if let Some(ls) = self.light_grid.get(&(p.floor().as_ivec3() >> LIGHT_CELL_BITS)) {
+        if let Some(ls) = w.lights_near(p.floor().as_ivec3()) {
             for l in ls {
                 let to = l.position - p;
                 let c = point_light(n, to.as_vec3(), l);
                 if c != Vec3::ZERO {
                     let dist = to.length();
-                    if self.shadows != Shadows::All || !self.occluded(p, to / dist, dist) {
+                    if w.shadows != Shadows::All || !self.occluded(p, to / dist, dist) {
                         light += c;
                     }
                 }
             }
         }
         light
-    }
-
-    pub fn max_dist(&self) -> f64 {
-        // Rays are clipped to the loaded region; no artificial distance limit, so the view
-        // radius can change at runtime.
-        let _ = self.view_radius;
-        1e7
     }
 }
 
@@ -441,7 +476,8 @@ fn min_axis(t: DVec3) -> usize {
 
 impl Renderer for CpuReference {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        self.scene.apply(updates);
+        let rest = self.world.apply(updates);
+        self.chunks.apply(rest);
         Ok(())
     }
 
@@ -452,16 +488,17 @@ impl Renderer for CpuReference {
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         let start = Instant::now();
-        self.scene.prepare();
+        self.world.prepare();
+        self.chunks.prepare();
         self.meshes.prepare();
         let meshes = req.meshes.then_some(&self.meshes);
         let (w, h) = (self.width, self.height);
         let cam = req.camera;
         let o = cam.position;
-        let max_dist = self.scene.max_dist();
-        let sky = encode_srgb(self.scene.env.sky);
+        let this = VoxelScene { world: &self.world, chunks: &self.chunks };
+        let max_dist = this.max_dist();
+        let sky = encode_srgb(self.world.env.sky);
         let mut pixels = std::mem::take(&mut self.pixels);
-        let this = &self.scene;
         self.pool.install(|| pixels.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
             for x in 0..w {
                 let d = cam.ray_dir(x, y as u32, w, h).as_dvec3();
@@ -482,8 +519,8 @@ impl Renderer for CpuReference {
             gpu_ms: None,
             legend: None,
             counters: vec![
-                ("chunks".into(), self.scene.chunk_count() as f64),
-                ("lights".into(), self.scene.light_count() as f64),
+                ("chunks".into(), self.chunks.chunk_count() as f64),
+                ("lights".into(), self.world.light_count() as f64),
                 ("mesh_triangles".into(), if req.meshes { self.meshes.triangle_count() as f64 } else { 0.0 }),
             ],
             stages: Vec::new(),
@@ -493,7 +530,7 @@ impl Renderer for CpuReference {
     }
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
-        if !self.pool.set_common(&mut self.scene, name, value)? {
+        if !self.pool.set_common(&mut self.world, name, value)? {
             anyhow::bail!("unknown parameter `{name}`");
         }
         Ok(())
@@ -511,6 +548,6 @@ impl Renderer for CpuReference {
     }
 
     fn memory(&self) -> MemoryReport {
-        MemoryReport { cpu_bytes: self.scene.dense_bytes() + self.pixels.len() as u64, gpu_bytes: 0 }
+        MemoryReport { cpu_bytes: self.chunks.dense_bytes() + self.pixels.len() as u64, gpu_bytes: 0 }
     }
 }

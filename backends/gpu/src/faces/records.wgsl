@@ -3,8 +3,8 @@
 // cluster discovery). The drawer's visibility component shades (`shade_surface`); lit-mode
 // shadow rays walk their GPU storage.
 
-@group(0) @binding(1) var<storage, read> quads: array<vec2<u32>>;
-@group(0) @binding(2) var<storage, read> tags: array<u32>;  // views: kind << 30 | cluster id
+@group(0) @binding(8) var<storage, read> quads: array<vec2<u32>>;
+@group(0) @binding(9) var<storage, read> tags: array<u32>;  // views: kind << 30 | cluster id
 
 // Record: x(15) | z(15) << 15 | face.lo(2) << 30 ; block(16) | y(15) << 16 | face.hi(1) << 31
 fn rec_face(q: vec2<u32>) -> u32 {

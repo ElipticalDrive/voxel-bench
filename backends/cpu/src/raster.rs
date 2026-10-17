@@ -24,7 +24,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use cpu_reference::{Pool, Shadows, VoxelScene};
+use cpu_reference::{Chunks, Pool, Shadows, VoxelScene, World};
 use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -101,7 +101,7 @@ pub(crate) struct CpuRaster {
     /// deferred pass shades each pixel; inline, each fragment passing the depth test shades.
     deferred: bool,
     opts: Options,
-    scene: VoxelScene,
+    chunks: Chunks,
     meshes: HashMap<IVec3, Mesh>,
     dirty: HashSet<IVec3>,
     /// The geometry component's mesher and knobs.
@@ -115,8 +115,6 @@ impl CpuRaster {
     pub(crate) fn new(p: &InitParams, g: &mr_components::graph::Checked) -> anyhow::Result<(Core, Self)> {
         let n = (p.width * p.height) as usize;
         let opts: Options = p.options()?;
-        let mut scene = VoxelScene::new(p);
-        scene.shadows = opts.shadows;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         require(BACKEND, Slot::Draw, &opts.draw)?;
         require(BACKEND, Slot::Shading, &opts.shading)?;
@@ -124,12 +122,12 @@ impl CpuRaster {
         let mesh = mesh_fn(&require(BACKEND, Slot::Geometry, &opts.geometry)?);
         let knobs = Knobs { cull: opts.cull, ..Default::default() };
         use mr_components::graph::Role;
-        let core = Core::new(p, g, opts.threads)?;
+        let core = Core::new(p, g, opts.threads, opts.shadows)?;
         Ok((core, Self {
             stage_nodes: [g.ids(&[Role::Geometry]), g.ids(&[Role::Visibility]), g.ids(&[Role::Draw]), g.ids(&[Role::Shading]), g.ids(&[Role::Draw, Role::Shading])],
             deferred: mr_components::parse_placement(&opts.placement)?,
             opts,
-            scene,
+            chunks: Chunks::default(),
             meshes: HashMap::new(),
             dirty: HashSet::new(),
             mesh,
@@ -144,7 +142,7 @@ impl CpuRaster {
             return 0;
         }
         let dirty: Vec<IVec3> = self.dirty.drain().collect();
-        let (scene, mesh, knobs) = (&self.scene, self.mesh, self.knobs);
+        let (scene, mesh, knobs) = (&self.chunks, self.mesh, self.knobs);
         let meshes: Vec<(IVec3, Option<Mesh>)> = dirty
             .par_iter()
             .map(|&p| (p, scene.chunk(p).map(|c| mesh(c, Face::ALL.map(|f| scene.chunk(p + f.normal())), 0, knobs))))
@@ -210,10 +208,10 @@ fn clip(poly: &mut Vec<Vec4>, scratch: &mut Vec<Vec4>) {
 }
 
 impl CpuRaster {
-    fn frame(&mut self, frame: &mut Frame, req: &FrameRequest) -> FrameStats {
+    fn frame(&mut self, frame: &mut Frame, world: &World, req: &FrameRequest) -> FrameStats {
         let start = Instant::now();
 
-        self.scene.prepare();
+        self.chunks.prepare();
         let remeshed = self.remesh();
         let t_mesh = start.elapsed().as_secs_f64() * 1e3;
         let (w, h) = (frame.width, frame.height);
@@ -299,8 +297,8 @@ impl CpuRaster {
 
         // Rasterise: each band owns its rows of the depth/id buffers (and of the image when
         // shading is inline).
-        let quads = Quads { visible: &visible, bases: visible.iter().map(|v| v.2).collect(), scene: &self.scene, cam, w, h, mode: req.mode };
-        let sky = encode_srgb(self.scene.env.sky);
+        let quads = Quads { visible: &visible, bases: visible.iter().map(|v| v.2).collect(), scene: VoxelScene { world, chunks: &self.chunks }, cam, w, h, mode: req.mode };
+        let sky = encode_srgb(world.env.sky);
         let raster = Raster { tris: &tris, bins: &bins, tiles_x, tw, bh, w, quads: &quads, sky };
         let rows = (bh * w) as usize;
         let bands = self.depth.par_chunks_mut(rows).zip(self.ids.par_chunks_mut(rows)).zip(frame.pixels.par_chunks_mut(rows * 4)).enumerate();
@@ -348,7 +346,7 @@ impl CpuRaster {
 struct Quads<'a> {
     visible: &'a [(IVec3, &'a Mesh, u32)],
     bases: Vec<u32>,
-    scene: &'a VoxelScene,
+    scene: VoxelScene<'a>,
     cam: Camera,
     w: u32,
     h: u32,
@@ -475,11 +473,11 @@ impl mr_components::shading::deferred::Records for QuadIds<'_> {
 
 impl Lane for CpuRaster {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        for p in self.scene.apply(updates) {
+        for p in self.chunks.apply(updates) {
             self.dirty.insert(p);
             for f in Face::ALL {
                 let nb = p + f.normal();
-                if self.meshes.contains_key(&nb) || self.scene.chunk(nb).is_some() {
+                if self.meshes.contains_key(&nb) || self.chunks.chunk(nb).is_some() {
                     self.dirty.insert(nb);
                 }
             }
@@ -487,13 +485,12 @@ impl Lane for CpuRaster {
         Ok(())
     }
 
-    fn render(&mut self, frame: &mut Frame, _: &Pool, req: &FrameRequest) -> FrameStats {
-        self.frame(frame, req)
+    fn render(&mut self, frame: &mut Frame, _: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
+        self.frame(frame, world, req)
     }
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         match name {
-            "shadows" => return Some(cpu_reference::parse_shadows(value).map(|s| self.scene.shadows = s)),
             "tile_width" => self.opts.tile_width = value.as_i64().unwrap_or(64) as u32,
             "band_height" => self.opts.band_height = value.as_i64().unwrap_or(16) as u32,
             "geometry" => match require(BACKEND, Slot::Geometry, value.as_str().unwrap_or("")) {
@@ -520,6 +517,6 @@ impl Lane for CpuRaster {
 
     fn memory(&self) -> u64 {
         let quads: usize = self.meshes.values().map(|m| m.quads.len()).sum();
-        self.scene.dense_bytes() + quads as u64 * 8 + (self.depth.len() + self.ids.len()) as u64 * 4
+        self.chunks.dense_bytes() + quads as u64 * 8 + (self.depth.len() + self.ids.len()) as u64 * 4
     }
 }

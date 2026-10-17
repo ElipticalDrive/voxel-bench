@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use cpu_reference::{Pool, Shadows};
+use cpu_reference::{Pool, Shadows, World};
 use glam::{IVec3, Vec3};
 use mr_components::storage::bits::cpu::Bits;
 use mr_components::storage::bricks::cpu::U16;
@@ -226,15 +226,9 @@ impl std::ops::Add for RowWork {
 }
 
 struct Scene<R> {
-    blocks: Arc<BlockRegistry>,
-    env: Environment,
     chunks: HashMap<IVec3, Entry<R>>,
     grid: Grid<R>,
     grid_dirty: bool,
-    lights: HashMap<u32, Light>,
-    light_grid: HashMap<IVec3, Vec<Light>>,
-    lights_dirty: bool,
-    shadows: Shadows,
     traversal: Traversal,
     /// Levels the incremental traversals may use (bit k = 2^k cubes), from the `skip*` knobs.
     levels: u32,
@@ -247,8 +241,6 @@ struct Scene<R> {
 fn level_mask(skips: [bool; 4]) -> u32 {
     skips.iter().enumerate().fold(0b100001, |m, (i, &on)| m | (on as u32) << (i + 1))
 }
-
-const LIGHT_CELL_BITS: i32 = 4;
 
 impl<R: Repr> Scene<R> {
     fn rebuild_grid(&mut self) {
@@ -269,22 +261,6 @@ impl<R: Repr> Scene<R> {
         }
         self.grid = Grid { min: lo, dims, cells, entries };
         self.grid_dirty = false;
-    }
-
-    fn rebuild_lights(&mut self) {
-        self.light_grid.clear();
-        for l in self.lights.values() {
-            let lo = (l.position - l.radius as f64).floor().as_ivec3() >> LIGHT_CELL_BITS;
-            let hi = (l.position + l.radius as f64).floor().as_ivec3() >> LIGHT_CELL_BITS;
-            for z in lo.z..=hi.z {
-                for y in lo.y..=hi.y {
-                    for x in lo.x..=hi.x {
-                        self.light_grid.entry(IVec3::new(x, y, z)).or_default().push(*l);
-                    }
-                }
-            }
-        }
-        self.lights_dirty = false;
     }
 
     fn bounds_rel(&self, cam: IVec3) -> (IVec3, IVec3) {
@@ -313,19 +289,21 @@ impl<R: Repr> Scene<R> {
         (self.grid.block_at(h.cell + cam), Face::entered(h.axis as usize, if d[h.axis as usize] > 0.0 { 1 } else { -1 }))
     }
 
-    fn shade(&self, cam: IVec3, o: Vec3, d: Vec3, h: &Hit, mode: RenderMode) -> [u8; 4] {
+    fn shade(&self, world: &World, cam: IVec3, o: Vec3, d: Vec3, h: &Hit, mode: RenderMode) -> [u8; 4] {
         let (block, face) = self.hit_face(cam, d, h);
-        self.shade_surface(cam, &mr_components::shading::direct::cpu::Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
+        self.shade_surface(world, cam, &mr_components::shading::direct::cpu::Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
     }
 
-    fn shade_surface(&self, cam: IVec3, s: &mr_components::shading::direct::cpu::Surface, mode: RenderMode) -> [u8; 4] {
+    /// Shades surface `s` of `world` (its blocks, environment, lights), shadow rays walking
+    /// these chunks.
+    fn shade_surface(&self, world: &World, cam: IVec3, s: &mr_components::shading::direct::cpu::Surface, mode: RenderMode) -> [u8; 4] {
         let ctx = mr_components::shading::direct::cpu::Ctx {
-            blocks: &self.blocks,
-            env: &self.env,
+            blocks: &world.blocks,
+            env: &world.env,
             cam,
-            sun_shadows: self.shadows != Shadows::None,
-            light_shadows: self.shadows == Shadows::All,
-            lights_near: |world: IVec3| self.light_grid.get(&(world >> LIGHT_CELL_BITS)).map(|v| v.as_slice()),
+            sun_shadows: world.shadows != Shadows::None,
+            light_shadows: world.shadows == Shadows::All,
+            lights_near: |w: IVec3| world.lights_near(w),
             occluded: |p: Vec3, d: Vec3, dist: f32| self.occluded(cam, p, d, dist),
         };
         mr_components::shading::direct::cpu::shade(&ctx, s, mode)
@@ -398,15 +376,9 @@ impl<R: Repr, S: Spec> Raycast<R, S> {
             perf: o.perf,
             counters: None,
             scene: Scene {
-                blocks: p.blocks.clone(),
-                env: p.environment,
                 chunks: HashMap::new(),
                 grid: Grid::default(),
                 grid_dirty: false,
-                lights: HashMap::new(),
-                light_grid: HashMap::new(),
-                lights_dirty: false,
-                shadows: o.shadows,
                 traversal: traversal(&o.traversal, o.exact)?,
                 levels: level_mask([o.skip2, o.skip4, o.skip8, o.skip16]),
                 shadow,
@@ -421,7 +393,7 @@ impl<R: Repr, S: Spec> Raycast<R, S> {
             deferred: parse_placement(&o.placement)?,
         };
         b.check_baked()?;
-        Ok((Core::new(p, g, o.threads)?, b))
+        Ok((Core::new(p, g, o.threads, o.shadows)?, b))
     }
 
     /// Fails if a knob differs from the value this pipeline baked in.
@@ -471,6 +443,7 @@ fn pixel_dir(f: Vec3, rt: Vec3, u: Vec3, tan: f32, aspect: f32, w: u32, h: u32, 
 /// What every rectangle of a frame shares.
 struct Job<'a, R> {
     scene: &'a Scene<R>,
+    world: &'a World,
     cam: Camera,
     w: u32,
     h: u32,
@@ -499,7 +472,7 @@ fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r:
     let tan = (job.cam.fov_y * 0.5).tan();
     let aspect = w as f32 / h as f32;
     let (bmin, bmax) = scene.bounds_rel(cam_block);
-    let sky = encode_srgb(scene.env.sky);
+    let sky = encode_srgb(job.world.env.sky);
     let (bw, bh) = if job.two_d {
         match N {
             1 => (1, 1),
@@ -574,7 +547,7 @@ fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r:
                     continue;
                 }
                 let px = match &hits[l] {
-                    Some(hit) => scene.shade(cam_block, o, dirs[l], hit, mode),
+                    Some(hit) => scene.shade(job.world, cam_block, o, dirs[l], hit, mode),
                     None => sky,
                 };
                 // SAFETY: pix < w * h, and each pixel belongs to exactly one rectangle.
@@ -633,6 +606,7 @@ fn render_rect_isa<R: Repr, S: Spec, const D: bool>(isa: Isa, job: &Job<R>, r: R
 /// (`shading::deferred`).
 struct Deferred<'a, R> {
     scene: &'a Scene<R>,
+    world: &'a World,
     records: &'a [Record],
     cam: IVec3,
     o: Vec3,
@@ -645,10 +619,10 @@ struct Deferred<'a, R> {
 }
 
 impl<'a, R: Repr> Deferred<'a, R> {
-    fn new(scene: &'a Scene<R>, records: &'a [Record], cam: &Camera, w: u32, h: u32, mode: RenderMode) -> Self {
+    fn new(scene: &'a Scene<R>, world: &'a World, records: &'a [Record], cam: &Camera, w: u32, h: u32, mode: RenderMode) -> Self {
         let (cam_block, o) = cam.split_position();
         let basis = (cam.forward(), cam.right(), cam.up(), (cam.fov_y * 0.5).tan(), w as f32 / h as f32);
-        Self { scene, records, cam: cam_block, o, basis, w, h, mode, sky: encode_srgb(scene.env.sky) }
+        Self { scene, world, records, cam: cam_block, o, basis, w, h, mode, sky: encode_srgb(world.env.sky) }
     }
 }
 
@@ -666,7 +640,7 @@ impl<R: Repr> mr_components::shading::deferred::Records for Deferred<'_, R> {
     fn shade(&self, r: Record, x: u32, y: u32) -> [u8; 4] {
         let (f, rt, u, tan, aspect) = self.basis;
         let d = pixel_dir(f, rt, u, tan, aspect, self.w, self.h, x, y);
-        self.scene.shade_surface(self.cam, &r.surface(self.o, d), self.mode)
+        self.scene.shade_surface(self.world, self.cam, &r.surface(self.o, d), self.mode)
     }
     #[inline]
     fn miss(&self, _: u32, _: u32) -> [u8; 4] {
@@ -817,33 +791,18 @@ impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
                     }
                     s.grid_dirty = true;
                 }
-                WorldUpdate::LightUpsert(ls) => {
-                    for l in ls {
-                        s.lights.insert(l.id, l);
-                    }
-                    s.lights_dirty = true;
-                }
-                WorldUpdate::LightRemove(ids) => {
-                    for id in ids {
-                        s.lights.remove(&id);
-                    }
-                    s.lights_dirty = true;
-                }
-                WorldUpdate::SetEnvironment(e) => s.env = e,
+                WorldUpdate::LightUpsert(_) | WorldUpdate::LightRemove(_) | WorldUpdate::SetEnvironment(_) => {}
             }
         }
         Ok(())
     }
 
-    fn render(&mut self, frame: &mut Frame, pool: &Pool, req: &FrameRequest) -> FrameStats {
+    fn render(&mut self, frame: &mut Frame, pool: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
         let start = Instant::now();
         let mut stages = Vec::new();
         if self.scene.grid_dirty {
             self.scene.rebuild_grid();
             stages.push(StageTime::cpu("storage", &self.storage_nodes, start.elapsed().as_secs_f32() * 1e3));
-        }
-        if self.scene.lights_dirty {
-            self.scene.rebuild_lights();
         }
         let (w, h) = (frame.width, frame.height);
         let (scene, isa, packet) = (&self.scene, self.isa, self.packet);
@@ -869,7 +828,7 @@ impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
         if deferred {
             self.records.resize((w * h) as usize, Record::SKY);
         }
-        let job = Job { scene, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone(), out: OutPtr(pixels.as_mut_ptr()), records: RecPtr(self.records.as_mut_ptr()) };
+        let job = Job { scene, world, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone(), out: OutPtr(pixels.as_mut_ptr()), records: RecPtr(self.records.as_mut_ptr()) };
         let rect_list = &self.rects;
         let cast = Instant::now();
         let rect: fn(Isa, &Job<R>, Rect) -> RowWork = if deferred { render_rect_isa::<R, S, true> } else { render_rect_isa::<R, S, false> };
@@ -879,7 +838,7 @@ impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
             stages.push(StageTime::cpu("cast", &frame.stage_nodes[1], cast.elapsed().as_secs_f32() * 1e3));
             let shade = Instant::now();
             let records = &self.records;
-            let deferred = Deferred::new(scene, records, &cam, w, h, mode);
+            let deferred = Deferred::new(scene, world, records, &cam, w, h, mode);
             mr_components::shading::deferred::shade(&deferred, w, pixels);
             stages.push(StageTime::cpu("shade", &frame.stage_nodes[2], shade.elapsed().as_secs_f32() * 1e3));
         } else {
@@ -936,7 +895,6 @@ impl<R: Repr, S: Spec> Raycast<R, S> {
     /// Sets knob `name`; `false` if it is not one of the lane's.
     fn set(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<bool> {
         match name {
-            "shadows" => self.scene.shadows = cpu_reference::parse_shadows(value)?,
             "perf" => self.perf = value.as_bool().unwrap_or(false),
             "view" => self.steps_view = parse_view(value.as_str().unwrap_or(""))?,
             "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,

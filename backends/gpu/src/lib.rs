@@ -81,8 +81,10 @@ fn run<L: Lane + 'static>((core, lane): (Core, L)) -> anyhow::Result<Box<dyn Ren
     Ok(Box::new(Executor { core, lane }))
 }
 
-/// The camera uniform every lane's root but the face drawer's reads (group 0, binding 0); the
-/// last two words are the lane's.
+/// The camera uniform every lane's root reads (group 0, binding 0); `lane` holds the lane's
+/// two words. The rasterising lanes also read the view-projection and the anchor (the faces
+/// lane: the CPU sampler's face records are relative to it; PLAN step 13e4d), which the
+/// others' shaders leave undeclared.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct CameraUniform {
@@ -97,6 +99,8 @@ struct CameraUniform {
     width: u32,
     height: u32,
     lane: [u32; 2],
+    view_proj: [[f32; 4]; 4],
+    anchor: [i32; 4],
 }
 
 /// Group 0: the camera (0), the output (1), the shading state (2-3), the hit records (4,
@@ -266,29 +270,42 @@ impl Core {
 
     /// Group 0's entries before the lane's.
     fn layout_entries(&self) -> Vec<wgpu::BindGroupLayoutEntry> {
-        let mut e = vec![
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: self.stages,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
+        self.layout_entries_with(true)
+    }
+
+    /// Group 0's entries before the lane's; without the output where the lane's output is a
+    /// render attachment (the faces lane).
+    fn layout_entries_with(&self, output: bool) -> Vec<wgpu::BindGroupLayoutEntry> {
+        let mut e = vec![wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: self.stages,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        }];
+        if output {
+            e.push(wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D2 },
                 count: None,
-            },
-        ];
-        e.extend(ShadeState::layout_entries(STATE_BINDING, self.stages));
-        e.extend(self.records.as_ref().map(|_| storage_entry(RECORDS_BINDING, false, self.stages)));
+            });
+        }
+        // Writable buffers are not visible to vertex shaders (the faces lane's).
+        let writable = self.stages - wgpu::ShaderStages::VERTEX;
+        e.extend(ShadeState::layout_entries(STATE_BINDING, writable));
+        e.extend(self.records.as_ref().map(|_| storage_entry(RECORDS_BINDING, false, writable)));
         e.extend(self.accel.iter().flat_map(|a| a.layout_entries(self.stages)));
         e
     }
 
     /// Their resources, the output's `view`.
     fn bind_entries<'a>(&'a self, view: &'a wgpu::TextureView) -> Vec<wgpu::BindGroupEntry<'a>> {
-        let mut e = vec![wgpu::BindGroupEntry { binding: 0, resource: self.camera_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) }];
+        self.bind_entries_with(Some(view))
+    }
+
+    fn bind_entries_with<'a>(&'a self, view: Option<&'a wgpu::TextureView>) -> Vec<wgpu::BindGroupEntry<'a>> {
+        let mut e = vec![wgpu::BindGroupEntry { binding: 0, resource: self.camera_buf.as_entire_binding() }];
+        e.extend(view.map(|v| wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(v) }));
         e.extend(self.accum.bind_entries(STATE_BINDING));
         e.extend(self.records.as_ref().map(|r| wgpu::BindGroupEntry { binding: RECORDS_BINDING, resource: r.as_entire_binding() }));
         e.extend(self.accel.iter().flat_map(|a| a.bind_entries()));
@@ -297,11 +314,17 @@ impl Core {
 
     /// Writes the camera uniform for `c` (`lane`: the lane's two words).
     fn write_camera(&self, c: &Camera, mode: RenderMode, lane: [u32; 2]) {
+        self.write_camera_at(c, mode, lane, IVec3::ZERO);
+    }
+
+    /// The same with `anchor` (the faces lane's CPU records' origin).
+    fn write_camera_at(&self, c: &Camera, mode: RenderMode, lane: [u32; 2], anchor: IVec3) {
+        let aspect = self.width as f32 / self.height as f32;
         let cam = CameraUniform {
             forward: c.forward().to_array(),
             tan_half_fov: (c.fov_y * 0.5).tan(),
             right: c.right().to_array(),
-            aspect: self.width as f32 / self.height as f32,
+            aspect,
             up: c.up().to_array(),
             mode: (mode == RenderMode::Lit) as u32,
             origin: c.split_position().1.to_array(),
@@ -309,6 +332,8 @@ impl Core {
             width: self.width,
             height: self.height,
             lane,
+            view_proj: (c.projection(aspect) * c.view_rotation()).to_cols_array_2d(),
+            anchor: [anchor.x, anchor.y, anchor.z, 0],
         };
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
     }

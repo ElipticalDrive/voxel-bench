@@ -7,9 +7,11 @@
 //!
 //! Which lane runs is the graph's: rasterisation when a drawer draws faces, else by the
 //! visibility node's component. The rest is shared ([`Core`]): the thread pool every frame
-//! runs in (the `threads` knob), the output image, its size and the timed stages' nodes.
+//! runs in (the `threads` knob), the world (`cpu_reference::World`: blocks, environment,
+//! lights, the `shadows` knob; PLAN step 13e4d), the output image, its size and the timed
+//! stages' nodes. The chunks are each lane's representation (its storage).
 
-use cpu_reference::Pool;
+use cpu_reference::{Pool, Shadows, World};
 use mr_components::graph::{self, Role};
 use mr_core::*;
 
@@ -60,6 +62,7 @@ fn run<L: Lane + 'static>((core, lane): (Core, L)) -> anyhow::Result<Box<dyn Ren
 pub(crate) struct Core {
     /// Every frame runs in it.
     pool: Pool,
+    world: World,
     frame: Frame,
 }
 
@@ -74,10 +77,13 @@ pub(crate) struct Frame {
 }
 
 impl Core {
-    /// `threads`: the knob's value (0 = every core the run grants).
-    fn new(p: &InitParams, g: &graph::Checked, threads: usize) -> anyhow::Result<Self> {
+    /// `threads`: the knob's value (0 = every core the run grants); `shadows` the world's.
+    fn new(p: &InitParams, g: &graph::Checked, threads: usize, shadows: Shadows) -> anyhow::Result<Self> {
+        let mut world = World::new(p);
+        world.shadows = shadows;
         Ok(Self {
             pool: Pool::new(p.devices.cpu_threads(threads))?,
+            world,
             frame: Frame {
                 pixels: vec![0; (p.width * p.height * 4) as usize],
                 width: p.width,
@@ -88,11 +94,12 @@ impl Core {
     }
 }
 
-/// A lane: the visibility node's implementation, its world and what it keeps.
+/// A lane: the visibility node's implementation, its chunks and what it keeps.
 trait Lane: Send {
+    /// The chunk updates (the world applied its own).
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()>;
-    /// Renders `frame.pixels` (in `pool`).
-    fn render(&mut self, frame: &mut Frame, pool: &Pool, req: &FrameRequest) -> FrameStats;
+    /// Renders `frame.pixels` (in `pool`) of `world`.
+    fn render(&mut self, frame: &mut Frame, pool: &Pool, world: &World, req: &FrameRequest) -> FrameStats;
     /// Its knobs; `None` if `name` is not one.
     fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>>;
     /// After the frame's resize.
@@ -109,12 +116,14 @@ struct Executor<L> {
 
 impl<L: Lane> Renderer for Executor<L> {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        self.lane.update(updates)
+        let rest = self.core.world.apply(updates);
+        self.lane.update(rest)
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         let (core, lane) = (&mut self.core, &mut self.lane);
-        let stats = core.pool.install(|| lane.render(&mut core.frame, &core.pool, req));
+        core.world.prepare();
+        let stats = core.pool.install(|| lane.render(&mut core.frame, &core.pool, &core.world, req));
         sink.complete(CompletedFrame { frame_id: req.frame_id, stats, pixels: Some(&core.frame.pixels) });
         Ok(())
     }
@@ -124,6 +133,10 @@ impl<L: Lane> Renderer for Executor<L> {
             return r;
         }
         match name {
+            "shadows" => {
+                self.core.world.shadows = cpu_reference::parse_shadows(value)?;
+                Ok(())
+            }
             "threads" => {
                 let n = value.as_i64().unwrap_or(0) as usize;
                 if n != self.core.pool.threads {

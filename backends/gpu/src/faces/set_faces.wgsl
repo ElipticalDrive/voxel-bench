@@ -3,8 +3,8 @@
 // (tint faces new this frame), 2 quads (colour per drawn quad)). The drawer's visibility
 // component shades (`shade_surface`); lit-mode shadow rays walk their storage.
 
-@group(0) @binding(1) var<storage, read> faces: array<vec4<u32>>; // key, table index, block, fresh | run length << 1 (merged runs; 0 = one face)
-@group(0) @binding(2) var<storage, read> chunk_pos: array<vec4<i32>>;
+@group(0) @binding(8) var<storage, read> faces: array<vec4<u32>>; // key, table index, block, fresh | run length << 1 (merged runs; 0 = one face)
+@group(0) @binding(9) var<storage, read> chunk_pos: array<vec4<i32>>;
 
 // Record: key (face | chunk-local cell << 3 | chunk slot << 18), table index (or seam
 // edges, merged runs), block, fresh | run length << 1 (merged runs; 0 = one face).
@@ -32,7 +32,7 @@ fn src_vertex(ii: u32, vi: u32) -> FaceVertex {
         // coplanar; the depth test and the per-cell block lookup in `face_hit` resolve it.
         let base = rec_chunk(e) + p - fr.cam_frac;
         let z = max(dot(base, fr.forward), 1e-3);
-        let eps = z * 2.0 * fr.tan_half_fov / fr.size.y / 16.0;
+        let eps = z * 2.0 * fr.tan_half_fov / frame_size().y / 16.0;
         // Only seam edges (e.y bits: 0 -u, 1 +u, 2 -v, 3 +v); silhouettes stay exact.
         let grow_u = select(e.y & 1u, (e.y >> 1u) & 1u, c.x > 0.5);
         let grow_v = select((e.y >> 2u) & 1u, (e.y >> 3u) & 1u, c.y > 0.5);

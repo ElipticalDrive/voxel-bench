@@ -15,9 +15,9 @@
 //! Which source runs is the graph's: meshing when the drawer's faces come from the `faces`
 //! visibility (every meshed face), else discovery on the visibility node's device. The rest is
 //! the lane's ([`Draw`]) over the executor's core: the face drawer compiled over the shared
-//! frame and the source's WGSL, the frame uniform, the depth buffer.
+//! frame (the core's group 0: its camera uniform, shading state, acceleration structures; the
+//! source's two buffers at the lane's bindings) and the source's WGSL, the depth buffer.
 
-use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use mr_components::draw::{self, drawer::{DrawMode, DrawNodes, DrawerSpec, FaceDrawer}};
 use mr_components::graph::{self, Device, Role};
@@ -50,25 +50,6 @@ pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Wa
 
 fn run<S: FaceSource + 'static>((core, draw, source): (Core, Draw, S)) -> anyhow::Result<Box<dyn Renderer>> {
     crate::run((core, Faces { draw, source }))
-}
-
-/// The frame uniform of the face drawer (`frame.wgsl`), shared by every face source.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct FrameUniform {
-    view_proj: [[f32; 4]; 4],
-    cam_frac: [f32; 3],
-    mode: u32,
-    forward: [f32; 3],
-    tan_half_fov: f32,
-    right: [f32; 3],
-    aspect: f32,
-    up: [f32; 3],
-    view: u32,
-    size: [f32; 2],
-    _p1: [f32; 2],
-    anchor: [i32; 4],
-    sky: [f32; 4],
 }
 
 /// What the core and the drawer need of a face source's options.
@@ -118,7 +99,7 @@ struct Meshed {
 }
 
 /// The lane's drawing, every face source's: the face drawer and what it is compiled from,
-/// the frame uniform, the depth buffer.
+/// group 0's layout, the depth buffer.
 pub(crate) struct Draw {
     shading: String,
     /// The face drawer (`draw`), compiled against `program` (the walks' modules) with
@@ -140,7 +121,6 @@ pub(crate) struct Draw {
     pl_draw: wgpu::PipelineLayout,
     pl_shade: wgpu::PipelineLayout,
     images: wgpu::BindGroupLayout,
-    frame_buf: wgpu::Buffer,
     depth: wgpu::TextureView,
     depth_read: bool,
     /// The drawer's timed stages' nodes (PLAN step 11).
@@ -214,7 +194,7 @@ fn programs(walks: &Walks, lead: Option<(usize, usize)>, [shadow, bounce]: [usiz
 /// shading state and component, the face drawer's vertex stage.
 fn draw_src(source: &str, shading: &str, varyings: bool) -> String {
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
-    format!("{}\n{source}\n{}\n{shade}\n{}", include_str!("frame.wgsl"), ShadeState::wgsl(0, 3), draw::faces_wgsl(varyings))
+    format!("{}\n{source}\n{}\n{shade}\n{}", include_str!("frame.wgsl"), ShadeState::wgsl(0, crate::STATE_BINDING), draw::faces_wgsl(varyings))
 }
 
 fn depth_view(gpu: &Gpu, w: u32, h: u32, read: bool) -> wgpu::TextureView {
@@ -270,18 +250,16 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         core.trace_root(&mut m.program, "0u");
     }
     let draw_src = draw_src(&src.wgsl, &shading, src.varyings);
-    let buf = |binding, ty| wgpu::BindGroupLayoutEntry {
+    let buf = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None },
+        ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
         count: None,
     };
-    let ro = wgpu::BufferBindingType::Storage { read_only: true };
-    let [a, b] = ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE);
-    // The frame, the face source's two buffers, the shading state, the acceleration
-    // structures (ray queries at the sites).
-    let mut entries = vec![buf(0, wgpu::BufferBindingType::Uniform), buf(1, ro), buf(2, ro), a, b];
-    entries.extend(core.accel.iter().flat_map(|a| a.layout_entries(wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE)));
+    // The core's group 0 (the camera, the shading state, the acceleration structures; the
+    // output is the drawer's render attachment, not bound) and the face source's two buffers.
+    let mut entries = core.layout_entries_with(false);
+    entries.extend([buf(crate::LANE_BINDING), buf(crate::LANE_BINDING + 1)]);
     let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("face draw"), entries: &entries });
     let images = FaceDrawer::images_layout(dev, meshed.is_some());
     let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("face draw"), bind_group_layouts: &core.storages.layouts(&[Some(&layout_draw), Some(core.world.layout())]), immediate_size: 0 });
@@ -290,7 +268,6 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         bind_group_layouts: &core.storages.layouts(&[Some(&layout_draw), Some(core.world.layout()), None, Some(&images)]),
         immediate_size: 0,
     });
-    let frame_buf = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("frame"), size: size_of::<FrameUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     let parts = DrawParts { gpu, program: &program, deps: &deps, meshed: meshed.as_ref().filter(|_| src.draw_meshes), strip: src.strip, draw_src: &draw_src, shading: &shading, pl_draw: &pl_draw, pl_shade: &pl_shade, images: &images, width: p.width, height: p.height };
     let drawer = parts.drawer(o.draw)?;
     let draw = Draw {
@@ -313,7 +290,6 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         pl_draw,
         pl_shade,
         images,
-        frame_buf,
     };
     Ok((core, draw))
 }
@@ -353,41 +329,17 @@ impl Draw {
         Ok(rebound)
     }
 
-    /// A draw bind group: the frame, the face source's two buffers, the shading state, the
-    /// acceleration structures.
+    /// A draw bind group: the core's group 0 and the face source's two buffers.
     fn bind(&self, core: &Core, a: &wgpu::Buffer, b: &wgpu::Buffer) -> wgpu::BindGroup {
-        let [s0, s1] = core.accum.bind_entries(3);
-        let mut entries = vec![
-            wgpu::BindGroupEntry { binding: 0, resource: self.frame_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: a.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: b.as_entire_binding() },
-            s0,
-            s1,
-        ];
-        entries.extend(core.accel.iter().flat_map(|a| a.bind_entries()));
+        let mut entries = core.bind_entries_with(None);
+        entries.extend([wgpu::BindGroupEntry { binding: crate::LANE_BINDING, resource: a.as_entire_binding() }, wgpu::BindGroupEntry { binding: crate::LANE_BINDING + 1, resource: b.as_entire_binding() }]);
         core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("face draw"), layout: &self.layout_draw, entries: &entries })
     }
 
-    /// Writes the frame uniform for `c` (`view`: the face source's tint; `anchor`: the CPU
-    /// records' origin).
+    /// Writes the core's camera uniform for `c` (`view`: the face source's tint, the lane's
+    /// first word; `anchor`: the CPU records' origin).
     fn write_frame(&self, core: &Core, c: &Camera, mode: RenderMode, view: u32, anchor: IVec3) {
-        let (w, h) = (core.width as f32, core.height as f32);
-        let fu = FrameUniform {
-            view_proj: (c.projection(w / h) * c.view_rotation()).to_cols_array_2d(),
-            cam_frac: c.split_position().1.to_array(),
-            mode: (mode == RenderMode::Lit) as u32,
-            forward: c.forward().to_array(),
-            tan_half_fov: (c.fov_y * 0.5).tan(),
-            right: c.right().to_array(),
-            aspect: w / h,
-            up: c.up().to_array(),
-            view,
-            size: [w, h],
-            _p1: [0.0; 2],
-            anchor: [anchor.x, anchor.y, anchor.z, 0],
-            sky: sky_rgba(core),
-        };
-        core.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
+        core.write_camera_at(c, mode, [view, 0], anchor);
     }
 
     /// Lit `stateful` shading drawn forward may update its state once per pixel only

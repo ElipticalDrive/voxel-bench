@@ -9,7 +9,7 @@
 
 use std::time::Instant;
 
-use cpu_reference::{Pool, Shadows, VoxelScene};
+use cpu_reference::{Chunks, Pool, Shadows, World};
 use glam::{IVec3, Vec3};
 use mr_components::shading::direct::cpu::{Ctx, Surface, shade};
 use mr_components::storage::heightmap::Heightmap;
@@ -46,7 +46,7 @@ pub(crate) struct CpuColumns {
     /// deferred pass shades them into `pixels`; inline, it shades into `cols`, transposed.
     deferred: bool,
     recs: Vec<Record>,
-    scene: VoxelScene,
+    chunks: Chunks,
     cols: Vec<u8>,
 }
 
@@ -76,35 +76,33 @@ impl CpuColumns {
         for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
             require(BACKEND, slot, name)?;
         }
-        let mut scene = VoxelScene::new(p);
-        scene.shadows = opts.shadows;
         let deferred = mr_components::parse_placement(&opts.placement)?;
         let lane = Self {
             hm: Heightmap::new(p.view_radius_chunks),
             deferred,
             recs: if deferred { vec![Record::SKY; (p.width * p.height) as usize] } else { Vec::new() },
-            scene,
+            chunks: Chunks::default(),
             cols: if deferred { Vec::new() } else { vec![0; (p.width * p.height * 4) as usize] },
         };
-        Ok((Core::new(p, g, opts.threads)?, lane))
+        Ok((Core::new(p, g, opts.threads, opts.shadows)?, lane))
     }
 }
 
 impl Lane for CpuColumns {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        let changed = self.scene.apply(updates);
-        let scene = &self.scene;
+        let changed = self.chunks.apply(updates);
+        let scene = &self.chunks;
         self.hm.apply(changed, |pos| scene.chunk(pos));
         Ok(())
     }
 
-    fn render(&mut self, frame: &mut Frame, _: &Pool, req: &FrameRequest) -> FrameStats {
+    fn render(&mut self, frame: &mut Frame, _: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
         let start = Instant::now();
-        self.scene.prepare();
+        self.chunks.prepare();
         let (w, h) = (frame.width as usize, frame.height as usize);
         let cam = &req.camera;
         let cam_block = cam.split_position().0;
-        let (hm, scene) = (&self.hm, &self.scene);
+        let (hm, scene) = (&self.hm, world);
         let lit = req.mode == RenderMode::Lit;
         let sky = encode_srgb(scene.env.sky);
         let m = March::new(hm, cam, w, h, hm.march_cells() as usize);
@@ -157,8 +155,8 @@ impl Lane for CpuColumns {
         }
     }
 
-    fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        (name == "shadows").then(|| cpu_reference::parse_shadows(value).map(|s| self.scene.shadows = s))
+    fn set_param(&mut self, _: &str, _: &ParamValue) -> Option<anyhow::Result<()>> {
+        None
     }
 
     fn resize(&mut self, frame: &Frame) {
@@ -171,6 +169,6 @@ impl Lane for CpuColumns {
     }
 
     fn memory(&self) -> u64 {
-        self.scene.dense_bytes() + (self.cols.len() + self.recs.len() * 8 + self.hm.hm.len() * 4) as u64
+        self.chunks.dense_bytes() + (self.cols.len() + self.recs.len() * 8 + self.hm.hm.len() * 4) as u64
     }
 }

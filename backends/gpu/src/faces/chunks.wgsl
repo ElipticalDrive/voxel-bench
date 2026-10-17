@@ -4,8 +4,8 @@
 // `face_hit`; the shading component colours the hit (`shade_surface`), with shadow rays
 // through the composed storage. The frame is the executor's (`frame.wgsl`).
 
-@group(0) @binding(1) var<storage, read> quads: array<vec2<u32>>;
-@group(0) @binding(2) var<storage, read> chunk_pos: array<vec4<i32>>;
+@group(0) @binding(8) var<storage, read> quads: array<vec2<u32>>;
+@group(0) @binding(9) var<storage, read> chunk_pos: array<vec4<i32>>;
 
 // Minimum corner of instance `q`'s `face` (camera-block relative), on the face plane.
 fn quad_base(q: vec2<u32>, face: u32) -> vec3<f32> {

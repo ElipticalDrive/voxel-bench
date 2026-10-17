@@ -228,7 +228,7 @@ The user's architecture, settled with finality and without limits for later (IDE
           split at the hit records, deferred shading on the second GPU; see the log.)
         - 13e4d: the faces lane on group 0 (its own frame uniform goes), the CPU lanes'
           world shared; then the full pixel and timing A/B of every old composition against
-          13e3. Step 13 is then done.
+          13e3. Step 13 is then done. (Done 2026-10-17; see the log.)
 14. **The served split (IDEAS §19):** the world (generator, authoritative store, change
     log) becomes a node on a *server* device; a *link* is a graph edge, the bottleneck
     between them (the point is the separation, not realistic networking; latency,
@@ -1327,4 +1327,67 @@ root, `walk.wgsl` / `rayquery.wgsl` the lanes' roots), `components/src/graph.rs`
 - Not yet: the edge `prev` (the second GPU shading frame N-1 while the first casts N: one frame
   of latency, overlapping the GPUs); other record writers (gpu-raster's gbuffer, columns) feeding
   the remote shading; a peer copy where the API offers one.
+
+
+**2026-10-17, step 13e4d: the faces lane on the core's group 0; one CPU world; the A/B of step
+13e.** `backends/gpu/src/{lib.rs,faces/*}`, `components/src/draw/faces.wgsl`,
+`renderers/cpu-reference/src/lib.rs`, `backends/cpu/src/*`:
+- **Faces on group 0:** the face drawer's own frame uniform (`FrameUniform`, `Draw.frame_buf`)
+  is gone; it reads the core's camera uniform, which gains `view_proj` and `anchor` at its end
+  (the other lanes' shaders leave them undeclared, so their WGSL is unchanged), the view tint
+  as the lane's first word. The drawer's group 0 is the core's (camera 0, shading state 2-3,
+  acceleration structures 5-7; no storage-texture output: its output is a render attachment,
+  `Core::layout_entries_with(false)`), the face source's two buffers at the lane's bindings
+  8-9 (were 1-2; shading state was 3-4). The core's writable entries are not visible to vertex
+  shaders (only the faces lane has them).
+- **One CPU world:** `cpu_reference::World` (block registry, environment, point lights and their
+  grid, the `shadows` knob) is the CPU executor core's; each lane keeps only its chunks (the
+  ray-casting lane its storage's representation, the rasteriser and voxelspace lanes
+  `cpu_reference::Chunks`: dense chunks with the reference DDA), and the reference model is a
+  view of both (`VoxelScene<'a> { world, chunks }`). Gone: the ray-casting lane's copies of the
+  environment, the lights and their grid builder, and the per-lane `shadows` handling. The
+  reference renderer is the same two parts.
+- Pixel A/B against 13e3 (frames 0/20/39, lit + unlit), terrain: gpu-compute plain, deferred,
+  fragment + deferred, beam, tree64 + sphere + pathtrace, steps view; gpu-rt greedy, deferred,
+  boxes + pathtrace; gpu-raster raster, visbuffer, gbuffer + pathtrace; gpu-discover plain,
+  coverage; cpu-discover quadtree, cluster; gpu-splat; gpu-voxelspace inline, deferred,
+  pathtrace; cpu plain, incremental deferred, tiles + steps view; cpu-raster deferred, naive
+  inline; cpu-voxelspace inline, deferred (168 of 168 frames identical); meshes: gpu-compute
+  deferred, fragment, gpu-raster gbuffer, raster (30 of 30); edits: gpu-raster visbuffer,
+  gpu-discover, cpu-discover, gpu-splat, gpu-voxelspace, cpu palette, cpu-raster,
+  cpu-voxelspace, gpu-rt, gpu-compute (64 of 66: gpu-splat at frame 0, ~3000-4500 px, which
+  differs between two runs of one build: what has streamed in); far: gpu-compute (12 of 12).
+- Timing A/B against 13e3 (terrain, 300 frames, each alone, 4 rounds; GPU time lit / unlit, fps
+  where host-bound): gpu-compute +0.0 / +0.0%, deferred +0.0 / +0.0%, fragment deferred -0.1 /
+  -0.0%, beam +0.0 / -0.0%, tree64 pathtrace -0.1 / -0.2%, steps +0.1 / +0.1%; gpu-rt +0.4 /
+  -0.0% (8 rounds: +0.0 / +0.2%), deferred +0.4 / +0.7% (8: +0.5 / +0.7%, 13e4b's logged
+  change), boxes pathtrace +0.2 / +0.0%; gpu-raster +0.5 / +0.1%, visbuffer -0.1 / -0.5%,
+  gbuffer pathtrace -0.4 / +0.1%; gpu-discover +1.4 / +0.2% (8: +0.0 / -0.2%), coverage -0.1 /
+  -0.2%; cpu-discover -0.2 / +0.3%, cluster -0.4 / +1.3%; gpu-splat -0.1 / +2.6% (8: -0.1 /
+  -0.6%: its tail); gpu-voxelspace +0.1 / -0.0%, deferred -0.1 / -0.0%, pathtrace +0.0 / -0.0%.
+  CPU lanes (fps): cpu -0.6 / +0.2%, incremental deferred +0.7 / +1.9%, tiles steps +0.8 / -0.2%,
+  cpu-raster -0.5 / -1.2% (8: -0.4 / -1.6%), naive -0.7 / -0.6%, cpu-voxelspace +1.1 / +3.8%,
+  deferred +3.5 / +5.8%.
+- **Logged: host-bound fps of the GPU rasterisers** (gpu-raster ~175 fps: -2.1 / -3.4% raster,
+  -3.1 / -1.9% visbuffer (8: -1.8 / -2.0%), -1.5 / -3.2% gbuffer), its GPU time unchanged. The
+  time is in CPU stages 13e4d did not touch: meshing (`geometry` 3.35 -> 3.49 ms) and culling
+  (+5%). Bisected: 13e3 -> 13e4c -0.6 / +0.1%; 13e4c -> 13e4d -2.2 / -2.8% (6 rounds); but each
+  half of 13e4d alone on 13e4c measures none (CPU world only +0.6 / +0.5%, faces only +0.4 /
+  -1.0%): the mesher's machine code is the same size, the loss appears only with both halves
+  linked, so it is the binary's layout, not either change's work (the mesher and the cull run
+  the same code). Unresolved; the forced alignment (`.cargo/config.toml`) does not cover it.
+- **Logged: host-bound fps of gpu-rt** (~113 fps: -1.8 / -1.7% over 8 rounds, deferred -1.3 /
+  -2.4%) and gpu-voxelspace pathtrace unlit (~490 fps: -4.8%, 8 rounds -3.6%); GPU time
+  unchanged. Bisected (6 rounds): gpu-rt 13e3 -> 13e4c +0.5 / -1.1%, 13e4c -> 13e4d -0.9 / -1.3%;
+  voxelspace pathtrace -0.7% and -0.8% unlit (so about -1.5% in all). Small losses spread over
+  steps whose host work for these lanes did not change (13e4d: one camera write with 80 more
+  bytes); not explained.
+- Verified: builds without warnings (dev, release), 84 unit tests, 4 GPU end-to-end tests; the
+  faces lane's three sources and three drawers run (gpu-raster psnr 52.0 / 48.6, gpu-discover
+  50.2 / 47.8, cpu-discover 29.4 / 27.0 over 20 frames, as before).
+- Step 13 is done: every renderer is a graph run by the GPU or CPU executor, cpu-discover a
+  configuration, one pipeline split over two GPUs; stateful nodes and timings (incremental
+  discovery, pipelining, accumulation) run. Not done within it (logged above): an edge `prev`
+  between GPUs, other record writers feeding a remote shading, the rasterisers' lead shadow
+  rays as ray queries.
 
