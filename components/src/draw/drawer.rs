@@ -80,6 +80,10 @@ pub struct FaceDrawer {
     height: u32,
 }
 
+/// The deferred shading pass's images group (after the drawing's group 0, the world's 1 and
+/// the first storage's 2, where there is one).
+pub const IMAGES_GROUP: u32 = 3;
+
 /// One frame's drawing.
 pub struct DrawFrame<'a> {
     pub out: &'a wgpu::TextureView,
@@ -360,7 +364,7 @@ impl FaceDrawer {
                 for (i, g) in f.binds.iter().enumerate() {
                     pass.set_bind_group(i as u32, *g, &[]);
                 }
-                pass.set_bind_group(f.binds.len() as u32, &images, &[]);
+                pass.set_bind_group(IMAGES_GROUP, &images, &[]);
                 for (i, g) in f.more {
                     pass.set_bind_group(*i, *g, &[]);
                 }

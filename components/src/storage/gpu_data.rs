@@ -366,10 +366,10 @@ impl Bound {
         }
     }
 
-    /// The first storage's bind group and the others' by group (a face drawer's `binds`
-    /// and `more`).
-    pub fn split(&self) -> (&wgpu::BindGroup, Vec<(u32, &wgpu::BindGroup)>) {
-        (&self.0[0].1, self.0[1..].iter().map(|(g, b)| (*g, b)).collect())
+    /// The first storage's bind group (none when every site is a ray query) and the
+    /// others' by group (a face drawer's `binds` and `more`).
+    pub fn split(&self) -> (Option<&wgpu::BindGroup>, Vec<(u32, &wgpu::BindGroup)>) {
+        (self.0.first().map(|(_, b)| b), self.0.iter().skip(1).map(|(g, b)| (*g, b)).collect())
     }
 
     /// Storage `i`'s bind group.

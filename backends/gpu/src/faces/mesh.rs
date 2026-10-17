@@ -232,7 +232,7 @@ impl Meshing {
             anyhow::bail!("{BACKEND}: the faces do not cross from the CPU to the GPU");
         }
         let (walks, shadow, bounce, mesh_shadow) = walks(g)?;
-        let mesh_storage = walks.kernels[mesh_shadow].storage;
+        let mesh_storage = walks.kernels[mesh_shadow].storage.ok_or_else(|| anyhow::anyhow!("{BACKEND}: mesh shadows walk a storage (not ray queries)"))?;
         let (occ, rays) = walks.shadow_program(mesh_shadow);
         tracing::info!("gpu-raster: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
@@ -247,7 +247,8 @@ impl Meshing {
             SourceSpec {
                 wgsl: source_wgsl(&geometry),
                 walks,
-                sites: [shadow, shadow, shadow, bounce],
+                lead: None,
+                sites: [shadow, bounce],
                 varyings: false,
                 strip: self::geometry(&geometry).strip,
                 meshes: Some(mesh_shadow),
@@ -503,19 +504,23 @@ impl FaceSource for Meshing {
         let bound = core.storages.prepare(&core.gpu, &core.world);
         self.mesh.set_occlusion_bind_group(bound.get(self.mesh_storage));
         let (bind2, more) = bound.split();
+        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
+        if core.build_accel(&mut enc, ticket, req) {
+            self.bind0 = Some(drawing.bind(core, self.quad_buf.buffer(), &self.chunk_buf));
+        }
         let bind0 = self.bind0.clone().unwrap();
+        let binds: Vec<&wgpu::BindGroup> = [Some(&bind0), Some(&world_bg), bind2].into_iter().flatten().collect();
         let sky = super::sky_rgba(core);
         let clear = wgpu::Color { r: sky[0] as f64, g: sky[1] as f64, b: sky[2] as f64, a: 1.0 };
         let out_view = core.output.create_view(&Default::default());
         let n = draws.len() as u32;
-        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
         let frame = DrawFrame {
             out: &out_view,
             depth: &drawing.depth,
             clear,
             prepass: drawing.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
-            binds: &[&bind0, &world_bg, bind2],
+            binds: &binds,
             more: &more,
             mesh_verts: Some(self.mesh.vertices()),
             ring: &core.ring,
@@ -532,6 +537,7 @@ impl FaceSource for Meshing {
         let meshes = want_meshes && (!drawing.drawer.mode().deferred() || self.mesh.triangles() > 0);
         let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp, Some(&world_bg));
         drawing.drawer.encode(&core.gpu, &mut enc, &frame, &draw, meshes.then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass)), None);
+        let (accel, accel_stages) = core.accel_stats();
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
@@ -546,9 +552,10 @@ impl FaceSource for Meshing {
             ]
             .into_iter()
             .chain(core.storages.counters())
+            .chain(accel)
             .chain(core.accum.counter(req.mode))
             .collect(),
-            stages: vec![StageTime::cpu("geometry", &self.geometry_nodes, mesh_ms as f32), StageTime::cpu("cull", &self.cull_nodes, cull_ms)],
+            stages: [StageTime::cpu("geometry", &self.geometry_nodes, mesh_ms as f32), StageTime::cpu("cull", &self.cull_nodes, cull_ms)].into_iter().chain(accel_stages).collect(),
         };
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
         core.ring.poll(&core.gpu, sink, false)
@@ -636,7 +643,7 @@ mod tests {
                             let what = format!("{st} {k} {g} {shading}");
                             let (walks, shadow, bounce, mesh_shadow) = walks(&ck).unwrap();
                             // The drawer (with mesh records for deferred drawers, and without).
-                            let (program, deps, meshed) = crate::faces::programs(&walks, [shadow, shadow, shadow, bounce], Some(mesh_shadow));
+                            let (program, deps, meshed) = crate::faces::programs(&walks, None, [shadow, bounce], Some(mesh_shadow));
                             let draw_src = crate::faces::draw_src(&source_wgsl(g), shading, false);
                             crate::faces::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, BACKEND);
                             // Forward mesh shading through the mesh-shadow site.

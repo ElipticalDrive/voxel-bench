@@ -88,11 +88,11 @@ struct CoreOpts<'a> {
 /// its sites' walks and how the drawer draws its faces.
 struct SourceSpec {
     wgsl: String,
-    /// The walks of the GPU's rays, and the indices of (discovery rays, exposure, shadow,
-    /// bounce) in them (the CPU sampler's and meshing's GPU walks are their shadow rays' and
-    /// bounces').
+    /// The walks of the GPU's rays: the indices of the discovery rays' kernel and the
+    /// exposure storage in them (the GPU sampler's), and of the shadow and bounce rays'.
     walks: Walks,
-    sites: [usize; 4],
+    lead: Option<(usize, usize)>,
+    sites: [usize; 2],
     /// The drawer's fragment inputs: interpolated (unit faces) or rebuilt from the instance
     /// (merged faces, `draw::faces_wgsl`).
     varyings: bool,
@@ -200,9 +200,8 @@ fn draw_wgsl(mode: DrawMode, shading: &str) -> String {
 /// The walks' program for a source's sites (discovery rays, exposure, shadow, bounce) and the
 /// root's dependencies; with meshes (the mesh-shadow site's walk) also the mesh capability's
 /// variant, the triangles in the images group.
-fn programs(walks: &Walks, sites: [usize; 4], meshes: Option<usize>) -> (mr_gpu::program::Program, Vec<String>, Option<Meshed>) {
-    let [rays, exposure, shadow, bounce] = sites;
-    let (program, deps) = mr_components::shaders::sites_program(walks, rays, exposure, shadow, bounce);
+fn programs(walks: &Walks, lead: Option<(usize, usize)>, [shadow, bounce]: [usize; 2], meshes: Option<usize>) -> (mr_gpu::program::Program, Vec<String>, Option<Meshed>) {
+    let (program, deps) = mr_components::shaders::sites_program(walks, lead, shadow, bounce);
     let meshed = meshes.map(|mesh_shadow| {
         let (mut program, mut deps) = (program.clone(), deps.clone());
         deps.insert(0, mr_components::shaders::meshes(&mut program, walks, shadow, mesh_shadow, 3, 2));
@@ -245,6 +244,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         CoreSpec {
             gpu: GpuNeeds { experimental: false, required_features: src.features, optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE },
             walks: &src.walks,
+            accel: crate::accel::AccelSpec::of(g, &src.walks)?,
             stages: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT,
             max_lod: 0,
             voxels: false,
@@ -263,7 +263,12 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
     let shading = o.shading.to_string();
     // The walks' modules: the roots cast through the discovery rays' kernel and read the
     // exposure storage; shading's rays through theirs.
-    let (program, deps, meshed) = programs(&src.walks, src.sites, src.meshes);
+    let (mut program, deps, mut meshed) = programs(&src.walks, src.lead, src.sites, src.meshes);
+    // Ray queries at the sites: their bindings and trace in every root.
+    core.trace_root(&mut program, "0u");
+    if let Some(m) = &mut meshed {
+        core.trace_root(&mut m.program, "0u");
+    }
     let draw_src = draw_src(&src.wgsl, &shading, src.varyings);
     let buf = |binding, ty| wgpu::BindGroupLayoutEntry {
         binding,
@@ -273,8 +278,11 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
     };
     let ro = wgpu::BufferBindingType::Storage { read_only: true };
     let [a, b] = ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE);
-    // The frame, the face source's two buffers, the shading state.
-    let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("face draw"), entries: &[buf(0, wgpu::BufferBindingType::Uniform), buf(1, ro), buf(2, ro), a, b] });
+    // The frame, the face source's two buffers, the shading state, the acceleration
+    // structures (ray queries at the sites).
+    let mut entries = vec![buf(0, wgpu::BufferBindingType::Uniform), buf(1, ro), buf(2, ro), a, b];
+    entries.extend(core.accel.iter().flat_map(|a| a.layout_entries(wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE)));
+    let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("face draw"), entries: &entries });
     let images = FaceDrawer::images_layout(dev, meshed.is_some());
     let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("face draw"), bind_group_layouts: &core.storages.layouts(&[Some(&layout_draw), Some(core.world.layout())]), immediate_size: 0 });
     let pl_shade = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -345,20 +353,19 @@ impl Draw {
         Ok(rebound)
     }
 
-    /// A draw bind group: the frame, the face source's two buffers, the shading state.
+    /// A draw bind group: the frame, the face source's two buffers, the shading state, the
+    /// acceleration structures.
     fn bind(&self, core: &Core, a: &wgpu::Buffer, b: &wgpu::Buffer) -> wgpu::BindGroup {
         let [s0, s1] = core.accum.bind_entries(3);
-        core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("face draw"),
-            layout: &self.layout_draw,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.frame_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: a.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: b.as_entire_binding() },
-                s0,
-                s1,
-            ],
-        })
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: self.frame_buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: a.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: b.as_entire_binding() },
+            s0,
+            s1,
+        ];
+        entries.extend(core.accel.iter().flat_map(|a| a.bind_entries()));
+        core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("face draw"), layout: &self.layout_draw, entries: &entries })
     }
 
     /// Writes the frame uniform for `c` (`view`: the face source's tint; `anchor`: the CPU
@@ -517,7 +524,7 @@ mod tests {
                 let groups = &[2, 4];
                 let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), groups, false);
                 let bounce = ck.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&ck, s, groups, false));
-                let (program, deps) = mr_components::shaders::sites_program(&walks, shadow, shadow, shadow, bounce);
+                let (program, deps) = mr_components::shaders::sites_program(&walks, None, shadow, bounce);
                 drawers(&program, &deps, None, &super::draw_src(include_str!("records.wgsl"), shading, true), shading, &format!("{st} {shading}"), backend);
             }
         }

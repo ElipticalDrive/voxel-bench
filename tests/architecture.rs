@@ -63,7 +63,7 @@ const SHADING_USE: &[(&str, &str)] = &[
     // `shaders::shading`: the shading component's module (`shading::gpu_wgsl`; PLAN step 9b).
     // The ray-casting lane (gpu-compute and gpu-rt; PLAN step 13e2): each caster.
     ("gpu/src/raycast/walk.rs", "shaders::shading(&mut program, shading, &rays"),
-    ("gpu/src/raycast/rayquery.rs", "shaders::shading(&mut program, shading, &[\"rt::rays\"]"),
+    ("gpu/src/raycast/rayquery.rs", "shaders::shading(&mut program, shading, &rays"),
     // The faces lane (gpu-raster, gpu-discover and cpu-discover; PLAN step 13e1).
     ("gpu/src/faces", "shading::gpu_wgsl("),
     ("gpu/src/splat.rs", "shading::gpu_wgsl("),

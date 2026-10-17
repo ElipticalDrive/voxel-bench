@@ -547,7 +547,8 @@ impl GpuSampler {
         let (core, drawing) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("set_faces.wgsl").into(),
             walks,
-            sites: [rays, exposure, shadow, bounce],
+            lead: Some((rays, exposure)),
+            sites: [shadow, bounce],
             varyings: true,
             strip: true,
             meshes: None,
@@ -1011,6 +1012,7 @@ impl GpuSampler {
     fn counters(&self, core: &Core, mode: RenderMode) -> Vec<(String, f64)> {
         let mut out = vec![("chunk_slots".into(), self.slots.len() as f64), ("slot_overflow".into(), self.slot_overflow as f64)];
         out.extend(core.accum.counter(mode));
+        out.extend(core.accel_stats().0);
         if self.opts.incremental && self.opts.events {
             // 0 static (skipped), 1 still (rotation / chunk changes), 2 moving, 3 full.
             out.push(("frame_kind".into(), self.last_kind as u32 as f64));
@@ -1114,7 +1116,7 @@ impl GpuSampler {
             clear,
             prepass,
             keep_depth: self.opts.incremental,
-            binds: &[bind_draw, world_bg, st],
+            binds: &[bind_draw, world_bg, st.expect("discovery rays walk a storage")],
             more: &more,
             mesh_verts: None,
             ring: &core.ring,
@@ -1193,12 +1195,22 @@ impl GpuSampler {
         let world_bg = core.world.prepare(&core.gpu, c).clone();
         let bound = Bound(core.storages.prepare(&core.gpu, &core.world).0.clone());
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
+        if core.build_accel(&mut enc, ticket, req) {
+            self.bind_faces(core, drawing);
+        }
         self.encode_shade(core, drawing, &mut enc, parity, &world_bg, &bound, req.mode, (true, true), ticket);
         let tile = self.opts.tile;
         self.encode_overlay(core, &mut enc, ticket, 0, 0, 0, core.width.div_ceil(tile), core.height.div_ceil(tile));
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(core, req.mode), legend: self.legend(), stages: Vec::new() };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(core, req.mode), legend: self.legend(), stages: core.accel_stats().1 };
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
         core.ring.poll(&core.gpu, sink, false)
+    }
+
+    /// The drawing's bind groups over the face lists (anew when the drawing's group changes).
+    fn bind_faces(&mut self, core: &Core, drawing: &Draw) {
+        self.bind_merged = drawing.bind(core, &self.merged, &self.cpos);
+        self.bind_sorted = drawing.bind(core, &self.sorted, &self.cpos);
+        self.bind_draw = [0, 1].map(|i| drawing.bind(core, &self.lists[i], &self.cpos));
     }
 
     /// Row merge active (painter order sorts single faces, so it takes precedence).
@@ -1388,6 +1400,9 @@ impl FaceSource for GpuSampler {
         let holes = self.opts.incremental as usize;
 
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
+        if core.build_accel(&mut enc, ticket, req) {
+            self.bind_faces(core, drawing);
+        }
         // Counter/timestamp staging buffer for this frame (if one is free).
         let stage = self.stages.iter().position(|s| s.state.load(Ordering::SeqCst) == 0);
         let qs = self.profile.as_ref().zip(stage).map(|(q, i)| (q, i as u32 * PROFILE_TS));
@@ -1594,7 +1609,7 @@ impl FaceSource for GpuSampler {
             }
             self.stages[i].tag = (self.frame, parity as u32);
         }
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(core, req.mode), legend: self.legend(), stages: Vec::new() };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(core, req.mode), legend: self.legend(), stages: core.accel_stats().1 };
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
         if let Some(i) = stage {
             let st = &self.stages[i];
@@ -1651,9 +1666,7 @@ impl FaceSource for GpuSampler {
 
     fn resize(&mut self, core: &Core, drawing: &Draw) {
         self.sized = make_sized(&core.gpu, core.width, core.height);
-        self.bind_merged = drawing.bind(core, &self.merged, &self.cpos);
-        self.bind_sorted = drawing.bind(core, &self.sorted, &self.cpos);
-        self.bind_draw = [0, 1].map(|i| drawing.bind(core, &self.lists[i], &self.cpos));
+        self.bind_faces(core, drawing);
         self.bind_disc = None;
         self.bind_ov = None;
         self.force_full = true;
@@ -1752,7 +1765,7 @@ mod tests {
                     let mut with_bounce = walks.clone();
                     let bounce = with_bounce.site(&ck, ck.site(Role::Shading, "bounce").unwrap(), STORAGE_GROUPS, false);
                     for (walks, bounce, shading) in [(walks, shadow, "direct"), (with_bounce, bounce, "pathtrace")] {
-                        let (mut program, deps) = mr_components::shaders::sites_program(&walks, rays, exposure, shadow, bounce);
+                        let (mut program, deps) = mr_components::shaders::sites_program(&walks, Some((rays, exposure)), shadow, bounce);
                         crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("set_faces.wgsl"), shading, true), shading, &format!("{st} {k} {shading}"), BACKEND);
                         // Discovery's pieces: the sampler and hole detection over the shared set.
                         program.add(quadtree::SET, quadtree::SET_WGSL, &deps.iter().map(String::as_str).collect::<Vec<_>>());

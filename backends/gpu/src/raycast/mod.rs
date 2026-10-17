@@ -59,6 +59,9 @@ struct Before {
 trait Cast: Sized {
     /// The registry's name of this configuration.
     const BACKEND: &'static str;
+    /// The ray flags of ray queries that are not shadow rays (a WGSL expression; see
+    /// `Core::trace_root`).
+    const RT_FLAGS: &'static str = "0u";
     /// Group 0's entries from `LANE_BINDING`.
     fn layout_entries(&self, stages: wgpu::ShaderStages) -> Vec<wgpu::BindGroupLayoutEntry>;
     /// Their resources (stale after the lane's group 0 is dropped: see `Passes::unbind`).
@@ -159,7 +162,9 @@ impl Passes {
     fn variant<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, meshed: bool) -> anyhow::Result<(Variant, Vec<wgpu::ComputePipeline>)> {
         let dev = &core.gpu.device;
         let deferred = core.records.is_some() && !cast.inline_only();
-        let lp = shader(cast.program(shading, meshed), deferred, cast.inline_only(), cast.fragment());
+        let mut lp = cast.program(shading, meshed);
+        core.trace_root(&mut lp.program, C::RT_FLAGS);
+        let lp = shader(lp, deferred, cast.inline_only(), cast.fragment());
         let deps: Vec<&str> = lp.deps.iter().map(String::as_str).collect();
         let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = mr_gpu::program::compile(dev, "raycast", &lp.program, &lp.root, &deps);
@@ -278,6 +283,9 @@ impl<C: Cast> Lane for Raycast<C> {
         let start = Instant::now();
         let c = &req.camera;
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
+        if core.build_accel(&mut enc, ticket, req) {
+            passes.unbind();
+        }
         cast.prepare(core, passes, &mut enc, ticket, req);
         core.accum.begin(&core.gpu, c, req.mode);
         core.write_camera(c, req.mode, cast.camera());
@@ -336,7 +344,10 @@ impl<C: Cast> Lane for Raycast<C> {
             }
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         }
-        let (mut counters, legend, stages) = cast.stats(core);
+        let (mut counters, legend, mut stages) = cast.stats(core);
+        let (accel, accel_stages) = core.accel_stats();
+        counters.extend(accel);
+        stages.extend(accel_stages);
         counters.extend(core.accum.counter(req.mode));
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
         cast.finish(&mut enc);

@@ -215,6 +215,9 @@ pub struct FrameRing {
     marks: Option<wgpu::QuerySet>,
     /// The GPU stages of the frame being recorded.
     recording: std::sync::Mutex<Vec<StageTime>>,
+    /// The frame being recorded started its clock before its passes ([`Self::start_clock`]):
+    /// passes asking to begin it do not.
+    clock_started: std::sync::atomic::AtomicBool,
     timestamp_period: f32,
     width: u32,
     height: u32,
@@ -286,6 +289,7 @@ impl FrameRing {
             query_set,
             marks,
             recording: Default::default(),
+            clock_started: Default::default(),
             timestamp_period: gpu.queue.get_timestamp_period(),
             width,
             height,
@@ -305,7 +309,26 @@ impl FrameRing {
             gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
             self.poll(gpu, sink, false)?;
         }
+        self.clock_started.store(false, std::sync::atomic::Ordering::Relaxed);
         Ok(Ticket(self.free.pop().unwrap()))
+    }
+
+    /// Starts frame `t`'s clock now, on `enc` (before work outside passes: acceleration
+    /// structure builds): a timestamp in the encoder where the device writes them there, else
+    /// an empty pass. The frame's passes asking to begin it then do not.
+    pub fn start_clock(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, t: Ticket) {
+        let Some((q, begin, _)) = self.timestamps(t) else { return };
+        if gpu.device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
+            enc.write_timestamp(q, begin);
+        } else {
+            enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("frame begin"), timestamp_writes: self.compute_timestamps(t, true, false) });
+        }
+        self.clock_started.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether a pass asking to begin the frame's clock does (not after `start_clock`).
+    fn begins(&self, begin: bool) -> bool {
+        begin && !self.clock_started.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// `(query_set, begin_index, end_index)` for this frame's timestamps, if supported.
@@ -315,6 +338,7 @@ impl FrameRing {
     }
 
     pub fn compute_timestamps(&self, t: Ticket, begin: bool, end: bool) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
+        let begin = self.begins(begin);
         // A pass writing neither is no timestamp pass (wgpu rejects one without indices).
         self.timestamps(t).filter(|_| begin || end).map(|(q, b, e)| wgpu::ComputePassTimestampWrites {
             query_set: q,
@@ -324,6 +348,7 @@ impl FrameRing {
     }
 
     pub fn render_timestamps(&self, t: Ticket, begin: bool, end: bool) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+        let begin = self.begins(begin);
         // A pass writing neither is no timestamp pass (wgpu rejects one without indices).
         self.timestamps(t).filter(|_| begin || end).map(|(q, b, e)| wgpu::RenderPassTimestampWrites {
             query_set: q,

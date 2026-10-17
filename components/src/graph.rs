@@ -322,12 +322,15 @@ fn known(role: Role, name: &str) -> bool {
 }
 
 /// Where a node runs unless the graph says otherwise: fused nodes run with their callers;
-/// the rest where the back end runs that role (its [`crate::Place`]; GPU slot 0).
-fn default_device(executor: &str, role: Role) -> Device {
+/// the rest where the back end runs that role (its [`crate::Place`]; GPU slot 0), or for a
+/// stage it has not (a free site's geometry) where the component runs, if on one kind of
+/// device only.
+fn default_device(executor: &str, role: Role, component: &str) -> Device {
+    let only = || role.slot().and_then(|s| crate::component(s, component)).and_then(|c| c.impls.iter().all(|i| i.kind == Kind::Cpu).then_some(Device::Cpu));
     match (backend(executor), role.slot()) {
-        (Some(b), Some(slot)) if b.place(slot).kind == Kind::Gpu => Device::Gpu(0),
-        (Some(_), Some(_)) => Device::Cpu,
-        (None, Some(_)) => Device::Gpu(0),
+        (Some(b), Some(slot)) if b.has(slot.source()) && b.place(slot).kind == Kind::Gpu => Device::Gpu(0),
+        (Some(b), Some(slot)) if b.has(slot.source()) => Device::Cpu,
+        (_, Some(_)) => only().unwrap_or(Device::Gpu(0)),
         (_, None) => Device::Cpu,
     }
 }
@@ -496,7 +499,7 @@ impl Graph {
     /// queries, else `gpu-compute`; `columns`; `splat`). Nodes without a device run where
     /// the written executor runs their role. `None` for a shape no preset has.
     pub fn preset(&self) -> Option<&'static str> {
-        let dev = |n: &Node| n.device.unwrap_or_else(|| default_device(&self.executor, n.role)).kind();
+        let dev = |n: &Node| n.device.unwrap_or_else(|| default_device(&self.executor, n.role, &n.component)).kind();
         let shading = self.nodes.values().find(|n| n.role == Role::Shading)?;
         let hits = self.nodes.get(shading.inputs.get("hits")?)?;
         let gpu = |n: &Node| dev(n) == Kind::Gpu;
@@ -532,7 +535,7 @@ impl Graph {
         let mut g = self.clone();
         if let Some(b) = backend(&self.executor) {
             for n in g.nodes.values_mut().filter(|n| n.role.slot().is_some_and(|s| b.has(s)) && known(n.role, &n.component) && !output(n.role, &n.component).fused()) {
-                n.device.get_or_insert_with(|| default_device(&self.executor, n.role));
+                n.device.get_or_insert_with(|| default_device(&self.executor, n.role, &n.component));
             }
         }
         g.executor = p.into();
@@ -592,7 +595,7 @@ impl Graph {
             id = self.nodes[id].inputs.get("faces")?;
         }
         let vis = self.nodes.get(id)?;
-        let dev = |n: &Node| n.device.unwrap_or_else(|| default_device(&self.executor, n.role));
+        let dev = |n: &Node| n.device.unwrap_or_else(|| default_device(&self.executor, n.role, &n.component));
         if vis.role != Role::Visibility || dev(vis) != dev(&self.nodes[shading]) {
             return None;
         }
@@ -752,7 +755,7 @@ impl Graph {
                     }
                     d
                 }
-                None => default_device(&g.executor, n.role),
+                None => default_device(&g.executor, n.role, &n.component),
             };
             devices.insert(id.to_string(), d);
         }
@@ -936,22 +939,50 @@ impl Graph {
                     }
                 }
                 bind => {
-                    // Secondary rays run where the back end runs its shadow stages (cpu-discover:
-                    // on the GPU), the others with its storage and kernel.
+                    // On the GPU, any GPU implementation (the GPU executor compiles walks into
+                    // any of its lanes and builds ray queries' acceleration structures). Else
+                    // secondary rays run where the back end runs its shadow stages, the others
+                    // with its storage and kernel.
                     let secondary = matches!(role, Role::Shading | Role::Meshes);
                     let need = |slot: Slot, id: &str| {
+                        let comp = &g.nodes[id].component;
+                        if ck.devices[id].kind() == Kind::Gpu && slot != Slot::Geometry {
+                            let c = component(slot, comp)?;
+                            return (!c.impls.iter().any(|i| i.kind == Kind::Gpu)).then(|| format!("{at} → `{id}`: `{comp}` has no GPU implementation (has: {})", c.impls_label()));
+                        }
                         let at_slot = match slot {
                             Slot::Storage if secondary => Slot::ShadowStorage,
                             Slot::Traversal if secondary => Slot::ShadowTraversal,
                             s => s,
                         };
-                        crate::unimplemented_at(&b.place(at_slot), slot, &g.nodes[id].component).map(|w| format!("{at} → `{id}`: {w}"))
+                        crate::unimplemented_at(&b.place(at_slot), slot, comp).map(|w| format!("{at} → `{id}`: {w}"))
                     };
                     if port == "exposure" {
                         why.extend(need(Slot::Storage, &src));
                         continue;
                     }
                     why.extend(need(Slot::Traversal, &src));
+                    // Ray queries trace acceleration structures the GPU executor builds on the
+                    // CPU from a geometry node (one per pipeline), not in the face drawer's
+                    // mesh pipelines.
+                    let query = g.walked(&src).filter(|w| g.nodes[*w].role == Role::Geometry);
+                    if let Some(geo) = query {
+                        let name = &g.nodes[geo].component;
+                        if crate::geometry::rt(name).is_none() {
+                            why.push(format!("{at} → `{geo}`: geometry `{name}` builds no acceleration structure for ray queries (have: greedy, naive, boxes)"));
+                        }
+                        if ck.devices[geo] != Device::Cpu {
+                            why.push(format!("{at} → `{geo}`: acceleration structures are built from geometry meshed on the CPU (here: {})", ck.devices[geo]));
+                        }
+                        if role == Role::Meshes && b.has(Slot::Draw) {
+                            why.push(format!("{at}: `{}` lights meshes through walks (its mesh pipelines have no ray queries)", g.executor));
+                        }
+                        let other = g.sites().into_iter().find_map(|(_, _, k)| g.walked(&k).filter(|w| g.nodes[*w].role == Role::Geometry && *w != geo).map(String::from));
+                        if let Some(o) = other {
+                            why.push(format!("{at}: ray queries over two geometry nodes (`{geo}`, `{o}`): one acceleration structure per pipeline"));
+                        }
+                        continue;
+                    }
                     if let Some(st) = g.walked(&src) {
                         if let Some(slot) = g.nodes[st].role.slot() {
                             why.extend(need(slot, st));
@@ -1561,7 +1592,7 @@ enum Bind {
 /// How back end `executor` binds the `port` site of its `role` node (PLAN step 9c).
 fn site_binding(executor: &str, role: Role, port: &str) -> Bind {
     match (executor, role, port) {
-        ("gpu-compute", Role::Shading | Role::Meshes, _) => Bind::Free,
+        ("gpu-compute", Role::Shading | Role::Meshes, _) | ("gpu-rt", Role::Shading, _) => Bind::Free,
         ("gpu-raster" | "gpu-splat", Role::Shading, "bounce") | ("gpu-raster", Role::Meshes, "shadow") => Bind::Free,
         ("gpu-discover", Role::Visibility, "exposure") | ("gpu-discover" | "cpu-discover", Role::Shading, _) => Bind::Free,
         ("cpu", Role::Shading, "shadow") => Bind::SameStorage,
@@ -2080,16 +2111,15 @@ mod tests {
         let mut h = g.clone();
         h.nodes.get_mut("shading").unwrap().inputs.remove("bounce");
         assert_eq!(h.canonical(), g.canonical());
-        // gpu-raster: bounces apart from the shadow rays; a kernel it lacks is rejected.
+        // gpu-raster: bounces apart from the shadow rays, also as ray queries over the
+        // geometry it draws (step 13e4b; before, a kernel it lacked).
         let r = Composition { shading: "pathtrace".into(), ..Composition::new("gpu-raster") };
         assert!(!with(r.clone(), &|g| own(g, "b", "prefix", "incremental", &[("shading", "bounce")])).accept().unwrap().1);
-        let e = with(r, &|g| {
+        let q = with(r, &|g| {
             g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "geometry")]));
             g.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "rq".into());
-        })
-        .validate()
-        .unwrap_err();
-        assert!(e.contains("no gpu raster/compute implementation"), "{e}");
+        });
+        assert!(!q.accept().unwrap().1);
         // gpu-discover: exposure tests read another storage than the discovery rays walk.
         let d = with(Composition { storage: "distance".into(), traversal: "sphere".into(), ..Composition::new("gpu-discover") }, &|g| {
             g.nodes.insert("x".into(), Node::new(Role::Storage, "bricks"));
@@ -2115,14 +2145,13 @@ mod tests {
         assert!(!g.accept().unwrap().1);
         let e = with(cpu, &|g| own(g, "s", "hier", "refloor", &[("shading", "shadow")])).validate().unwrap_err();
         assert!(e.contains("over the storage of its primary rays"), "{e}");
-        // gpu-rt: every ray is a ray query through its one acceleration structure.
-        let e = with(Composition { shading: "pathtrace".into(), ..Composition::new("gpu-rt") }, &|g| {
+        // gpu-rt: its shading's rays free (step 13e4b): a kernel node of their own over its
+        // one acceleration structure.
+        let g = with(Composition { shading: "pathtrace".into(), ..Composition::new("gpu-rt") }, &|g| {
             g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "geometry")]));
             g.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "rq".into());
-        })
-        .validate()
-        .unwrap_err();
-        assert!(e.contains("through its primary kernel"), "{e}");
+        });
+        assert!(!g.accept().unwrap().1);
         // Knobs of free-site nodes stay with their nodes.
         let mut g = with(Composition::default(), &|g| own(g, "s", "prefix", "incremental", &[("shading", "shadow")]));
         g.nodes.get_mut("s.kernel").unwrap().knobs.insert("exact".into(), toml::Value::Boolean(false));
@@ -2240,6 +2269,65 @@ mod tests {
         g.nodes.get_mut("draw").unwrap().device = Some(Device::Gpu(0));
         assert_eq!(g.placed().executor, "gpu-raster");
         assert!(g.validate().is_err());
+    }
+
+    /// Step 13e4b: any GPU ray-casting site binds any kernel with a GPU implementation: ray
+    /// queries over a geometry node's acceleration structures (one per pipeline) beside
+    /// walks, walks beside ray queries; the reasons where not.
+    #[test]
+    fn ray_query_sites() {
+        let of = |b: &str| Graph::from_composition(&Composition { shading: "pathtrace".into(), ..Composition::new(b) }).unwrap();
+        let rq = |g: &mut Graph, geo: &str, k: &str| {
+            g.nodes.insert(geo.into(), Node::new(Role::Geometry, "greedy"));
+            g.nodes.insert(k.into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", geo)]));
+        };
+        let walk = |g: &mut Graph| {
+            g.nodes.insert("st".into(), Node::new(Role::Storage, "prefix"));
+            g.nodes.insert("wk".into(), Node::new(Role::Traversal, "incremental").with(&[("storage", "st")]));
+        };
+        let bind = |g: &mut Graph, port: &str, k: &str| drop(g.nodes.get_mut("shading").unwrap().inputs.insert(port.into(), k.into()));
+        // Shadow rays as ray queries in a walk, in GPU discovery, in CPU discovery's drawing.
+        for b in ["gpu-compute", "gpu-discover", "cpu-discover"] {
+            let mut g = of(b);
+            rq(&mut g, "geo", "rq");
+            bind(&mut g, "shadow", "rq");
+            bind(&mut g, "bounce", "rq");
+            let g = g.pruned();
+            g.validate().unwrap_or_else(|e| panic!("{b}: {e}"));
+            assert_eq!(g.check().unwrap().devices["geo"], Device::Cpu, "{b}");
+        }
+        // Bounces as ray queries in the rasterisers; walks for gpu-rt's shadow rays.
+        for b in ["gpu-raster", "gpu-splat"] {
+            let mut g = of(b);
+            rq(&mut g, "geo2", "rq");
+            bind(&mut g, "bounce", "rq");
+            g.validate().unwrap_or_else(|e| panic!("{b}: {e}"));
+        }
+        let mut g = of("gpu-rt");
+        walk(&mut g);
+        bind(&mut g, "shadow", "wk");
+        g.validate().unwrap();
+        // Reasons: geometry without acceleration structures, two of them, mesh shadows of the
+        // face drawer, a CPU-only storage on the GPU (its capabilities checked first).
+        let mut g = of("gpu-compute");
+        g.nodes.insert("pts".into(), Node::new(Role::Geometry, "points"));
+        g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "pts")]));
+        bind(&mut g, "shadow", "rq");
+        assert!(g.validate().unwrap_err().contains("builds no acceleration structure"));
+        let mut g = of("gpu-rt");
+        rq(&mut g, "geo2", "rq2");
+        bind(&mut g, "shadow", "rq2");
+        assert!(g.validate().unwrap_err().contains("one acceleration structure per pipeline"));
+        let mut g = of("gpu-raster");
+        rq(&mut g, "geo2", "rq");
+        g.nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), "rq".into());
+        assert!(g.validate().unwrap_err().contains("its mesh pipelines have no ray queries"));
+        let mut g = of("gpu-compute");
+        g.nodes.insert("st".into(), Node::new(Role::Storage, "palette"));
+        g.nodes.insert("wk".into(), Node::new(Role::Traversal, "refloor").with(&[("storage", "st")]));
+        bind(&mut g, "shadow", "wk");
+        let e = g.validate().unwrap_err();
+        assert!(e.contains("storage `palette` lacks it on the gpu"), "{e}");
     }
 
     #[test]

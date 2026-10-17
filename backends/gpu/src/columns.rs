@@ -94,6 +94,7 @@ impl Columns {
             CoreSpec {
                 gpu: GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY },
                 walks: &Default::default(),
+                accel: None,
                 stages: wgpu::ShaderStages::COMPUTE,
                 max_lod: 0,
                 voxels: false,

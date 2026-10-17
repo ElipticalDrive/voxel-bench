@@ -970,8 +970,9 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ shading = \"pathtrace\" }}\nsites = {{ bounce = \"*\" }}\n"), &[]).unwrap();
         let keys: std::collections::HashSet<String> = p.renderers.iter().map(|r| r.pipeline().unwrap().key().unwrap()).collect();
         assert_eq!(keys.len(), p.renderers.len());
-        // shared with the shadow rays, 4 kernels over the primary storage, 8 storages x 4 kernels.
-        assert!(p.renderers.len() == 37 && p.renderers.iter().any(|r| r.sites.is_empty()), "{}", p.renderers.len());
+        // shared with the shadow rays, 4 kernels over the primary storage, 8 storages x 4 kernels,
+        // ray queries over 3 geometries (step 13e4b).
+        assert!(p.renderers.len() == 40 && p.renderers.iter().any(|r| r.sites.is_empty()), "{}", p.renderers.len());
         let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = [\"gpu-compute\", \"gpu-raster\"], shading = \"pathtrace\" }}\nsites = {{ bounce = [\"shadow\", \"rows/rowrun\"] }}\n"), &[]).unwrap();
         let labels: Vec<&str> = p.renderers.iter().map(|r| r.label()).collect();
         assert_eq!(labels.len(), 4, "{labels:?}");

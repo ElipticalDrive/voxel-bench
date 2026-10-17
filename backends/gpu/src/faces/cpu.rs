@@ -251,7 +251,8 @@ impl CpuSampler {
         let (core, drawing) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("records.wgsl").into(),
             walks,
-            sites: [shadow, shadow, shadow, bounce],
+            lead: None,
+            sites: [shadow, bounce],
             varyings: true,
             strip: true,
             meshes: None,
@@ -405,18 +406,22 @@ impl FaceSource for CpuSampler {
         if self.bind0.is_none() {
             self.bind0 = Some(drawing.bind(core, self.rec_buf.buffer(), self.tag_buf.buffer()));
         }
+        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
+        if core.build_accel(&mut enc, ticket, req) {
+            self.bind0 = Some(drawing.bind(core, self.rec_buf.buffer(), self.tag_buf.buffer()));
+        }
         let bind0 = self.bind0.clone().unwrap();
+        let binds: Vec<&wgpu::BindGroup> = [Some(&bind0), Some(&world_bg), storage_bg].into_iter().flatten().collect();
         let sky = encode_srgb(core.world.env.sky);
         let clear = wgpu::Color { r: sky[0] as f64 / 255.0, g: sky[1] as f64 / 255.0, b: sky[2] as f64 / 255.0, a: 1.0 };
         let out_view = core.output.create_view(&Default::default());
-        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
         let frame = DrawFrame {
             out: &out_view,
             depth: &drawing.depth,
             clear,
             prepass: drawing.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
-            binds: &[&bind0, &world_bg, storage_bg],
+            binds: &binds,
             more: &more,
             mesh_verts: None,
             ring: &core.ring,
@@ -468,7 +473,9 @@ impl FaceSource for CpuSampler {
         counters.extend(core.accum.counter(req.mode));
         counters.extend(core.storages.counters());
         // Discovery's own time (pipelined: overlapping the previous frame's drawing).
-        let stages = vec![StageTime::cpu("discover", &self.vis_nodes, out.ms)];
+        let (accel, accel_stages) = core.accel_stats();
+        counters.extend(accel);
+        let stages = [StageTime::cpu("discover", &self.vis_nodes, out.ms)].into_iter().chain(accel_stages).collect();
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
         core.ring.poll(&core.gpu, sink, false)

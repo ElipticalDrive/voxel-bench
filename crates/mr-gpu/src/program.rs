@@ -33,6 +33,10 @@ pub struct Program {
     modules: Vec<Module>,
     /// Shader defs set for every module and the root (`#ifdef NAME`).
     defs: Vec<String>,
+    /// Code every root compiled against the program carries, after its own: ray queries,
+    /// which naga cannot write back into a module (the acceleration structures' bindings
+    /// and trace, the ray services it overrides).
+    root_code: Vec<String>,
 }
 
 /// The shared modules: `mr::common` (colour, camera, face helpers), `mr::voxels` (the
@@ -75,6 +79,20 @@ impl Program {
             self.defs.push(name.into());
         }
         self
+    }
+
+    /// Adds `code` to every root (once; see `root_code`).
+    pub fn root(&mut self, code: impl Into<String>) -> &mut Self {
+        let code = code.into();
+        if !self.root_code.contains(&code) {
+            self.root_code.push(code);
+        }
+        self
+    }
+
+    /// `root` with the program's root code.
+    fn full_root(&self, root: &str) -> String {
+        if self.root_code.is_empty() { root.to_string() } else { format!("{root}\n{}", self.root_code.join("\n")) }
     }
 
     fn shader_defs(&self) -> HashMap<String, ShaderDefValue> {
@@ -143,7 +161,8 @@ impl Program {
         for m in self.order(&deps)? {
             s += &format!("// ---- module {}\n#define_import_path {}\n{}{}\n", m.path, m.path, self.imports(&m.source, &m.deps)?, m.source);
         }
-        s += &format!("// ---- root\n{}", with_imports(root, &self.imports(root, &deps)?));
+        let root = self.full_root(root);
+        s += &format!("// ---- root\n{}", with_imports(&root, &self.imports(&root, &deps)?));
         Ok(s)
     }
 
@@ -157,7 +176,8 @@ impl Program {
                 return Err(format!("shader module `{}`: {}", m.path, e.emit_to_string(&c)));
             }
         }
-        let src = with_imports(root, &self.imports(root, &deps)?);
+        let root = self.full_root(root);
+        let src = with_imports(&root, &self.imports(&root, &deps)?);
         c.make_naga_module(NagaModuleDescriptor { source: &src, file_path: "root", shader_type: ShaderType::Wgsl, shader_defs: self.shader_defs(), ..Default::default() }).map_err(|e| e.emit_to_string(&c))
     }
 }
@@ -176,7 +196,10 @@ pub fn compile(dev: &wgpu::Device, label: &str, p: &Program, root: &str, deps: &
 
 /// `src` with `imports` after its directives (`enable ...;` must come first).
 fn with_imports(src: &str, imports: &str) -> String {
-    let (directives, rest): (Vec<&str>, Vec<&str>) = src.lines().partition(|l| l.starts_with("enable ") || l.starts_with("requires "));
+    let (mut directives, rest): (Vec<&str>, Vec<&str>) = src.lines().partition(|l| l.starts_with("enable ") || l.starts_with("requires "));
+    // Once each (a root and its program's root code may both enable ray queries).
+    let mut seen = HashSet::new();
+    directives.retain(|l| seen.insert(*l));
     format!("{}{imports}{}\n", directives.iter().map(|l| format!("{l}\n")).collect::<String>(), rest.join("\n"))
 }
 

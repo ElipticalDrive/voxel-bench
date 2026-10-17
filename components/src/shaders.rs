@@ -68,11 +68,6 @@ pub fn shadow_rays(p: &mut Program, path: &str, kernel: &str) {
     p.add(path, "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n", &[kernel, VOXELS]);
 }
 
-/// Adds the bounce-ray service `strace()` at `path`, through kernel module `kernel`.
-pub fn bounce_rays(p: &mut Program, path: &str, kernel: &str) {
-    p.add(path, "fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit { return ctrace(o, d, max_t); }\n", &[kernel, VOXELS]);
-}
-
 /// One storage instance of a pipeline (a graph node): its module at its own bind group.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StorageInst {
@@ -81,22 +76,34 @@ pub struct StorageInst {
     pub group: u32,
 }
 
-/// One kernel instance (a graph node) over `storages[storage]`.
+/// One kernel instance (a graph node) over `storages[storage]`, or (`None`) a ray query
+/// over the acceleration structures of [`Walks::geometry`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct KernelInst {
     pub node: String,
     pub component: String,
-    pub storage: usize,
+    pub storage: Option<usize>,
     pub consts: KernelConsts,
+}
+
+/// The geometry node ray queries trace (its acceleration structures are the executor's).
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueryGeometry {
+    pub node: String,
+    pub component: String,
 }
 
 /// The walks of a pipeline's GPU ray-casting sites (PLAN step 9c): one module per storage
 /// node and one per kernel node, so sites bound to one node share it and sites bound to
-/// their own each have theirs; every storage at its own bind group.
+/// their own each have theirs; every storage at its own bind group. Sites bound to a ray
+/// query (step 13e4b) trace the acceleration structures built from `geometry`: their ray
+/// services are virtual functions the root overrides (naga cannot write ray queries back
+/// into a module).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Walks {
     pub storages: Vec<StorageInst>,
     pub kernels: Vec<KernelInst>,
+    pub geometry: Option<QueryGeometry>,
 }
 
 /// A module path for node `id` under `kind` (`kernel::shadow_kernel`).
@@ -119,13 +126,64 @@ impl Walks {
     /// Adds the walk of `site` (its nodes once; a new storage at the next of `groups`),
     /// the kernel's constants from its knobs; the kernel's index.
     pub fn site(&mut self, ck: &Checked, site: Site, groups: &[u32], lod: bool) -> usize {
-        let st = self.storage(ck, site.storage, groups);
         if let Some(i) = self.kernels.iter().position(|k| k.node == site.kernel) {
             return i;
         }
         let n = ck.node(site.kernel);
+        let st = if traversal::rt_wgsl(&n.component).is_some() {
+            let g = QueryGeometry { node: site.storage.into(), component: ck.node(site.storage).component.clone() };
+            match &self.geometry {
+                Some(have) => assert!(*have == g, "ray queries over two geometry nodes (`{}`, `{}`): one acceleration structure per pipeline", have.node, g.node),
+                None => self.geometry = Some(g),
+            }
+            None
+        } else {
+            Some(self.storage(ck, site.storage, groups))
+        };
         self.kernels.push(KernelInst { node: site.kernel.into(), component: n.component.clone(), storage: st, consts: KernelConsts::of(n, lod) });
         self.kernels.len() - 1
+    }
+
+    /// Kernel `k` and what it walks or traces, for logs (`refloor over bricks`).
+    pub fn label(&self, k: usize) -> String {
+        let ki = &self.kernels[k];
+        let over = ki.storage.map_or_else(|| self.geometry.as_ref().map_or("-", |g| g.component.as_str()).to_string(), |st| self.storages[st].component.clone());
+        format!("{} over {over}", ki.component)
+    }
+
+    /// Kernel `k` is a ray query.
+    pub fn is_query(&self, k: usize) -> bool {
+        self.kernels[k].storage.is_none()
+    }
+
+    /// Adds ray services `path` through kernel `k` (`occluded()` for shadow rays and/or
+    /// `strace()` for bounces): a module over the kernel's walk, or for a ray query virtual
+    /// functions the program's root overrides with the trace.
+    pub fn services(&self, p: &mut Program, path: &str, k: usize, occluded: bool, strace: bool) {
+        const OCCLUDED: &str = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool";
+        const STRACE: &str = "fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit";
+        let mut src = String::new();
+        if self.is_query(k) {
+            let mut over = String::new();
+            if occluded {
+                src += &format!("virtual {OCCLUDED} {{ return false; }}\n");
+                over += &format!("override {} {{ return g_rt_trace(p, d, max_t, true).hit; }}\n", OCCLUDED.replacen("fn ", &format!("fn {path}::"), 1));
+            }
+            if strace {
+                src += &format!("virtual {STRACE} {{ var h: Hit; return h; }}\n");
+                over += &format!("override {} {{ return g_rt_trace(o, d, max_t, false); }}\n", STRACE.replacen("fn ", &format!("fn {path}::"), 1));
+            }
+            p.add(path, src, &[VOXELS]);
+            p.root(over);
+        } else {
+            if occluded {
+                src += &format!("{OCCLUDED} {{ return ctrace(p, d, max_t).hit; }}\n");
+            }
+            if strace {
+                src += &format!("{STRACE} {{ return ctrace(o, d, max_t); }}\n");
+            }
+            p.add(path, src, &[&self.kernel_path(k), VOXELS]);
+        }
     }
 
     pub fn gpu_storage(&self, i: usize) -> GpuStorage {
@@ -146,7 +204,9 @@ impl Walks {
             storage(p, &self.storage_path(i), &self.gpu_storage(i), s.group);
         }
         for (i, k) in self.kernels.iter().enumerate() {
-            kernel(p, &self.kernel_path(i), &self.storage_path(k.storage), &k.component, &k.consts);
+            if let Some(st) = k.storage {
+                kernel(p, &self.kernel_path(i), &self.storage_path(st), &k.component, &k.consts);
+            }
         }
     }
 
@@ -154,7 +214,7 @@ impl Walks {
     pub fn lod_blocker(&self) -> Option<String> {
         use crate::{Cap, Kind::Gpu, Slot, caps::provides};
         let why: Vec<String> = (self.storages.iter().filter(|s| !provides(Gpu, Slot::Storage, &s.component, Cap::Lod)).map(|s| format!("storage `{}` (`{}`) lacks lod", s.component, s.node)))
-            .chain(self.kernels.iter().filter(|k| !provides(Gpu, Slot::Traversal, &k.component, Cap::Lod)).map(|k| format!("traversal `{}` (`{}`) lacks lod", k.component, k.node)))
+            .chain(self.kernels.iter().filter(|k| k.storage.is_none() || !provides(Gpu, Slot::Traversal, &k.component, Cap::Lod)).map(|k| format!("traversal `{}` (`{}`) lacks lod", k.component, k.node)))
             .collect();
         (!why.is_empty()).then(|| why.join("; "))
     }
@@ -166,7 +226,8 @@ impl Walks {
         let rays = "walk::rays".to_string();
         let mut p = Program::world(Some(&rays));
         let ki = &self.kernels[k];
-        storage(&mut p, "walk::storage", &self.gpu_storage(ki.storage), 2);
+        let st = ki.storage.expect("mesh shadows walk a storage");
+        storage(&mut p, "walk::storage", &self.gpu_storage(st), 2);
         kernel(&mut p, "walk::kernel", "walk::storage", &ki.component, &ki.consts);
         shadow_rays(&mut p, &rays, "walk::kernel");
         (p, rays)
@@ -178,8 +239,8 @@ impl Walks {
 /// kernel, so a live switch to pathtrace finds them). Adds them to `p` and returns their
 /// module paths.
 pub fn shading_rays(p: &mut Program, walks: &Walks, shadow: usize, bounce: usize) -> Vec<String> {
-    shadow_rays(p, "rays::shadow", &walks.kernel_path(shadow));
-    bounce_rays(p, "rays::bounce", &walks.kernel_path(bounce));
+    walks.services(p, "rays::shadow", shadow, true, false);
+    walks.services(p, "rays::bounce", bounce, false, true);
     vec!["rays::shadow".to_string(), "rays::bounce".to_string()]
 }
 
@@ -193,7 +254,7 @@ pub fn meshes(p: &mut Program, walks: &Walks, shadow: usize, mesh_shadow: usize,
     let lighting = if mesh_shadow == shadow {
         LIGHTING
     } else {
-        shadow_rays(p, "rays::mesh", &walks.kernel_path(mesh_shadow));
+        walks.services(p, "rays::mesh", mesh_shadow, true, false);
         p.add("lighting::mesh", mr_gpu::voxels::LIGHTING_WGSL, &["rays::mesh", VOXELS]);
         "lighting::mesh"
     };
@@ -202,14 +263,15 @@ pub fn meshes(p: &mut Program, walks: &Walks, shadow: usize, mesh_shadow: usize,
     MESH_SURFACE.to_string()
 }
 
-/// The usual program of back ends whose root casts through kernel `kernel`, reads storage
-/// `storage` and shades with shadow (and bounce) rays through theirs: the world, every walk
-/// of `walks`, the rays' services and lighting through the shadow rays. Returns the program
-/// and the root's dependencies (nearest first: the root's own kernel and storage).
-pub fn sites_program(walks: &Walks, kernel: usize, storage: usize, shadow: usize, bounce: usize) -> (Program, Vec<String>) {
+/// The usual program of back ends whose root (`lead`) casts through a kernel and reads a
+/// storage of `walks` (kernel, storage) and that shade with shadow (and bounce) rays through
+/// theirs: the world, every walk of `walks`, the rays' services and lighting through the
+/// shadow rays. Returns the program and the root's dependencies (nearest first: the root's
+/// own kernel and storage).
+pub fn sites_program(walks: &Walks, lead: Option<(usize, usize)>, shadow: usize, bounce: usize) -> (Program, Vec<String>) {
     let mut p = Program::world(Some("rays::shadow"));
     walks.add_to(&mut p);
-    let mut deps = vec![walks.kernel_path(kernel), walks.storage_path(storage)];
+    let mut deps: Vec<String> = lead.map_or(vec![], |(k, st)| vec![walks.kernel_path(k), walks.storage_path(st)]);
     deps.extend(shading_rays(&mut p, walks, shadow, bounce));
     deps.extend([LIGHTING, VOXELS, mr_gpu::program::COMMON].map(String::from));
     (p, deps)

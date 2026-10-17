@@ -108,7 +108,7 @@ impl Splat {
         }
         // The sites' walks (PLAN step 9c): shadow rays (the storage and traversal stages),
         // bounces their own or the same.
-        let (walks, program, own, deps) = program(g, &opts.shading)?;
+        let (walks, mut program, own, deps) = program(g, &opts.shading)?;
         let core = Core::new(
             p,
             devices,
@@ -117,6 +117,7 @@ impl Splat {
             CoreSpec {
                 gpu: GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY },
                 walks: &walks,
+                accel: crate::accel::AccelSpec::of(g, &walks)?,
                 stages: wgpu::ShaderStages::COMPUTE,
                 max_lod: 0,
                 voxels: false,
@@ -131,6 +132,7 @@ impl Splat {
                 frames_in_flight: opts.frames_in_flight,
             },
         )?;
+        core.trace_root(&mut program, "0u");
         let gpu = &core.gpu;
         let module = mr_gpu::program::compile(&gpu.device, "splat", &program, &own, &deps.iter().map(String::as_str).collect::<Vec<_>>());
         let mut entries = core.layout_entries();
@@ -178,7 +180,7 @@ fn program(g: &graph::Checked, shading: &str) -> anyhow::Result<(Walks, mr_gpu::
     let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, &[2, 3, 4], false));
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
     let own = format!("{}\n{}\n{shade}\n{}", splat::GPU_WGSL, ShadeState::wgsl(0, crate::STATE_BINDING), mr_components::shading::DEFERRED_WGSL);
-    let (program, deps) = mr_components::shaders::sites_program(&walks, 0, 0, 0, bounce);
+    let (program, deps) = mr_components::shaders::sites_program(&walks, None, 0, bounce);
     Ok((walks, program, own, deps))
 }
 
@@ -201,6 +203,9 @@ impl Lane for Splat {
         let world_bg = core.world.prepare(&core.gpu, c).clone();
         let bound = core.storages.prepare(&core.gpu, &core.world);
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
+        if core.build_accel(&mut enc, ticket, req) {
+            self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.idbuf);
+        }
         let groups = self.count.div_ceil(64);
         let (gx, gy) = (groups.min(65535), groups.div_ceil(65535));
         let (w, h) = (core.width, core.height);
@@ -228,12 +233,13 @@ impl Lane for Splat {
             pass.set_pipeline(&self.pipes[3]);
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         }
+        let (accel, stages) = core.accel_stats();
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
             legend: None,
-            counters: [("points".into(), self.count as f64), ("dropped_chunks".into(), core.world.dropped_chunks() as f64)].into_iter().chain(core.accum.counter(req.mode)).collect(),
-            stages: Vec::new(),
+            counters: [("points".into(), self.count as f64), ("dropped_chunks".into(), core.world.dropped_chunks() as f64)].into_iter().chain(accel).chain(core.accum.counter(req.mode)).collect(),
+            stages,
         };
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
         core.ring.poll(&core.gpu, sink, false)

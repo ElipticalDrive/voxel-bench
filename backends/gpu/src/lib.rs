@@ -9,9 +9,10 @@
 //!
 //! Which lane runs is the graph's: faces when a drawer draws them, else by the visibility
 //! node's component. The rest is shared ([`Core`]): the GPU device, the voxel world, the
-//! storages the GPU's rays walk, the shading state, the camera uniform and group 0 (camera,
-//! output, shading state, hit records, then the lane's), the output, the frame ring and the
-//! timed stages' nodes.
+//! storages the GPU's rays walk, the acceleration structures its ray queries trace
+//! ([`accel`]), the shading state, the camera uniform and group 0 (camera, output, shading
+//! state, hit records, acceleration structures, then the lane's), the output, the frame ring
+//! and the timed stages' nodes.
 
 use std::sync::Arc;
 
@@ -26,6 +27,7 @@ use mr_core::*;
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 
+mod accel;
 mod columns;
 mod faces;
 mod raycast;
@@ -97,7 +99,8 @@ struct CameraUniform {
 }
 
 /// Group 0: the camera (0), the output (1), the shading state (2-3), the hit records (4,
-/// `placement = deferred`), the lane's bindings from `LANE_BINDING`.
+/// `placement = deferred`), the acceleration structures (5-7, `accel::ACCEL_BINDING`), the
+/// lane's bindings from `LANE_BINDING`.
 const STATE_BINDING: u32 = 2;
 const RECORDS_BINDING: u32 = 4;
 const LANE_BINDING: u32 = 8;
@@ -105,8 +108,10 @@ const LANE_BINDING: u32 = 8;
 /// What a lane needs of the core.
 struct CoreSpec<'a> {
     gpu: GpuNeeds,
-    /// The walks of the GPU's rays: the storages whose data the core keeps.
+    /// The walks of the GPU's rays: the storages whose data the core keeps (and the geometry
+    /// node of its ray queries' acceleration structures, built as `accel` says).
     walks: &'a Walks,
+    accel: Option<accel::AccelSpec>,
     /// The stages that read group 0, the world and the storages.
     stages: wgpu::ShaderStages,
     /// LOD levels streamed and walked.
@@ -131,6 +136,10 @@ pub(crate) struct Core {
     world: VoxelWorld,
     /// The storage instances the GPU's rays walk (PLAN step 9c).
     storages: StorageSet,
+    /// The acceleration structures the GPU's ray queries trace (PLAN step 13e4b), and the
+    /// geometry node they are built from (their timed stage).
+    accel: Option<accel::Accel>,
+    accel_nodes: Vec<String>,
     /// Shading state (pathtrace's accumulation).
     accum: ShadeState,
     camera_buf: wgpu::Buffer,
@@ -160,8 +169,15 @@ fn storage_entry(binding: u32, read_only: bool, visibility: wgpu::ShaderStages) 
 
 impl Core {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, s: CoreSpec) -> anyhow::Result<Self> {
-        // The host hands the device in (GPU slot 0); the executor only states its needs.
-        let gpu = mr_gpu::gpu(devices, 0, &s.gpu)?;
+        // The host hands the device in (GPU slot 0); the executor only states its needs (ray
+        // queries' with acceleration structures).
+        let mut needs = s.gpu;
+        if s.accel.is_some() {
+            needs.experimental = true;
+            needs.required_features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
+        }
+        let gpu = mr_gpu::gpu(devices, 0, &needs)?;
+        let accel = s.accel.as_ref().map(|a| accel::Accel::new(&gpu, a)).transpose()?;
         let world = VoxelWorld::new(
             &gpu,
             &p.blocks,
@@ -169,7 +185,7 @@ impl Core {
             VoxelWorldConfig {
                 max_lod: s.max_lod,
                 // Region storages (tree64, ...) hold their own data instead of the voxel pool.
-                upload_voxels: s.voxels || StorageSet::needs_pool(s.walks),
+                upload_voxels: s.voxels || StorageSet::needs_pool(s.walks) || accel.as_ref().is_some_and(|a| a.reads_voxels()),
                 pool_mb: s.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: s.shadows,
@@ -195,9 +211,34 @@ impl Core {
             height: p.height,
             waker,
             storages,
+            accel_nodes: s.walks.geometry.iter().map(|g| g.node.clone()).collect(),
+            accel,
             world,
             gpu,
         })
+    }
+
+    /// Adds the ray queries' root code to `p` (the bindings and the trace; `flags`: the ray
+    /// flags of rays that are not shadow rays, a WGSL expression), if the pipeline has them.
+    fn trace_root(&self, p: &mut mr_gpu::program::Program, flags: &str) {
+        if let Some(a) = &self.accel {
+            p.root(format!("enable wgpu_ray_query;\n{}", a.wgsl(flags)));
+        }
+    }
+
+    /// This frame's acceleration structures, built into `enc` before the lane's passes (its
+    /// clock starts first, so the frame's GPU time holds the builds; a timed stage of the
+    /// geometry node). Returns whether group 0's bindings changed.
+    fn build_accel(&mut self, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) -> bool {
+        let Some(a) = &mut self.accel else { return false };
+        self.ring.start_clock(&self.gpu, enc, ticket);
+        self.ring.stage(enc, ticket, "geometry", &self.accel_nodes);
+        a.build(&self.world, enc, req.camera.split_position().0)
+    }
+
+    /// The acceleration structures' counters and CPU stage time.
+    fn accel_stats(&self) -> (Vec<(String, f64)>, Vec<StageTime>) {
+        self.accel.as_ref().map_or_else(Default::default, |a| (a.counters(), vec![StageTime::cpu("geometry", &self.accel_nodes, a.build_ms as f32)]))
     }
 
     /// Group 0's entries before the lane's.
@@ -218,6 +259,7 @@ impl Core {
         ];
         e.extend(ShadeState::layout_entries(STATE_BINDING, self.stages));
         e.extend(self.records.as_ref().map(|_| storage_entry(RECORDS_BINDING, false, self.stages)));
+        e.extend(self.accel.iter().flat_map(|a| a.layout_entries(self.stages)));
         e
     }
 
@@ -226,6 +268,7 @@ impl Core {
         let mut e = vec![wgpu::BindGroupEntry { binding: 0, resource: self.camera_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) }];
         e.extend(self.accum.bind_entries(STATE_BINDING));
         e.extend(self.records.as_ref().map(|r| wgpu::BindGroupEntry { binding: RECORDS_BINDING, resource: r.as_entire_binding() }));
+        e.extend(self.accel.iter().flat_map(|a| a.bind_entries()));
         e
     }
 
@@ -255,7 +298,7 @@ impl Core {
                 self.world.cfg.max_steps = value.as_i64().unwrap_or(2048) as u32;
                 Ok(())
             }
-            _ => return self.accum.set_param(name, value).map(|_| Ok(())),
+            _ => return self.accel.as_mut().and_then(|a| a.set_param(name, value)).or_else(|| self.accum.set_param(name, value).map(|_| Ok(()))),
         })
     }
 
@@ -271,7 +314,7 @@ impl Core {
     }
 
     fn memory_bytes(&self) -> u64 {
-        self.world.memory_bytes() + self.storages.memory_bytes() + self.accum.memory_bytes() + self.records.as_ref().map_or(0, |r| r.size()) + self.width as u64 * self.height as u64 * 4
+        self.world.memory_bytes() + self.storages.memory_bytes() + self.accel.as_ref().map_or(0, |a| a.memory_bytes()) + self.accum.memory_bytes() + self.records.as_ref().map_or(0, |r| r.size()) + self.width as u64 * self.height as u64 * 4
     }
 }
 
@@ -306,6 +349,9 @@ impl<L: Lane> Renderer for Executor<L> {
         let c = &mut self.core;
         let changed = c.world.apply(&c.gpu, updates);
         c.storages.update(&c.gpu, &c.world, &changed)?;
+        if let Some(a) = &mut c.accel {
+            a.updated(&c.world, &changed);
+        }
         self.lane.updated(&self.core, &changed)
     }
 

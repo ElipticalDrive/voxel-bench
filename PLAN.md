@@ -219,11 +219,15 @@ The user's architecture, settled with finality and without limits for later (IDE
           pick the executor. (Done 2026-10-17; see the log.)
         - 13e4b: lanes combine within an executor, so acceptance is "every node has an
           implementation on its device", not a preset's composition: ray queries for a
-          walk's sites, a walk's or ray queries' rays beside the face drawer, the faces lane
-          on group 0, a CPU world shared by the CPU lanes.
+          walk's sites, a walk's or ray queries' rays beside the face drawer. (Done
+          2026-10-17: ray queries at any GPU site, walks at gpu-rt's; see the log. The
+          faces lane on group 0 and a CPU world shared by the CPU lanes moved to 13e4d:
+          no graph needs them, they remove duplication.)
         - 13e4c: a second GPU (`gpu1`) with the peer / host transfer adapter; one pipeline
           split over two GPUs (here: the NVIDIA RTX 5060 and the AMD iGPU).
-        - 13e4d: the full pixel and timing A/B of every old composition against 13e3.
+        - 13e4d: the faces lane on group 0 (its own frame uniform goes), the CPU lanes'
+          world shared; then the full pixel and timing A/B of every old composition against
+          13e3. Step 13 is then done.
 14. **The served split (IDEAS §19):** the world (generator, authoritative store, change
     log) becomes a node on a *server* device; a *link* is a graph edge, the bottleneck
     between them (the point is the separation, not realistic networking; latency,
@@ -1210,3 +1214,63 @@ root, `walk.wgsl` / `rayquery.wgsl` the lanes' roots), `components/src/graph.rs`
   combining two lanes' pieces (ray queries for a walk's shadow rays, a drawer's shadow rays as ray
   queries) has no preset and is refused with the reason.
 
+
+**2026-10-17, step 13e4b: ray queries at any GPU ray-casting site; walks at gpu-rt's.**
+`backends/gpu/src/accel.rs` (new), `backends/gpu/src/{lib.rs,splat.rs,raycast/*,faces/*}`,
+`components/src/{shaders.rs,graph.rs,storage/gpu_data.rs,draw/drawer.rs}`,
+`components/src/traversal/rayquery/gpu.wgsl`, `components/src/geometry/greedy/rt.wgsl`,
+`crates/mr-gpu/src/{lib.rs,program.rs}`, `tests/architecture.rs`:
+- **The acceleration structures are the core's** (`Accel`, moved out of the gpu-rt lane: chunk
+  BLASes from the geometry node a `rayquery` kernel reads, the camera-relative TLAS), built
+  when any site of the graph is a ray query (`AccelSpec::of`: the geometry node and its knobs),
+  bound in group 0 at 5-7 (`ACCEL_BINDING`; the faces lane's drawing group too), built at the
+  start of the frame (`Core::build_accel`: the frame's clock starts first, `FrameRing::
+  start_clock`, so its GPU time holds the builds; a `geometry` stage). Ray queries stay root
+  code (naga cannot write them into modules): `Program::root` carries code every root gets
+  (`Core::trace_root`: the bindings, the geometry's `g_rt_trace`, `rt_flags()`), and a site
+  bound to a ray query gets its ray services (`occluded`, `strace`) as virtual functions the
+  root overrides (`Walks::services`; `Walks.geometry`, `KernelInst.storage: None`).
+- **So any GPU lane casts any site either way**: gpu-compute's, gpu-discover's and
+  cpu-discover's (GPU) shadow and bounce rays, gpu-raster's and gpu-splat's bounces as ray
+  queries; gpu-rt's shading rays walks over any GPU storage (its sites are free now, its lane is
+  `Walks` over the core's storages and acceleration structures; `max_steps` 2048 for those
+  walks, before 0). Sites forms: `shadow = greedy/rayquery`, `shadow = prefix/incremental`.
+- Acceptance (`site_blocker`): a site on the GPU takes any component with a GPU implementation
+  (any API: the GPU executor runs them all); a ray query needs a geometry with acceleration
+  structures (greedy, naive, boxes) meshed on the CPU, one geometry node per pipeline, and not the
+  face drawer's mesh shadows (its mesh pipelines have no ray queries), each with its reason. A
+  node in a stage the preset lacks (a free site's geometry) runs where its component runs
+  (`default_device`).
+- Runs (terrain, 40 frames, lit): gpu-compute with ray-query shadows psnr 56.5 (walked: 56.4),
+  cast+shade 0.93 ms against 1.25 walked, plus the BLAS builds (4.4 ms GPU, 39 ms CPU while
+  streaming, as gpu-rt); gpu-discover with ray-query shadows 49.0 (48.8), draw+shade 0.82 ms
+  against 1.84; cpu-discover with GPU ray-query shadows 32.4 (32.4); gpu-rt with
+  prefix/incremental shadow walks 56.0 (its first run had no shadows: `max_steps` was 0).
+- Behaviour changed: gpu-rt's program is the walk lane's shape (`rays::shadow`, `rays::bounce`
+  instead of one `rt::rays`), its bindings 8-10 are now 5-7; the drawer's deferred images group
+  is fixed at 3 (`IMAGES_GROUP`, was the number of bound groups); a frame whose clock started
+  early ignores later passes' begin timestamps; without `TIMESTAMP_QUERY_INSIDE_ENCODERS` the
+  clock now starts in an empty pass before the builds (gpu-rt's GPU time includes them there
+  too).
+- Verified: builds without warnings (dev, release), 82 unit tests (new `ray_query_sites`; the
+  site sweep `bounce = "*"` now 40 pipelines: ray queries over three geometries), 4 GPU end-to-end
+  tests. Pixel A/B against 13e4a (frames 0/20/39, lit + unlit): gpu-rt greedy, boxes + pathtrace,
+  deferred, boxes deferred; gpu-compute plain, deferred, fragment, fragment + deferred, tree64 +
+  sphere + pathtrace, beam; gpu-raster raster, visbuffer, gbuffer + pathtrace; gpu-splat;
+  gpu-voxelspace; gpu-discover plain, coverage; cpu-discover quadtree, cluster; meshes:
+  gpu-compute inline, deferred, gpu-raster raster, gbuffer; edits: gpu-raster visbuffer,
+  gpu-discover, gpu-rt, gpu-compute: all identical. gpu-rt naive deferred with `cull_faces =
+  none` ran out of GPU memory at frame 39 in both builds (as 13e2 found).
+- Timing A/B (terrain, each alone, 4 rounds; GPU time lit / unlit): gpu-rt -0.0 / -0.2%, boxes
+  +0.1 / +0.1%, gpu-compute +0.0 / +0.1%, gpu-raster raster -0.0 / -0.1%, visbuffer -0.0 / -0.1%,
+  gpu-discover -0.1 / -0.0%, cpu-discover -0.5 / -5.9% (0.20 ms unlit), gpu-splat +0.2 / +2.5%
+  (8 rounds: -0.2 / -2.0%: its known tail, see 13e3); fps -0.7 .. +2.0%.
+- **Logged, unexplained: gpu-rt deferred** +0.7 / +0.9% GPU (4 rounds), +0.6 / +1.2% (8 rounds),
+  in all three stages alike (unlit: geometry 0.437 -> 0.440 ms, cast 0.350 -> 0.355, shade 0.059
+  -> 0.061), fps unchanged; inline gpu-rt unchanged. The geometry stage's commands did not
+  change; what did: the acceleration structures' bindings (8-10 -> 5-7), the shader's ray
+  services (two virtual modules instead of one), `rt_flags()` for the camera word.
+- Not yet: the rasterisers' own shadow rays (gpu-raster's and gpu-splat's storage and traversal
+  stages, their lead site) stay walks: acceptance still compares a graph's skeleton with its
+  preset's composition, whose storage slot names them; the drawer's meshes and meshing and a ray
+  query over the same geometry node mesh it twice (two implementations' data).

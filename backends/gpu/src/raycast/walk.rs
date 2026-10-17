@@ -235,11 +235,12 @@ impl Composition {
         let meshes = meshed.then(|| shaders::meshes(&mut program, &self.walks, self.shadow, self.mesh_shadow, 3, 3));
         let pre = mr_components::prepass::gpu_wgsl(self.prepass()).expect("validated");
         let primary = self.primary();
+        let primary_storage = primary.storage.expect("the walk's primary rays walk a storage");
         let root = format!(
             "// Composition: storage = {}, prepass = {}, traversal = {}, shading = {shading}\n\
              const PREPASS_TILE: u32 = {}u;\n\
              {}\n{}\n{}\n{pre}",
-            self.walks.storages[primary.storage].component,
+            self.walks.storages[primary_storage].component,
             self.prepass(),
             primary.component,
             self.tile.max(1),
@@ -247,7 +248,7 @@ impl Composition {
             if self.steps_view { mr_core::legend::ramp_wgsl() } else { String::new() },
             include_str!("walk.wgsl"),
         );
-        let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string(), self.walks.kernel_path(0), self.walks.storage_path(primary.storage)];
+        let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string(), self.walks.kernel_path(0), self.walks.storage_path(primary_storage)];
         deps.extend(meshes);
         deps.extend(rays);
         deps.extend([mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON].map(String::from));
@@ -326,6 +327,7 @@ impl Walk {
             CoreSpec {
                 gpu: GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY },
                 walks: &comp.walks,
+                accel: crate::accel::AccelSpec::of(g, &comp.walks)?,
                 stages,
                 max_lod: if comp.lod { p.max_lod.min(6) } else { 0 },
                 voxels: false,
@@ -340,7 +342,7 @@ impl Walk {
                 frames_in_flight: opts.frames_in_flight,
             },
         )?;
-        let walk = |k: usize| format!("{} over {}", comp.walks.kernels[k].component, comp.walks.storages[comp.walks.kernels[k].storage].component);
+        let walk = |k: usize| comp.walks.label(k);
         tracing::info!("gpu-compute: primary {}, shadow {}, bounce {}, shading {shading}", walk(0), walk(comp.shadow), walk(comp.bounce));
         let lane = Self {
             meshes: MeshRecords::new(&core.gpu, &core.world, p.width, p.height),
