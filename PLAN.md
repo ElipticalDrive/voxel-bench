@@ -195,7 +195,22 @@ The user's architecture, settled with finality and without limits for later (IDE
     - 13e: GPU and CPU executors run every graph from the schedule (ray casting, raster,
       ray queries, splat, columns, discovery); hand-written back ends removed; a pipeline
       split over `gpu` and `gpu1` through a transfer adapter; pixel and timing A/B of every
-      old composition.
+      old composition. Sub-steps (2026-10-17), each family first joined under one core, then
+      the cores joined:
+      - 13e1: one face-drawing executor (IDEAS §24): gpu-raster joins gpu-discover and
+        cpu-discover; meshing, GPU discovery and CPU discovery are three face sources of one
+        drawer, chosen by what feeds the drawer's faces. (Done 2026-10-17; see the log.)
+      - 13e2: one ray-casting executor: gpu-compute and gpu-rt (the walk's kernels and ray
+        queries as the visibility node's API: `compute` or `rayquery`), placement inline or
+        deferred over one core.
+      - 13e3: one GPU executor: the face-drawing, ray-casting, splat and columns lanes over
+        one core (world, storages, shading state, output, ring), the lane per the graph's
+        visibility node; a CPU executor likewise (`cpu`, cpu-raster, cpu-voxelspace lanes).
+      - 13e4: the registry's back ends become preset graphs (names, labels and keys kept):
+        any graph whose nodes have implementations on their devices runs (e.g. discovery's
+        sampler moved between devices, a face source a choice at the drawer's input); a
+        second GPU (`gpu1`) with the peer / host transfer adapter, one pipeline split over
+        two GPUs; the full pixel and timing A/B of every old composition.
 14. **The served split (IDEAS §19):** the world (generator, authoritative store, change
     log) becomes a node on a *server* device; a *link* is a graph edge, the bottleneck
     between them (the point is the separation, not realistic networking; latency,
@@ -975,3 +990,64 @@ speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/
   move columns between devices; the executor would run it, the registry's acceptance does not);
   splat has no CPU implementation; the heightmap is built on the CPU in both lanes (its GPU
   implementation is CPU-built rows uploaded).
+
+
+**2026-10-17, step 13e1: one face-drawing executor (IDEAS §24).**
+`backends/faces/` (crate `backend-faces`, replaces `backends/discover` and `backends/gpu-raster`;
+`lib.rs` the executor, `mesh.rs` meshing, `gpu.rs` / `cpu.rs` the samplers, `chunks.wgsl` was
+gpu-raster's `main.wgsl`), `tests/architecture.rs`, `crates/mr-worker`, `src/gui/live.rs` (test):
+- **Three face sources, one drawer**: `gpu-raster`, `gpu-discover` and `cpu-discover` stay the
+  registry's names (graphs, keys, labels, knobs unchanged) and all create `Faces<S>`, the face
+  source chosen from the graph: meshing (`Meshing`) when the drawer's faces come from the
+  `faces` visibility (every meshed face), else discovery on the visibility node's device
+  (`GpuSampler`, `CpuSampler`). Static dispatch (`Faces<S: FaceSource>`), so the per-frame
+  dynamic call into the sampler that 13c left is gone too.
+- **The core now also draws meshed chunks**: a face source describes itself to the core
+  (`SourceSpec`: its WGSL, its sites' walks, the drawer's fragment inputs, strip or list
+  primitives, meshes with their mesh-shadow walk, the GPU features it needs, whether it reads
+  the depth buffer, the drawer's stage nodes). Meshes (mesh mode) moved with it: deferred
+  drawers compile the record's mesh capability as a variant (`programs` / `Meshed`) used only
+  in frames with meshes, as gpu-raster did; `rebuild` recompiles the drawer for live
+  geometry, shading and meshes changes (meshing applies them at the next frame, one rebuild
+  for several). gpu-raster's frame uniform, layouts, depth buffer, output, ring, accumulation,
+  storages and world setup were a second copy of the discovery core's and are gone; the
+  meshing source keeps only its own work (chunk meshing and its upload, the faces' transfer
+  found in the schedule as gpu-splat's points are; culling; multi-draw-indirect; mesh mode).
+- Behaviour changed: gpu-raster's shader now uses the executor's frame (`frame.wgsl`: two
+  more words, unread) and its text order (shading before the face drawer's vertex stage);
+  cpu-discover's depth buffer is no longer created sampleable (only hole detection reads it).
+- Verified: builds without warnings (dev, release), 80 unit tests (gpu-raster's compose test
+  rewritten over the executor's `programs` / `draw_src`: every storage, kernel, geometry and
+  shading with every drawer, with and without the mesh variant, plus forward mesh shading), 4
+  GPU end-to-end tests (the live session now also switches gpu-raster's geometry and draw
+  while running: the rebuild at the next frame). Pixel A/B (frames 0/20/39, lit + unlit): gpu-raster greedy raster,
+  visbuffer, gbuffer, naive, cubes, pathtrace, tree64 + incremental with `merge = exposure` on
+  terrain; raster, visbuffer, gbuffer + pathtrace on edits; raster, visbuffer, gbuffer and
+  meshes `none` on meshes; gpu-discover plain, coverage, gbuffer (terrain), coverage,
+  visbuffer (edits); cpu-discover pipelined, cluster, visbuffer, synchronous (terrain), plain
+  (edits): all identical. Not comparable: naive with `cull = false` overflows the quad buffer
+  at any allowed size (1025 MiB needed, the buffer grows in powers of two to at most 2040 MiB)
+  and which chunks are dropped changes from run to run, in the build before too (two runs of
+  it differ by ~0.5 Mpx).
+- Timing A/B (interleaved, each configuration alone): GPU time unchanged (gpu-raster raster
+  +0.2 / -0.1% (6 rounds); visbuffer +0.0 / -0.1%; gbuffer -0.0 / -0.1%; mesh mode raster
+  -1.4 / -9.3% of 0.05 ms, visbuffer +2.4 / +0.2%; gpu-discover plain -3.2 / -0.1%, coverage
+  -0.0 / -0.0%; cpu-discover -1.8 / -1.0%, cluster -0.0 / +4.8% of its 0.17 ms unlit draw, the
+  ±5% 13b saw on it). fps: gpu-raster on terrain +0.3 / -0.1% (raster), -0.1 / -1.1% (visbuffer);
+  cpu-discover (one CCD) -0.5 / -0.3% (quadtree), -0.3 / +1.9% (cluster). Mesh mode's fps at
+  4000-7500 (host-bound, 0.13 ms a frame) varies ±5% between rounds of one build: raster
+  +2.1 / +2.2%, visbuffer -0.3 / -3.4% with the rounds' ranges overlapping (6758-7427 before,
+  6208-7434 after).
+- **A host-time loss that went away (log)**: the first version showed -1.8 .. -2.8% fps for
+  gpu-raster on terrain (raster, visbuffer, gbuffer; 4-8 rounds), GPU time unchanged, all of it
+  in the CPU `geometry` stage (chunk meshing 3.34 -> 3.44 ms mean), code the step did not
+  change. That version cloned two strings per frame to detect knob changes; replacing them by a
+  flag removed the loss (geometry 3.30-3.31 ms in both builds). Two string clones cannot cost
+  0.1 ms inside the meshing stage, so the cause is presumably the code's layout again (step 11's
+  and 12d's signature), moved by the change; not established. gbuffer was measured only with
+  the first version.
+- Not yet: the three names remain registry entries with their own slot lists (a graph cannot
+  pick the face source at the drawer's input: the executor would run it, the registry's
+  acceptance does not); the discovery samplers have no meshes stage (the core supports one);
+  the GPU sampler still owns its raster passes (face ids, painter, overdraw) beside the
+  drawer's.

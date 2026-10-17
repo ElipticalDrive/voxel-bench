@@ -62,14 +62,14 @@ use mr_components::graph::{Checked, Role};
 use mr_components::shaders::Walks;
 use mr_components::storage::gpu_data::Bound;
 use mr_components::shading::state as shade_state;
-use mr_components::draw::{self, drawer::DrawFrame};
+use mr_components::draw::{self, drawer::{DrawFrame, DrawNodes}};
 use mr_components::visibility::quadtree;
 use mr_components::{names_on, require, Slot};
 use mr_gpu::voxels::{Shadows, hash3, shadows_param};
 use mr_gpu::{Gpu, wgpu};
 use serde::Deserialize;
 
-use crate::{Core, CoreOpts, Sampler, Source};
+use crate::{Core, CoreOpts, FaceSource, SourceSpec};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -543,7 +543,18 @@ impl GpuSampler {
         let shadow = walks.site(g, bound(Role::Shading, "shadow")?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         let o = CoreOpts { shading: &shading, draw: &opts.draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
-        let core = Core::new(p, devices, waker, g, &o, opts.depth_prepass, Source { wgsl: include_str!("set_faces.wgsl"), walks, sites: [rays, exposure, shadow, bounce] })?;
+        let core = Core::new(p, devices, waker, &o, opts.depth_prepass, SourceSpec {
+            wgsl: include_str!("set_faces.wgsl").into(),
+            walks,
+            sites: [rays, exposure, shadow, bounce],
+            varyings: true,
+            strip: true,
+            meshes: None,
+            draw_meshes: false,
+            features: wgpu::Features::empty(),
+            depth_read: true,
+            nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
+        })?;
         let (gpu, dev) = (&core.gpu, &core.gpu.device);
         let module = |label, src: String| mr_gpu::shader(dev, label, src);
         // Discovery's pieces (PLAN step 13b): the quadtree sampler and hole detection, each
@@ -1199,7 +1210,7 @@ impl GpuSampler {
     }
 }
 
-impl Sampler for GpuSampler {
+impl FaceSource for GpuSampler {
     fn updating(&mut self, updates: &[WorldUpdate]) {
         if self.opts.incremental {
             // Event areas for the next frame: edited blocks exactly, chunk loads whole.
@@ -1741,7 +1752,7 @@ mod tests {
                     let bounce = with_bounce.site(&ck, ck.site(Role::Shading, "bounce").unwrap(), STORAGE_GROUPS, false);
                     for (walks, bounce, shading) in [(walks, shadow, "direct"), (with_bounce, bounce, "pathtrace")] {
                         let (mut program, deps) = mr_components::shaders::sites_program(&walks, rays, exposure, shadow, bounce);
-                        crate::tests::drawers(&program, &deps, shading, &format!("{st} {k} {shading}"), BACKEND);
+                        crate::tests::drawers(&program, &deps, None, &crate::draw_src(include_str!("set_faces.wgsl"), shading, true), shading, &format!("{st} {k} {shading}"), BACKEND);
                         // Discovery's pieces: the sampler and hole detection over the shared set.
                         program.add(quadtree::SET, quadtree::SET_WGSL, &deps.iter().map(String::as_str).collect::<Vec<_>>());
                         let disc_deps: Vec<String> = std::iter::once(quadtree::SET.to_string()).chain(deps.iter().cloned()).collect();

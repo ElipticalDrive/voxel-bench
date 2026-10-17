@@ -1,5 +1,6 @@
-// The discovery executor's frame (group 0, binding 0), shared by both face sources: the
-// GPU face set's list (`set_faces.wgsl`) and the CPU sampler's records (`records.wgsl`).
+// The face-drawing executor's frame (group 0, binding 0), shared by every face source: the
+// GPU face set's list (`set_faces.wgsl`), the CPU sampler's records (`records.wgsl`) and
+// meshed chunks (`chunks.wgsl`).
 
 struct Frame {
     view_proj: mat4x4<f32>,

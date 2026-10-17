@@ -17,10 +17,9 @@ members = [
     "components",
     "backends/gpu-compute",
     "backends/cpu",
-    "backends/gpu-raster",
     "backends/gpu-rt",
     "backends/cpu-raster",
-    "backends/discover",
+    "backends/faces",
     "backends/gpu-splat",
     "backends/voxelspace",
 ]
@@ -39,13 +38,12 @@ mr-gpu = { path = "crates/mr-gpu" }
 mr-mesh = { path = "crates/mr-mesh" }
 cpu-reference = { path = "renderers/cpu-reference" }
 backend-cpu-raster = { path = "backends/cpu-raster" }
-backend-discover = { path = "backends/discover" }
+backend-faces = { path = "backends/faces" }
 backend-cpu = { path = "backends/cpu" }
 backend-gpu-splat = { path = "backends/gpu-splat" }
 backend-voxelspace = { path = "backends/voxelspace" }
 mr-components = { path = "components" }
 gpu-compute = { path = "backends/gpu-compute" }
-backend-gpu-raster = { path = "backends/gpu-raster" }
 backend-gpu-rt = { path = "backends/gpu-rt" }
 
 anyhow = "1"

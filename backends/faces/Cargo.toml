@@ -1,5 +1,5 @@
 [package]
-name = "backend-gpu-raster"
+name = "backend-faces"
 version.workspace = true
 edition.workspace = true
 
@@ -10,7 +10,6 @@ glam.workspace = true
 serde.workspace = true
 tracing.workspace = true
 bytemuck.workspace = true
-pollster.workspace = true
 rayon.workspace = true
 wgpu.workspace = true
 mr-gpu.workspace = true

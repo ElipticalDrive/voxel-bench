@@ -1450,6 +1450,13 @@ mod tests {
         live.send(Cmd::SetParam { lane: 0, name: "host.render_scale".into(), value: ParamValue::Float(0.5) });
         wait(&live.shared, "resize", 20, |s| s.lanes[0].frame.as_ref().is_some_and(|f| f.width == 160 && f.height == 90));
 
+        // Live compile-time knobs (lane 1, gpu-raster): the drawer is rebuilt at the next frame.
+        for (name, value) in [("geometry", "naive"), ("draw", "visbuffer"), ("geometry", "greedy"), ("draw", "raster")] {
+            let frames = live.shared.lock().unwrap().lanes[1].frames;
+            live.send(Cmd::SetParam { lane: 1, name: name.into(), value: ParamValue::Choice(value.into()) });
+            wait(&live.shared, &format!("{name} = {value}"), 20, |s| s.lanes[1].frames > frames + 3 && s.lanes[1].status == LaneStatus::Running);
+        }
+
         // Hot swap (restart-only knob): lane 1 must keep producing frames throughout.
         let frames_before = live.shared.lock().unwrap().lanes[1].frames;
         live.send(Cmd::SetParam { lane: 1, name: "frames_in_flight".into(), value: ParamValue::Int(2) });

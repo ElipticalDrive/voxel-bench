@@ -1,20 +1,9 @@
-// GPU-raster back end: the face source of the face drawer (`visibility/faces.wgsl`) for
-// the geometry component's instances, drawn with vertex pulling (`g_face` / `g_size` /
-// `g_corner` place each vertex); the visibility component supplies the fragment (and
-// compute) entry points, built on `face_hit`; the shading component colours the hit
-// (`shade_surface`), with shadow rays through the composed storage.
+// Meshing's face source for the face drawer (`visibility/faces.wgsl`): the geometry
+// component's instances, drawn with vertex pulling (`g_face` / `g_size` / `g_corner` place
+// each vertex); the draw component supplies the fragment (and compute) entry points, built on
+// `face_hit`; the shading component colours the hit (`shade_surface`), with shadow rays
+// through the composed storage. The frame is the executor's (`frame.wgsl`).
 
-struct Frame {
-    view_proj: mat4x4<f32>,
-    cam_frac: vec3<f32>, mode: u32,   // camera position within vp.cam_block; 0 unlit, 1 lit
-    forward: vec3<f32>, tan_half_fov: f32,
-    right: vec3<f32>, aspect: f32,
-    up: vec3<f32>, _p0: u32,
-    size: vec2<f32>, _p1: vec2<f32>,
-    sky: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> fr: Frame;
 @group(0) @binding(1) var<storage, read> quads: array<vec2<u32>>;
 @group(0) @binding(2) var<storage, read> chunk_pos: array<vec4<i32>>;
 

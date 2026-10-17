@@ -61,10 +61,9 @@ const LIGHTING_ALLOWED: &[(&str, &str)] = &[
 const SHADING_USE: &[(&str, &str)] = &[
     // `shaders::shading`: the shading component's module (`shading::gpu_wgsl`; PLAN step 9b).
     ("gpu-compute", "shaders::shading("),
-    ("gpu-raster", "shading::gpu_wgsl("),
     ("gpu-rt", "shaders::shading("),
-    // The discovery executor (gpu-discover and cpu-discover; PLAN step 13c).
-    ("discover", "shading::gpu_wgsl("),
+    // The face-drawing executor (gpu-raster, gpu-discover and cpu-discover; PLAN step 13e1).
+    ("faces", "shading::gpu_wgsl("),
     ("gpu-splat", "shading::gpu_wgsl("),
     ("cpu", "direct::cpu::"),
     // The voxelspace executor (gpu-voxelspace and cpu-voxelspace; PLAN step 13d): each lane.

@@ -32,7 +32,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::Instant;
 
 use glam::IVec3;
-use mr_components::draw::drawer::DrawFrame;
+use mr_components::draw::drawer::{DrawFrame, DrawNodes};
 use mr_components::graph::{Checked, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
@@ -44,7 +44,7 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GrowableBuffer, wgpu};
 use serde::Deserialize;
 
-use crate::{Core, CoreOpts, Sampler, Source};
+use crate::{Core, CoreOpts, FaceSource, SourceSpec};
 
 pub(crate) const BACKEND: &str = "cpu-discover";
 
@@ -247,7 +247,18 @@ impl CpuSampler {
         let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("{BACKEND}: GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         let o = CoreOpts { shading: &opts.shading, draw: &opts.draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
-        let core = Core::new(p, devices, waker, g, &o, opts.depth_prepass, Source { wgsl: include_str!("records.wgsl"), walks, sites: [shadow, shadow, shadow, bounce] })?;
+        let core = Core::new(p, devices, waker, &o, opts.depth_prepass, SourceSpec {
+            wgsl: include_str!("records.wgsl").into(),
+            walks,
+            sites: [shadow, shadow, shadow, bounce],
+            varyings: true,
+            strip: true,
+            meshes: None,
+            draw_meshes: false,
+            features: wgpu::Features::empty(),
+            depth_read: false,
+            nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
+        })?;
         let rec_buf = GrowableBuffer::new(&core.gpu, "face records", 1 << 22, 2040 << 20, wgpu::BufferUsages::STORAGE);
         let tag_buf = GrowableBuffer::new(&core.gpu, "face tags", 1 << 21, 1020 << 20, wgpu::BufferUsages::STORAGE);
         let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(p.devices.cpu_threads(opts.threads)).thread_name(|i| format!("discover-{i}")).build()?);
@@ -318,7 +329,7 @@ impl CpuSampler {
     }
 }
 
-impl Sampler for CpuSampler {
+impl FaceSource for CpuSampler {
     fn updating(&mut self, updates: &[WorldUpdate]) {
         self.cpu.apply(updates);
     }

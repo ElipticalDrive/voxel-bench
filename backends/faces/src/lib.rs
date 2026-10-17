@@ -1,24 +1,29 @@
-//! The discovery executor (PLAN step 13c): self-directed visibility (the user's idea: cast
-//! as few rays as possible to discover every visible block face, keep the face set across
-//! frames, rasterise only it), one executor for both of its configurations:
-//! - `gpu-discover`: the sampler (`visibility` quadtree) on the GPU, with hole detection
-//!   (`holes = coverage`) and the face set in a GPU hash set ([`gpu`]);
-//! - `cpu-discover`: the sampler (quadtree or cluster) on the CPU over a CPU storage, its
-//!   face records uploaded to the GPU, a frame ahead when the drawer's faces arrive `prev`
-//!   ([`cpu`]).
+//! The face-drawing executor (PLAN step 13e1; IDEAS §24): every pipeline whose image is the
+//! shared face drawer's (`draw`: raster, visbuffer or gbuffer) over a set of block faces, one
+//! executor for the three face sources that can feed the drawer's `faces`:
+//! - `gpu-raster`: meshing ([`mesh`]): the geometry component meshes changed chunks on the
+//!   CPU (view-independent: every exposed face), uploaded per chunk (the schedule's transfer
+//!   of the faces from the CPU to the GPU), culled per chunk and face direction, drawn with
+//!   multi-draw-indirect; with meshes (mesh mode) in the same depth buffer;
+//! - `gpu-discover`: discovery on the GPU ([`gpu`]): the sampler (`visibility` quadtree, with
+//!   hole detection `holes = coverage`) finds the faces the camera sees and keeps them in a
+//!   GPU hash set;
+//! - `cpu-discover`: discovery on the CPU ([`cpu`]): the sampler (quadtree or cluster) over a
+//!   CPU storage, its face records uploaded to the GPU, a frame ahead when the drawer's faces
+//!   arrive `prev`.
 //!
-//! Which sampler runs is the visibility node's device in the graph; the upload and its
-//! pipelining are the schedule's transfer of the faces from the CPU to the GPU (its timing).
-//! The rest is shared ([`Core`]): the GPU device, the voxel world, the storages the GPU's
-//! rays walk, the shading state, the face drawer (`draw`: raster, visbuffer or gbuffer)
-//! with the sampler's face source, the frame uniform, the output and the frame ring.
+//! Which source runs is the graph's: meshing when the drawer's faces come from the `faces`
+//! visibility (every meshed face), else discovery on the visibility node's device. The rest is
+//! shared ([`Core`]): the GPU device, the voxel world, the storages the GPU's rays walk, the
+//! shading state, the face drawer compiled over the shared frame and the source's WGSL, the
+//! frame uniform, the output and the frame ring.
 
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use mr_components::draw::{self, drawer::{DrawMode, DrawNodes, DrawerSpec, FaceDrawer}};
-use mr_components::graph::{self, Checked, Device, Role};
+use mr_components::graph::{self, Device, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::{self, StorageSet};
@@ -29,16 +34,21 @@ use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 
 mod cpu;
 mod gpu;
+mod mesh;
 
-pub fn gpu_entry() -> RendererEntry {
-    RendererEntry { info: gpu::info, create: |p, d, w| Ok(Box::new(Discover::new(gpu::BACKEND, p, d, w)?)) }
+pub fn gpu_raster_entry() -> RendererEntry {
+    RendererEntry { info: mesh::info, create: |p, d, w| Faces::create(mesh::BACKEND, p, d, w) }
 }
 
-pub fn cpu_entry() -> RendererEntry {
-    RendererEntry { info: cpu::info, create: |p, d, w| Ok(Box::new(Discover::new(cpu::BACKEND, p, d, w)?)) }
+pub fn gpu_discover_entry() -> RendererEntry {
+    RendererEntry { info: gpu::info, create: |p, d, w| Faces::create(gpu::BACKEND, p, d, w) }
 }
 
-/// The frame uniform of the face drawer (`frame.wgsl`).
+pub fn cpu_discover_entry() -> RendererEntry {
+    RendererEntry { info: cpu::info, create: |p, d, w| Faces::create(cpu::BACKEND, p, d, w) }
+}
+
+/// The frame uniform of the face drawer (`frame.wgsl`), shared by every face source.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct FrameUniform {
@@ -57,7 +67,7 @@ struct FrameUniform {
     sky: [f32; 4],
 }
 
-/// What the core needs of a sampler's options.
+/// What the core needs of a face source's options.
 struct CoreOpts<'a> {
     shading: &'a str,
     draw: &'a str,
@@ -70,17 +80,40 @@ struct CoreOpts<'a> {
     frames_in_flight: usize,
 }
 
-/// A sampler's face source: its WGSL (after `frame.wgsl`) and the storage groups of its
-/// sites' walks.
-struct Source {
-    wgsl: &'static str,
+/// What a face source gives the core: its WGSL (after `frame.wgsl`), the storage groups of
+/// its sites' walks and how the drawer draws its faces.
+struct SourceSpec {
+    wgsl: String,
     /// The walks of the GPU's rays, and the indices of (discovery rays, exposure, shadow,
-    /// bounce) in them (the CPU sampler's GPU walks are its shadow rays' and bounces').
+    /// bounce) in them (the CPU sampler's and meshing's GPU walks are their shadow rays' and
+    /// bounces').
     walks: Walks,
     sites: [usize; 4],
+    /// The drawer's fragment inputs: interpolated (unit faces) or rebuilt from the instance
+    /// (merged faces, `draw::faces_wgsl`).
+    varyings: bool,
+    /// Instances drawn as triangle strips (else lists: `cubes`).
+    strip: bool,
+    /// Meshes drawn with the faces (mesh mode): the mesh-shadow site's walk. Deferred drawers
+    /// then compile a variant with the record's mesh capability for frames with meshes.
+    meshes: Option<usize>,
+    /// Frames draw meshes (the meshes stage is not `none`; live).
+    draw_meshes: bool,
+    /// GPU features the source needs.
+    features: wgpu::Features,
+    /// The source reads the depth buffer (hole detection: last frame's depth).
+    depth_read: bool,
+    /// The drawer's timed stages' nodes (PLAN step 11).
+    nodes: DrawNodes,
 }
 
-/// Everything but the sampler: the GPU drawing lane of both configurations.
+/// The mesh capability's variant of a program (PLAN step 12d).
+struct Meshed {
+    program: mr_gpu::program::Program,
+    deps: Vec<String>,
+}
+
+/// Everything but the face source: the GPU drawing lane of every configuration.
 pub(crate) struct Core {
     gpu: Arc<Gpu>,
     world: VoxelWorld,
@@ -94,9 +127,16 @@ pub(crate) struct Core {
     /// drawer's vertex stage) plus the draw component.
     drawer: FaceDrawer,
     draw: String,
+    source: String,
+    varyings: bool,
+    strip: bool,
     draw_src: String,
     program: mr_gpu::program::Program,
     deps: Vec<String>,
+    /// With meshes: the program with the mesh capability, and whether frames draw meshes
+    /// (the meshes stage is live).
+    meshed: Option<Meshed>,
+    draw_meshes: bool,
     layout_draw: wgpu::BindGroupLayout,
     pl_draw: wgpu::PipelineLayout,
     pl_shade: wgpu::PipelineLayout,
@@ -104,6 +144,7 @@ pub(crate) struct Core {
     frame_buf: wgpu::Buffer,
     output: wgpu::Texture,
     depth: wgpu::TextureView,
+    depth_read: bool,
     ring: FrameRing,
     frames_in_flight: usize,
     /// The drawer's timed stages' nodes (PLAN step 11).
@@ -119,6 +160,8 @@ struct DrawParts<'a> {
     gpu: &'a Gpu,
     program: &'a mr_gpu::program::Program,
     deps: &'a [String],
+    meshed: Option<&'a Meshed>,
+    strip: bool,
     draw_src: &'a str,
     shading: &'a str,
     pl_draw: &'a wgpu::PipelineLayout,
@@ -130,35 +173,60 @@ struct DrawParts<'a> {
 
 impl DrawParts<'_> {
     fn module(&self, label: &str, rest: &str) -> wgpu::ShaderModule {
-        mr_gpu::program::compile(&self.gpu.device, label, self.program, &format!("{}\n{rest}", self.draw_src), &self.deps.iter().map(String::as_str).collect::<Vec<_>>())
+        Self::compile(self.gpu, label, self.program, self.deps, &format!("{}\n{rest}", self.draw_src))
+    }
+
+    fn compile(gpu: &Gpu, label: &str, program: &mr_gpu::program::Program, deps: &[String], root: &str) -> wgpu::ShaderModule {
+        mr_gpu::program::compile(&gpu.device, label, program, root, &deps.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
     /// The face drawer for `draw` (the draw component's WGSL over `draw_src`; forward
-    /// drawing shades in the fragment shader).
+    /// drawing shades in the fragment shader); deferred drawers of a source with meshes also
+    /// the mesh capability's variant, for frames with meshes.
     fn drawer(&self, draw: &str) -> anyhow::Result<FaceDrawer> {
         let mode = DrawMode::parse(draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`"))?;
-        let vis = draw::gpu_wgsl(mode.name()).unwrap();
-        let vis = if mode.deferred() {
-            vis.to_string()
-        } else {
+        if !mode.deferred() {
             if let Some(why) = shade_state::fragment_blocker(self.shading, &self.gpu.device) {
                 anyhow::bail!(why);
             }
-            shade_state::fragment_wgsl(self.shading, vis)
-        };
-        let module = self.module("discover drawer", &vis);
-        FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: true, mesh_module: None }, mode, self.images, self.width, self.height)
+        }
+        let vis = draw_wgsl(mode, self.shading);
+        let module = self.module("face drawer", &vis);
+        let meshed = self.meshed.filter(|_| mode.deferred()).map(|m| Self::compile(self.gpu, "face drawer with meshes", &m.program, &m.deps, &format!("{}\n{vis}", self.draw_src)));
+        FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: self.strip, mesh_module: meshed.as_ref() }, mode, self.images, self.width, self.height)
     }
 }
 
-/// The drawing lane's WGSL before the draw component: the frame, the sampler's face source,
-/// the shading state and component, the face drawer's vertex stage.
-fn draw_src(source: &str, shading: &str) -> String {
-    let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
-    format!("{}\n{source}\n{}\n{shade}\n{}", include_str!("frame.wgsl"), ShadeState::wgsl(0, 3), draw::faces_wgsl(true))
+/// The draw component's WGSL after `draw_src`: deferred drawers shade in compute, forward
+/// drawing in the fragment shader.
+fn draw_wgsl(mode: DrawMode, shading: &str) -> String {
+    let vis = draw::gpu_wgsl(mode.name()).unwrap();
+    if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis) }
 }
 
-fn depth_view(gpu: &Gpu, w: u32, h: u32) -> wgpu::TextureView {
+/// The walks' program for a source's sites (discovery rays, exposure, shadow, bounce) and the
+/// root's dependencies; with meshes (the mesh-shadow site's walk) also the mesh capability's
+/// variant, the triangles in the images group.
+fn programs(walks: &Walks, sites: [usize; 4], meshes: Option<usize>) -> (mr_gpu::program::Program, Vec<String>, Option<Meshed>) {
+    let [rays, exposure, shadow, bounce] = sites;
+    let (program, deps) = mr_components::shaders::sites_program(walks, rays, exposure, shadow, bounce);
+    let meshed = meshes.map(|mesh_shadow| {
+        let (mut program, mut deps) = (program.clone(), deps.clone());
+        deps.insert(0, mr_components::shaders::meshes(&mut program, walks, shadow, mesh_shadow, 3, 2));
+        Meshed { program, deps }
+    });
+    (program, deps, meshed)
+}
+
+/// The drawing lane's WGSL before the draw component: the frame, the face source, the
+/// shading state and component, the face drawer's vertex stage.
+fn draw_src(source: &str, shading: &str, varyings: bool) -> String {
+    let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
+    format!("{}\n{source}\n{}\n{shade}\n{}", include_str!("frame.wgsl"), ShadeState::wgsl(0, 3), draw::faces_wgsl(varyings))
+}
+
+fn depth_view(gpu: &Gpu, w: u32, h: u32, read: bool) -> wgpu::TextureView {
+    let read = if read { wgpu::TextureUsages::TEXTURE_BINDING } else { wgpu::TextureUsages::empty() };
     gpu.device
         .create_texture(&wgpu::TextureDescriptor {
             label: Some("depth"),
@@ -168,16 +236,16 @@ fn depth_view(gpu: &Gpu, w: u32, h: u32) -> wgpu::TextureView {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
             // Hole detection reads last frame's depth.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | read,
             view_formats: &[],
         })
         .create_view(&Default::default())
 }
 
 impl Core {
-    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, o: &CoreOpts, depth_prepass: bool, src: Source) -> anyhow::Result<Self> {
+    fn new(p: &InitParams, devices: &Devices, waker: Waker, o: &CoreOpts, depth_prepass: bool, src: SourceSpec) -> anyhow::Result<Self> {
         // The host hands the device in (GPU slot 0); the executor only states its needs.
-        let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
+        let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: src.features, optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE })?;
         let walks = src.walks;
         let world = VoxelWorld::new(
             &gpu,
@@ -203,9 +271,8 @@ impl Core {
         let accum = ShadeState::new(&gpu, p.width, p.height, &shading, o.bounces, o.spp, o.accumulate);
         // The walks' modules: the roots cast through the discovery rays' kernel and read the
         // exposure storage; shading's rays through theirs.
-        let [rays, exposure, shadow, bounce] = src.sites;
-        let (program, deps) = mr_components::shaders::sites_program(&walks, rays, exposure, shadow, bounce);
-        let draw_src = draw_src(src.wgsl, &shading);
+        let (program, deps, meshed) = programs(&walks, src.sites, src.meshes);
+        let draw_src = draw_src(&src.wgsl, &shading, src.varyings);
         let buf = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
@@ -215,35 +282,41 @@ impl Core {
         let ro = wgpu::BufferBindingType::Storage { read_only: true };
         let [a, b] = ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE);
         // The frame, the face source's two buffers, the shading state.
-        let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("discover draw"), entries: &[buf(0, wgpu::BufferBindingType::Uniform), buf(1, ro), buf(2, ro), a, b] });
-        let images = FaceDrawer::images_layout(dev, false);
-        let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover draw"), bind_group_layouts: &storages.layouts(&[Some(&layout_draw), Some(world.layout())]), immediate_size: 0 });
+        let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("face draw"), entries: &[buf(0, wgpu::BufferBindingType::Uniform), buf(1, ro), buf(2, ro), a, b] });
+        let images = FaceDrawer::images_layout(dev, meshed.is_some());
+        let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("face draw"), bind_group_layouts: &storages.layouts(&[Some(&layout_draw), Some(world.layout())]), immediate_size: 0 });
         let pl_shade = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("discover deferred shade"),
+            label: Some("face deferred shade"),
             bind_group_layouts: &storages.layouts(&[Some(&layout_draw), Some(world.layout()), None, Some(&images)]),
             immediate_size: 0,
         });
         let frame_buf = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("frame"), size: size_of::<FrameUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let fif = o.frames_in_flight.max(1);
-        let parts = DrawParts { gpu: &gpu, program: &program, deps: &deps, draw_src: &draw_src, shading: &shading, pl_draw: &pl_draw, pl_shade: &pl_shade, images: &images, width: p.width, height: p.height };
+        let parts = DrawParts { gpu: &gpu, program: &program, deps: &deps, meshed: meshed.as_ref().filter(|_| src.draw_meshes), strip: src.strip, draw_src: &draw_src, shading: &shading, pl_draw: &pl_draw, pl_shade: &pl_shade, images: &images, width: p.width, height: p.height };
         let drawer = parts.drawer(o.draw)?;
         Ok(Self {
             drawer,
             draw: o.draw.to_string(),
             output: mr_gpu::output_texture(&gpu, p.width, p.height),
-            depth: depth_view(&gpu, p.width, p.height),
+            depth: depth_view(&gpu, p.width, p.height, src.depth_read),
+            depth_read: src.depth_read,
             ring: FrameRing::new(&gpu, p.width, p.height, fif, waker.clone()).with_stages(p.stage_times),
             frames_in_flight: fif,
-            draw_nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
+            draw_nodes: src.nodes,
             depth_prepass,
             gpu,
             world,
             storages,
             accum,
             shading,
+            source: src.wgsl,
+            varyings: src.varyings,
+            strip: src.strip,
             draw_src,
             program,
             deps,
+            draw_meshes: src.draw_meshes && meshed.is_some(),
+            meshed,
             layout_draw,
             pl_draw,
             pl_shade,
@@ -256,10 +329,11 @@ impl Core {
     }
 
     fn parts(&self) -> DrawParts<'_> {
-        DrawParts { gpu: &self.gpu, program: &self.program, deps: &self.deps, draw_src: &self.draw_src, shading: &self.shading, pl_draw: &self.pl_draw, pl_shade: &self.pl_shade, images: &self.images, width: self.width, height: self.height }
+        let meshed = self.meshed.as_ref().filter(|_| self.draw_meshes);
+        DrawParts { gpu: &self.gpu, program: &self.program, deps: &self.deps, meshed, strip: self.strip, draw_src: &self.draw_src, shading: &self.shading, pl_draw: &self.pl_draw, pl_shade: &self.pl_shade, images: &self.images, width: self.width, height: self.height }
     }
 
-    /// A module over the walks: `draw_src` plus `rest` (the sampler's own raster entry
+    /// A module over the walks: `draw_src` plus `rest` (the GPU sampler's own raster entry
     /// points).
     fn draw_module(&self, label: &str, rest: &str) -> wgpu::ShaderModule {
         self.parts().module(label, rest)
@@ -269,11 +343,25 @@ impl Core {
         self.parts().drawer(draw)
     }
 
+    /// Recompiles the drawer for a new face source WGSL (`strip`: its primitive), shading
+    /// (also the shading state's) and whether frames draw meshes; returns whether the shading
+    /// state's bindings changed (the source's draw bind group is then stale).
+    fn rebuild(&mut self, source: String, strip: bool, shading: &str, meshes: bool) -> anyhow::Result<bool> {
+        let rebound = self.accum.set_shading(&self.gpu, shading);
+        self.shading = shading.to_string();
+        self.draw_src = draw_src(&source, shading, self.varyings);
+        self.source = source;
+        self.strip = strip;
+        self.draw_meshes = meshes && self.meshed.is_some();
+        self.drawer = self.drawer(&self.draw)?;
+        Ok(rebound)
+    }
+
     /// A draw bind group: the frame, the face source's two buffers, the shading state.
     fn draw_bind(&self, a: &wgpu::Buffer, b: &wgpu::Buffer) -> wgpu::BindGroup {
         let [s0, s1] = self.accum.bind_entries(3);
         self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("discover draw"),
+            label: Some("face draw"),
             layout: &self.layout_draw,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.frame_buf.as_entire_binding() },
@@ -350,7 +438,7 @@ impl Core {
         self.width = width;
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
-        self.depth = depth_view(&self.gpu, width, height);
+        self.depth = depth_view(&self.gpu, width, height, self.depth_read);
         self.drawer.resize(&self.gpu, width, height);
         self.accum.resize(&self.gpu, width, height);
         self.ring = FrameRing::new(&self.gpu, width, height, self.frames_in_flight, self.waker.clone()).with_stages(self.ring.stages());
@@ -361,12 +449,14 @@ impl Core {
     }
 }
 
-/// A sampler: the visibility node's implementation on its device.
-trait Sampler {
+/// A face source: what feeds the drawer's faces, on its device (meshing, or a sampler).
+trait FaceSource {
     /// World changes before the GPU world applies them (the CPU world, event areas).
     fn updating(&mut self, updates: &[WorldUpdate]);
     /// Chunks the GPU world changed.
     fn updated(&mut self, core: &Core, changed: &[IVec3]);
+    /// Meshes (mesh mode), for a source that draws them.
+    fn update_meshes(&mut self, _update: MeshUpdate) {}
     fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()>;
     /// Its knobs; `None` if `name` is not one.
     fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>>;
@@ -375,44 +465,55 @@ trait Sampler {
     fn memory(&self, core: &Core) -> (u64, u64);
 }
 
-pub struct Discover {
+pub struct Faces<S> {
     core: Core,
-    sampler: Box<dyn Sampler>,
+    source: S,
 }
 
-impl Discover {
-    fn new(backend: &str, p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
+impl Faces<()> {
+    /// The executor for `backend`'s graph: meshing when the drawer's faces are every meshed
+    /// face (the `faces` visibility), else discovery on the visibility node's device.
+    fn create(backend: &str, p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Box<dyn Renderer>> {
         let g = graph::of_init(backend, &p)?;
+        let faces = g.input(Role::Draw, "faces").ok_or_else(|| anyhow::anyhow!("{backend}: the drawer's faces are not bound"))?;
+        if g.node(faces).component == "faces" {
+            let (core, source) = mesh::Meshing::new(&p, devices, waker, &g)?;
+            return Ok(Box::new(Faces { core, source }));
+        }
         let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{backend}: no visibility node"))?;
-        let (core, sampler): (Core, Box<dyn Sampler>) = match g.devices[vis] {
+        Ok(match g.devices[vis] {
             Device::Cpu => {
-                let (core, s) = cpu::CpuSampler::new(&p, devices, waker, &g)?;
-                (core, Box::new(s))
+                let (core, source) = cpu::CpuSampler::new(&p, devices, waker, &g)?;
+                Box::new(Faces { core, source })
             }
             Device::Gpu(_) => {
-                let (core, s) = gpu::GpuSampler::new(&p, devices, waker, &g)?;
-                (core, Box::new(s))
+                let (core, source) = gpu::GpuSampler::new(&p, devices, waker, &g)?;
+                Box::new(Faces { core, source })
             }
-        };
-        Ok(Self { core, sampler })
+        })
     }
 }
 
-impl Renderer for Discover {
+impl<S: FaceSource> Renderer for Faces<S> {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         if !updates.is_empty() {
             self.core.accum.invalidate();
         }
-        self.sampler.updating(&updates);
+        self.source.updating(&updates);
         let c = &mut self.core;
         let changed = c.world.apply(&c.gpu, updates);
         c.storages.update(&c.gpu, &c.world, &changed)?;
-        self.sampler.updated(&self.core, &changed);
+        self.source.updated(&self.core, &changed);
+        Ok(())
+    }
+
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        self.source.update_meshes(update);
         Ok(())
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.sampler.render(&mut self.core, req, sink)
+        self.source.render(&mut self.core, req, sink)
     }
 
     fn poll(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
@@ -420,7 +521,7 @@ impl Renderer for Discover {
     }
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
-        if let Some(r) = self.sampler.set_param(&mut self.core, name, value) {
+        if let Some(r) = self.source.set_param(&mut self.core, name, value) {
             return r;
         }
         self.core.set_param(name, value).unwrap_or_else(|| anyhow::bail!("`{name}` cannot change while running"))
@@ -432,37 +533,38 @@ impl Renderer for Discover {
 
     fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
         self.core.resize(width, height);
-        self.sampler.resize(&self.core);
+        self.source.resize(&self.core);
         Ok(())
     }
 
     fn memory(&self) -> MemoryReport {
-        let (cpu, gpu) = self.sampler.memory(&self.core);
+        let (cpu, gpu) = self.source.memory(&self.core);
         MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use mr_components::draw::{self, drawer::DrawMode};
-    use mr_components::shading::state as shade_state;
+    use mr_components::draw::drawer::DrawMode;
     use mr_components::{Slot, names_on};
 
-    /// `backend`'s face source with every drawer it offers (the raster's fragment stage with
-    /// the sampler's own entry points) composes and validates over `program`.
-    pub(crate) fn drawers(program: &mr_gpu::program::Program, deps: &[String], shading: &str, what: &str, backend: &str) {
-        let draw_src = crate::draw_src(if backend == crate::cpu::BACKEND { include_str!("records.wgsl") } else { include_str!("set_faces.wgsl") }, shading);
+    /// A face source's drawing lane (`draw_src`) with every drawer `backend` offers (the
+    /// raster's fragment stage with the sampler's own entry points) composes and validates
+    /// over `program`, and over the mesh capability's variant where deferred drawers have it.
+    pub(crate) fn drawers(program: &mr_gpu::program::Program, deps: &[String], meshed: Option<&crate::Meshed>, draw_src: &str, shading: &str, what: &str, backend: &str) {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
-        let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
-        let check = |root: &str, what: &str| {
+        let check = |program: &mr_gpu::program::Program, deps: &[String], root: &str, what: &str| {
+            let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
             let m = program.naga(root, &deps).unwrap_or_else(|e| panic!("{what}: {e}"));
             Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));
         };
         for d in names_on(backend, Slot::Draw) {
             let mode = DrawMode::parse(d).unwrap();
-            let vis = draw::gpu_wgsl(mode.name()).unwrap();
-            let vis = if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis) };
-            check(&format!("{draw_src}\n{vis}"), &format!("{backend} drawer {what} {d}"));
+            let root = format!("{draw_src}\n{}", crate::draw_wgsl(mode, shading));
+            check(program, deps, &root, &format!("{backend} drawer {what} {d}"));
+            if let Some(m) = meshed.filter(|_| mode.deferred()) {
+                check(&m.program, &m.deps, &root, &format!("{backend} drawer with meshes {what} {d}"));
+            }
         }
     }
 
@@ -482,7 +584,7 @@ mod tests {
                 let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), groups, false);
                 let bounce = ck.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&ck, s, groups, false));
                 let (program, deps) = mr_components::shaders::sites_program(&walks, shadow, shadow, shadow, bounce);
-                drawers(&program, &deps, shading, &format!("{st} {shading}"), backend);
+                drawers(&program, &deps, None, &crate::draw_src(include_str!("records.wgsl"), shading, true), shading, &format!("{st} {shading}"), backend);
             }
         }
     }
