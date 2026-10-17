@@ -59,9 +59,10 @@ pub struct InitParams {
 }
 
 /// Which devices a renderer runs on (IDEAS §17, requirement 2: no hardware opinion in the
-/// renderers). Several GPUs, or a GPU and the CPU, are a configuration; a back end's
-/// stages pick their device by slot (today every GPU back end uses GPU slot 0, and the CPU
-/// stages the CPU).
+/// renderers). Several GPUs, or a GPU and the CPU, are a configuration; a graph's nodes
+/// pick their device by slot (`gpu` = slot 0, `gpu1` = slot 1, ...; PLAN step 13e4c: a
+/// pipeline runs on its drawer's or visibility node's GPU, its deferred shading may run on
+/// another).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DeviceConfig {

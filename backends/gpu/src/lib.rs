@@ -31,6 +31,7 @@ mod accel;
 mod columns;
 mod faces;
 mod raycast;
+mod remote;
 mod splat;
 
 pub fn gpu_raster_entry() -> RendererEntry {
@@ -106,6 +107,7 @@ const RECORDS_BINDING: u32 = 4;
 const LANE_BINDING: u32 = 8;
 
 /// What a lane needs of the core.
+#[derive(Clone)]
 struct CoreSpec<'a> {
     gpu: GpuNeeds,
     /// The walks of the GPU's rays: the storages whose data the core keeps (and the geometry
@@ -157,9 +159,25 @@ pub(crate) struct Core {
     waker: Waker,
 }
 
-/// The records of `placement = deferred` (8 bytes per pixel).
+/// The records of `placement = deferred` (8 bytes per pixel; copied between GPUs when the
+/// shading runs on another, [`remote`]).
 fn records(gpu: &Gpu, width: u32, height: u32) -> wgpu::Buffer {
-    gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("hit records"), size: (width as u64 * height as u64 * 8).max(16), usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
+    let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+    gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("hit records"), size: records_size(width, height), usage, mapped_at_creation: false })
+}
+
+fn records_size(width: u32, height: u32) -> u64 {
+    (width as u64 * height as u64 * 8).max(16)
+}
+
+/// The GPU slot a pipeline's nodes run on (the device configuration's, PLAN step 13e4c): its
+/// drawer's, else its visibility node's (the shading may run on another: [`remote`]).
+fn home_slot(g: &graph::Checked) -> usize {
+    let at = |r| g.find(r).map(|id| g.devices[id]);
+    match at(Role::Draw).or(at(Role::Visibility)) {
+        Some(graph::Device::Gpu(i)) => i as usize,
+        _ => 0,
+    }
 }
 
 /// A storage buffer's layout entry.
@@ -169,14 +187,19 @@ fn storage_entry(binding: u32, read_only: bool, visibility: wgpu::ShaderStages) 
 
 impl Core {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, s: CoreSpec) -> anyhow::Result<Self> {
-        // The host hands the device in (GPU slot 0); the executor only states its needs (ray
-        // queries' with acceleration structures).
+        Self::on(home_slot(g), p, devices, waker, g, s)
+    }
+
+    /// The core on GPU slot `slot`.
+    fn on(slot: usize, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, s: CoreSpec) -> anyhow::Result<Self> {
+        // The host hands the device in (the slot's adapter); the executor only states its
+        // needs (ray queries' with acceleration structures).
         let mut needs = s.gpu;
         if s.accel.is_some() {
             needs.experimental = true;
             needs.required_features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
         }
-        let gpu = mr_gpu::gpu(devices, 0, &needs)?;
+        let gpu = mr_gpu::gpu(devices, slot, &needs)?;
         let accel = s.accel.as_ref().map(|a| accel::Accel::new(&gpu, a)).transpose()?;
         let world = VoxelWorld::new(
             &gpu,
@@ -332,6 +355,10 @@ trait Lane {
     fn resize(&mut self, core: &Core);
     /// (CPU, GPU) bytes beyond the core's.
     fn memory(&self, core: &Core) -> (u64, u64);
+    /// Completes finished frames (`wait`: all of them).
+    fn poll(&mut self, core: &mut Core, sink: &mut dyn FrameSink, wait: bool) -> anyhow::Result<()> {
+        core.ring.poll(&core.gpu, sink, wait)
+    }
 }
 
 /// The core and one lane (static dispatch).
@@ -365,7 +392,7 @@ impl<L: Lane> Renderer for Executor<L> {
     }
 
     fn poll(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.core.ring.poll(&self.core.gpu, sink, false)
+        self.lane.poll(&mut self.core, sink, false)
     }
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
@@ -376,7 +403,7 @@ impl<L: Lane> Renderer for Executor<L> {
     }
 
     fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.core.ring.poll(&self.core.gpu, sink, true)
+        self.lane.poll(&mut self.core, sink, true)
     }
 
     fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {

@@ -510,6 +510,12 @@ GPU renderers pick the discrete GPU on hybrid laptops. Override this with
 `run.devices = { gpus = ["nvidia"] }` (or a renderer's own `devices = { ... }`; `cpu_threads` sets
 CPU stages' threads), or set `WGPU_BACKEND` to choose the backend.
 
+Slots are what graph nodes name as `device` (`gpu` = slot 0, `gpu1` = slot 1). A pipeline
+runs on its drawer's or visibility node's GPU; a ray-casting pipeline may run its deferred
+shading (with its own shadow and bounce walks) on a second GPU, the hit records crossing
+between them each frame (`devices = { gpus = ["nvidia", "amd"] }`, shading `device = "gpu1"`,
+`placement = "deferred"`; with both slots on one adapter, two devices of it).
+
 ### Adding a renderer
 
 **New techniques go in as components, not new renderers.** Add a directory under

@@ -25,6 +25,7 @@ use wgpu::util::DeviceExt;
 pub(crate) const ACCEL_BINDING: u32 = 5;
 
 /// How the acceleration structures are built (the geometry node's knobs and the build's).
+#[derive(Clone)]
 pub(crate) struct AccelSpec {
     /// The geometry component.
     pub geometry: String,

@@ -1,27 +1,7 @@
-// The ray-casting executor's root (PLAN step 13e2): one thread per pixel casts the primary ray
-// (`pixel_hit`, the lane's: a walk over a storage, or a hardware ray query) and colours the
-// hit with the shading component (`shade_surface`), in a compute thread or (`FRAGMENT`) a
-// fragment shader over a full-screen triangle.
-
-struct Camera {
-    forward: vec3<f32>, tan_half_fov: f32,
-    right: vec3<f32>, aspect: f32,
-    up: vec3<f32>, mode: u32,      // 0 unlit, 1 lit
-    origin: vec3<f32>, sky: u32,   // camera position relative to vp.cam_block; packed sRGB sky
-    width: u32, height: u32,
-    view_max: u32,                 // steps view: the top of the colour scale
-    ray_flags: u32,                // ray queries: primary-ray culling
-}
-
-@group(0) @binding(0) var<uniform> cam: Camera;
-@group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
-// Bindings 2 and 3: the shading state (`sp`, `accum`; shading::state); 4: the hit records
-// (`placement = deferred`); from 8: the lane's.
-
-// The unit primary ray through pixel `px` (also the deferred pass's view).
-fn view_ray(px: vec2<u32>) -> vec3<f32> {
-    return camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(px) + 0.5, vec2<f32>(f32(cam.width), f32(cam.height)));
-}
+// The ray-casting executor's root (PLAN step 13e2), after `view.wgsl`: one thread per pixel
+// casts the primary ray (`pixel_hit`, the lane's: a walk over a storage, or a hardware ray
+// query) and colours the hit with the shading component (`shade_surface`), in a compute
+// thread or (`FRAGMENT`) a fragment shader over a full-screen triangle.
 
 // Mesh mode (`MESHES`): the distance along `d` to the mesh surface at pixel `px`, where its
 // ray stops (1e30: none).

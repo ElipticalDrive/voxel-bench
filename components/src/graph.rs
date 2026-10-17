@@ -1024,7 +1024,7 @@ impl Graph {
                 }
             }
         }
-        if let Some(why) = self.site_blocker(&ck) {
+        if let Some(why) = self.site_blocker(&ck).or_else(|| device_blocker(&ck)) {
             return Err(why);
         }
         let skel = ck.graph.skeleton();
@@ -1046,9 +1046,15 @@ impl Graph {
             g.canonical()
         };
         let strip = |g: &Graph| strip_with(g, false);
+        // The shape on one GPU: which GPU each node runs on is `device_blocker`'s.
+        let one_gpu = |g: &Graph| {
+            let mut g = g.clone();
+            g.nodes.values_mut().filter(|n| matches!(n.device, Some(Device::Gpu(_)))).for_each(|n| n.device = Some(Device::Gpu(0)));
+            g
+        };
         let expected = Graph::from_composition(&c)?;
-        if strip(&expected.skeleton())? != strip(&skel)? {
-            if strip_with(&expected.skeleton(), true)? == strip_with(&skel, true)? {
+        if strip(&expected.skeleton())? != strip(&one_gpu(&skel))? {
+            if strip_with(&expected.skeleton(), true)? == strip_with(&one_gpu(&skel), true)? {
                 let timed = |g: &Graph| {
                     let v: Vec<String> = g.nodes.iter().flat_map(|(id, n)| n.timing.iter().map(move |(p, w)| format!("`{id}`.{p} {}", w.label()))).collect();
                     if v.is_empty() { "every edge now".to_string() } else { v.join(", ") }
@@ -1218,6 +1224,47 @@ impl Graph {
         }
         Ok(g)
     }
+}
+
+/// Why the GPUs `ck` places its nodes on cannot run, if they can't (PLAN step 13e4c): a
+/// pipeline runs on one GPU (any slot), or split over two at the hit records: ray casting's
+/// shading (`placement = deferred`, with the walks compiled into it) on another GPU than the
+/// rest, the records crossing between them (the schedule's transfer).
+fn device_blocker(ck: &Checked) -> Option<String> {
+    let g = &ck.graph;
+    let mut slots: Vec<u8> = ck.devices.values().filter_map(|d| if let Device::Gpu(i) = d { Some(*i) } else { None }).collect();
+    slots.sort();
+    slots.dedup();
+    if slots.len() < 2 {
+        return None;
+    }
+    let on = |d: Device| {
+        let mut v: Vec<&str> = g.nodes.keys().map(String::as_str).filter(|id| ck.devices[*id] == d).collect();
+        v.sort();
+        v.iter().map(|id| format!("`{id}`")).collect::<Vec<_>>().join(", ")
+    };
+    let used = slots.iter().map(|&i| format!("{} ({})", Device::Gpu(i), on(Device::Gpu(i)))).collect::<Vec<_>>().join("; ");
+    if !matches!(g.executor.as_str(), "gpu-compute" | "gpu-rt") {
+        return Some(format!("`{}` runs on one GPU (here: {used}); a pipeline over two GPUs is split at the hit records, ray casting's deferred shading on the second", g.executor));
+    }
+    let (Some(vis), Some(shading)) = (g.nodes.iter().find(|(_, n)| n.role == Role::Visibility), g.nodes.iter().find(|(_, n)| n.role == Role::Shading)) else {
+        return Some(format!("a pipeline over two GPUs is split between its visibility and shading nodes (here: {used})"));
+    };
+    let (near, far) = (ck.devices[vis.0], ck.devices[shading.0]);
+    // The nodes on the shading's GPU are the shading and what is compiled into it (fused
+    // nodes follow their callers), the rest on the visibility's.
+    let stray: Vec<String> = g.nodes.iter().filter(|(id, n)| matches!(ck.devices[*id], Device::Gpu(_)) && ck.devices[*id] != near && (far == near || (*id != shading.0 && !output(n.role, &n.component).fused()))).map(|(id, _)| format!("`{id}` on {}", ck.devices[id])).collect();
+    if slots.len() > 2 || far == near || !stray.is_empty() {
+        return Some(format!("only the shading and the walks compiled into it run on a second GPU (here: {used}{})", if stray.is_empty() { String::new() } else { format!("; not so: {}", stray.join(", ")) }));
+    }
+    let mut why = Vec::new();
+    if shading.1.knobs.get("placement").and_then(|v| v.as_str()) != Some("deferred") {
+        why.push(format!("`{}` on {far} shades the hit records `{}` writes on {near}: placement = deferred", shading.0, vis.0));
+    }
+    if let Some((id, n)) = g.nodes.iter().find(|(_, n)| n.role == Role::Meshes && n.component != "none") {
+        why.push(format!("`{id}` ({}): mesh surfaces are rasterised on {near}, and the shading on {far} has not their triangles (meshes = none)", n.component));
+    }
+    (!why.is_empty()).then(|| why.join("; "))
 }
 
 /// Why the APIs set in `ck` cannot run on back end `b` running composition `c`, if they
@@ -2270,6 +2317,58 @@ mod tests {
         assert_eq!(g.placed().executor, "gpu-raster");
         assert!(g.validate().is_err());
     }
+    /// A pipeline on one GPU runs on any slot; over two it is split at the hit records (ray
+    /// casting's deferred shading, with its walks, on the second GPU); else the reasons
+    /// (PLAN step 13e4c).
+    #[test]
+    fn two_gpus() {
+        let split = |b: &str, placement: &str| {
+            let mut g = Graph::from_composition(&Composition::new(b)).unwrap();
+            g.nodes.retain(|_, n| n.role != Role::Meshes);
+            g.nodes.values_mut().for_each(|n| drop(n.inputs.remove("meshes")));
+            g.nodes.insert("s.storage".into(), Node::new(Role::Storage, "prefix").with(&[("changes", "world")]));
+            g.nodes.insert("s.kernel".into(), Node::new(Role::Traversal, "incremental").with(&[("storage", "s.storage")]));
+            let sh = g.nodes.get_mut("shading").unwrap();
+            sh.inputs.insert("shadow".into(), "s.kernel".into());
+            sh.device = Some(Device::Gpu(1));
+            sh.knobs.insert("placement".into(), toml::Value::String(placement.into()));
+            g
+        };
+        for b in ["gpu-compute", "gpu-rt"] {
+            let g = split(b, "deferred");
+            let (_, exact) = g.accept().unwrap_or_else(|e| panic!("{b}: {e}"));
+            assert!(!exact, "{b}: the split is no flat composition (its devices would be lost)");
+            let ck = g.check().unwrap();
+            assert_eq!((ck.devices["s.kernel"], ck.devices["visibility"]), (Device::Gpu(1), Device::Gpu(0)));
+            let sched = ck.schedule().unwrap().to_string();
+            assert!(sched.contains("gpu -> gpu1"), "{b}: {sched}");
+            let why = split(b, "inline").accept().unwrap_err();
+            assert!(why.contains("placement = deferred"), "{b}: {why}");
+        }
+        // The whole pipeline on the second GPU.
+        let mut g = Graph::from_composition(&Composition::new("gpu-compute")).unwrap();
+        g.nodes.values_mut().filter(|n| n.role != Role::World).for_each(|n| n.device = Some(Device::Gpu(1)));
+        g.accept().unwrap();
+        // Meshes on the first GPU with the shading on the second; three GPUs; a drawer's shading.
+        let mut g = split("gpu-compute", "deferred");
+        g.nodes.insert("m.kernel".into(), Node::new(Role::Traversal, "refloor").with(&[("storage", "storage")]));
+        g.nodes.insert("meshes".into(), Node::new(Role::Meshes, "composite").with(&[("changes", "world"), ("shadow", "m.kernel")]));
+        g.nodes.get_mut("visibility").unwrap().inputs.insert("meshes".into(), "meshes".into());
+        let why = g.accept().unwrap_err();
+        assert!(why.contains("meshes = none"), "{why}");
+        let mut g = split("gpu-compute", "deferred");
+        g.nodes.get_mut("storage").unwrap().device = Some(Device::Gpu(2));
+        assert!(g.accept().is_err());
+        let mut g = Graph::from_composition(&Composition::new("gpu-raster")).unwrap();
+        g.nodes.insert("s.storage".into(), Node::new(Role::Storage, "prefix").with(&[("changes", "world")]));
+        g.nodes.insert("s.kernel".into(), Node::new(Role::Traversal, "incremental").with(&[("storage", "s.storage")]));
+        let sh = g.nodes.get_mut("shading").unwrap();
+        sh.inputs.insert("shadow".into(), "s.kernel".into());
+        sh.device = Some(Device::Gpu(1));
+        let why = g.accept().unwrap_err();
+        assert!(why.contains("runs on one GPU"), "{why}");
+    }
+
 
     /// Step 13e4b: any GPU ray-casting site binds any kernel with a GPU implementation: ray
     /// queries over a geometry node's acceleration structures (one per pipeline) beside

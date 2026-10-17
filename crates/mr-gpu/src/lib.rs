@@ -483,8 +483,9 @@ impl FrameRing {
                 {
                     let v = read.get_mapped_range(..)?;
                     let ts: [u64; 2] = [u64::from_le_bytes(v[0..8].try_into()?), u64::from_le_bytes(v[8..16].try_into()?)];
+                    // Added to what the frame brought (a pipeline over two GPUs: the other's).
                     if ts[1] > ts[0] {
-                        p.stats.gpu_ms = Some((ts[1] - ts[0]) as f32 * self.timestamp_period / 1e6);
+                        p.stats.gpu_ms = Some(p.stats.gpu_ms.unwrap_or(0.0) + (ts[1] - ts[0]) as f32 * self.timestamp_period / 1e6);
                     }
                 }
                 read.unmap();

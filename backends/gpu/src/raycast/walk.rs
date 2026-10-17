@@ -180,8 +180,14 @@ impl Composition {
         let primary = walks.site(&g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
         walks.kernels[primary].component = require(BACKEND, Slot::Traversal, &opts.traversal)?;
         walks.kernels[primary].consts = mr_components::shaders::KernelConsts { lod: false, exact: opts.exact, levels: [opts.skip2, opts.skip4, opts.skip8, opts.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)) };
-        let shadow = walks.site(&g, site(Role::Shading, "shadow")?, STORAGE_GROUPS, false);
-        let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&g, s, STORAGE_GROUPS, false));
+        let shadow = match super::shading_site(g, "shadow") {
+            Some(_) => walks.site(&g, site(Role::Shading, "shadow")?, STORAGE_GROUPS, false),
+            None => primary,
+        };
+        let bounce = match super::shading_site(g, "bounce") {
+            Some(Some(s)) => walks.site(&g, s, STORAGE_GROUPS, false),
+            _ => shadow,
+        };
         let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(shadow, |s| walks.site(&g, s, STORAGE_GROUPS, false));
         let mut comp = Self {
             walks,
@@ -308,7 +314,7 @@ pub(crate) struct Walk {
 }
 
 impl Walk {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String)> {
+    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String, Option<crate::remote::Far>)> {
         let opts: Options = p.options()?;
         let comp = Composition::of(g, &opts, p.max_lod)?;
         if let Some(why) = feature_blocker(&comp) {
@@ -319,12 +325,7 @@ impl Walk {
         // fragment shader.
         let stages = wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT;
         // The storage instances' data: the primary's at group 2, the other sites' at 4.. .
-        let core = Core::new(
-            p,
-            devices,
-            waker,
-            g,
-            CoreSpec {
+        let spec = CoreSpec {
                 gpu: GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY },
                 walks: &comp.walks,
                 accel: crate::accel::AccelSpec::of(g, &comp.walks)?,
@@ -340,8 +341,9 @@ impl Walk {
                 max_steps: opts.max_steps,
                 pool_mb: opts.pool_mb,
                 frames_in_flight: opts.frames_in_flight,
-            },
-        )?;
+        };
+        let core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
+        let far = crate::remote::Far::of(p, devices, waker, g, &core, &spec)?;
         let walk = |k: usize| comp.walks.label(k);
         tracing::info!("gpu-compute: primary {}, shadow {}, bounce {}, shading {shading}", walk(0), walk(comp.shadow), walk(comp.bounce));
         let lane = Self {
@@ -355,7 +357,7 @@ impl Walk {
             view_max: opts.view_max.clamp(1, 16384),
             stage_nodes: [g.ids(&[Role::Meshes]), g.ids(&[Role::Prepass])],
         };
-        Ok((core, lane, shading))
+        Ok((core, lane, shading, far))
     }
 }
 

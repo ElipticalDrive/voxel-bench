@@ -11,8 +11,9 @@
 //!
 //! Which caster runs is the graph's: the primary rays' kernel node's API. The rest is the
 //! lane's ([`Raycast`], [`Passes`]) over the executor's core: the shader (the caster's root
-//! and modules, then `cast.wgsl`, and when deferred `deferred.wgsl` with the common pass), the
-//! rays' pass and the deferred shading pass.
+//! and modules, then `view.wgsl` and `cast.wgsl`, and when deferred `records.wgsl` and
+//! `deferred.wgsl` with the common pass), the rays' pass and the deferred shading pass, or
+//! (the shading on another GPU, PLAN step 13e4c) the records sent to it ([`crate::remote`]).
 
 use std::time::Instant;
 
@@ -22,6 +23,7 @@ use mr_components::graph::{self, Role};
 use mr_core::*;
 use mr_gpu::{Ticket, wgpu};
 
+use crate::remote::Far;
 use crate::{Core, Lane};
 
 pub(crate) mod rayquery;
@@ -35,6 +37,16 @@ pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Wa
         Some(Api::RayQuery) => crate::run(Raycast::new(rayquery::RayQuery::new(p, devices, waker, g)?)?),
         // A walk: compute threads or a fragment shader (`dispatch`), the kernel compiled in.
         _ => crate::run(Raycast::new(walk::Walk::new(p, devices, waker, g)?)?),
+    }
+}
+
+/// The site `port` of the shading's rays, unless the shading runs on another GPU (then its
+/// rays are the remote part's, [`Far`], and this GPU's program walks the primary rays' kernel
+/// there, never called).
+fn shading_site<'a>(g: &'a graph::Checked, port: &str) -> Option<Option<graph::Site<'a>>> {
+    match crate::remote::far_slot(g) {
+        Some(_) => None,
+        None => Some(g.site(Role::Shading, port)),
     }
 }
 
@@ -132,6 +144,8 @@ enum Main {
 pub(crate) struct Passes {
     layout0: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
+    /// The records are shaded on another GPU (no shading pass here).
+    remote: bool,
     plain: Variant,
     meshed: Option<Variant>,
     extra: Vec<wgpu::ComputePipeline>,
@@ -142,24 +156,24 @@ pub(crate) struct Passes {
 }
 
 impl Passes {
-    fn new<C: Cast>(core: &Core, cast: &C, shading: &str) -> anyhow::Result<Self> {
+    fn new<C: Cast>(core: &Core, cast: &C, shading: &str, remote: bool) -> anyhow::Result<Self> {
         let dev = &core.gpu.device;
         let mut entries = core.layout_entries();
         entries.extend(cast.layout_entries(core.stages));
         let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("raycast"), entries: &entries });
         let pipeline_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("raycast"), bind_group_layouts: &cast.layouts(core, [&layout0, core.world.layout()]), immediate_size: 0 });
-        let (plain, meshed, extra) = Self::compile(core, &pipeline_layout, cast, shading)?;
-        Ok(Self { layout0, pipeline_layout, plain, meshed, extra, bind0: None, bind0_frag: None, stand_in: None })
+        let (plain, meshed, extra) = Self::compile(core, &pipeline_layout, cast, shading, remote)?;
+        Ok(Self { layout0, pipeline_layout, remote, plain, meshed, extra, bind0: None, bind0_frag: None, stand_in: None })
     }
 
     /// The variants for `cast` and its own entry points.
-    fn compile<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str) -> anyhow::Result<(Variant, Option<Variant>, Vec<wgpu::ComputePipeline>)> {
-        let (plain, extra) = Self::variant(core, layout, cast, shading, false)?;
-        let meshed = if cast.meshes() { Some(Self::variant(core, layout, cast, shading, true)?.0) } else { None };
+    fn compile<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, remote: bool) -> anyhow::Result<(Variant, Option<Variant>, Vec<wgpu::ComputePipeline>)> {
+        let (plain, extra) = Self::variant(core, layout, cast, shading, false, remote)?;
+        let meshed = if cast.meshes() { Some(Self::variant(core, layout, cast, shading, true, remote)?.0) } else { None };
         Ok((plain, meshed, extra))
     }
 
-    fn variant<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, meshed: bool) -> anyhow::Result<(Variant, Vec<wgpu::ComputePipeline>)> {
+    fn variant<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, meshed: bool, remote: bool) -> anyhow::Result<(Variant, Vec<wgpu::ComputePipeline>)> {
         let dev = &core.gpu.device;
         let deferred = core.records.is_some() && !cast.inline_only();
         let mut lp = cast.program(shading, meshed);
@@ -190,7 +204,7 @@ impl Passes {
         } else {
             Main::Compute(entry(if deferred { "walk_records" } else { "main" }))
         };
-        let shade = deferred.then(|| entry("shade"));
+        let shade = (deferred && !remote).then(|| entry("shade"));
         let extra = if meshed { vec![] } else { cast.entries().iter().map(|e| entry(e)).collect() };
         if let Some(e) = pollster::block_on(scope.pop()) {
             anyhow::bail!("compiling the ray-casting shader: {e}");
@@ -227,9 +241,9 @@ impl Passes {
     }
 }
 
-/// The whole shader of a caster's program: its root, then `cast.wgsl` (`steps`: the steps
-/// view, `fragment`: the fragment entry points), and when shading is `deferred`
-/// `deferred.wgsl` with the common pass.
+/// The whole shader of a caster's program: its root, then `view.wgsl` and `cast.wgsl`
+/// (`steps`: the steps view, `fragment`: the fragment entry points), and when shading is
+/// `deferred` `records.wgsl` and `deferred.wgsl` with the common pass.
 fn shader(mut lp: CastProgram, deferred: bool, steps: bool, fragment: bool) -> CastProgram {
     if steps {
         lp.program.define("VIEW_STEPS");
@@ -237,30 +251,41 @@ fn shader(mut lp: CastProgram, deferred: bool, steps: bool, fragment: bool) -> C
     if fragment {
         lp.program.define("FRAGMENT");
     }
-    lp.root = format!("{}\n{}", lp.root, include_str!("cast.wgsl"));
+    lp.root = format!("{}\n{}\n{}", lp.root, include_str!("view.wgsl"), include_str!("cast.wgsl"));
     if deferred {
-        lp.root = format!("{}\n{}\n{}", lp.root, include_str!("deferred.wgsl"), mr_components::shading::DEFERRED_PACKED_WGSL);
+        lp.root = format!("{}\n{}\n{}\n{}", lp.root, include_str!("records.wgsl"), include_str!("deferred.wgsl"), mr_components::shading::DEFERRED_PACKED_WGSL);
     }
     lp
 }
 
-/// The lane: the caster, its passes and the shading they were compiled with.
+/// The lane: the caster, its passes and the shading they were compiled with; the shading's
+/// GPU when it is another.
 struct Raycast<C> {
     passes: Passes,
     cast: C,
+    far: Option<Far>,
     shading: String,
     /// Shading the passes were compiled with (recompiled at the next frame on a change).
     built_shading: String,
 }
 
 impl<C: Cast> Raycast<C> {
-    fn new((core, cast, shading): (Core, C, String)) -> anyhow::Result<(Core, Self)> {
-        let passes = Passes::new(&core, &cast, &shading)?;
-        Ok((core, Self { passes, cast, built_shading: shading.clone(), shading }))
+    fn new((core, cast, shading, far): (Core, C, String, Option<Far>)) -> anyhow::Result<(Core, Self)> {
+        anyhow::ensure!(far.is_none() || !cast.inline_only(), "{}: view = steps shades inline, not on the shading's GPU", C::BACKEND);
+        let passes = Passes::new(&core, &cast, &shading, far.is_some())?;
+        Ok((core, Self { passes, cast, far, built_shading: shading.clone(), shading }))
     }
 }
 
 impl<C: Cast> Lane for Raycast<C> {
+    fn updating(&mut self, updates: &[WorldUpdate]) {
+        if let Some(f) = &mut self.far {
+            if let Err(e) = f.update(updates) {
+                tracing::error!("the shading's GPU: {e}");
+            }
+        }
+    }
+
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
         self.cast.updated(core, changed)
     }
@@ -272,14 +297,19 @@ impl<C: Cast> Lane for Raycast<C> {
     fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         let (passes, cast) = (&mut self.passes, &mut self.cast);
         if cast.stale() || self.shading != self.built_shading {
-            (passes.plain, passes.meshed, passes.extra) = Passes::compile(core, &passes.pipeline_layout, cast, &self.shading)?;
+            (passes.plain, passes.meshed, passes.extra) = Passes::compile(core, &passes.pipeline_layout, cast, &self.shading, passes.remote)?;
             if core.accum.set_shading(&core.gpu, &self.shading) {
                 passes.unbind();
             }
             self.built_shading = self.shading.clone();
             cast.compiled();
         }
-        let ticket = core.ring.begin(&core.gpu, sink)?;
+        // With the shading on another GPU, this GPU's frames are the first half of one (their
+        // stats go with the records).
+        let ticket = match &mut self.far {
+            Some(f) => core.ring.begin(&core.gpu, f.near_sink())?,
+            None => core.ring.begin(&core.gpu, sink)?,
+        };
         let start = Instant::now();
         let c = &req.camera;
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
@@ -295,7 +325,7 @@ impl<C: Cast> Lane for Raycast<C> {
         let variant = if before.meshed { passes.meshed.as_ref().unwrap_or(&passes.plain) } else { &passes.plain };
         // The rays' pass ends the frame unless the deferred shading pass follows.
         let last = variant.shade.is_none();
-        if last {
+        if last && !passes.remote {
             core.ring.stage(&mut enc, ticket, "cast+shade", &core.stage_nodes[0]);
         } else {
             core.ring.stage(&mut enc, ticket, "cast", &core.stage_nodes[1]);
@@ -351,6 +381,11 @@ impl<C: Cast> Lane for Raycast<C> {
         counters.extend(core.accum.counter(req.mode));
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
         cast.finish(&mut enc);
+        if let Some(f) = &mut self.far {
+            f.send(core, enc, ticket, req, stats)?;
+            cast.submitted();
+            return f.render(req, &self.shading, sink);
+        }
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
         cast.submitted();
         core.ring.poll(&core.gpu, sink, false)
@@ -360,16 +395,30 @@ impl<C: Cast> Lane for Raycast<C> {
         if name == "shading" {
             return Some(mr_components::require(C::BACKEND, mr_components::Slot::Shading, value.as_str().unwrap_or("")).map(|s| self.shading = s));
         }
+        // The core's knobs (shadows, the shading state's) reach both GPUs' cores.
+        if let Some(Err(e)) = self.far.as_mut().and_then(|f| f.set_param(name, value)) {
+            return Some(Err(e));
+        }
         self.cast.set_param(name, value)
     }
 
     fn resize(&mut self, core: &Core) {
         self.cast.resize(core);
         self.passes.unbind();
+        if let Some(f) = &mut self.far {
+            f.resize(core);
+        }
     }
 
     fn memory(&self, _core: &Core) -> (u64, u64) {
-        (0, self.cast.memory_bytes())
+        (0, self.cast.memory_bytes() + self.far.as_ref().map_or(0, |f| f.memory_bytes()))
+    }
+
+    fn poll(&mut self, core: &mut Core, sink: &mut dyn FrameSink, wait: bool) -> anyhow::Result<()> {
+        match &mut self.far {
+            Some(f) => f.poll(sink, wait),
+            None => core.ring.poll(&core.gpu, sink, wait),
+        }
     }
 }
 

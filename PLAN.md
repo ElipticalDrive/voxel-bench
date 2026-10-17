@@ -224,7 +224,8 @@ The user's architecture, settled with finality and without limits for later (IDE
           faces lane on group 0 and a CPU world shared by the CPU lanes moved to 13e4d:
           no graph needs them, they remove duplication.)
         - 13e4c: a second GPU (`gpu1`) with the peer / host transfer adapter; one pipeline
-          split over two GPUs (here: the NVIDIA RTX 5060 and the AMD iGPU).
+          split over two GPUs (here: the NVIDIA RTX 5060 and the AMD iGPU). (Done 2026-10-17:
+          split at the hit records, deferred shading on the second GPU; see the log.)
         - 13e4d: the faces lane on group 0 (its own frame uniform goes), the CPU lanes'
           world shared; then the full pixel and timing A/B of every old composition against
           13e3. Step 13 is then done.
@@ -1274,3 +1275,56 @@ root, `walk.wgsl` / `rayquery.wgsl` the lanes' roots), `components/src/graph.rs`
   stages, their lead site) stay walks: acceptance still compares a graph's skeleton with its
   preset's composition, whose storage slot names them; the drawer's meshes and meshing and a ray
   query over the same geometry node mesh it twice (two implementations' data).
+
+
+**2026-10-17, step 13e4c: one pipeline over two GPUs.** `backends/gpu/src/remote.rs` (new),
+`backends/gpu/src/{lib.rs,raycast/*}` (`view.wgsl`, `records.wgsl` split out of `cast.wgsl` and
+`deferred.wgsl`), `components/src/graph.rs` (`device_blocker`), `crates/mr-gpu` (FrameRing),
+`crates/mr-core` (DeviceConfig doc), `plans/two-gpus.toml`, README:
+- **Where the cut is: the hit records.** The visibility node (a walk or ray queries) casts the
+  primary rays on its GPU and writes one record per pixel (`placement = deferred`); the shading
+  node and the walks compiled into it (its shadow and bounce sites, their own storage and kernel
+  nodes) run on another GPU. The edge `visibility` -> `shading`.hits crosses devices: its
+  transfer adapter copies the records into a readback buffer, waits for them (the edge is
+  `now`), and writes them to the second GPU (through the host: wgpu has no peer copy between
+  adapters). The second GPU keeps its own world and the shading's storages from the change log
+  (the world's updates applied twice: its schedule's `world -> s.storage` transfer), shades with
+  the common deferred pass and delivers the image.
+- **Executor:** `Far` = a second `Core` (`Core::on(slot, ..)`: any GPU slot; `Core::new` now
+  takes the pipeline's drawer's or visibility node's slot, so a whole pipeline on `gpu1` runs
+  there) + the shading pass (`view.wgsl` + `records.wgsl` + the common pass). The ray-casting
+  lane holds it (`far: Option<Far>`, a host-side branch per frame); its passes then compile no
+  shading pass (`Passes.remote`) and its walks skip the shading's sites. The first GPU's frame is
+  captured (its stats), the second's goes to the sink; knobs reach both cores; `Lane::poll`
+  polls the GPU that delivers. Frame stats: GPU time = both GPUs' passes (the ring now adds its
+  time to what the frame brought; every other lane brings none), stages `cast` (gpu), `copy`
+  (gpu: the records into the readback buffer), `transfer` (cpu: the upload), `shade` (gpu1);
+  counter `transfer_wait_ms` (waiting for the first GPU).
+- **Acceptance** (`device_blocker`, also greyed in the GUI): a pipeline on one GPU runs on any
+  slot; over two only as this split (gpu-compute or gpu-rt, shading `placement = deferred`, no
+  meshes: their triangles are rasterised on the first GPU), else the reasons; the shape against
+  the preset is compared with GPU slots folded together, and such a graph is never "exact" (its
+  devices would be lost in a flat composition).
+- Runs (terrain 1920x1080, 40 frames): with `devices = { gpus = ["nvidia", "amd"] }` the walk on
+  the RTX 5060, shading on the Radeon iGPU: psnr 59.7 / 56.8 (one GPU: 59.4 / 56.6); stages
+  unlit cast 0.89 ms, copy 0.83 (16.6 MB of records), transfer 1.35 ms CPU, shade 1.21 ms; lit
+  shade 13.6 ms on the iGPU; 51 / 45 fps. Pixels against the same graph on one GPU: identical
+  when both slots are the NVIDIA (two devices, 12/12 frames); NVIDIA + AMD differ by 230-370 px
+  per frame, while the whole pipeline on the AMD differs from it on the NVIDIA by 390-600 px
+  (the GPUs' arithmetic; the split lies between them).
+- Old compositions: pixel A/B against 13e4b (frames 0/20/39, lit + unlit) gpu-compute plain,
+  deferred, deferred fragment, tree64 + sphere + pathtrace deferred, meshes deferred; gpu-rt
+  plain, deferred: all identical. Timing (4 rounds, GPU lit / unlit): gpu-compute +0.0 / -0.0%,
+  deferred +0.0 / -0.0%, gpu-rt +0.5 / +0.1%, deferred -0.1 / +0.1%; fps -2.9 .. +0.6%. 8-round
+  reruns: gpu-compute -0.1 / -0.1% GPU, fps +0.5 / +0.1% (the -2.9% was noise); **logged: gpu-rt
+  +0.3 / +0.3% GPU** (fps -0.5 / +0.1%), while its shaders are unchanged: the assembled WGSL of
+  gpu-rt (every geometry and shading) and gpu-compute (bricks, every kernel, shading, prepass)
+  is identical to 13e4b's but for blank lines (39 of 39), and its frame's commands are too (the
+  remote branch is host-side); unexplained, within the spread 13e4b saw for it.
+- Verified: builds without warnings (dev, release), 4 GPU end-to-end tests, 84 unit tests (new `two_gpus`: the split
+  accepted for both casters and scheduled `gpu -> gpu1`, the reasons for inline placement,
+  meshes, three GPUs, a drawer's shading; a whole pipeline on gpu1; `remote::program_composes`).
+- Not yet: the edge `prev` (the second GPU shading frame N-1 while the first casts N: one frame
+  of latency, overlapping the GPUs); other record writers (gpu-raster's gbuffer, columns) feeding
+  the remote shading; a peer copy where the API offers one.
+

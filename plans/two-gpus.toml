@@ -1,0 +1,47 @@
+# One pipeline over two GPUs (PLAN step 13e4c): the primary rays walk on GPU slot 0 and write
+# hit records; the records cross to slot 1 each frame (read back, uploaded: the transfer
+# adapter); deferred shading with its own shadow walk runs there. Beside it, the same graph
+# on one GPU. Slot 1 here is the adapter whose name contains "amd" (this machine's iGPU);
+# change `gpus` to yours, or leave it out: both slots then open the default GPU (two devices).
+name = "two-gpus"
+
+[scene]
+generator = { type = "terrain", seed = 7 }
+camera = { type = "flythrough", points = [[0, 110, 0], [260, 140, 120], [520, 95, -80], [800, 170, 60], [1100, 120, 300]] }
+lights = [{ type = "scatter", count = 400, seed = 1, center = [550, 80, 100], extent = [600, 80, 300], on_surface = true, intensity = 25.0, radius = 18.0 }]
+
+[run]
+frames = 300
+warmup = 30
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 16
+devices = { gpus = ["", "amd"] }
+
+[[renderer]]
+label = "split over two GPUs"
+[renderer.graph]
+executor = "gpu-compute"
+nodes.world = { role = "world", component = "world" }
+nodes.storage = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes.kernel = { role = "traversal", component = "refloor", inputs = { storage = "storage" } }
+nodes.visibility = { role = "visibility", component = "raycast", inputs = { primary = "kernel" } }
+nodes."s.storage" = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes."s.kernel" = { role = "traversal", component = "refloor", inputs = { storage = "s.storage" } }
+nodes.shading = { role = "shading", component = "direct", device = "gpu1", knobs = { placement = "deferred" }, inputs = { hits = "visibility", shadow = "s.kernel" } }
+
+[[renderer]]
+label = "on one GPU"
+[renderer.graph]
+executor = "gpu-compute"
+nodes.world = { role = "world", component = "world" }
+nodes.storage = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes.kernel = { role = "traversal", component = "refloor", inputs = { storage = "storage" } }
+nodes.visibility = { role = "visibility", component = "raycast", inputs = { primary = "kernel" } }
+nodes."s.storage" = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes."s.kernel" = { role = "traversal", component = "refloor", inputs = { storage = "s.storage" } }
+nodes.shading = { role = "shading", component = "direct", knobs = { placement = "deferred" }, inputs = { hits = "visibility", shadow = "s.kernel" } }
+
+[output]
+compare = { every = 100 }
+save = { every = 150 }

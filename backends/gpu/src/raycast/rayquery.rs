@@ -142,7 +142,7 @@ pub(crate) struct RayQuery {
 const STORAGE_GROUPS: &[u32] = &[2, 3, 4, 5];
 
 impl RayQuery {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String)> {
+    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String, Option<crate::remote::Far>)> {
         let opts: Options = p.options()?;
         let geometry = require(BACKEND, Slot::Geometry, &opts.geometry)?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
@@ -153,15 +153,16 @@ impl RayQuery {
         let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{BACKEND}: {} `{port}` rays are not bound", role.name()));
         let primary = walks.site(g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
         anyhow::ensure!(primary == 0 && walks.is_query(0), "{BACKEND}: the primary rays are ray queries");
-        let shadow = walks.site(g, site(Role::Shading, "shadow")?, STORAGE_GROUPS, false);
-        let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+        let shadow = match super::shading_site(g, "shadow") {
+            Some(_) => walks.site(g, site(Role::Shading, "shadow")?, STORAGE_GROUPS, false),
+            None => primary,
+        };
+        let bounce = match super::shading_site(g, "bounce") {
+            Some(Some(s)) => walks.site(g, s, STORAGE_GROUPS, false),
+            _ => shadow,
+        };
         let accel = AccelSpec { geometry, cull: opts.cull, fast_build: opts.fast_build, build_budget: opts.build_budget };
-        let core = Core::new(
-            p,
-            devices,
-            waker,
-            g,
-            CoreSpec {
+        let spec = CoreSpec {
                 gpu: GpuNeeds { experimental: true, required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY, optional_features: wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS },
                 walks: &walks,
                 accel: Some(accel),
@@ -178,10 +179,11 @@ impl RayQuery {
                 max_steps: 2048,
                 pool_mb: opts.pool_mb,
                 frames_in_flight: opts.frames_in_flight,
-            },
-        )?;
+        };
+        let core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
+        let far = crate::remote::Far::of(p, devices, waker, g, &core, &spec)?;
         tracing::info!("gpu-rt: primary {}, shadow {}, bounce {}, shading {shading}", walks.label(0), walks.label(shadow), walks.label(bounce));
-        Ok((core, Self { walks, shadow, bounce, opts, bound: Bound(Vec::new()) }, shading))
+        Ok((core, Self { walks, shadow, bounce, opts, bound: Bound(Vec::new()) }, shading, far))
     }
 }
 
