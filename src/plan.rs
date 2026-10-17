@@ -219,7 +219,7 @@ impl RendererSpec {
                     self.sites = sites;
                 }
                 None => {
-                    self.ran_graph = Some(g.clone());
+                    self.ran_graph = Some(g.placed());
                     self.compose = Some(c);
                 }
             }

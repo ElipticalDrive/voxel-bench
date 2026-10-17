@@ -211,7 +211,19 @@ The user's architecture, settled with finality and without limits for later (IDE
         any graph whose nodes have implementations on their devices runs (e.g. discovery's
         sampler moved between devices, a face source a choice at the drawer's input); a
         second GPU (`gpu1`) with the peer / host transfer adapter, one pipeline split over
-        two GPUs; the full pixel and timing A/B of every old composition.
+        two GPUs; the full pixel and timing A/B of every old composition. Sub-steps
+        (2026-10-17):
+        - 13e4a: the names are presets a graph's shape and devices name (`Graph::preset`,
+          `placed`): a graph may leave its executor out or name another; discovery's
+          sampler moved between devices, and the face source bound at the drawer's input,
+          pick the executor. (Done 2026-10-17; see the log.)
+        - 13e4b: lanes combine within an executor, so acceptance is "every node has an
+          implementation on its device", not a preset's composition: ray queries for a
+          walk's sites, a walk's or ray queries' rays beside the face drawer, the faces lane
+          on group 0, a CPU world shared by the CPU lanes.
+        - 13e4c: a second GPU (`gpu1`) with the peer / host transfer adapter; one pipeline
+          split over two GPUs (here: the NVIDIA RTX 5060 and the AMD iGPU).
+        - 13e4d: the full pixel and timing A/B of every old composition against 13e3.
 14. **The served split (IDEAS §19):** the world (generator, authoritative store, change
     log) becomes a node on a *server* device; a *link* is a graph edge, the bottleneck
     between them (the point is the separation, not realistic networking; latency,
@@ -1166,3 +1178,35 @@ root, `walk.wgsl` / `rayquery.wgsl` the lanes' roots), `components/src/graph.rs`
   cannot yet combine lanes (a walk beside a face drawer, ray queries for a walk's sites) or move
   a node between the executors; the faces lane draws with its own frame uniform, not group 0;
   the CPU lanes share no world (the storages' CPU side is per lane).
+
+
+**2026-10-17, step 13e4a: the back ends' names are presets.** `components/src/graph.rs`
+(`Graph::preset`, `Graph::placed`, `executor` optional), `src/plan.rs`, `src/gui/stages.rs`:
+- **A graph's executor is the preset its shape and devices name**: the drawer's face source
+  (a `faces` node over meshing: `gpu-raster` / `cpu-raster` by the drawer's device; a
+  `quadtree` / `cluster` sampler: `gpu-discover` / `cpu-discover` by the sampler's device), else
+  the visibility node (`raycast`: `cpu` on the CPU, `gpu-rt` when its primary kernel is
+  `rayquery`, else `gpu-compute`; `columns` by device; `splat`). The written `executor` only
+  places the nodes that give no device (nodes in stages the written back end has keep its
+  placement when the preset changes; fused nodes follow their callers as before); it may be left
+  out (then nodes run on the GPU unless they say otherwise). `check`, `accept`, `flat_knobs`,
+  `with_options`, `timing_options` and `of_init` work on the placed graph; the host keeps the
+  placed graph (`ran_graph`), so the worker gets the entry and the graph of its preset.
+- So: a `gpu-discover` graph with its sampler on the CPU (and the shading's shadow rays on their
+  own GPU instances, the drawer's faces `prev` or `now`) is cpu-discover, with cpu-discover's
+  keys; a `gpu-raster` graph whose drawer reads a `quadtree` sampler is gpu-discover; a graph
+  with ray queries for its primary rays is gpu-rt whatever it names.
+- Keys unchanged: every composition's graph names its own back end (`compositions_round_trip`
+  asserts it for all of them), so `placed` changes nothing for them; spot-checked `multirenderer
+  graph` keys (cpu-raster, gpu-rt, cpu) equal to before. No executor or shader code changed, so no
+  pixel or timing A/B for this sub-step (13e4d does the full one).
+- Verified: builds without warnings (dev, release), 81 unit tests (new `presets`: the moved
+  sampler, both timings; the rebound face source; ray queries written for gpu-compute and with no
+  executor; a cpu graph without executor needing its devices; a shape no preset runs keeps its
+  reasons), 4 GPU end-to-end tests. Runs (terrain, 40 frames, lit + unlit): the moved-sampler graph
+  beside cpu-discover (psnr 34.7 / 32.4 both), the rebound gpu-raster graph beside gpu-discover
+  (51.8 / 48.8 both), the executor-less ray-query graph beside gpu-rt (59.3 / 56.2 both).
+- Not yet (13e4b): acceptance is still a preset's composition (plus its free sites): a graph
+  combining two lanes' pieces (ray queries for a walk's shadow rays, a drawer's shadow rays as ray
+  queries) has no preset and is refused with the reason.
+

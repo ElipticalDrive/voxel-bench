@@ -95,7 +95,7 @@ pub fn stage_grid(ui: &mut Ui, spec: &RendererSpec, knobs: &[(ParamSpec, ParamVa
 fn runs_on(g: &Graph, comp: &Composition, id: &str) -> Option<String> {
     let ck = g.check().ok()?;
     let n = &ck.graph.nodes[id];
-    let b = mr_components::backend(&g.executor)?;
+    let b = mr_components::backend(&ck.graph.executor)?;
     let fused = mr_components::graph::output(n.role, &n.component).fused();
     let api = match ck.apis.get(id) {
         Some(a) => a.name().to_string(),

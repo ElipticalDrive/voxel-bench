@@ -372,11 +372,13 @@ impl Node {
     }
 }
 
-/// A pipeline: nodes by id, run by `executor` (a back end; step 13 makes back ends
-/// executors placing nodes on devices).
+/// A pipeline: nodes by id, run by `executor`: the preset its shape and devices name
+/// ([`Graph::preset`]; step 13e4), so a graph may leave it out or name another (its
+/// nodes without a device run where that one runs their role).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Graph {
+    #[serde(default)]
     pub executor: String,
     pub nodes: BTreeMap<String, Node>,
 }
@@ -486,9 +488,60 @@ impl Graph {
         Ok(Graph { executor: c.backend, nodes })
     }
 
+    /// The preset this graph's shape and devices name (PLAN step 13e4: the back ends'
+    /// names are presets of graphs, not what a graph is written for): the face drawer's
+    /// source (meshing: `gpu-raster` / `cpu-raster` by the drawer's device; discovery:
+    /// `gpu-discover` / `cpu-discover` by the sampler's), else the visibility node's
+    /// component and device (ray casting: `cpu`, `gpu-rt` when its primary rays are ray
+    /// queries, else `gpu-compute`; `columns`; `splat`). Nodes without a device run where
+    /// the written executor runs their role. `None` for a shape no preset has.
+    pub fn preset(&self) -> Option<&'static str> {
+        let dev = |n: &Node| n.device.unwrap_or_else(|| default_device(&self.executor, n.role)).kind();
+        let shading = self.nodes.values().find(|n| n.role == Role::Shading)?;
+        let hits = self.nodes.get(shading.inputs.get("hits")?)?;
+        let gpu = |n: &Node| dev(n) == Kind::Gpu;
+        if hits.role == Role::Draw {
+            let src = self.nodes.get(hits.inputs.get("faces")?)?;
+            return match (src.role, src.component.as_str()) {
+                (Role::Visibility, "quadtree" | "cluster") if gpu(hits) => Some(if gpu(src) { "gpu-discover" } else { "cpu-discover" }),
+                (Role::Visibility, "faces") => Some(if gpu(hits) { "gpu-raster" } else { "cpu-raster" }),
+                _ => None,
+            };
+        }
+        if hits.role != Role::Visibility {
+            return None;
+        }
+        match (hits.component.as_str(), gpu(hits)) {
+            ("columns", g) => Some(if g { "gpu-voxelspace" } else { "cpu-voxelspace" }),
+            ("splat", true) => Some("gpu-splat"),
+            ("raycast", false) => Some("cpu"),
+            ("raycast", true) => {
+                let rq = hits.inputs.get("primary").and_then(|k| self.nodes.get(k)).is_some_and(|k| k.component == "rayquery");
+                Some(if rq { "gpu-rt" } else { "gpu-compute" })
+            }
+            _ => None,
+        }
+    }
+
+    /// The graph run by the preset its shape names ([`Self::preset`]; unchanged if it names
+    /// none or the written one). Where the preset changes, nodes in stages the written back
+    /// end has keep the device it runs them on (fused nodes still follow their callers), so
+    /// the graph means what it was written as; the others run where the preset runs them.
+    pub fn placed(&self) -> Graph {
+        let Some(p) = self.preset().filter(|p| *p != self.executor) else { return self.clone() };
+        let mut g = self.clone();
+        if let Some(b) = backend(&self.executor) {
+            for n in g.nodes.values_mut().filter(|n| n.role.slot().is_some_and(|s| b.has(s)) && known(n.role, &n.component) && !output(n.role, &n.component).fused()) {
+                n.device.get_or_insert_with(|| default_device(&self.executor, n.role));
+            }
+        }
+        g.executor = p.into();
+        g
+    }
+
     /// The world node added if missing; unbound `changes` inputs bound to it.
     fn normalised(&self) -> Result<Graph, String> {
-        let mut g = self.clone();
+        let mut g = self.placed();
         let worlds: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == Role::World).map(|(k, _)| k.clone()).collect();
         let world = match worlds.as_slice() {
             [] => {
@@ -606,6 +659,10 @@ impl Graph {
     /// Checks the graph is well formed (not yet whether its back end runs it: see
     /// [`Self::validate`]), with the reasons when it isn't.
     pub fn check(&self) -> Result<Checked, String> {
+        let placed = self.placed();
+        if placed.executor != self.executor {
+            return placed.check();
+        }
         let b = backend(&self.executor).ok_or_else(|| format!("unknown back end `{}`", self.executor))?;
         let g = self.normalised()?;
         let mut why = Vec::new();
@@ -922,6 +979,10 @@ impl Graph {
     /// the nearest, for labels and the flat options). Fails with the reasons if the back end
     /// cannot run the graph.
     pub fn accept(&self) -> Result<(Composition, bool), String> {
+        let placed = self.placed();
+        if placed.executor != self.executor {
+            return placed.accept();
+        }
         let ck = self.check()?;
         // Timings a back end lets the graph choose; the others must be its composition's.
         let free = |n: &Node, p: &str| FREE_TIMINGS.iter().find(|(e, r, port, _)| *e == self.executor && *r == n.role && *port == p).map(|f| f.3);
@@ -993,23 +1054,24 @@ impl Graph {
     /// The graph with the edge timings its knobs spell set (`TIMING_KNOBS`: cpu-discover's
     /// `pipelined = false` makes the drawer's faces arrive `now`). Knobs not given keep the
     /// graph's timing.
-    pub fn with_options(mut self, options: &toml::Table) -> Graph {
-        for &(e, knob, role, port, on, off) in TIMING_KNOBS.iter().filter(|k| k.0 == self.executor) {
-            let _ = e;
+    pub fn with_options(self, options: &toml::Table) -> Graph {
+        let mut g = self.placed();
+        for &(_, knob, role, port, on, off) in TIMING_KNOBS.iter().filter(|k| k.0 == g.executor) {
             let Some(v) = options.get(knob).and_then(|v| v.as_bool()) else { continue };
-            for n in self.nodes.values_mut().filter(|n| n.role == role && n.inputs.contains_key(port)) {
+            for n in g.nodes.values_mut().filter(|n| n.role == role && n.inputs.contains_key(port)) {
                 n.timing.insert(port.into(), if v { on } else { off });
                 n.timing.retain(|_, w| *w != When::Now);
             }
         }
-        self
+        g
     }
 
     /// The knobs spelling this graph's timings, as `with_options` reads them.
     pub fn timing_options(&self) -> Vec<(&'static str, bool)> {
+        let g = self.placed();
         let mut v = Vec::new();
-        for &(_, knob, role, port, on, _) in TIMING_KNOBS.iter().filter(|k| k.0 == self.executor) {
-            if let Some(n) = self.nodes.values().find(|n| n.role == role && n.inputs.contains_key(port)) {
+        for &(_, knob, role, port, on, _) in TIMING_KNOBS.iter().filter(|k| k.0 == g.executor) {
+            if let Some(n) = g.nodes.values().find(|n| n.role == role && n.inputs.contains_key(port)) {
                 v.push((knob, n.when(port) == on));
             }
         }
@@ -1079,6 +1141,10 @@ impl Graph {
     /// sites keep theirs: back ends read them per instance). Two skeleton nodes with
     /// different values of one knob cannot be expressed yet.
     pub fn flat_knobs(&self) -> Result<toml::Table, String> {
+        let placed = self.placed();
+        if placed.executor != self.executor {
+            return placed.flat_knobs();
+        }
         let skel = self.normalised()?.skeleton();
         let mut t = toml::Table::new();
         if let Some((b, ch)) = backend(&self.executor).and_then(|b| b.api_choice.map(|ch| (b, ch))) {
@@ -1474,6 +1540,7 @@ pub fn of_init(backend: &str, p: &mr_core::InitParams) -> anyhow::Result<Checked
     } else {
         serde_json::from_str(&p.graph_json)?
     };
+    let g = g.placed();
     anyhow::ensure!(g.executor == backend, "a `{}` graph handed to `{backend}`", g.executor);
     g.validate().map_err(anyhow::Error::msg)?;
     g.check().map_err(anyhow::Error::msg)
@@ -1774,6 +1841,7 @@ mod tests {
         let mut keys = HashMap::new();
         for c in &all {
             let g = Graph::from_composition(c).unwrap();
+            assert_eq!(g.preset(), Some(c.backend.as_str()), "{}", c.label());
             let back = g.to_composition().unwrap_or_else(|e| panic!("{}: {e}\n{g:#?}", c.label()));
             assert_eq!(Graph::from_composition(&back).unwrap().canonical(), g.canonical(), "{}", c.label());
             // Exactly, except `same` and an explicit name meaning one graph.
@@ -2125,6 +2193,53 @@ mod tests {
         assert!(e.contains("unknown storage component `x`"), "{e}");
         let e = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("bounce".into(), "shadow".into()), ("shadow".into(), "bounce".into())])).unwrap_err();
         assert!(e.contains("cycle"), "{e}");
+    }
+
+    /// Step 13e4: the back ends' names are presets, named by a graph's shape and devices,
+    /// whatever executor it is written for (or none).
+    #[test]
+    fn presets() {
+        let key = |c: Composition| Graph::from_composition(&c).unwrap().key().unwrap();
+        let of = |b: &str| Graph::from_composition(&Composition::new(b)).unwrap();
+        // Discovery's sampler moved to the CPU: the shading's shadow rays get their own
+        // instances on the GPU, the drawer its faces a frame late or now.
+        let mut g = of("gpu-discover");
+        g.nodes.get_mut("visibility").unwrap().device = Some(Device::Cpu);
+        for (id, n) in [("shadow.kernel", g.nodes["kernel"].clone().with(&[("storage", "shadow.storage")])), ("shadow.storage", g.nodes["storage"].clone())] {
+            g.nodes.insert(id.into(), Node { device: Some(Device::Gpu(0)), ..n });
+        }
+        g.nodes.get_mut("shading").unwrap().inputs.insert("shadow".into(), "shadow.kernel".into());
+        assert_eq!(g.placed().executor, "cpu-discover");
+        let now: toml::Table = toml::from_str("pipelined = false").unwrap();
+        assert_eq!(g.key().unwrap(), of("cpu-discover").with_options(&now).key().unwrap());
+        g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
+        assert_eq!(g.key().unwrap(), key(Composition::new("cpu-discover")));
+        assert_eq!(g.to_composition().unwrap().backend, "cpu-discover");
+        // The drawer's face source a choice: discovery in place of meshing.
+        let mut g = Graph::from_composition(&Composition { meshes: "none".into(), ..Composition::new("gpu-raster") }).unwrap();
+        g.nodes.retain(|k, _| k != "geometry");
+        g.nodes.insert("visibility".into(), Node::new(Role::Visibility, "quadtree").with(&[("rays", "kernel"), ("exposure", "storage")]));
+        assert_eq!(g.key().unwrap(), key(Composition::new("gpu-discover")));
+        // Ray queries for the primary rays, written for gpu-compute or for no executor.
+        let mut g = of("gpu-rt");
+        g.executor = "gpu-compute".into();
+        assert_eq!(g.key().unwrap(), of("gpu-rt").key().unwrap());
+        for b in ["gpu-compute", "gpu-splat", "gpu-voxelspace", "gpu-raster", "gpu-discover"] {
+            let mut g = of(b);
+            g.executor.clear();
+            assert_eq!(g.key().unwrap(), of(b).key().unwrap(), "{b}");
+        }
+        // Without an executor, nodes run on the GPU unless they say otherwise.
+        let mut g = of("cpu");
+        g.executor.clear();
+        assert_eq!(g.placed().executor, "gpu-compute");
+        g.nodes.values_mut().filter(|n| matches!(n.role, Role::Visibility | Role::Shading)).for_each(|n| n.device = Some(Device::Cpu));
+        assert_eq!(g.key().unwrap(), of("cpu").key().unwrap());
+        // A shape no preset has keeps its reasons.
+        let mut g = of("cpu-raster");
+        g.nodes.get_mut("draw").unwrap().device = Some(Device::Gpu(0));
+        assert_eq!(g.placed().executor, "gpu-raster");
+        assert!(g.validate().is_err());
     }
 
     #[test]
