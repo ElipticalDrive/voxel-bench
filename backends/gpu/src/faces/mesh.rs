@@ -34,7 +34,8 @@ use mr_gpu::{GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use crate::{Core, CoreOpts, FaceSource, SourceSpec};
+use super::{CoreOpts, Draw, FaceSource, SourceSpec};
+use crate::Core;
 
 pub(crate) const BACKEND: &str = "gpu-raster";
 
@@ -214,7 +215,7 @@ pub(crate) struct Meshing {
 }
 
 impl Meshing {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
+    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Draw, Self)> {
         let opts: Options = p.options()?;
         require(BACKEND, Slot::Meshes, &opts.meshes)?;
         parse_merge(&opts.merge)?;
@@ -236,10 +237,11 @@ impl Meshing {
         tracing::info!("gpu-raster: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let meshes = opts.meshes != "none";
-        let core = Core::new(
+        let (core, drawing) = super::new(
             p,
             devices,
             waker,
+            g,
             &o,
             opts.depth_prepass,
             SourceSpec {
@@ -291,7 +293,7 @@ impl Meshing {
             overflowed: false,
             opts,
         };
-        Ok((core, s))
+        Ok((core, drawing, s))
     }
 
     fn knobs(&self) -> Knobs {
@@ -417,12 +419,12 @@ impl FaceSource for Meshing {
         self.mesh.apply(update);
     }
 
-    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+    fn render(&mut self, core: &mut Core, drawing: &mut Draw, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         // The meshes stage draws meshes (`depth`), or not (`none`).
         let want_meshes = req.meshes && self.opts.meshes != "none";
         if self.stale {
             let o = &self.opts;
-            if core.rebuild(source_wgsl(&o.geometry), geometry(&o.geometry).strip, &o.shading, o.meshes != "none")? {
+            if drawing.rebuild(core, source_wgsl(&o.geometry), geometry(&o.geometry).strip, &o.shading, o.meshes != "none")? {
                 self.bind0 = None;
             }
             if o.geometry != self.built {
@@ -431,7 +433,7 @@ impl FaceSource for Meshing {
             }
             self.stale = false;
         }
-        core.check_state(req.mode, None)?;
+        drawing.check_state(req.mode, None)?;
         let ticket = core.ring.begin(&core.gpu, sink)?;
         let start = Instant::now();
         let remeshed = self.remesh(core, req.camera.split_position().0 >> 5);
@@ -440,7 +442,7 @@ impl FaceSource for Meshing {
         let c = &req.camera;
         let (cam_block, frac) = c.split_position();
         let view_proj = c.projection(core.width as f32 / core.height as f32) * c.view_rotation();
-        core.write_frame(c, req.mode, 0, IVec3::ZERO);
+        drawing.write_frame(core, c, req.mode, 0, IVec3::ZERO);
         core.accum.begin(&core.gpu, c, req.mode);
         let world_bg = core.world.prepare(&core.gpu, c).clone();
         if want_meshes {
@@ -496,22 +498,22 @@ impl FaceSource for Meshing {
         let cull_ms = cull_start.elapsed().as_secs_f32() * 1e3;
 
         if self.bind0.is_none() {
-            self.bind0 = Some(core.draw_bind(self.quad_buf.buffer(), &self.chunk_buf));
+            self.bind0 = Some(drawing.bind(core, self.quad_buf.buffer(), &self.chunk_buf));
         }
         let bound = core.storages.prepare(&core.gpu, &core.world);
         self.mesh.set_occlusion_bind_group(bound.get(self.mesh_storage));
         let (bind2, more) = bound.split();
         let bind0 = self.bind0.clone().unwrap();
-        let sky = core.sky_rgba();
+        let sky = super::sky_rgba(core);
         let clear = wgpu::Color { r: sky[0] as f64, g: sky[1] as f64, b: sky[2] as f64, a: 1.0 };
         let out_view = core.output.create_view(&Default::default());
         let n = draws.len() as u32;
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
         let frame = DrawFrame {
             out: &out_view,
-            depth: &core.depth,
+            depth: &drawing.depth,
             clear,
-            prepass: core.depth_prepass && req.mode == RenderMode::Lit,
+            prepass: drawing.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
             binds: &[&bind0, &world_bg, bind2],
             more: &more,
@@ -519,7 +521,7 @@ impl FaceSource for Meshing {
             ring: &core.ring,
             ticket,
             ts: (true, true),
-            nodes: &core.draw_nodes,
+            nodes: &drawing.draw_nodes,
         };
         let draw = |pass: &mut wgpu::RenderPass<'_>| {
             if n > 0 {
@@ -527,9 +529,9 @@ impl FaceSource for Meshing {
             }
         };
         // Meshes: in the faces' forward passes; into their ids or records when deferred.
-        let meshes = want_meshes && (!core.drawer.mode().deferred() || self.mesh.triangles() > 0);
+        let meshes = want_meshes && (!drawing.drawer.mode().deferred() || self.mesh.triangles() > 0);
         let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp, Some(&world_bg));
-        core.drawer.encode(&core.gpu, &mut enc, &frame, &draw, meshes.then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass)), None);
+        drawing.drawer.encode(&core.gpu, &mut enc, &frame, &draw, meshes.then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass)), None);
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
@@ -552,7 +554,7 @@ impl FaceSource for Meshing {
         core.ring.poll(&core.gpu, sink, false)
     }
 
-    fn set_param(&mut self, _: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+    fn set_param(&mut self, _: &mut Core, _: &mut Draw, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         let s = value.as_str().unwrap_or("").to_string();
         let r = |slot| require(BACKEND, slot, &s);
         let stale = &mut self.stale;
@@ -589,7 +591,7 @@ impl FaceSource for Meshing {
         })
     }
 
-    fn resize(&mut self, _: &Core) {
+    fn resize(&mut self, _: &Core, _: &Draw) {
         self.bind0 = None;
     }
 
@@ -634,9 +636,9 @@ mod tests {
                             let what = format!("{st} {k} {g} {shading}");
                             let (walks, shadow, bounce, mesh_shadow) = walks(&ck).unwrap();
                             // The drawer (with mesh records for deferred drawers, and without).
-                            let (program, deps, meshed) = crate::programs(&walks, [shadow, shadow, shadow, bounce], Some(mesh_shadow));
-                            let draw_src = crate::draw_src(&source_wgsl(g), shading, false);
-                            crate::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, BACKEND);
+                            let (program, deps, meshed) = crate::faces::programs(&walks, [shadow, shadow, shadow, bounce], Some(mesh_shadow));
+                            let draw_src = crate::faces::draw_src(&source_wgsl(g), shading, false);
+                            crate::faces::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, BACKEND);
                             // Forward mesh shading through the mesh-shadow site.
                             let (mut p, rays) = walks.shadow_program(mesh_shadow);
                             p.define("SHADE");

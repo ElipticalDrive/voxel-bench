@@ -7,7 +7,7 @@
 // record's parity cannot name; the record keeps the cell the point lies in (texels differ
 // at 8-19% of pixels, PSNR against the reference within 0.1 dB of inline).
 
-@group(0) @binding(6) var<storage, read_write> records: array<vec2<u32>>;
+@group(0) @binding(4) var<storage, read_write> records: array<vec2<u32>>;
 
 fn record_at(px: vec2<u32>) -> vec2<u32> { return records[px.y * cam.width + px.x]; }
 fn view_ray(px: vec2<u32>) -> vec3<f32> { return column_ray(f32(px.x) + 0.5, f32(px.y) + 0.5); }

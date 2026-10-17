@@ -14,9 +14,9 @@ struct Point { pos: vec3<i32>, info: u32 } // info: block | face_mask << 16
 
 @group(0) @binding(0) var<uniform> cam: Camera;
 @group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
-@group(0) @binding(2) var<storage, read> points: array<Point>;
-@group(0) @binding(3) var<storage, read_write> zbuf: array<atomic<u32>>;
-@group(0) @binding(4) var<storage, read_write> idbuf: array<atomic<u32>>;
+@group(0) @binding(8) var<storage, read> points: array<Point>;
+@group(0) @binding(9) var<storage, read_write> zbuf: array<atomic<u32>>;
+@group(0) @binding(10) var<storage, read_write> idbuf: array<atomic<u32>>;
 
 @compute @workgroup_size(8, 8)
 fn clear(@builtin(global_invocation_id) gid: vec3<u32>) {

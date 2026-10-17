@@ -326,8 +326,10 @@ components/      mr-components: the registry, compatibility rules and `Compositi
                  directory per component: storage/<name>/{gpu.wgsl,cpu.rs},
                  geometry/<name>/..., draw/<name>/..., traversal/<name>/...,
                  shading/<name>/...
-backends/*       back ends that assemble compositions: gpu-compute, cpu, gpu-raster, gpu-rt,
-                 cpu-raster, gpu-discover, cpu-discover, gpu-splat, gpu-voxelspace, cpu-voxelspace
+backends/gpu     the GPU executor: one core, a lane per visibility (faces: gpu-raster,
+                 gpu-discover, cpu-discover; ray casting: gpu-compute, gpu-rt; gpu-splat;
+                 columns: gpu-voxelspace)
+backends/cpu     the CPU executor: ray casting (cpu), cpu-raster, columns (cpu-voxelspace)
 renderers/*      cpu-reference only: the standalone reference renderer
 ```
 

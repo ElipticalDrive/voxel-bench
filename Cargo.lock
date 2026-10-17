@@ -501,20 +501,6 @@ dependencies = [
  "libc",
  "mr-components",
  "mr-core",
- "rayon",
- "serde",
- "tracing",
-]
-
-[[package]]
-name = "backend-cpu-raster"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cpu-reference",
- "glam",
- "mr-components",
- "mr-core",
  "mr-mesh",
  "rayon",
  "serde",
@@ -522,39 +508,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "backend-faces"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-components",
- "mr-core",
- "mr-gpu",
- "rayon",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "backend-gpu-splat"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "mr-components",
- "mr-core",
- "mr-gpu",
- "pollster",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "backend-raycast"
+name = "backend-gpu"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -568,24 +522,6 @@ dependencies = [
  "rayon",
  "serde",
  "toml",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "backend-voxelspace"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "cpu-reference",
- "glam",
- "mr-components",
- "mr-core",
- "mr-gpu",
- "pollster",
- "rayon",
- "serde",
  "tracing",
  "wgpu",
 ]
@@ -2286,11 +2222,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "backend-cpu",
- "backend-cpu-raster",
- "backend-faces",
- "backend-gpu-splat",
- "backend-raycast",
- "backend-voxelspace",
+ "backend-gpu",
  "cpu-reference",
  "mr-core",
  "mr-gpu",

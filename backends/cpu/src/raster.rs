@@ -1,4 +1,5 @@
-//! CPU-raster back end: a software rasteriser on the CPU, assembled from components
+//! The CPU raster lane (`cpu-raster`; PLAN step 13e3: was the cpu-raster back end): a
+//! software rasteriser on the CPU, assembled from components
 //! (`mr-components`, IDEAS §12): **geometry** (`greedy` or `naive` quads, meshed on the
 //! CPU), **visibility** `faces` with **draw** `raster` (below), **shading** `direct` (here the reference
 //! scene's f64 model, with CPU ray-traced shadows). Was the cpu-raster renderer.
@@ -33,17 +34,16 @@ use mr_mesh::{FACE_AXES, Mesh, Quad};
 use rayon::prelude::*;
 use serde::Deserialize;
 
-pub fn entry() -> RendererEntry {
-    RendererEntry {
-        info: || RendererInfo {
-            name: "cpu-raster".into(),
-            description: "CPU-raster back end: geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading".into(),
-            tags: vec!["cpu".into(), "raster".into(), "software".into(), "visibility-buffer".into(), "modular".into()],
-            modes: vec![RenderMode::Unlit, RenderMode::Lit],
-            max_lod: 0,
-            params: mr_components::lighting_knobs(BACKEND, params()),
-        },
-        create: |p, _, _| Ok(Box::new(CpuRaster::new(p)?)),
+use crate::{Core, Frame, Lane};
+
+pub(crate) fn info() -> RendererInfo {
+    RendererInfo {
+        name: "cpu-raster".into(),
+        description: "CPU-raster back end: geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading".into(),
+        tags: vec!["cpu".into(), "raster".into(), "software".into(), "visibility-buffer".into(), "modular".into()],
+        modes: vec![RenderMode::Unlit, RenderMode::Lit],
+        max_lod: 0,
+        params: mr_components::lighting_knobs(BACKEND, params()),
     }
 }
 
@@ -71,9 +71,7 @@ impl Default for Options {
     }
 }
 
-const BACKEND: &str = "cpu-raster";
-
-
+pub(crate) const BACKEND: &str = "cpu-raster";
 
 fn params() -> Vec<ParamSpec> {
     let mut p = cpu_reference::cpu_params();
@@ -95,18 +93,15 @@ struct Tri {
     id: u32,
 }
 
-pub struct CpuRaster {
+pub(crate) struct CpuRaster {
     /// The nodes of the timed stages (PLAN step 11): meshing, transform, raster, shading;
     /// raster with inline shading.
     stage_nodes: [Vec<String>; 5],
     /// `placement = deferred` (the default): the rasteriser writes quad ids, the common
     /// deferred pass shades each pixel; inline, each fragment passing the depth test shades.
     deferred: bool,
-    width: u32,
-    height: u32,
     opts: Options,
     scene: VoxelScene,
-    pool: Pool,
     meshes: HashMap<IVec3, Mesh>,
     dirty: HashSet<IVec3>,
     /// The geometry component's mesher and knobs.
@@ -114,14 +109,13 @@ pub struct CpuRaster {
     knobs: Knobs,
     depth: Vec<f32>,
     ids: Vec<u32>,
-    pixels: Vec<u8>,
 }
 
 impl CpuRaster {
-    pub fn new(p: InitParams) -> anyhow::Result<Self> {
+    pub(crate) fn new(p: &InitParams, g: &mr_components::graph::Checked) -> anyhow::Result<(Core, Self)> {
         let n = (p.width * p.height) as usize;
         let opts: Options = p.options()?;
-        let mut scene = VoxelScene::new(&p);
+        let mut scene = VoxelScene::new(p);
         scene.shadows = opts.shadows;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         require(BACKEND, Slot::Draw, &opts.draw)?;
@@ -129,14 +123,11 @@ impl CpuRaster {
         anyhow::ensure!(opts.merge == "block", "merge = `{}`: cpu-raster has no per-pixel block lookup (only `block`)", opts.merge);
         let mesh = mesh_fn(&require(BACKEND, Slot::Geometry, &opts.geometry)?);
         let knobs = Knobs { cull: opts.cull, ..Default::default() };
-        let g = mr_components::graph::of_init(BACKEND, &p)?;
         use mr_components::graph::Role;
-        Ok(Self {
+        let core = Core::new(p, g, opts.threads)?;
+        Ok((core, Self {
             stage_nodes: [g.ids(&[Role::Geometry]), g.ids(&[Role::Visibility]), g.ids(&[Role::Draw]), g.ids(&[Role::Shading]), g.ids(&[Role::Draw, Role::Shading])],
             deferred: mr_components::parse_placement(&opts.placement)?,
-            width: p.width,
-            height: p.height,
-            pool: Pool::new(p.devices.cpu_threads(opts.threads))?,
             opts,
             scene,
             meshes: HashMap::new(),
@@ -145,8 +136,7 @@ impl CpuRaster {
             knobs,
             depth: vec![0.0; n],
             ids: vec![0; n],
-            pixels: vec![0; n * 4],
-        })
+        }))
     }
 
     fn remesh(&mut self) -> usize {
@@ -220,13 +210,13 @@ fn clip(poly: &mut Vec<Vec4>, scratch: &mut Vec<Vec4>) {
 }
 
 impl CpuRaster {
-    fn render_inner(&mut self, req: &FrameRequest) -> FrameStats {
+    fn frame(&mut self, frame: &mut Frame, req: &FrameRequest) -> FrameStats {
         let start = Instant::now();
 
         self.scene.prepare();
         let remeshed = self.remesh();
         let t_mesh = start.elapsed().as_secs_f64() * 1e3;
-        let (w, h) = (self.width, self.height);
+        let (w, h) = (frame.width, frame.height);
         let cam = req.camera;
         let (cam_block, frac) = cam.split_position();
         let vp = cam.projection(w as f32 / h as f32) * cam.view_rotation();
@@ -313,7 +303,7 @@ impl CpuRaster {
         let sky = encode_srgb(self.scene.env.sky);
         let raster = Raster { tris: &tris, bins: &bins, tiles_x, tw, bh, w, quads: &quads, sky };
         let rows = (bh * w) as usize;
-        let bands = self.depth.par_chunks_mut(rows).zip(self.ids.par_chunks_mut(rows)).zip(self.pixels.par_chunks_mut(rows * 4)).enumerate();
+        let bands = self.depth.par_chunks_mut(rows).zip(self.ids.par_chunks_mut(rows)).zip(frame.pixels.par_chunks_mut(rows * 4)).enumerate();
         if self.deferred {
             bands.for_each(|(band, ((depth, ids), _))| raster.band::<false>(band, depth, ids, &mut []));
         } else {
@@ -323,7 +313,7 @@ impl CpuRaster {
 
         // Deferred shading: the common pass over the quad ids.
         if self.deferred {
-            mr_components::shading::deferred::shade(&QuadIds { ids: &self.ids, quads: &quads, sky }, w, &mut self.pixels);
+            mr_components::shading::deferred::shade(&QuadIds { ids: &self.ids, quads: &quads, sky }, w, &mut frame.pixels);
         }
         let total = start.elapsed().as_secs_f64() * 1e3;
         let n = &self.stage_nodes;
@@ -483,7 +473,7 @@ impl mr_components::shading::deferred::Records for QuadIds<'_> {
     }
 }
 
-impl Renderer for CpuRaster {
+impl Lane for CpuRaster {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         for p in self.scene.apply(updates) {
             self.dirty.insert(p);
@@ -497,50 +487,39 @@ impl Renderer for CpuRaster {
         Ok(())
     }
 
-    fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
-        if self.pool.set_common(&mut self.scene, name, value)? {
-            return Ok(());
-        }
+    fn render(&mut self, frame: &mut Frame, _: &Pool, req: &FrameRequest) -> FrameStats {
+        self.frame(frame, req)
+    }
+
+    fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         match name {
+            "shadows" => return Some(cpu_reference::parse_shadows(value).map(|s| self.scene.shadows = s)),
             "tile_width" => self.opts.tile_width = value.as_i64().unwrap_or(64) as u32,
             "band_height" => self.opts.band_height = value.as_i64().unwrap_or(16) as u32,
-            "geometry" => {
-                self.mesh = mesh_fn(&require(BACKEND, Slot::Geometry, value.as_str().unwrap_or(""))?);
-                self.dirty.extend(self.meshes.keys().copied());
-            }
+            "geometry" => match require(BACKEND, Slot::Geometry, value.as_str().unwrap_or("")) {
+                Ok(g) => {
+                    self.mesh = mesh_fn(&g);
+                    self.dirty.extend(self.meshes.keys().copied());
+                }
+                Err(e) => return Some(Err(e)),
+            },
             "cull" => {
                 self.knobs.cull = value.as_bool().unwrap_or(true);
                 self.dirty.extend(self.meshes.keys().copied());
             }
-            _ => anyhow::bail!("unknown parameter `{name}`"),
+            _ => return None,
         }
-        Ok(())
+        Some(Ok(()))
     }
 
-    fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        let pool = std::mem::replace(&mut self.pool, Pool::new(1)?);
-        let stats = pool.install(|| self.render_inner(req));
-        self.pool = pool;
-        sink.complete(CompletedFrame { frame_id: req.frame_id, stats, pixels: Some(&self.pixels) });
-        Ok(())
-    }
-
-    fn flush(&mut self, _: &mut dyn FrameSink) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
-        let n = (width * height) as usize;
-        self.width = width;
-        self.height = height;
+    fn resize(&mut self, frame: &Frame) {
+        let n = (frame.width * frame.height) as usize;
         self.depth = vec![0.0; n];
         self.ids = vec![0; n];
-        self.pixels = vec![0; n * 4];
-        Ok(())
     }
 
-    fn memory(&self) -> MemoryReport {
+    fn memory(&self) -> u64 {
         let quads: usize = self.meshes.values().map(|m| m.quads.len()).sum();
-        MemoryReport { cpu_bytes: self.scene.dense_bytes() + quads as u64 * 8 + self.pixels.len() as u64 * 3, gpu_bytes: 0 }
+        self.scene.dense_bytes() + quads as u64 * 8 + (self.depth.len() + self.ids.len()) as u64 * 4
     }
 }

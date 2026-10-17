@@ -15,12 +15,8 @@ members = [
     "crates/mr-mesh",
     "renderers/cpu-reference",
     "components",
-    "backends/raycast",
+    "backends/gpu",
     "backends/cpu",
-    "backends/cpu-raster",
-    "backends/faces",
-    "backends/gpu-splat",
-    "backends/voxelspace",
 ]
 
 [workspace.package]
@@ -36,13 +32,9 @@ mr-serve = { path = "crates/mr-serve" }
 mr-gpu = { path = "crates/mr-gpu" }
 mr-mesh = { path = "crates/mr-mesh" }
 cpu-reference = { path = "renderers/cpu-reference" }
-backend-cpu-raster = { path = "backends/cpu-raster" }
-backend-faces = { path = "backends/faces" }
 backend-cpu = { path = "backends/cpu" }
-backend-gpu-splat = { path = "backends/gpu-splat" }
-backend-voxelspace = { path = "backends/voxelspace" }
 mr-components = { path = "components" }
-backend-raycast = { path = "backends/raycast" }
+backend-gpu = { path = "backends/gpu" }
 
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }

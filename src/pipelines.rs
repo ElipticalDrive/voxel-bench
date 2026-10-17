@@ -53,7 +53,7 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
         return Ok(None);
     }
     let graph = spec.pipeline().context("the renderer has no graph")?;
-    let params = (backend_cpu::entry().info)().params;
+    let params = (backend_cpu::cpu_entry().info)().params;
     let knobs: Vec<(&mr_core::ParamSpec, toml::Value)> = BAKES
         .iter()
         .map(|k| {
@@ -331,7 +331,7 @@ mod tests {
                 assert!(s.contains("NATIVE: bool = true") && s.contains(backend_cpu::storage_type(st).unwrap()), "{s}");
             }
         }
-        let params = (backend_cpu::entry().info)().params;
+        let params = (backend_cpu::cpu_entry().info)().params;
         for k in BAKES {
             assert!(params.iter().any(|p| p.name == *k && p.baked && p.owner.is_some()), "`{k}` is declared specialisable and belongs to a node");
         }

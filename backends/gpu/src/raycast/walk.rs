@@ -19,7 +19,7 @@ use glam::IVec3;
 use mr_components::graph::{self, Role};
 use mr_components::shaders::{KernelInst, Walks};
 use mr_components::shading::state as shade_state;
-use mr_components::storage::gpu_data::{self, Bound, StorageSet};
+use mr_components::storage::gpu_data::Bound;
 use mr_components::{Cap, Slot, caps, components, names_on, placement_param, require};
 use mr_core::*;
 use mr_gpu::meshes::{MESH_RECORDS_WGSL, MeshRecords};
@@ -27,7 +27,8 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
-use crate::{Before, Core, CoreOpts, LANE_BINDING, Lane, LaneNeeds, LaneProgram, Passes, Ticket};
+use super::{Before, Cast, CastProgram, Passes, Ticket};
+use crate::{Core, CoreSpec, LANE_BINDING};
 
 pub(crate) const BACKEND: &str = "gpu-compute";
 
@@ -224,7 +225,7 @@ impl Composition {
     /// shading component, and the lane's root, which casts the primary rays through kernel 0
     /// and reads its storage (the prepass); `meshed`: with the mesh capability (`MESHES`) and
     /// the mesh records at group 3.
-    fn program(&self, shading: &str, meshed: bool) -> LaneProgram {
+    fn program(&self, shading: &str, meshed: bool) -> CastProgram {
         use mr_components::shaders;
         let mut program = mr_gpu::program::Program::world(Some("rays::shadow"));
         self.walks.add_to(&mut program);
@@ -250,7 +251,7 @@ impl Composition {
         deps.extend(meshes);
         deps.extend(rays);
         deps.extend([mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON].map(String::from));
-        LaneProgram { program, root, deps }
+        CastProgram { program, root, deps }
     }
 }
 
@@ -284,16 +285,14 @@ fn parse_view(s: &str) -> anyhow::Result<bool> {
     }
 }
 
-/// The walking lane's own state: the storages the rays walk, the meshes' records, the
-/// prepass's buffers.
+/// The walking caster's own state: the meshes' records, the prepass's buffers (the storages
+/// the rays walk are the core's).
 pub(crate) struct Walk {
     /// Mesh mode: mesh records rasterised first, rays capped at their depth.
     meshes: MeshRecords,
     comp: Composition,
     /// Composition the passes were compiled from (recompiled at the next frame on a change).
     built: Composition,
-    /// The storage instances' data (the primary's at group 2, the other sites' at 4..).
-    storages: StorageSet,
     /// This frame's storage bind groups.
     bound: Bound,
     /// Prepass output (one f32 per tile, sized for 1-pixel tiles) and statistics, whether this
@@ -308,7 +307,7 @@ pub(crate) struct Walk {
 }
 
 impl Walk {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self)> {
+    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String)> {
         let opts: Options = p.options()?;
         let comp = Composition::of(g, &opts, p.max_lod)?;
         if let Some(why) = feature_blocker(&comp) {
@@ -318,27 +317,35 @@ impl Walk {
         // Fragment too: `dispatch = "fragment"` runs the pixels (and walks the storages) in a
         // fragment shader.
         let stages = wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT;
-        let o = CoreOpts { shading: &shading, placement: &opts.placement, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
-        let needs = LaneNeeds {
-            gpu: GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY },
-            max_lod: if comp.lod { p.max_lod.min(6) } else { 0 },
-            // Region storages (tree64) hold their own data instead of the voxel pool.
-            upload_voxels: StorageSet::needs_pool(&comp.walks),
-            stages,
-        };
-        let core = Core::new(p, devices, waker, g, &o, needs)?;
-        let limits = gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 };
-        let storages = StorageSet::new(&core.gpu, &comp.walks, stages, limits);
-        if storages.groups_end() > core.gpu.device.limits().max_bind_groups {
-            anyhow::bail!("{} storages (rays walking their own) need {} bind groups; this device has {}", comp.walks.storages.len(), storages.groups_end(), core.gpu.device.limits().max_bind_groups);
-        }
+        // The storage instances' data: the primary's at group 2, the other sites' at 4.. .
+        let core = Core::new(
+            p,
+            devices,
+            waker,
+            g,
+            CoreSpec {
+                gpu: GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY },
+                walks: &comp.walks,
+                stages,
+                max_lod: if comp.lod { p.max_lod.min(6) } else { 0 },
+                voxels: false,
+                records: mr_components::parse_placement(&opts.placement)?,
+                shading: &shading,
+                bounces: opts.bounces,
+                spp: opts.spp,
+                accumulate: opts.accumulate,
+                shadows: opts.shadows,
+                max_steps: opts.max_steps,
+                pool_mb: opts.pool_mb,
+                frames_in_flight: opts.frames_in_flight,
+            },
+        )?;
         let walk = |k: usize| format!("{} over {}", comp.walks.kernels[k].component, comp.walks.storages[comp.walks.kernels[k].storage].component);
         tracing::info!("gpu-compute: primary {}, shadow {}, bounce {}, shading {shading}", walk(0), walk(comp.shadow), walk(comp.bounce));
         let lane = Self {
             meshes: MeshRecords::new(&core.gpu, &core.world, p.width, p.height),
             built: comp.clone(),
             comp,
-            storages,
             bound: Bound(Vec::new()),
             beam: Beam::new(&core.gpu, p.width, p.height),
             prepass: false,
@@ -346,11 +353,11 @@ impl Walk {
             view_max: opts.view_max.clamp(1, 16384),
             stage_nodes: [g.ids(&[Role::Meshes]), g.ids(&[Role::Prepass])],
         };
-        Ok((core, lane))
+        Ok((core, lane, shading))
     }
 }
 
-impl Lane for Walk {
+impl Cast for Walk {
     const BACKEND: &'static str = BACKEND;
 
     fn layout_entries(&self, stages: wgpu::ShaderStages) -> Vec<wgpu::BindGroupLayoutEntry> {
@@ -367,11 +374,11 @@ impl Lane for Walk {
         vec![wgpu::BindGroupEntry { binding: LANE_BINDING, resource: self.beam.tiles.as_entire_binding() }, wgpu::BindGroupEntry { binding: LANE_BINDING + 1, resource: self.beam.stats.as_entire_binding() }]
     }
 
-    fn layouts<'a>(&'a self, [layout0, world]: [&'a wgpu::BindGroupLayout; 2]) -> Vec<Option<&'a wgpu::BindGroupLayout>> {
-        self.storages.layouts(&[Some(layout0), Some(world), None, Some(self.meshes.layout())])
+    fn layouts<'a>(&'a self, core: &'a Core, [layout0, world]: [&'a wgpu::BindGroupLayout; 2]) -> Vec<Option<&'a wgpu::BindGroupLayout>> {
+        core.storages.layouts(&[Some(layout0), Some(world), None, Some(self.meshes.layout())])
     }
 
-    fn program(&self, shading: &str, meshed: bool) -> LaneProgram {
+    fn program(&self, shading: &str, meshed: bool) -> CastProgram {
         self.comp.program(shading, meshed)
     }
 
@@ -399,12 +406,12 @@ impl Lane for Walk {
         if mr_components::prepass::has_pass(self.comp.prepass()) { &["prepass"] } else { &[] }
     }
 
-    fn camera(&self) -> (u32, u32) {
-        (self.view_max, 0)
+    fn camera(&self) -> [u32; 2] {
+        [self.view_max, 0]
     }
 
-    fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
-        self.storages.update(&core.gpu, &core.world, changed)
+    fn updated(&mut self, _core: &Core, _changed: &[IVec3]) -> anyhow::Result<()> {
+        Ok(())
     }
 
     fn update_meshes(&mut self, update: MeshUpdate) {
@@ -414,7 +421,7 @@ impl Lane for Walk {
     fn prepare(&mut self, _core: &mut Core, _passes: &mut Passes, _enc: &mut wgpu::CommandEncoder, _ticket: Ticket, _req: &FrameRequest) {}
 
     fn before(&mut self, core: &mut Core, passes: &Passes, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, world: &wgpu::BindGroup) -> Before {
-        self.bound = self.storages.prepare(&core.gpu, &core.world);
+        self.bound = core.storages.prepare(&core.gpu, &core.world);
         // The first pass carries the frame's begin timestamp: meshes, else the prepass.
         let want_meshes = req.meshes && self.built.meshes;
         let meshes_on = self.meshes.active(want_meshes);
@@ -447,7 +454,7 @@ impl Lane for Walk {
     fn stats(&self, core: &Core) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
         let counters = [("dropped_chunks".to_string(), core.world.dropped_chunks() as f64)]
             .into_iter()
-            .chain(self.storages.counters())
+            .chain(core.storages.counters())
             .chain(self.prepass.then(|| ("avg_skip_blocks".to_string(), self.beam.avg_skip)))
             .collect();
         (counters, self.built.steps_view.then(|| Legend::ramp("loop iterations (primary ray)", self.view_max as f64, true)), Vec::new())
@@ -514,7 +521,7 @@ impl Lane for Walk {
     }
 
     fn memory_bytes(&self) -> u64 {
-        self.storages.memory_bytes() + self.beam.tiles.size()
+        self.beam.tiles.size()
     }
 }
 
@@ -621,7 +628,7 @@ mod tests {
                                 for (deferred, meshed, fragment) in [(false, true, false), (true, true, true), (false, false, true), (true, false, false)] {
                                     let what = format!("{c:?} {shading} deferred {deferred} meshed {meshed} fragment {fragment}");
                                     let steps = c.steps_view && !deferred;
-                                    crate::tests::validate(c.program(shading, meshed), deferred, steps, fragment, &what);
+                                    super::super::tests::validate(c.program(shading, meshed), deferred, steps, fragment, &what);
                                 }
                                 n += 1;
                             }

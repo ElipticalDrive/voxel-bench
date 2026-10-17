@@ -8,7 +8,7 @@ use std::sync::Arc;
 use mr_core::{RendererEntry, RendererInfo};
 
 pub fn registry() -> Vec<RendererEntry> {
-    vec![cpu_reference::entry(), backend_cpu_raster::entry(), backend_faces::cpu_discover_entry(), backend_faces::gpu_discover_entry(), backend_cpu::entry(), backend_voxelspace::cpu_entry(), backend_gpu_splat::entry(), backend_voxelspace::gpu_entry(), backend_raycast::gpu_compute_entry(), backend_faces::gpu_raster_entry(), backend_raycast::gpu_rt_entry()]
+    vec![cpu_reference::entry(), backend_cpu::cpu_raster_entry(), backend_gpu::cpu_discover_entry(), backend_gpu::gpu_discover_entry(), backend_cpu::cpu_entry(), backend_cpu::cpu_voxelspace_entry(), backend_gpu::gpu_splat_entry(), backend_gpu::gpu_voxelspace_entry(), backend_gpu::gpu_compute_entry(), backend_gpu::gpu_raster_entry(), backend_gpu::gpu_rt_entry()]
 }
 
 pub fn infos() -> Vec<RendererInfo> {

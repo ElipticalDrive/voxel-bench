@@ -69,7 +69,8 @@ use mr_gpu::voxels::{Shadows, hash3, shadows_param};
 use mr_gpu::{Gpu, wgpu};
 use serde::Deserialize;
 
-use crate::{Core, CoreOpts, FaceSource, SourceSpec};
+use super::{CoreOpts, Draw, FaceSource, SourceSpec};
+use crate::Core;
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -527,7 +528,7 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
 }
 
 impl GpuSampler {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
+    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Draw, Self)> {
         let mut opts: Options = p.options()?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         require(BACKEND, Slot::Draw, &opts.draw)?;
@@ -543,7 +544,7 @@ impl GpuSampler {
         let shadow = walks.site(g, bound(Role::Shading, "shadow")?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         let o = CoreOpts { shading: &shading, draw: &opts.draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
-        let core = Core::new(p, devices, waker, &o, opts.depth_prepass, SourceSpec {
+        let (core, drawing) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("set_faces.wgsl").into(),
             walks,
             sites: [rays, exposure, shadow, bounce],
@@ -560,9 +561,9 @@ impl GpuSampler {
         // Discovery's pieces (PLAN step 13b): the quadtree sampler and hole detection, each
         // its own root over the shared face set (a module after the walks'). The sampler
         // reads hole detection's tiles only where they are bound (shader def `HOLES`).
-        let mut program = core.program.clone();
-        program.add(quadtree::SET, quadtree::SET_WGSL, &core.deps.iter().map(String::as_str).collect::<Vec<_>>());
-        let disc_deps: Vec<&str> = std::iter::once(quadtree::SET).chain(core.deps.iter().map(String::as_str)).collect();
+        let mut program = drawing.program.clone();
+        program.add(quadtree::SET, quadtree::SET_WGSL, &drawing.deps.iter().map(String::as_str).collect::<Vec<_>>());
+        let disc_deps: Vec<&str> = std::iter::once(quadtree::SET).chain(drawing.deps.iter().map(String::as_str)).collect();
         let discovery = |label, root: &str, program: &mr_gpu::program::Program| mr_gpu::program::compile(dev, label, program, root, &disc_deps);
         let mut with_holes = program.clone();
         with_holes.define("HOLES");
@@ -574,7 +575,7 @@ impl GpuSampler {
         }
         // The forward raster's fragment stage, for painter order, the overdraw view and the
         // face-id raster.
-        let draw_mod = core.draw_module("discover raster", &shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap()));
+        let draw_mod = drawing.module(&core, "discover raster", &shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap()));
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {
             binding,
@@ -680,7 +681,7 @@ impl GpuSampler {
             cache: None,
         });
 
-        let pl_draw = &core.pl_draw;
+        let pl_draw = &drawing.pl_draw;
         let pipeline = |label, write: bool, compare, fragment: bool| {
             let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
             dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -767,8 +768,8 @@ impl GpuSampler {
         let ctable = storage(gpu, "chunk slot table", CHUNK_TABLE as u64 * 16, none);
         gpu.queue.write_buffer(&ctable, 0, bytemuck::cast_slice(&vec![[0i32, 0, 0, -1]; CHUNK_TABLE]));
         let cpos = storage(gpu, "slot chunk positions", MAX_SLOTS as u64 * 16, none);
-        let bind_merged = core.draw_bind(&merged, &cpos);
-        let bind_sorted = core.draw_bind(&sorted, &cpos);
+        let bind_merged = drawing.bind(&core, &merged, &cpos);
+        let bind_sorted = drawing.bind(&core, &sorted, &cpos);
         let bind_args = dev.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("discover args"),
             layout: &layout_args,
@@ -779,7 +780,7 @@ impl GpuSampler {
                 wgpu::BindGroupEntry { binding: 3, resource: lcount.as_entire_binding() },
             ],
         });
-        let bind_draw = [0, 1].map(|i| core.draw_bind(&lists[i], &cpos));
+        let bind_draw = [0, 1].map(|i| drawing.bind(&core, &lists[i], &cpos));
         let stages = (0..STAGES)
             .map(|_| Stage {
                 buf: dev.create_buffer(&wgpu::BufferDescriptor { label: Some("counter stage"), size: STATS_WORDS * 4 + 16 + PROFILE_TS as u64 * 8, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false }),
@@ -865,10 +866,10 @@ impl GpuSampler {
             frame: 0,
             rng: 0x9e3779b97f4a7c15,
         };
-        Ok((core, s))
+        Ok((core, drawing, s))
     }
 
-    fn make_bind_disc(&self, core: &Core) -> [wgpu::BindGroup; 2] {
+    fn make_bind_disc(&self, core: &Core, drawing: &Draw) -> [wgpu::BindGroup; 2] {
         let s = &self.sized;
         [0usize, 1].map(|par| {
             let prev = 1 - par;
@@ -896,7 +897,7 @@ impl GpuSampler {
                 (17, res(&self.seen)),
                 (18, res(&s.need)),
                 (19, wgpu::BindingResource::TextureView(&s.idtex)),
-                (20, wgpu::BindingResource::TextureView(&core.depth)),
+                (20, wgpu::BindingResource::TextureView(&drawing.depth)),
                 (21, res(&s.changed_tiles)),
                 (22, res(&s.sky[par])),
                 (23, res(&s.sky[prev])),
@@ -1090,13 +1091,13 @@ impl GpuSampler {
     /// Rasterises list `parity` into the output (depth pre-pass + equal-depth shading in lit
     /// mode). `ts` = (begin, end) frame timestamps carried by these passes.
     #[allow(clippy::too_many_arguments)]
-    fn encode_shade(&self, core: &Core, enc: &mut wgpu::CommandEncoder, parity: usize, world_bg: &wgpu::BindGroup, bound: &Bound, mode: RenderMode, ts: (bool, bool), ticket: mr_gpu::Ticket) {
+    fn encode_shade(&self, core: &Core, drawing: &Draw, enc: &mut wgpu::CommandEncoder, parity: usize, world_bg: &wgpu::BindGroup, bound: &Bound, mode: RenderMode, ts: (bool, bool), ticket: mr_gpu::Ticket) {
         let painter = self.opts.order == "painter";
         let overdraw = view_code(&self.opts.view) == 4;
         let sky = if overdraw { [0, 0, 0, 255] } else { encode_srgb(core.world.env.sky) };
         let clear = wgpu::Color { r: sky[0] as f64 / 255.0, g: sky[1] as f64 / 255.0, b: sky[2] as f64 / 255.0, a: 1.0 };
         let out_view = core.output.create_view(&Default::default());
-        let prepass = core.depth_prepass && mode == RenderMode::Lit && !painter && !overdraw;
+        let prepass = drawing.depth_prepass && mode == RenderMode::Lit && !painter && !overdraw;
         let merging = self.merging();
         let draw_ofs = if merging { 108 * 4 } else { (72 + parity as u64 * 4) * 4 };
         let bind_draw = if painter {
@@ -1109,7 +1110,7 @@ impl GpuSampler {
         let (st, more) = bound.split();
         let frame = DrawFrame {
             out: &out_view,
-            depth: &core.depth,
+            depth: &drawing.depth,
             clear,
             prepass,
             keep_depth: self.opts.incremental,
@@ -1119,7 +1120,7 @@ impl GpuSampler {
             ring: &core.ring,
             ticket,
             ts,
-            nodes: &core.draw_nodes,
+            nodes: &drawing.draw_nodes,
         };
         let draw = |pass: &mut wgpu::RenderPass<'_>| pass.draw_indirect(&self.args, draw_ofs);
         let main = match (overdraw, painter) {
@@ -1128,7 +1129,7 @@ impl GpuSampler {
             (false, true) => Some(&self.pipe_paint),
             (false, false) => None,
         };
-        core.drawer.encode(&core.gpu, enc, &frame, &draw, None, main);
+        drawing.drawer.encode(&core.gpu, enc, &frame, &draw, None, main);
     }
 
     /// `view = tiles | rays`: blends the diagnostic overlay over the output (`overdraw`:
@@ -1182,17 +1183,17 @@ impl GpuSampler {
 
     /// Event-driven static frame: camera and world unchanged since the last discovery, so
     /// the last face list is still complete. Only shading runs (lights may move).
-    fn render_static(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink, ticket: mr_gpu::Ticket, start: Instant) -> anyhow::Result<()> {
+    fn render_static(&mut self, core: &mut Core, drawing: &Draw, req: &FrameRequest, sink: &mut dyn FrameSink, ticket: mr_gpu::Ticket, start: Instant) -> anyhow::Result<()> {
         self.last_kind = FrameKind::Static;
         self.kind_counts[FrameKind::Static as usize] += 1;
         let parity = (self.frame & 1) as usize;
         let c = &req.camera;
         // Nothing is new in a static frame.
-        core.write_frame(c, req.mode, if view_code(&self.opts.view) == 5 { 2 } else { 0 }, IVec3::ZERO);
+        drawing.write_frame(core, c, req.mode, if view_code(&self.opts.view) == 5 { 2 } else { 0 }, IVec3::ZERO);
         let world_bg = core.world.prepare(&core.gpu, c).clone();
         let bound = Bound(core.storages.prepare(&core.gpu, &core.world).0.clone());
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
-        self.encode_shade(core, &mut enc, parity, &world_bg, &bound, req.mode, (true, true), ticket);
+        self.encode_shade(core, drawing, &mut enc, parity, &world_bg, &bound, req.mode, (true, true), ticket);
         let tile = self.opts.tile;
         self.encode_overlay(core, &mut enc, ticket, 0, 0, 0, core.width.div_ceil(tile), core.height.div_ceil(tile));
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(core, req.mode), legend: self.legend(), stages: Vec::new() };
@@ -1228,12 +1229,12 @@ impl FaceSource for GpuSampler {
         self.update_slots(core, changed);
     }
 
-    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        let forward = !core.drawer.mode().deferred();
+    fn render(&mut self, core: &mut Core, drawing: &mut Draw, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        let forward = !drawing.drawer.mode().deferred();
         if !forward && (self.opts.order == "painter" || view_code(&self.opts.view) == 4) {
             anyhow::bail!("order = painter and view = overdraw need draw = raster (both draw forward)");
         }
-        core.check_state(req.mode, Some(self.opts.order == "painter"))?;
+        drawing.check_state(req.mode, Some(self.opts.order == "painter"))?;
         core.accum.begin(&core.gpu, &req.camera, req.mode);
         let ticket = core.ring.begin(&core.gpu, sink)?;
         let start = Instant::now();
@@ -1246,7 +1247,7 @@ impl FaceSource for GpuSampler {
         let same_rot = self.prev_cam.is_some_and(|p| p == (c.forward().to_array(), c.right().to_array(), c.up().to_array(), tan_now));
         if events && same_pos && same_rot && self.pending.is_empty() && !self.force_full && self.frame > 0 {
             // Nothing that affects visibility changed: redraw the last face list.
-            return self.render_static(core, req, sink, ticket, start);
+            return self.render_static(core, drawing, req, sink, ticket, start);
         }
         self.frame = self.frame.wrapping_add(1).max(1);
         let parity = (self.frame & 1) as usize;
@@ -1377,11 +1378,11 @@ impl FaceSource for GpuSampler {
             5 => 2,
             _ => 0,
         };
-        core.write_frame(c, req.mode, view, IVec3::ZERO);
+        drawing.write_frame(core, c, req.mode, view, IVec3::ZERO);
         let world_bg = core.world.prepare(&core.gpu, c).clone();
         let storage_bg = Bound(core.storages.prepare(&core.gpu, &core.world).0.clone());
         if self.bind_disc.is_none() {
-            self.bind_disc = Some(self.make_bind_disc(core));
+            self.bind_disc = Some(self.make_bind_disc(core, drawing));
         }
         let bind_disc = self.bind_disc.as_ref().unwrap()[parity].clone();
         let holes = self.opts.incremental as usize;
@@ -1433,7 +1434,7 @@ impl FaceSource for GpuSampler {
                         ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &core.depth,
+                        view: &drawing.depth,
                         depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
                         stencil_ops: None,
                     }),
@@ -1557,7 +1558,7 @@ impl FaceSource for GpuSampler {
             pass.set_pipeline(&self.pipe_sort_scatter);
             pass.dispatch_workgroups_indirect(&self.args, aofs(64 + parity as u64 * 4));
         }
-        self.encode_shade(core, &mut enc, parity, &world_bg, &storage_bg, req.mode, (false, true), ticket);
+        self.encode_shade(core, drawing, &mut enc, parity, &world_bg, &storage_bg, req.mode, (false, true), ticket);
         mark(&mut enc, 3 + 2 * MAX_LEVELS as u32);
         if self.opts.incremental {
             core.ring.stage(&mut enc, ticket, "sky mask", &self.holes_nodes);
@@ -1604,7 +1605,7 @@ impl FaceSource for GpuSampler {
         core.ring.poll(&core.gpu, sink, false)
     }
 
-    fn set_param(&mut self, _: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+    fn set_param(&mut self, _: &mut Core, _: &mut Draw, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
         match name {
             "tile" => self.opts.tile = int(8),
@@ -1648,11 +1649,11 @@ impl FaceSource for GpuSampler {
         Some(Ok(()))
     }
 
-    fn resize(&mut self, core: &Core) {
+    fn resize(&mut self, core: &Core, drawing: &Draw) {
         self.sized = make_sized(&core.gpu, core.width, core.height);
-        self.bind_merged = core.draw_bind(&self.merged, &self.cpos);
-        self.bind_sorted = core.draw_bind(&self.sorted, &self.cpos);
-        self.bind_draw = [0, 1].map(|i| core.draw_bind(&self.lists[i], &self.cpos));
+        self.bind_merged = drawing.bind(core, &self.merged, &self.cpos);
+        self.bind_sorted = drawing.bind(core, &self.sorted, &self.cpos);
+        self.bind_draw = [0, 1].map(|i| drawing.bind(core, &self.lists[i], &self.cpos));
         self.bind_disc = None;
         self.bind_ov = None;
         self.force_full = true;
@@ -1752,7 +1753,7 @@ mod tests {
                     let bounce = with_bounce.site(&ck, ck.site(Role::Shading, "bounce").unwrap(), STORAGE_GROUPS, false);
                     for (walks, bounce, shading) in [(walks, shadow, "direct"), (with_bounce, bounce, "pathtrace")] {
                         let (mut program, deps) = mr_components::shaders::sites_program(&walks, rays, exposure, shadow, bounce);
-                        crate::tests::drawers(&program, &deps, None, &crate::draw_src(include_str!("set_faces.wgsl"), shading, true), shading, &format!("{st} {k} {shading}"), BACKEND);
+                        crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("set_faces.wgsl"), shading, true), shading, &format!("{st} {k} {shading}"), BACKEND);
                         // Discovery's pieces: the sampler and hole detection over the shared set.
                         program.add(quadtree::SET, quadtree::SET_WGSL, &deps.iter().map(String::as_str).collect::<Vec<_>>());
                         let disc_deps: Vec<String> = std::iter::once(quadtree::SET.to_string()).chain(deps.iter().cloned()).collect();

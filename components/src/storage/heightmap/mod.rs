@@ -74,6 +74,16 @@ impl Heightmap {
         self.columns.len()
     }
 
+    /// Cells a column march crosses: twice the view radius in blocks.
+    pub fn march_cells(&self) -> u32 {
+        2 * (self.reach - CHUNK_SIZE as u32)
+    }
+
+    /// The storage's frame counters.
+    pub fn counters(&self) -> [(String, f64); 2] {
+        [("heightmap_size".into(), self.size as f64), ("chunk_columns".into(), self.columns() as f64)]
+    }
+
     /// The entry of absolute column (x, z).
     #[inline]
     pub fn at(&self, x: i32, z: i32) -> u32 {

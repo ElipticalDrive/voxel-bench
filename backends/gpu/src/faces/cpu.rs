@@ -44,7 +44,8 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GrowableBuffer, wgpu};
 use serde::Deserialize;
 
-use crate::{Core, CoreOpts, FaceSource, SourceSpec};
+use super::{CoreOpts, Draw, FaceSource, SourceSpec};
+use crate::Core;
 
 pub(crate) const BACKEND: &str = "cpu-discover";
 
@@ -230,7 +231,7 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
 }
 
 impl CpuSampler {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
+    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Draw, Self)> {
         let mut opts: Options = p.options()?;
         let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
@@ -247,7 +248,7 @@ impl CpuSampler {
         let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("{BACKEND}: GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         let o = CoreOpts { shading: &opts.shading, draw: &opts.draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
-        let core = Core::new(p, devices, waker, &o, opts.depth_prepass, SourceSpec {
+        let (core, drawing) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("records.wgsl").into(),
             walks,
             sites: [shadow, shadow, shadow, bounce],
@@ -276,7 +277,7 @@ impl CpuSampler {
             vis_nodes: g.ids(&[Role::Visibility]),
             overflowed: false,
         };
-        Ok((core, s))
+        Ok((core, drawing, s))
     }
 
     /// Takes back the state from an in-flight job (discarding its result).
@@ -336,8 +337,8 @@ impl FaceSource for CpuSampler {
 
     fn updated(&mut self, _: &Core, _: &[IVec3]) {}
 
-    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        core.check_state(req.mode, None)?;
+    fn render(&mut self, core: &mut Core, drawing: &mut Draw, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        drawing.check_state(req.mode, None)?;
         let ticket = core.ring.begin(&core.gpu, sink)?;
         let start = Instant::now();
         let (w, h) = (core.width, core.height);
@@ -396,13 +397,13 @@ impl FaceSource for CpuSampler {
         } else {
             0
         };
-        core.write_frame(&c, req.mode, view, out.anchor);
+        drawing.write_frame(core, &c, req.mode, view, out.anchor);
         let world_bg = core.world.prepare(&core.gpu, &c).clone();
         let bound = core.storages.prepare(&core.gpu, &core.world);
         let (storage_bg, more) = bound.split();
         core.accum.begin(&core.gpu, &c, req.mode);
         if self.bind0.is_none() {
-            self.bind0 = Some(core.draw_bind(self.rec_buf.buffer(), self.tag_buf.buffer()));
+            self.bind0 = Some(drawing.bind(core, self.rec_buf.buffer(), self.tag_buf.buffer()));
         }
         let bind0 = self.bind0.clone().unwrap();
         let sky = encode_srgb(core.world.env.sky);
@@ -411,9 +412,9 @@ impl FaceSource for CpuSampler {
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
         let frame = DrawFrame {
             out: &out_view,
-            depth: &core.depth,
+            depth: &drawing.depth,
             clear,
-            prepass: core.depth_prepass && req.mode == RenderMode::Lit,
+            prepass: drawing.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
             binds: &[&bind0, &world_bg, storage_bg],
             more: &more,
@@ -421,14 +422,14 @@ impl FaceSource for CpuSampler {
             ring: &core.ring,
             ticket,
             ts: (true, true),
-            nodes: &core.draw_nodes,
+            nodes: &drawing.draw_nodes,
         };
         let draw = |pass: &mut wgpu::RenderPass<'_>| {
             if n > 0 {
                 pass.draw(0..4, 0..n);
             }
         };
-        core.drawer.encode(&core.gpu, &mut enc, &frame, &draw, None, None);
+        drawing.drawer.encode(&core.gpu, &mut enc, &frame, &draw, None, None);
         let pixels = (w as f64) * (h as f64);
         let mut counters = vec![
             ("rays".into(), out.rays as f64),
@@ -473,7 +474,7 @@ impl FaceSource for CpuSampler {
         core.ring.poll(&core.gpu, sink, false)
     }
 
-    fn set_param(&mut self, _: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+    fn set_param(&mut self, _: &mut Core, _: &mut Draw, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
         match name {
             "tile" => self.opts.tile = int(32),
@@ -504,7 +505,7 @@ impl FaceSource for CpuSampler {
         Some(Ok(()))
     }
 
-    fn resize(&mut self, _: &Core) {
+    fn resize(&mut self, _: &Core, _: &Draw) {
         self.cancel_pending();
         self.bind0 = None;
     }

@@ -31,7 +31,8 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use wgpu::util::DeviceExt;
 
-use crate::{Before, Core, CoreOpts, LANE_BINDING, Lane, LaneNeeds, LaneProgram, Passes, Ticket};
+use super::{Before, Cast, CastProgram, Passes, Ticket};
+use crate::{Core, CoreSpec, LANE_BINDING};
 
 pub(crate) const BACKEND: &str = "gpu-rt";
 
@@ -185,7 +186,7 @@ pub(crate) struct RayQuery {
 }
 
 impl RayQuery {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self)> {
+    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String)> {
         let opts: Options = p.options()?;
         let geometry = require(BACKEND, Slot::Geometry, &opts.geometry)?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
@@ -193,15 +194,29 @@ impl RayQuery {
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
         anyhow::ensure!(opts.merge == "block", "merge = `{}`: gpu-rt has no per-pixel block lookup (only `block`)", opts.merge);
         let (_, rt) = mr_components::geometry::rt(&geometry).expect("validated");
-        let o = CoreOpts { shading: &shading, placement: &opts.placement, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: 0, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
-        let needs = LaneNeeds {
-            gpu: GpuNeeds { experimental: true, required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY, optional_features: wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS },
-            max_lod: 0,
-            // Only the boxes' DDA reads voxels.
-            upload_voxels: matches!(rt, RtKind::Boxes),
-            stages: wgpu::ShaderStages::COMPUTE,
-        };
-        let core = Core::new(p, devices, waker, g, &o, needs)?;
+        let core = Core::new(
+            p,
+            devices,
+            waker,
+            g,
+            CoreSpec {
+                gpu: GpuNeeds { experimental: true, required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY, optional_features: wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS },
+                walks: &Default::default(),
+                stages: wgpu::ShaderStages::COMPUTE,
+                max_lod: 0,
+                // Only the boxes' DDA reads voxels.
+                voxels: matches!(rt, RtKind::Boxes),
+                records: mr_components::parse_placement(&opts.placement)?,
+                shading: &shading,
+                bounces: opts.bounces,
+                spp: opts.spp,
+                accumulate: opts.accumulate,
+                shadows: opts.shadows,
+                max_steps: 0,
+                pool_mb: opts.pool_mb,
+                frames_in_flight: opts.frames_in_flight,
+            },
+        )?;
         let gpu = core.gpu.clone();
         let geo_buf = GrowableBuffer::new(&gpu, "geometry", 1 << 20, 1 << 30, wgpu::BufferUsages::STORAGE);
         let geo_words = (geo_buf.size() / 4) as u32;
@@ -229,11 +244,11 @@ impl RayQuery {
             stage_nodes: g.ids(&[Role::Geometry]),
             gpu,
         };
-        Ok((core, lane))
+        Ok((core, lane, shading))
     }
 }
 
-impl Lane for RayQuery {
+impl Cast for RayQuery {
     const BACKEND: &'static str = BACKEND;
 
     fn layout_entries(&self, stages: wgpu::ShaderStages) -> Vec<wgpu::BindGroupLayoutEntry> {
@@ -250,11 +265,11 @@ impl Lane for RayQuery {
         ]
     }
 
-    fn layouts<'a>(&'a self, [layout0, world]: [&'a wgpu::BindGroupLayout; 2]) -> Vec<Option<&'a wgpu::BindGroupLayout>> {
+    fn layouts<'a>(&'a self, _core: &'a Core, [layout0, world]: [&'a wgpu::BindGroupLayout; 2]) -> Vec<Option<&'a wgpu::BindGroupLayout>> {
         vec![Some(layout0), Some(world)]
     }
 
-    fn program(&self, shading: &str, _meshed: bool) -> LaneProgram {
+    fn program(&self, shading: &str, _meshed: bool) -> CastProgram {
         let (geo_wgsl, _) = mr_components::geometry::rt(&self.geometry).expect("validated");
         program(&self.geometry, &self.kernel, geo_wgsl, traversal::rt_wgsl(&self.kernel).expect("validated"), shading)
     }
@@ -265,13 +280,13 @@ impl Lane for RayQuery {
 
     fn compiled(&mut self) {}
 
-    fn camera(&self) -> (u32, u32) {
+    fn camera(&self) -> [u32; 2] {
         let cull = match self.opts.cull_faces {
             Cull::Back => 0x10,
             Cull::Front => 0x20,
             Cull::None => 0,
         };
-        (0, if let RtKind::Triangles(_) = self.rt { cull } else { 0 })
+        [0, if let RtKind::Triangles(_) = self.rt { cull } else { 0 }]
     }
 
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
@@ -366,7 +381,7 @@ impl Lane for RayQuery {
 /// (`rt::rays`) virtual functions the root overrides with the ray-query kernel, which (like
 /// the geometry's `g_rt_trace`) stays in the root: naga cannot write ray queries back into
 /// a module.
-fn program(geometry: &str, vis: &str, geo_wgsl: &str, vis_wgsl: &str, shading: &str) -> LaneProgram {
+fn program(geometry: &str, vis: &str, geo_wgsl: &str, vis_wgsl: &str, shading: &str) -> CastProgram {
     use mr_components::shaders;
     let mut program = mr_gpu::program::Program::world(Some("rt::rays"));
     program.add(
@@ -377,7 +392,7 @@ fn program(geometry: &str, vis: &str, geo_wgsl: &str, vis_wgsl: &str, shading: &
     );
     shaders::shading(&mut program, shading, &["rt::rays"], 0, crate::STATE_BINDING);
     let root = format!("enable wgpu_ray_query;\n// Composition: geometry = {geometry}, traversal = {vis}, shading = {shading}\n{}\n{geo_wgsl}\n{vis_wgsl}", include_str!("rayquery.wgsl"));
-    LaneProgram { program, root, deps: ROOT_DEPS.iter().map(|d| d.to_string()).collect() }
+    CastProgram { program, root, deps: ROOT_DEPS.iter().map(|d| d.to_string()).collect() }
 }
 
 const ROOT_DEPS: &[&str] = &[mr_components::shaders::SHADING, mr_components::shaders::STATE, "rt::rays", mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON];
@@ -582,7 +597,7 @@ mod tests {
             for shading in names_on(BACKEND, Slot::Shading) {
                 for deferred in [false, true] {
                     let lp = program(g, "rayquery", geo_wgsl, traversal::rt_wgsl("rayquery").unwrap(), shading);
-                    crate::tests::validate(lp, deferred, false, false, &format!("{g} {shading} {deferred}"));
+                    super::super::tests::validate(lp, deferred, false, false, &format!("{g} {shading} {deferred}"));
                 }
             }
         }

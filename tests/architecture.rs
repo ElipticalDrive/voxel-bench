@@ -57,22 +57,22 @@ const LIGHTING_ALLOWED: &[(&str, &str)] = &[
     ("crates/mr-gpu/src/program.rs", "the module system's test links a root to the lighting module"),
 ];
 
-/// Each back end's shading entry point (a string its sources must contain).
+/// Each executor lane's shading entry point (a string its sources must contain), by its path
+/// under `backends/` (PLAN step 13e3: the GPU and the CPU executor, a lane per visibility).
 const SHADING_USE: &[(&str, &str)] = &[
     // `shaders::shading`: the shading component's module (`shading::gpu_wgsl`; PLAN step 9b).
-    // The ray-casting executor (gpu-compute and gpu-rt; PLAN step 13e2): each lane.
-    ("raycast", "shaders::shading(&mut program, shading, &rays"),
-    ("raycast", "shaders::shading(&mut program, shading, &[\"rt::rays\"]"),
-    // The face-drawing executor (gpu-raster, gpu-discover and cpu-discover; PLAN step 13e1).
-    ("faces", "shading::gpu_wgsl("),
-    ("gpu-splat", "shading::gpu_wgsl("),
-    ("cpu", "direct::cpu::"),
-    // The voxelspace executor (gpu-voxelspace and cpu-voxelspace; PLAN step 13d): each lane.
-    ("voxelspace", "shading::gpu_wgsl("),
-    ("voxelspace", "direct::cpu::"),
+    // The ray-casting lane (gpu-compute and gpu-rt; PLAN step 13e2): each caster.
+    ("gpu/src/raycast/walk.rs", "shaders::shading(&mut program, shading, &rays"),
+    ("gpu/src/raycast/rayquery.rs", "shaders::shading(&mut program, shading, &[\"rt::rays\"]"),
+    // The faces lane (gpu-raster, gpu-discover and cpu-discover; PLAN step 13e1).
+    ("gpu/src/faces", "shading::gpu_wgsl("),
+    ("gpu/src/splat.rs", "shading::gpu_wgsl("),
+    ("gpu/src/columns.rs", "shading::gpu_wgsl("),
+    ("cpu/src/raycast.rs", "direct::cpu::"),
+    ("cpu/src/columns.rs", "direct::cpu::"),
     // The reference's f64 model on purpose: the same algorithm at a higher precision (the
     // f32 component cost 4-22 dB of lit PSNR; PLAN, step 1).
-    ("cpu-raster", "shade_surface("),
+    ("cpu/src/raster.rs", "shade_surface("),
 ];
 
 fn root() -> PathBuf {
@@ -80,6 +80,10 @@ fn root() -> PathBuf {
 }
 
 fn files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
+    if dir.is_file() {
+        out.push(dir.to_path_buf());
+        return;
+    }
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
@@ -97,11 +101,14 @@ fn rel(p: &Path) -> String {
     p.strip_prefix(root()).unwrap().to_string_lossy().into_owned()
 }
 
-/// Owner of a source file: the back end's name, or "shared".
+/// Owner of a source file: the executor's lane (`gpu/faces`: `backends/gpu/src/faces...`),
+/// the executor for its own files, or "shared".
 fn owner(rel: &str) -> String {
-    match rel.strip_prefix("backends/") {
-        Some(r) => r.split('/').next().unwrap().to_string(),
-        None => "shared".into(),
+    let Some(r) = rel.strip_prefix("backends/") else { return "shared".into() };
+    match r.split('/').collect::<Vec<_>>().as_slice() {
+        [ex, "src", lane, ..] if *lane != "lib.rs" => format!("{ex}/{}", lane.trim_end_matches(".rs")),
+        [ex, ..] => ex.to_string(),
+        [] => unreachable!(),
     }
 }
 
@@ -294,8 +301,8 @@ fn lighting_goes_through_the_shading_component() {
         backends = rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
     }
     for b in backends {
-        if !SHADING_USE.iter().any(|&(n, _)| n == b) {
-            problems.push(format!("back end `{b}` has no entry in SHADING_USE (how does it shade?)"));
+        if !SHADING_USE.iter().any(|&(n, _)| n.starts_with(&format!("{b}/"))) {
+            problems.push(format!("executor `{b}` has no entry in SHADING_USE (how does it shade?)"));
         }
     }
     assert!(problems.is_empty(), "lighting outside the shading component:\n  {}", problems.join("\n  "));

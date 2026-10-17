@@ -65,6 +65,10 @@ impl Pool {
         self.pool.install(f)
     }
 
+    pub fn rayon(&self) -> &rayon::ThreadPool {
+        &self.pool
+    }
+
     /// Handles the shared `threads` / `shadows` parameters; returns false if `name` is
     /// not one of them.
     pub fn set_common(&mut self, scene: &mut VoxelScene, name: &str, value: &ParamValue) -> anyhow::Result<bool> {
@@ -77,12 +81,17 @@ impl Pool {
                 Ok(true)
             }
             "shadows" => {
-                scene.shadows = value.as_str().and_then(Shadows::parse).ok_or_else(|| anyhow::anyhow!("bad shadows value"))?;
+                scene.shadows = parse_shadows(value)?;
                 Ok(true)
             }
             _ => Ok(false),
         }
     }
+}
+
+/// The `shadows` knob's value.
+pub fn parse_shadows(value: &ParamValue) -> anyhow::Result<Shadows> {
+    value.as_str().and_then(Shadows::parse).ok_or_else(|| anyhow::anyhow!("bad shadows value"))
 }
 
 #[derive(serde::Deserialize, Default)]

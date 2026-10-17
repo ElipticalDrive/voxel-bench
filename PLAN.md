@@ -206,6 +206,7 @@ The user's architecture, settled with finality and without limits for later (IDE
       - 13e3: one GPU executor: the face-drawing, ray-casting, splat and columns lanes over
         one core (world, storages, shading state, output, ring), the lane per the graph's
         visibility node; a CPU executor likewise (`cpu`, cpu-raster, cpu-voxelspace lanes).
+        (Done 2026-10-17: `backends/gpu` and `backends/cpu`; see the log.)
       - 13e4: the registry's back ends become preset graphs (names, labels and keys kept):
         any graph whose nodes have implementations on their devices runs (e.g. discovery's
         sampler moved between devices, a face source a choice at the drawer's input); a
@@ -1100,3 +1101,68 @@ root, `walk.wgsl` / `rayquery.wgsl` the lanes' roots), `components/src/graph.rs`
   executor would need both lanes' data at once); meshes, the prepass and fragment dispatch exist
   only on the walking lane (the core runs them for any lane).
 
+
+**2026-10-17, step 13e3: one GPU executor, one CPU executor.**
+`backends/gpu/` (crate `backend-gpu`, replaces `backends/faces`, `backends/raycast`,
+`backends/gpu-splat` and the GPU half of `backends/voxelspace`) and `backends/cpu/` (crate
+`backend-cpu`, now also cpu-raster and cpu-voxelspace; `backends/cpu-raster` and
+`backends/voxelspace` gone), `components/src/visibility/{splat,columns}`,
+`components/src/storage/heightmap`, `renderers/cpu-reference` (`Pool::rayon`,
+`parse_shadows`), `crates/mr-worker`, `src/pipelines.rs`, `tests/architecture.rs`, README:
+- **GPU: one core, four lanes.** `Core` (lib.rs): the device, the voxel world, the storages the
+  GPU's rays walk (`StorageSet` from the lane's walks), the shading state, the camera uniform
+  (`CameraUniform`, its last two words the lane's), group 0 (camera 0, output 1, shading state
+  2-3, hit records 4 when deferred, the lane's from 8), the output, the frame ring, the timed
+  stages' nodes; a lane states its needs (`CoreSpec`). `Executor<L: Lane>` is the one Renderer
+  (world changes into the world and the storages, the shared knobs `shadows`, `max_steps` and
+  the shading state's). Lanes, picked from the graph (a drawer: faces; else the visibility
+  component: `splat`, `columns`, else ray casting): `faces/` (13e1's executor; its own part is
+  now `Draw`: the face drawer and what it compiles from, the frame uniform, the depth buffer;
+  the three face sources get the core and the drawing), `raycast/` (13e2's; the walk's storages
+  are the core's; the inner trait is `Cast`), `splat.rs`, `columns.rs`.
+- **Splat and columns on the shared group 0**: their own camera structs (identical layout,
+  `splat::Camera`, `columns::Camera`) are gone (the core's, lane words `[count, max_splat]` /
+  `[0, march_cells]`); bindings renumbered: splat points/depth/ids 2-4 -> 8-10, shading state
+  5-6 -> 2-3; columns heightmap 2-3 -> 8-9, shading state 4-5 -> 2-3, records 6 -> 4. The
+  heightmap's bookkeeping both voxelspace lanes shared moved onto the component
+  (`Heightmap::march_cells`, `counters`); each columns lane owns its heightmap.
+- **CPU: one core, three lanes.** `Core`: the thread pool (`threads` knob; cpu's private copy of
+  the pool type is gone) and `Frame` (the image, its size, the timed stages' nodes);
+  `Executor<L>` runs every frame inside the pool and hands the image to the sink. Lanes:
+  `raycast.rs` (`Raycast<R, S>`, the old cpu back end, still monomorphised per storage and the
+  crate compiled pipelines build: `entry_for`, `Spec` re-exported), `raster.rs`, `columns.rs`.
+  Each CPU lane keeps its own world (the storage-specific `Scene<R>`, or the reference's
+  `VoxelScene`).
+- Behaviour changed: cpu's whole frame runs in its pool (before only the parallel parts; the
+  `perf` counters still open, 6/7 events on 32 threads); compiled pipelines now also build the
+  raster and columns lanes' code; `tests/architecture.rs` owns WGSL by lane (`gpu/faces`,
+  `cpu/raycast`, ...), so the one-definition rule still holds between lanes of one executor.
+- Verified: builds without warnings (dev, release), 80 unit tests, 4 GPU end-to-end tests. Pixel
+  A/B against 13e2 (frames 0/20/39, lit + unlit), 39 configurations: gpu-compute plain,
+  deferred, fragment + deferred, beam, tree64 + sphere + pathtrace, steps view, meshes deferred,
+  meshes fragment, far; gpu-rt greedy, deferred, boxes + pathtrace; gpu-raster raster,
+  visbuffer, gbuffer + pathtrace, meshes gbuffer, edits; gpu-discover plain, coverage, edits
+  visbuffer; cpu-discover quadtree, cluster, edits; gpu-splat terrain, edits; gpu-voxelspace
+  inline, deferred, pathtrace, edits; cpu plain, incremental deferred, tiles + steps view,
+  palette edits; cpu-raster deferred, inline naive, edits; cpu-voxelspace inline, deferred,
+  edits: all identical but gpu-splat on edits at frame 0 (~3000 px), which differs as much
+  between two runs of the build before (frame 0 depends on what has streamed in).
+- Timing A/B (terrain, interleaved, 4 rounds, each configuration alone; GPU time / fps, lit /
+  unlit): gpu-compute plain -0.1 / +0.0%, +0.2 / -1.2% fps; deferred +0.0 / -0.0%; fragment
+  -0.0 / -0.0%, +0.6 / +0.9% fps; gpu-rt -0.0 / -0.2%; gpu-raster raster -0.0 / -0.0%, -0.1 /
+  +2.1% fps; visbuffer +0.0 / -0.1%; gpu-discover -0.1 / -0.0%; coverage +1.8 / +0.0% (8-round
+  rerun -1.0 / -0.2%: the pass 13b found bimodal); cpu-discover +0.9 / -0.1%, fps -0.5 / -1.1%;
+  gpu-voxelspace inline -0.1 / -0.1%, deferred +0.1 / -0.1% (fps +4.2 / +2.4%, host-bound at
+  700-770 fps); cpu fps +0.7 / +0.3%, deferred +0.4 / +0.1%; cpu-raster +0.3 / +0.1%;
+  cpu-voxelspace inline +0.6 / -0.1%, deferred +1.5 / -2.8% (8-round rerun +1.7 / -1.3%).
+- **Logged, not a loss: gpu-splat's mean GPU time** +1.2 / +2.5% (4 rounds), -0.8 / +2.7% (8
+  rounds), all in the splat stage (the resolve +-0.2%). The splat pass is the same code in both
+  modes and moved -1.4% lit / +2.5% unlit in one run; per round its median is no higher after
+  (unlit p50 1.25-1.32 ms after, 1.29-1.32 before; lit 1.26-1.27 after, 1.25-1.32 before). The
+  mean follows the pass's tail (p95 ~2.5 ms against a 1.3 ms median: atomic contention), whose
+  share varies between runs. What changed for it: only binding numbers (points/depth/ids 2-4 ->
+  8-10) and the shared camera struct.
+- Not yet (13e4): the registry's names remain entries with their own slot lists, so a graph
+  cannot yet combine lanes (a walk beside a face drawer, ray queries for a walk's sites) or move
+  a node between the executors; the faces lane draws with its own frame uniform, not group 0;
+  the CPU lanes share no world (the storages' CPU side is per lane).
