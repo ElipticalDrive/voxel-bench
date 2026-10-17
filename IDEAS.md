@@ -1688,6 +1688,31 @@ pipelines keep their pixels and speed (A/B) after the feature lands.
 
 ---
 
+## 24. Discovery is a face source: raster and discover are one family (2026-10-17)
+
+**The user's question:** why is gpu-discover a different back end from gpu-raster? Discovery
+looks like a precursor to rasterisation: an algorithm that takes part in meshing, the process
+of turning the voxel world into shapes a rasteriser can draw.
+
+**Analysis:** right. Both pipelines end in the same face drawer (shared since step 12); in the
+graph they differ only in what feeds the drawer's `faces` input:
+- *meshing* (the geometry component: greedy, naive, cubes) is view-independent: it runs on
+  chunk changes and yields every exposed face;
+- *discovery* (the samplers: quadtree, cluster) is view-dependent: it runs every frame from the
+  camera and yields only the faces it sees, so it is meshing and occlusion culling in one, by
+  ray sampling. It needs rays (a storage and kernel) and keeps state across frames (the face
+  set, hole detection's loop).
+
+Neither difference needs a back end of its own. They are the separate back ends for historical
+reasons only. Step 13e (one GPU executor runs every graph) removes the split: "gpu-raster" and
+"gpu-discover" stay as names of preset graphs, and the face source becomes a choice at the
+drawer's input (meshing, discovery, or a combination).
+
+**Combinations this opens:** greedy-merging discovered faces (`merge = rows` is a first, small
+case); meshing culled by discovery (mesh chunks, draw only the parts discovery found visible);
+discovery seeded from meshed faces; cpu-discover and gpu-raster then also share the drawing
+lane as configurations of one graph family.
+
 ## Suggested order
 
 The live plan, with estimates and progress, is in `PLAN.md`.
