@@ -687,12 +687,13 @@ pub fn lighting_knobs(backend: &str, mut params: Vec<mr_core::ParamSpec>) -> Vec
 /// shades where the strategy finds the hit, in the same pass; `deferred` has the strategy
 /// write hit records and one common pass shade each pixel. Fixed at creation: inline
 /// pipelines carry nothing of the deferred one (no record buffer, binding or pass).
-pub fn placement_param(backend: &str) -> mr_core::ParamSpec {
+/// `default`: the back end's original placement (cpu-raster was deferred).
+pub fn placement_param(backend: &str, default: &str) -> mr_core::ParamSpec {
     mr_core::ParamSpec::choice(
         "placement",
-        "Shading placement: inline = shaded where the ray hits, in the same pass; deferred = the walk writes hit records (8 bytes per pixel), then one common pass shades each pixel",
+        "Shading placement: inline = shaded where the surface is found, in the same pass (with rasterisers: every fragment that passes the depth test); deferred = the strategy writes a hit record per pixel, then one common pass shades each pixel",
         &["inline", "deferred"],
-        "inline",
+        default,
         false,
     )
     .of(Slot::Shading.name(), &names_on(backend, Slot::Shading))

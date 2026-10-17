@@ -16,4 +16,5 @@ fn walk_records(@builtin(global_invocation_id) gid: vec3<u32>) {
 fn record_at(px: vec2<u32>) -> vec2<u32> { return records[px.y * cam.width + px.x]; }
 fn view_origin() -> vec3<f32> { return cam.origin; }
 fn view_lit() -> bool { return cam.mode == 1u; }
+fn view_surface(s: Surface) -> Surface { return s; }
 fn view_miss(px: vec2<u32>) -> vec4<f32> { return unpack4x8unorm(cam.sky); }

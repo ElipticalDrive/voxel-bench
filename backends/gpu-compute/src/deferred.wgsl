@@ -29,6 +29,7 @@ fn fs_cast(@builtin(position) frag: vec4<f32>) {
 fn record_at(px: vec2<u32>) -> vec2<u32> { return records[px.y * cam.width + px.x]; }
 fn view_origin() -> vec3<f32> { return cam.origin; }
 fn view_lit() -> bool { return cam.mode == 1u; }
+fn view_surface(s: Surface) -> Surface { return s; }
 fn view_miss(px: vec2<u32>) -> vec4<f32> {
     if (mesh_t(px, view_ray(px), cam.forward) < 1e29) { return mesh_color(px); }
     return unpack4x8unorm(cam.sky);

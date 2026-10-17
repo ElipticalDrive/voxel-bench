@@ -62,6 +62,7 @@ fn view_ray(px: vec2<u32>) -> vec3<f32> { return pixel_ray(vec2<f32>(px) + 0.5);
 fn view_origin() -> vec3<f32> { return fr.cam_frac; }
 fn view_miss(px: vec2<u32>) -> vec4<f32> { return fr.sky; }
 fn view_lit() -> bool { return fr.mode == 1u; }
+fn view_surface(s: Surface) -> Surface { return s; }
 
 // The hit of primary ray `d` on the plane of `face` at `plane` (its coordinate along the
 // face's normal axis, camera-block relative): analytic, rather than interpolated

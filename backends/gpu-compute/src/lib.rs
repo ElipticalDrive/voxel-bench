@@ -71,7 +71,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
     ];
     p.extend(shade_state::params());
-    p.push(placement_param(BACKEND));
+    p.push(placement_param(BACKEND, "inline"));
     p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("traversal", &["incremental"]));
@@ -264,7 +264,7 @@ impl Composition {
             self.steps_view,
             mr_core::legend::ramp_wgsl(),
             include_str!("main.wgsl"),
-            if self.shade_deferred() { format!("{}\n{}", include_str!("deferred.wgsl"), mr_components::shading::DEFERRED_WGSL) } else { String::new() },
+            if self.shade_deferred() { format!("{}\n{}", include_str!("deferred.wgsl"), mr_components::shading::DEFERRED_PACKED_WGSL) } else { String::new() },
         );
         let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string(), self.walks.kernel_path(0), self.walks.storage_path(primary.storage)];
         deps.extend(rays);

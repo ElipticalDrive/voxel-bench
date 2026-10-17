@@ -9,11 +9,13 @@
 //! nearest dependency that declares it (its own dependencies first, in order, then theirs,
 //! breadth first). So the primary rays' `ctrace` and the shadow rays' `ctrace` never meet:
 //! each caller reaches only the kernel it is bound to. Per-instance constants (bind group,
-//! LOD, kernel knobs) go in the instance's own source.
+//! LOD, kernel knobs) go in the instance's own source. Choices compiled into one body (a
+//! variant of the root without a call boundary, e.g. gpu-voxelspace's shading placement)
+//! are the module system's shader defs (`#ifdef NAME`, [`Program::define`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use naga_oil::compose::{ComposableModuleDescriptor, Composer, NagaModuleDescriptor, ShaderLanguage, ShaderType};
+use naga_oil::compose::{ComposableModuleDescriptor, Composer, NagaModuleDescriptor, ShaderDefValue, ShaderLanguage, ShaderType};
 
 use wgpu::naga;
 
@@ -29,6 +31,8 @@ struct Module {
 #[derive(Clone, Debug, Default)]
 pub struct Program {
     modules: Vec<Module>,
+    /// Shader defs set for every module and the root (`#ifdef NAME`).
+    defs: Vec<String>,
 }
 
 /// The shared modules: `mr::common` (colour, camera, face helpers), `mr::voxels` (the
@@ -63,6 +67,18 @@ impl Program {
             None => self.modules.push(m),
         }
         self
+    }
+
+    /// Sets shader def `name` (true) for the modules and the root.
+    pub fn define(&mut self, name: &str) -> &mut Self {
+        if !self.defs.iter().any(|d| d == name) {
+            self.defs.push(name.into());
+        }
+        self
+    }
+
+    fn shader_defs(&self) -> HashMap<String, ShaderDefValue> {
+        self.defs.iter().map(|d| (d.clone(), ShaderDefValue::Bool(true))).collect()
     }
 
     pub fn has(&self, path: &str) -> bool {
@@ -123,7 +139,7 @@ impl Program {
     /// what is compiled, for dumps and error messages.
     pub fn text(&self, root: &str, deps: &[&str]) -> Result<String, String> {
         let deps: Vec<String> = deps.iter().map(|d| d.to_string()).collect();
-        let mut s = String::new();
+        let mut s = if self.defs.is_empty() { String::new() } else { format!("// ---- shader defs: {}\n", self.defs.join(", ")) };
         for m in self.order(&deps)? {
             s += &format!("// ---- module {}\n#define_import_path {}\n{}{}\n", m.path, m.path, self.imports(&m.source, &m.deps)?, m.source);
         }
@@ -137,12 +153,12 @@ impl Program {
         let mut c = Composer::default().with_capabilities(naga::valid::Capabilities::all());
         for m in self.order(&deps)? {
             let src = format!("#define_import_path {}\n{}{}", m.path, self.imports(&m.source, &m.deps)?, m.source);
-            if let Err(e) = c.add_composable_module(ComposableModuleDescriptor { source: &src, file_path: &m.path, language: ShaderLanguage::Wgsl, ..Default::default() }) {
+            if let Err(e) = c.add_composable_module(ComposableModuleDescriptor { source: &src, file_path: &m.path, language: ShaderLanguage::Wgsl, shader_defs: self.shader_defs(), ..Default::default() }) {
                 return Err(format!("shader module `{}`: {}", m.path, e.emit_to_string(&c)));
             }
         }
         let src = with_imports(root, &self.imports(root, &deps)?);
-        c.make_naga_module(NagaModuleDescriptor { source: &src, file_path: "root", shader_type: ShaderType::Wgsl, ..Default::default() }).map_err(|e| e.emit_to_string(&c))
+        c.make_naga_module(NagaModuleDescriptor { source: &src, file_path: "root", shader_type: ShaderType::Wgsl, shader_defs: self.shader_defs(), ..Default::default() }).map_err(|e| e.emit_to_string(&c))
     }
 }
 

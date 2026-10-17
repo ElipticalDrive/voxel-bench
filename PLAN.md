@@ -126,7 +126,7 @@ The user's architecture, settled with finality and without limits for later (IDE
       records, the common pass shades; the CPU record and shade loop. (Done 2026-10-17.)
     - 12c: the other strategies on the record (splat's resolve, columns on GPU and CPU,
       cpu-raster's buffer, `visbuffer` as the face-id encoding decoded by its face source),
-      with placement wherever a strategy lacks it.
+      with placement wherever a strategy lacks it. (Done 2026-10-17.)
     - 12d: meshes as a surface source writing records (a mesh capability in the reserved
       bits, compiled in only with meshes), replacing `MeshComposite` and the drawer's
       after-shading mesh pass; transparency's capabilities (layers, continued rays, the
@@ -598,3 +598,60 @@ speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/
   inline (interleaved, 3 repeats): gpu-compute +7-8% GPU time with `direct` (+3-5% with
   fragment dispatch), -2..-3% with lit `pathtrace` (its shading is 3/4 of the frame and
   runs more coherently on its own); gpu-rt +7-9%; `cpu` +2-4% frame time.
+
+**2026-10-17, step 12c: every strategy on the record.** `components/src/shading/{deferred.wgsl,packed.wgsl,deferred.rs}`,
+`components/src/draw/visbuffer/gpu.wgsl`, `backends/gpu-splat/src/splat.wgsl`,
+`backends/{gpu-voxelspace,cpu-voxelspace,cpu-raster}/src/`, `crates/mr-gpu/src/program.rs` (`Program::define`):
+- **Record encodings.** The deferred pass reads a record through its encoding: `record_at`,
+  `record_hit`, `record_decode(r, d)` (the surface on the pixel's ray), `record_view(r, color)`
+  (the source's diagnostic views), plus the back end's view (`view_ray`, `view_miss`, ...).
+  The packed record (`pack_hit`) is one encoding (`shading/packed.wgsl`; the back end may
+  refine the decoded surface in `view_surface`). `visbuffer`'s face ids are another, decoded by
+  the face source (`face_hit`, `src_view`): its own shade entry is gone. gpu-splat's point ids
+  likewise: its resolve *is* the common pass (stages `splat` and `shade` instead of
+  `splat+shade`).
+- **The CPU pass**, written once: `shading::deferred::{Records, shade}` (a trait monomorphised
+  per strategy: record type, decode and shading call). Used by `cpu` (replacing
+  `shade_records`), cpu-voxelspace (records) and cpu-raster (quad ids, its f64 reference shading).
+- **Placement where it was missing**: gpu-voxelspace and cpu-voxelspace (`placement`, default
+  inline: the march writes records, the common pass shades; the CPU records are
+  column-major and the pass writes rows, so the transpose goes); cpu-raster (`placement`,
+  default deferred as before; inline = forward shading of every fragment that passes the depth
+  test). Splatting settles visibility only once every point is in, so it is deferred by
+  construction (no knob). The face drawers already had it (`raster` or `visbuffer` / `gbuffer`).
+- **Columns' surface is not exactly a record.** The march draws rows whose ray meets the top
+  plane outside the marched column and clamps their texture coordinates there; the record's
+  cell parity names only the point's cell or a neighbour. Deferred columns rebuild
+  column-relative texture coordinates and the slope normal from the record's cell
+  (`view_surface`), and differ from inline in texels at 8-19% of pixels (equally on GPU and
+  CPU): PSNR against the reference 20.8 vs 20.9 dB unlit, 18.2 vs 18.2 lit (plain record
+  decoding: 20.7).
+- **A hook function cost 2.5% (log).** gpu-voxelspace's march first called a per-pixel hook
+  (`column_hit`: shade inline, or write a record): unlit GPU time +1.0% against the build
+  before (three A/Bs), and the old shader in the new build was equal, so it was the shader.
+  Hand-inlining the same code: -1.4%. Building the surface inside each branch, or returning
+  the colour from the hook, kept the +1.0%: on NVIDIA the call boundary in front of
+  `shade_surface` costs. Fix: naga_oil shader defs (`Program::define`, `#ifdef DEFERRED`), one
+  march body; then -0.4% unlit, +0.2% lit (noise).
+- **Deferred columns on the GPU are 8.5x faster lit** (0.89 vs 7.6 ms; unlit 0.72 vs 1.14): the
+  march runs one thread per screen column (1920 threads), so inline shading (shadow rays) runs
+  serially down each column on a mostly idle GPU; the common pass spreads it over every pixel
+  (stages: `columns` 0.67 ms, `shade` 0.08 / 0.24 ms). On the CPU deferred columns are slower
+  (3.6 -> 4.7 ms unlit, 8.5 -> 9.6 lit: decode, heightmap re-reads). cpu-raster inline is
+  slower than deferred (lit 80 vs 61 ms: overdraw shaded in f64) and pixel-identical to it.
+- Verified: builds without warnings, 73 unit tests (new: gpu-splat's shader composes for every
+  composition; gpu-voxelspace's for both placements), architecture guard (the record hooks
+  registered as interface), 4 GPU end-to-end tests, GUI screenshot. Pixel A/B against the
+  build before: 66/66 frames identical (all ten back ends, lit + unlit), deferred variants
+  (gpu-compute, cpu, gpu-rt, gbuffer on gpu-raster and cpu-discover, visbuffer on gpu-discover)
+  42/42, visbuffer diagnostic views (`quads`, `churn`) 18/18, mesh mode 24/24, room 30/30.
+  Timing A/B (interleaved, 3-5 rounds): GPU time within ±0.5% (visbuffer and gbuffer drawers,
+  gpu-compute deferred, gpu-voxelspace), gpu-splat -0.1% / +0.8% (the extra pass boundary);
+  CPU pinned: `cpu` deferred ±0.2%, cpu-raster fps +0.7..+2.2% with its shade stage +1.2%
+  unlit / equal lit (after `#[inline]` on the quad decode; +2% without). cpu-voxelspace got
+  faster: march -15% unlit (4.46 -> 3.78 ms), -2% lit, fps +14.7%: the march is now a method
+  monomorphised per output instead of one closure; the exact cause was not isolated (no
+  profiler).
+- Not yet: records carry no capability bits yet (12d: meshes); the deferred pass's lit flag is
+  a runtime value (as in 12a/b).
+

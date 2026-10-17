@@ -5,8 +5,9 @@
 //! GPU point splatting: every face-exposed block becomes one point. A compute pass
 //! projects each point and `atomicMin`s its view depth into a u32 framebuffer over a
 //! square footprint sized from the projected block size (capped at `max_splat` px), a
-//! second pass writes the winning point id, and a resolve pass ray-boxes the pixel
-//! against the winning block to texture (and N.L-light) the hit face.
+//! second pass writes the winning point id, and the resolve, the common deferred shading
+//! pass over the ids (PLAN step 12c), ray-boxes the pixel against the winning block and
+//! shades the face it hits.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -151,8 +152,8 @@ pub struct GpuSplat {
     /// Shading state (pathtrace's accumulation).
     accum: ShadeState,
     ring: FrameRing,
-    /// The nodes of the timed stage (PLAN step 11).
-    stage_nodes: Vec<String>,
+    /// The nodes of the timed stages (PLAN step 11): splatting, then the deferred pass.
+    stage_nodes: [Vec<String>; 2],
     chunks: HashMap<IVec3, Vec<Point>>,
     dirty: bool,
     count: u32,
@@ -185,9 +186,7 @@ impl GpuSplat {
         // The sites' walks (PLAN step 9c): shadow rays (the storage and traversal stages),
         // bounces their own or the same.
         let g = graph::of_init(BACKEND, &p)?;
-        let mut walks = Walks::default();
-        let shadow = walks.site(&g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("gpu-splat: shadow rays are not bound"))?, &[2, 3, 4], false);
-        let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&g, s, &[2, 3, 4], false));
+        let (walks, program, own, deps) = program(&g, &opts.shading)?;
         // The host hands the device in (GPU slot 0); this back end only states its needs.
         let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY })?;
         let world = VoxelWorld::new(
@@ -206,9 +205,6 @@ impl GpuSplat {
             },
         )?;
         let storages = StorageSet::new(&gpu, &walks, wgpu::ShaderStages::COMPUTE, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
-        let shade = mr_components::shading::gpu_wgsl(&opts.shading).expect("validated");
-        let own = format!("{}\n{}\n{shade}", include_str!("splat.wgsl"), ShadeState::wgsl(0, 5));
-        let (program, deps) = mr_components::shaders::sites_program(&walks, 0, 0, 0, bounce);
         let module = mr_gpu::program::compile(&gpu.device, "splat", &program, &own, &deps.iter().map(String::as_str).collect::<Vec<_>>());
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("splat"),
@@ -251,7 +247,7 @@ impl GpuSplat {
                 cache: None,
             })
         };
-        let pipes = [pipe("clear"), pipe("splat_depth"), pipe("splat_id"), pipe("resolve")];
+        let pipes = [pipe("clear"), pipe("splat_depth"), pipe("splat_id"), pipe("shade")];
         let camera_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
             size: size_of::<CameraUniform>() as u64,
@@ -280,7 +276,7 @@ impl GpuSplat {
             bind0,
             accum,
             ring,
-            stage_nodes: g.ids(&[Role::Visibility, Role::Shading]),
+            stage_nodes: [g.ids(&[Role::Visibility]), g.ids(&[Role::Shading])],
             chunks: HashMap::new(),
             dirty: false,
             count: 0,
@@ -335,6 +331,18 @@ impl GpuSplat {
         }
         self.dirty = false;
     }
+}
+
+/// The shader: the shadow and bounce rays' walks (PLAN step 9c), the splat passes, the
+/// shading component and the common deferred pass (the resolve) as the root.
+fn program(g: &graph::Checked, shading: &str) -> anyhow::Result<(Walks, mr_gpu::program::Program, String, Vec<String>)> {
+    let mut walks = Walks::default();
+    let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("gpu-splat: shadow rays are not bound"))?, &[2, 3, 4], false);
+    let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, &[2, 3, 4], false));
+    let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
+    let own = format!("{}\n{}\n{shade}\n{}", include_str!("splat.wgsl"), ShadeState::wgsl(0, 5), mr_components::shading::DEFERRED_WGSL);
+    let (program, deps) = mr_components::shaders::sites_program(&walks, 0, 0, 0, bounce);
+    Ok((walks, program, own, deps))
 }
 
 impl Renderer for GpuSplat {
@@ -393,9 +401,9 @@ impl Renderer for GpuSplat {
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         let groups = self.count.div_ceil(64);
         let (gx, gy) = (groups.min(65535), groups.div_ceil(65535));
-        self.ring.stage(&mut enc, ticket, "splat+shade", &self.stage_nodes);
+        self.ring.stage(&mut enc, ticket, "splat", &self.stage_nodes[0]);
         {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("splat"), timestamp_writes: self.ring.compute_timestamps(ticket, true, true) });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("splat"), timestamp_writes: self.ring.compute_timestamps(ticket, true, false) });
             pass.set_bind_group(0, &self.bind0, &[]);
             pass.set_bind_group(1, &world_bg, &[]);
             bound.compute(&mut pass);
@@ -407,6 +415,13 @@ impl Renderer for GpuSplat {
                 pass.set_pipeline(&self.pipes[2]);
                 pass.dispatch_workgroups(gx, gy, 1);
             }
+        }
+        self.ring.stage(&mut enc, ticket, "shade", &self.stage_nodes[1]);
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("shade"), timestamp_writes: self.ring.compute_timestamps(ticket, false, true) });
+            pass.set_bind_group(0, &self.bind0, &[]);
+            pass.set_bind_group(1, &world_bg, &[]);
+            bound.compute(&mut pass);
             pass.set_pipeline(&self.pipes[3]);
             pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
         }
@@ -454,5 +469,33 @@ impl Renderer for GpuSplat {
     fn memory(&self) -> MemoryReport {
         let cpu = self.chunks.values().map(|v| v.len() as u64 * 16).sum();
         MemoryReport { cpu_bytes: cpu, gpu_bytes: self.world.memory_bytes() + self.storages.memory_bytes() + self.points_buf.size() + self.accum.memory_bytes() + self.width as u64 * self.height as u64 * 12 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every composition's shader composes from its modules and validates (no GPU needed).
+    #[test]
+    fn programs_compose() {
+        use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+        let mut n = 0;
+        for st in names_on(BACKEND, Slot::Storage) {
+            for k in names_on(BACKEND, Slot::Traversal) {
+                for shading in names_on(BACKEND, Slot::Shading) {
+                    let flat = mr_components::Composition { storage: st.into(), traversal: k.into(), shading: shading.into(), ..mr_components::Composition::new(BACKEND) };
+                    let Ok(gr) = mr_components::graph::Graph::from_composition(&flat) else { continue };
+                    if gr.validate().is_err() {
+                        continue;
+                    }
+                    let (_, p, root, deps) = program(&gr.check().unwrap(), shading).unwrap();
+                    let m = p.naga(&root, &deps.iter().map(String::as_str).collect::<Vec<_>>()).unwrap_or_else(|e| panic!("{flat:?}: {e}"));
+                    Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{flat:?}: {e:?}"));
+                    n += 1;
+                }
+            }
+        }
+        assert!(n > 20, "only {n} compositions composed");
     }
 }

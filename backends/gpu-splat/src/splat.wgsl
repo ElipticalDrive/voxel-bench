@@ -1,5 +1,6 @@
 // gpu-splat: software point rasterisation. Each face-exposed block is a point; passes:
-// clear, depth splat (atomicMin), id splat (atomicMax where depth matches), resolve.
+// clear, depth splat (atomicMin), id splat (atomicMax where depth matches), then the
+// common deferred pass over the ids (the resolve).
 
 struct Camera {
     forward: vec3<f32>, tan_half_fov: f32,
@@ -81,44 +82,51 @@ fn splat_id(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-@compute @workgroup_size(8, 8)
-fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= cam.width || gid.y >= cam.height) { return; }
-    let id = atomicLoad(&idbuf[gid.y * cam.width + gid.x]);
-    var color = unpack4x8unorm(cam.sky);
-    if (id != 0u) {
-        let pt = points[id - 1u];
-        let d = camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(gid.xy) + 0.5, vec2<f32>(f32(cam.width), f32(cam.height)));
-        let o = cam.origin;
-        let bmin = vec3<f32>(pt.pos - vp.cam_block);
-        let inv = 1.0 / d;
-        let ta = (bmin - o) * inv;
-        let tb = (bmin + vec3<f32>(1.0) - o) * inv;
-        let tlo = min(ta, tb);
-        let thi = max(ta, tb);
-        var axis = 0u;
-        if (tlo.y > tlo[axis]) { axis = 1u; }
-        if (tlo.z > tlo[axis]) { axis = 2u; }
-        let tn = tlo[axis];
-        let tf = min(thi.x, min(thi.y, thi.z));
-        var p: vec3<f32>;
-        var face: u32;
-        if (tn <= tf && tf > 0.0) {
-            p = o + d * max(tn, 0.0);
-            face = face_entered(axis, d[axis] > 0.0);
-        } else {
-            // Splat pixel outside the block's silhouette: clamp to the box.
-            let ctr = bmin + vec3<f32>(0.5);
-            p = clamp(o + d * dot(ctr - o, d), bmin, bmin + vec3<f32>(1.0));
-            let q = abs(p - ctr);
-            var a = 0u;
-            if (q.y > q[a]) { a = 1u; }
-            if (q.z > q[a]) { a = 2u; }
-            face = face_entered(a, (p - ctr)[a] < 0.0);
-        }
-        let local = clamp(p - bmin, vec3<f32>(0.0), vec3<f32>(0.9999));
-        let s = Surface(p, face_normal(face), local, pt.info & 0xffffu, face);
-        color = shade_surface(s, d, cam.mode == 1u, gid.xy);
+// The resolve is the common deferred pass (`shading/deferred.wgsl`, entry `shade`) over the
+// id buffer: a point id is the record's encoding here, decoded by ray-boxing the pixel
+// against the winning block. Splatting settles visibility only once every point is in, so
+// shading is deferred by construction.
+
+fn record_at(px: vec2<u32>) -> u32 { return atomicLoad(&idbuf[px.y * cam.width + px.x]); }
+fn record_hit(id: u32) -> bool { return id != 0u; }
+fn record_view(id: u32, color: vec4<f32>) -> vec4<f32> { return color; }
+fn view_ray(px: vec2<u32>) -> vec3<f32> {
+    return camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(px) + 0.5, vec2<f32>(f32(cam.width), f32(cam.height)));
+}
+fn view_miss(px: vec2<u32>) -> vec4<f32> { return unpack4x8unorm(cam.sky); }
+fn view_lit() -> bool { return cam.mode == 1u; }
+
+// The surface of point `id` on primary ray `d`: the face the ray enters the block through,
+// or, for splat pixels outside the block's silhouette, the box point nearest the ray.
+fn record_decode(id: u32, d: vec3<f32>) -> Surface {
+    let pt = points[id - 1u];
+    let o = cam.origin;
+    let bmin = vec3<f32>(pt.pos - vp.cam_block);
+    let inv = 1.0 / d;
+    let ta = (bmin - o) * inv;
+    let tb = (bmin + vec3<f32>(1.0) - o) * inv;
+    let tlo = min(ta, tb);
+    let thi = max(ta, tb);
+    var axis = 0u;
+    if (tlo.y > tlo[axis]) { axis = 1u; }
+    if (tlo.z > tlo[axis]) { axis = 2u; }
+    let tn = tlo[axis];
+    let tf = min(thi.x, min(thi.y, thi.z));
+    var p: vec3<f32>;
+    var face: u32;
+    if (tn <= tf && tf > 0.0) {
+        p = o + d * max(tn, 0.0);
+        face = face_entered(axis, d[axis] > 0.0);
+    } else {
+        // Splat pixel outside the block's silhouette: clamp to the box.
+        let ctr = bmin + vec3<f32>(0.5);
+        p = clamp(o + d * dot(ctr - o, d), bmin, bmin + vec3<f32>(1.0));
+        let q = abs(p - ctr);
+        var a = 0u;
+        if (q.y > q[a]) { a = 1u; }
+        if (q.z > q[a]) { a = 2u; }
+        face = face_entered(a, (p - ctr)[a] < 0.0);
     }
-    textureStore(out_tex, vec2<i32>(gid.xy), color);
+    let local = clamp(p - bmin, vec3<f32>(0.0), vec3<f32>(0.9999));
+    return Surface(p, face_normal(face), local, pt.info & 0xffffu, face);
 }

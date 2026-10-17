@@ -70,7 +70,7 @@ fn params() -> Vec<ParamSpec> {
     .into_iter()
     .chain(shade_state::params())
     .chain([
-        placement_param(BACKEND),
+        placement_param(BACKEND, "inline"),
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB; boxes geometry)", 64, 6144, 2048, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ])
@@ -230,7 +230,7 @@ fn program(geometry: &str, vis: &str, geo_wgsl: &str, vis_wgsl: &str, shading: &
         &[mr_gpu::program::VOXELS],
     );
     shaders::shading(&mut p, shading, &["rt::rays"], 0, 5);
-    let deferred = if deferred { format!("{}\n{}", include_str!("deferred.wgsl"), mr_components::shading::DEFERRED_WGSL) } else { String::new() };
+    let deferred = if deferred { format!("{}\n{}", include_str!("deferred.wgsl"), mr_components::shading::DEFERRED_PACKED_WGSL) } else { String::new() };
     let root = format!("enable wgpu_ray_query;\n// Composition: geometry = {geometry}, traversal = {vis}, shading = {shading}\n{}\n{geo_wgsl}\n{vis_wgsl}\n{deferred}", include_str!("main.wgsl"));
     (p, root)
 }

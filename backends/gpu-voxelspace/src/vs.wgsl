@@ -1,6 +1,7 @@
 // gpu-voxelspace: Comanche-style column renderer. One invocation per screen column
 // marches front-to-back over the heightmap storage, drawing spans with a y-buffer; shadow
-// and bounce rays walk the same heightmap (`hm_trace`).
+// and bounce rays walk the same heightmap (`hm_trace`). Shading placement (PLAN step 12c):
+// inline in the march, or deferred (the march writes records, the common pass shades).
 
 struct Camera {
     forward: vec3<f32>, tan_half_fov: f32,
@@ -24,6 +25,20 @@ fn column_ray(x: f32, row: f32) -> vec3<f32> {
     return camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(x, row), vec2<f32>(f32(cam.width), f32(cam.height)));
 }
 
+// The heightmap slope at column `cell`: lit tops shade with it instead of the face normal.
+fn slope_normal(cell: vec2<i32>) -> vec3<f32> {
+    let hx0 = hm_top(hm_at(cell - vec2<i32>(1, 0)));
+    let hx1 = hm_top(hm_at(cell + vec2<i32>(1, 0)));
+    let hz0 = hm_top(hm_at(cell - vec2<i32>(0, 1)));
+    let hz1 = hm_top(hm_at(cell + vec2<i32>(0, 1)));
+    let gx = clamp(select(0.0, hx0, hx0 > -1e5) - select(0.0, hx1, hx1 > -1e5), -2.0, 2.0);
+    let gz = clamp(select(0.0, hz0, hz0 > -1e5) - select(0.0, hz1, hz1 > -1e5), -2.0, 2.0);
+    return normalize(vec3<f32>(gx * 0.5, 2.0, gz * 0.5));
+}
+
+// Every pixel the march covers is shaded inline or, with shader def `DEFERRED`, written as
+// a hit record (`vs_deferred.wgsl`). One body either way: a function between the march and
+// the shading (a hook per pixel) cost 2.5% of unlit GPU time on NVIDIA (PLAN step 12c).
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= cam.width) { return; }
@@ -43,7 +58,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var t0 = 0.0;
     var axis = 0u; // last stepped axis in xz (0 = x, 1 = z), invalid for the first cell
     var first = true;
-    let sky = unpack4x8unorm(cam.sky);
     for (var i = 0u; i < cam.max_cells && ybuf > 0; i++) {
         let t1 = min(tmax.x, tmax.y);
         let e = hm_at(cell);
@@ -72,24 +86,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
                 let p = o + d * t;
                 let local = clamp(p - vec3<f32>(f32(cell.x), H - 1.0, f32(cell.y)), vec3<f32>(0.0), vec3<f32>(0.999));
+#ifdef DEFERRED
+                records[u32(row) * cam.width + gid.x] = pack_hit(t, Surface(p, face_normal(face), local, block, face));
+#else
+                // Lit and unlit call the shading separately (a constant flag; see `raster`).
                 var color: vec4<f32>;
                 if (cam.mode == 1u) {
-                    // Tops shade with the heightmap's slope instead of the face normal.
                     var n = face_normal(face);
-                    if (!side) {
-                        let hx0 = hm_top(hm_at(cell - vec2<i32>(1, 0)));
-                        let hx1 = hm_top(hm_at(cell + vec2<i32>(1, 0)));
-                        let hz0 = hm_top(hm_at(cell - vec2<i32>(0, 1)));
-                        let hz1 = hm_top(hm_at(cell + vec2<i32>(0, 1)));
-                        let gx = clamp(select(0.0, hx0, hx0 > -1e5) - select(0.0, hx1, hx1 > -1e5), -2.0, 2.0);
-                        let gz = clamp(select(0.0, hz0, hz0 > -1e5) - select(0.0, hz1, hz1 > -1e5), -2.0, 2.0);
-                        n = normalize(vec3<f32>(gx * 0.5, 2.0, gz * 0.5));
-                    }
+                    if (!side) { n = slope_normal(cell); }
                     color = shade_surface(Surface(p, n, local, block, face), d, true, vec2<u32>(gid.x, u32(row)));
                 } else {
                     color = shade_surface(Surface(p, face_normal(face), local, block, face), d, false, vec2<u32>(gid.x, u32(row)));
                 }
                 textureStore(out_tex, vec2<i32>(i32(gid.x), row), color);
+#endif
             }
             ybuf = min(ybuf, rtop);
         }
@@ -97,5 +107,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         t0 = t1;
         if (tmax.x < tmax.y) { cell.x += stp.x; tmax.x += inv.x; axis = 0u; } else { cell.y += stp.y; tmax.y += inv.y; axis = 1u; }
     }
+#ifdef DEFERRED
+    for (var row = 0; row < ybuf; row++) { records[u32(row) * cam.width + gid.x] = vec2<u32>(0u); }
+#else
+    let sky = unpack4x8unorm(cam.sky);
     for (var row = 0; row < ybuf; row++) { textureStore(out_tex, vec2<i32>(i32(gid.x), row), sky); }
+#endif
 }

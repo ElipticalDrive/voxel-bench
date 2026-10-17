@@ -91,7 +91,7 @@ fn params() -> Vec<ParamSpec> {
     p.push(ParamSpec::choice("visibility", "Visibility strategy", &names_on(BACKEND, Slot::Visibility), "raycast", false));
     p.push(ParamSpec::choice("traversal", "Traversal kernel. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &names_on(BACKEND, Slot::Traversal), "refloor", true));
     p.push(ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", true));
-    p.push(placement_param(BACKEND));
+    p.push(placement_param(BACKEND, "inline"));
     p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
     p.push(ParamSpec::choice("packet", "Rays traced together in lockstep (refloor; measured: no gain on Zen 5)", &["1", "4", "8", "16"], "1", true).of("traversal", &["refloor"]));
     p.push(ParamSpec::choice("isa", "Instruction set for the hot loop", &["auto", "scalar", "avx2", "avx512"], "auto", true));
@@ -656,25 +656,49 @@ fn render_rect_isa<R: Repr, S: Spec, const D: bool>(isa: Isa, job: &Job<R>, r: R
     }
 }
 
-/// `placement = deferred`: shades every pixel from its hit record (the common deferred
-/// pass on the CPU), rows in parallel.
-fn shade_records<R: Repr>(scene: &Scene<R>, cam: &Camera, w: u32, h: u32, mode: RenderMode, records: &[Record], pixels: &mut [u8]) {
-    let (cam_block, o) = cam.split_position();
-    let (f, rt, u) = (cam.forward(), cam.right(), cam.up());
-    let tan = (cam.fov_y * 0.5).tan();
-    let aspect = w as f32 / h as f32;
-    let sky = encode_srgb(scene.env.sky);
-    pixels.par_chunks_mut(w as usize * 4).zip(records.par_chunks(w as usize)).enumerate().for_each(|(y, (row, recs))| {
-        for (x, (px, rec)) in row.chunks_exact_mut(4).zip(recs).enumerate() {
-            let c = if rec.is_hit() {
-                let d = pixel_dir(f, rt, u, tan, aspect, w, h, x as u32, y as u32);
-                scene.shade_surface(cam_block, &rec.surface(o, d), mode)
-            } else {
-                sky
-            };
-            px.copy_from_slice(&c);
-        }
-    });
+/// `placement = deferred`: the frame's hit records, shaded by the common deferred pass
+/// (`shading::deferred`).
+struct Deferred<'a, R> {
+    scene: &'a Scene<R>,
+    records: &'a [Record],
+    cam: IVec3,
+    o: Vec3,
+    /// Forward, right, up; tan(fov / 2), aspect.
+    basis: (Vec3, Vec3, Vec3, f32, f32),
+    w: u32,
+    h: u32,
+    mode: RenderMode,
+    sky: [u8; 4],
+}
+
+impl<'a, R: Repr> Deferred<'a, R> {
+    fn new(scene: &'a Scene<R>, records: &'a [Record], cam: &Camera, w: u32, h: u32, mode: RenderMode) -> Self {
+        let (cam_block, o) = cam.split_position();
+        let basis = (cam.forward(), cam.right(), cam.up(), (cam.fov_y * 0.5).tan(), w as f32 / h as f32);
+        Self { scene, records, cam: cam_block, o, basis, w, h, mode, sky: encode_srgb(scene.env.sky) }
+    }
+}
+
+impl<R: Repr> mr_components::shading::deferred::Records for Deferred<'_, R> {
+    type Record = Record;
+    #[inline]
+    fn record_at(&self, x: u32, y: u32) -> Record {
+        self.records[(y * self.w + x) as usize]
+    }
+    #[inline]
+    fn hit(r: Record) -> bool {
+        r.is_hit()
+    }
+    #[inline]
+    fn shade(&self, r: Record, x: u32, y: u32) -> [u8; 4] {
+        let (f, rt, u, tan, aspect) = self.basis;
+        let d = pixel_dir(f, rt, u, tan, aspect, self.w, self.h, x, y);
+        self.scene.shade_surface(self.cam, &r.surface(self.o, d), self.mode)
+    }
+    #[inline]
+    fn miss(&self, _: u32, _: u32) -> [u8; 4] {
+        self.sky
+    }
 }
 
 // ------------------------------------------------------------------------- schedule
@@ -882,7 +906,8 @@ impl<R: Repr, S: Spec> Renderer for CpuBackend<R, S> {
             stages.push(StageTime::cpu("cast", &self.stage_nodes[2], cast.elapsed().as_secs_f32() * 1e3));
             let shade = Instant::now();
             let records = &self.records;
-            self.pool.pool.install(|| shade_records(scene, &cam, w, h, mode, records, &mut pixels));
+            let deferred = Deferred::new(scene, records, &cam, w, h, mode);
+            self.pool.pool.install(|| mr_components::shading::deferred::shade(&deferred, w, &mut pixels));
             stages.push(StageTime::cpu("shade", &self.stage_nodes[3], shade.elapsed().as_secs_f32() * 1e3));
         } else {
             stages.push(StageTime::cpu("cast+shade", &self.stage_nodes[1], cast.elapsed().as_secs_f32() * 1e3));
