@@ -88,8 +88,8 @@ fn surface_of(h: Hit, o: vec3<f32>, d: vec3<f32>) -> Surface {
 // pixel's unit primary ray (f32 bits); y = 0 for no hit (sky), else bit 0 set, the face in
 // bits 1-3, the block in bits 4-19, and in bits 20-22 the parity of the surface's cell per
 // axis (x, y, z), which tells the cell from its neighbours where the point lies on a block
-// edge. Bits 23-31 belong to optional capabilities (mesh surfaces, layers for
-// transparency; IDEAS §23) and are 0 in pipelines without them.
+// edge. Bits 23-31 belong to optional capabilities (`caps::RECORD_CAPS`: mesh surfaces,
+// transparency's layers; IDEAS §23) and are 0 in pipelines without them.
 fn pack_hit(t: f32, s: Surface) -> vec2<u32> {
     let cell = bitcast<vec3<u32>>(vec3<i32>(round(s.p - s.local))) & vec3<u32>(1u);
     let parity = cell.x | (cell.y << 1u) | (cell.z << 2u);
@@ -107,6 +107,21 @@ fn record_surface(r: vec2<u32>, o: vec3<f32>, d: vec3<f32>) -> Surface {
     cell += select(vec3<f32>(0.0), select(vec3<f32>(-1.0), vec3<f32>(1.0), p - cell > vec3<f32>(0.5)), parity);
     return Surface(p, face_normal(face), p - cell, (r.y >> 4u) & 0xffffu, face);
 }
+
+// The mesh-surface capability of the record (PLAN step 12d; compiled in only with meshes):
+// bit 23 marks a mesh triangle's hit, whose index is in bits 1-22 instead of the face, block
+// and parity (`MESH_TRIS` triangles at most); `t` as for voxels. `visbuffer`'s face ids
+// encode one as `VIS_MESH | tri`.
+const REC_MESH: u32 = 0x800000u;
+const MESH_TRIS: u32 = 0x400000u;
+const VIS_MESH: u32 = 0x80000000u;
+
+fn pack_mesh_hit(t: f32, tri: u32) -> vec2<u32> {
+    return vec2<u32>(bitcast<u32>(t), 1u | REC_MESH | ((tri & (MESH_TRIS - 1u)) << 1u));
+}
+
+fn record_is_mesh_hit(r: vec2<u32>) -> bool { return (r.y & REC_MESH) != 0u; }
+fn record_mesh_tri(r: vec2<u32>) -> u32 { return (r.y >> 1u) & (MESH_TRIS - 1u); }
 
 // Chunk-table key: LOD folded into y, mirroring `voxels::table_key`.
 fn chunk_key(c: vec3<i32>, lod: u32) -> vec3<i32> {

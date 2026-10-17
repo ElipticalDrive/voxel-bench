@@ -35,6 +35,8 @@ const INTERFACE: &[(&str, &str)] = &[
     ("view_origin", "deferred shading pass: the back end's camera"),
     ("view_miss", "deferred shading pass: what the back end shows where nothing was hit"),
     ("view_lit", "deferred shading pass: the back end's mode"),
+    ("record_is_mesh", "deferred shading pass with meshes: one per record encoding (packed, face ids)"),
+    ("record_mesh", "deferred shading pass with meshes: one per record encoding"),
 ];
 
 /// Lighting internals only the shading components (and the lighting model) may call.
@@ -47,7 +49,8 @@ const LIGHTING_ALLOWED: &[(&str, &str)] = &[
     ("components/src/shading/", "the shading components"),
     ("crates/mr-gpu/src/lighting.wgsl", "the lighting model itself"),
     ("crates/mr-gpu/src/voxels.rs", "uploads the environment for the lighting model"),
-    ("crates/mr-gpu/src/mesh.wgsl", "the meshes stage shades vertex-coloured mesh fragments, not a voxel Surface (until meshes feed the shading component)"),
+    ("crates/mr-gpu/src/mesh.wgsl", "forward drawers shade vertex-coloured mesh fragments, not a voxel Surface (until meshes feed the shading component)"),
+    ("crates/mr-gpu/src/mesh_surface.wgsl", "mesh records are shaded as vertex-coloured mesh surfaces, not a voxel Surface (until meshes feed the shading component)"),
     ("crates/mr-world/", "scene description (sun direction, ambient), not lighting"),
     ("crates/mr-core/", "the lighting model's shared math and the environment type"),
     ("renderers/cpu-reference/", "the reference renderer's f64 model"),

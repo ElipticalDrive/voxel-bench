@@ -9,6 +9,11 @@
 //!   through the images group ([`FaceDrawer::images_layout`], the shade layout's last
 //!   group).
 //!
+//! Meshes (PLAN step 12d, gpu-raster) are drawn into the same depth: forward drawers shade
+//! their fragments in each pass; deferred ones draw them into the same id or record target
+//! (the record's mesh capability), and the shade pass decodes them from the triangles in the
+//! images group.
+//!
 //! The back end owns the shader module (its face source plus `faces_wgsl`,
 //! `raster_wgsl(mode)`, the storage and the shading), the bind groups and the draw calls;
 //! the drawer owns the pipelines, the deferred targets and the pass structure.
@@ -54,11 +59,14 @@ pub struct DrawerSpec<'a> {
     pub shade_layout: &'a wgpu::PipelineLayout,
     /// Triangle strips (quads of 4 vertices) or lists.
     pub strip: bool,
+    /// Deferred drawers with meshes: the module with the record's mesh capability, whose
+    /// shade pass runs on frames that draw meshes (the plain one on the others).
+    pub mesh_module: Option<&'a wgpu::ShaderModule>,
 }
 
 enum Pipes {
     Forward { fill: wgpu::RenderPipeline, depth: wgpu::RenderPipeline, equal: wgpu::RenderPipeline },
-    Deferred { ids: wgpu::RenderPipeline, shade: wgpu::ComputePipeline },
+    Deferred { ids: wgpu::RenderPipeline, shade: wgpu::ComputePipeline, mesh_shade: Option<wgpu::ComputePipeline> },
 }
 
 pub struct FaceDrawer {
@@ -86,6 +94,8 @@ pub struct DrawFrame<'a> {
     pub binds: &'a [&'a wgpu::BindGroup],
     /// Further groups after the images (storages of rays walking their own, PLAN step 9c).
     pub more: &'a [(u32, &'a wgpu::BindGroup)],
+    /// The mesh triangles for the images group (`images_layout(.., true)`).
+    pub mesh_verts: Option<&'a wgpu::Buffer>,
     pub ring: &'a FrameRing,
     pub ticket: Ticket,
     /// Whether these passes carry the frame's (begin, end) timestamps.
@@ -119,8 +129,9 @@ fn target(gpu: &Gpu, label: &str, w: u32, h: u32, format: wgpu::TextureFormat) -
 }
 
 impl FaceDrawer {
-    /// The deferred shade pass's images group: ids or hit records (0), output (1).
-    pub fn images_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    /// The deferred shade pass's images group: ids or hit records (0), output (1) and, with
+    /// `meshes`, the mesh triangles (2; `mr_gpu::meshes::surface_wgsl(3, 2)`).
+    pub fn images_layout(device: &wgpu::Device, meshes: bool) -> wgpu::BindGroupLayout {
         let compute = wgpu::ShaderStages::COMPUTE;
         let tex = |binding, sample_type| wgpu::BindGroupLayoutEntry {
             binding,
@@ -128,9 +139,7 @@ impl FaceDrawer {
             ty: wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
             count: None,
         };
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("deferred images"),
-            entries: &[
+        let mut entries = vec![
                 tex(0, wgpu::TextureSampleType::Uint),
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
@@ -142,8 +151,16 @@ impl FaceDrawer {
                     },
                     count: None,
                 },
-            ],
-        })
+        ];
+        if meshes {
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: compute,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            });
+        }
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("deferred images"), entries: &entries })
     }
 
     /// `images_layout` is the one the shade layout was built with.
@@ -226,15 +243,17 @@ impl FaceDrawer {
                 } else {
                     render("visibility ids", &[Some(R32Uint.into())], true, Greater, true)
                 };
-                let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("deferred shade"),
-                    layout: Some(spec.shade_layout),
-                    module: spec.module,
-                    entry_point: Some("shade"),
-                    compilation_options: Default::default(),
-                    cache: None,
-                });
-                Pipes::Deferred { ids, shade }
+                let shade = |module| {
+                    gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("deferred shade"),
+                        layout: Some(spec.shade_layout),
+                        module,
+                        entry_point: Some("shade"),
+                        compilation_options: Default::default(),
+                        cache: None,
+                    })
+                };
+                Pipes::Deferred { ids, shade: shade(spec.module), mesh_shade: spec.mesh_module.map(shade) }
             }
         };
         if let Some(e) = pollster::block_on(scope.pop()) {
@@ -245,7 +264,7 @@ impl FaceDrawer {
 
     /// Encodes the frame's face passes. `draw` issues the face draws into a pass whose
     /// pipeline and groups are set; `extra` draws more into the same depth (gpu-raster's
-    /// meshes: in each forward pass, after shading when deferred); `main` replaces the
+    /// meshes: in each forward pass, into the ids or records when deferred); `main` replaces the
     /// forward main pipeline (gpu-discover's painter order and overdraw view; no prepass).
     pub fn encode(
         &self,
@@ -307,8 +326,11 @@ impl FaceDrawer {
                     extra(&mut pass, if prepass { MeshPass::Equal } else { MeshPass::Fill });
                 }
             }
-            Pipes::Deferred { ids, shade } => {
-                f.ring.stage(enc, f.ticket, "draw", &f.nodes.draw);
+            Pipes::Deferred { ids, shade, mesh_shade } => {
+                let shade = if extra.is_some() { mesh_shade.as_ref().expect("deferred meshes need DrawerSpec::mesh_module") } else { shade };
+                let n = f.nodes;
+                let nodes: Vec<String> = n.draw.iter().chain(extra.map_or(&[][..], |_| &n.extra[..])).cloned().collect();
+                f.ring.stage(enc, f.ticket, "draw", &nodes);
                 {
                     let attach = |view| {
                         Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })
@@ -316,53 +338,33 @@ impl FaceDrawer {
                     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("visibility ids"),
                         color_attachments: &[attach(&self.ids)],
-                        depth_stencil_attachment: depth_attachment(wgpu::LoadOp::Clear(0.0), keep(f.keep_depth || extra.is_some())),
+                        depth_stencil_attachment: depth_attachment(wgpu::LoadOp::Clear(0.0), keep(f.keep_depth)),
                         timestamp_writes: if f.ts.0 { f.ring.render_timestamps(f.ticket, true, false) } else { None },
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
                     run(&mut pass, ids);
+                    if let Some(extra) = extra {
+                        extra(&mut pass, if self.mode == DrawMode::Gbuffer { MeshPass::Records } else { MeshPass::Ids });
+                    }
                 }
-                let images = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("deferred images"),
-                    layout: &self.images_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.ids) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(f.out) },
-                    ],
-                });
+                let mut entries = vec![
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.ids) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(f.out) },
+                ];
+                entries.extend(f.mesh_verts.map(|b| wgpu::BindGroupEntry { binding: 2, resource: b.as_entire_binding() }));
+                let images = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("deferred images"), layout: &self.images_layout, entries: &entries });
                 f.ring.stage(enc, f.ticket, "shade", &f.nodes.shade);
-                {
-                    let end = f.ts.1 && extra.is_none();
-                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: if end { f.ring.compute_timestamps(f.ticket, false, true) } else { None } });
-                    pass.set_pipeline(shade);
-                    for (i, g) in f.binds.iter().enumerate() {
-                        pass.set_bind_group(i as u32, *g, &[]);
-                    }
-                    pass.set_bind_group(f.binds.len() as u32, &images, &[]);
-                    for (i, g) in f.more {
-                        pass.set_bind_group(*i, *g, &[]);
-                    }
-                    pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: if f.ts.1 { f.ring.compute_timestamps(f.ticket, false, true) } else { None } });
+                pass.set_pipeline(shade);
+                for (i, g) in f.binds.iter().enumerate() {
+                    pass.set_bind_group(i as u32, *g, &[]);
                 }
-                if let Some(extra) = extra {
-                    f.ring.stage(enc, f.ticket, "meshes", &f.nodes.extra);
-                    // Drawn after shading, depth-tested against the faces.
-                    let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("after shading"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: f.out,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                        })],
-                        depth_stencil_attachment: depth_attachment(wgpu::LoadOp::Load, keep(f.keep_depth)),
-                        timestamp_writes: if f.ts.1 { f.ring.render_timestamps(f.ticket, false, true) } else { None },
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    extra(&mut pass, MeshPass::Fill);
+                pass.set_bind_group(f.binds.len() as u32, &images, &[]);
+                for (i, g) in f.more {
+                    pass.set_bind_group(*i, *g, &[]);
                 }
+                pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
             }
         }
     }

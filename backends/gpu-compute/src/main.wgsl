@@ -24,6 +24,16 @@ fn view_ray(px: vec2<u32>) -> vec3<f32> {
     return camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(px) + 0.5, vec2<f32>(f32(cam.width), f32(cam.height)));
 }
 
+// Mesh mode (`MESHES`): the distance along `d` to the mesh surface at pixel `px`, where its
+// ray stops (1e30: none).
+fn pixel_mesh_t(px: vec2<u32>, d: vec3<f32>) -> f32 {
+#ifdef MESHES
+    return mesh_t(px, d, cam.forward);
+#else
+    return 1e30;
+#endif
+}
+
 // What the primary ray `d` through pixel `px` hits (mesh mode: rays end at the mesh
 // surface, `mt`; a voxel in front of it still wins).
 fn pixel_hit(px: vec2<u32>, d: vec3<f32>, mt: f32) -> Hit {
@@ -45,14 +55,20 @@ fn pixel_hit(px: vec2<u32>, d: vec3<f32>, mt: f32) -> Hit {
 fn pixel_color(px: vec2<u32>) -> vec4<f32> {
     let d = view_ray(px);
     ct_iters = 0u;
-    let mt = mesh_t(px, d, cam.forward);
+    let mt = pixel_mesh_t(px, d);
     let h = pixel_hit(px, d, mt);
     if (VIEW_STEPS) {
         // Primary-ray loop iterations on the shared colour scale (log; white above the top).
         return ramp_value(f32(ct_iters), f32(cam.view_max), true);
     }
     var color = unpack4x8unorm(cam.sky);
-    if (!h.hit && mt < 1e29) { color = mesh_color(px); }
+#ifdef MESHES
+    // No voxel in front of the mesh: its record's surface.
+    if (!h.hit && mt < 1e29) {
+        let m = mesh_record(px);
+        color = shade_mesh(mesh_surface(record_mesh_tri(m), cam.origin, d, bitcast<f32>(m.x)), cam.mode == 1u);
+    }
+#endif
     if (h.hit) { color = shade_surface(surface_of(h, cam.origin, d), d, cam.mode == 1u, px); }
     return color;
 }

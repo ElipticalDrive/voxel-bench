@@ -770,7 +770,7 @@ impl GpuDiscover {
                 cache: None,
             })
         };
-        let images = FaceDrawer::images_layout(dev);
+        let images = FaceDrawer::images_layout(dev, false);
         let pl_shade = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("discover deferred shade"),
             bind_group_layouts: &storages.layouts(&[Some(&layout_draw), Some(world.layout()), None, Some(&images)]),
@@ -1205,6 +1205,7 @@ impl GpuDiscover {
             keep_depth: self.opts.incremental,
             binds: &[bind_draw, world_bg, st],
             more: &more,
+            mesh_verts: None,
             ring: &self.ring,
             ticket,
             ts,
@@ -1227,7 +1228,7 @@ impl GpuDiscover {
         let vis = draw::gpu_wgsl(mode.name()).unwrap();
         let vis = if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis) };
         let module = mr_gpu::program::compile(&gpu.device, "discover drawer", program, &format!("{draw_src}\n{vis}"), &deps.iter().map(String::as_str).collect::<Vec<_>>());
-        FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl_draw, shade_layout: pl_shade, strip: true }, mode, images, width, height)
+        FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl_draw, shade_layout: pl_shade, strip: true, mesh_module: None }, mode, images, width, height)
     }
 
     fn sky_rgba(&self) -> [f32; 4] {

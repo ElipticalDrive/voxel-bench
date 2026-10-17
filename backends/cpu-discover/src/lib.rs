@@ -344,7 +344,7 @@ impl CpuDiscover {
         let all = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
         let storages = StorageSet::new(&gpu, &walks, all, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         let accum = ShadeState::new(&gpu, p.width, p.height, &opts.shading, opts.bounces, opts.spp, opts.accumulate);
-        let images = FaceDrawer::images_layout(&gpu.device);
+        let images = FaceDrawer::images_layout(&gpu.device, false);
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("cpu-discover"),
             bind_group_layouts: &storages.layouts(&[Some(&layout0), Some(world.layout())]),
@@ -420,7 +420,7 @@ impl CpuDiscover {
         let (program, deps) = mr_components::shaders::sites_program(walks, 0, 0, 0, bounce);
         let root = format!("{}\n{}\n{}\n{shade}\n{vis}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true));
         let module = mr_gpu::program::compile(&gpu.device, "cpu-discover raster", &program, &root, &deps.iter().map(String::as_str).collect::<Vec<_>>());
-        FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl, shade_layout: pl_shade, strip: true }, mode, images, width, height)
+        FaceDrawer::new(gpu, &DrawerSpec { module: &module, render_layout: pl, shade_layout: pl_shade, strip: true, mesh_module: None }, mode, images, width, height)
     }
 
     /// Takes back the state from an in-flight job (discarding its result).
@@ -620,6 +620,7 @@ impl Renderer for CpuDiscover {
             keep_depth: false,
             binds: &[&bind0, &world_bg, storage_bg],
             more: &more,
+            mesh_verts: None,
             ring: &self.ring,
             ticket,
             ts: (true, true),

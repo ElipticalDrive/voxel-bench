@@ -13,7 +13,8 @@
 //!   **traversal** kernel.
 //!
 //! Replaces the monoliths gpu-raster, gpu-raster-naive, gpu-cubes and gpu-visbuffer.
-//! Meshes (mesh mode) share the depth buffer (`mr_gpu::meshes::GpuMeshes`).
+//! Meshes (mesh mode) share the depth buffer (`mr_gpu::meshes::GpuMeshes`): shaded forward
+//! with `raster`, written into the ids or records with the deferred drawers.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -155,6 +156,9 @@ struct Composition {
     /// The draw component (the visibility strategy is always `faces`).
     draw: String,
     shading: String,
+    /// The meshes stage draws meshes (`depth`); deferred drawers then compile in the record's
+    /// mesh capability (`MESHES`).
+    meshes: bool,
 }
 
 /// Bind groups of the storage instances: the shadow rays' at 2, the others' after the
@@ -179,6 +183,7 @@ impl Composition {
                 require(BACKEND, Slot::Draw, &opts.draw)?
             },
             shading: require(BACKEND, Slot::Shading, &opts.shading)?,
+            meshes: require(BACKEND, Slot::Meshes, &opts.meshes)? != "none",
         })
     }
 
@@ -196,9 +201,13 @@ impl Composition {
     }
 
     /// The shader: the sites' walks as modules (the shadow rays' storage at group 2), this
-    /// back end's code with geometry, draw and shading as the root.
+    /// back end's code with geometry, draw and shading as the root; deferred drawers with
+    /// meshes decode mesh records from the triangles in the images group (group 3).
     fn program(&self) -> (mr_gpu::program::Program, String, Vec<String>) {
-        let (p, deps) = mr_components::shaders::sites_program(&self.walks, 0, 0, 0, self.bounce);
+        let (mut p, mut deps) = mr_components::shaders::sites_program(&self.walks, 0, 0, 0, self.bounce);
+        if self.deferred() && self.meshes {
+            deps.insert(0, mr_components::shaders::meshes(&mut p, &self.walks, 0, self.mesh_shadow, 3, 2));
+        }
         let own = format!(
             "// Composition: storage = {}, geometry = {}, draw = {}, traversal = {}, shading = {}\n\
              {}\n{}\n{}\n{}\n{}\n{}",
@@ -350,7 +359,8 @@ impl Layouts {
                 ShadeState::layout_entries(3, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE)[1],
             ],
         });
-        let images = FaceDrawer::images_layout(&gpu.device);
+        // With the mesh triangles: meshes are a live choice.
+        let images = FaceDrawer::images_layout(&gpu.device, true);
         let render = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("raster"),
             bind_group_layouts: &storages.layouts(&[Some(&frame), Some(world.layout())]),
@@ -373,9 +383,14 @@ impl Layouts {
                 anyhow::bail!(why);
             }
         }
-        let (program, root, deps) = comp.program();
-        let module = mr_gpu::program::compile(&gpu.device, "raster", &program, &root, &deps.iter().map(String::as_str).collect::<Vec<_>>());
-        let spec = DrawerSpec { module: &module, render_layout: &self.render, shade_layout: &self.shade, strip: comp.geometry().strip };
+        let module = |comp: &Composition| {
+            let (program, root, deps) = comp.program();
+            mr_gpu::program::compile(&gpu.device, "raster", &program, &root, &deps.iter().map(String::as_str).collect::<Vec<_>>())
+        };
+        // The mesh capability only in the shade pass of frames with meshes.
+        let plain = module(&Composition { meshes: false, ..comp.clone() });
+        let meshed = (comp.deferred() && comp.meshes).then(|| module(comp));
+        let spec = DrawerSpec { module: &plain, render_layout: &self.render, shade_layout: &self.shade, strip: comp.geometry().strip, mesh_module: meshed.as_ref() };
         FaceDrawer::new(gpu, &spec, DrawMode::parse(&comp.draw).expect("validated"), &self.images, width, height)
     }
 }
@@ -432,9 +447,9 @@ impl GpuRasterBackend {
         let quad_buf = GrowableBuffer::new(&gpu, "quads", 1 << 20, quad_capacity as u64 * QUAD_BYTES, wgpu::BufferUsages::STORAGE);
         let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
-        // Mesh shadows: their site's walk (by default the shadow rays').
+        // Mesh shadows of forward drawers: their site's walk (by default the shadow rays').
         let (occ, rays) = comp.walks.shadow_program(comp.mesh_shadow);
-        let mesh = GpuMeshes::new(&gpu, &world, wgpu::TextureFormat::Rgba8Unorm, Occlusion { program: &occ, rays: &rays, layout: storages.layout(comp.walks.kernels[comp.mesh_shadow].storage) });
+        let mesh = GpuMeshes::new(&gpu, &world, Some(Occlusion { program: &occ, rays: &rays, layout: storages.layout(comp.walks.kernels[comp.mesh_shadow].storage) }));
         let ring = FrameRing::new(&gpu, p.width, p.height, opts.frames_in_flight.max(1), waker.clone()).with_stages(p.stage_times);
         let accum = ShadeState::new(&gpu, p.width, p.height, &comp.shading, opts.bounces, opts.spp, opts.accumulate);
         tracing::info!("gpu-raster: storage {}, geometry {}, draw {}, traversal {}, shading {}, {} walks", comp.walks.storages[0].component, comp.geometry, comp.draw, comp.walks.kernels[0].component, comp.shading, comp.walks.kernels.len());
@@ -642,6 +657,7 @@ impl Renderer for GpuRasterBackend {
         self.accum.begin(&self.gpu, c, req.mode);
         let world_bg = self.world.prepare(&self.gpu, c).clone();
         if want_meshes {
+            // The images group is built each frame, so a new vertex buffer needs nothing more.
             self.mesh.prepare(&self.gpu, c, view_proj, req.mode);
         }
 
@@ -721,6 +737,7 @@ impl Renderer for GpuRasterBackend {
             keep_depth: false,
             binds: &[&bind0, &world_bg, bind2],
             more: &more,
+            mesh_verts: Some(self.mesh.vertices()),
             ring: &self.ring,
             ticket,
             ts: (true, true),
@@ -731,9 +748,9 @@ impl Renderer for GpuRasterBackend {
                 pass.multi_draw_indirect(&self.indirect, 0, n);
             }
         };
-        // Meshes: in the faces' forward passes; after shading (depth-tested) when deferred.
+        // Meshes: in the faces' forward passes; into their ids or records when deferred.
         let meshes = want_meshes && (!self.drawer.mode().deferred() || self.mesh.triangles() > 0);
-        let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp, &world_bg);
+        let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp, Some(&world_bg));
         self.drawer.encode(&self.gpu, &mut enc, &frame, &draw, meshes.then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass)), None);
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
@@ -772,7 +789,10 @@ impl Renderer for GpuRasterBackend {
             "visibility" => drop(require(BACKEND, Slot::Visibility, &s())?),
             "draw" => self.comp.draw = require(BACKEND, Slot::Draw, &s())?,
             "shading" => self.comp.shading = require(BACKEND, Slot::Shading, &s())?,
-            "meshes" => self.opts.meshes = require(BACKEND, Slot::Meshes, &s())?,
+            "meshes" => {
+                self.opts.meshes = require(BACKEND, Slot::Meshes, &s())?;
+                self.comp.meshes = self.opts.meshes != "none";
+            }
             "merge" => {
                 parse_merge(&s())?;
                 if s() != self.opts.merge {
@@ -851,11 +871,17 @@ mod tests {
                                 gr.validate().unwrap_or_else(|e| panic!("{gr:?}: {e}"));
                                 let opts = Options { storage: st.into(), geometry: g.into(), draw: d.into(), traversal: k.into(), shading: shading.into(), ..Default::default() };
                                 let c = Composition::of(&ck, &opts).unwrap();
-                                let (p, root, deps) = c.program();
-                                let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
-                                let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{c:?}: {e}"));
-                                Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{c:?}: {e:?}"));
-                                let (p, rays) = c.walks.shadow_program(c.mesh_shadow);
+                                // With mesh records (deferred drawers) and without.
+                                for meshes in [true, false] {
+                                    let c = Composition { meshes, ..c.clone() };
+                                    let (p, root, deps) = c.program();
+                                    let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+                                    let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+                                    Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{c:?}: {e:?}"));
+                                }
+                                // Forward mesh shading through the mesh-shadow site.
+                                let (mut p, rays) = c.walks.shadow_program(c.mesh_shadow);
+                                p.define("SHADE");
                                 let m = p.naga(mr_gpu::meshes::MESH_WGSL, &[&rays, mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON]).unwrap_or_else(|e| panic!("meshes {c:?}: {e}"));
                                 Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("meshes {c:?}: {e:?}"));
                                 n += 1;

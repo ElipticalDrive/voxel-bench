@@ -50,6 +50,48 @@ impl Cap {
     }
 }
 
+/// An optional capability of the stored hit record (PLAN step 12, IDEAS §23): bits of the
+/// record's id word (or, for layers, more records per pixel) that pipelines without it never
+/// write, and code compiled in only with it. Not every one is built yet.
+pub struct RecordCap {
+    pub name: &'static str,
+    /// The id word's bits it takes (`mr::voxels`, `pack_hit`); none for a capability of
+    /// the ray services rather than the record.
+    pub bits: Option<std::ops::RangeInclusive<u32>>,
+    pub description: &'static str,
+    /// Implemented; the others are named here so the record leaves room for them.
+    pub built: bool,
+}
+
+/// The record's optional capabilities. Voxel records use bits 0-22 (hit, face, block, cell
+/// parity); a mesh record reuses bits 1-22 for its triangle under its own flag.
+pub const RECORD_CAPS: &[RecordCap] = &[
+    RecordCap {
+        name: "meshes",
+        bits: Some(23..=23),
+        description: "Mesh surfaces (step 12d): bit 23 flags a mesh triangle's hit, its index in bits 1-22 (`pack_mesh_hit`; `visbuffer`: `VIS_MESH | tri`); decoded from the mesh vertices and shaded by `shade_mesh`. Compiled in with a meshes stage (`MESHES`).",
+        built: true,
+    },
+    RecordCap {
+        name: "layers",
+        bits: Some(24..=26),
+        description: "Transparency: several hits per pixel, each record a layer (its index here), sorted or accumulated by the shading pass. Built after the architecture.",
+        built: false,
+    },
+    RecordCap {
+        name: "continued",
+        bits: Some(27..=27),
+        description: "Transparency: the ray continues past a translucent hit (flag), its next hit written by the strategy that cast it. Built after the architecture.",
+        built: false,
+    },
+    RecordCap {
+        name: "opaque-only",
+        bits: None,
+        description: "Transparency: an opaque-only query for shadow and other secondary rays (a ray service, no record bits): translucent blocks do not occlude. Built after the architecture.",
+        built: false,
+    },
+];
+
 /// Compile-time code that gives a `slot` component lacking `cap` the capability.
 pub struct Adapter {
     pub slot: Slot,
@@ -142,4 +184,24 @@ pub fn adapter_note(c: &Composition) -> Option<String> {
         .collect();
     notes.dedup();
     (!notes.is_empty()).then(|| notes.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RECORD_CAPS;
+
+    /// The record's capabilities take distinct bits above the voxel record's (0-22), and the
+    /// built ones match the WGSL encoding.
+    #[test]
+    fn record_caps_are_disjoint() {
+        let mut used = 0u32;
+        for c in RECORD_CAPS {
+            for b in c.bits.clone().into_iter().flatten() {
+                assert!(b > 22 && b < 32 && used & (1 << b) == 0, "{} bit {b}", c.name);
+                used |= 1 << b;
+            }
+        }
+        let mesh = RECORD_CAPS.iter().find(|c| c.name == "meshes").unwrap();
+        assert!(mesh.built && mr_gpu::voxels::VOXELS_WGSL.contains(&format!("const REC_MESH: u32 = {:#x}u;", 1u32 << mesh.bits.clone().unwrap().start())));
+    }
 }

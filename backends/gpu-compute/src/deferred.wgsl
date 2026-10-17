@@ -1,17 +1,23 @@
 // `placement = deferred`: the walk writes each pixel's hit record (`pack_hit`) into `records`
 // (in a compute thread, or a fragment shader with `dispatch = "fragment"`), then the common
 // pass (`shading/deferred.wgsl`, entry `shade`) shades it. Mesh mode: where no voxel is
-// hit, the composited mesh shows (`view_miss`), as inline.
+// in front of the mesh, the pixel's record is the mesh's.
 
 @group(0) @binding(6) var<storage, read_write> records: array<vec2<u32>>;
 
 fn pixel_record(px: vec2<u32>) {
     let d = view_ray(px);
-    let h = pixel_hit(px, d, mesh_t(px, d, cam.forward));
+    let mt = pixel_mesh_t(px, d);
+    let h = pixel_hit(px, d, mt);
     var r = vec2<u32>(0u);
     if (h.hit) {
         r = pack_hit(h.t, surface_of(h, cam.origin, d));
     }
+#ifdef MESHES
+    else if (mt < 1e29) {
+        r = mesh_record(px);
+    }
+#endif
     records[px.y * cam.width + px.x] = r;
 }
 
@@ -30,7 +36,4 @@ fn record_at(px: vec2<u32>) -> vec2<u32> { return records[px.y * cam.width + px.
 fn view_origin() -> vec3<f32> { return cam.origin; }
 fn view_lit() -> bool { return cam.mode == 1u; }
 fn view_surface(s: Surface) -> Surface { return s; }
-fn view_miss(px: vec2<u32>) -> vec4<f32> {
-    if (mesh_t(px, view_ray(px), cam.forward) < 1e29) { return mesh_color(px); }
-    return unpack4x8unorm(cam.sky);
-}
+fn view_miss(px: vec2<u32>) -> vec4<f32> { return unpack4x8unorm(cam.sky); }

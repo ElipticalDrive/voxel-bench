@@ -1,5 +1,8 @@
 // Mesh mode (mr_core::mesh): camera-relative triangles with sRGB vertex colours, drawn into
-// the voxel renderer's depth buffer. Lit mode uses the shared lighting (voxel shadow rays).
+// the voxel renderer's depth buffer. Fragments either write the hit record's mesh
+// capability (`mesh_record_fs`, `mesh_id_fs`: shaded later, where the pixel is shaded) or,
+// with shader def `SHADE` (forward drawers), shade themselves with the shared lighting
+// (voxel shadow rays).
 
 struct MeshFrame {
     view_proj: mat4x4<f32>,
@@ -19,18 +22,34 @@ struct MeshOut {
     @location(0) rel: vec3<f32>,
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) normal: vec3<f32>,
+    // The triangle (vertices are three per triangle, unindexed).
+    @location(3) @interpolate(flat) tri: u32,
 }
 
 @vertex
-fn mesh_vs(v: MeshIn) -> MeshOut {
+fn mesh_vs(v: MeshIn, @builtin(vertex_index) vi: u32) -> MeshOut {
     var out: MeshOut;
     out.pos = mf.view_proj * vec4<f32>(v.pos - mf.cam_frac, 1.0);
     out.rel = v.pos;
     out.color = v.color;
     out.normal = v.normal;
+    out.tri = vi / 3u;
     return out;
 }
 
+// The packed hit record (ray casters' mesh targets, `gbuffer`).
+@fragment
+fn mesh_record_fs(in: MeshOut) -> @location(0) vec2<u32> {
+    return pack_mesh_hit(length(in.rel - mf.cam_frac), in.tri);
+}
+
+// `visbuffer`'s face-id encoding.
+@fragment
+fn mesh_id_fs(in: MeshOut) -> @location(0) u32 {
+    return VIS_MESH | in.tri;
+}
+
+#ifdef SHADE
 @fragment
 fn mesh_fs(in: MeshOut) -> @location(0) vec4<f32> {
     // Interpolated sRGB colour (perspective-correct, like the reference's barycentrics).
@@ -40,3 +59,4 @@ fn mesh_fs(in: MeshOut) -> @location(0) vec4<f32> {
     let n = select(in.normal, -in.normal, dot(in.normal, in.rel - mf.cam_frac) > 0.0);
     return shade_lit(c, in.rel, n);
 }
+#endif

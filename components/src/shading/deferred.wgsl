@@ -9,7 +9,10 @@
 // `d`) and `record_view(r, color)` (the source's diagnostic views, or `color`); from the
 // back end, its view of the frame: `view_ray(px)` (the pixel's unit primary ray),
 // `view_origin()`, `view_miss(px)` (the colour where no surface was hit: the sky, or what
-// the back end composites there), `view_lit()`, and the output `out_tex`.
+// the back end composites there), `view_lit()`, and the output `out_tex`. With meshes
+// (shader def `MESHES`, the record's mesh capability), also `record_is_mesh(r)` and
+// `record_mesh(r, d)` (the `MeshSurface` on ray `d`); mesh surfaces are shaded by
+// `shade_mesh` (`mr::mesh_surface`).
 
 @compute @workgroup_size(8, 8)
 fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -21,5 +24,11 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let d = view_ray(gid.xy);
+#ifdef MESHES
+    if (record_is_mesh(r)) {
+        textureStore(out_tex, vec2<i32>(gid.xy), shade_mesh(record_mesh(r, d), view_lit()));
+        return;
+    }
+#endif
     textureStore(out_tex, vec2<i32>(gid.xy), record_view(r, shade_surface(record_decode(r, d), d, view_lit(), gid.xy)));
 }

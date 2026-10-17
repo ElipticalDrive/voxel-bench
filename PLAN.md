@@ -61,7 +61,8 @@ The user's architecture, settled with finality and without limits for later (IDE
   hand-written assemblers, not executors placing pieces on devices (§18).
 - **No common visibility buffer:** strategies do not share one hit record / visibility
   buffer; inline or deferred shading is a choice only where a face drawer exists; meshes
-  are a special stage instead of a surface source (§18).
+  are a special stage instead of a surface source (§18). (Step 12 done: one hit record with
+  optional capabilities, placement a choice for every strategy, meshes write records.)
 - **No per-stage devices:** cpu-discover (CPU discovery, GPU drawing) is a hard-wired back
   end, not a configuration; two GPUs cannot be combined (requirement 2).
 - **No history and no post stages** (§18 pieces 7 and 8).
@@ -130,7 +131,8 @@ The user's architecture, settled with finality and without limits for later (IDE
     - 12d: meshes as a surface source writing records (a mesh capability in the reserved
       bits, compiled in only with meshes), replacing `MeshComposite` and the drawer's
       after-shading mesh pass; transparency's capabilities (layers, continued rays, the
-      opaque-only query) named in the registry, built after the architecture.
+      opaque-only query) named in the registry, built after the architecture. (Done
+      2026-10-17.)
 13. **Strategies as components, back ends as executors** (first: design stateful nodes and
     two-way edges, and the executor's fusion and pipelining, IDEAS §22; needs step 11's
     timing to show executors cost nothing): discovery's pieces (sampler,
@@ -654,4 +656,62 @@ speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/
   profiler).
 - Not yet: records carry no capability bits yet (12d: meshes); the deferred pass's lit flag is
   a runtime value (as in 12a/b).
+
+**2026-10-17, step 12d: meshes as a surface source.** `crates/mr-gpu/src/{meshes.rs,mesh.wgsl,mesh_surface.wgsl,voxels.wgsl}`,
+`components/src/{shaders.rs,caps.rs,shading/{deferred,packed}.wgsl,draw/{drawer.rs,visbuffer/gpu.wgsl}}`,
+`backends/{gpu-compute,gpu-raster}/src/`:
+- **The record's mesh capability**: bit 23 flags a mesh triangle's hit, its index in bits 1-22
+  (`pack_mesh_hit`; 4M triangles, the mesh pass truncates beyond with a warning); `visbuffer`
+  encodes one as `VIS_MESH | tri` (bit 31). Decoding (`mr::mesh_surface`, `mesh_surface.wgsl`)
+  reads the triangle from the mesh pass's vertex buffer (now also a storage buffer): the ray's
+  barycentrics give the colour (the rasteriser's perspective-correct ones at the pixel centre),
+  the ray's point on the triangle the position, the flat normal turned to the camera.
+  `shade_mesh` lights it as the forward mesh shader did (`shade_lit`), through the mesh-shadow
+  site: `shaders::meshes` adds a lighting instance of its own (`lighting::mesh` over
+  `rays::mesh`) when that site's kernel is not the shadow rays'. Shader def `MESHES` compiles
+  the capability in (deferred pass: `record_is_mesh` / `record_mesh` per encoding).
+- **Ray casters** (gpu-compute `composite`): `MeshComposite` became `MeshRecords`: the mesh pass
+  writes records and depth only (no shading, no shadow-ray program of its own); rays stop at the
+  mesh depth as before; where no voxel is nearer, the walk shades the mesh record inline or
+  writes it for the deferred pass.
+- **Face drawers** (gpu-raster `depth`): forward `raster` shades mesh fragments as before;
+  `visbuffer` / `gbuffer` draw meshes into the same id / record target in the faces' pass (the
+  after-shading mesh pass and its stage are gone; meshes join the `draw` stage), and the
+  common pass decodes them from the triangles in the images group (binding 2,
+  `images_layout(dev, meshes)`).
+- **Compiled in only for frames with meshes.** With the mesh code in the walk, gpu-compute's
+  `dispatch = fragment` cost +2.0% / +2.5% GPU time (unlit / lit, 5 rounds) on frames without
+  meshes (presumably the second inlined copy of the lighting and shadow walk in the pixel shader;
+  compute dispatch showed none). Both back ends now build the mesh variant beside the plain one
+  and use it only on frames that draw mesh records: gpu-compute's walk and shade passes
+  (`Passes`, `plain` / `meshed`), the drawer's shade pass (`DrawerSpec::mesh_module`; one id
+  target). Frames without meshes run exactly the shaders of before.
+- **Transparency named in the registry**: `caps::RECORD_CAPS` (meshes, built; `layers` bits
+  24-26, `continued` bit 27, `opaque-only` a ray service, not built), tested disjoint and
+  matching the WGSL constants.
+- Verified: builds without warnings, 75 unit tests (new: the mesh record program composes,
+  the record capabilities; gpu-compute's and gpu-raster's compose tests now cover programs with
+  and without meshes and mesh shadows through their own kernel), architecture guard (mesh
+  surfaces may call `shade_lit`, listed with the reason; `record_is_mesh` / `record_mesh` as
+  interface), 4 GPU end-to-end tests. Pixel A/B without meshes: every frame identical (ten back
+  ends, the drawers' deferred variants, gpu-compute deferred / fragment, lit + unlit). Mesh
+  mode: forward `raster` identical; the record paths differ by 1 at 36-165 mesh pixels per
+  frame (ray barycentrics against the rasteriser's interpolation); packed records (gbuffer,
+  gpu-compute deferred) also at 6-7 voxel pixels per frame on texel boundaries (up to 12; the
+  shade pass compiled with the mesh branch; most now match forward `raster` and the reference).
+  PSNR against the reference equal or +0.1 dB in all six mesh configurations. Mesh shadows
+  through their own kernel run (inline and deferred; PSNR as the build before).
+- Timing A/B, mesh mode (`meshes` plan, GPU time, 3-5 rounds): gbuffer -16.1% lit / -6.1%
+  unlit, visbuffer -15.9% / -12.4% (meshes no longer shaded in a pass of their own), forward
+  `raster` -0.5% / -3.5%, gpu-compute inline -2.0% / -0.4%, deferred -2.6% / +0.3%, fragment
+  +0.3% / **+1.6% unlit (log)**: its mesh pixels now decode their triangle in the walk's fragment
+  shader instead of reading a colour the mesh pass shaded. Without meshes: GPU time within ±0.9%
+  everywhere. **CPU-bound fps, an unresolved loss (log)**: gpu-raster -1.4..-2.5% and gpu-rt
+  -1.7% fps (5 / 3 rounds), all of it in the CPU geometry stage (+2-3%: chunk meshing, code this
+  step did not touch; gpu-rt's back end is untouched and does not use the mesh code), the
+  signature of step 11's loss: how the surrounding code is laid out, not what runs.
+- Not yet: meshes are shaded by the lighting model (`shade_mesh`), not the shading component
+  (no path tracing of mesh surfaces; a `Surface` would need an albedo instead of a block texel);
+  gpu-discover and cpu-discover have no meshes stage (their drawer now supports one); CPU back
+  ends have no meshes.
 

@@ -183,6 +183,25 @@ pub fn shading_rays(p: &mut Program, walks: &Walks, shadow: usize, bounce: usize
     vec!["rays::shadow".to_string(), "rays::bounce".to_string()]
 }
 
+/// Adds mesh surfaces to `p` (PLAN step 12d): the mesh-surface module (`mesh_surface`,
+/// `shade_mesh`) with the triangles at `group`, `binding`, lit through the mesh-shadow
+/// site's kernel `mesh_shadow` (the program's lighting when that is the shadow rays' kernel
+/// `shadow`, else a lighting instance of its own), and shader def `MESHES`, which compiles in
+/// the record's mesh capability. Returns the module's path for the root's dependencies.
+pub fn meshes(p: &mut Program, walks: &Walks, shadow: usize, mesh_shadow: usize, group: u32, binding: u32) -> String {
+    use mr_gpu::meshes::{MESH_SURFACE, surface_wgsl};
+    let lighting = if mesh_shadow == shadow {
+        LIGHTING
+    } else {
+        shadow_rays(p, "rays::mesh", &walks.kernel_path(mesh_shadow));
+        p.add("lighting::mesh", mr_gpu::voxels::LIGHTING_WGSL, &["rays::mesh", VOXELS]);
+        "lighting::mesh"
+    };
+    p.add(MESH_SURFACE, surface_wgsl(group, binding), &[lighting, VOXELS, mr_gpu::program::COMMON]);
+    p.define("MESHES");
+    MESH_SURFACE.to_string()
+}
+
 /// The usual program of back ends whose root casts through kernel `kernel`, reads storage
 /// `storage` and shades with shadow (and bounce) rays through theirs: the world, every walk
 /// of `walks`, the rays' services and lighting through the shadow rays. Returns the program
