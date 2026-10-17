@@ -28,12 +28,12 @@ use glam::{IVec3, Vec3};
 use mr_core::{Camera, Face};
 use rayon::prelude::*;
 
-use crate::discover::{FaceMap, Output, Rays, Settings, State, cast, face_key, finalize};
-use crate::grid::Grid;
+use crate::visibility::discover::{FaceMap, Output, Rays, Settings, State, cast, face_key, finalize};
+use crate::visibility::discover::grid::Grid;
 
 /// How a face of S was found this frame (`view = kinds` colours them).
-pub(crate) const KIND_CONFIRMED: u8 = 1;
-pub(crate) const KIND_PARTIAL: u8 = 2;
+pub const KIND_CONFIRMED: u8 = 1;
+pub const KIND_PARTIAL: u8 = 2;
 
 /// Smallest chunk of a flood-fill wave handed to one thread.
 const MIN_LEN: usize = 256;
@@ -119,7 +119,7 @@ fn covered_pixels(cx: &Ctx, c: &[IVec3; 4], out: &mut Vec<u32>) -> bool {
     true
 }
 
-pub(crate) fn discover(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
+pub fn discover(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
     let start = std::time::Instant::now();
     let rays = Rays::new(cam, w, h, set.margin);
     let (bmin, bmax) = grid.bounds_rel(rays.cb);
@@ -214,7 +214,7 @@ pub(crate) fn discover(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32,
                 .par_iter()
                 .with_min_len(MIN_LEN)
                 .flat_map_iter(|&(key, _)| {
-                    let (cell, face) = crate::discover::unpack_key(key);
+                    let (cell, face) = crate::visibility::discover::unpack_key(key);
                     corners(cell, face).map(|c| face_key(c, 0))
                 })
                 .collect();
@@ -226,7 +226,7 @@ pub(crate) fn discover(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32,
             need.dedup();
             need.retain(|c| !corner_vis.contains_key(c));
             corner_rays += need.len() as u64;
-            let vis: Vec<bool> = need.par_iter().with_min_len(MIN_LEN / 4).map(|&c| corner_visible(&cx, crate::discover::unpack_key(c).0)).collect();
+            let vis: Vec<bool> = need.par_iter().with_min_len(MIN_LEN / 4).map(|&c| corner_visible(&cx, crate::visibility::discover::unpack_key(c).0)).collect();
             for (c, v) in need.into_iter().zip(vis) {
                 corner_vis.insert(c, v as u32);
             }
@@ -239,7 +239,7 @@ pub(crate) fn discover(mut st: State, grid: &Grid, cam: &Camera, w: u32, h: u32,
                 .par_iter()
                 .with_min_len(MIN_LEN)
                 .map(|&(key, id)| {
-                    let (cell, face) = crate::discover::unpack_key(key);
+                    let (cell, face) = crate::visibility::discover::unpack_key(key);
                     let c = corners(cell, face);
                     let mut px = vec![];
                     if !c.iter().all(|p| cv.get(&face_key(*p, 0)) == Some(&1)) || !covered_pixels(&cx, &c, &mut px) {
@@ -332,8 +332,8 @@ mod tests {
     use mr_core::{BlockId, CHUNK_VOLUME, ChunkData, ChunkKey, DenseChunk, WorldUpdate};
 
     use super::*;
-    use crate::discover::Settings;
-    use crate::grid::CpuWorld;
+    use crate::visibility::discover::Settings;
+    use crate::visibility::discover::grid::CpuWorld;
 
     /// One chunk: a floor, a back wall, a pillar in front of the wall, and a floating
     /// block — the pillar-in-front-of-a-wall case of IDEAS §5.

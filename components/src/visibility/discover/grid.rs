@@ -8,22 +8,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use glam::{IVec3, Vec3};
-use mr_components::storage::cpu::{Entry, Grid as StorageGrid, Repr};
-use mr_components::traversal::refloor::cpu::trace_packet;
+use crate::storage::cpu::{Entry, Grid as StorageGrid, Repr};
+use crate::traversal::refloor::cpu::trace_packet;
 use mr_core::chunk::local_of_block;
 use mr_core::*;
 
-pub(crate) use mr_components::storage::cpu::ffloor;
+pub use crate::storage::cpu::ffloor;
 
 #[derive(Copy, Clone, Default)]
-pub(crate) struct Hit {
+pub struct Hit {
     pub t: f32,
     pub cell: IVec3,
     pub axis: u8,
 }
 
 /// What discovery asks of the world.
-pub(crate) trait World: Send + Sync {
+pub trait World: Send + Sync {
     /// Single ray from camera-relative `o` (`cam` = camera block), ignoring the start cell.
     fn trace(&self, cam: IVec3, o: Vec3, d: Vec3, bmin: IVec3, bmax: IVec3) -> Option<Hit>;
     /// Block id at absolute cell `abs` (0 = air / not loaded).
@@ -33,7 +33,7 @@ pub(crate) trait World: Send + Sync {
 }
 
 /// A world snapshot, whatever the storage.
-pub(crate) type Grid = dyn World;
+pub type Grid = dyn World;
 
 impl<R: Repr> World for StorageGrid<R> {
     #[inline]
@@ -157,7 +157,7 @@ impl<R: Repr> Store for Chunks<R> {
 }
 
 /// Chunk map mirrored from the update stream, in the chosen CPU storage.
-pub(crate) struct CpuWorld {
+pub struct CpuWorld {
     store: Box<dyn Store>,
     /// The last snapshot.
     pub grid: Arc<Grid>,
@@ -169,8 +169,8 @@ fn store<R: Repr>() -> Box<dyn Store> {
 
 impl CpuWorld {
     /// `storage`: a CPU storage component (validated by the caller).
-    pub(crate) fn new(storage: &str) -> anyhow::Result<Self> {
-        use mr_components::storage as s;
+    pub fn new(storage: &str) -> anyhow::Result<Self> {
+        use crate::storage as s;
         let store = match storage {
             "bricks" => store::<s::bricks::cpu::U16>(),
             "u8" => store::<s::u8::cpu::U8>(),
@@ -185,17 +185,17 @@ impl CpuWorld {
         Ok(Self { store, grid: Arc::new(StorageGrid::<s::bricks::cpu::U16>::default()) })
     }
 
-    pub(crate) fn apply(&mut self, updates: &[WorldUpdate]) {
+    pub fn apply(&mut self, updates: &[WorldUpdate]) {
         self.store.apply(updates);
     }
 
     /// Current grid snapshot (rebuilt if the world changed since the last call).
-    pub(crate) fn snapshot(&mut self) -> Arc<Grid> {
+    pub fn snapshot(&mut self) -> Arc<Grid> {
         self.grid = self.store.snapshot();
         self.grid.clone()
     }
 
-    pub(crate) fn memory(&self) -> u64 {
+    pub fn memory(&self) -> u64 {
         self.store.memory()
     }
 }

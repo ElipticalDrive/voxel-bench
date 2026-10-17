@@ -283,14 +283,24 @@ impl Tree<'_> {
             }
             let name = mr_components::graph::site_name(n.role, p.name);
             let is_site = self.values.contains_key(&name) && self.lead.as_deref() != Some(&name);
-            // An edge carrying an earlier value (previous frame, or an iteration's first pass).
+            // An edge carrying the previous frame's value is shown, not descended; an
+            // iteration (a loop within the frame) is noted and descended (shared nodes stop it).
             if let (Some(src), w) = (n.inputs.get(p.name), n.when(p.name)) {
-                if w != mr_components::graph::When::Now {
-                    ui.horizontal_wrapped(|ui| {
-                        label(ui, depth + 1, p.name, false, p.description);
-                        ui.weak(format!("← {src} ({})", w.label()));
-                    });
-                    continue;
+                match w {
+                    mr_components::graph::When::Prev => {
+                        ui.horizontal_wrapped(|ui| {
+                            label(ui, depth + 1, p.name, false, p.description);
+                            ui.weak(format!("← {src} (previous frame)"));
+                        });
+                        continue;
+                    }
+                    mr_components::graph::When::Iterate(k) => {
+                        ui.horizontal_wrapped(|ui| {
+                            label(ui, depth + 1, "", false, p.description);
+                            ui.weak(format!("↻ {} {k} passes a frame: first last frame's {}", p.name, p.data.name()));
+                        });
+                    }
+                    mr_components::graph::When::Now => {}
                 }
             }
             match n.inputs.get(p.name) {

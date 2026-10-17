@@ -209,10 +209,18 @@ impl Observation {
     /// The pipeline it measured: its graph, or its composition with its sites (`None` for
     /// standalone renderers).
     pub fn pipeline(&self) -> Option<mr_components::graph::Graph> {
-        if let Some(g) = &self.graph {
-            return Some(g.clone());
+        // Records keep the knobs that spell timings (cpu-discover `pipelined`) and, before
+        // step 13b, hole detection (`incremental`): they load as the graphs they ran.
+        let options: toml::Table = serde_json::from_value(self.options.clone()).unwrap_or_default();
+        let incremental = options.get("incremental").and_then(|v| v.as_bool()) == Some(true);
+        if let Some(g) = self.graph.as_ref().filter(|g| !incremental || g.nodes.values().any(|n| n.role == mr_components::graph::Role::Holes)) {
+            return Some(g.clone().with_options(&options));
         }
-        mr_components::graph::Graph::from_composition(self.composition.as_ref()?).and_then(|g| g.with_sites(&self.sites)).ok()
+        let mut c = self.composition.clone()?;
+        if c.backend == "gpu-discover" && incremental && (c.holes.is_empty() || c.holes == "none") {
+            c.holes = "coverage".into();
+        }
+        mr_components::graph::Graph::from_composition(&c).and_then(|g| g.with_sites(&self.sites)).ok().map(|g| g.with_options(&options))
     }
 }
 

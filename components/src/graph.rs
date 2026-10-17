@@ -44,13 +44,15 @@ pub enum Role {
     Prepass,
     Traversal,
     Visibility,
+    /// Discovery's hole detection: which screen tiles the sampler looks at.
+    Holes,
     Draw,
     Shading,
     Meshes,
 }
 
 impl Role {
-    pub const ALL: [Role; 9] = [Role::World, Role::Storage, Role::Geometry, Role::Prepass, Role::Traversal, Role::Visibility, Role::Draw, Role::Shading, Role::Meshes];
+    pub const ALL: [Role; 10] = [Role::World, Role::Storage, Role::Geometry, Role::Prepass, Role::Traversal, Role::Visibility, Role::Holes, Role::Draw, Role::Shading, Role::Meshes];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -68,6 +70,7 @@ impl Role {
             Role::Prepass => Slot::Prepass,
             Role::Traversal => Slot::Traversal,
             Role::Visibility => Slot::Visibility,
+            Role::Holes => Slot::Holes,
             Role::Draw => Slot::Draw,
             Role::Shading => Slot::Shading,
             Role::Meshes => Slot::Meshes,
@@ -92,6 +95,8 @@ pub enum Data {
     Hits,
     /// Mesh surfaces joining the voxel image.
     Surfaces,
+    /// The screen tiles discovery looks at (hole detection).
+    Tiles,
     Image,
 }
 
@@ -105,6 +110,7 @@ impl Data {
             Data::Rays => "ray queries",
             Data::Hits => "hits",
             Data::Surfaces => "mesh surfaces",
+            Data::Tiles => "tiles",
             Data::Image => "image",
         }
     }
@@ -185,7 +191,12 @@ const DISCOVER: &[Port] = &[port("rays", Data::Rays, true, "discovery rays"), po
 const QUADTREE: &[Port] = &[
     port("rays", Data::Rays, true, "discovery rays"),
     port("exposure", Data::Storage, true, "the storage exposure tests read (which faces are exposed, their blocks)"),
-    port("covered", Data::Hits, false, "what the drawer covered: incremental discovery looks only where the faces it already has leave holes (a feedback edge: `iterate`, the drawer first drawing last frame's faces)"),
+    port("where", Data::Tiles, false, "the screen tiles to look at (hole detection; unbound: every tile, every frame)"),
+];
+const COVERAGE: &[Port] = &[
+    port("covered", Data::Hits, true, "what the drawer covers drawing last frame's faces at this camera (in the loop: the drawer's faces iterate twice)"),
+    port("sky", Data::Hits, true, "the previous frame's final image (timing `prev`): sky told apart from holes"),
+    port("changes", Data::Changes, true, "the world's change log: edited blocks and changed chunks mark their tiles"),
 ];
 const MESHES: &[Port] = &[port("changes", Data::Changes, true, "the world's change log"), port("shadow", Data::Rays, false, "shadow rays onto meshes (unbound: the shading's)")];
 const FACES: &[Port] = &[port("faces", Data::Faces, true, "the faces to draw")];
@@ -213,6 +224,7 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
         (Role::Visibility, "splat") => SPLAT,
         (Role::Visibility, "columns") => ON_STORAGE,
         (Role::Visibility, _) => FACES,
+        (Role::Holes, _) => COVERAGE,
         (Role::Draw, _) => DRAW,
         (Role::Shading, "pathtrace") => PATHTRACE,
         (Role::Shading, _) => DIRECT,
@@ -229,6 +241,7 @@ pub fn output(role: Role, name: &str) -> Data {
         (Role::Traversal, _) => Data::Rays,
         (Role::Visibility, "quadtree" | "cluster" | "faces") => Data::Faces,
         (Role::Visibility | Role::Draw, _) => Data::Hits,
+        (Role::Holes, _) => Data::Tiles,
         (Role::Shading, _) => Data::Image,
         (Role::Meshes, _) => Data::Surfaces,
     }
@@ -247,6 +260,7 @@ pub fn state(role: Role, name: &str) -> Option<&'static str> {
         (Role::Traversal, "rayquery") => "acceleration structures built from its geometry",
         (Role::Visibility, "quadtree" | "cluster") => "the discovered face set (faces kept `keep_frames` passes)",
         (Role::Shading, "pathtrace") => "accumulated radiance (restarted when the view changes)",
+        (Role::Holes, _) => "per-tile reveal radii and the sky mask; when each face last covered a pixel",
         _ => return None,
     })
 }
@@ -278,6 +292,26 @@ impl When {
         }
     }
 }
+
+/// When a discovery back end's drawer gets its faces: cpu-discover discovers one frame
+/// ahead (`prev`; its `pipelined` knob, see [`Graph::with_options`]); with hole detection
+/// the faces iterate twice within the frame.
+fn faces_timing(executor: &str, holes: bool) -> Option<When> {
+    match (executor, holes) {
+        (_, true) => Some(When::Iterate(2)),
+        ("cpu-discover", false) => Some(When::Prev),
+        _ => None,
+    }
+}
+
+/// Edge timings a back end lets a graph choose, with the values it runs (the rest are its
+/// composition's): cpu-discover's faces now or a frame late.
+const FREE_TIMINGS: &[(&str, Role, &str, &[When])] = &[("cpu-discover", Role::Draw, "faces", &[When::Now, When::Prev])];
+
+/// Knobs that spell an edge timing (the graph says it; the knob is how plans, the CLI and
+/// the GUI write it): back end, knob, the edge's role and port, the timing when the knob
+/// is true, when false.
+const TIMING_KNOBS: &[(&str, &str, Role, &str, When, When)] = &[("cpu-discover", "pipelined", Role::Draw, "faces", When::Prev, When::Now)];
 
 /// Whether `role` component `name` exists.
 fn known(role: Role, name: &str) -> bool {
@@ -404,6 +438,13 @@ impl Graph {
         if meshes && !drawn {
             vis.push(("meshes", "meshes"));
         }
+        // Hole detection: a loop through the drawer (it draws last frame's faces, discovery
+        // looks where they leave holes, it draws again), and the last frame's image.
+        let holes = has(Slot::Holes) && c.holes != "none";
+        if holes {
+            vis.push(("where", "holes"));
+            add("holes", Role::Holes, &c.holes, &[("covered", "draw"), ("sky", "draw"), ("changes", "world")]);
+        }
         add("visibility", Role::Visibility, &c.visibility, &vis);
         if drawn {
             add("draw", Role::Draw, &c.draw, if meshes { &[("faces", "visibility"), ("meshes", "meshes")] } else { &[("faces", "visibility")] });
@@ -432,6 +473,12 @@ impl Graph {
             shade.extend(inputs(Role::Shading, &c.shading).iter().filter(|p| p.casts).map(|p| (p.name, k)));
         }
         add("shading", Role::Shading, &c.shading, &shade);
+        if holes {
+            nodes.get_mut("holes").unwrap().timing.insert("sky".into(), When::Prev);
+        }
+        if let (true, Some(w)) = (drawn, faces_timing(&c.backend, holes)) {
+            nodes.get_mut("draw").unwrap().timing.insert("faces".into(), w);
+        }
         // Mesh shadows are the shading's shadow rays.
         if let (true, Some(k)) = (meshes, shadow) {
             nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), k.into());
@@ -876,27 +923,46 @@ impl Graph {
     /// cannot run the graph.
     pub fn accept(&self) -> Result<(Composition, bool), String> {
         let ck = self.check()?;
-        // Back ends run every edge within the frame; their knobs say what timings would
-        // (cpu-discover `pipelined`, gpu-discover `incremental`) until executors run them.
-        let timed: Vec<String> = ck.graph.nodes.iter().flat_map(|(id, n)| n.timing.iter().map(move |(p, w)| format!("`{id}`.{p} ({})", w.label()))).collect();
-        if !timed.is_empty() {
-            return Err(format!("`{}` runs every edge within the frame (its knobs set what timings would), not {}", self.executor, timed.join(", ")));
+        // Timings a back end lets the graph choose; the others must be its composition's.
+        let free = |n: &Node, p: &str| FREE_TIMINGS.iter().find(|(e, r, port, _)| *e == self.executor && *r == n.role && *port == p).map(|f| f.3);
+        for (id, n) in &ck.graph.nodes {
+            for (p, w) in &n.timing {
+                if let Some(ok) = free(n, p).filter(|ok| !ok.contains(w)) {
+                    return Err(format!("`{id}`.{p}: `{}` runs this edge {}, not {}", self.executor, ok.iter().map(|w| w.label()).collect::<Vec<_>>().join(" or "), w.label()));
+                }
+            }
         }
         if let Some(why) = self.site_blocker(&ck) {
             return Err(why);
         }
         let skel = ck.graph.skeleton();
         let mut c = skel.skeleton_composition()?;
-        // Without knobs and APIs (the composition has neither; `cpu` reads its API as `isa`).
-        let strip = |g: &Graph| {
+        // Without knobs and APIs (the composition has neither; `cpu` reads its API as `isa`)
+        // and free timings (its knobs: see `TIMING_KNOBS`); `all` makes every timed edge
+        // `prev` (the graphs' shapes compared, whatever their timings).
+        let strip_with = |g: &Graph, all: bool| {
             let mut g = g.clone();
             g.nodes.values_mut().for_each(|n| {
                 n.knobs.clear();
                 n.api = None;
+                let role = n.role;
+                n.timing.retain(|p, _| all || !FREE_TIMINGS.iter().any(|(e, r, port, _)| *e == self.executor && *r == role && port == p));
+                if all {
+                    n.timing.values_mut().for_each(|w| *w = When::Prev);
+                }
             });
             g.canonical()
         };
-        if strip(&Graph::from_composition(&c)?.skeleton())? != strip(&skel)? {
+        let strip = |g: &Graph| strip_with(g, false);
+        let expected = Graph::from_composition(&c)?;
+        if strip(&expected.skeleton())? != strip(&skel)? {
+            if strip_with(&expected.skeleton(), true)? == strip_with(&skel, true)? {
+                let timed = |g: &Graph| {
+                    let v: Vec<String> = g.nodes.iter().flat_map(|(id, n)| n.timing.iter().map(move |(p, w)| format!("`{id}`.{p} {}", w.label()))).collect();
+                    if v.is_empty() { "every edge now".to_string() } else { v.join(", ") }
+                };
+                return Err(format!("`{}` runs `{}` with {} (here: {})", self.executor, c.label(), timed(&expected), timed(&ck.graph)));
+            }
             return Err(format!("`{}` cannot run this graph; the nearest it runs is `{}`", self.executor, c.label()));
         }
         // The secondary-ray stages where the composition has them.
@@ -922,6 +988,32 @@ impl Graph {
         }
         let exact = strip(&Graph::from_composition(&c)?)? == strip(self)?;
         Ok((c, exact))
+    }
+
+    /// The graph with the edge timings its knobs spell set (`TIMING_KNOBS`: cpu-discover's
+    /// `pipelined = false` makes the drawer's faces arrive `now`). Knobs not given keep the
+    /// graph's timing.
+    pub fn with_options(mut self, options: &toml::Table) -> Graph {
+        for &(e, knob, role, port, on, off) in TIMING_KNOBS.iter().filter(|k| k.0 == self.executor) {
+            let _ = e;
+            let Some(v) = options.get(knob).and_then(|v| v.as_bool()) else { continue };
+            for n in self.nodes.values_mut().filter(|n| n.role == role && n.inputs.contains_key(port)) {
+                n.timing.insert(port.into(), if v { on } else { off });
+                n.timing.retain(|_, w| *w != When::Now);
+            }
+        }
+        self
+    }
+
+    /// The knobs spelling this graph's timings, as `with_options` reads them.
+    pub fn timing_options(&self) -> Vec<(&'static str, bool)> {
+        let mut v = Vec::new();
+        for &(_, knob, role, port, on, _) in TIMING_KNOBS.iter().filter(|k| k.0 == self.executor) {
+            if let Some(n) = self.nodes.values().find(|n| n.role == role && n.inputs.contains_key(port)) {
+                v.push((knob, n.when(port) == on));
+            }
+        }
+        v
     }
 
     /// The composition the back end runs the graph as (see [`Self::accept`]).
@@ -993,6 +1085,9 @@ impl Graph {
             if let Some(v) = self.nodes.values().filter(|n| n.role.slot().is_some_and(|sl| b.chooses(sl))).find_map(|n| n.api).and_then(|a| ch.value(a)) {
                 t.insert(ch.knob.into(), v.into());
             }
+        }
+        for (k, v) in self.normalised()?.timing_options() {
+            t.insert(k.into(), v.into());
         }
         for (id, n) in self.nodes.iter().filter(|(id, _)| skel.nodes.contains_key(*id)) {
             for (k, v) in &n.knobs {
@@ -1374,7 +1469,8 @@ pub fn of_init(backend: &str, p: &mr_core::InitParams) -> anyhow::Result<Checked
                 c.set(s, v);
             }
         }
-        Graph::from_composition(&c).map_err(anyhow::Error::msg)?
+        let knobs: toml::Table = serde_json::from_value(serde_json::Value::Object(opts)).unwrap_or_default();
+        Graph::from_composition(&c).map_err(anyhow::Error::msg)?.with_options(&knobs)
     } else {
         serde_json::from_str(&p.graph_json)?
     };
@@ -2020,92 +2116,98 @@ mod tests {
         assert!(e.contains("input `shadow`"), "{e}");
     }
 
-    /// Step 13a: edge timings. Incremental discovery as an iteration (the drawer draws last
-    /// frame's faces, discovery fills the holes, the drawer draws again), holes found a frame
-    /// late as a `prev` edge, and the reasons for what is not a pipeline.
+    /// Step 13a/b: edge timings. Hole detection is a loop through the drawer (it draws last
+    /// frame's faces, the holes node finds where they leave holes, the sampler looks there,
+    /// the drawer draws again) plus last frame's image read `prev`; and the reasons for what
+    /// is not a pipeline.
     #[test]
     fn timings() {
-        let base = Graph::from_composition(&Composition::new("gpu-discover")).unwrap();
-        let with = |covered: Option<When>, faces: Option<When>| {
-            let mut g = base.clone();
-            if let Some(w) = covered {
-                g.nodes.get_mut("visibility").unwrap().inputs.insert("covered".into(), "draw".into());
-                g.nodes.get_mut("visibility").unwrap().timing.insert("covered".into(), w);
-            }
-            if let Some(w) = faces {
-                g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), w);
-            }
-            g
-        };
-        // A cycle within the frame says how to break it.
-        let e = with(Some(When::Now), None).check().unwrap_err();
-        assert!(e.contains("cycle through") && e.contains("`prev`"), "{e}");
-        // An iteration: written as TOML and as JSON (the worker's form), canonical with its timing.
-        let it = with(Some(When::Now), Some(When::Iterate(2)));
+        let it = Graph::from_composition(&Composition { holes: "coverage".into(), ..Composition::new("gpu-discover") }).unwrap();
+        assert_eq!(it.nodes["draw"].when("faces"), When::Iterate(2));
+        assert_eq!(it.nodes["holes"].when("sky"), When::Prev);
+        assert_eq!(it.nodes["visibility"].inputs.get("where").map(String::as_str), Some("holes"));
+        // Written as TOML and as JSON (the worker's form), canonical with its timings.
         let toml_text = toml::to_string(&it).unwrap();
-        assert!(toml_text.contains("iterate = 2"), "{toml_text}");
+        assert!(toml_text.contains("iterate = 2") && toml_text.contains("sky = \"prev\""), "{toml_text}");
         assert_eq!(toml::from_str::<Graph>(&toml_text).unwrap(), it);
         assert_eq!(serde_json::from_str::<Graph>(&serde_json::to_string(&it).unwrap()).unwrap(), it);
         let canon = it.canonical().unwrap();
-        assert!(canon.contains("faces=n") && canon.contains("~iterate2"), "{canon}");
-        assert_ne!(it.key().unwrap(), base.key().unwrap());
+        assert!(canon.contains("~iterate2") && canon.contains("~prev"), "{canon}");
         // An explicit `now` is the same pipeline as none.
+        let base = Graph::from_composition(&Composition::new("gpu-discover")).unwrap();
         let mut now = base.clone();
         now.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Now);
         assert_eq!(now.key().unwrap(), base.key().unwrap());
+        // The schedule: one loop, the consumer first, the shading after it.
         let sched = it.check().unwrap().schedule().unwrap();
         let names = |ps: &[Pass]| ps.iter().map(|p| p.node.clone()).collect::<Vec<_>>();
-        let li = sched.steps.iter().position(|s| matches!(s, Step::Loop { .. })).expect("a loop");
-        let Step::Loop { passes, body } = &sched.steps[li] else { unreachable!() };
-        assert_eq!((*passes, names(body)), (2, vec!["draw".to_string(), "visibility".to_string()]), "{sched}");
-        // The shading reads the loop's last pass: after the loop.
+        let loops: Vec<&Step> = sched.steps.iter().filter(|s| matches!(s, Step::Loop { .. })).collect();
+        let [Step::Loop { passes, body }] = loops.as_slice() else { panic!("one loop\n{sched}") };
+        assert_eq!((*passes, names(body)), (2, vec!["draw".to_string(), "holes".to_string(), "visibility".to_string()]), "{sched}");
         assert!(matches!(sched.steps.last(), Some(Step::Pass(p)) if p.node == "shading"), "{sched}");
-        assert!(sched.kept.iter().any(|e| e.to == "draw" && e.port == "faces"), "{sched}");
-        // Back ends do not run timings yet: greyed with the reason.
-        let e = it.validate().unwrap_err();
-        assert!(e.contains("runs every edge within the frame") && e.contains("`draw`.faces (iterate 2)"), "{e}");
-        // Holes found a frame late: coverage from the previous frame, no loop.
-        let late = with(Some(When::Prev), None);
-        let sched = late.check().unwrap().schedule().unwrap();
-        assert!(sched.steps.iter().all(|s| matches!(s, Step::Pass(_))), "{sched}");
-        assert!(sched.kept.iter().any(|e| e.to == "visibility" && e.port == "covered" && e.when == When::Prev), "{sched}");
-        // Reasons.
-        let e = with(None, Some(When::Iterate(2))).check().unwrap_err();
+        assert!(sched.kept.iter().any(|e| e.to == "draw" && e.port == "faces") && sched.kept.iter().any(|e| e.to == "holes" && e.port == "sky"), "{sched}");
+        // gpu-discover runs it, and it is the composition.
+        assert_eq!(it.accept().unwrap(), (Composition { holes: "coverage".into(), ..Composition::new("gpu-discover") }, true));
+        // Reasons. A cycle within the frame says how to break it.
+        let mut g = it.clone();
+        g.nodes.get_mut("draw").unwrap().timing.clear();
+        let e = g.check().unwrap_err();
+        assert!(e.contains("cycle through") && e.contains("`prev`"), "{e}");
+        // Faces a frame late instead of the loop: a valid graph gpu-discover does not run.
+        g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
+        let e = g.validate().unwrap_err();
+        assert!(e.contains("runs `gpu-discover: bricks + quadtree + coverage` with") && e.contains("iterate 2"), "{e}");
+        let mut g = base.clone();
+        g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Iterate(2));
+        let e = g.check().unwrap_err();
         assert!(e.contains("no cycle to iterate"), "{e}");
-        let e = with(Some(When::Now), Some(When::Iterate(1))).check().unwrap_err();
+        let mut g = it.clone();
+        g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Iterate(1));
+        let e = g.check().unwrap_err();
         assert!(e.contains("at least twice"), "{e}");
         let mut g = base.clone();
         g.nodes.get_mut("kernel").unwrap().timing.insert("storage".into(), When::Prev);
         let e = g.check().unwrap_err();
         assert!(e.contains("compiled into their caller") && e.contains("no timing"), "{e}");
         let mut g = base.clone();
-        g.nodes.get_mut("visibility").unwrap().timing.insert("covered".into(), When::Prev);
+        g.nodes.get_mut("visibility").unwrap().timing.insert("where".into(), When::Prev);
         let e = g.check().unwrap_err();
         assert!(e.contains("not a bound input"), "{e}");
+        // A free timing outside what the back end runs.
+        let mut g = Graph::from_composition(&Composition::new("cpu-discover")).unwrap();
+        g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Iterate(2));
+        g.nodes.get_mut("visibility").unwrap().inputs.insert("where".into(), "draw".into());
+        assert!(g.validate().is_err());
     }
 
-    /// Step 13a: the schedule across devices. cpu-discover: discovery on the CPU, drawing
-    /// on the GPU; faces and the change log cross devices; with the faces a frame late the
-    /// devices overlap (what its `pipelined` knob does today).
+    /// The schedule across devices. cpu-discover: discovery on the CPU, drawing on the GPU;
+    /// faces and the change log cross devices; by default the faces arrive a frame late and
+    /// the devices overlap (`pipelined = true`); `pipelined = false` spells `now`.
     #[test]
     fn schedule_across_devices() {
         let g = Graph::from_composition(&Composition::new("cpu-discover")).unwrap();
         let sched = g.check().unwrap().schedule().unwrap();
         let crosses = |s: &Schedule, from: &str, to: &str| s.transfers.iter().find(|e| e.from == from && e.to == to).map(|e| (e.from_device, e.to_device, e.when));
-        assert_eq!(crosses(&sched, "visibility", "draw"), Some((Device::Cpu, Device::Gpu(0), When::Now)), "{sched}");
+        assert_eq!(crosses(&sched, "visibility", "draw"), Some((Device::Cpu, Device::Gpu(0), When::Prev)), "{sched}");
         assert_eq!(crosses(&sched, "world", "shadow.storage"), Some((Device::Cpu, Device::Gpu(0), When::Now)), "{sched}");
-        assert!(!sched.pipelined());
+        assert!(sched.pipelined(), "{sched}");
         let vis = sched.passes().find(|p| p.node == "visibility").unwrap();
         assert_eq!((vis.device, vis.fused.clone()), (Device::Cpu, vec!["kernel".to_string(), "storage".to_string()]));
         assert!(vis.state.is_some());
-        let mut piped = g.clone();
-        piped.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
-        let sched = piped.check().unwrap().schedule().unwrap();
-        assert_eq!(crosses(&sched, "visibility", "draw"), Some((Device::Cpu, Device::Gpu(0), When::Prev)), "{sched}");
-        assert!(sched.pipelined(), "{sched}");
+        assert_eq!(g.timing_options(), vec![("pipelined", true)]);
+        let off: toml::Table = toml::from_str("pipelined = false").unwrap();
+        let sync = g.clone().with_options(&off);
+        let sched = sync.check().unwrap().schedule().unwrap();
+        assert_eq!(crosses(&sched, "visibility", "draw"), Some((Device::Cpu, Device::Gpu(0), When::Now)), "{sched}");
+        assert!(!sched.pipelined());
+        assert_eq!(sync.timing_options(), vec![("pipelined", false)]);
+        // Both run, as the same composition; the knob carries the difference.
+        assert_eq!(sync.accept().unwrap(), (Composition::new("cpu-discover"), true));
+        assert_eq!(sync.flat_knobs().unwrap().get("pipelined"), Some(&toml::Value::Boolean(false)));
+        assert_ne!(sync.key().unwrap(), g.key().unwrap());
     }
 
-    /// Every composition schedules: the output last, walking kernels only compiled in, every other
+    /// Every composition schedules: the output after what it reads, walking kernels only compiled in, every other
     /// node a pass of its own, fused nodes compiled into a pass on their device.
     #[test]
     fn every_composition_schedules() {
@@ -2113,8 +2215,15 @@ mod tests {
             let ck = Graph::from_composition(&c).unwrap().check().unwrap();
             let s = ck.schedule().unwrap_or_else(|e| panic!("{}: {e}", c.label()));
             let passes: Vec<&Pass> = s.passes().collect();
-            assert_eq!(passes.last().map(|p| p.node.as_str()), Some(ck.output.as_str()), "{}\n{s}", c.label());
-            assert!(s.kept.is_empty() && s.steps.iter().all(|x| matches!(x, Step::Pass(_))), "{}", c.label());
+            // The output after everything it reads within the frame (discovery a frame ahead
+            // runs after it).
+            let at = |id: &str| passes.iter().position(|p| p.node == id);
+            let out = at(&ck.output).unwrap();
+            assert!(ck.graph.nodes.keys().filter(|id| ck.graph.depends(&ck.output, id)).filter_map(|id| at(id)).all(|i| i <= out), "{}\n{s}", c.label());
+            // Kept values and loops only where discovery's timings are.
+            let looped = s.steps.iter().any(|x| matches!(x, Step::Loop { .. }));
+            assert_eq!(looped, c.holes == "coverage", "{}\n{s}", c.label());
+            assert_eq!(s.kept.is_empty(), c.holes != "coverage" && c.backend != "cpu-discover", "{}\n{s}", c.label());
             for (id, n) in &ck.graph.nodes {
                 let is_pass = passes.iter().any(|p| p.node == *id);
                 // Ray queries build their acceleration structures from faces: a pass too.

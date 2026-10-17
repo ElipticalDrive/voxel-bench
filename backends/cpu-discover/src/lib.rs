@@ -1,20 +1,22 @@
 //! CPU-discover back end: self-directed (non screen-space) visibility ray casting on the
 //! CPU, pipelined with a GPU rasteriser. Assembled from components (IDEAS §12): the CPU
-//! **storage** discovery rays walk (any CPU representation, refloor walk; see `grid`), the
-//! **visibility** component (`quadtree` below, or `cluster`, the user's face-cluster
+//! **storage** discovery rays walk (any CPU representation, refloor walk; `mr_components::visibility::discover::grid`), the
+//! **visibility** component (`quadtree`, or `cluster`, the user's face-cluster
 //! design of IDEAS §10; was the cpu-cluster renderer) and **shading** `direct` (the GPU
 //! raster's lit model; its shadow rays walk the GPU storage `shadow_storage`).
 //!
 //! Instead of one ray per pixel, an adaptive screen-space quadtree of CPU rays decides
 //! where to look so that it casts as few rays as possible while still discovering every
-//! block face visible from the camera (see [`discover`]). The discovered face set S lives
+//! block face visible from the camera (the discovery code is the components':
+//! `mr_components::visibility::{discover, quadtree, cluster}`, PLAN step 13b). The discovered face set S lives
 //! in world space and persists across frames (faces not re-confirmed for `keep_frames`
 //! discovery passes expire). S is rasterised on the GPU as one instanced unit quad per
 //! face (the `gpu-raster-naive` backend: 8-byte face record, analytic UVs, lit mode with
 //! ray-traced shadows in the fragment shader). If S is complete, the image equals
 //! rasterising the whole world.
 //!
-//! Pipelining: discovery for frame N+1 runs on a rayon pool while the GPU renders frame N,
+//! Pipelining (in the graph the drawer's faces arrive `prev`; the `pipelined` knob spells
+//! it): discovery for frame N+1 runs on a rayon pool while the GPU renders frame N,
 //! so frame N is drawn with the S discovered from camera N-1 (one frame of visibility
 //! latency). `predict` discovers from the camera extrapolated one frame ahead instead, and
 //! `margin` widens the discovery FOV, both to cut disocclusion errors. The very first frame
@@ -25,9 +27,6 @@
 //! blocked on the job). `audit=true` also casts one CPU ray per pixel for the rendered
 //! camera and counts pixels / distinct faces visible but missing from S.
 
-mod cluster;
-mod discover;
-mod grid;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -35,7 +34,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
-use discover::{Output, Settings, State, cast};
+use mr_components::visibility::discover::{self, Output, Settings, State, cast, grid};
 use mr_components::{names_on, require, Slot};
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
@@ -304,6 +303,10 @@ impl CpuDiscover {
         require(BACKEND, Slot::Shading, &opts.shading)?;
         // The GPU sites' walks: shadow rays (the shadow stages), bounces their own or the same.
         let g = graph::of_init(BACKEND, &p)?;
+        // Pipelining is the drawer's faces arriving a frame late (the graph's timing; the
+        // `pipelined` knob spells it).
+        let mut opts = opts;
+        opts.pipelined = g.find(Role::Draw).is_some_and(|d| g.node(d).when("faces") == graph::When::Prev);
         let mut walks = Walks::default();
         let shadow = walks.site(&g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("cpu-discover: GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&g, s, STORAGE_GROUPS, false));

@@ -149,9 +149,11 @@ The user's architecture, settled with finality and without limits for later (IDE
       nodes between n - 1 times. Fused data (storages, ray queries) is always `now`. A cycle
       of `now` edges, or an `iterate` edge closing none, is invalid with the reason. Today's
       knobs are timings: cpu-discover's `pipelined` = the drawer's faces `prev`;
-      gpu-discover's `incremental` = discovery's `covered` input from the drawer with the
-      drawer's faces iterating twice (draw last frame's faces, discover the holes, draw);
-      its `still_holes = late` = `covered` read `prev` instead.
+      gpu-discover's `incremental` = a hole-detection node (`holes = coverage`) in a loop
+      with the drawer: the drawer's faces iterate twice (draw last frame's faces, find the
+      holes, discover there, draw), and the holes node reads the last frame's image `prev`
+      (its sky mask). (Corrected in 13b: `still_holes = late` is not a timing but a choice
+      per frame kind, so it stays a knob of the holes node.)
     - *Stateful nodes* declare what they keep across frames (`graph::state`: storages,
       geometry, discovered face sets, path-tracing accumulation, acceleration structures).
       The executor owns it per instance on the node's device and resets it on resize or a
@@ -181,6 +183,8 @@ The user's architecture, settled with finality and without limits for later (IDE
     - 13b: discovery's pieces as components (sampler `quadtree` / `cluster`, hole
       detection, retention, the drawer), CPU and GPU; `incremental`, `still_holes` and
       `pipelined` become the timings above (old records load as the graphs they mean).
+      (Done 2026-10-17: hole detection a stage and node, `pipelined` a timing, the CPU and
+      GPU discovery code in components; retention stays the face set's policy, see the log.)
     - 13c: one discovery executor: gpu-discover and cpu-discover become one, discovery on
       `cpu` or `gpu` by its node's device, transfers from the schedule, the CPU storage
       monomorphised (no `dyn World`).
@@ -800,3 +804,72 @@ speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/
   while its `pipelined` knob (default on) makes them `prev` (13b turns such knobs into timings);
   the GUI cannot set timings (shows them); nested or overlapping iterations are rejected with
   the reason.
+
+**2026-10-17, step 13b: discovery's pieces as components; its knobs as graph structure.**
+`components/src/{lib.rs,graph.rs}` (`Slot::Holes`, `Role::Holes`, `Data::Tiles`, `FREE_TIMINGS`,
+`TIMING_KNOBS`, `Graph::with_options` / `timing_options`), `components/src/visibility/{discover,quadtree,cluster}/`,
+`components/src/holes/`, `backends/{gpu-discover,cpu-discover}/src/lib.rs`, `src/{plan.rs,observe.rs,gui/stages.rs}`:
+- **Hole detection is a stage and a node** (`holes = none | coverage` on gpu-discover; CLI
+  `gpu-discover:bricks+quadtree+coverage`; label `... + coverage`): `coverage` is what
+  `incremental = true` was. Its graph: the sampler's new optional input `where` (tiles) from the
+  holes node, whose inputs are `covered` (the drawer, in the loop), `sky` (the drawer, `prev`:
+  last frame's image) and the change log; the drawer's faces iterate twice. The schedule shows
+  the loop `draw, holes, visibility` (2 passes) with the shading after it. The knobs `keep_unseen`,
+  `refresh`, `parallax_px`, `reveal_tiles`, `events`, `still_holes` moved to the holes node; its
+  passes are timed as stages `holes` and `sky mask` of node `holes` (the first part was in
+  `discover`). `holes` is a live knob (as `incremental` was). Old plans and records:
+  `incremental = true` loads as `holes = coverage` (plans, the CLI options, observations with or
+  without a stored graph).
+- **`pipelined` is a timing**: cpu-discover's graph has the drawer's faces `prev` (its default,
+  so every cpu-discover graph key changed: the graph now says what ran); `pipelined = false`
+  spells `now` (`Graph::with_options`, applied wherever a graph is built from a composition and
+  options: plans, sweeps' dedupe keys, observations, the worker without a host graph). A written
+  graph's timing becomes the knob for the back end (`flat_knobs`). Back ends now read both from
+  their graph (gpu-discover: a holes node; cpu-discover: the faces' timing). `accept` checks
+  timings: free ones (`FREE_TIMINGS`: cpu-discover's faces now or prev) must be among the
+  values the back end runs, the others must be its composition's (else the reason, e.g. "runs
+  `gpu-discover: bricks + quadtree + coverage` with `draw`.faces iterate 2, `holes`.sky prev").
+- **The code moved into components**: CPU discovery (`visibility/discover`: face keys, state,
+  rays, the merge into the set, the CPU world `grid`; `visibility/quadtree/cpu.rs`,
+  `visibility/cluster/cpu.rs`) and GPU discovery, split at the piece boundary into the shared
+  module `quadtree::set` (face set, lattice, buffers, parameters), the sampler root
+  (`visibility/quadtree/gpu.wgsl`) and hole detection's root (`holes/coverage/gpu.wgsl`); neither
+  root uses the other's functions. The back ends keep only plumbing (indirect args, overlays,
+  the face source's raster, buffers and passes); 13c makes one executor of them.
+- **Retention is not a node**: the face set's expiry (`keep_frames`, with hole detection
+  `keep_unseen` for faces in view) is the policy of the state the sampler inserts into: on the
+  GPU the sampler writes straight into the hash set, so retention would be a fused node with no
+  edge of its own. It stays the set's knobs; a node when a second retention policy exists.
+- **The GUI's pipeline tree** descends through an iteration with a note (`↻ faces 2 passes a
+  frame: first last frame's faces`) and shows a `prev` edge without descending.
+- Verified: builds without warnings, 78 unit tests (rewritten: the timings test on the real
+  loop, accept's reasons for timings, cpu-discover's `pipelined` spelling both ways, every
+  composition's schedule with loops and kept values exactly where discovery has them; the
+  gpu-discover shader-compose test compiles the sampler and hole detection roots), 4 GPU
+  end-to-end tests. Pixel A/B against the build before (terrain and edits, lit + unlit):
+  gpu-discover plain, coverage (as `incremental = true` in both builds), still_holes late,
+  painter, visbuffer with coverage, gbuffer, view tiles, pathtrace with coverage: identical;
+  `merge = rows` differs by 1 pixel per frame in some frames, as it does between two runs of one
+  build (its merge is not deterministic: noted, not this step's); cpu-discover pipelined,
+  synchronous, cluster, visbuffer: identical; gpu-compute, gpu-raster, `cpu`, gpu-splat
+  identical. Timing A/B (GPU time, interleaved): gpu-discover plain +0.1 / +0.3%, coverage
+  +0.5%, still_holes late +0.5% (10 rounds alone), merge +0.2 / +0.3%, painter -0.9 / -1.4%,
+  gbuffer -0.7% unlit, lit within its spread (2.22-2.36 ms in both builds), pathtrace with
+  coverage +0.2% (8 rounds alone). cpu-discover (pinned to one CCD, 4 rounds): fps within
+  ±0.8% (pipelined, synchronous, cluster; the moved CPU code), its tiny unlit GPU draw (0.18 ms)
+  ±5% both ways (0.007 ms). GUI screenshot: the tree shows the loop note under the drawer, the
+  holes node under the sampler's `where` with its knobs, `sky` as the previous frame. (The
+  headless screenshot test cannot start workers: it spawns the test binary, which rejects
+  `--socket`; true before this step too.)
+- **A measurement hazard (log)**: in runs with several renderers, gpu-discover with hole
+  detection, unlit, lands in one of two modes per run (about 2.15 or 2.33-2.40 ms GPU time) in
+  both builds; alone (one renderer per run) it never does. A median over few rounds then flips
+  between modes (it showed +5.8% and +8.4% "losses" that vanished when run alone). Not explained
+  (presumably GPU clocks or state left by the renderer before); time such passes alone.
+- Not yet: the sampler still reads hole detection's tile mask through a runtime flag (`incr`)
+  rather than a compiled-in input (as before; the zero-cost rule says compile it in, which
+  13c's executor does with the module split); gpu-discover's first draw in the loop is hole
+  detection's own face-id raster rather than the drawer's pass; cluster has no GPU
+  implementation and no hole detection; `merge` and the painter's sort are still knobs of the
+  sampler / drawer, not nodes.
+

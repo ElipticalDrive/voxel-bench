@@ -244,6 +244,14 @@ impl RendererSpec {
                 self.compose = Some(c);
             }
         }
+        // Before step 13b hole detection was gpu-discover's `incremental` knob.
+        if let Some(on) = self.options.remove("incremental").and_then(|v| v.as_bool()) {
+            if let Some(c) = self.compose.as_mut().filter(|c| c.holes.is_empty() || c.holes == "none") {
+                c.holes = if on { "coverage" } else { "none" }.into();
+            } else if on && self.compose.is_none() {
+                self.options.insert("holes".into(), "coverage".into());
+            }
+        }
         if let Some(c) = &mut self.compose {
             // Stages that were options before (discovery's `draw`, cpu-discover's
             // `shadow_storage`): a stage left empty takes the option of its name.
@@ -369,7 +377,8 @@ impl RendererSpec {
     /// The graph the back end runs: the one given, else the composition's (`None` for
     /// standalone renderers).
     pub fn pipeline(&self) -> Option<mr_components::graph::Graph> {
-        self.ran_graph.clone().or_else(|| self.compose.as_ref().and_then(|c| mr_components::graph::Graph::from_composition(c).ok()))
+        // Knobs that spell timings (cpu-discover `pipelined`) set them on the composition's graph.
+        self.ran_graph.clone().or_else(|| self.compose.as_ref().and_then(|c| mr_components::graph::Graph::from_composition(c).ok())).map(|g| g.with_options(&self.options))
     }
 
     /// Options as the user sees them: without the keys a composition derives.
@@ -657,7 +666,7 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
             // Combinations whose components' needs cannot be met do not exist.
             for c in combos.into_iter().filter(|c| c.validate().is_ok()) {
                 for (c, sites) in expand_sites(&c, &site_axes)? {
-                    let key = mr_components::graph::Graph::from_composition(&c).and_then(|g| g.with_sites(&sites)).and_then(|g| g.key()).map_err(anyhow::Error::msg)?;
+                    let key = mr_components::graph::Graph::from_composition(&c).and_then(|g| g.with_sites(&sites)).and_then(|g| g.with_options(&options).key()).map_err(anyhow::Error::msg)?;
                     if !keys.insert(key) {
                         continue;
                     }

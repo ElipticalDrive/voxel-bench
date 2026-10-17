@@ -1651,6 +1651,10 @@ API. Executors acting on devices: step 13.
 creation lists passes, loops, transfers between devices and kept values. Graphs express it
 and validate it with reasons; back ends do not run timings yet (13b-13e).
 
+**State (2026-10-17, step 13b).** The first timings run: gpu-discover's incremental mode is
+a hole-detection node in a loop with the drawer (`holes = coverage`), cpu-discover's
+pipelining is its faces edge `prev`; the discovery code (CPU and GPU) lives in components.
+
 ---
 
 ## 23. Scope of animation; transparency next (after the architecture)

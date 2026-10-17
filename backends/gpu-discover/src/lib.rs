@@ -34,7 +34,11 @@
 //! `audit` adds one ray per pixel after the timed passes and counts pixels whose visible
 //! face is not in S.
 //!
-//! Event-driven frames (`events`, with `incremental`): the host classifies each frame.
+//! The quadtree's shaders are the components' (PLAN step 13b): the sampler
+//! (`mr_components::visibility::quadtree`) and hole detection (`mr_components::holes`, the
+//! `holes = coverage` stage, was `incremental`), two roots over the shared face set.
+//!
+//! Event-driven frames (`events`, with `holes = coverage`): the host classifies each frame.
 //! *static* (camera pose unchanged, no world changes) skips discovery and redraws the last
 //! face list; *still* (rotation and/or world changes, no translation) skips seen-marking
 //! and the parallax test (with `still_holes = late` also the face-id raster, finding holes
@@ -59,6 +63,7 @@ use mr_components::shaders::Walks;
 use mr_components::storage::gpu_data::{self, Bound, StorageSet};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawNodes, DrawerSpec, FaceDrawer};
+use mr_components::visibility::quadtree;
 use mr_components::{draw, names_on, require, Slot};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, hash3, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
@@ -106,17 +111,17 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("closure_box", "Local-closure box size in cells per axis", 1, 8, 2, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("block_faces", "With each discovered face also add its block's other camera-facing exposed faces (closes raster-vs-ray edge cracks)", true, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("jitter", "Shift the tile lattice randomly every frame (temporal coverage)", true, true).of("visibility", &["quadtree"]),
-        ParamSpec::bool("incremental", "Rasterise last frame's faces first and only discover tiles with uncovered pixels, parallax-revealable occlusion edges, edited blocks or changed chunks, or their refresh turn (jitter off)", false, true).of("visibility", &["quadtree"]),
-        ParamSpec::int("keep_unseen", "Incremental: frames a face inside the view stays in S without covering a pixel (faces outside the view use keep_frames)", 1, 1000, 64, true).of("visibility", &["quadtree"]),
-        ParamSpec::int("refresh", "Incremental: re-discover every Nth tile each frame regardless (0 = never)", 0, 1024, 16, true).of("visibility", &["quadtree"]),
-        ParamSpec::float("parallax_px", "Incremental: an occlusion edge needs discovery if the camera's translation can reveal more than this many pixels behind it", 0.05, 16.0, false, 0.5, true).of("visibility", &["quadtree"]),
-        ParamSpec::bool("events", "Incremental: classify frames by what changed. Unchanged camera and world: skip discovery and redraw (frame_kind 0). Rotation or world changes only: skip seen-marking and the parallax test (1). Translation: the full incremental passes (2). Edits mark only the edited blocks' screen tiles", true, true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("holes", "Hole detection (was `incremental`): none = discover the whole screen every frame (jittered lattice); coverage = rasterise last frame's faces first and only discover tiles with uncovered pixels, parallax-revealable occlusion edges, edited blocks or changed chunks, or their refresh turn (jitter off)", &names_on(BACKEND, Slot::Holes), "none", true),
+        ParamSpec::int("keep_unseen", "Incremental: frames a face inside the view stays in S without covering a pixel (faces outside the view use keep_frames)", 1, 1000, 64, true).of("holes", &["coverage"]),
+        ParamSpec::int("refresh", "Incremental: re-discover every Nth tile each frame regardless (0 = never)", 0, 1024, 16, true).of("holes", &["coverage"]),
+        ParamSpec::float("parallax_px", "Incremental: an occlusion edge needs discovery if the camera's translation can reveal more than this many pixels behind it", 0.05, 16.0, false, 0.5, true).of("holes", &["coverage"]),
+        ParamSpec::bool("events", "Incremental: classify frames by what changed. Unchanged camera and world: skip discovery and redraw (frame_kind 0). Rotation or world changes only: skip seen-marking and the parallax test (1). Translation: the full incremental passes (2). Edits mark only the edited blocks' screen tiles", true, true).of("holes", &["coverage"]),
         ParamSpec::choice("merge", "Faces drawn as: none = one quad per face; rows = runs of same-block faces along each face's u axis merged into one quad (one GPU pass over S; ignored with order = painter)", &["none", "rows"], "none", true).of("visibility", &["quadtree"]),
         ParamSpec::choice("order", "Face drawing order. depth: any order, depth-tested (lit mode adds a depth pre-pass). painter: sorted back to front by Manhattan distance from the camera cell (an exact order for voxels; GPU counting sort), drawn without depth testing, so every fragment is shaded", &["depth", "painter"], "depth", true).of("draw", &["raster"]),
-        ParamSpec::choice("still_holes", "Events, rotation-only frames: now = rasterise the old face list first and discover holes (faces that rotation moved onto a pixel centre) in the same frame; late = skip that raster and discover them next frame (cheaper, holes visible for one frame)", &["now", "late"], "now", true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("still_holes", "Events, rotation-only frames: now = rasterise the old face list first and discover holes (faces that rotation moved onto a pixel centre) in the same frame; late = skip that raster and discover them next frame (cheaper, holes visible for one frame)", &["now", "late"], "now", true).of("holes", &["coverage"]),
         ParamSpec::choice("view", "image: the rendered scene. quads: one colour per drawn quad (shows merging). overdraw: fragments shaded per pixel on a colour scale (linear; white above view_max; compare order = depth vs painter). tiles: level-0 tiles tinted by why they were discovered this frame (white full, blue edited block / changed chunk, cyan entering strip (still_holes = late), red uncovered or hole, yellow parallax, green refresh; dark = skipped). rays: a dot per ray cast this frame. churn: faces new to the set this frame in red, carried-over faces grey", &["image", "tiles", "rays", "churn", "overdraw", "quads"], "image", true).of("visibility", &["quadtree"]),
         ParamSpec::int("view_max", "overdraw view: the top of the colour scale (fragments per pixel)", 1, 255, 8, true).of("visibility", &["quadtree"]),
-        ParamSpec::int("reveal_tiles", "Incremental: largest reveal radius around an edge, in level-0 tiles", 1, 16, 4, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("reveal_tiles", "Incremental: largest reveal radius around an edge, in level-0 tiles", 1, 16, 4, true).of("holes", &["coverage"]),
         ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true).of("visibility", &["quadtree"]),
         shadows_param(),
         ParamSpec::int("max_steps", "DDA step limit", 32, 16384, 2048, true),
@@ -150,6 +155,9 @@ struct Options {
     closure_box: u32,
     block_faces: bool,
     jitter: bool,
+    holes: String,
+    /// Hole detection on: a `holes` node in the graph (`coverage`).
+    #[serde(skip)]
     incremental: bool,
     keep_unseen: u32,
     refresh: u32,
@@ -193,6 +201,7 @@ impl Default for Options {
             closure_box: 2,
             block_faces: true,
             jitter: true,
+            holes: "none".into(),
             incremental: false,
             keep_unseen: 64,
             refresh: 16,
@@ -486,6 +495,8 @@ pub struct GpuDiscover {
     ring: FrameRing,
     /// The nodes of the timed stages (PLAN step 11): discovery's, then the drawer's.
     vis_nodes: Vec<String>,
+    /// Hole detection's node (timed stages `holes` and `sky mask`).
+    holes_nodes: Vec<String>,
     draw_nodes: DrawNodes,
     slots: HashMap<IVec3, u16>,
     free_slots: Vec<u16>,
@@ -585,6 +596,9 @@ impl GpuDiscover {
         // The sites' walks (PLAN step 9c): discovery rays (the storage and traversal stages),
         // the storage exposure tests read, shadow and bounce rays; each its own or shared.
         let g = graph::of_init(BACKEND, &p)?;
+        // Hole detection is a node of the graph (the drawer's faces iterating through it).
+        let mut opts = opts;
+        opts.incremental = g.find(Role::Holes).is_some();
         let mut walks = Walks::default();
         let bound = |role, port: &str| g.site(role, port).ok_or_else(|| anyhow::anyhow!("gpu-discover: `{port}` rays are not bound"));
         let rays = walks.site(&g, bound(Role::Visibility, "rays")?, STORAGE_GROUPS, false);
@@ -613,15 +627,22 @@ impl GpuDiscover {
         let module = |label, src: String| mr_gpu::shader(dev, label, src);
         // The walks' modules: the roots cast through the discovery rays' kernel and read the
         // exposure storage; shading's rays through theirs.
-        let (program, deps) = mr_components::shaders::sites_program(&walks, rays, exposure, shadow, bounce);
+        let (mut program, deps) = mr_components::shaders::sites_program(&walks, rays, exposure, shadow, bounce);
+        // The quadtree's face set and buffers (a module the sampler and hole detection share).
+        program.add(quadtree::SET, quadtree::SET_WGSL, &deps.iter().map(String::as_str).collect::<Vec<_>>());
         let modules = |label, root: &str| mr_gpu::program::compile(dev, label, &program, root, &deps.iter().map(String::as_str).collect::<Vec<_>>());
+        let disc_deps: Vec<&str> = std::iter::once(quadtree::SET).chain(deps.iter().map(String::as_str)).collect();
+        let discovery = |label, root: &str| mr_gpu::program::compile(dev, label, &program, root, &disc_deps);
         // Discovery and raster read the world through the composed storage, walked with
         // refloor (rays and shadow rays).
         let storages = StorageSet::new(&gpu, &walks, wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT, gpu_data::Limits { mb: opts.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         if storages.groups_end() > gpu.device.limits().max_bind_groups {
             anyhow::bail!("{} storages need {} bind groups; this device has {}", walks.storages.len(), storages.groups_end(), gpu.device.limits().max_bind_groups);
         }
-        let disc_mod = modules("discover", include_str!("discover.wgsl"));
+        // Discovery's pieces (PLAN step 13b): the quadtree sampler and hole detection, each
+        // its own root over the shared set.
+        let disc_mod = discovery("quadtree", quadtree::GPU_WGSL);
+        let holes_mod = discovery("holes", mr_components::holes::coverage::GPU_WGSL);
         let args_mod = module("discover args", include_str!("args.wgsl").to_string());
         let shade = mr_components::shading::gpu_wgsl(&shading).expect("validated");
         if let Some(why) = shade_state::fragment_blocker(&shading, &gpu.device) {
@@ -703,11 +724,11 @@ impl GpuDiscover {
         let pipe_finalize = compute(&pl_args, &args_mod, "finalize");
         let pipe_job_args = compute(&pl_args, &args_mod, "job_args");
         let pipe_footprint = compute(&pl_disc, &disc_mod, "footprint");
-        let pipe_mark = compute(&pl_disc, &disc_mod, "mark");
-        let pipe_need_raw = compute(&pl_disc, &disc_mod, "need_raw");
-        let pipe_need_final = compute(&pl_disc, &disc_mod, "need_final");
-        let pipe_sky = compute(&pl_disc, &disc_mod, "sky_update");
-        let pipe_need_still = compute(&pl_disc, &disc_mod, "need_still");
+        let pipe_mark = compute(&pl_disc, &holes_mod, "mark");
+        let pipe_need_raw = compute(&pl_disc, &holes_mod, "need_raw");
+        let pipe_need_final = compute(&pl_disc, &holes_mod, "need_final");
+        let pipe_sky = compute(&pl_disc, &holes_mod, "sky_update");
+        let pipe_need_still = compute(&pl_disc, &holes_mod, "need_still");
         let pipe_sort_hist = compute(&pl_disc, &disc_mod, "sort_hist");
         let pipe_sort_scan = compute(&pl_disc, &disc_mod, "sort_scan");
         let pipe_sort_scatter = compute(&pl_disc, &disc_mod, "sort_scatter");
@@ -867,6 +888,7 @@ impl GpuDiscover {
             bind_st: None,
             ring: FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()).with_stages(p.stage_times),
             vis_nodes: g.ids(&[Role::Visibility]),
+            holes_nodes: g.ids(&[Role::Holes]),
             draw_nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
             sized,
             world,
@@ -1540,7 +1562,8 @@ impl Renderer for GpuDiscover {
         };
         // Empty pass carrying the frame's begin timestamp, so the clears below are timed.
         enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("frame begin"), timestamp_writes: self.ring.compute_timestamps(ticket, true, false) });
-        self.ring.stage(&mut enc, ticket, "discover", &self.vis_nodes);
+        let first = if self.opts.incremental { ("holes", &self.holes_nodes) } else { ("discover", &self.vis_nodes) };
+        self.ring.stage(&mut enc, ticket, first.0, first.1);
         mark(&mut enc, 0);
         enc.clear_buffer(&self.stats, 0, None);
         enc.clear_buffer(&self.keys[parity], 0, None);
@@ -1600,6 +1623,9 @@ impl Renderer for GpuDiscover {
             pass.dispatch_workgroups((cols * rows).div_ceil(256), 1, 1);
             pass.set_pipeline(&self.pipe_need_final);
             pass.dispatch_workgroups((cols * rows).div_ceil(256), 1, 1);
+        }
+        if self.opts.incremental {
+            self.ring.stage(&mut enc, ticket, "discover", &self.vis_nodes);
         }
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("survive"), timestamp_writes: None });
@@ -1696,7 +1722,7 @@ impl Renderer for GpuDiscover {
         self.encode_shade(&mut enc, parity, &world_bg, req.mode, (false, true), ticket);
         mark(&mut enc, 3 + 2 * MAX_LEVELS as u32);
         if self.opts.incremental {
-            self.ring.stage(&mut enc, ticket, "sky mask", &self.vis_nodes);
+            self.ring.stage(&mut enc, ticket, "sky mask", &self.holes_nodes);
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sky mask"), timestamp_writes: None });
             pass.set_pipeline(&self.pipe_sky);
             pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
@@ -1759,8 +1785,9 @@ impl Renderer for GpuDiscover {
             "closure_box" => self.opts.closure_box = int(2),
             "block_faces" => self.opts.block_faces = value.as_bool().unwrap_or(true),
             "jitter" => self.opts.jitter = value.as_bool().unwrap_or(true),
-            "incremental" => {
-                self.opts.incremental = value.as_bool().unwrap_or(false);
+            "holes" => {
+                self.opts.holes = value.as_str().unwrap_or("none").into();
+                self.opts.incremental = require(BACKEND, Slot::Holes, &self.opts.holes)? == "coverage";
                 self.pending.clear();
             }
             "refresh" => self.opts.refresh = int(16),
@@ -1935,8 +1962,12 @@ mod tests {
                     let mut with_bounce = walks.clone();
                     let bounce = with_bounce.site(&ck, ck.site(Role::Shading, "bounce").unwrap(), STORAGE_GROUPS, false);
                     for (walks, bounce, shading) in [(walks, shadow, "direct"), (with_bounce, bounce, "pathtrace")] {
-                        let (program, deps) = mr_components::shaders::sites_program(&walks, rays, exposure, shadow, bounce);
-                        check(&program, include_str!("discover.wgsl"), &deps, &format!("discover {st} {k}"));
+                        let (mut program, deps) = mr_components::shaders::sites_program(&walks, rays, exposure, shadow, bounce);
+                        // Discovery's pieces: the sampler and hole detection over the shared set.
+                        program.add(quadtree::SET, quadtree::SET_WGSL, &deps.iter().map(String::as_str).collect::<Vec<_>>());
+                        let disc_deps: Vec<String> = std::iter::once(quadtree::SET.to_string()).chain(deps.iter().cloned()).collect();
+                        check(&program, quadtree::GPU_WGSL, &disc_deps, &format!("quadtree {st} {k}"));
+                        check(&program, mr_components::holes::coverage::GPU_WGSL, &disc_deps, &format!("holes {st} {k}"));
                         let shade = mr_components::shading::gpu_wgsl(shading).unwrap();
                         let draw_src = format!("{}\n{shade}\n{}\n{}", ShadeState::wgsl(0, 3), include_str!("raster.wgsl"), draw::faces_wgsl(true));
                         check(&program, &format!("{draw_src}\n{}", shade_state::fragment_wgsl(shading, draw::gpu_wgsl("raster").unwrap())), &deps, &format!("raster {st} {k} {shading}"));

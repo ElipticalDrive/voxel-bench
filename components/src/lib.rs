@@ -40,6 +40,7 @@ pub mod caps;
 pub mod draw;
 pub mod geometry;
 pub mod graph;
+pub mod holes;
 pub mod impls;
 pub mod prepass;
 pub mod shaders;
@@ -54,6 +55,9 @@ pub enum Slot {
     Geometry,
     Prepass,
     Visibility,
+    /// Discovery's hole detection (PLAN step 13b): where the sampler looks; `none` looks
+    /// everywhere every frame, `coverage` only where last frame's faces leave holes.
+    Holes,
     Draw,
     Traversal,
     /// What shadow and bounce rays walk (PLAN step 7c, the graph's secondary-ray edge):
@@ -66,7 +70,7 @@ pub enum Slot {
 
 impl Slot {
     /// In composition order (labels, the GUI chooser).
-    pub const ALL: [Slot; 10] = [Slot::Storage, Slot::Geometry, Slot::Prepass, Slot::Visibility, Slot::Draw, Slot::Traversal, Slot::ShadowStorage, Slot::ShadowTraversal, Slot::Shading, Slot::Meshes];
+    pub const ALL: [Slot; 11] = [Slot::Storage, Slot::Geometry, Slot::Prepass, Slot::Visibility, Slot::Holes, Slot::Draw, Slot::Traversal, Slot::ShadowStorage, Slot::ShadowTraversal, Slot::Shading, Slot::Meshes];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -74,6 +78,7 @@ impl Slot {
             Slot::Geometry => "geometry",
             Slot::Prepass => "prepass",
             Slot::Visibility => "visibility",
+            Slot::Holes => "holes",
             Slot::Draw => "draw",
             Slot::Traversal => "traversal",
             Slot::ShadowStorage => "shadow_storage",
@@ -87,7 +92,7 @@ impl Slot {
     /// mesh drawing): left out of labels while at the default, and last (optional) in the
     /// CLI form.
     pub fn optional(self) -> bool {
-        matches!(self, Slot::Prepass | Slot::Shading | Slot::Meshes)
+        matches!(self, Slot::Prepass | Slot::Holes | Slot::Shading | Slot::Meshes)
     }
 
     /// The name shown in the GUI's stage grid.
@@ -242,7 +247,7 @@ pub const BACKENDS: &[BackendInfo] = &[
         name: "gpu-discover",
         description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
         renderer: Some("gpu-discover"),
-        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Draw, Slot::Traversal],
+        slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Holes, "none"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Draw, Slot::Traversal],
         runs: impls::GPU_COMPUTE, at: DRAWN, hosts: &[(Slot::Visibility, &["quadtree"])], reads: READS, api_choice: None,
     },
     BackendInfo {
@@ -342,6 +347,9 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Visibility, name: "splat", description: "Point splatting in compute (from gpu-splat): each point's square footprint (sized from its projected size, capped at max_splat px) atomicMin's its depth, a second pass writes the winning id, a resolve pass ray-boxes the block. Knob: max_splat.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "columns", description: "Voxel Space column march (Comanche, 1992): per screen column, front to back over the heightmap, drawing spans with a y-buffer.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }, Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] }], needs: &[(Slot::Storage, Cap::Heights)] },
     ComponentInfo { slot: Slot::Visibility, name: "faces", description: "Every face of the geometry component goes to the draw stage, which depth-tests them (rasterisation).", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[] }, Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] }], needs: &[] },
+    // Holes (discovery's hole detection, PLAN step 13b).
+    ComponentInfo { slot: Slot::Holes, name: "none", description: "No hole detection: the sampler looks at the whole screen every frame (jittered lattice).", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }], needs: &[] },
+    ComponentInfo { slot: Slot::Holes, name: "coverage", description: "Incremental discovery (was `incremental = true`): the drawer first draws last frame's faces at this camera; the sampler then looks only at tiles with uncovered pixels (not known sky), occlusion edges the camera's translation can reveal, edited blocks or changed chunks, and a round-robin refresh; faces covering a pixel count as seen. In the graph a loop: the drawer's faces iterate twice. Knobs: keep_unseen, refresh, parallax_px, reveal_tiles, events, still_holes.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }], needs: &[] },
     // Draw (the face drawer).
     ComponentInfo { slot: Slot::Draw, name: "raster", description: "Depth-tested rasterisation of the faces; each fragment's pixel ray is intersected with the face plane and shaded. gpu-raster: knob depth_prepass (lit: shade once per pixel); discovery: knob order (depth or painter). cpu-raster: edge functions into a visibility buffer, then deferred shading; knobs tile_width, band_height.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[] }, Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] }], needs: &[] },
     ComponentInfo { slot: Slot::Draw, name: "gbuffer", description: "G-buffer (from gpu-hybrid): the raster pass writes the common hit record (distance, block, face); the common deferred pass rebuilds the surface and shades once per pixel. 8 bytes per pixel against visbuffer's 4, but no refetch.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[] }], needs: &[] },
@@ -386,6 +394,8 @@ pub struct Composition {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub visibility: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub holes: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub draw: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub traversal: String,
@@ -420,6 +430,8 @@ struct Stored {
     #[serde(default)]
     visibility: String,
     #[serde(default)]
+    holes: String,
+    #[serde(default)]
     draw: String,
     #[serde(default)]
     traversal: String,
@@ -435,7 +447,7 @@ struct Stored {
 
 impl From<Stored> for Composition {
     fn from(s: Stored) -> Self {
-        let mut c = Composition { backend: s.backend, storage: s.storage, geometry: s.geometry, prepass: s.prepass, visibility: s.visibility, draw: s.draw, traversal: s.traversal, shadow_storage: s.shadow_storage, shadow_traversal: s.shadow_traversal, shading: s.shading, meshes: s.meshes };
+        let mut c = Composition { backend: s.backend, storage: s.storage, geometry: s.geometry, prepass: s.prepass, visibility: s.visibility, holes: s.holes, draw: s.draw, traversal: s.traversal, shadow_storage: s.shadow_storage, shadow_traversal: s.shadow_traversal, shading: s.shading, meshes: s.meshes };
         if c.traversal.is_empty() && component(Slot::Traversal, &c.visibility).is_some() {
             c.traversal = std::mem::take(&mut c.visibility);
         }
@@ -457,7 +469,7 @@ impl Default for Composition {
 impl Composition {
     /// The back end's default composition (empty slots if the back end is unknown).
     pub fn new(backend: &str) -> Self {
-        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), draw: String::new(), traversal: String::new(), shadow_storage: String::new(), shadow_traversal: String::new(), shading: String::new(), meshes: String::new() };
+        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), holes: String::new(), draw: String::new(), traversal: String::new(), shadow_storage: String::new(), shadow_traversal: String::new(), shading: String::new(), meshes: String::new() };
         c.fill_defaults();
         c
     }
@@ -468,6 +480,7 @@ impl Composition {
             Slot::Geometry => &self.geometry,
             Slot::Prepass => &self.prepass,
             Slot::Visibility => &self.visibility,
+            Slot::Holes => &self.holes,
             Slot::Draw => &self.draw,
             Slot::Traversal => &self.traversal,
             Slot::ShadowStorage => &self.shadow_storage,
@@ -492,6 +505,7 @@ impl Composition {
             Slot::Geometry => &mut self.geometry,
             Slot::Prepass => &mut self.prepass,
             Slot::Visibility => &mut self.visibility,
+            Slot::Holes => &mut self.holes,
             Slot::Draw => &mut self.draw,
             Slot::Traversal => &mut self.traversal,
             Slot::ShadowStorage => &mut self.shadow_storage,
@@ -735,7 +749,7 @@ mod tests {
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 Slot::Prepass => prepass::gpu_wgsl(c.name).is_some(),
                 Slot::Meshes => ["none", "composite"].contains(&c.name),
-                Slot::Geometry | Slot::Draw | Slot::ShadowStorage | Slot::ShadowTraversal => false,
+                Slot::Geometry | Slot::Draw | Slot::Holes | Slot::ShadowStorage | Slot::ShadowTraversal => false,
             };
             assert!(ok, "{} `{}`", c.slot.name(), c.name);
         }
@@ -748,7 +762,7 @@ mod tests {
                 Slot::Traversal => traversal::gpu_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
                 Slot::Meshes => ["none", "depth"].contains(&c.name),
-                Slot::Prepass | Slot::ShadowStorage | Slot::ShadowTraversal => false,
+                Slot::Prepass | Slot::Holes | Slot::ShadowStorage | Slot::ShadowTraversal => false,
             };
             assert!(ok, "gpu-raster {} `{}`", c.slot.name(), c.name);
         }
@@ -806,6 +820,7 @@ mod tests {
             let ok = match c.slot {
                 Slot::Storage => storage::gpu(c.name).is_some(),
                 Slot::Visibility => c.name == "quadtree",
+                Slot::Holes => ["none", "coverage"].contains(&c.name),
                 Slot::Draw => draw::gpu_wgsl(c.name).is_some(),
                 Slot::Traversal => traversal::gpu_wgsl(c.name).is_some(),
                 Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
