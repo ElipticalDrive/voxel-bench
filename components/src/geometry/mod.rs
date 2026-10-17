@@ -15,6 +15,7 @@
 
 pub mod cubes;
 pub mod naive;
+pub mod points;
 
 use mr_core::ChunkData;
 pub use mr_mesh::{Merge, Mesh};

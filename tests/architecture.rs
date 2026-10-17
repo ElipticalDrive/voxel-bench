@@ -66,9 +66,10 @@ const SHADING_USE: &[(&str, &str)] = &[
     // The discovery executor (gpu-discover and cpu-discover; PLAN step 13c).
     ("discover", "shading::gpu_wgsl("),
     ("gpu-splat", "shading::gpu_wgsl("),
-    ("gpu-voxelspace", "shading::gpu_wgsl("),
     ("cpu", "direct::cpu::"),
-    ("cpu-voxelspace", "direct::cpu::"),
+    // The voxelspace executor (gpu-voxelspace and cpu-voxelspace; PLAN step 13d): each lane.
+    ("voxelspace", "shading::gpu_wgsl("),
+    ("voxelspace", "direct::cpu::"),
     // The reference's f64 model on purpose: the same algorithm at a higher precision (the
     // f32 component cost 4-22 dB of lit PSNR; PLAN, step 1).
     ("cpu-raster", "shade_surface("),

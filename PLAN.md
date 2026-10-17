@@ -58,7 +58,8 @@ The user's architecture, settled with finality and without limits for later (IDE
   accepts until step 13 makes back ends executors.)
 - **Strategies inside back ends:** discovery (quadtree, cluster and their pieces), splat
   and voxelspace columns are back-end code, not components; the ten back ends are
-  hand-written assemblers, not executors placing pieces on devices (§18).
+  hand-written assemblers, not executors placing pieces on devices (§18). (Steps 13b-d:
+  discovery, splat and columns are components; discovery and voxelspace one executor each.)
 - **No common visibility buffer:** strategies do not share one hit record / visibility
   buffer; inline or deferred shading is a choice only where a face drawer exists; meshes
   are a special stage instead of a surface source (§18). (Step 12 done: one hit record with
@@ -190,6 +191,7 @@ The user's architecture, settled with finality and without limits for later (IDE
       monomorphised (no `dyn World`). (Done 2026-10-17: one crate `backends/discover`, the two
       names its configurations; see the log.)
     - 13d: splat and columns as components; the voxelspace back ends as configurations.
+      (Done 2026-10-17: one crate `backends/voxelspace`, the two names its lanes; see the log.)
     - 13e: GPU and CPU executors run every graph from the schedule (ray casting, raster,
       ray queries, splat, columns, discovery); hand-written back ends removed; a pipeline
       split over `gpu` and `gpu1` through a transfer adapter; pixel and timing A/B of every
@@ -926,3 +928,50 @@ speak graphs.** `components/src/graph.rs` (sites form), `src/plan.rs`, `src/gui/
   move gpu-discover's sampler to the CPU or the reverse; the executor would run it, the
   registry's acceptance does not); the GPU sampler still owns its own raster passes (face ids,
   painter, overdraw) beside the drawer's; cluster has no GPU implementation.
+
+
+**2026-10-17, step 13d: splat and columns as components; one voxelspace executor.**
+`components/src/visibility/{columns,splat}/`, `components/src/geometry/points/`,
+`backends/voxelspace/` (crate `backend-voxelspace`, replaces `backends/gpu-voxelspace` and
+`backends/cpu-voxelspace`; `lib.rs` the executor, `gpu.rs` / `cpu.rs` the lanes),
+`backends/gpu-splat/src/lib.rs`, `tests/architecture.rs`, `crates/mr-worker`:
+- **Columns is a component**: the CPU march (`columns::cpu`: `March`, its outputs `Inline` and
+  `Records`, the deferred view `Deferred`) and the GPU root (`columns::GPU_WGSL`, the records and
+  view under `DEFERRED`: `columns::DEFERRED_WGSL`, the uniform `columns::Camera`) moved out of the
+  back ends unchanged.
+- **One voxelspace executor, two configurations**: `gpu-voxelspace` and `cpu-voxelspace` stay
+  the registry's names (graphs, keys, labels, knobs unchanged); both create `VoxelSpace<L>`, the
+  lane picked by the visibility node's device (`GpuColumns`, `CpuColumns`; generic, so no
+  dynamic call per frame). Shared (`Core`): the heightmap storage, kept on the CPU by both and
+  patched from the change log (the GPU lane uploads its changed rows: the change log's transfer),
+  cells per column, frame size, the timed stages' nodes and counters.
+- **Splat is a component over geometry `points`**: the shader (`splat::GPU_WGSL`, entries
+  `splat::ENTRIES`, `splat::Camera`) and the points (`geometry::points`: `build` over a chunk and
+  its six neighbours, as every geometry does; `Points`, the node's state: rebuilt for changed
+  chunks and their neighbours). gpu-splat keeps the plumbing; it finds the points' transfer
+  (geometry on the CPU to visibility on the GPU) in `Checked::schedule` and refuses a graph
+  without it; the upload is that transfer's adapter.
+- Verified: builds without warnings (dev, release), 80 unit tests (new: points' exposed faces),
+  4 GPU end-to-end tests. Shaders (`wgsl.sh`, narrowed to the changed back ends: gpu-voxelspace
+  every shading inline and deferred, gpu-splat every storage, traversal and shading; terrain and
+  meshes): 68 distinct, identical. Pixel A/B (terrain and edits, lit + unlit, frames 0/20/39):
+  gpu-voxelspace inline, deferred, pathtrace; cpu-voxelspace inline, deferred: identical;
+  gpu-splat on terrain (bricks, tree64, pathtrace): identical; on edits frame 0 differs
+  (2.3-3.6k px) in every variant, and by as much between two runs of the after build alone
+  (see below), frames 20 and 39 identical. Timing A/B (interleaved, 4 rounds, each alone):
+  gpu-voxelspace GPU time -0.1 / +0.0% (inline), +0.0 / -0.0% (deferred), fps -0.3 .. +0.1%
+  except deferred unlit +3.0% (host-bound at 730-750 fps; noise-sized); cpu-voxelspace (one CCD)
+  fps +0.5 / -0.3% (inline), -0.3 / -0.4% (deferred).
+- **gpu-splat faster on the host (log)**: fps +26% (88 -> 112 lit, 91 -> 115 unlit), GPU time
+  -0.1 / -1.9% (a rerun -4.8 / -5.1%, presumably fewer stalls); the cause, measured: world updates
+  mean 5.8 -> 3.6 ms (p95 61 -> 38 ms), initial load 1362 -> 875 ms. The points build now reads
+  the six neighbour chunks fetched once (the geometry interface's `get`) instead of a
+  `world.block` hash lookup per face test at chunk borders. Same points, same order.
+- **gpu-splat's first frame is not deterministic on `edits` (log)**: two runs of one build
+  differ by ~2.6-2.9k px at frame 0 (lit and unlit). Points are concatenated in hash-map order
+  and equal depths go to the larger id (`atomicMax`), so ties resolve by an order that changes
+  per process; later frames agree. Older than this step; not fixed (not blocking).
+- Not yet: the two names remain registry entries with their own slot lists (a graph cannot
+  move columns between devices; the executor would run it, the registry's acceptance does not);
+  splat has no CPU implementation; the heightmap is built on the CPU in both lanes (its GPU
+  implementation is CPU-built rows uploaded).

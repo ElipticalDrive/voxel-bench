@@ -522,19 +522,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "backend-cpu-voxelspace"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cpu-reference",
- "glam",
- "mr-components",
- "mr-core",
- "rayon",
- "serde",
-]
-
-[[package]]
 name = "backend-discover"
 version = "0.1.0"
 dependencies = [
@@ -601,11 +588,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "backend-gpu-voxelspace"
+name = "backend-voxelspace"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "cpu-reference",
  "glam",
  "mr-components",
  "mr-core",
@@ -2331,12 +2319,11 @@ dependencies = [
  "anyhow",
  "backend-cpu",
  "backend-cpu-raster",
- "backend-cpu-voxelspace",
  "backend-discover",
  "backend-gpu-raster",
  "backend-gpu-rt",
  "backend-gpu-splat",
- "backend-gpu-voxelspace",
+ "backend-voxelspace",
  "cpu-reference",
  "gpu-compute",
  "mr-core",

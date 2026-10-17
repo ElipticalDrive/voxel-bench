@@ -2,25 +2,23 @@
 //! shading `direct`, and the **storage** lit-mode shadow rays walk (refloor; group 2).
 //! Was the gpu-splat renderer.
 //!
-//! GPU point splatting: every face-exposed block becomes one point. A compute pass
-//! projects each point and `atomicMin`s its view depth into a u32 framebuffer over a
-//! square footprint sized from the projected block size (capped at `max_splat` px), a
-//! second pass writes the winning point id, and the resolve, the common deferred shading
-//! pass over the ids (PLAN step 12c), ray-boxes the pixel against the winning block and
-//! shades the face it hits.
+//! GPU point splatting: every face-exposed block becomes one point (geometry `points` on
+//! the CPU, `mr_components::geometry::points`), uploaded as the schedule's transfer of the
+//! points to the GPU; the splat passes and their resolve, the common deferred shading pass
+//! over the ids (PLAN step 12c), are visibility `splat` (`mr_components::visibility::splat`).
+//! This back end keeps the plumbing: buffers, bind groups, passes.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use bytemuck::{Pod, Zeroable};
-use glam::IVec3;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::shading::state::{self as shade_state, ShadeState};
+use mr_components::geometry::points::{Point, Points};
 use mr_components::graph::{self, Role};
 use mr_components::shaders::Walks;
 use mr_components::storage::gpu_data::{self, StorageSet};
+use mr_components::visibility::splat;
 use mr_components::{names_on, require, Slot};
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
@@ -77,64 +75,7 @@ impl Default for Options {
     }
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct CameraUniform {
-    forward: [f32; 3],
-    tan_half_fov: f32,
-    right: [f32; 3],
-    aspect: f32,
-    up: [f32; 3],
-    mode: u32,
-    origin: [f32; 3],
-    sky: u32,
-    width: u32,
-    height: u32,
-    count: u32,
-    max_splat: u32,
-}
-
-type Point = [u32; 4];
-
-/// Exposed-block points of one chunk.
-fn build_points(world: &VoxelWorld, cpos: IVec3) -> Vec<Point> {
-    let Some(chunk) = world.chunk(cpos) else { return vec![] };
-    if chunk.is_air() {
-        return vec![];
-    }
-    let base = cpos * CHUNK_SIZE;
-    let solid = |l: IVec3| -> bool {
-        if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(CHUNK_SIZE)).all() { chunk.get(l) != BlockId::AIR } else { world.block(base + l) != BlockId::AIR }
-    };
-    const N: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
-    let mut out = vec![];
-    for y in 0..CHUNK_SIZE {
-        for z in 0..CHUNK_SIZE {
-            for x in 0..CHUNK_SIZE {
-                let l = IVec3::new(x, y, z);
-                let b = chunk.get(l);
-                if b == BlockId::AIR {
-                    continue;
-                }
-                let mut mask = 0u32;
-                for (i, n) in N.iter().enumerate() {
-                    if !solid(l + *n) {
-                        mask |= 1 << i;
-                    }
-                }
-                if mask != 0 {
-                    let p = base + l;
-                    out.push([p.x as u32, p.y as u32, p.z as u32, b.0 as u32 | mask << 16]);
-                }
-            }
-        }
-    }
-    out
-}
-
 const BACKEND: &str = "gpu-splat";
-
-
 
 pub struct GpuSplat {
     gpu: Arc<Gpu>,
@@ -154,8 +95,8 @@ pub struct GpuSplat {
     ring: FrameRing,
     /// The nodes of the timed stages (PLAN step 11): splatting, then the deferred pass.
     stage_nodes: [Vec<String>; 2],
-    chunks: HashMap<IVec3, Vec<Point>>,
-    dirty: bool,
+    /// The geometry node's state: every chunk's points.
+    points: Points,
     count: u32,
     max_splat: u32,
     width: u32,
@@ -186,6 +127,12 @@ impl GpuSplat {
         // The sites' walks (PLAN step 9c): shadow rays (the storage and traversal stages),
         // bounces their own or the same.
         let g = graph::of_init(BACKEND, &p)?;
+        // The points cross from the CPU (geometry) to the GPU (visibility): the schedule's
+        // transfer, its adapter `upload`.
+        let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
+        if !schedule.transfers.iter().any(|e| e.port == "points" && g.node(&e.to).role == Role::Visibility) {
+            anyhow::bail!("{BACKEND}: the points do not cross from the CPU to the GPU");
+        }
         let (walks, program, own, deps) = program(&g, &opts.shading)?;
         // The host hands the device in (GPU slot 0); this back end only states its needs.
         let gpu = mr_gpu::gpu(devices, 0, &GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY })?;
@@ -247,10 +194,10 @@ impl GpuSplat {
                 cache: None,
             })
         };
-        let pipes = [pipe("clear"), pipe("splat_depth"), pipe("splat_id"), pipe("shade")];
+        let pipes = splat::ENTRIES.map(pipe);
         let camera_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
-            size: size_of::<CameraUniform>() as u64,
+            size: size_of::<splat::Camera>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -277,8 +224,7 @@ impl GpuSplat {
             accum,
             ring,
             stage_nodes: [g.ids(&[Role::Visibility]), g.ids(&[Role::Shading])],
-            chunks: HashMap::new(),
-            dirty: false,
+            points: Points::default(),
             count: 0,
             max_splat: opts.max_splat.clamp(1, 64),
             width: p.width,
@@ -318,9 +264,9 @@ impl GpuSplat {
         self.bind0 = Self::bind0(&self.gpu, &self.layout0, &self.camera_buf, &self.output, &self.points_buf, &self.zbuf, &self.idbuf, &self.accum);
     }
 
-    /// Concatenates every chunk's points into one GPU buffer (rebuilt after any change).
-    fn upload(&mut self) {
-        let all: Vec<Point> = self.chunks.values().flatten().copied().collect();
+    /// The points' transfer: every chunk's points into one GPU buffer (rebuilt after any
+    /// change).
+    fn upload(&mut self, all: Vec<Point>) {
         self.count = all.len() as u32;
         if (all.len() as u64) * 16 > self.points_buf.size() {
             self.points_buf = Self::points_buffer(&self.gpu, all.len() as u64 * 3 / 2);
@@ -329,7 +275,6 @@ impl GpuSplat {
         if !all.is_empty() {
             self.gpu.queue.write_buffer(&self.points_buf, 0, bytemuck::cast_slice(&all));
         }
-        self.dirty = false;
     }
 }
 
@@ -340,7 +285,7 @@ fn program(g: &graph::Checked, shading: &str) -> anyhow::Result<(Walks, mr_gpu::
     let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("gpu-splat: shadow rays are not bound"))?, &[2, 3, 4], false);
     let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, &[2, 3, 4], false));
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
-    let own = format!("{}\n{}\n{shade}\n{}", include_str!("splat.wgsl"), ShadeState::wgsl(0, 5), mr_components::shading::DEFERRED_WGSL);
+    let own = format!("{}\n{}\n{shade}\n{}", splat::GPU_WGSL, ShadeState::wgsl(0, 5), mr_components::shading::DEFERRED_WGSL);
     let (program, deps) = mr_components::shaders::sites_program(&walks, 0, 0, 0, bounce);
     Ok((walks, program, own, deps))
 }
@@ -352,35 +297,20 @@ impl Renderer for GpuSplat {
         }
         let changed = self.world.apply(&self.gpu, updates);
         self.storages.update(&self.gpu, &self.world, &changed)?;
-        // Exposure depends on neighbours, so rebuild the 6-neighbourhood too.
-        let mut todo = HashSet::new();
-        for c in changed {
-            todo.insert(c);
-            for n in [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z] {
-                todo.insert(c + n);
-            }
-        }
-        for c in todo {
-            let pts = build_points(&self.world, c);
-            if pts.is_empty() {
-                self.dirty |= self.chunks.remove(&c).is_some();
-            } else {
-                self.chunks.insert(c, pts);
-                self.dirty = true;
-            }
-        }
+        let world = &self.world;
+        self.points.update(changed, |c| world.chunk(c));
         Ok(())
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        if self.dirty {
-            self.upload();
+        if let Some(all) = self.points.changed() {
+            self.upload(all);
         }
         let ticket = self.ring.begin(&self.gpu, sink)?;
         let start = Instant::now();
         let c = &req.camera;
         let (_, frac) = c.split_position();
-        let cam = CameraUniform {
+        let cam = splat::Camera {
             forward: c.forward().to_array(),
             tan_half_fov: (c.fov_y * 0.5).tan(),
             right: c.right().to_array(),
@@ -467,7 +397,7 @@ impl Renderer for GpuSplat {
     }
 
     fn memory(&self) -> MemoryReport {
-        let cpu = self.chunks.values().map(|v| v.len() as u64 * 16).sum();
+        let cpu = self.points.bytes();
         MemoryReport { cpu_bytes: cpu, gpu_bytes: self.world.memory_bytes() + self.storages.memory_bytes() + self.points_buf.size() + self.accum.memory_bytes() + self.width as u64 * self.height as u64 * 12 }
     }
 }

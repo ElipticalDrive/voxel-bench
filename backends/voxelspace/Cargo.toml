@@ -1,5 +1,5 @@
 [package]
-name = "backend-cpu-voxelspace"
+name = "backend-voxelspace"
 version.workspace = true
 edition.workspace = true
 
@@ -9,5 +9,10 @@ mr-components.workspace = true
 cpu-reference.workspace = true
 anyhow.workspace = true
 glam.workspace = true
-rayon.workspace = true
 serde.workspace = true
+tracing.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
+rayon.workspace = true
+wgpu.workspace = true
+mr-gpu.workspace = true

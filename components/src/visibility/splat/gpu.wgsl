@@ -1,6 +1,7 @@
-// gpu-splat: software point rasterisation. Each face-exposed block is a point; passes:
-// clear, depth splat (atomicMin), id splat (atomicMax where depth matches), then the
-// common deferred pass over the ids (the resolve).
+// Visibility `splat` on the GPU (the root of gpu-splat's program): software point
+// rasterisation. Each point of geometry `points` is a face-exposed block; passes: clear,
+// depth splat (atomicMin), id splat (atomicMax where depth matches), then the common
+// deferred pass over the ids (the resolve).
 
 struct Camera {
     forward: vec3<f32>, tan_half_fov: f32,

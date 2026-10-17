@@ -1,31 +1,26 @@
-//! GPU-voxelspace back end (components, IDEAS §12): storage `heightmap`, visibility
-//! `columns`, shading `direct` or `pathtrace` (heightmap-gradient normals on column tops;
-//! shadow and bounce rays walk the heightmap, `hm_trace`). Was the gpu-voxelspace renderer.
-//!
-//! Voxel Space (Comanche, 1992) style 2.5D renderer: a CPU-built heightmap ring (top
-//! solid block height + block id per (x, z) column) marched front-to-back per screen
-//! column in a compute shader, drawing spans with a per-column y-buffer. Shading inline in
-//! the march or deferred (`placement`, PLAN step 12c: the march writes hit records, the
-//! common pass `shading/deferred.wgsl` shades them).
+//! `gpu-voxelspace`, the voxelspace executor's GPU lane (components, IDEAS §12): storage
+//! `heightmap`, visibility `columns`, shading `direct` or `pathtrace` (heightmap-gradient
+//! normals on column tops; shadow and bounce rays walk the heightmap, `hm_trace`). The march
+//! is the columns component's root (`mr_components::visibility::columns::GPU_WGSL`) in one
+//! compute pass; shading inline in the march or deferred (`placement`, PLAN step 12c: the
+//! march writes hit records, the common pass `shading/deferred.wgsl` shades them).
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use bytemuck::{Pod, Zeroable};
-use mr_components::graph::{self, Role};
+use glam::{IVec2, IVec3};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::heightmap::{self, Heightmap};
+use mr_components::visibility::columns;
 use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig, shadows_param};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
-pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, d, w| Ok(Box::new(GpuVoxelSpace::new(p, d, w)?)) }
-}
+use crate::{Core, Lane};
 
-fn info() -> RendererInfo {
+pub(crate) fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu-voxelspace".into(),
         description: "Comanche-style Voxel Space: per-column front-to-back heightmap march with a y-buffer (2.5D, no overhangs)".into(),
@@ -60,7 +55,7 @@ struct Options {
     frames_in_flight: usize,
 }
 
-const BACKEND: &str = "gpu-voxelspace";
+pub(crate) const BACKEND: &str = "gpu-voxelspace";
 
 impl Default for Options {
     fn default() -> Self {
@@ -68,24 +63,7 @@ impl Default for Options {
     }
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct CameraUniform {
-    forward: [f32; 3],
-    tan_half_fov: f32,
-    right: [f32; 3],
-    aspect: f32,
-    up: [f32; 3],
-    mode: u32,
-    origin: [f32; 3],
-    sky: u32,
-    width: u32,
-    height: u32,
-    _p0: u32,
-    max_cells: u32,
-}
-
-pub struct GpuVoxelSpace {
+pub(crate) struct GpuColumns {
     gpu: Arc<Gpu>,
     world: VoxelWorld,
     /// The march (shading inline, or writing records), and the deferred shading pass.
@@ -96,9 +74,8 @@ pub struct GpuVoxelSpace {
     records: Option<wgpu::Buffer>,
     layout0: wgpu::BindGroupLayout,
     camera_buf: wgpu::Buffer,
-    /// The heightmap storage: built on the CPU, uploaded to `hm_buf`; `hm_info` = mask,
-    /// columns a walk may cross.
-    hm: Heightmap,
+    /// The heightmap storage's GPU copy (`Core::hm` uploaded); `hm_info` = mask, columns a
+    /// walk may cross.
     hm_buf: wgpu::Buffer,
     hm_info: wgpu::Buffer,
     /// Shading state (pathtrace's accumulation).
@@ -106,17 +83,12 @@ pub struct GpuVoxelSpace {
     output: wgpu::Texture,
     bind0: wgpu::BindGroup,
     ring: FrameRing,
-    /// The nodes of the timed stages (PLAN step 11): the march (with shading when inline),
-    /// the march alone, the deferred pass.
-    stage_nodes: [Vec<String>; 3],
-    width: u32,
-    height: u32,
     depth: usize,
     waker: Waker,
 }
 
-impl GpuVoxelSpace {
-    pub fn new(p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Self> {
+impl Lane for GpuColumns {
+    fn new(p: &InitParams, devices: &Devices, waker: Waker, core: &Core) -> anyhow::Result<Self> {
         let opts: Options = p.options()?;
         use mr_components::{Slot, require};
         for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
@@ -139,7 +111,7 @@ impl GpuVoxelSpace {
                 visibility: wgpu::ShaderStages::COMPUTE,
             },
         )?;
-        let hm = Heightmap::new(p.view_radius_chunks);
+        let hm = &core.hm;
         let hm_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("heightmap"),
             size: hm.hm.len() as u64 * 4,
@@ -212,7 +184,7 @@ impl GpuVoxelSpace {
         let records = deferred.then(|| Self::records(&gpu, p.width, p.height));
         let camera_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
-            size: size_of::<CameraUniform>() as u64,
+            size: size_of::<columns::Camera>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -221,66 +193,49 @@ impl GpuVoxelSpace {
         let bind0 = Self::bind0(&gpu, &layout0, &camera_buf, &output, &hm_buf, &hm_info, &accum, records.as_ref());
         let depth = opts.frames_in_flight.max(1);
         let ring = FrameRing::new(&gpu, p.width, p.height, depth, waker.clone()).with_stages(p.stage_times);
-        let g = graph::of_init(BACKEND, &p)?;
-        let stage_nodes = [g.ids(&[Role::Visibility, Role::Shading]), g.ids(&[Role::Visibility]), g.ids(&[Role::Shading])];
-        Ok(Self { gpu, world, pipeline, shade, records, layout0, camera_buf, hm, hm_buf, hm_info, accum, output, bind0, ring, stage_nodes, width: p.width, height: p.height, depth, waker })
+        Ok(Self { gpu, world, pipeline, shade, records, layout0, camera_buf, hm_buf, hm_info, accum, output, bind0, ring, depth, waker })
     }
 
-    /// The hit records of `placement = deferred` (8 bytes per pixel).
-    fn records(gpu: &Gpu, width: u32, height: u32) -> wgpu::Buffer {
-        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("hit records"), size: (width as u64 * height as u64 * 8).max(16), usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, hm: &wgpu::Buffer, hm_info: &wgpu::Buffer, accum: &ShadeState, records: Option<&wgpu::Buffer>) -> wgpu::BindGroup {
-        let view = out.create_view(&Default::default());
-        let mut entries = vec![
-            wgpu::BindGroupEntry { binding: 0, resource: cam.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
-            wgpu::BindGroupEntry { binding: 2, resource: hm.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: hm_info.as_entire_binding() },
-            accum.bind_entries(4)[0].clone(),
-            accum.bind_entries(4)[1].clone(),
-        ];
-        entries.extend(records.map(|r| wgpu::BindGroupEntry { binding: 6, resource: r.as_entire_binding() }));
-        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxelspace"), layout, entries: &entries })
-    }
-}
-
-impl Renderer for GpuVoxelSpace {
-    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+    fn apply(&mut self, updates: Vec<WorldUpdate>) -> Vec<IVec3> {
         if !updates.is_empty() {
             self.accum.invalidate();
         }
-        let changed = self.world.apply(&self.gpu, updates);
-        let world = &self.world;
-        for c in self.hm.apply(changed, |pos| world.chunk(pos)) {
-            for (start, len) in self.hm.dirty_rows(c) {
-                self.gpu.queue.write_buffer(&self.hm_buf, start as u64 * 4, bytemuck::cast_slice(&self.hm.hm[start..start + len]));
-            }
-        }
-        self.gpu.queue.write_buffer(&self.hm_info, 0, bytemuck::cast_slice(&self.hm.info()));
-        Ok(())
+        self.world.apply(&self.gpu, updates)
     }
 
-    fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+    fn chunk(&self, pos: IVec3) -> Option<&ChunkData> {
+        self.world.chunk(pos)
+    }
+
+    /// The heightmap's transfer to the GPU: its changed rows.
+    fn heights(&mut self, hm: &Heightmap, tiles: &[IVec2]) {
+        for &c in tiles {
+            for (start, len) in hm.dirty_rows(c) {
+                self.gpu.queue.write_buffer(&self.hm_buf, start as u64 * 4, bytemuck::cast_slice(&hm.hm[start..start + len]));
+            }
+        }
+        self.gpu.queue.write_buffer(&self.hm_info, 0, bytemuck::cast_slice(&hm.info()));
+    }
+
+    fn render(&mut self, core: &Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        let (width, height) = (core.width, core.height);
         let ticket = self.ring.begin(&self.gpu, sink)?;
         let start = Instant::now();
         let c = &req.camera;
         let (_, frac) = c.split_position();
-        let cam = CameraUniform {
+        let cam = columns::Camera {
             forward: c.forward().to_array(),
             tan_half_fov: (c.fov_y * 0.5).tan(),
             right: c.right().to_array(),
-            aspect: self.width as f32 / self.height as f32,
+            aspect: width as f32 / height as f32,
             up: c.up().to_array(),
             mode: (req.mode == RenderMode::Lit) as u32,
             origin: frac.to_array(),
             sky: u32::from_le_bytes(encode_srgb(self.world.env.sky)),
-            width: self.width,
-            height: self.height,
+            width,
+            height,
             _p0: 0,
-            max_cells: (self.world.cfg.view_radius * CHUNK_SIZE as u32) * 2,
+            max_cells: core.max_cells,
         };
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
         self.accum.begin(&self.gpu, c, req.mode);
@@ -288,9 +243,9 @@ impl Renderer for GpuVoxelSpace {
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         let deferred = self.shade.is_some();
         if deferred {
-            self.ring.stage(&mut enc, ticket, "columns", &self.stage_nodes[1]);
+            self.ring.stage(&mut enc, ticket, "columns", &core.stage_nodes[1]);
         } else {
-            self.ring.stage(&mut enc, ticket, "columns+shade", &self.stage_nodes[0]);
+            self.ring.stage(&mut enc, ticket, "columns+shade", &core.stage_nodes[0]);
         }
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -300,21 +255,21 @@ impl Renderer for GpuVoxelSpace {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind0, &[]);
             pass.set_bind_group(1, &world_bg, &[]);
-            pass.dispatch_workgroups(self.width.div_ceil(64), 1, 1);
+            pass.dispatch_workgroups(width.div_ceil(64), 1, 1);
         }
         if let Some(shade) = &self.shade {
-            self.ring.stage(&mut enc, ticket, "shade", &self.stage_nodes[2]);
+            self.ring.stage(&mut enc, ticket, "shade", &core.stage_nodes[2]);
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: self.ring.compute_timestamps(ticket, false, true) });
             pass.set_pipeline(shade);
             pass.set_bind_group(0, &self.bind0, &[]);
             pass.set_bind_group(1, &world_bg, &[]);
-            pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
+            pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
         }
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
             gpu_ms: None,
             legend: None,
-            counters: [("heightmap_size".into(), self.hm.size as f64), ("chunk_columns".into(), self.hm.columns() as f64)].into_iter().chain(self.accum.counter(req.mode)).collect(),
+            counters: core.counters().into_iter().chain(self.accum.counter(req.mode)).collect(),
             stages: Vec::new(),
         };
         self.ring.submit(&self.gpu, enc, ticket, &self.output, req.frame_id, req.readback, stats);
@@ -338,9 +293,8 @@ impl Renderer for GpuVoxelSpace {
         self.ring.poll(&self.gpu, sink, true)
     }
 
-    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
-        self.width = width;
-        self.height = height;
+    fn resize(&mut self, core: &Core) -> anyhow::Result<()> {
+        let (width, height) = (core.width, core.height);
         self.output = mr_gpu::output_texture(&self.gpu, width, height);
         self.accum.resize(&self.gpu, width, height);
         if self.records.is_some() {
@@ -351,15 +305,37 @@ impl Renderer for GpuVoxelSpace {
         Ok(())
     }
 
-    fn memory(&self) -> MemoryReport {
-        let hm = self.hm.hm.len() as u64 * 4;
-        MemoryReport { cpu_bytes: hm, gpu_bytes: hm + self.world.memory_bytes() + self.accum.memory_bytes() + self.records.as_ref().map_or(0, |r| r.size()) + self.width as u64 * self.height as u64 * 4 }
+    fn memory(&self, core: &Core) -> (u64, u64) {
+        let hm = core.hm.hm.len() as u64 * 4;
+        (0, hm + self.world.memory_bytes() + self.accum.memory_bytes() + self.records.as_ref().map_or(0, |r| r.size()) + core.width as u64 * core.height as u64 * 4)
+    }
+}
+
+impl GpuColumns {
+    /// The hit records of `placement = deferred` (8 bytes per pixel).
+    fn records(gpu: &Gpu, width: u32, height: u32) -> wgpu::Buffer {
+        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("hit records"), size: (width as u64 * height as u64 * 8).max(16), usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bind0(gpu: &Gpu, layout: &wgpu::BindGroupLayout, cam: &wgpu::Buffer, out: &wgpu::Texture, hm: &wgpu::Buffer, hm_info: &wgpu::Buffer, accum: &ShadeState, records: Option<&wgpu::Buffer>) -> wgpu::BindGroup {
+        let view = out.create_view(&Default::default());
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: cam.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 2, resource: hm.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: hm_info.as_entire_binding() },
+            accum.bind_entries(4)[0].clone(),
+            accum.bind_entries(4)[1].clone(),
+        ];
+        entries.extend(records.map(|r| wgpu::BindGroupEntry { binding: 6, resource: r.as_entire_binding() }));
+        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxelspace"), layout, entries: &entries })
     }
 }
 
 /// The shader: the heightmap storage (group 2) is its own kernel (`ctrace`; storage and walk
-/// in one, IDEAS §18's exceptions), the ray services through it, this back end's column
-/// march and the shading component as the root; with `deferred`, the march writes records and
+/// in one, IDEAS §18's exceptions), the ray services through it, the column march and the
+/// shading component as the root; with `deferred`, the march writes records and
 /// the common deferred pass shades them.
 fn program(shading: &str, deferred: bool) -> (mr_gpu::program::Program, String, [&'static str; 5]) {
     use mr_gpu::program::{COMMON, LIGHTING, Program, VOXELS};
@@ -367,11 +343,11 @@ fn program(shading: &str, deferred: bool) -> (mr_gpu::program::Program, String, 
     p.add("heightmap", heightmap::gpu_wgsl(0, 2), &[VOXELS]);
     mr_components::shaders::rays(&mut p, "heightmap::rays", "heightmap");
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
-    let place = if deferred { format!("{}\n{}", include_str!("vs_deferred.wgsl"), mr_components::shading::DEFERRED_PACKED_WGSL) } else { String::new() };
+    let place = if deferred { format!("{}\n{}", columns::DEFERRED_WGSL, mr_components::shading::DEFERRED_PACKED_WGSL) } else { String::new() };
     if deferred {
         p.define("DEFERRED");
     }
-    let root = format!("{}\n{}\n{shade}\n{place}", ShadeState::wgsl(0, 4), include_str!("vs.wgsl"));
+    let root = format!("{}\n{}\n{shade}\n{place}", ShadeState::wgsl(0, 4), columns::GPU_WGSL);
     (p, root, ["heightmap", "heightmap::rays", LIGHTING, VOXELS, COMMON])
 }
 
