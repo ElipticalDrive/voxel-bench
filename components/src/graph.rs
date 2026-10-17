@@ -1508,6 +1508,20 @@ impl Checked {
         &self.graph.nodes[id]
     }
 
+    /// The API node `id` runs with: its own or its callers' (`apis`), else its component's
+    /// only one on the node's device (e.g. `rayquery`'s ray queries).
+    pub fn api(&self, id: &str) -> Option<Api> {
+        self.apis.get(id).copied().or_else(|| {
+            let n = self.node(id);
+            let kind = self.devices[id].kind();
+            let apis: Vec<Api> = component(n.role.slot()?, &n.component)?.impls.iter().filter(|i| i.kind == kind).flat_map(|i| i.apis.iter().copied()).collect();
+            match apis[..] {
+                [a] => Some(a),
+                _ => None,
+            }
+        })
+    }
+
     /// The node of `role` (strategy, shading, draw, prepass, meshes: one each).
     pub fn find(&self, role: Role) -> Option<&str> {
         self.graph.nodes.iter().find(|(_, n)| n.role == role).map(|(k, _)| k.as_str())
@@ -1914,6 +1928,13 @@ mod tests {
         assert_eq!(g.flat_knobs().unwrap().get("isa"), Some(&toml::Value::String("avx2".into())));
         let ck = g.check().unwrap();
         assert_eq!(ck.apis.get("kernel"), Some(&Api::Avx2), "the kernel runs with its caller");
+        // A node without an API of its own or its callers' runs its component's only one on
+        // its device (what the ray-casting executor picks its lane by).
+        // A walk's kernel has two (compute, raster: `dispatch`), so it has none.
+        for (backend, api) in [("gpu-rt", Some(Api::RayQuery)), ("gpu-compute", None)] {
+            let ck = Graph::from_composition(&Composition::new(backend)).unwrap().check().unwrap();
+            assert_eq!(ck.api(ck.input(Role::Visibility, "primary").unwrap()), api, "{backend}");
+        }
         assert!(g.canonical().unwrap().contains(":avx2") && g.key().unwrap() != Graph::from_composition(&cpu).unwrap().key().unwrap());
         let e = set(&cpu, &[("visibility", Api::Avx2), ("shading", Api::Avx512)]).validate().unwrap_err();
         assert!(e.contains("with one api, its `isa`"), "{e}");

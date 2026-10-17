@@ -1,9 +1,9 @@
-// `placement = deferred`: the walk writes each pixel's hit record (`pack_hit`) into `records`
-// (in a compute thread, or a fragment shader with `dispatch = "fragment"`), then the common
-// pass (`shading/deferred.wgsl`, entry `shade`) shades it. Mesh mode: where no voxel is
-// in front of the mesh, the pixel's record is the mesh's.
+// `placement = deferred`: the rays write each pixel's hit record (`pack_hit`) into `records`
+// (in a compute thread, or a fragment shader with `FRAGMENT`), then the common pass
+// (`shading/deferred.wgsl`, entry `shade`) shades it. Mesh mode: where no voxel is in front
+// of the mesh, the pixel's record is the mesh's.
 
-@group(0) @binding(6) var<storage, read_write> records: array<vec2<u32>>;
+@group(0) @binding(4) var<storage, read_write> records: array<vec2<u32>>;
 
 fn pixel_record(px: vec2<u32>) {
     let d = view_ray(px);
@@ -27,10 +27,12 @@ fn walk_records(@builtin(global_invocation_id) gid: vec3<u32>) {
     pixel_record(gid.xy);
 }
 
+#ifdef FRAGMENT
 @fragment
 fn fs_cast(@builtin(position) frag: vec4<f32>) {
     pixel_record(vec2<u32>(frag.xy));
 }
+#endif
 
 fn record_at(px: vec2<u32>) -> vec2<u32> { return records[px.y * cam.width + px.x]; }
 fn view_origin() -> vec3<f32> { return cam.origin; }

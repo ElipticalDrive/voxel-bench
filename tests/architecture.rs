@@ -60,8 +60,9 @@ const LIGHTING_ALLOWED: &[(&str, &str)] = &[
 /// Each back end's shading entry point (a string its sources must contain).
 const SHADING_USE: &[(&str, &str)] = &[
     // `shaders::shading`: the shading component's module (`shading::gpu_wgsl`; PLAN step 9b).
-    ("gpu-compute", "shaders::shading("),
-    ("gpu-rt", "shaders::shading("),
+    // The ray-casting executor (gpu-compute and gpu-rt; PLAN step 13e2): each lane.
+    ("raycast", "shaders::shading(&mut program, shading, &rays"),
+    ("raycast", "shaders::shading(&mut program, shading, &[\"rt::rays\"]"),
     // The face-drawing executor (gpu-raster, gpu-discover and cpu-discover; PLAN step 13e1).
     ("faces", "shading::gpu_wgsl("),
     ("gpu-splat", "shading::gpu_wgsl("),

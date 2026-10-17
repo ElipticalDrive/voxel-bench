@@ -202,7 +202,7 @@ The user's architecture, settled with finality and without limits for later (IDE
         drawer, chosen by what feeds the drawer's faces. (Done 2026-10-17; see the log.)
       - 13e2: one ray-casting executor: gpu-compute and gpu-rt (the walk's kernels and ray
         queries as the visibility node's API: `compute` or `rayquery`), placement inline or
-        deferred over one core.
+        deferred over one core. (Done 2026-10-17; see the log.)
       - 13e3: one GPU executor: the face-drawing, ray-casting, splat and columns lanes over
         one core (world, storages, shading state, output, ring), the lane per the graph's
         visibility node; a CPU executor likewise (`cpu`, cpu-raster, cpu-voxelspace lanes).
@@ -1051,3 +1051,52 @@ gpu-raster's `main.wgsl`), `tests/architecture.rs`, `crates/mr-worker`, `src/gui
   acceptance does not); the discovery samplers have no meshes stage (the core supports one);
   the GPU sampler still owns its raster passes (face ids, painter, overdraw) beside the
   drawer's.
+
+
+**2026-10-17, step 13e2: one ray-casting executor.**
+`backends/raycast/` (crate `backend-raycast`, replaces `backends/gpu-compute` and `backends/gpu-rt`;
+`lib.rs` the executor, `walk.rs` / `rayquery.rs` the lanes, `cast.wgsl` + `deferred.wgsl` the shared
+root, `walk.wgsl` / `rayquery.wgsl` the lanes' roots), `components/src/graph.rs`
+(`Checked::api`), `tests/architecture.rs`, `crates/mr-worker`:
+- **Two lanes, one core**: `gpu-compute` and `gpu-rt` stay the registry's names (graphs, keys,
+  labels, knobs unchanged) and both create `Raycast<L>`, the lane picked by the API of the primary
+  rays' kernel node: ray queries (`rayquery`: `RayQuery`, the chunks' BLASes and the TLAS), else a
+  walk (`Walk`: the storages, the beam prepass, meshes' records, LOD, the steps view; the kernel's
+  API is compute or raster by `dispatch`). Static dispatch (`Lane`), as 13e1. Shared (`Core`,
+  `Passes`): the device, the voxel world, the shading state, one camera uniform (`cast.wgsl`:
+  `view_max` and `ray_flags` both), the output, the hit records, the frame ring; the shader (the
+  lane's root, then `cast.wgsl`, deferred `deferred.wgsl` with the common pass), the rays' pass
+  (compute or fragment), the deferred shading pass, the variant with mesh records, group 0 (core
+  bindings 0-4, the lane's from 8) and its bind groups, recompiling on live knob changes. The two
+  back ends' `main`/`walk_records`/`record_at`/`view_*` copies are gone.
+- `Checked::api(id)`: a node's API, its own or its callers', else its component's only one on its
+  device (`rayquery`: ray queries). `apis` alone left the kernel without one (no node sets an
+  API here), so the first build ran gpu-rt's graph on the walking lane, which refused its
+  options; the GPU end-to-end tests do not run gpu-rt, the pixel A/B caught it (a graph test now
+  pins the rule).
+- Compiled in instead of constant flags: the steps view (`VIEW_STEPS`, was `const VIEW_STEPS`) and
+  the fragment entry points (`FRAGMENT`, only with `dispatch = fragment`); the colour ramp only
+  with the steps view.
+- Behaviour changed: gpu-rt's memory report now counts its output texture (as gpu-compute's did);
+  group 0's bindings renumbered (shading state 2-3, records 4, the lane's from 8).
+- Verified: builds without warnings (dev, release), 80 unit tests (each lane's compose test
+  through the executor's `shader`: gpu-compute every storage, kernel, shadow / bounce / mesh-shadow
+  site, shading and prepass, inline and deferred, with and without meshes, compute and fragment;
+  gpu-rt every geometry and shading, inline and deferred), 4 GPU end-to-end tests. Pixel A/B
+  (frames 0/20/39, lit + unlit; terrain and edits): gpu-compute plain, deferred, fragment,
+  fragment + deferred, beam, tree64 + sphere + pathtrace, prefix + incremental steps view,
+  pathtrace deferred with bounces over rows/incremental; gpu-rt greedy, deferred, boxes +
+  pathtrace, boxes deferred, naive deferred with `cull_faces = none`; meshes: gpu-compute inline,
+  deferred, fragment, fragment + deferred, meshes `none`; far: plain, deferred: all identical
+  (gpu-rt naive on terrain ran out of GPU memory at frame 39 in the build before in one run and
+  the build after in another: near the limit, both builds).
+- Timing A/B (interleaved, 4 rounds, each alone): GPU time -0.3 .. +0.6% everywhere (gpu-compute
+  plain +0.2 / -0.1%, deferred +0.0 / +0.1%, fragment -0.1 / +0.0%, beam -0.2 / -0.0%, pathtrace
+  +0.2 / -0.1%, meshes -0.3 / +0.1%, meshes deferred +0.6 / -0.0%; gpu-rt greedy +0.3 / +0.1%,
+  deferred -0.1 / -0.1%, boxes -0.0 / -0.0%). fps -0.6 .. +1.9% (gpu-compute deferred unlit -1.5%
+  at 640 fps in 4 rounds, +0.0% in an 8-round rerun; gpu-rt unlit +1.9 / +1.5%).
+- Not yet: the two names remain registry entries with their own slot lists (a graph cannot bind a
+  storage walk and ray queries in one pipeline, nor the walk's sites to ray queries: the
+  executor would need both lanes' data at once); meshes, the prepass and fragment dispatch exist
+  only on the walking lane (the core runs them for any lane).
+
