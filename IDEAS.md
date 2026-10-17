@@ -1719,6 +1719,69 @@ case); meshing culled by discovery (mesh chunks, draw only the parts discovery f
 discovery seeded from meshed faces; cpu-discover and gpu-raster then also share the drawing
 lane as configurations of one graph family.
 
+## 25. Performance ideas from step 13e's losses (2026-10-17, for after the architecture)
+
+Step 13e's A/B against 13e3 left small, mostly host-side losses (PLAN log, 13e4b-d): the GPU
+rasterisers' CPU-bound fps -2..-3% (meshing and culling slower without their code changing:
+code layout), gpu-rt fps ~-1.7% and deferred GPU +0.5..0.7%, voxelspace pathtrace ~-1.5%
+fps, and the two-GPU split paying a synchronous transfer. Ideas, none tried yet:
+
+**Layout-proofing the measurements and the hot code.**
+- *Profile-guided layout*: build with PGO (`-Cprofile-generate` / `-Cprofile-use`) or BOLT
+  over a fixed training plan, so hot loops (mesher, cull, CPU walks) are placed by profile,
+  not by link order. Both builds of an A/B with the same profile: layout noise should mostly
+  vanish, and the result is likely faster overall.
+- *Hot code in its own codegen unit / crate*: `#[inline(never)]` + `#[cold]` hygiene around
+  the mesher's and culler's entry points, or `codegen-units = 1` + fat LTO for release, so
+  unrelated crates' changes stop moving them. Measure what each costs in build time.
+- *A layout probe in the A/B tools*: `scripts/ab/perf.sh` with a "before + meaningless change"
+  build, run automatically when a host-bound loss appears, to tell layout from work (13e4d had
+  to do this by hand: each half alone showed nothing).
+- *Count instructions, not time, for CPU stages*: the `cpu` back end already opens
+  `perf_event_open` counters; do the same for the GPU executors' CPU stages (meshing, cull,
+  BLAS build), so an A/B can say "same instructions, more cycles" (layout / caches) or "more
+  instructions" (real work).
+
+**Meshing and culling (gpu-raster's host-bound 5.5 ms frame).**
+- The `geometry` stage (3.4 ms/frame while streaming) remeshes on the render thread before
+  the frame: move it off the frame's critical path (a mesher thread pool fed by the change
+  log, results uploaded when ready; the drawer's faces edge `prev` per chunk). That also
+  hides any layout sensitivity of the mesher.
+- Cull on the GPU (per-chunk frustum + face-direction test in a compute pass writing the
+  indirect args), removing the 0.9-1.0 ms CPU `cull` stage.
+
+**gpu-rt (host-bound ~113 fps, BLAS builds on the CPU side).**
+- Build budgets per frame by time, not count, and batch the BLAS builds of a frame into one
+  `build_acceleration_structures` call; rebuild the camera-relative TLAS only when the camera
+  crosses a chunk or instances change (it is rebuilt every frame today).
+- The deferred +0.5..0.7% GPU: the records' round trip through memory costs at 1080p; try
+  writing the records as `rg32uint` texture (tiled) instead of a linear buffer, or fuse the
+  shade into the cast when no capability needs a full-screen pass (the executor's fusion,
+  IDEAS §22), as inline already shows.
+
+**The two-GPU split (13e4c).**
+- The edge `prev`: the second GPU shades frame N-1's records while the first casts frame N
+  (one frame of latency, the GPUs overlap); with double-buffered staging the CPU never waits
+  (today `transfer_wait_ms` holds the whole first-GPU frame).
+- Shrink the transfer: 8 bytes/pixel today (16.6 MB at 1080p); a 4-byte record (t quantised
+  relative to the previous pixel, or face id + block in a texture) halves it; send only tiles
+  whose records changed (camera still) or compress (delta + RLE on the CPU, cheap at this
+  size).
+- Map directly: an upload buffer `MAP_WRITE` on the iGPU (shared system memory) written by the
+  memcpy from the readback mapping, skipping `queue.write_buffer`'s staging copy; on Vulkan,
+  external memory / `VK_KHR_external_memory_host` could share one host allocation between the
+  two devices (no copy at all), outside wgpu's API today.
+- Split by cost, not by stage: the iGPU is ~11x slower at lit shading (13.6 ms vs 1.2 ms), so
+  give it the cheap part (e.g. the cast or the unlit pass, or a screen fraction once splittable
+  nodes exist, IDEAS §21) and let the planner (§14) choose from the measured stage times.
+
+**Small host costs everywhere.**
+- The camera uniform (now 160 bytes with `view_proj` and the anchor) and the per-frame
+  `write_buffer`s: one persistent mapped ring of per-frame uniforms per core instead of queue
+  writes; skip writes when the camera did not change.
+- Per-frame bind group creation where a lane rebuilds groups after storage growth only:
+  confirm none are rebuilt every frame (a quick counter per lane).
+
 ## Suggested order
 
 The live plan, with estimates and progress, is in `PLAN.md`.
