@@ -36,9 +36,12 @@ use crate::{Api, Composition, Kind, Slot, backend, caps, component};
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
-    /// The generator, the authoritative chunk store and its change log (the host today;
-    /// PLAN step 14 puts it on a server behind a modelled link).
+    /// The authoritative chunk store and its change log, on the server (PLAN step 14).
     World,
+    /// The world's generator (PLAN step 14d): on the server (the default), feeding the world,
+    /// which streams its chunks; or on the client's `cpu`, feeding the client from the
+    /// world's spec (a shared seed), the server then sending that client edits only.
+    Generator,
     /// The link the server's stream crosses to a client (PLAN step 14c2): `free` (everything
     /// arrives at once, in order) or `net`, a modelled network (`mr_core::link::LinkSpec`
     /// as its knobs). Runs in the client's process, in front of the client.
@@ -60,22 +63,23 @@ pub enum Role {
 }
 
 impl Role {
-    pub const ALL: [Role; 12] = [Role::World, Role::Link, Role::Client, Role::Storage, Role::Geometry, Role::Prepass, Role::Traversal, Role::Visibility, Role::Holes, Role::Draw, Role::Shading, Role::Meshes];
+    pub const ALL: [Role; 13] = [Role::World, Role::Generator, Role::Link, Role::Client, Role::Storage, Role::Geometry, Role::Prepass, Role::Traversal, Role::Visibility, Role::Holes, Role::Draw, Role::Shading, Role::Meshes];
 
     pub fn name(self) -> &'static str {
         match self {
             Role::World => "world",
+            Role::Generator => "generator",
             Role::Link => "link",
             Role::Client => "client",
             r => r.slot().unwrap().name(),
         }
     }
 
-    /// The registry slot whose components fill this role (none for the world, the link and
-    /// the client).
+    /// The registry slot whose components fill this role (none for the world, its generator,
+    /// the link and the client).
     pub fn slot(self) -> Option<Slot> {
         Some(match self {
-            Role::World | Role::Link | Role::Client => return None,
+            Role::World | Role::Generator | Role::Link | Role::Client => return None,
             Role::Storage => Slot::Storage,
             Role::Geometry => Slot::Geometry,
             Role::Prepass => Slot::Prepass,
@@ -94,6 +98,8 @@ impl Role {
 pub enum Data {
     /// Chunk loads, unloads, edits, lights (the world's change log).
     Changes,
+    /// Generated chunks (a generator's: any chunk on request).
+    Chunks,
     /// A representation answering storage queries (`s_probe`, optional capabilities).
     Storage,
     /// Faces to draw: a geometry component's faces or a discovered face set.
@@ -115,6 +121,7 @@ impl Data {
     pub fn name(self) -> &'static str {
         match self {
             Data::Changes => "changes",
+            Data::Chunks => "generated chunks",
             Data::Storage => "storage",
             Data::Faces => "faces",
             Data::Starts => "ray starts",
@@ -196,7 +203,11 @@ const fn port(name: &'static str, data: Data, required: bool, description: &'sta
 
 const CHANGES: &[Port] = &[port("changes", Data::Changes, true, "the world's change log")];
 const SENT: &[Port] = &[port("changes", Data::Changes, true, "the server's stream: the world's change log, the same for every client")];
-const STREAM: &[Port] = &[port("changes", Data::Changes, true, "the server's stream as it arrives over the link")];
+const STREAM: &[Port] = &[
+    port("changes", Data::Changes, true, "the server's stream as it arrives over the link"),
+    port("chunks", Data::Chunks, false, "the generator, on the client: chunks generated here (the server then sends edits only)"),
+];
+const GENERATED: &[Port] = &[port("chunks", Data::Chunks, false, "the generator, on the server (unbound: the generator is on the client)")];
 const ON_STORAGE: &[Port] = &[port("storage", Data::Storage, true, "the storage it reads")];
 const ON_GEOMETRY: &[Port] = &[port("geometry", Data::Faces, true, "the faces its acceleration structure is built from")];
 const RAYCAST: &[Port] = &[
@@ -229,7 +240,8 @@ const PATHTRACE: &[Port] = &[
 /// The inputs of `role` component `name`.
 pub fn inputs(role: Role, name: &str) -> &'static [Port] {
     match (role, name) {
-        (Role::World, _) => &[],
+        (Role::World, _) => GENERATED,
+        (Role::Generator, _) => &[],
         (Role::Link, _) => SENT,
         (Role::Client, _) => STREAM,
         (Role::Storage | Role::Geometry, _) => CHANGES,
@@ -254,6 +266,7 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
 pub fn output(role: Role, name: &str) -> Data {
     match (role, name) {
         (Role::World | Role::Link | Role::Client, _) => Data::Changes,
+        (Role::Generator, _) => Data::Chunks,
         (Role::Storage, _) => Data::Storage,
         (Role::Geometry, _) => Data::Faces,
         (Role::Prepass, _) => Data::Starts,
@@ -355,6 +368,14 @@ pub const LINKS: &[&str] = &["free", "net"];
 /// The sites form's key for the link.
 pub const LINK: &str = "link";
 
+/// The generator's components (PLAN step 14d): `procedural`, the world's generator built
+/// from its spec (the run's world: terrain, menger, ...).
+pub const GENERATORS: &[&str] = &["procedural"];
+
+/// The sites form's key for the generator: its device, `server` (streamed, the default) or
+/// `cpu` (on the client: `generator = "cpu"`).
+pub const GENERATOR: &str = "generator";
+
 /// `component(knob=value, ...)`, the sites form of a node with knobs (the link, the
 /// client): the component and the knobs (values in TOML).
 pub fn parse_site_knobs(value: &str) -> Result<(String, toml::Table), String> {
@@ -405,6 +426,7 @@ fn known(role: Role, name: &str) -> bool {
     match role.slot() {
         None if role == Role::Client => CLIENTS.contains(&name),
         None if role == Role::Link => LINKS.contains(&name),
+        None if role == Role::Generator => GENERATORS.contains(&name),
         None => name == "world",
         Some(s) => component(s, name).is_some(),
     }
@@ -416,7 +438,7 @@ fn known(role: Role, name: &str) -> bool {
 /// device only.
 fn default_device(executor: &str, role: Role, component: &str) -> Device {
     match role {
-        Role::World => return Device::Server,
+        Role::World | Role::Generator => return Device::Server,
         Role::Link | Role::Client => return Device::Cpu,
         _ => {}
     }
@@ -658,8 +680,14 @@ impl Graph {
             }
         };
         let world = one(&mut g, Role::World, "world")?;
+        let generator = one(&mut g, Role::Generator, "procedural")?;
         let link = one(&mut g, Role::Link, "free")?;
         let client = one(&mut g, Role::Client, "pick")?;
+        // The generator feeds what runs on its device: the world on the server, else the client.
+        let local = g.nodes[&generator].device.is_some_and(|d| d != Device::Server);
+        let (feeds, other) = if local { (&client, &world) } else { (&world, &client) };
+        g.nodes.get_mut(feeds).unwrap().inputs.insert("chunks".into(), generator.clone());
+        g.nodes.get_mut(other).unwrap().inputs.remove("chunks");
         for (id, n) in g.nodes.iter_mut() {
             n.timing.retain(|_, w| *w != When::Now);
             let from = if *id == link {
@@ -787,6 +815,7 @@ impl Graph {
                 let have: Vec<&str> = match n.role {
                     Role::Client => CLIENTS.to_vec(),
                     Role::Link => LINKS.to_vec(),
+                    Role::Generator => GENERATORS.to_vec(),
                     r => r.slot().map(|s| crate::components(s).map(|c| c.name).collect()).unwrap_or_default(),
                 };
                 why.push(format!("`{id}`: unknown {} component `{}` (have: {})", n.role.name(), n.component, have.join(", ")));
@@ -893,8 +922,12 @@ impl Graph {
                 None => default_device(&g.executor, n.role, &n.component),
             };
             devices.insert(id.to_string(), d);
-            if (n.role == Role::World) != (d == Device::Server) {
-                why.push(if n.role == Role::World { format!("`{id}`: the world runs on the server, not on {d}") } else { format!("`{id}`: only the world runs on the server") });
+            if n.role == Role::Generator {
+                if !matches!(d, Device::Server | Device::Cpu) {
+                    why.push(format!("`{id}`: the generator runs on the server (streamed) or the client's cpu, not on {d}"));
+                }
+            } else if (n.role == Role::World) != (d == Device::Server) {
+                why.push(if n.role == Role::World { format!("`{id}`: the world runs on the server, not on {d}") } else { format!("`{id}`: only the world and its generator run on the server") });
             } else if n.role == Role::Client && d != Device::Cpu {
                 why.push(format!("`{id}`: the client runs on the cpu (the renderer's process), not on {d}"));
             } else if n.role == Role::Link && d != Device::Cpu {
@@ -971,7 +1004,7 @@ impl Graph {
         // The client's region is the workload, not the pipeline (its knobs left out); the
         // default link (`free`) and client (`pick`), nothing else set, are left out: their
         // readers are written as reading what they read, as before steps 14b and 14c2,
-        // which keeps the keys.
+        // which keeps the keys. So is the generator on the server (step 14d).
         let knobs = |n: &Node| -> toml::Table {
             match n.role {
                 Role::Client => n.knobs.iter().filter(|(k, _)| !CLIENT_KNOBS.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -981,8 +1014,9 @@ impl Graph {
         };
         let plain = |id: &str| {
             let n = &g.nodes[id];
-            matches!((n.role, n.component.as_str()), (Role::Client, "pick") | (Role::Link, "free")) && knobs(n).is_empty() && n.timing.is_empty() && n.api.is_none() && n.device.is_none_or(|d| d == Device::Cpu)
+            matches!((n.role, n.component.as_str()), (Role::Client, "pick") | (Role::Link, "free")) && knobs(n).is_empty() && n.timing.is_empty() && n.api.is_none() && n.device.is_none_or(|d| d == Device::Cpu) && !n.inputs.contains_key("chunks")
         };
+        let served = |id: &str| g.nodes[id].role == Role::Generator && c.devices[id] == Device::Server && g.nodes[id].component == "procedural" && knobs(&g.nodes[id]).is_empty();
         let src = |s: &'_ str| -> String {
             let mut s = s;
             while plain(s) {
@@ -999,7 +1033,7 @@ impl Graph {
             }
             ids.insert(id.clone(), order.len());
             // Reversed so the first port by name is visited first.
-            stack.extend(g.nodes[&id].inputs.values().rev().map(|s| src(s)));
+            stack.extend(g.nodes[&id].inputs.values().filter(|s| !served(s)).rev().map(|s| src(s)));
             order.push(id);
         }
         // APIs only where the executor offers a choice (elsewhere a set API is checked to be
@@ -1014,7 +1048,7 @@ impl Graph {
                 When::Prev => "~prev".into(),
                 When::Iterate(k) => format!("~iterate{k}"),
             };
-            let ins: Vec<String> = n.inputs.iter().map(|(p, s)| format!("{p}=n{}{}", ids[&src(s)], when(p))).collect();
+            let ins: Vec<String> = n.inputs.iter().filter(|(_, s)| !served(s)).map(|(p, s)| format!("{p}=n{}{}", ids[&src(s)], when(p))).collect();
             let knobs: Vec<String> = knobs(n).iter().map(|(k, v)| format!("{k}={v}")).collect();
             let api = c.apis.get(id).filter(|a| chosen(n, a)).map_or(String::new(), |a| format!(":{}", a.name()));
             // (The server is written `cpu`, the world's device before step 14, which keeps
@@ -1207,11 +1241,12 @@ impl Graph {
             g.nodes.values_mut().for_each(|n| {
                 n.knobs.clear();
                 n.api = None;
-                // The worker runs the link and the client, whichever they are; the back end
-                // sees the client's messages.
+                // The worker runs the link, the client and a generator on the client, whichever
+                // they are; the back end sees the client's messages.
                 match n.role {
                     Role::Client => n.component = "pick".into(),
                     Role::Link => n.component = "free".into(),
+                    Role::Generator => n.device = None,
                     _ => {}
                 }
                 let role = n.role;
@@ -1567,10 +1602,21 @@ impl Graph {
                 }
             }
         }
+        if let Some(v) = sites.remove(GENERATOR) {
+            let d = match v.as_str() {
+                "server" => Device::Server,
+                "cpu" => Device::Cpu,
+                _ => return Err(format!("{GENERATOR} = `{v}`: it runs on the `server` (streamed) or the client's `cpu`")),
+            };
+            for n in g.nodes.values_mut().filter(|n| n.role == Role::Generator) {
+                n.device = (d != Device::Server).then_some(d);
+            }
+            g = g.normalised()?;
+        }
         let sites = &sites;
         let names: Vec<String> = g.site_ports().into_iter().map(|(n, ..)| n).collect();
         if let Some(bad) = sites.keys().find(|k| !names.contains(k)) {
-            return Err(format!("no site `{bad}` in this pipeline (have: {}, {LINK}, {CLIENT})", names.join(", ")));
+            return Err(format!("no site `{bad}` in this pipeline (have: {}, {LINK}, {CLIENT}, {GENERATOR})", names.join(", ")));
         }
         // A value naming another listed site waits until that one is bound.
         let refers = |v: &str, n: &str| v == n || v.split_once('/').is_some_and(|(s, _)| s == n);
@@ -1662,8 +1708,13 @@ impl Graph {
                 stack.extend(self.nodes.get(&id).into_iter().flat_map(|n| n.inputs.values().cloned()));
             }
         }
-        self.nodes.retain(|k, n| keep.contains(k) || matches!(n.role, Role::World | Role::Link | Role::Client));
+        self.nodes.retain(|k, n| keep.contains(k) || matches!(n.role, Role::World | Role::Generator | Role::Link | Role::Client));
         self
+    }
+
+    /// Whether the world is generated on the client (the generator node off the server).
+    pub fn generates(&self) -> bool {
+        self.nodes.values().any(|n| n.role == Role::Generator && n.device.is_some_and(|d| d != Device::Server))
     }
 
     /// The client node's component (`pick` when the graph has none).
@@ -1681,21 +1732,32 @@ impl Graph {
         self.nodes.values().find(|n| n.role == Role::Link).map_or(Ok(Default::default()), link_spec)
     }
 
-    /// The sites form's value for the link or the client (`key`: [`LINK`], [`CLIENT`]),
-    /// the default written out.
+    /// The sites form's value for the link, the client or the generator (`key`: [`LINK`],
+    /// [`CLIENT`], [`GENERATOR`]), the default written out.
     pub fn sites_value(&self, key: &str) -> String {
         let g = self.normalised().unwrap_or_else(|_| self.clone());
-        g.world_sites().remove(key).unwrap_or_else(|| if key == LINK { "free" } else { "pick" }.into())
+        g.world_sites().remove(key).unwrap_or_else(|| match key {
+            LINK => "free".into(),
+            GENERATOR => "server".into(),
+            _ => "pick".into(),
+        })
     }
 
-    /// The link and the client in the sites form (`link = "net(latency_ms=30)"`, `client =
-    /// "derive(radius=4)"`): those other than the default, nothing set.
+    /// The link, the client and the generator in the sites form (`link = "net(latency_ms=30)"`,
+    /// `client = "derive(radius=4)"`, `generator = "cpu"`): those other than the default,
+    /// nothing set.
     fn world_sites(&self) -> BTreeMap<String, String> {
         let mut t = BTreeMap::new();
         for n in self.nodes.values() {
             let (key, default) = match n.role {
                 Role::Link => (LINK, "free"),
                 Role::Client => (CLIENT, "pick"),
+                Role::Generator => {
+                    if let Some(d) = n.device.filter(|d| *d != Device::Server) {
+                        t.insert(GENERATOR.to_string(), d.to_string());
+                    }
+                    continue;
+                }
                 _ => continue,
             };
             let knobs = if n.role == Role::Link { link_spec(n).map(|l| link_knobs(&l)).unwrap_or_else(|_| n.knobs.clone()) } else { n.knobs.clone() };
@@ -1814,6 +1876,9 @@ impl Graph {
         }
         if name == LINK {
             return LINKS.iter().map(|c| c.to_string()).collect();
+        }
+        if name == GENERATOR {
+            return vec!["server".into(), "cpu".into()];
         }
         let ports = self.site_ports();
         let Some((_, _, port)) = ports.iter().find(|(n, ..)| n == name) else { return vec![] };
@@ -2622,6 +2687,43 @@ mod tests {
         old.nodes.get_mut("client").unwrap().inputs.insert("changes".into(), "world".into());
         assert_eq!(old.normalised().unwrap().nodes["client"].inputs["changes"], "link");
         assert_eq!(key(&old), key(&pick));
+    }
+
+    /// The generator: on the server it feeds the world and is left out of the key; on the
+    /// client's cpu it feeds the client, a pipeline of its own (PLAN step 14d).
+    #[test]
+    fn generator_placement() {
+        let pick = Graph::from_composition(&Composition::new("gpu-compute")).unwrap();
+        let with = |kv: &[(&str, &str)]| pick.with_sites(&kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        let key = |g: &Graph| g.key().unwrap();
+        assert!(!pick.generates());
+        assert_eq!(key(&with(&[(GENERATOR, "server")]).unwrap()), key(&pick));
+        let ck = pick.check().unwrap();
+        assert_eq!((ck.graph.nodes["world"].inputs["chunks"].as_str(), ck.devices["generator"]), ("generator", Device::Server));
+        assert!(!ck.graph.nodes["client"].inputs.contains_key("chunks"));
+        let local = with(&[(GENERATOR, "cpu")]).unwrap();
+        assert!(local.generates());
+        assert_ne!(key(&local), key(&pick));
+        let ck = local.check().unwrap();
+        assert_eq!((ck.graph.nodes["client"].inputs["chunks"].as_str(), ck.devices["generator"]), ("generator", Device::Cpu));
+        assert!(!ck.graph.nodes["world"].inputs.contains_key("chunks"));
+        assert_eq!(local.sites_value(GENERATOR), "cpu");
+        assert_eq!(pick.sites_value(GENERATOR), "server");
+        let (_, form) = local.sites_form().unwrap().unwrap();
+        assert_eq!(form[GENERATOR], "cpu");
+        assert_eq!(key(&pick.with_sites(&form).unwrap()), key(&local));
+        assert!(local.label().unwrap().ends_with(", generator = cpu"), "{}", local.label().unwrap());
+        assert_eq!(local.to_composition().unwrap().label(), pick.to_composition().unwrap().label());
+        // With the other world nodes set.
+        let both = with(&[(GENERATOR, "cpu"), (CLIENT, "derive")]).unwrap();
+        assert_ne!(key(&both), key(&with(&[(CLIENT, "derive")]).unwrap()));
+        assert_ne!(key(&both), key(&local));
+        assert!(with(&[(GENERATOR, "gpu")]).unwrap_err().contains("server"));
+        let mut gpu = local.clone();
+        gpu.nodes.get_mut("generator").unwrap().device = Some(Device::Gpu(0));
+        assert!(gpu.check().unwrap_err().contains("the generator runs on the server"), "{}", gpu.check().unwrap_err());
+        // Moved back to the server, it feeds the world again.
+        assert_eq!(key(&local.with_sites(&[(GENERATOR.to_string(), "server".to_string())].into()).unwrap()), key(&pick));
     }
 
     /// casting's deferred shading, with its walks, on the second GPU); else the reasons

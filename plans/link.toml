@@ -5,7 +5,9 @@
 # 64 KiB): at 200 Mbit/s the first region takes seconds. Renderers draw what has arrived;
 # quality against the reference (which stays on a free link) shows the holes. Time is
 # simulated (`run.clock_fps`), so runs repeat. The link is a graph node (`sites = { link =
-# "net(..)" }`, knobs as in `mr_core::link::LinkSpec`); unset it is free.
+# "net(..)" }`, knobs as in `mr_core::link::LinkSpec`); unset it is free. With the generator
+# on the client (`generator = "cpu"`, PLAN step 14d) only edits cross the link: the client
+# generates its region from the world's spec.
 name = "link"
 
 [scene]
@@ -80,6 +82,21 @@ sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01
 compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
 label = "home, derive r4+2"
 sites = { client = "derive(radius=4, max_lod=2)", link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+label = "home, generated"
+sites = { generator = "cpu", link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+label = "bad, generated"
+sites = { generator = "cpu", link = "net(latency_ms=150, jitter_ms=80, bandwidth_mbps=50, loss=0.05, reorder=true)" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+label = "home, derive r4+2, generated"
+sites = { generator = "cpu", client = "derive(radius=4, max_lod=2)", link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [output]
 compare = { every = 50 }

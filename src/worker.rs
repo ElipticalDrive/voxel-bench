@@ -46,10 +46,12 @@ pub struct SpawnConfig<'a> {
     pub exe: Option<PathBuf>,
 }
 
-/// Spawns a worker for `spec` using the plan's run settings.
+/// Spawns a worker for `spec` using the plan's run settings; `world` is the world's
+/// generator, which its client runs if the graph places the generator there (PLAN step 14d).
 pub fn spawn_renderer(
     run: &RunSpec,
     spec: &RendererSpec,
+    world: &mr_world::GenSpec,
     blocks: Arc<BlockRegistry>,
     log_path: Option<PathBuf>,
     resolution: [u32; 2],
@@ -85,7 +87,7 @@ pub fn spawn_renderer(
         client: spec.levels(),
         link: spec.link(),
     };
-    Worker::spawn(SpawnConfig {
+    let w = Worker::spawn(SpawnConfig {
         renderer: &spec.name,
         label: spec.label(),
         params,
@@ -94,7 +96,11 @@ pub fn spawn_renderer(
         log_path,
         slots,
         exe,
-    })
+    })?;
+    if spec.generates() {
+        w.send(HostMsg::Generate { world: serde_json::to_string(world)?, budget: run.budget().map(|b| b as u32) })?;
+    }
+    Ok(w)
 }
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);

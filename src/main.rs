@@ -11,7 +11,7 @@ mod pipelines;
 mod plan;
 mod report;
 mod session;
-mod stream;
+pub(crate) use mr_world::stream;
 mod tune;
 mod window;
 mod worker;
@@ -288,7 +288,7 @@ impl Ctx<'_> {
             };
             let mode_tag = mode.map(|m| m.name()).unwrap_or("view");
             let log = self.run_dir.map(|d| d.join("logs").join(format!("{}-{mode_tag}.log", sanitize(&label))));
-            let spawn = || worker::spawn_renderer(run, spec, self.blocks.clone(), log, run.resolution, run.in_flight + 2);
+            let spawn = || worker::spawn_renderer(run, spec, &self.plan.scene.generator, self.blocks.clone(), log, run.resolution, run.in_flight + 2);
             match spawn() {
                 Ok(worker) => {
                     report.init_ms = worker.init_ms;
@@ -360,11 +360,13 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
     {
         let t = Instant::now();
         let scene = Scene::new(plan.scene.clone(), ctx.blocks.clone(), &mut base, run.frames)?;
-        // One streamer per distinct region among the renderers.
+        // One streamer per distinct region the server streams (none for renderers generating
+        // the world themselves).
         let mut configs: Vec<Vec<u32>> = plan
             .renderers
             .iter()
-            .map(|r| r.region(run, infos.iter().find(|i| i.name == r.name).map(|i| i.max_lod).unwrap_or(0)).reach())
+            .map(|r| r.region(run, infos.iter().find(|i| i.name == r.name).map(|i| i.max_lod).unwrap_or(0)).streamed())
+            .filter(|r| !r.is_empty())
             .chain(std::iter::once(vec![run.view_radius]))
             .collect();
         configs.sort();

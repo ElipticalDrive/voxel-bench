@@ -28,9 +28,11 @@ impl World {
 
     /// Whether a chunk can be non-air: inside the generator's vertical range, or edited.
     pub fn may_contain_blocks(&self, key: ChunkKey) -> bool {
-        if key.lod == 0 && self.edited.contains(&key.pos) {
-            return true;
-        }
+        (key.lod == 0 && self.edited.contains(&key.pos)) || self.may_contain_generated(key)
+    }
+
+    /// Whether the generator can put blocks in a chunk (inside its vertical range).
+    fn may_contain_generated(&self, key: ChunkKey) -> bool {
         let (y0, y1) = self.generator.chunk_y_range();
         let ext = key.extent();
         let oy = key.pos.y * ext;
@@ -90,6 +92,27 @@ impl World {
                 (k, c)
             })
             .collect()
+    }
+
+    /// Every edit made so far, as the blocks that differ from the generator's (what a client
+    /// generating the world itself needs to join: PLAN step 14d).
+    pub fn edits(&self) -> Vec<BlockEdit> {
+        let mut out = vec![];
+        let mut keys: Vec<&IVec3> = self.edited.iter().collect();
+        keys.sort_unstable_by_key(|p| p.to_array());
+        for &pos in keys {
+            let key = ChunkKey { pos, lod: 0 };
+            let now = &self.chunks[&key];
+            let was = if self.may_contain_generated(key) { self.generator.chunk(key) } else { ChunkData::Uniform(BlockId::AIR) };
+            for i in 0..mr_core::CHUNK_VOLUME {
+                let l = mr_core::chunk::cell_of_index(i);
+                let b = now.get(l);
+                if b != was.get(l) {
+                    out.push(BlockEdit { pos: key.origin() + l, block: b });
+                }
+            }
+        }
+        out
     }
 
     /// Drops cached chunks for which `keep` is false (edited chunks are always kept).

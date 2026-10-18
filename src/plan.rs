@@ -547,7 +547,13 @@ impl RendererSpec {
 
     /// What its client takes of the server's stream, given the levels the renderer supports.
     pub fn region(&self, run: &RunSpec, supported: u8) -> crate::stream::Region {
-        crate::stream::Region { radius: self.view_radius(run), max_lod: self.max_lod(run, supported), levels: self.levels() }
+        crate::stream::Region { radius: self.view_radius(run), max_lod: self.max_lod(run, supported), levels: self.levels(), generates: self.generates() }
+    }
+
+    /// Whether its client generates the world itself (its graph's generator on the client:
+    /// PLAN step 14d).
+    pub fn generates(&self) -> bool {
+        self.pipeline().is_some_and(|g| g.generates())
     }
 }
 

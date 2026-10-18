@@ -3,7 +3,9 @@
 //! 8: one composition compiled for this machine) both serve through [`run`]. The worker is
 //! the client side of the link (PLAN step 14b): it takes the server's stream and its
 //! [`Client`] derives what the renderer holds before the renderer sees it; since 14c the
-//! stream reaches the client through its [`Link`] (latency, bandwidth, loss) unless free.
+//! stream reaches the client through its [`Link`] (latency, bandwidth, loss) unless free;
+//! since 14d the client may generate the world itself ([`Generating`]), the server's
+//! stream then carrying edits only.
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -15,6 +17,7 @@ use mr_core::client::Client;
 use mr_core::link::Link;
 use mr_core::{CompletedFrame, FrameSink, Renderer, RendererEntry, Waker};
 use mr_ipc::{FrameSlots, HostMsg, MsgWriter, PROTOCOL_VERSION, WorkerMsg};
+use mr_world::stream::Generating;
 
 /// The `worker --socket <path>` arguments a worker process is started with.
 pub fn socket_arg(mut args: impl Iterator<Item = String>) -> anyhow::Result<PathBuf> {
@@ -124,7 +127,12 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let devices = devices(&params.devices);
     // The renderer's region: its radius, and the levels it asked for that it supports.
     let supported = info.max_lod;
-    let mut client = Client::new(params.view_radius_chunks, params.max_lod.min(supported), params.client);
+    let levels = params.client;
+    let mut client = Client::new(params.view_radius_chunks, params.max_lod.min(supported), levels);
+    // The world generated here (`HostMsg::Generate`), and whether it generated this frame.
+    let mut generating: Option<Generating> = None;
+    let mut generated = false;
+    let reach = |c: &Client| mr_core::client::reach(c.radius(), c.max_lod(), levels);
     // The link in front of it (PLAN step 14c): none when free, the stream then as it came.
     let mut link = (!params.link.free()).then(|| Link::new(params.link));
     let mut renderer: Box<dyn Renderer> = (entry.create)(params, &devices, waker)?;
@@ -150,12 +158,24 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
             HostMsg::Stream { updates, at, time } => {
                 let t = Instant::now();
                 let mut ups = vec![];
-                match &mut link {
+                let got = match &mut link {
                     Some(l) => {
                         l.send(time, updates);
-                        client.receive(&arrived(l, time), &mut ups);
+                        arrived(l, time)
                     }
-                    None => client.receive(&updates, &mut ups),
+                    None => updates,
+                };
+                match &mut generating {
+                    Some(g) => {
+                        let mut local = vec![];
+                        g.receive(&got, &mut local);
+                        if let Some(at) = at {
+                            g.update(at, &mut local);
+                            generated = true;
+                        }
+                        client.receive(&local, &mut ups);
+                    }
+                    None => client.receive(&got, &mut ups),
                 }
                 if let Some(at) = at {
                     client.update(at, &mut ups);
@@ -165,7 +185,12 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 }
                 *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
             }
-            HostMsg::Follow { radii } => client.follow(&radii),
+            // A client generating the world follows its own generator's region.
+            HostMsg::Follow { radii } => client.follow(if generating.is_some() { reach(&client) } else { radii }.as_slice()),
+            HostMsg::Generate { world, budget } => {
+                let spec: mr_world::GenSpec = serde_json::from_str(&world).context("the world's generator spec")?;
+                generating = Some(Generating::new(&spec, reach(&client), budget.map(|b| b as usize)));
+            }
             HostMsg::Meshes(m) => {
                 let t = Instant::now();
                 renderer.update_meshes(m)?;
@@ -175,8 +200,18 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 // What arrived by now; the camera may have crossed into chunks the replica holds.
                 let t = Instant::now();
                 let mut ups = vec![];
-                if let Some(l) = &mut link {
-                    client.receive(&arrived(l, time), &mut ups);
+                let got = link.as_mut().map(|l| arrived(l, time)).unwrap_or_default();
+                match &mut generating {
+                    Some(g) => {
+                        // Generated once per frame: here if no stream ended at a camera.
+                        let mut local = vec![];
+                        g.receive(&got, &mut local);
+                        if !std::mem::take(&mut generated) {
+                            g.update(req.camera.position, &mut local);
+                        }
+                        client.receive(&local, &mut ups);
+                    }
+                    None => client.receive(&got, &mut ups),
                 }
                 client.update(req.camera.position, &mut ups);
                 if !ups.is_empty() {
@@ -204,6 +239,15 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                         "client.max_lod" => level().map(|v| client.set_max_lod((v as u8).min(supported))).context("client.max_lod takes an integer"),
                         _ => renderer.set_param(&name, &value),
                     };
+                    // Its generator follows the client's region.
+                    if let (Some(g), "client.radius" | "client.max_lod") = (&mut generating, name.as_str()) {
+                        let (mut local, mut ups) = (vec![], vec![]);
+                        g.set_radii(&reach(&client), &mut local);
+                        client.receive(&local, &mut ups);
+                        if !ups.is_empty() {
+                            renderer.update(ups)?;
+                        }
+                    }
                     if let Err(e) = r {
                         sink.out.send(&WorkerMsg::ParamError { name, error: format!("{e:#}") })?;
                     }

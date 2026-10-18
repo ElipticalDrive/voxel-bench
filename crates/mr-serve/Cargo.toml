@@ -6,6 +6,8 @@ edition.workspace = true
 [dependencies]
 mr-core.workspace = true
 mr-ipc.workspace = true
+mr-world.workspace = true
+serde_json.workspace = true
 anyhow.workspace = true
 crossbeam-channel.workspace = true
 tracing.workspace = true

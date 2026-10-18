@@ -5,6 +5,7 @@ pub mod generators;
 pub mod meshes;
 pub mod noise;
 pub mod scenario;
+pub mod stream;
 pub mod textures;
 pub mod world;
 

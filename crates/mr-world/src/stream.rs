@@ -1,7 +1,9 @@
 //! The server's stream (PLAN step 14a): one region around the camera (a radius per LOD
 //! level: the largest any client needs there), the chunks in it as load / unload / edit
-//! messages, the same for every client (`mr_core::client`, in each worker, derives what its renderer holds). Also walks the world for
-//! tools (pre-generation, scene features).
+//! messages, the same for every client (`mr_core::client`, in each worker, derives what its
+//! renderer holds). A client may generate the world itself instead ([`Generating`], PLAN
+//! step 14d): the server then sends it edits only. Also walks the world for tools
+//! (pre-generation, scene features).
 
 use std::collections::{HashMap, HashSet};
 
@@ -10,27 +12,35 @@ use mr_core::chunk::CHUNK_BITS;
 use mr_core::renderer::BlockEdit;
 use mr_core::client::Levels;
 use mr_core::{ChunkData, ChunkKey, WorldUpdate};
-use mr_world::World;
+use crate::World;
 
-/// What a client takes of the stream: its renderer's radius and LOD levels, and how it gets
-/// the levels. The host sizes the server's region from its clients' (the clients run in the
-/// workers: PLAN step 14b).
+/// What a client takes of the stream: its renderer's radius and LOD levels, how it gets
+/// the levels, and whether it generates its chunks itself. The host sizes the server's
+/// region from its clients' (the clients run in the workers: PLAN step 14b).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Region {
     pub radius: u32,
     pub max_lod: u8,
     pub levels: Levels,
+    /// Generates the world itself from the server's spec (the graph's generator on the
+    /// client: PLAN step 14d); the server sends it edits, lights and the environment only.
+    pub generates: bool,
 }
 
 impl Region {
-    /// The radius per LOD level it needs streamed.
+    /// The radius per LOD level it needs, streamed or generated.
     pub fn reach(&self) -> Vec<u32> {
         mr_core::client::reach(self.radius, self.max_lod, self.levels)
+    }
+
+    /// The radius per LOD level it needs the server to stream (nothing if it generates).
+    pub fn streamed(&self) -> Vec<u32> {
+        if self.generates { vec![] } else { self.reach() }
     }
 }
 
 /// The server's region for clients needing `reaches`: the largest radius any needs at each
-/// level (`fallback` at LOD 0 without clients).
+/// level (`fallback` at LOD 0 without clients or needs).
 pub fn union(reaches: impl IntoIterator<Item = Vec<u32>>, fallback: u32) -> Vec<u32> {
     let mut out: Vec<u32> = vec![];
     for r in reaches {
@@ -190,13 +200,57 @@ impl Streamer {
     }
 }
 
+/// The world generated on a client (PLAN step 14d: the graph's generator node on the
+/// client's side): the server's generator built from its spec, the server's edits applied,
+/// and the client's region streamed to it as the server would.
+pub struct Generating {
+    world: World,
+    streamer: Streamer,
+}
+
+impl Generating {
+    /// A generator for `spec`, streaming `radii` (per LOD level) around the camera,
+    /// `budget` chunks per update.
+    pub fn new(spec: &crate::GenSpec, radii: Vec<u32>, budget: Option<usize>) -> Self {
+        Self { world: World::new(spec.build()), streamer: Streamer::new(radii, budget) }
+    }
+
+    pub fn set_radii(&mut self, radii: &[u32], out: &mut Vec<WorldUpdate>) {
+        self.streamer.set_radii(radii, out);
+    }
+
+    /// Takes the server's messages: edits change its world and go on as the server's
+    /// stream would carry them; everything else goes on as it is.
+    pub fn receive(&mut self, msgs: &[WorldUpdate], out: &mut Vec<WorldUpdate>) {
+        for m in msgs {
+            match m {
+                WorldUpdate::SetBlocks(edits) => {
+                    let changed = self.world.apply_edits(edits);
+                    self.streamer.edits(edits, &changed, out);
+                }
+                m => out.push(m.clone()),
+            }
+        }
+    }
+
+    /// The chunks of its region at camera `cam`, generated (within the budget).
+    pub fn update(&mut self, cam: DVec3, out: &mut Vec<WorldUpdate>) {
+        self.streamer.update(&mut self.world, cam, out);
+    }
+
+    /// Chunks generated (non-air) so far.
+    pub fn chunks(&self) -> u64 {
+        self.streamer.chunks_sent
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use mr_core::BlockId;
     use mr_core::chunk::{CHUNK_BITS, local_of_block};
     use mr_core::client::Client;
-    use mr_world::generators::GenSpec;
+    use crate::generators::GenSpec;
 
     /// What a renderer holds after applying messages.
     fn apply(held: &mut HashMap<ChunkKey, ChunkData>, ups: &[WorldUpdate]) {
@@ -293,6 +347,69 @@ mod tests {
             assert_eq!(link.in_flight(), 0, "{levels:?} reorder {reorder}");
             assert!(holes > 5 && link.stats().resent > 0, "{levels:?} reorder {reorder}: holes {holes}, {:?}", link.stats());
             assert!(same(&a, &b), "{levels:?} reorder {reorder}: {} chunks held against {}", a.len(), b.len());
+        }
+    }
+
+    /// A client generating the world from the server's spec, sent only edits, holds what a
+    /// client of the server's stream holds, every frame, `pick` and `derive`; so does one
+    /// joining late with the edits so far (`World::edits`), once its budget caught up
+    /// (PLAN step 14d).
+    #[test]
+    fn client_generating_the_world() {
+        let spec = GenSpec::Terrain { seed: 3, caves: true, trees: true };
+        let same = |a: &HashMap<ChunkKey, ChunkData>, b: &HashMap<ChunkKey, ChunkData>| {
+            a.len() == b.len() && b.iter().all(|(k, d)| a.get(k).is_some_and(|c| c == d || (0..mr_core::CHUNK_VOLUME).map(mr_core::chunk::cell_of_index).all(|p| c.get(p) == d.get(p))))
+        };
+        for levels in [Levels::Pick, Levels::Derive] {
+            let (radius, max_lod) = (2, 2);
+            let reach = mr_core::client::reach(radius, max_lod, levels);
+            let mut world = World::new(spec.build());
+            let mut server = Streamer::new(reach.clone(), None);
+            let mut ours = Generating::new(&spec, reach.clone(), None);
+            let (mut streamed, mut local) = (Client::new(radius, max_lod, levels), Client::new(radius, max_lod, levels));
+            let (mut a, mut b) = (HashMap::new(), HashMap::new());
+            let mut late: Option<(Generating, Client, HashMap<ChunkKey, ChunkData>)> = None;
+            for f in 0..40 {
+                let g = f.min(30);
+                let cam = DVec3::new(g as f64 * 13.0, 60.0, g as f64 * -7.0);
+                let edits: Vec<BlockEdit> = if f < 30 { (0..20).map(|i| BlockEdit { pos: IVec3::new(f * 13 + i * 3, 30 + i * 2, -f * 7 - i), block: if i % 2 == 0 { BlockId::AIR } else { BlockId(1) } }).collect() } else { vec![] };
+                let changed = world.apply_edits(&edits);
+                let (mut stream, mut ups) = (vec![], vec![]);
+                server.edits(&edits, &changed, &mut stream);
+                server.update(&mut world, cam, &mut stream);
+                streamed.receive(&stream, &mut ups);
+                streamed.update(cam, &mut ups);
+                apply(&mut a, &ups);
+                // The server sends the generating clients this frame's edits only.
+                let sent = [WorldUpdate::SetBlocks(edits)];
+                let generated = |g: &mut Generating, client: &mut Client, held: &mut HashMap<ChunkKey, ChunkData>, sent: &[WorldUpdate]| {
+                    let (mut chunks, mut ups) = (vec![], vec![]);
+                    g.receive(sent, &mut chunks);
+                    g.update(cam, &mut chunks);
+                    client.receive(&chunks, &mut ups);
+                    client.update(cam, &mut ups);
+                    apply(held, &ups);
+                };
+                generated(&mut ours, &mut local, &mut b, &sent);
+                assert!(same(&b, &a), "{levels:?} frame {f}: {} chunks held against {}", b.len(), a.len());
+                if let Some((g, c, h)) = &mut late {
+                    generated(g, c, h, &sent);
+                    // What it holds already is right (`derive`'s coarse levels only once their
+                    // LOD 0 arrived: they are built from what it has).
+                    let exact = |k: &ChunkKey| k.lod == 0 || levels == Levels::Pick;
+                    let part: HashMap<ChunkKey, ChunkData> = a.iter().filter(|(k, _)| h.contains_key(k) && exact(k)).map(|(k, d)| (*k, d.clone())).collect();
+                    let mine: HashMap<ChunkKey, ChunkData> = h.iter().filter(|(k, _)| exact(k)).map(|(k, d)| (*k, d.clone())).collect();
+                    assert!(same(&mine, &part), "{levels:?}, joined late, frame {f}: holds what the server's client does not");
+                }
+                if f == 20 {
+                    let mut l = (Generating::new(&spec, reach.clone(), Some(400)), Client::new(radius, max_lod, levels), HashMap::new());
+                    generated(&mut l.0, &mut l.1, &mut l.2, &[WorldUpdate::SetBlocks(world.edits())]);
+                    late = Some(l);
+                }
+            }
+            let (_, _, h) = late.unwrap();
+            assert!(same(&h, &a), "{levels:?}, joined late: {} chunks held against {}", h.len(), a.len());
+            assert!(ours.chunks() > 0);
         }
     }
 

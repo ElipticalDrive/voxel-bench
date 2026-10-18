@@ -444,11 +444,11 @@ fn sync_compose(spec: &mut RendererSpec, knob: &str) {
     }
 }
 
-fn spawn_async(run: &RunSpec, spec: &RendererSpec, blocks: Arc<BlockRegistry>, res: [u32; 2]) -> Spawn {
+fn spawn_async(run: &RunSpec, spec: &RendererSpec, world: &mr_world::GenSpec, blocks: Arc<BlockRegistry>, res: [u32; 2]) -> Spawn {
     let (tx, rx) = crossbeam_channel::bounded(1);
-    let (run, spec) = (run.clone(), spec.clone());
+    let (run, spec, world) = (run.clone(), spec.clone(), world.clone());
     std::thread::spawn(move || {
-        let _ = tx.send(worker::spawn_renderer(&run, &spec, blocks, None, res, SLOTS));
+        let _ = tx.send(worker::spawn_renderer(&run, &spec, &world, blocks, None, res, SLOTS));
     });
     rx
 }
@@ -520,12 +520,12 @@ impl Session {
     }
 
     fn new_runner(&self, spec: RendererSpec, res: [u32; 2], radius: u32) -> Runner {
-        let levels = spec.levels();
+        let (levels, generates) = (spec.levels(), spec.generates());
         Runner {
-            spawning: Some(spawn_async(&self.plan.run, &spec, self.blocks.clone(), res)),
+            spawning: Some(spawn_async(&self.plan.run, &spec, &self.plan.scene.generator, self.blocks.clone(), res)),
             spec,
             worker: None,
-            region: Region { radius, max_lod: 0, levels },
+            region: Region { radius, max_lod: 0, levels, generates },
             joined: false,
             chunks_sent: 0,
             own: None,
@@ -648,9 +648,11 @@ impl Session {
         }
         let mut stream = vec![];
         self.server.edits(&edits, &changed, &mut stream);
+        // Clients generating the world get every edit (PLAN step 14d).
+        let all = [WorldUpdate::SetBlocks(edits)];
         for r in self.lanes.iter_mut().flat_map(|l| std::iter::once(&mut l.run).chain(l.standby.as_mut())) {
             if r.joined {
-                r.take(&stream);
+                r.take(if r.region.generates { &all } else { &stream });
             }
         }
     }
@@ -880,18 +882,30 @@ impl Session {
             sh.lights = self.lights.len();
             sh.cached_chunks = self.world.cached_chunks();
         }
-        // The server's region: as large as the largest any lane needs at each level.
+        // The server's region: as large as the largest any lane needs streamed at each level
+        // (none for lanes generating the world: PLAN step 14d).
         let runners = || self.lanes.iter().flat_map(|l| std::iter::once(&l.run).chain(l.standby.as_ref()));
-        let radii = crate::stream::union(runners().map(|r| r.region.reach()), self.plan.run.view_radius);
         let mut stream = vec![];
-        self.server.set_radii(&radii, &mut stream);
-        self.server.update(&mut self.world, cam.position, &mut stream);
+        if runners().any(|r| !r.region.generates) {
+            let radii = crate::stream::union(runners().map(|r| r.region.streamed()), self.plan.run.view_radius);
+            self.server.set_radii(&radii, &mut stream);
+            self.server.update(&mut self.world, cam.position, &mut stream);
+        }
         let (world, server) = (&mut self.world, &self.server);
         for r in self.lanes.iter_mut().flat_map(|l| std::iter::once(&mut l.run).chain(l.standby.as_mut())) {
             if r.worker.is_none() {
                 continue;
             }
-            if r.joined {
+            if r.region.generates {
+                // Joining, the edits so far; then the edits as they come.
+                if !r.joined {
+                    let edits = world.edits();
+                    if !edits.is_empty() {
+                        r.take(&[WorldUpdate::SetBlocks(edits)]);
+                    }
+                    r.joined = true;
+                }
+            } else if r.joined {
                 r.take(&stream);
             } else {
                 r.take(&server.snapshot(world));

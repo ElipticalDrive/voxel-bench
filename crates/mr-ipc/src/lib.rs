@@ -16,7 +16,7 @@ use memmap2::MmapMut;
 use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {
@@ -37,6 +37,11 @@ pub enum HostMsg {
     /// The server streams this region (a radius per LOD level) and neither it nor the
     /// client's changes: a client covering it takes the stream as it is.
     Follow { radii: Vec<u32> },
+    /// The client generates the world itself (PLAN step 14d: the graph's generator on the
+    /// client): `world` is the server's generator spec (`mr_world::GenSpec` as JSON, the
+    /// shared seed), `budget` the chunks it generates per frame (`None`: all at once). The
+    /// server then sends it edits, lights and the environment only.
+    Generate { world: String, budget: Option<u32> },
     /// Mesh mode: geometry and instances, applied in order with `Updates`.
     Meshes(MeshUpdate),
     /// `slot` is the shared-memory slot to write pixels into when `req.readback` is set.

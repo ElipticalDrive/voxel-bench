@@ -2214,6 +2214,8 @@ dependencies = [
  "crossbeam-channel",
  "mr-core",
  "mr-ipc",
+ "mr-world",
+ "serde_json",
  "tracing",
 ]
 

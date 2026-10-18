@@ -401,8 +401,10 @@ pub fn run_pass(
     let mut measure_start: Option<Instant> = None;
     let mut missed = 0u32;
     let mut sent_instances: Option<Vec<MeshInstance>> = None;
-    // The server streams one region, as large as the largest any client needs at each level.
-    let radii = crate::stream::union(lanes.iter().map(|l| l.region.reach()), 0);
+    // The server streams one region, as large as the largest any client needs streamed at
+    // each level; clients generating the world (PLAN step 14d) need nothing streamed.
+    let streams = lanes.iter().any(|l| !l.region.generates);
+    let radii = crate::stream::union(lanes.iter().map(|l| l.region.streamed()), 0);
     let mut server = Streamer::new(radii.clone(), run.budget());
     for l in lanes.iter() {
         l.worker.send(HostMsg::Follow { radii: radii.clone() })?;
@@ -412,25 +414,41 @@ pub fn run_pass(
         let instances = input.meshes.filter(|i| sent_instances.as_ref() != Some(i));
         let edits = resolve_edits(world, input.events.edits);
         let changed = world.apply_edits(&edits);
-        let mut stream = vec![];
+        let (mut head, mut tail) = (vec![], vec![]);
         // Everything a renderer knows of the world comes over the stream (PLAN step 14c),
         // the environment too (its creation's is a default until then).
         if first {
-            stream.push(WorldUpdate::SetEnvironment(environment));
-            stream.push(WorldUpdate::LightUpsert(lights.to_vec()));
+            head.push(WorldUpdate::SetEnvironment(environment));
+            head.push(WorldUpdate::LightUpsert(lights.to_vec()));
         }
-        server.edits(&edits, &changed, &mut stream);
-        server.update(world, input.camera.position, &mut stream);
         if !input.events.lights.is_empty() {
-            stream.push(WorldUpdate::LightUpsert(input.events.lights.clone()));
+            tail.push(WorldUpdate::LightUpsert(input.events.lights.clone()));
         }
         if let Some(env) = input.events.environment {
-            stream.push(WorldUpdate::SetEnvironment(env));
+            tail.push(WorldUpdate::SetEnvironment(env));
         }
+        let mut stream = head.clone();
+        if streams {
+            server.edits(&edits, &changed, &mut stream);
+            server.update(world, input.camera.position, &mut stream);
+        }
+        stream.extend_from_slice(&tail);
+        // Clients generating the world get every edit (from the start: those before the pass).
+        let mut edit_stream = head;
+        let before = if first { world.edits() } else { vec![] };
+        if first && !before.is_empty() {
+            edit_stream.push(WorldUpdate::SetBlocks(before));
+        } else if !first && !edits.is_empty() {
+            edit_stream.push(WorldUpdate::SetBlocks(edits));
+        }
+        edit_stream.extend(tail);
         // What crossed the link to each client.
         let loads = stream.iter().filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. })).count() as u64;
         for lane in lanes.iter_mut() {
-            lane.report.chunks_sent += loads;
+            let stream = if lane.region.generates { &edit_stream } else { &stream };
+            if !lane.region.generates {
+                lane.report.chunks_sent += loads;
+            }
             if first && !meshes.is_empty() {
                 lane.worker.send(HostMsg::Meshes(MeshUpdate::Meshes(meshes.to_vec())))?;
             }
