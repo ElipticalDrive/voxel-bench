@@ -69,7 +69,10 @@ pub struct RunSpec {
     pub devices: mr_core::DeviceConfig,
     /// `native`: run every renderer an executor runs (CPU or GPU) as a pipeline compiled for
     /// its graph and this machine (PLAN steps 8 and 16a, `pipelines`), built before their pass
-    /// if not cached; `off`: the generic build.
+    /// if not cached; `break-in`: the same, built for speed whatever the build takes (PLAN step
+    /// 16c: native, whole-program LTO, profile-guided and both, each timed here, the fastest
+    /// kept);
+    /// `off`: the generic build.
     pub compile: Compile,
     /// Time every stage of every frame (PLAN step 11): each GPU stage costs a timestamp
     /// (measured: +0.1–0.6% GPU time); `false` runs exactly as before step 11.
@@ -100,6 +103,18 @@ pub enum Compile {
     #[default]
     Off,
     Native,
+    #[serde(rename = "break-in")]
+    BreakIn,
+}
+
+impl Compile {
+    pub fn name(self) -> &'static str {
+        match self {
+            Compile::Off => "off",
+            Compile::Native => "native",
+            Compile::BreakIn => "break-in",
+        }
+    }
 }
 
 impl Default for RunSpec {
@@ -461,9 +476,9 @@ impl RendererSpec {
         t
     }
 
-    /// Whether this renderer runs as a pipeline compiled for this machine.
-    pub fn native(&self, run: &RunSpec) -> bool {
-        self.compile.unwrap_or(run.compile) == Compile::Native && matches!(crate::pipelines::bake(self), Ok(Some(_)))
+    /// How this renderer runs compiled for this machine (`None`: the generic build).
+    pub fn compiled(&self, run: &RunSpec) -> Option<Compile> {
+        Some(self.compile.unwrap_or(run.compile)).filter(|&c| c != Compile::Off && matches!(crate::pipelines::bake(self), Ok(Some(_))))
     }
 
     /// Display label: the explicit one, else the graph's (the composition's and the sites

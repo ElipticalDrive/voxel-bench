@@ -1,12 +1,12 @@
 # perfsum.py DIR: median GPU ms and fps per pass of interleaved before/after runs.
-import sys, json, glob, statistics as st
+import re, sys, json, glob, statistics as st
 T = sys.argv[1]; res = {}
 for b in ('before', 'after'):
     for f in glob.glob(f'{T}/{b}/*/*/report.json'):
         for p in json.load(open(f)):
             if p.get('error'): print('ERROR', b, p['label'], p['error']); continue
             g = p['gpu_ms']['mean'] if p.get('gpu_ms') else float('nan')
-            res.setdefault((p['label'].replace(' [native]', ''), p['mode']), {}).setdefault(b, []).append((g, p['fps']))
+            res.setdefault((re.sub(r' \[(native|break-in)\]$', '', p['label']), p['mode']), {}).setdefault(b, []).append((g, p['fps']))
 print(f"{'pass':60s} {'gpu before':>10s} {'after':>8s} {'Δ%':>6s} {'fps before':>10s} {'after':>8s} {'Δ%':>6s}")
 for k, v in sorted(res.items()):
     if 'before' not in v or 'after' not in v: continue

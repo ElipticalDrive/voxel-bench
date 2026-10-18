@@ -60,11 +60,11 @@ pub fn spawn_renderer(
     let [width, height] = resolution;
     // A pipeline compiled for this machine, if asked for and the renderer has one.
     let exe = match (spec.compile.unwrap_or(run.compile), crate::pipelines::bake(spec)?) {
-        (crate::plan::Compile::Native, Some(b)) => {
+        (level @ (crate::plan::Compile::Native | crate::plan::Compile::BreakIn), Some(b)) => {
             if run.isolation != Isolation::Process {
                 anyhow::bail!("{}: compiled pipelines run in their own process (isolation = \"process\")", spec.label());
             }
-            let c = crate::pipelines::trusted(&b)?;
+            let c = crate::pipelines::trusted(&b, level)?;
             if let Some(s) = c.build_s {
                 tracing::info!("{}: compiled pipeline {} in {s:.1} s", spec.label(), c.key);
             }

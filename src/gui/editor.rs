@@ -657,6 +657,8 @@ fn run(ui: &mut Ui, plan: &mut Plan) -> Changed {
         c |= ui.selectable_value(&mut r.compile, Compile::Off, "generic").on_hover_text("The precompiled build: every knob live").changed();
         let tip = "CPU executor pipelines run as pipelines compiled for this CPU with their choices baked in (seconds to build once, cached; checked against the generic build before use; process isolation). The generic build runs meanwhile, then hot-swaps.";
         c |= ui.add_enabled_ui(r.isolation == Isolation::Process, |ui| ui.selectable_value(&mut r.compile, Compile::Native, "native").on_hover_text(tip).on_disabled_hover_text("Compiled pipelines run in their own process: choose process isolation")).inner.changed();
+        let tip = "As native, built for speed whatever it takes: native, whole-program LTO, profile-guided (trained on a short flight) and both, each timed on this machine, the fastest kept (minutes, once per pipeline and machine). The generic build runs meanwhile, then hot-swaps.";
+        c |= ui.add_enabled_ui(r.isolation == Isolation::Process, |ui| ui.selectable_value(&mut r.compile, Compile::BreakIn, "break-in").on_hover_text(tip).on_disabled_hover_text("Compiled pipelines run in their own process: choose process isolation")).inner.changed();
     });
     let mut launcher = r.launcher.join(" ");
     ui.horizontal(|ui| {

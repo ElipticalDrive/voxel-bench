@@ -568,7 +568,7 @@ impl Session {
     fn add_lane(&mut self, spec: RendererSpec) {
         // A pipeline compiled for this machine (PLAN step 8): the generic build runs while
         // it compiles and is checked, then it hot-swaps in.
-        let native = spec.native(&self.plan.run);
+        let native = spec.compiled(&self.plan.run).is_some();
         let mut first = spec.clone();
         if native {
             first.compile = Some(crate::plan::Compile::Off);
@@ -719,7 +719,7 @@ impl Session {
         }
         lane.standby = Some(standby);
         lane.standby_warm = 0;
-        let native = spec.native(&self.plan.run);
+        let native = spec.compiled(&self.plan.run).is_some();
         self.shared.lock().unwrap().lanes[i].swap = Some(if native { "compiling for this machine (generic build meanwhile)".into() } else { "spawning".into() });
         self.event(i, format!("hot swap → {} {}", spec.name, toml::to_string(&spec.options).unwrap_or_default().replace('\n', " ")));
     }

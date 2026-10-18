@@ -8,6 +8,10 @@
 //! the result is an ordinary worker executable spoken to over the usual protocol, so a bad
 //! build only fails its worker and the host can swap it for the generic build.
 //!
+//! `break-in` (step 16c, IDEAS §17's break-in mode) spends what it takes on the same crate:
+//! it builds it natively, with whole-program LTO, profile-guided (trained on a short flight of
+//! the trust check's scene) and with both, times each here and keeps the fastest.
+//!
 //! Builds are cached by the pipeline's graph key (step 10: the renderer's graph with the
 //! values of the knobs the generated code bakes placed on their nodes, [`Bake::graph`]) and
 //! a hash over the generated source, the sources it compiles against, the toolchain
@@ -21,7 +25,7 @@ use std::time::Instant;
 
 use anyhow::{Context, bail};
 
-use crate::plan::RendererSpec;
+use crate::plan::{Compile, RendererSpec};
 
 /// What a generated pipeline bakes in: the pipeline (its graph, with the values of the knobs
 /// in [`bakes`] on the nodes they belong to: its identity, the cache key), the executor, its
@@ -204,7 +208,8 @@ fn manifest(repo: &Path, executor: Executor) -> String {
     let gpu = if executor == Executor::Gpu { dep("mr-gpu", "crates/mr-gpu") } else { String::new() };
     format!(
         "[package]\nname = \"mr-pipeline\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\n{}{gpu}{}{}{}\n\
-         [profile.release]\ndebug = \"line-tables-only\"\ncodegen-units = 16\n",
+         [profile.release]\ndebug = \"line-tables-only\"\ncodegen-units = 16\n\n\
+         [profile.break-in]\ninherits = \"release\"\nlto = \"fat\"\ncodegen-units = 1\n",
         dep(name, path),
         dep("mr-serve", "crates/mr-serve"),
         dep("mr-components", "components"),
@@ -257,24 +262,193 @@ fn machine_id() -> anyhow::Result<String> {
     Ok(format!("{}\n{}", String::from_utf8_lossy(&rustc.stdout), model.join("\n")))
 }
 
-/// The cache key of `b` on this machine and source state: the pipeline's graph key, then a
-/// hash of what builds it here.
-pub fn key(b: &Bake) -> anyhow::Result<String> {
+/// The cache key of `b` built at `level` on this machine and source state: the pipeline's
+/// graph key, then a hash of what builds it here (`-break-in` after it for that level).
+pub fn key(b: &Bake, level: Compile) -> anyhow::Result<String> {
     let mut h = fnv(0xcbf2_9ce4_8422_2325, source(b)?.as_bytes());
     h = fnv(h, manifest(repo(), b.executor).as_bytes());
     h = fnv(h, &sources_hash(repo(), b.executor)?.to_le_bytes());
     h = fnv(h, machine_id()?.as_bytes());
+    h = fnv(h, FLAGS.as_bytes());
+    if level == Compile::BreakIn {
+        h = fnv(h, format!("{BREAK_IN:?}").as_bytes());
+    }
     let prefix = match b.executor {
         Executor::Cpu => "cpu",
         Executor::Gpu => "gpu",
     };
-    Ok(format!("{prefix}-{}-{h:016x}", b.graph.key().map_err(anyhow::Error::msg)?))
+    let suffix = if level == Compile::BreakIn { "-break-in" } else { "" };
+    Ok(format!("{prefix}-{}-{h:016x}{suffix}", b.graph.key().map_err(anyhow::Error::msg)?))
 }
 
-/// Returns the worker for `b`, building it first if it is not cached (blocking; minutes
-/// the first time, while the shared target directory fills, seconds after).
-pub fn ensure(b: &Bake) -> anyhow::Result<Compiled> {
-    let key = key(b)?;
+/// The same forced code alignment as the workspace (`.cargo/config.toml`), plus this CPU.
+const FLAGS: &str = "-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=5 -C target-cpu=native";
+
+/// Builds the crate in `src` with `profile` into `target` (`RUSTFLAGS` = [`FLAGS`] + `extra`)
+/// and returns the worker executable.
+fn cargo(key: &str, src: &Path, target: &Path, profile: &str, extra: &str) -> anyhow::Result<PathBuf> {
+    tracing::info!("compiling pipeline {key} (cargo, profile {profile}, target {})", target.display());
+    let out = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()))
+        .args(["build", "--quiet", "--profile", profile, "--manifest-path"])
+        .arg(src.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", target)
+        .env("RUSTFLAGS", format!("{FLAGS} {extra}"))
+        .output()
+        .context("running cargo (a Rust toolchain builds the pipelines)")?;
+    if !out.status.success() {
+        bail!("building pipeline {key} ({profile}) failed:\n{}", tail(&out.stderr, 30));
+    }
+    Ok(target.join(profile).join("mr-pipeline"))
+}
+
+/// The last `n` lines of a child's output.
+fn tail(out: &[u8], n: usize) -> String {
+    let s = String::from_utf8_lossy(out);
+    let lines: Vec<&str> = s.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+/// The toolchain's `llvm-profdata` (rustup component `llvm-tools`: its LLVM is rustc's).
+fn profdata() -> anyhow::Result<PathBuf> {
+    let rustc = std::env::var("RUSTC").unwrap_or("rustc".into());
+    let sysroot = Command::new(&rustc).args(["--print", "sysroot"]).output().context("running rustc --print sysroot")?;
+    let vv = Command::new(&rustc).arg("-vV").output().context("running rustc -vV")?;
+    let vv = String::from_utf8_lossy(&vv.stdout);
+    let host = vv.lines().find_map(|l| l.strip_prefix("host: ")).context("rustc -vV names no host")?;
+    let exe = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim()).join("lib/rustlib").join(host).join("bin/llvm-profdata");
+    if !exe.exists() {
+        bail!("break-in needs llvm-profdata ({} is missing): rustup component add llvm-tools", exe.display());
+    }
+    Ok(exe)
+}
+
+/// The training run's knobs: one thread where the executor has the knob. The profile's
+/// counters are shared, and threads writing them take turns at the cache lines (measured,
+/// bricks + refloor, 960x540: 71 ms a frame on one thread, 547 on four, 850 on all 32).
+fn train_options(b: &Bake) -> toml::Table {
+    let mut options = toml::Table::new();
+    if params_of(&b.graph.executor).is_some_and(|(_, ps)| ps.iter().any(|p| p.name == "threads")) {
+        options.insert("threads".into(), 1.into());
+    }
+    options
+}
+
+/// Break-in's candidates: name, target directory, cargo profile, profile-guided.
+const BREAK_IN: &[(&str, &str, &str, bool)] = &[
+    ("native", "target", "release", false),
+    ("lto", "target-lto", "break-in", false),
+    ("pgo", "target-pgo-use", "release", true),
+    ("lto+pgo", "target-break-in", "break-in", true),
+];
+
+/// Flies `b`'s graph (lit and unlit, `frames` frames, 960x540) under `dir` with worker `exe`
+/// (and `env`) and returns the run's report.
+fn fly(b: &Bake, dir: &Path, exe: &Path, options: toml::Table, frames: u32, env: &[(&str, &std::ffi::OsStr)]) -> anyhow::Result<serde_json::Value> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(dir.join("plan.toml"), check_plan(b, &dir.join("run"), &["off"], options, frames, [960, 540], false)?)?;
+    let mut cmd = Command::new(host_exe()?);
+    cmd.arg("run").arg(dir.join("plan.toml")).env("MR_PIPELINE_CHECK", "1").env("MR_WORKER_EXE", exe);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output()?;
+    if !out.status.success() {
+        bail!("the run in {} failed:\n{}", dir.display(), tail(&out.stderr, 20));
+    }
+    let run = std::fs::read_dir(dir.join("run"))?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.join("report.json").exists()).context("the run wrote no report")?;
+    Ok(serde_json::from_slice(&std::fs::read(run.join("report.json"))?)?)
+}
+
+/// The break-in builds of the crate in `src`, each timed here, the fastest kept: the native
+/// build, whole-program LTO (one codegen unit), profile-guided (an instrumented build flies a
+/// training run, `llvm-profdata` merges the profile), and both. Which wins depends on the
+/// pipeline (measured: LTO alone +4-8 % for raster and host-bound gpu-compute, where the
+/// profile costs 4 %; the profile alone +8-10 % for prefix + incremental, where LTO costs
+/// 2-4 %; both together lost to the better one alone in each).
+fn break_in(b: &Bake, key: &str, src: &Path, root: &Path) -> anyhow::Result<PathBuf> {
+    let profdata = profdata()?;
+    let train = root.join("train").join(key);
+    let _ = std::fs::remove_dir_all(&train);
+    std::fs::create_dir_all(&train)?;
+    // The instrumented build: one fixed profile path for every pipeline (the training run
+    // names its own files), so the shared target keeps its dependencies.
+    let scratch = root.join("pgo-scratch");
+    let instrumented = cargo(key, src, &root.join("target-pgo"), "release", &format!("-C profile-generate={}", scratch.display()))?;
+    let t = Instant::now();
+    let profiles = train.join("profiles");
+    std::fs::create_dir_all(&profiles)?;
+    fly(b, &train.join("train"), &instrumented, train_options(b), 90, &[("LLVM_PROFILE_FILE", profiles.join("%p-%m.profraw").as_os_str())])?;
+    let raw: Vec<PathBuf> = std::fs::read_dir(&profiles).map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).collect()).unwrap_or_default();
+    if raw.is_empty() {
+        bail!("the training run wrote no profile");
+    }
+    let merged = train.join("merged.profdata");
+    let out = Command::new(profdata).arg("merge").arg("-o").arg(&merged).args(&raw).output().context("running llvm-profdata")?;
+    if !out.status.success() {
+        bail!("llvm-profdata merge failed:\n{}", tail(&out.stderr, 20));
+    }
+    tracing::info!("pipeline {key}: trained in {:.1} s ({} profiles)", t.elapsed().as_secs_f64(), raw.len());
+    // The candidates, each copied out of its target (the targets are shared).
+    let use_profile = format!("-C profile-use={}", merged.display());
+    let mut candidates = vec![];
+    for &(name, target, profile, pgo) in BREAK_IN {
+        let exe = train.join(format!("worker-{name}"));
+        if pgo {
+            // The profile's path is in the flags, so every dependency is built anew for this
+            // pipeline (1.5 GB); nothing else can use the target.
+            let target = root.join(target).join(key);
+            let built = cargo(key, src, &target, profile, &use_profile);
+            let copied = built.and_then(|b| Ok(std::fs::copy(b, &exe)?));
+            let _ = std::fs::remove_dir_all(&target);
+            copied?;
+        } else {
+            std::fs::copy(cargo(key, src, &root.join(target), profile, "")?, &exe)?;
+        }
+        candidates.push((name, exe));
+    }
+    // Timed in interleaved rounds, all threads: the mean frame time over lit and unlit.
+    let t = Instant::now();
+    let mut ms: Vec<Vec<f64>> = vec![vec![]; candidates.len()];
+    for round in 0..3 {
+        for (i, (name, exe)) in candidates.iter().enumerate() {
+            let report = fly(b, &train.join(format!("time-{name}-{round}")), exe, toml::Table::new(), 150, &[])?;
+            let passes = report.as_array().context("a report is a list of passes")?;
+            let fps: Vec<f64> = passes.iter().filter_map(|p| p["fps"].as_f64()).collect();
+            if fps.is_empty() || fps.iter().any(|&f| f <= 0.0) {
+                bail!("timing {name}: no frame rate in its report");
+            }
+            ms[i].push(fps.iter().map(|f| 1e3 / f).sum::<f64>() / fps.len() as f64);
+        }
+    }
+    let median = |v: &[f64]| {
+        let mut v = v.to_vec();
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    let times: Vec<f64> = ms.iter().map(|v| median(v)).collect();
+    let best = (0..times.len()).min_by(|&a, &b| times[a].total_cmp(&times[b])).unwrap();
+    let table: Vec<String> = candidates.iter().zip(&times).map(|((n, _), t)| format!("{n} {t:.3} ms")).collect();
+    let summary = format!("chose {} ({}; median of 3 rounds, timed in {:.1} s)", candidates[best].0, table.join(", "), t.elapsed().as_secs_f64());
+    tracing::info!("pipeline {key}: {summary}");
+    std::fs::write(train.join("chosen.txt"), &summary)?;
+    // Kept: the choice and the profile; the runs and the other candidates go.
+    let chosen = train.join("worker");
+    std::fs::rename(&candidates[best].1, &chosen)?;
+    for e in std::fs::read_dir(&train)?.filter_map(|e| e.ok()).map(|e| e.path()) {
+        if e.is_dir() {
+            let _ = std::fs::remove_dir_all(&e);
+        } else if e.file_name().is_some_and(|n| n.to_string_lossy().starts_with("worker-")) {
+            let _ = std::fs::remove_file(&e);
+        }
+    }
+    Ok(chosen)
+}
+
+/// Returns the worker for `b` at `level`, building it first if it is not cached (blocking;
+/// native: minutes the first time, while the shared target directory fills, seconds after;
+/// break-in: minutes every time).
+pub fn ensure(b: &Bake, level: Compile) -> anyhow::Result<Compiled> {
+    let key = key(b, level)?;
     let root = cache_dir();
     let exe = root.join("bin").join(&key);
     if exe.exists() {
@@ -287,24 +461,18 @@ pub fn ensure(b: &Bake) -> anyhow::Result<Compiled> {
     std::fs::write(src.join("src/main.rs"), source(b)?)?;
     // The workspace's lock file, so the generated crate builds the same dependency versions.
     std::fs::copy(repo().join("Cargo.lock"), src.join("Cargo.lock"))?;
-    // The same forced code alignment as the workspace (`.cargo/config.toml`), plus this CPU.
-    let flags = "-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=5 -C target-cpu=native";
-    let target = root.join("target");
-    tracing::info!("compiling pipeline {key} (cargo, target {})", target.display());
-    let out = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()))
-        .args(["build", "--release", "--quiet", "--manifest-path"])
-        .arg(src.join("Cargo.toml"))
-        .env("CARGO_TARGET_DIR", &target)
-        .env("RUSTFLAGS", flags)
-        .output()
-        .context("running cargo (a Rust toolchain builds the pipelines)")?;
-    if !out.status.success() {
-        bail!("building pipeline {key} failed:\n{}", String::from_utf8_lossy(&out.stderr).lines().rev().take(30).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"));
-    }
+    let built = match level {
+        Compile::BreakIn => break_in(b, &key, &src, &root)?,
+        _ => cargo(&key, &src, &root.join("target"), "release", "")?,
+    };
     std::fs::create_dir_all(root.join("bin"))?;
     // Copy, then rename: a crash mid-copy never leaves a truncated worker under the key.
     let tmp = root.join("bin").join(format!(".{key}.tmp"));
-    std::fs::copy(target.join("release/mr-pipeline"), &tmp)?;
+    std::fs::copy(&built, &tmp)?;
+    if level == Compile::BreakIn {
+        // The chosen candidate, out of its training directory.
+        let _ = std::fs::remove_file(&built);
+    }
     std::fs::rename(&tmp, &exe)?;
     let build_s = t.elapsed().as_secs_f64();
     tracing::info!("compiled pipeline {key} in {build_s:.1} s");
@@ -315,8 +483,8 @@ pub fn ensure(b: &Bake) -> anyhow::Result<Compiled> {
 /// the same pixels as the generic build of the same composition ([`verify`]) before it is
 /// used; the result is kept next to the worker (`.trusted`, or `.rejected` with the
 /// reason, which fails every later request until the sources or toolchain change).
-pub fn trusted(b: &Bake) -> anyhow::Result<Compiled> {
-    let c = ensure(b)?;
+pub fn trusted(b: &Bake, level: Compile) -> anyhow::Result<Compiled> {
+    let c = ensure(b, level)?;
     // The check itself runs the pipeline: no check inside the check.
     if std::env::var_os("MR_PIPELINE_CHECK").is_some() {
         return Ok(c);
@@ -330,7 +498,7 @@ pub fn trusted(b: &Bake) -> anyhow::Result<Compiled> {
         bail!("pipeline {} was rejected: {why}", c.key);
     }
     let t = Instant::now();
-    match verify(b, &c) {
+    match verify(b, &c, level) {
         Ok(summary) => {
             tracing::info!("pipeline {} trusted in {:.1} s: {summary}", c.key, t.elapsed().as_secs_f64());
             std::fs::write(&ok, summary)?;
@@ -343,44 +511,56 @@ pub fn trusted(b: &Bake) -> anyhow::Result<Compiled> {
     }
 }
 
+/// This executable (`MR_WORKER_EXE` where the current one is a test harness, as for workers).
+fn host_exe() -> anyhow::Result<PathBuf> {
+    Ok(std::env::var_os("MR_WORKER_EXE").map(PathBuf::from).map_or_else(std::env::current_exe, Ok)?)
+}
+
+/// A terrain flight (lit and unlit) of `b`'s graph under `dir`, one lane per `compile` level
+/// with knobs `options`; with `save`, every frame is saved (the check).
+fn check_plan(b: &Bake, dir: &Path, lanes: &[&str], options: toml::Table, frames: u32, resolution: [u32; 2], save: bool) -> anyhow::Result<String> {
+    let lane = |compile: &&str| -> anyhow::Result<toml::Value> {
+        let mut t = toml::Table::new();
+        t.insert("graph".into(), toml::Value::try_from(&b.graph)?);
+        t.insert("compile".into(), (*compile).into());
+        t.insert("options".into(), options.clone().into());
+        Ok(toml::Value::Table(t))
+    };
+    let mut t = toml::Table::new();
+    t.insert("renderer".into(), toml::Value::Array(lanes.iter().map(lane).collect::<anyhow::Result<_>>()?));
+    let renderers = toml::to_string(&t)?;
+    let save = if save { "save = { every = 1 }" } else { "" };
+    Ok(format!(
+        "name = \"pipeline-check\"\n\n[scene]\ngenerator = {{ type = \"terrain\", seed = 7 }}\n\
+         camera = {{ type = \"flythrough\", points = [[0, 110, 0], [260, 140, 120], [520, 95, -80]] }}\n\
+         lights = [{{ type = \"scatter\", count = 40, seed = 1, center = [260, 80, 0], extent = [300, 60, 200], on_surface = true, intensity = 25.0, radius = 18.0 }}]\n\n\
+         [run]\nframes = {frames}\nwarmup = 1\nresolution = {resolution:?}\nmodes = [\"unlit\", \"lit\"]\nview_radius = 6\n\n\
+         [output]\ndir = {:?}\n{save}\n\n{renderers}",
+        dir,
+    ))
+}
+
 /// Renders a short terrain flight (lit and unlit) with the generic build and the compiled
-/// pipeline `c`, in a child process of this executable, and compares every saved frame
-/// pixel by pixel.
-fn verify(b: &Bake, c: &Compiled) -> anyhow::Result<String> {
+/// pipeline `c` (built at `level`), in a child process of this executable, and compares every
+/// saved frame pixel by pixel.
+fn verify(b: &Bake, c: &Compiled, level: Compile) -> anyhow::Result<String> {
     let dir = cache_dir().join("check").join(&c.key);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     // The pipeline twice, as its graph: the generic build and the compiled one.
-    let lane = |compile: &str| -> anyhow::Result<toml::Value> {
-        let mut t = toml::Table::new();
-        t.insert("graph".into(), toml::Value::try_from(&b.graph)?);
-        t.insert("compile".into(), compile.into());
-        Ok(toml::Value::Table(t))
-    };
-    let mut lanes = toml::Table::new();
-    lanes.insert("renderer".into(), toml::Value::Array(vec![lane("off")?, lane("native")?]));
-    let renderers = toml::to_string(&lanes)?;
-    let plan = format!(
-        "name = \"pipeline-check\"\n\n[scene]\ngenerator = {{ type = \"terrain\", seed = 7 }}\n\
-         camera = {{ type = \"flythrough\", points = [[0, 110, 0], [260, 140, 120], [520, 95, -80]] }}\n\
-         lights = [{{ type = \"scatter\", count = 40, seed = 1, center = [260, 80, 0], extent = [300, 60, 200], on_surface = true, intensity = 25.0, radius = 18.0 }}]\n\n\
-         [run]\nframes = 4\nwarmup = 1\nresolution = [480, 270]\nmodes = [\"unlit\", \"lit\"]\nview_radius = 6\n\n\
-         [output]\ndir = {:?}\nsave = {{ every = 1 }}\n\n{renderers}",
-        dir.join("run"),
-    );
+    let plan = check_plan(b, &dir.join("run"), &["off", level.name()], toml::Table::new(), 4, [480, 270], true)?;
     std::fs::write(dir.join("check.toml"), &plan)?;
-    // This executable (`MR_WORKER_EXE` where the current one is a test harness, as for workers).
-    let exe = std::env::var_os("MR_WORKER_EXE").map(PathBuf::from).map_or_else(std::env::current_exe, Ok)?;
-    let out = Command::new(exe).arg("run").arg(dir.join("check.toml")).env("MR_PIPELINE_CHECK", "1").output()?;
+    let out = Command::new(host_exe()?).arg("run").arg(dir.join("check.toml")).env("MR_PIPELINE_CHECK", "1").output()?;
     if !out.status.success() {
-        bail!("check run failed:\n{}", String::from_utf8_lossy(&out.stderr).lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"));
+        bail!("check run failed:\n{}", tail(&out.stderr, 20));
     }
-    // frames/<label>-<mode>/<frame>.png: the generic lane and the `[native]` one.
+    // frames/<label>-<mode>/<frame>.png: the generic lane and the compiled one (`<label> [<level>]`).
+    let marker = format!("__{}_", level.name());
     let run = std::fs::read_dir(dir.join("run"))?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.join("frames").is_dir()).context("check run saved no frames")?;
     let lanes: Vec<PathBuf> = std::fs::read_dir(run.join("frames"))?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
     let (mut frames, mut differ) = (0, vec![]);
-    for native in lanes.iter().filter(|p| p.to_string_lossy().contains("_native_")) {
-        let name = native.file_name().unwrap().to_string_lossy().replace("__native_", "");
+    for native in lanes.iter().filter(|p| p.to_string_lossy().contains(&marker)) {
+        let name = native.file_name().unwrap().to_string_lossy().replace(&marker, "");
         let generic = run.join("frames").join(&name);
         for f in std::fs::read_dir(native)?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| !p.to_string_lossy().ends_with("-diff.png")) {
             let a = image::open(&f)?.to_rgb8();
@@ -461,9 +641,25 @@ mod tests {
         assert!(s.contains("CpuWorld::of::<mr_components::storage::prefix::cpu::Prefix>") && s.contains("(\"storage\", \"\\\"prefix\\\"\")"), "{s}");
         let m = manifest(repo(), Executor::Gpu);
         assert!(m.contains("backend-gpu") && m.contains("mr-gpu") && !m.contains("backend-cpu"), "{m}");
-        let key = |r: &str, o: &[(&str, toml::Value)]| self::key(&bake(&spec(r, o)).unwrap().unwrap()).unwrap();
+        let key = |r: &str, o: &[(&str, toml::Value)]| self::key(&bake(&spec(r, o)).unwrap().unwrap(), Compile::Native).unwrap();
         assert!(key("gpu-compute", &[]).starts_with("gpu-"));
         assert_ne!(key("cpu-discover", &[("storage", "prefix".into())]), key("cpu-discover", &[]));
+    }
+
+    /// Break-in is a level of the same pipeline: its own worker under the same graph key, its training run on one thread where the executor has the knob.
+    #[test]
+    fn break_in_is_its_own_build() {
+        let b = bake(&spec("cpu", &[])).unwrap().unwrap();
+        let (native, broken) = (key(&b, Compile::Native).unwrap(), key(&b, Compile::BreakIn).unwrap());
+        assert!(broken.ends_with("-break-in") && broken != format!("{native}-break-in"), "its recipe in the hash: {broken}");
+        assert_eq!(broken.split('-').nth(1), native.split('-').nth(1), "the same graph");
+        let m = manifest(repo(), Executor::Cpu);
+        assert!(m.contains("[profile.break-in]\ninherits = \"release\"\nlto = \"fat\"\ncodegen-units = 1"), "{m}");
+        let p: crate::plan::Plan = crate::plan::Plan::parse("[scene]\ngenerator = { type = \"terrain\" }\ncamera = { type = \"line\", from = [0, 1, 0], to = [1, 1, 0] }\n[run]\ncompile = \"break-in\"\n[[renderer]]\ncompose = { backend = \"cpu\" }\n", &[]).unwrap();
+        assert_eq!(p.renderers[0].compiled(&p.run), Some(Compile::BreakIn));
+        let plan = check_plan(&b, Path::new("/x"), &["off"], train_options(&b), 90, [960, 540], false).unwrap();
+        assert!(plan.contains("threads = 1") && !plan.contains("save"), "{plan}");
+        assert!(train_options(&bake(&spec("gpu-compute", &[])).unwrap().unwrap()).is_empty(), "no threads knob");
     }
 
     /// The cache key is the pipeline's graph with its baked values: knobs it does not use
