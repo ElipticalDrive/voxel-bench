@@ -98,7 +98,8 @@ fn files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 }
 
 fn rel(p: &Path) -> String {
-    p.strip_prefix(root()).unwrap().to_string_lossy().into_owned()
+    // '/'-separated on every OS: the allow-lists and owners are written that way.
+    p.strip_prefix(root()).unwrap().to_string_lossy().replace('\\', "/")
 }
 
 /// Owner of a source file: the executor's lane (`gpu/faces`: `backends/gpu/src/faces...`),

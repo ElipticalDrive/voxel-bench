@@ -306,11 +306,13 @@ mod shm {
             if handle.is_null() {
                 return Err(std::io::Error::last_os_error().into());
             }
-            let map = Self::view(handle, 0)?;
+            let mut map = Self::view(handle, 0)?;
             if map.len < bytes {
                 bail!("{name} too small");
             }
-            Ok(Self { len: bytes, ..map })
+            // Not `Self { len, ..map }`: that copies the handle out and `map`'s drop unmaps it.
+            map.len = bytes;
+            Ok(map)
         }
 
         /// Maps all of `handle`; `bytes` 0 takes the mapping's size (rounded up to pages).
@@ -371,5 +373,54 @@ mod tests {
         let back: WorkerMsg = postcard::from_bytes(&postcard::to_allocvec(&msg).unwrap()).unwrap();
         let WorkerMsg::FrameDone { frame_id: 7, stats: s, slot: Some(1), update_ms, arrivals: a } = back else { panic!("{back:?}") };
         assert_eq!((s.stages, s.counters, s.gpu_ms, update_ms, a), (stats.stages, stats.counters, stats.gpu_ms, 0.125, arrivals));
+    }
+
+    /// The OS parts carry data intact: large messages over a local socket in both
+    /// directions, and frame slots written through one mapping read through another.
+    #[test]
+    fn transport_is_intact() {
+        let ep = endpoint(&format!("mr-ipc-test-{}", std::process::id()));
+        let l = listen(&ep).unwrap();
+        let pattern = |n: usize, seed: u64| (0..n).map(|i| (i as u64).wrapping_mul(2654435761).wrapping_add(seed) as u8).collect::<Vec<u8>>();
+        let sizes = [0, 1, 4095, 65536, 3 << 20, 17 << 20];
+        // Each side checks what it receives; the peer answers once the host has sent all.
+        let peer = std::thread::spawn({
+            let ep = ep.clone();
+            move || {
+                let (mut r, mut w) = split::<Vec<u8>, Vec<u8>>(connect(&ep).unwrap());
+                for (i, n) in sizes.into_iter().enumerate() {
+                    assert!(r.recv().unwrap().unwrap() == pattern(n, i as u64), "to the peer: message {i} of {n} bytes");
+                }
+                for (i, n) in sizes.into_iter().enumerate() {
+                    w.send(&pattern(n, 100 + i as u64)).unwrap();
+                }
+            }
+        });
+        let s = loop {
+            if let Some(s) = try_accept(&l).unwrap() {
+                break s;
+            }
+            std::thread::yield_now();
+        };
+        let (mut r, mut w) = split::<Vec<u8>, Vec<u8>>(s);
+        for (i, n) in sizes.into_iter().enumerate() {
+            w.send(&pattern(n, i as u64)).unwrap();
+        }
+        for (i, n) in sizes.into_iter().enumerate() {
+            assert!(r.recv().unwrap().unwrap() == pattern(n, 100 + i as u64), "from the peer: message {i} of {n} bytes");
+        }
+        peer.join().unwrap();
+
+        let name = format!("mr-ipc-test-{}", std::process::id());
+        let (slots, slot_bytes) = (3, 1920 * 1080 * 4 + 12345);
+        let mut a = FrameSlots::create(&name, slots, slot_bytes).unwrap();
+        let mut b = FrameSlots::open(a.spec()).unwrap();
+        a.unlink();
+        for i in 0..slots {
+            b.slot_mut(i).copy_from_slice(&pattern(slot_bytes as usize, i as u64));
+        }
+        for i in 0..slots {
+            assert!(a.slot(i) == pattern(slot_bytes as usize, i as u64), "slot {i}");
+        }
     }
 }
