@@ -325,9 +325,13 @@ const FREE_TIMINGS: &[(&str, Role, &str, &[When])] = &[("cpu-discover", Role::Dr
 /// is true, when false.
 const TIMING_KNOBS: &[(&str, &str, Role, &str, When, When)] = &[("cpu-discover", "pipelined", Role::Draw, "faces", When::Prev, When::Now)];
 
-/// The client's components: `pick` takes the server's LOD levels (later: `derive`, levels
-/// built on the client from LOD 0).
-pub const CLIENTS: &[&str] = &["pick"];
+/// The client's components (`mr_core::client::Levels`): `pick` takes the server's LOD
+/// levels, `derive` builds them on the client from LOD 0. The sites form writes a client
+/// other than `pick` as `client = "derive"`.
+pub const CLIENTS: &[&str] = &["pick", "derive"];
+
+/// The sites form's key for the client's component.
+pub const CLIENT: &str = "client";
 
 /// Whether `role` component `name` exists.
 fn known(role: Role, name: &str) -> bool {
@@ -1095,6 +1099,10 @@ impl Graph {
             g.nodes.values_mut().for_each(|n| {
                 n.knobs.clear();
                 n.api = None;
+                // The worker runs the client, whichever it is; the back end sees its messages.
+                if n.role == Role::Client {
+                    n.component = "pick".into();
+                }
                 let role = n.role;
                 n.timing.retain(|p, _| all || !FREE_TIMINGS.iter().any(|(e, r, port, _)| *e == self.executor && *r == role && port == p));
                 if all {
@@ -1434,9 +1442,17 @@ impl Graph {
     /// The graph with `sites` bound as given (see the sites form above).
     pub fn with_sites(&self, sites: &BTreeMap<String, String>) -> Result<Graph, String> {
         let mut g = self.normalised()?;
+        let mut sites = sites.clone();
+        if let Some(c) = sites.remove(CLIENT) {
+            if !CLIENTS.contains(&c.as_str()) {
+                return Err(format!("unknown client `{c}` (have: {})", CLIENTS.join(", ")));
+            }
+            g.nodes.values_mut().filter(|n| n.role == Role::Client).for_each(|n| n.component = c.clone());
+        }
+        let sites = &sites;
         let names: Vec<String> = g.site_ports().into_iter().map(|(n, ..)| n).collect();
         if let Some(bad) = sites.keys().find(|k| !names.contains(k)) {
-            return Err(format!("no site `{bad}` in this pipeline (have: {})", names.join(", ")));
+            return Err(format!("no site `{bad}` in this pipeline (have: {}, {CLIENT})", names.join(", ")));
         }
         // A value naming another listed site waits until that one is bound.
         let refers = |v: &str, n: &str| v == n || v.split_once('/').is_some_and(|(s, _)| s == n);
@@ -1532,6 +1548,11 @@ impl Graph {
         self
     }
 
+    /// The client node's component (`pick` when the graph has none).
+    pub fn client(&self) -> &str {
+        self.nodes.values().find(|n| n.role == Role::Client).map_or("pick", |n| n.component.as_str())
+    }
+
     /// The lead site's name (the strategy's own rays, or a rasteriser's shadow rays).
     pub fn lead_site(&self) -> Option<String> {
         self.lead().map(|(c, p)| site_name(self.nodes[&c].role, p))
@@ -1584,8 +1605,10 @@ impl Graph {
     /// or a shape the form has no words for).
     pub fn sites_form(&self) -> Result<Option<(Composition, BTreeMap<String, String>)>, String> {
         let (c, exact) = self.accept()?;
-        if exact {
-            return Ok(Some((c, BTreeMap::new())));
+        // A client other than `pick` (which `accept` leaves to the worker) is written out.
+        let client: BTreeMap<String, String> = Some(self.client()).filter(|c| *c != "pick").map(|c| (CLIENT.to_string(), c.to_string())).into_iter().collect();
+        if exact && client.is_empty() {
+            return Ok(Some((c, client)));
         }
         let me = self.normalised()?.pruned();
         let skel = me.skeleton();
@@ -1601,7 +1624,7 @@ impl Graph {
         let base = Graph::from_composition(&c)?;
         let described = me.site_values();
         let order: Vec<String> = described.iter().map(|(n, _)| n.clone()).collect();
-        let mut sites: BTreeMap<String, String> = described.into_iter().collect();
+        let mut sites: BTreeMap<String, String> = described.into_iter().chain(client).collect();
         let same = |s: &BTreeMap<String, String>| base.with_sites(s).and_then(|g| strip(&g)).is_ok_and(|x| x == target);
         if !same(&sites) {
             return Ok(None);
@@ -1632,6 +1655,9 @@ impl Graph {
     /// checked against the back end): the other sites it could share, a kernel over the
     /// lead's storage, and each storage with each kernel (exposure tests: each storage).
     pub fn site_choices(&self, name: &str) -> Vec<String> {
+        if name == CLIENT {
+            return CLIENTS.iter().map(|c| c.to_string()).collect();
+        }
         let ports = self.site_ports();
         let Some((_, _, port)) = ports.iter().find(|(n, ..)| n == name) else { return vec![] };
         let others = ports.iter().filter(|(n, _, p)| n != name && p.data == port.data).map(|(n, ..)| n.clone());
@@ -2376,6 +2402,29 @@ mod tests {
         assert!(g.validate().is_err());
     }
     /// A pipeline on one GPU runs on any slot; over two it is split at the hit records (ray
+    /// The client's component is a choice of the sites form (`client = "derive"`): the back
+    /// end runs the graph as before, its key and label say so; `pick` stays out of both.
+    #[test]
+    fn client_in_the_sites_form() {
+        let c = Composition::new("gpu-compute");
+        let pick = Graph::from_composition(&c).unwrap();
+        let sites: BTreeMap<String, String> = [(CLIENT.to_string(), "derive".to_string())].into();
+        let derive = pick.with_sites(&sites).unwrap();
+        assert_eq!(derive.client(), "derive");
+        assert_eq!(derive.to_composition().unwrap().label(), pick.to_composition().unwrap().label());
+        assert_ne!(derive.key().unwrap(), pick.key().unwrap());
+        assert_eq!(derive.sites_form().unwrap().unwrap().1, sites);
+        assert!(derive.label().unwrap().ends_with(", client = derive"), "{}", derive.label().unwrap());
+        assert!(pick.sites_form().unwrap().unwrap().1.is_empty());
+        let with_shadow: BTreeMap<String, String> = [(CLIENT.to_string(), "derive".to_string()), ("shadow".to_string(), "tree64/sphere".to_string())].into();
+        let g = pick.with_sites(&with_shadow).unwrap();
+        let (c, form) = g.sites_form().unwrap().unwrap();
+        assert_eq!(form.get(CLIENT).map(String::as_str), Some("derive"));
+        assert_eq!(Graph::from_composition(&c).unwrap().with_sites(&form).unwrap().key().unwrap(), g.key().unwrap());
+        let bad: BTreeMap<String, String> = [(CLIENT.to_string(), "fetch".to_string())].into();
+        assert!(pick.with_sites(&bad).unwrap_err().contains("unknown client"));
+    }
+
     /// casting's deferred shading, with its walks, on the second GPU); else the reasons
     /// (PLAN step 13e4c).
     #[test]

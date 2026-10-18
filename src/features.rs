@@ -73,7 +73,7 @@ impl SceneFeatures {
         (f.cam_turn_deg, f.cam_turn_deg_max) = mean_max(&turn);
 
         // Streaming load.
-        let mut s = Streamer::new(radius, 0, None);
+        let mut s = Streamer::new(vec![radius], None);
         let mut out = vec![];
         let mut loads = vec![];
         for (i, c) in cams.iter().enumerate() {

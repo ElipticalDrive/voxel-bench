@@ -56,6 +56,10 @@ pub struct InitParams {
     /// timestamp each (a few µs per frame).
     #[serde(default)]
     pub stage_times: bool,
+    /// How the worker's client gets the LOD levels (PLAN step 14b: the graph's `client`
+    /// node's component).
+    #[serde(default)]
+    pub client: crate::client::Levels,
 }
 
 /// Which devices a renderer runs on (IDEAS §17, requirement 2: no hardware opinion in the

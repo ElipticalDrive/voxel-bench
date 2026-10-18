@@ -115,7 +115,7 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let devices = devices(&params.devices);
     // The renderer's region: its radius, and the levels it asked for that it supports.
     let supported = info.max_lod;
-    let mut client = Client::new(params.view_radius_chunks, params.max_lod.min(supported));
+    let mut client = Client::new(params.view_radius_chunks, params.max_lod.min(supported), params.client);
     let mut renderer: Box<dyn Renderer> = (entry.create)(params, &devices, waker)?;
     let mut shm = FrameSlots::open(&shm)?;
     out.send(&WorkerMsg::Ready { info, init_ms: t.elapsed().as_secs_f32() * 1e3 })?;
@@ -148,7 +148,7 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 }
                 *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
             }
-            HostMsg::Follow { radius, max_lod } => client.follow(radius, max_lod),
+            HostMsg::Follow { radii } => client.follow(&radii),
             HostMsg::Meshes(m) => {
                 let t = Instant::now();
                 renderer.update_meshes(m)?;

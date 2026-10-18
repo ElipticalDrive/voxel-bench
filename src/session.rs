@@ -393,12 +393,11 @@ pub fn run_pass(
     let mut measure_start: Option<Instant> = None;
     let mut missed = 0u32;
     let mut sent_instances: Option<Vec<MeshInstance>> = None;
-    // The server streams one region, as large as the largest any client takes.
-    let radius = lanes.iter().map(|l| l.region.radius).max().unwrap_or(0);
-    let max_lod = lanes.iter().map(|l| l.region.max_lod).max().unwrap_or(0);
-    let mut server = Streamer::new(radius, max_lod, run.budget());
+    // The server streams one region, as large as the largest any client needs at each level.
+    let radii = crate::stream::union(lanes.iter().map(|l| l.region.reach()), 0);
+    let mut server = Streamer::new(radii.clone(), run.budget());
     for l in lanes.iter() {
-        l.worker.send(HostMsg::Follow { radius, max_lod })?;
+        l.worker.send(HostMsg::Follow { radii: radii.clone() })?;
     }
     while let Some(input) = driver.next()? {
         // Mesh mode: geometry once, instances whenever they change.

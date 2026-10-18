@@ -27,7 +27,7 @@ use mr_world::{Scene, World, textures::default_registry};
 use plan::{Plan, RendererSpec, Streaming};
 use report::PassReport;
 use session::{InteractiveDriver, Lane, Outputs, ScriptedDriver, run_pass, sanitize};
-use stream::{Region, Streamer};
+use stream::Streamer;
 use window::{UiEvent, UiHandle};
 
 #[derive(Parser)]
@@ -292,9 +292,9 @@ impl Ctx<'_> {
                 Ok(worker) => {
                     report.init_ms = worker.init_ms;
                     report.tags = worker.info.tags.clone();
-                    let max_lod = spec.max_lod(run, worker.info.max_lod);
                     let i = lanes.len();
-                    lanes.push(Lane::new(worker, Region { radius: spec.view_radius(run), max_lod }, report, i, w, h));
+                    let region = spec.region(run, worker.info.max_lod);
+                    lanes.push(Lane::new(worker, region, report, i, w, h));
                 }
                 Err(e) => {
                     tracing::error!("[{label}] failed to start: {e:#}");
@@ -358,18 +358,18 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
     {
         let t = Instant::now();
         let scene = Scene::new(plan.scene.clone(), ctx.blocks.clone(), &mut base, run.frames)?;
-        // One streamer per distinct (radius, LOD) configuration among the renderers.
-        let mut configs: Vec<(u32, u8)> = plan
+        // One streamer per distinct region among the renderers.
+        let mut configs: Vec<Vec<u32>> = plan
             .renderers
             .iter()
-            .map(|r| (r.view_radius(run), r.max_lod(run, infos.iter().find(|i| i.name == r.name).map(|i| i.max_lod).unwrap_or(0))))
-            .chain(std::iter::once((run.view_radius, 0)))
+            .map(|r| r.region(run, infos.iter().find(|i| i.name == r.name).map(|i| i.max_lod).unwrap_or(0)).reach())
+            .chain(std::iter::once(vec![run.view_radius]))
             .collect();
         configs.sort();
         configs.dedup();
         let mut sink = vec![];
-        for (radius, max_lod) in configs {
-            let mut s = Streamer::new(radius, max_lod, None);
+        for radii in configs {
+            let mut s = Streamer::new(radii, None);
             for f in 0..run.frames {
                 s.update(&mut base, scene.camera(f).position, &mut sink);
                 sink.clear();

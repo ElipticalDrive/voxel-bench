@@ -463,7 +463,7 @@ impl Session {
         let env = scene.environment;
         let mesh_data = scene.mesh_data();
         let instances = scene.mesh_instances(0);
-        let server = Streamer::new(plan.run.view_radius, 0, budget(&plan));
+        let server = Streamer::new(vec![plan.run.view_radius], budget(&plan));
         let mut s = Session {
             blocks,
             world,
@@ -513,11 +513,12 @@ impl Session {
     }
 
     fn new_runner(&self, spec: RendererSpec, res: [u32; 2], radius: u32) -> Runner {
+        let levels = spec.levels();
         Runner {
             spawning: Some(spawn_async(&self.plan.run, &spec, self.blocks.clone(), self.env, res)),
             spec,
             worker: None,
-            region: Region { radius, max_lod: 0 },
+            region: Region { radius, max_lod: 0, levels },
             joined: false,
             chunks_sent: 0,
             own: None,
@@ -869,13 +870,11 @@ impl Session {
             sh.lights = self.lights.len();
             sh.cached_chunks = self.world.cached_chunks();
         }
-        // The server's region: as large as the largest any lane takes.
+        // The server's region: as large as the largest any lane needs at each level.
         let runners = || self.lanes.iter().flat_map(|l| std::iter::once(&l.run).chain(l.standby.as_ref()));
-        let radius = runners().map(|r| r.region.radius).max().unwrap_or(self.plan.run.view_radius);
-        let levels = runners().map(|r| r.region.max_lod).max().unwrap_or(0);
-        self.server.set_radius(radius);
+        let radii = crate::stream::union(runners().map(|r| r.region.reach()), self.plan.run.view_radius);
         let mut stream = vec![];
-        self.server.set_max_lod(levels, &mut stream);
+        self.server.set_radii(&radii, &mut stream);
         self.server.update(&mut self.world, cam.position, &mut stream);
         let (world, server) = (&mut self.world, &self.server);
         for r in self.lanes.iter_mut().flat_map(|l| std::iter::once(&mut l.run).chain(l.standby.as_mut())) {
@@ -971,8 +970,9 @@ impl Session {
                     lane.run.region.max_lod = lods;
                     if let Some(own) = &mut lane.run.own {
                         // The reference's client takes its own server's stream as it is.
-                        own.set_max_lod(lods, &mut vec![]);
-                        if let Err(e) = w.send(HostMsg::Follow { radius: lane.run.region.radius, max_lod: lods }) {
+                        let radii = lane.run.region.reach();
+                        own.set_radii(&radii, &mut vec![]);
+                        if let Err(e) = w.send(HostMsg::Follow { radii }) {
                             tracing::error!("reference: {e:#}");
                         }
                     }
@@ -1129,7 +1129,7 @@ impl Session {
             self.shared.lock().unwrap().reference = spec.label().to_string();
             self.log(format!("starting reference {}", spec.label()));
             let mut r = self.new_lane(spec);
-            r.run.own = Some(Streamer::new(r.run.region.radius, 0, None));
+            r.run.own = Some(Streamer::new(r.run.region.reach(), None));
             self.reference = Some(r);
             return;
         }

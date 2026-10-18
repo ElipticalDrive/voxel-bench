@@ -441,6 +441,16 @@ impl RendererSpec {
     pub fn max_lod(&self, run: &RunSpec, supported: u8) -> u8 {
         self.max_lod.unwrap_or(run.max_lod).min(supported)
     }
+
+    /// How its client gets the LOD levels (its graph's `client` node; PLAN step 14b).
+    pub fn levels(&self) -> mr_core::client::Levels {
+        self.pipeline().and_then(|g| mr_core::client::Levels::of(g.client())).unwrap_or_default()
+    }
+
+    /// What its client takes of the server's stream, given the levels the renderer supports.
+    pub fn region(&self, run: &RunSpec, supported: u8) -> crate::stream::Region {
+        crate::stream::Region { radius: self.view_radius(run), max_lod: self.max_lod(run, supported), levels: self.levels() }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
