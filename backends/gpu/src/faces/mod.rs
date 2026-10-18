@@ -45,6 +45,7 @@ pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Wa
     match g.devices[vis] {
         Device::Cpu => run(cpu::CpuSampler::new(p, devices, waker, g)?),
         Device::Gpu(_) => run(gpu::GpuSampler::new(p, devices, waker, g)?),
+        Device::Server => unreachable!("checked graphs run only the world on the server"),
     }
 }
 

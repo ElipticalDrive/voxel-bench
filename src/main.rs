@@ -5,6 +5,7 @@ mod bayes;
 mod compare;
 mod features;
 mod catalogue;
+mod client;
 mod gui;
 mod observe;
 mod pipelines;
@@ -27,6 +28,7 @@ use mr_world::{Scene, World, textures::default_registry};
 use plan::{Plan, RendererSpec, Streaming};
 use report::PassReport;
 use session::{InteractiveDriver, Lane, Outputs, ScriptedDriver, run_pass, sanitize};
+use client::Client;
 use stream::Streamer;
 use window::{UiEvent, UiHandle};
 
@@ -267,10 +269,6 @@ impl Ctx<'_> {
     fn spawn_lanes(&self, specs: &[RendererSpec], mode: Option<PassMode>, env: mr_core::Environment) -> (Vec<Lane>, Vec<PassReport>) {
         let run = &self.plan.run;
         let [w, h] = run.resolution;
-        let budget = match run.streaming {
-            Streaming::Complete => None,
-            Streaming::Budget { budget } => Some(budget),
-        };
         let (mut lanes, mut failed) = (vec![], vec![]);
         for spec in specs {
             // Pipelines compiled for this machine are told apart from the generic build.
@@ -298,7 +296,7 @@ impl Ctx<'_> {
                     report.tags = worker.info.tags.clone();
                     let max_lod = spec.max_lod(run, worker.info.max_lod);
                     let i = lanes.len();
-                    lanes.push(Lane::new(worker, Streamer::new(spec.view_radius(run), max_lod, budget), report, i, w, h));
+                    lanes.push(Lane::new(worker, Client::new(spec.view_radius(run), max_lod), report, i, w, h));
                 }
                 Err(e) => {
                     tracing::error!("[{label}] failed to start: {e:#}");

@@ -1,5 +1,7 @@
-//! Per-renderer chunk streaming: tracks what each renderer holds and produces the
-//! load/unload/edit messages to keep it in sync with the camera and the world.
+//! The server's stream (PLAN step 14a): one region around the camera (a radius at each
+//! LOD level), the chunks in it as load / unload / edit messages, the same for every
+//! client (`crate::client` derives what each renderer holds). Also walks the world for
+//! tools (pre-generation, scene features).
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,20 +35,12 @@ impl Streamer {
         }
     }
 
-    pub fn radius(&self) -> u32 {
-        self.radius as u32
-    }
-
     /// Changes the streamed radius; chunks outside it are unloaded on the next update.
     pub fn set_radius(&mut self, radius: u32) {
         if radius as i32 != self.radius {
             self.radius = radius as i32;
             self.centers.iter_mut().for_each(|c| *c = None);
         }
-    }
-
-    pub fn set_budget(&mut self, budget: Option<usize>) {
-        self.budget = budget;
     }
 
     /// Chunks known to be needed but not yet delivered (budgeted streaming).
@@ -113,6 +107,29 @@ impl Streamer {
             if solid {
                 out.push(WorldUpdate::ChunkLoad { key, data });
                 self.chunks_sent += 1;
+            }
+        }
+    }
+
+    /// What a client joining now receives: every chunk the stream holds.
+    pub fn snapshot(&self, world: &mut World) -> Vec<WorldUpdate> {
+        let keys: Vec<ChunkKey> = self.resident.iter().filter(|e| *e.1).map(|e| *e.0).collect();
+        let data = world.get_many(&keys);
+        keys.into_iter().zip(data).map(|(key, data)| WorldUpdate::ChunkLoad { key, data }).collect()
+    }
+
+    /// Changes the streamed levels; levels above it unload on the next update.
+    pub fn set_max_lod(&mut self, max_lod: u8, out: &mut Vec<WorldUpdate>) {
+        if max_lod == self.max_lod {
+            return;
+        }
+        self.max_lod = max_lod;
+        self.centers.resize(max_lod as usize + 1, None);
+        self.pending.retain(|k| k.lod <= max_lod);
+        let gone: Vec<ChunkKey> = self.resident.keys().filter(|k| k.lod > max_lod).copied().collect();
+        for k in gone {
+            if self.resident.remove(&k) == Some(true) {
+                out.push(WorldUpdate::ChunkUnload { key: k });
             }
         }
     }

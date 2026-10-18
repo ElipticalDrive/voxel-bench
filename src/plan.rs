@@ -75,6 +75,16 @@ pub struct RunSpec {
     pub stage_times: bool,
 }
 
+impl RunSpec {
+    /// The server's chunk loads per frame (`None`: every chunk in range before each frame).
+    pub fn budget(&self) -> Option<usize> {
+        match self.streaming {
+            Streaming::Complete => None,
+            Streaming::Budget { budget } => Some(budget),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Compile {

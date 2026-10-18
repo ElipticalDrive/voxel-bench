@@ -16,6 +16,7 @@ use mr_world::{Scene, World};
 use crate::compare::{self, Quality};
 use crate::plan::{Pacing, Readback, RunSpec, SaveSpec};
 use crate::report::{FrameRecord, PassReport};
+use crate::client::Client;
 use crate::stream::Streamer;
 use crate::window::{UiEvent, UiHandle};
 use crate::worker::{Worker, WorkerEvent, recv_timeout};
@@ -170,7 +171,7 @@ struct InFlight {
 
 pub struct Lane {
     pub worker: Worker,
-    pub streamer: Streamer,
+    pub client: Client,
     pub report: PassReport,
     pub ui_index: usize,
     width: u32,
@@ -184,8 +185,8 @@ pub struct Lane {
 }
 
 impl Lane {
-    pub fn new(worker: Worker, streamer: Streamer, report: PassReport, ui_index: usize, width: u32, height: u32) -> Self {
-        Self { worker, streamer, report, ui_index, width, height, in_flight: VecDeque::new(), next_id: 0, completions: vec![], last_ui: None, pending_quality: vec![] }
+    pub fn new(worker: Worker, client: Client, report: PassReport, ui_index: usize, width: u32, height: u32) -> Self {
+        Self { worker, client, report, ui_index, width, height, in_flight: VecDeque::new(), next_id: 0, completions: vec![], last_ui: None, pending_quality: vec![] }
     }
 }
 
@@ -389,24 +390,32 @@ pub fn run_pass(
     let mut measure_start: Option<Instant> = None;
     let mut missed = 0u32;
     let mut sent_instances: Option<Vec<MeshInstance>> = None;
+    // The server streams one region, as large as the largest any client takes.
+    let radius = lanes.iter().map(|l| l.client.radius()).max().unwrap_or(0);
+    let max_lod = lanes.iter().map(|l| l.client.max_lod()).max().unwrap_or(0);
+    let mut server = Streamer::new(radius, max_lod, run.budget());
+    lanes.iter_mut().for_each(|l| l.client.follow(radius, max_lod));
     while let Some(input) = driver.next()? {
         // Mesh mode: geometry once, instances whenever they change.
         let instances = input.meshes.filter(|i| sent_instances.as_ref() != Some(i));
         let edits = resolve_edits(world, input.events.edits);
         let changed = world.apply_edits(&edits);
+        let mut stream = vec![];
+        if first {
+            stream.push(WorldUpdate::LightUpsert(lights.to_vec()));
+        }
+        server.edits(&edits, &changed, &mut stream);
+        server.update(world, input.camera.position, &mut stream);
+        if !input.events.lights.is_empty() {
+            stream.push(WorldUpdate::LightUpsert(input.events.lights.clone()));
+        }
+        if let Some(env) = input.events.environment {
+            stream.push(WorldUpdate::SetEnvironment(env));
+        }
         for lane in lanes.iter_mut() {
             let mut ups = vec![];
-            if first {
-                ups.push(WorldUpdate::LightUpsert(lights.to_vec()));
-            }
-            lane.streamer.edits(&edits, &changed, &mut ups);
-            lane.streamer.update(world, input.camera.position, &mut ups);
-            if !input.events.lights.is_empty() {
-                ups.push(WorldUpdate::LightUpsert(input.events.lights.clone()));
-            }
-            if let Some(env) = input.events.environment {
-                ups.push(WorldUpdate::SetEnvironment(env));
-            }
+            lane.client.receive(&stream, &mut ups);
+            lane.client.update(input.camera.position, &mut ups);
             if first && !meshes.is_empty() {
                 lane.worker.send(HostMsg::Meshes(MeshUpdate::Meshes(meshes.to_vec())))?;
             }
@@ -474,7 +483,7 @@ pub fn run_pass(
         if matches!(run.pacing, Pacing::Fps { .. }) {
             lane.report.missed_deadlines = Some(missed);
         }
-        lane.report.chunks_sent = lane.streamer.chunks_sent;
+        lane.report.chunks_sent = lane.client.chunks_sent;
         lane.report.peak_rss_mb = lane.worker.peak_rss().map(|b| b as f64 / 1048576.0);
         lane.worker.send(HostMsg::QueryMemory)?;
         if let Ok(WorkerMsg::Memory(m)) = recv_timeout(&lane.worker.rx, Duration::from_secs(30)) {

@@ -242,7 +242,8 @@ The user's architecture, settled with finality and without limits for later (IDE
     holes while streaming. Sub-steps (2026-10-17):
     - 14a: the world as a server node (generator, authoritative store, change log on a
       server device); one stream shared by all clients instead of the per-renderer
-      `Streamer`; the link a free pass-through edge. Pixels and speed unchanged.
+      `Streamer`; the link a free pass-through edge. Pixels and speed unchanged. (Done
+      2026-10-17; see the log.)
     - 14b: derivation on the client: LOD levels and storages built from the shared stream;
       radius and `max_lod` move to the client.
     - 14c: the link as a modelled network: latency, bandwidth, jitter, reordering, loss as
@@ -1413,3 +1414,41 @@ root, `walk.wgsl` / `rayquery.wgsl` the lanes' roots), `components/src/graph.rs`
   rays as ray queries. (2026-10-17: `prev` between GPUs moves to step 15a; the other two wait
   until after the architecture.)
 
+**2026-10-17, step 14a: the world as a server node, one stream.** `src/client.rs` (new),
+`src/stream.rs`, `src/session.rs`, `src/gui/live.rs`, `components/src/graph.rs`:
+- **The server**: the host's `Streamer` is now run once per pass, not once per lane: one
+  region (the largest radius and LOD levels any lane takes; the run's budget) streamed as
+  load / unload / edit / light / environment messages, the same for every client. A
+  joining client (the GUI's new lanes and hot-swap standbys) takes `snapshot` (every chunk
+  the stream holds), then follows the stream. `set_max_lod` changes the levels (the GUI
+  recomputes the region every tick from its lanes).
+- **The client** (`Client`, one per lane, still in the host process: the link is free): a
+  replica of the non-air chunks that arrived, and the renderer's own region (its radius and
+  `max_lod`), from which it derives the renderer's messages: edits, unloads and replaced
+  chunks it holds at once, chunks entering its region nearest first. A client whose region
+  covers the server's (`follow`: radius and levels fixed for a batch pass) takes the stream
+  as it is, without a replica. The GUI's reference keeps a server of its own without a
+  budget (`own`): it is ground truth, not a client of the stream.
+- **The graph**: `Device::Server` (`server`), the world's default and only device (check:
+  "the world runs on the server", "only the world runs on the server"); the schedule shows
+  the change log crossing `server -> gpu` / `server -> cpu`. The canonical form writes the
+  server as `cpu` (the world's device before this step), so every graph key is unchanged
+  (checked: ten pipelines, old and new build).
+- **First try's cost**: every lane through the replica cost ~24 µs per frame on the host
+  (server work 145 µs per frame, the same the old per-lane streamer did) and -3.0% fps on
+  gpu-compute unlit (~490 fps, 8 rounds), -1.8% gpu-voxelspace pathtrace unlit; GPU time
+  unchanged. The pass-through for whole-region clients took that to -1.4 / -0.6%.
+- Verified: builds without warnings (dev, release), 85 unit tests (new:
+  `client_derives_its_region`: a client of a radius-4, 3-level stream holds exactly what a
+  radius-2, 2-level stream gives, edits every frame), 4 GPU end-to-end tests. Pixel A/B
+  (old build against new, frames 0/20/39 lit + unlit, every renderer of the plan): `far`
+  (mixed radii and levels, i.e. the replica path) 36/36, `edits` 54/54, `streaming`
+  (budget 400) 27/27, `terrain` 54/54, `meshes` 12/12 identical; `showcase` 56/60 with 1-2
+  pixels off by 1, which the old build shows against itself (57/60). The GUI's new paths
+  (joins, standbys, the reference's own server) are compiled but not driven yet.
+- **Logged: host-bound fps** (4 rounds, five back ends together): gpu-compute -2.5% lit /
+  -1.5% unlit, gpu-voxelspace pathtrace unlit -1.6% (~500 fps); gpu-raster +1.6 / +0.8%,
+  gpu-rt +0.6 / +1.1%, cpu +1.6 / +1.6%; GPU time unchanged (gpu-compute lit +0.7%, which
+  host work cannot cause). The host now copies the stream once per lane instead of
+  building it per lane; the losses at ~500 fps are not explained by that work (alone 8
+  rounds: -1.4 / -0.6%).

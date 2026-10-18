@@ -121,18 +121,20 @@ impl Data {
     }
 }
 
-/// Where a node runs. `gpu` is GPU slot 0 of the run's device configuration.
+/// Where a node runs. `gpu` is GPU slot 0 of the run's device configuration; `server` is
+/// the world's machine (PLAN step 14), reached from the client's devices over the link.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Device {
     Cpu,
     Gpu(u8),
+    Server,
 }
 
 impl Device {
     pub fn kind(self) -> Kind {
         match self {
-            Device::Cpu => Kind::Cpu,
+            Device::Cpu | Device::Server => Kind::Cpu,
             Device::Gpu(_) => Kind::Gpu,
         }
     }
@@ -142,6 +144,7 @@ impl fmt::Display for Device {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Device::Cpu => f.write_str("cpu"),
+            Device::Server => f.write_str("server"),
             Device::Gpu(0) => f.write_str("gpu"),
             Device::Gpu(i) => write!(f, "gpu{i}"),
         }
@@ -153,8 +156,9 @@ impl TryFrom<String> for Device {
     fn try_from(s: String) -> Result<Self, String> {
         match s.as_str() {
             "cpu" => Ok(Device::Cpu),
+            "server" => Ok(Device::Server),
             "gpu" => Ok(Device::Gpu(0)),
-            _ => s.strip_prefix("gpu").and_then(|i| i.parse().ok()).map(Device::Gpu).ok_or_else(|| format!("unknown device `{s}` (cpu, gpu, gpu1, ...)")),
+            _ => s.strip_prefix("gpu").and_then(|i| i.parse().ok()).map(Device::Gpu).ok_or_else(|| format!("unknown device `{s}` (cpu, gpu, gpu1, ..., server)")),
         }
     }
 }
@@ -326,6 +330,9 @@ fn known(role: Role, name: &str) -> bool {
 /// stage it has not (a free site's geometry) where the component runs, if on one kind of
 /// device only.
 fn default_device(executor: &str, role: Role, component: &str) -> Device {
+    if role == Role::World {
+        return Device::Server;
+    }
     let only = || role.slot().and_then(|s| crate::component(s, component)).and_then(|c| c.impls.iter().all(|i| i.kind == Kind::Cpu).then_some(Device::Cpu));
     match (backend(executor), role.slot()) {
         (Some(b), Some(slot)) if b.has(slot.source()) && b.place(slot).kind == Kind::Gpu => Device::Gpu(0),
@@ -758,6 +765,9 @@ impl Graph {
                 None => default_device(&g.executor, n.role, &n.component),
             };
             devices.insert(id.to_string(), d);
+            if (n.role == Role::World) != (d == Device::Server) {
+                why.push(if n.role == Role::World { format!("`{id}`: the world runs on the server, not on {d}") } else { format!("`{id}`: only the world runs on the server") });
+            }
         }
         for (id, n) in &g.nodes {
             for (p, src) in &n.inputs {
@@ -853,7 +863,13 @@ impl Graph {
             let ins: Vec<String> = n.inputs.iter().map(|(p, src)| format!("{p}=n{}{}", ids[src.as_str()], when(p))).collect();
             let knobs: Vec<String> = n.knobs.iter().map(|(k, v)| format!("{k}={v}")).collect();
             let api = c.apis.get(*id).filter(|a| chosen(n, a)).map_or(String::new(), |a| format!(":{}", a.name()));
-            s += &format!("n{}={}.{}@{}{api}({}){{{}}};", ids[id], n.role.name(), n.component, c.devices[*id], ins.join(","), knobs.join(","));
+            // (The server is written `cpu`, the world's device before step 14, which keeps
+            // the keys: only the world runs there.)
+            let dev = match c.devices[*id] {
+                Device::Server => Device::Cpu,
+                d => d,
+            };
+            s += &format!("n{}={}.{}@{}{api}({}){{{}}};", ids[id], n.role.name(), n.component, dev, ins.join(","), knobs.join(","));
         }
         Ok(s)
     }
@@ -2512,7 +2528,7 @@ mod tests {
         let sched = g.check().unwrap().schedule().unwrap();
         let crosses = |s: &Schedule, from: &str, to: &str| s.transfers.iter().find(|e| e.from == from && e.to == to).map(|e| (e.from_device, e.to_device, e.when));
         assert_eq!(crosses(&sched, "visibility", "draw"), Some((Device::Cpu, Device::Gpu(0), When::Prev)), "{sched}");
-        assert_eq!(crosses(&sched, "world", "shadow.storage"), Some((Device::Cpu, Device::Gpu(0), When::Now)), "{sched}");
+        assert_eq!(crosses(&sched, "world", "shadow.storage"), Some((Device::Server, Device::Gpu(0), When::Now)), "{sched}");
         assert!(sched.pipelined(), "{sched}");
         let vis = sched.passes().find(|p| p.node == "visibility").unwrap();
         assert_eq!((vis.device, vis.fused.clone()), (Device::Cpu, vec!["kernel".to_string(), "storage".to_string()]));

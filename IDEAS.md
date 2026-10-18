@@ -1559,7 +1559,10 @@ time to the first complete frame, and how each technique behaves while data stre
 Today's sweeps reward techniques that assume everything is resident at once.
 
 **Status.** Scheduled 2026-10-14 as PLAN step 14 (after the executor, step 13); step 9's
-graph model treats the world as a node so the link is just an edge.
+graph model treats the world as a node so the link is just an edge. Sub-steps 14a–e
+(2026-10-17). 14a: the host is the server (the world node's device `server`), one stream
+for every lane (the largest radius and levels any takes), a client per lane deriving its
+renderer's region from a replica of what arrived; the link still free and in-process.
 
 ## 20. Path tracing on incremental discovery (an observation, tricks to come)
 

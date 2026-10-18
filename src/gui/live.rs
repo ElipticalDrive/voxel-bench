@@ -26,6 +26,7 @@ use mr_world::{Scene, World};
 
 use crate::compare::{self, Quality};
 use crate::plan::{Plan, RendererSpec, RunSpec, Streaming};
+use crate::client::Client;
 use crate::stream::Streamer;
 use crate::tune::{self, Action, HistoryPoint, Tuner, TunerConfig};
 use crate::worker::{self, Worker, WorkerEvent};
@@ -322,7 +323,12 @@ struct Runner {
     spec: RendererSpec,
     worker: Option<Worker>,
     spawning: Option<Spawn>,
-    streamer: Streamer,
+    /// What its renderer holds, derived from the server's stream (PLAN step 14a).
+    client: Client,
+    /// Has taken the server's snapshot (then follows its stream).
+    joined: bool,
+    /// The reference's own server without a budget: it sees the whole region at once.
+    own: Option<Streamer>,
     pending: Vec<WorldUpdate>,
     /// Mesh mode: geometry and instance updates not yet sent.
     pending_meshes: Vec<MeshUpdate>,
@@ -394,6 +400,8 @@ struct Session {
     plan: Plan,
     blocks: Arc<BlockRegistry>,
     world: World,
+    /// The one stream every lane's client takes (radius and levels: the largest any takes).
+    server: Streamer,
     scene: Scene,
     env: Environment,
     lights: HashMap<u32, Light>,
@@ -450,9 +458,11 @@ impl Session {
         let env = scene.environment;
         let mesh_data = scene.mesh_data();
         let instances = scene.mesh_instances(0);
+        let server = Streamer::new(plan.run.view_radius, 0, budget(&plan));
         let mut s = Session {
             blocks,
             world,
+            server,
             scene,
             env,
             lights,
@@ -502,7 +512,9 @@ impl Session {
             spawning: Some(spawn_async(&self.plan.run, &spec, self.blocks.clone(), self.env, res)),
             spec,
             worker: None,
-            streamer: Streamer::new(radius, 0, budget(&self.plan)),
+            client: Client::new(radius, 0),
+            joined: false,
+            own: None,
             pending: vec![WorldUpdate::LightUpsert(self.lights.values().copied().collect()), WorldUpdate::SetEnvironment(self.env)],
             pending_meshes: if self.mesh_data.is_empty() {
                 vec![]
@@ -614,10 +626,17 @@ impl Session {
         }
         let changed = self.world.apply_edits(&edits);
         for l in self.lanes.iter_mut().chain(self.reference.as_mut()) {
-            for r in std::iter::once(&mut l.run).chain(l.standby.as_mut()) {
-                let mut ups = std::mem::take(&mut r.pending);
-                r.streamer.edits(&edits, &changed, &mut ups);
-                r.pending = ups;
+            if let Some(own) = &mut l.run.own {
+                let mut stream = vec![];
+                own.edits(&edits, &changed, &mut stream);
+                l.run.client.receive(&stream, &mut l.run.pending);
+            }
+        }
+        let mut stream = vec![];
+        self.server.edits(&edits, &changed, &mut stream);
+        for r in self.lanes.iter_mut().flat_map(|l| std::iter::once(&mut l.run).chain(l.standby.as_mut())) {
+            if r.joined {
+                r.client.receive(&stream, &mut r.pending);
             }
         }
     }
@@ -645,9 +664,9 @@ impl Session {
             }
             "host.view_radius" => {
                 let r = value.as_i64().unwrap_or(8) as u32;
-                lane.run.streamer.set_radius(r);
+                lane.run.client.set_radius(r);
                 if let Some(s) = &mut lane.standby {
-                    s.streamer.set_radius(r);
+                    s.client.set_radius(r);
                 }
             }
             "host.in_flight" => {}
@@ -672,7 +691,7 @@ impl Session {
     }
 
     fn hot_swap(&mut self, i: usize, spec: RendererSpec) {
-        let radius = self.lanes[i].run.streamer.radius();
+        let radius = self.lanes[i].run.client.radius();
         let res = self.lanes[i].run.res;
         let standby = self.new_runner(spec.clone(), res, radius);
         let lane = &mut self.lanes[i];
@@ -844,15 +863,26 @@ impl Session {
             sh.lights = self.lights.len();
             sh.cached_chunks = self.world.cached_chunks();
         }
-        let world = &mut self.world;
-        for l in self.lanes.iter_mut().chain(self.reference.as_mut()) {
-            for r in std::iter::once(&mut l.run).chain(l.standby.as_mut()) {
-                if r.worker.is_some() {
-                    let mut ups = std::mem::take(&mut r.pending);
-                    r.streamer.update(world, cam.position, &mut ups);
-                    r.pending = ups;
-                }
+        // The server's region: as large as the largest any lane takes.
+        let runners = || self.lanes.iter().flat_map(|l| std::iter::once(&l.run).chain(l.standby.as_ref()));
+        let radius = runners().map(|r| r.client.radius()).max().unwrap_or(self.plan.run.view_radius);
+        let levels = runners().map(|r| r.client.max_lod()).max().unwrap_or(0);
+        self.server.set_radius(radius);
+        let mut stream = vec![];
+        self.server.set_max_lod(levels, &mut stream);
+        self.server.update(&mut self.world, cam.position, &mut stream);
+        let (world, server) = (&mut self.world, &self.server);
+        for r in self.lanes.iter_mut().flat_map(|l| std::iter::once(&mut l.run).chain(l.standby.as_mut())) {
+            if r.worker.is_none() {
+                continue;
             }
+            if r.joined {
+                r.client.receive(&stream, &mut r.pending);
+            } else {
+                r.client.receive(&server.snapshot(world), &mut r.pending);
+                r.joined = true;
+            }
+            r.client.update(cam.position, &mut r.pending);
         }
 
         let mut failures: Vec<(usize, anyhow::Error)> = vec![];
@@ -919,7 +949,7 @@ impl Session {
                 _ => continue,
             };
             busy = true;
-            let (run_spec, bud) = (self.plan.run.clone(), budget(&self.plan));
+            let run_spec = self.plan.run.clone();
             let lane = self.lane_mut(i).unwrap();
             lane.run.spawning = None;
             match result {
@@ -933,12 +963,9 @@ impl Session {
                     }
                     // Now that its LOD support is known, stream the levels it can use.
                     let lods = lane.run.spec.max_lod(&run_spec, info.max_lod);
-                    if lods > 0 {
-                        let mut s = Streamer::new(lane.run.streamer.radius(), lods, bud);
-                        if i == REFERENCE {
-                            s.set_budget(None);
-                        }
-                        lane.run.streamer = s;
+                    lane.run.client.set_max_lod(lods);
+                    if let Some(own) = &mut lane.run.own {
+                        own.set_max_lod(lods, &mut vec![]);
                     }
                     lane.values.insert("host.max_lod".into(), ParamValue::Int(lods as i64));
                     lane.info = Some(info);
@@ -971,7 +998,7 @@ impl Session {
                 }
             }
         }
-        let (run_spec, bud) = (self.plan.run.clone(), budget(&self.plan));
+        let run_spec = self.plan.run.clone();
         for i in 0..n {
             let lane = &mut self.lanes[i];
             let Some(sb) = &mut lane.standby else { continue };
@@ -981,9 +1008,7 @@ impl Session {
             match result {
                 Ok(w) => {
                     let lods = sb.spec.max_lod(&run_spec, w.info.max_lod);
-                    if lods > 0 {
-                        sb.streamer = Streamer::new(sb.streamer.radius(), lods, bud);
-                    }
+                    sb.client.set_max_lod(lods);
                     sb.worker = Some(w);
                     self.shared.lock().unwrap().lanes[i].swap = Some("loading world".into());
                 }
@@ -1007,7 +1032,8 @@ impl Session {
                 continue;
             }
             // Warm-up frames once everything in range has streamed.
-            if sb.streamer.pending() == 0 && sb.in_flight.is_empty() && lane.standby_warm < 3 {
+            let pending = if sb.joined { self.server.pending() } else { 1 };
+            if pending == 0 && sb.in_flight.is_empty() && lane.standby_warm < 3 {
                 match sb.submit(cam, mode, false, Purpose::Warm) {
                     Ok(_) => busy = true,
                     Err(e) => {
@@ -1033,7 +1059,7 @@ impl Session {
                 }
             }
             lane.standby_warm += done;
-            let progress = if sb.streamer.pending() > 0 { format!("loading world ({} chunks left)", sb.streamer.pending()) } else { format!("warming up ({}/3)", lane.standby_warm) };
+            let progress = if pending > 0 { format!("loading world ({pending} chunks left)") } else { format!("warming up ({}/3)", lane.standby_warm) };
             if lane.standby_warm < 3 {
                 self.shared.lock().unwrap().lanes[i].swap = Some(progress);
                 continue;
@@ -1094,7 +1120,7 @@ impl Session {
             self.shared.lock().unwrap().reference = spec.label().to_string();
             self.log(format!("starting reference {}", spec.label()));
             let mut r = self.new_lane(spec);
-            r.run.streamer.set_budget(None);
+            r.run.own = Some(Streamer::new(r.run.client.radius(), 0, None));
             self.reference = Some(r);
             return;
         }
@@ -1105,8 +1131,12 @@ impl Session {
         // The reference must see the whole streamed region.
         let mut ups = std::mem::take(&mut reference.run.pending);
         loop {
-            reference.run.streamer.update(&mut self.world, cam.position, &mut ups);
-            if reference.run.streamer.pending() == 0 {
+            let (own, client) = (reference.run.own.as_mut().unwrap(), &mut reference.run.client);
+            let mut stream = vec![];
+            own.update(&mut self.world, cam.position, &mut stream);
+            client.receive(&stream, &mut ups);
+            client.update(cam.position, &mut ups);
+            if own.pending() == 0 {
                 break;
             }
         }
@@ -1186,6 +1216,7 @@ impl Session {
     fn pump(&mut self, i: usize) -> anyhow::Result<bool> {
         let start = self.start;
         let shared = self.shared.clone();
+        let server_pending = self.server.pending();
         let Some(lane) = self.lane_mut(i) else { return Ok(false) };
         let Some(w) = &mut lane.run.worker else { return Ok(false) };
         let mut busy = false;
@@ -1198,8 +1229,8 @@ impl Session {
             let mut sh = shared.lock().unwrap();
             if let Some(v) = sh.lanes.get_mut(i) {
                 v.rss_mb = rss;
-                v.chunks_sent = lane.run.streamer.chunks_sent;
-                v.pending_chunks = lane.run.streamer.pending();
+                v.chunks_sent = lane.run.client.chunks_sent;
+                v.pending_chunks = server_pending;
             }
         }
         while let Ok(ev) = w.rx.try_recv() {
