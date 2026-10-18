@@ -382,9 +382,9 @@ impl<C: Cast> Lane for Raycast<C> {
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
         cast.finish(&mut enc);
         if let Some(f) = &mut self.far {
-            f.send(core, enc, ticket, req, stats)?;
+            f.send(core, enc, ticket, req, stats);
             cast.submitted();
-            return f.render(req, &self.shading, sink);
+            return f.render(core, req, &self.shading, sink);
         }
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
         cast.submitted();
@@ -405,8 +405,8 @@ impl<C: Cast> Lane for Raycast<C> {
     fn resize(&mut self, core: &Core) {
         self.cast.resize(core);
         self.passes.unbind();
-        if let Some(f) = &mut self.far {
-            f.resize(core);
+        if let Some(Err(e)) = self.far.as_mut().map(|f| f.resize(core)) {
+            tracing::error!("the shading's GPU: {e}");
         }
     }
 
@@ -416,7 +416,7 @@ impl<C: Cast> Lane for Raycast<C> {
 
     fn poll(&mut self, core: &mut Core, sink: &mut dyn FrameSink, wait: bool) -> anyhow::Result<()> {
         match &mut self.far {
-            Some(f) => f.poll(sink, wait),
+            Some(f) => f.poll(core, sink, wait),
             None => core.ring.poll(&core.gpu, sink, wait),
         }
     }

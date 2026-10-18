@@ -339,8 +339,14 @@ fn faces_timing(executor: &str, holes: bool) -> Option<When> {
 }
 
 /// Edge timings a back end lets a graph choose, with the values it runs (the rest are its
-/// composition's): cpu-discover's faces now or a frame late.
-const FREE_TIMINGS: &[(&str, Role, &str, &[When])] = &[("cpu-discover", Role::Draw, "faces", &[When::Now, When::Prev])];
+/// composition's): cpu-discover's faces now or a frame late; ray casting's shading on a
+/// second GPU shading this frame's hit records or the last frame's (PLAN step 15a: the GPUs
+/// then overlap; `device_blocker` says why not on one GPU).
+const FREE_TIMINGS: &[(&str, Role, &str, &[When])] = &[
+    ("cpu-discover", Role::Draw, "faces", &[When::Now, When::Prev]),
+    ("gpu-compute", Role::Shading, "hits", &[When::Now, When::Prev]),
+    ("gpu-rt", Role::Shading, "hits", &[When::Now, When::Prev]),
+];
 
 /// Knobs that spell an edge timing (the graph says it; the knob is how plans, the CLI and
 /// the GUI write it): back end, knob, the edge's role and port, the timing when the knob
@@ -1442,14 +1448,17 @@ impl Graph {
 /// Why the GPUs `ck` places its nodes on cannot run, if they can't (PLAN step 13e4c): a
 /// pipeline runs on one GPU (any slot), or split over two at the hit records: ray casting's
 /// shading (`placement = deferred`, with the walks compiled into it) on another GPU than the
-/// rest, the records crossing between them (the schedule's transfer).
+/// rest, the records crossing between them (the schedule's transfer), this frame's or the
+/// last frame's (`hits` timed `prev`, which only a split runs).
 fn device_blocker(ck: &Checked) -> Option<String> {
     let g = &ck.graph;
     let mut slots: Vec<u8> = ck.devices.values().filter_map(|d| if let Device::Gpu(i) = d { Some(*i) } else { None }).collect();
     slots.sort();
     slots.dedup();
     if slots.len() < 2 {
-        return None;
+        // Hit records a frame late are history worth keeping only between GPUs (they overlap).
+        let late = g.nodes.iter().find(|(_, n)| n.role == Role::Shading && n.when("hits") == When::Prev);
+        return late.map(|(id, _)| format!("`{id}`.hits prev: the last frame's hit records are shaded on a second GPU while the first casts this frame's (on one GPU a frame late is only latency: put `{id}` on another GPU, or hits now)"));
     }
     let on = |d: Device| {
         let mut v: Vec<&str> = g.nodes.keys().map(String::as_str).filter(|id| ck.devices[*id] == d).collect();
@@ -2752,6 +2761,16 @@ mod tests {
             assert!(sched.contains("gpu -> gpu1"), "{b}: {sched}");
             let why = split(b, "inline").accept().unwrap_err();
             assert!(why.contains("placement = deferred"), "{b}: {why}");
+            // Step 15a: the shading a frame behind, the GPUs overlapping; not on one GPU.
+            let mut late = split(b, "deferred");
+            late.nodes.get_mut("shading").unwrap().timing.insert("hits".into(), When::Prev);
+            late.accept().unwrap_or_else(|e| panic!("{b}: {e}"));
+            assert_ne!(late.key().unwrap(), g.key().unwrap());
+            let sched = late.check().unwrap().schedule().unwrap();
+            assert!(sched.pipelined(), "{b}: {sched}");
+            late.nodes.get_mut("shading").unwrap().device = None;
+            let why = late.accept().unwrap_err();
+            assert!(why.contains("hits prev") && why.contains("another GPU"), "{b}: {why}");
         }
         // The whole pipeline on the second GPU.
         let mut g = Graph::from_composition(&Composition::new("gpu-compute")).unwrap();

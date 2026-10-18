@@ -392,7 +392,8 @@ impl FrameRing {
     }
 
     /// Records read-back of `output` (an RGBA8 texture of the ring's size) if requested,
-    /// submits the encoder, and tracks the frame until the GPU is done with it.
+    /// submits the encoder, and tracks the frame until the GPU is done with it. Returns the
+    /// submission (to wait for it alone).
     pub fn submit(
         &mut self,
         gpu: &Gpu,
@@ -402,7 +403,7 @@ impl FrameRing {
         frame_id: u64,
         readback: bool,
         stats: FrameStats,
-    ) {
+    ) -> wgpu::SubmissionIndex {
         let slot = &self.slots[t.0];
         if readback {
             encoder.copy_texture_to_buffer(
@@ -427,7 +428,7 @@ impl FrameRing {
             encoder.resolve_query_set(q, b..b + 2, res, 0);
             encoder.copy_buffer_to_buffer(res, 0, read, 0, 16);
         }
-        gpu.queue.submit([encoder.finish()]);
+        let index = gpu.queue.submit([encoder.finish()]);
 
         let remaining = Arc::new(AtomicU32::new(0));
         let track = |buf: &wgpu::Buffer| {
@@ -460,6 +461,7 @@ impl FrameRing {
         if let Some(s) = &self.submitted {
             let _ = s.send(());
         }
+        index
     }
 
     /// Completes finished frames (in order). With `wait`, blocks until all are done.

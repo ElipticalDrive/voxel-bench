@@ -3,6 +3,8 @@
 # adapter); deferred shading with its own shadow walk runs there. Beside it, the same graph
 # on one GPU. Slot 1 here is the adapter whose name contains "amd" (this machine's iGPU);
 # change `gpus` to yours, or leave it out: both slots then open the default GPU (two devices).
+# The third lane (PLAN step 15a) shades the last frame's records (`timing = { hits = "prev" }`):
+# slot 1 shades frame N - 1 while slot 0 casts N, so each image shows the view a frame late.
 name = "two-gpus"
 
 [scene]
@@ -29,6 +31,18 @@ nodes.visibility = { role = "visibility", component = "raycast", inputs = { prim
 nodes."s.storage" = { role = "storage", component = "bricks", inputs = { changes = "world" } }
 nodes."s.kernel" = { role = "traversal", component = "refloor", inputs = { storage = "s.storage" } }
 nodes.shading = { role = "shading", component = "direct", device = "gpu1", knobs = { placement = "deferred" }, inputs = { hits = "visibility", shadow = "s.kernel" } }
+
+[[renderer]]
+label = "split, shading a frame behind"
+[renderer.graph]
+executor = "gpu-compute"
+nodes.world = { role = "world", component = "world" }
+nodes.storage = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes.kernel = { role = "traversal", component = "refloor", inputs = { storage = "storage" } }
+nodes.visibility = { role = "visibility", component = "raycast", inputs = { primary = "kernel" } }
+nodes."s.storage" = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes."s.kernel" = { role = "traversal", component = "refloor", inputs = { storage = "s.storage" } }
+nodes.shading = { role = "shading", component = "direct", device = "gpu1", knobs = { placement = "deferred" }, inputs = { hits = "visibility", shadow = "s.kernel" }, timing = { hits = "prev" } }
 
 [[renderer]]
 label = "on one GPU"
