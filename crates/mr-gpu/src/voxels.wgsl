@@ -2,7 +2,7 @@
 // camera's integer block `vp.cam_block`, so precision does not degrade far from the origin.
 
 struct VoxelParams {
-    cam_block: vec3<i32>, max_steps: u32,
+    cam_block: vec3<i32>, spare: u32,         // free (the walks' step limit is each kernel's constant)
     bounds_min: vec3<i32>, table_mask: u32,   // loaded region, camera-relative blocks
     bounds_max: vec3<i32>, max_probe: u32,
     sun_dir: vec3<f32>, has_sun: u32,         // direction towards the sun

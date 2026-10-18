@@ -212,15 +212,7 @@ fn manifest(repo: &Path, executor: Executor) -> String {
     )
 }
 
-/// Where compiled pipelines live: `$MR_PIPELINE_CACHE`, else `$XDG_CACHE_HOME` or
-/// `~/.cache`, `multirenderer/pipelines`.
-pub fn cache_dir() -> PathBuf {
-    if let Some(d) = std::env::var_os("MR_PIPELINE_CACHE") {
-        return PathBuf::from(d);
-    }
-    let base = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"));
-    base.join("multirenderer").join("pipelines")
-}
+use mr_core::cache_dir;
 
 /// FNV-1a: stable across runs and builds.
 fn fnv(h: u64, bytes: &[u8]) -> u64 {

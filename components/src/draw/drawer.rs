@@ -229,7 +229,7 @@ impl FaceDrawer {
                 multisample: Default::default(),
                 fragment: fragment.then(|| wgpu::FragmentState { module: spec.module, entry_point: Some("fs"), compilation_options: Default::default(), targets }),
                 multiview_mask: None,
-                cache: None,
+                cache: gpu.cache(),
             })
         };
         use wgpu::CompareFunction::{Equal, Greater};
@@ -254,7 +254,7 @@ impl FaceDrawer {
                         module,
                         entry_point: Some("shade"),
                         compilation_options: Default::default(),
-                        cache: None,
+                        cache: gpu.cache(),
                     })
                 };
                 Pipes::Deferred { ids, shade: shade(spec.module), mesh_shade: spec.mesh_module.map(shade) }

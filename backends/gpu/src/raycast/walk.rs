@@ -71,7 +71,7 @@ fn params() -> Vec<ParamSpec> {
     p.push(ParamSpec::int("view_max", "steps view: the top of the colour scale (iterations)", 1, 16384, 256, true));
     p.extend([
         shadows_param(),
-        ParamSpec::int("max_steps", "Loop iteration limit per ray", 32, 16384, 2048, true),
+        ParamSpec::int("max_steps", "Loop iteration limit per ray (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB); for region storages (tree64) the limit of their own data", 64, 6144, 2048, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ]);
@@ -179,7 +179,8 @@ impl Composition {
         let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("gpu-compute: {} `{port}` rays are not bound", role.name()));
         let primary = walks.site(&g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
         walks.kernels[primary].component = require(BACKEND, Slot::Traversal, &opts.traversal)?;
-        walks.kernels[primary].consts = mr_components::shaders::KernelConsts { lod: false, exact: opts.exact, levels: [opts.skip2, opts.skip4, opts.skip8, opts.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)) };
+        walks.kernels[primary].consts = mr_components::shaders::KernelConsts { lod: false, exact: opts.exact, levels: [opts.skip2, opts.skip4, opts.skip8, opts.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)), max_steps: opts.max_steps };
+        walks.set_max_steps(opts.max_steps);
         let shadow = match super::shading_site(g, "shadow") {
             Some(_) => walks.site(&g, site(Role::Shading, "shadow")?, STORAGE_GROUPS, false),
             None => primary,
@@ -621,11 +622,13 @@ mod tests {
                             for (gi, g) in graphs.into_iter().enumerate() {
                                 assert!(g.validate().is_ok(), "{g:?}");
                                 let ck = g.check().unwrap();
-                                let opts = Options { storage: st.to_string(), traversal: k.to_string(), shading: shading.to_string(), prepass: prepass.into(), tile, exact: false, skip4: false, view: "steps".into(), ..Default::default() };
+                                let opts = Options { storage: st.to_string(), traversal: k.to_string(), shading: shading.to_string(), prepass: prepass.into(), tile, exact: false, skip4: false, view: "steps".into(), max_steps: 77, ..Default::default() };
                                 let lod = *st == "bricks" && *k == "refloor" && ss == "same" && sk == "same";
                                 let c = Composition::of(&ck, &opts, if lod { 4 } else { 0 }).unwrap_or_else(|e| panic!("{g:?}: {e}"));
                                 // The walks of their own lack LOD.
                                 assert_eq!(c.lod, lod && prepass == "none" && gi == 0, "{c:?}");
+                                // Every site's kernel walks with the knob's step limit, a constant.
+                                assert!(c.walks.kernels.iter().all(|k| k.consts.max_steps == 77), "{c:?}");
                                 // Inline and deferred shading (the record-writing walk and the
                                 // common pass), with meshes' records and without, in compute
                                 // and fragment shaders.

@@ -182,6 +182,7 @@ fn create_with(backend: &str, p: InitParams, devices: &Devices, waker: Waker, cp
 }
 
 fn run<L: Lane + 'static>((core, lane): (Core, L)) -> anyhow::Result<Box<dyn Renderer>> {
+    core.gpu.save_cache();
     Ok(Box::new(Executor { core, lane }))
 }
 
@@ -235,6 +236,7 @@ struct CoreSpec<'a> {
     spp: u32,
     accumulate: bool,
     shadows: Shadows,
+    /// The walks' step limit (the lane sets it on its `Walks`; the second GPU's from here).
     max_steps: u32,
     pool_mb: u32,
     frames_in_flight: usize,
@@ -311,6 +313,8 @@ impl Core {
             needs.required_features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
         }
         let gpu = mr_gpu::gpu(devices, slot, &needs)?;
+        // Every pipeline of this graph goes through one persistent cache (PLAN step 16b).
+        gpu.open_cache(&g.graph.key().map_err(anyhow::Error::msg)?);
         let accel = s.accel.as_ref().map(|a| accel::Accel::new(&gpu, a)).transpose()?;
         let world = VoxelWorld::new(
             &gpu,
@@ -323,7 +327,6 @@ impl Core {
                 pool_mb: s.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: s.shadows,
-                max_steps: s.max_steps,
                 visibility: s.stages,
             },
         )?;
@@ -455,10 +458,6 @@ impl Core {
     fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         Some(match name {
             "shadows" => self.world.cfg.shadows.set(value).map(|_| ()),
-            "max_steps" => {
-                self.world.cfg.max_steps = value.as_i64().unwrap_or(2048) as u32;
-                Ok(())
-            }
             _ => return self.accel.as_mut().and_then(|a| a.set_param(name, value)).or_else(|| self.accum.set_param(name, value).map(|_| Ok(()))),
         })
     }
@@ -535,6 +534,9 @@ impl<L: Lane> Renderer for Executor<L> {
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
         if let Some(r) = self.lane.set_param(&mut self.core, name, value) {
+            // A lane rebuilds its pipelines lazily, at its next frame; they reach the file
+            // with the next change or at exit.
+            self.core.gpu.save_cache();
             return r;
         }
         self.core.set_param(name, value).unwrap_or_else(|| anyhow::bail!("`{name}` cannot change while running"))

@@ -62,7 +62,7 @@ pub fn shadows_param() -> mr_core::ParamSpec {
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct Params {
     cam_block: [i32; 3],
-    max_steps: u32,
+    spare: u32,
     bounds_min: [i32; 3],
     table_mask: u32,
     bounds_max: [i32; 3],
@@ -242,7 +242,6 @@ pub struct VoxelWorldConfig {
     pub pool_mb: u32,
     pub view_radius: u32,
     pub shadows: Shadows,
-    pub max_steps: u32,
     pub visibility: wgpu::ShaderStages,
 }
 
@@ -604,7 +603,7 @@ impl VoxelWorld {
         let sun = self.env.sun;
         let params = Params {
             cam_block: cam_block.to_array(),
-            max_steps: self.cfg.max_steps,
+            spare: 0,
             bounds_min: bmin.to_array(),
             table_mask: self.table.mask() as u32,
             bounds_max: bmax.to_array(),

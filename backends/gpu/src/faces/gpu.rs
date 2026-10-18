@@ -122,7 +122,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("reveal_tiles", "Incremental: largest reveal radius around an edge, in level-0 tiles", 1, 16, 4, true).of("holes", &["coverage"]),
         ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true).of("visibility", &["quadtree"]),
         shadows_param(),
-        ParamSpec::int("max_steps", "DDA step limit", 32, 16384, 2048, true),
+        ParamSpec::int("max_steps", "DDA step limit (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
         ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment (order and the overdraw view apply); visbuffer = face ids, then one compute pass shades each pixel; gbuffer = the common hit records, then the common deferred pass (no diagnostic tints)", &names_on(BACKEND, Slot::Draw), "raster", true),
         ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("max_faces", "Capacity of the face set S (faces)", 1 << 16, 1 << 24, 1 << 20, false).of("visibility", &["quadtree"]),
@@ -542,6 +542,7 @@ impl GpuSampler {
         let exposure = walks.storage(g, g.input(Role::Visibility, "exposure").ok_or_else(|| anyhow::anyhow!("{BACKEND}: exposure is not bound"))?, STORAGE_GROUPS);
         let shadow = walks.site(g, bound(Role::Shading, "shadow")?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+        walks.set_max_steps(opts.max_steps);
         let o = CoreOpts { shading: &shading, draw: &opts.draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let (core, drawing) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("set_faces.wgsl").into(),
@@ -627,7 +628,7 @@ impl GpuSampler {
                 module: m,
                 entry_point: Some(entry),
                 compilation_options: Default::default(),
-                cache: None,
+                cache: gpu.cache(),
             })
         };
         // Without and with hole detection's tiles.
@@ -678,7 +679,7 @@ impl GpuSampler {
                 targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
             }),
             multiview_mask: None,
-            cache: None,
+            cache: gpu.cache(),
         });
 
         let pl_draw = &drawing.pl_draw;
@@ -704,7 +705,7 @@ impl GpuSampler {
                 multisample: Default::default(),
                 fragment: fragment.then(|| wgpu::FragmentState { module: &draw_mod, entry_point: Some("fs"), compilation_options: Default::default(), targets: &targets }),
                 multiview_mask: None,
-                cache: None,
+                cache: gpu.cache(),
             })
         };
         // Painter order: no depth test, but depth is still written (the last fragment is the
@@ -725,7 +726,7 @@ impl GpuSampler {
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState { module: &draw_mod, entry_point: Some("fs_overdraw"), compilation_options: Default::default(), targets: &targets }),
                 multiview_mask: None,
-                cache: None,
+                cache: gpu.cache(),
             })
         };
         let pipe_over_depth = overdraw("overdraw depth", wgpu::CompareFunction::Greater);
@@ -746,7 +747,7 @@ impl GpuSampler {
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState { module: &draw_mod, entry_point: Some("fs_id"), compilation_options: Default::default(), targets: &id_targets }),
             multiview_mask: None,
-            cache: None,
+            cache: gpu.cache(),
         });
 
         let list_cap = opts.max_faces.clamp(1 << 16, 1 << 24);

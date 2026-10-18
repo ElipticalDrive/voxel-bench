@@ -25,7 +25,7 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
     res.t = tnear;
     var cached = vec3<i32>(0x7fffffff);
     var val = EMPTY;
-    for (var i = 0u; i < vp.max_steps; i++) {
+    for (var i = 0u; i < MAX_STEPS; i++) {
         ct_iters += 1u;
         let abs_cell = cell + vp.cam_block;
         let key = abs_cell >> vec3<u32>(S_TOP);

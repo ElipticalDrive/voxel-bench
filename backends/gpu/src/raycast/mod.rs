@@ -183,7 +183,7 @@ impl Passes {
         let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = mr_gpu::program::compile(dev, "raycast", &lp.program, &lp.root, &deps);
         let entry = |name| {
-            dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(name), layout: Some(layout), module: &module, entry_point: Some(name), compilation_options: Default::default(), cache: None })
+            dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(name), layout: Some(layout), module: &module, entry_point: Some(name), compilation_options: Default::default(), cache: core.gpu.cache() })
         };
         let main = if cast.fragment() {
             // Deferred: the fragments write records, not colour (the output is attached
@@ -199,7 +199,7 @@ impl Passes {
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some(if deferred { "fs_cast" } else { "fs_full" }), compilation_options: Default::default(), targets: &targets }),
                 multiview_mask: None,
-                cache: None,
+                cache: core.gpu.cache(),
             }))
         } else {
             Main::Compute(entry(if deferred { "walk_records" } else { "main" }))

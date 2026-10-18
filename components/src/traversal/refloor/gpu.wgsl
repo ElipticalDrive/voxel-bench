@@ -29,7 +29,7 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
     var cached_lod = 0u;
     var val = EMPTY;
     res.t = tnear;
-    for (var i = 0u; i < vp.max_steps; i++) {
+    for (var i = 0u; i < MAX_STEPS; i++) {
         ct_iters += 1u;
         let abs_cell = cell + vp.cam_block;
         var lod = 0u;

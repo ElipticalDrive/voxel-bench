@@ -71,7 +71,7 @@ fn ctrace(o: vec3<f32>, d_in: vec3<f32>, max_t: f32) -> Hit {
     var hit = false;
     var ic_key = vec3<i32>(0x7fffffff);
     var ic_val = EMPTY;
-    for (var i = 0u; i < vp.max_steps; i++) {
+    for (var i = 0u; i < MAX_STEPS; i++) {
         ct_iters += 1u;
         if (ic_occupied(level, c, &ic_key, &ic_val)) {
             if (level > 0u) {

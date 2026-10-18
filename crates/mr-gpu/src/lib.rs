@@ -27,6 +27,16 @@ pub struct Gpu {
     /// First uncaptured wgpu error (validation, OOM, ...). Any error fails the renderer:
     /// a renderer with an invalid pipeline must not report a frame rate.
     error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// The persistent pipeline cache, once opened (`open_cache`).
+    cache: std::sync::OnceLock<DiskCache>,
+}
+
+/// A driver pipeline cache kept in a file (Vulkan's `VkPipelineCache` through wgpu).
+struct DiskCache {
+    cache: wgpu::PipelineCache,
+    path: std::path::PathBuf,
+    /// Bytes last loaded or saved (saving skips an unchanged cache).
+    saved: std::sync::Mutex<usize>,
 }
 
 pub struct GpuRequest<'a> {
@@ -49,7 +59,8 @@ impl Gpu {
         if !available.contains(req.required_features) {
             bail!("adapter lacks features {:?}", req.required_features - available);
         }
-        let features = req.required_features | (req.optional_features & available);
+        // The pipeline cache where the adapter has one (`open_cache`).
+        let features = req.required_features | ((req.optional_features | wgpu::Features::PIPELINE_CACHE) & available);
         let limits = (req.limits)(&adapter.limits());
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("mr-gpu"),
@@ -76,7 +87,50 @@ impl Gpu {
             e2.lock().unwrap().get_or_insert_with(|| e.to_string());
         }));
         let features = device.features();
-        Self { device, queue, info, timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY), adapter_features: features, experimental: false, error }
+        Self { device, queue, info, timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY), adapter_features: features, experimental: false, error, cache: Default::default() }
+    }
+
+    /// Opens the persistent pipeline cache `name` (the pipelines' graph key): a file per
+    /// adapter and name under [`mr_core::cache_dir`], so the driver skips compiling pipelines
+    /// it compiled in an earlier run (PLAN step 16b). The first call in a process wins; no-op
+    /// where the device has no pipeline cache (wgpu: Vulkan only) or `$MR_GPU_CACHE` is `0`.
+    pub fn open_cache(&self, name: &str) {
+        if !self.device.features().contains(wgpu::Features::PIPELINE_CACHE) || std::env::var_os("MR_GPU_CACHE").is_some_and(|v| v == "0") {
+            return;
+        }
+        let Some(adapter) = wgpu::util::pipeline_cache_key(&self.info) else { return };
+        let path = mr_core::cache_dir().join("driver").join(adapter).join(format!("{name}.bin"));
+        let data = std::fs::read(&path).ok();
+        let saved = data.as_ref().map_or(0, Vec::len);
+        let _ = self.cache.get_or_init(|| {
+            // SAFETY: the data is what `get_data` wrote for this adapter (the file is keyed by
+            // it); wgpu and the driver validate the header (vendor, device, driver version, wgpu
+            // version) and fall back to an empty cache on a mismatch.
+            let cache = unsafe { self.device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor { label: Some(name), data: data.as_deref(), fallback: true }) };
+            DiskCache { cache, path, saved: std::sync::Mutex::new(saved) }
+        });
+    }
+
+    /// The pipeline cache every pipeline is created with (`None`: not opened).
+    pub fn cache(&self) -> Option<&wgpu::PipelineCache> {
+        self.cache.get().map(|c| &c.cache)
+    }
+
+    /// Writes the pipeline cache if it grew (atomically: a temporary file renamed over it,
+    /// so workers of one graph running at once never leave a torn file).
+    pub fn save_cache(&self) {
+        let Some(c) = self.cache.get() else { return };
+        let Some(data) = c.cache.get_data() else { return };
+        let mut saved = c.saved.lock().unwrap();
+        if data.len() == *saved {
+            return;
+        }
+        let tmp = c.path.with_extension(format!("{}.tmp", std::process::id()));
+        let written = c.path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&tmp, &data)).and_then(|_| std::fs::rename(&tmp, &c.path));
+        match written {
+            Ok(()) => *saved = data.len(),
+            Err(e) => tracing::warn!("pipeline cache {}: {e}", c.path.display()),
+        }
     }
 
     /// Why this device cannot serve `needs`, if it can't.
@@ -95,6 +149,12 @@ impl Gpu {
             Some(e) => bail!("wgpu error: {}", e.lines().take(12).collect::<Vec<_>>().join("\n")),
             None => Ok(()),
         }
+    }
+}
+
+impl Drop for Gpu {
+    fn drop(&mut self) {
+        self.save_cache();
     }
 }
 

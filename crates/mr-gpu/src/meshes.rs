@@ -123,7 +123,7 @@ impl GpuMeshes {
                 multisample: Default::default(),
                 fragment: entry.map(|e| wgpu::FragmentState { module, entry_point: Some(e), compilation_options: Default::default(), targets: &targets }),
                 multiview_mask: None,
-                cache: None,
+                cache: gpu.cache(),
             })
         };
         use wgpu::CompareFunction::{Equal, Greater};

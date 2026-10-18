@@ -68,7 +68,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::bool("cull", "naive / cubes: skip faces (blocks) hidden by solid neighbours (false = every face of every solid block)", true, true).of("geometry", &["naive", "cubes"]),
         ParamSpec::bool("depth_prepass", "raster, lit mode: depth pre-pass so lighting runs once per pixel", true, true).of("draw", &["raster"]),
         shadows_param(),
-        ParamSpec::int("max_steps", "Shadow-ray step limit", 32, 16384, 2048, true),
+        ParamSpec::int("max_steps", "Shadow-ray step limit (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
         ParamSpec::int("mesh_budget", "Chunks remeshed per frame, nearest first (0 = all)", 0, 100000, 0, true),
         ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB); for region storages (tree64) the limit of their own data", 64, 6144, 1536, false),
         ParamSpec::int("quad_buffer_mb", "Instance buffer limit (MiB; grows on demand)", 16, 2040, 1024, false),
@@ -231,7 +231,8 @@ impl Meshing {
         if !schedule.transfers.iter().any(|e| e.port == "faces" && g.node(&e.to).role == Role::Visibility) {
             anyhow::bail!("{BACKEND}: the faces do not cross from the CPU to the GPU");
         }
-        let (walks, shadow, bounce, mesh_shadow) = walks(g)?;
+        let (mut walks, shadow, bounce, mesh_shadow) = walks(g)?;
+        walks.set_max_steps(opts.max_steps);
         let mesh_storage = walks.kernels[mesh_shadow].storage.ok_or_else(|| anyhow::anyhow!("{BACKEND}: mesh shadows walk a storage (not ray queries)"))?;
         let (occ, rays) = walks.shadow_program(mesh_shadow);
         tracing::info!("gpu-raster: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());

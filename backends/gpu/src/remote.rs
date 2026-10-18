@@ -132,6 +132,7 @@ impl Far {
         let site = |port| g.site(Role::Shading, port);
         let shadow = walks.site(g, site("shadow").ok_or_else(|| anyhow::anyhow!("the shading's shadow rays are not bound"))?, STORAGE_GROUPS, false);
         let bounce = site("bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+        walks.set_max_steps(spec.max_steps);
         let core = Core::on(
             slot,
             p,
@@ -153,6 +154,7 @@ impl Far {
         let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("remote shading"), entries: &core.layout_entries() });
         let pipeline_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("remote shading"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
         let shade = compile(&core, &pipeline_layout, &walks, shadow, bounce, spec.shading)?;
+        core.gpu.save_cache();
         let vis = g.find(Role::Visibility).unwrap_or("visibility").to_string();
         let sh = g.find(Role::Shading).unwrap_or("shading").to_string();
         let late = g.graph.nodes.get(&sh).is_some_and(|n| n.when("hits") == When::Prev);
@@ -350,7 +352,7 @@ fn compile(core: &Core, layout: &wgpu::PipelineLayout, walks: &Walks, shadow: us
     let dev = &core.gpu.device;
     let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = mr_gpu::program::compile(dev, "remote shading", &program, &root, &deps);
-    let pipeline = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("remote shade"), layout: Some(layout), module: &module, entry_point: Some("shade"), compilation_options: Default::default(), cache: None });
+    let pipeline = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("remote shade"), layout: Some(layout), module: &module, entry_point: Some("shade"), compilation_options: Default::default(), cache: core.gpu.cache() });
     if let Some(e) = pollster::block_on(scope.pop()) {
         anyhow::bail!("compiling the remote shading pass: {e}");
     }

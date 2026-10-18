@@ -13,18 +13,24 @@ use crate::traversal;
 
 /// The constants of a kernel instance: `LOD` (LOD chunks are streamed and walked) and, for
 /// `incremental`, `EXACT` and `LEVEL_MASK` (its knobs; `levels` = the skip knobs' mask, bit
-/// k = 2^k cubes allowed).
+/// k = 2^k cubes allowed), and every loop's `MAX_STEPS`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct KernelConsts {
     pub lod: bool,
     pub exact: bool,
     pub levels: u32,
+    /// The loop's iteration limit: a constant, not a uniform (PLAN step 16b: as a uniform it
+    /// cost incremental 45 % of its GPU time on NVIDIA).
+    pub max_steps: u32,
 }
+
+/// The executor's `max_steps` default.
+pub const MAX_STEPS: u32 = 2048;
 
 impl KernelConsts {
     /// The kernel's knobs at their defaults.
     pub fn defaults(lod: bool) -> Self {
-        Self { lod, exact: true, levels: u32::MAX }
+        Self { lod, exact: true, levels: u32::MAX, max_steps: MAX_STEPS }
     }
 
     /// A kernel node's knobs (`exact`, `skip2`..`skip16`), the rest at their defaults.
@@ -32,12 +38,12 @@ impl KernelConsts {
         let on = |k: &str| node.knobs.get(k).and_then(|v| v.as_bool());
         let skips = [(1, "skip2"), (2, "skip4"), (3, "skip8"), (4, "skip16")];
         let levels = if skips.iter().any(|(_, k)| on(k).is_some()) { skips.iter().fold(0, |m, &(i, k)| m | (on(k).unwrap_or(true) as u32) << i) } else { u32::MAX };
-        Self { lod, exact: on("exact").unwrap_or(true), levels }
+        Self { lod, exact: on("exact").unwrap_or(true), levels, max_steps: MAX_STEPS }
     }
 
     fn wgsl(&self) -> String {
         let mask = if self.levels == u32::MAX { "S_LEVELS".to_string() } else { format!("(S_LEVELS & {:#x}u)", self.levels) };
-        format!("const LOD: bool = {};\nconst EXACT: bool = {};\nconst LEVEL_MASK: u32 = {mask} | 1u | (1u << S_TOP);\n", self.lod, self.exact)
+        format!("const LOD: bool = {};\nconst EXACT: bool = {};\nconst LEVEL_MASK: u32 = {mask} | 1u | (1u << S_TOP);\nconst MAX_STEPS: u32 = {}u;\n", self.lod, self.exact, self.max_steps)
     }
 }
 
@@ -107,6 +113,8 @@ pub struct Walks {
     pub geometry: Option<QueryGeometry>,
     /// The post node's tone mapper, compiled into the shading's output (PLAN step 15b).
     pub post: Tone,
+    /// Every kernel's iteration limit (the executor's `max_steps`).
+    pub max_steps: u32,
 }
 
 /// A module path for node `id` under `kind` (`kernel::shadow_kernel`).
@@ -118,7 +126,15 @@ fn node_path(kind: &str, id: &str) -> String {
 impl Walks {
     /// No walks yet, for graph `ck` (its post node's tone mapper).
     pub fn of(ck: &Checked) -> Self {
-        Self { post: ck.tone(), ..Self::default() }
+        Self { post: ck.tone(), max_steps: MAX_STEPS, ..Self::default() }
+    }
+
+    /// Sets every kernel's iteration limit (those added later too).
+    pub fn set_max_steps(&mut self, n: u32) {
+        self.max_steps = n;
+        for k in &mut self.kernels {
+            k.consts.max_steps = n;
+        }
     }
 
     /// Adds storage node `node` (once), at the next bind group of `groups`; its index.
@@ -148,7 +164,7 @@ impl Walks {
         } else {
             Some(self.storage(ck, site.storage, groups))
         };
-        self.kernels.push(KernelInst { node: site.kernel.into(), component: n.component.clone(), storage: st, consts: KernelConsts::of(n, lod) });
+        self.kernels.push(KernelInst { node: site.kernel.into(), component: n.component.clone(), storage: st, consts: KernelConsts { max_steps: self.max_steps, ..KernelConsts::of(n, lod) } });
         self.kernels.len() - 1
     }
 
