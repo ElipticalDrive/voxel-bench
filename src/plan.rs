@@ -67,8 +67,9 @@ pub struct RunSpec {
     /// The devices renderers run on (GPU adapters by slot, CPU threads), e.g.
     /// `devices = { gpus = ["nvidia"] }`; a renderer's own `devices` overrides it.
     pub devices: mr_core::DeviceConfig,
-    /// `native`: run `cpu` compositions as pipelines compiled for this machine (PLAN step
-    /// 8, `pipelines`), built before their pass if not cached; `off`: the generic build.
+    /// `native`: run every renderer an executor runs (CPU or GPU) as a pipeline compiled for
+    /// its graph and this machine (PLAN steps 8 and 16a, `pipelines`), built before their pass
+    /// if not cached; `off`: the generic build.
     pub compile: Compile,
     /// Time every stage of every frame (PLAN step 11): each GPU stage costs a timestamp
     /// (measured: +0.1–0.6% GPU time); `false` runs exactly as before step 11.

@@ -13,6 +13,7 @@ pub mod legend;
 pub mod link;
 pub mod lighting;
 pub mod mesh;
+pub mod baked;
 pub mod params;
 pub mod renderer;
 pub mod texture;

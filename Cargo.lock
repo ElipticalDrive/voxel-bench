@@ -2251,6 +2251,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "backend-cpu",
+ "backend-gpu",
  "clap",
  "crossbeam-channel",
  "eframe",

@@ -34,15 +34,16 @@ pub(crate) mod gpu;
 pub(crate) mod mesh;
 
 /// The lane for graph `g`: meshing when the drawer's faces are every meshed face (the `faces`
-/// visibility), else discovery on the visibility node's device.
-pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
+/// visibility), else discovery on the visibility node's device (on the CPU in `cpu_world`'s
+/// storage when a compiled pipeline names one).
+pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, cpu_world: Option<fn() -> mr_components::visibility::discover::grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
     let faces = g.input(Role::Draw, "faces").ok_or_else(|| anyhow::anyhow!("{backend}: the drawer's faces are not bound"))?;
     if g.node(faces).component == "faces" {
         return run(mesh::Meshing::new(p, devices, waker, g)?);
     }
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{backend}: no visibility node"))?;
     match g.devices[vis] {
-        Device::Cpu => run(cpu::CpuSampler::new(p, devices, waker, g)?),
+        Device::Cpu => run(cpu::CpuSampler::new(p, devices, waker, g, cpu_world)?),
         Device::Gpu(_) => run(gpu::GpuSampler::new(p, devices, waker, g)?),
         Device::Server => unreachable!("checked graphs run only the world on the server"),
     }

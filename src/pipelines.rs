@@ -1,8 +1,10 @@
-//! CPU pipelines compiled on demand (PLAN steps 8 and 16a, IDEAS §17): for one graph run by
-//! the CPU executor (any of its lanes: ray casting, rasterisation, columns), generate a small
-//! Rust crate whose worker serves only that graph: the lane's entry instantiated for the
-//! graph's storage type, with its choices baked in as constants (`backend_cpu::Spec`), built
-//! with `cargo` for this machine (`-C target-cpu=native`). The build runs in its own process,
+//! Pipelines compiled on demand (PLAN steps 8 and 16a, IDEAS §17): for one graph, generate a
+//! small Rust crate whose worker serves only that graph, built with `cargo` for this machine
+//! (`-C target-cpu=native`). For the CPU executor (any of its lanes: ray casting,
+//! rasterisation, columns) the lane's entry is instantiated for the graph's storage type with
+//! its choices baked in as constants (`backend_cpu::Spec`); for the GPU executor its worker's
+//! CPU work (client, storage encoding, meshing, discovery on the CPU in the graph's storage
+//! alone) is built for this CPU (`backend_gpu::Spec`). The build runs in its own process,
 //! the result is an ordinary worker executable spoken to over the usual protocol, so a bad
 //! build only fails its worker and the host can swap it for the generic build.
 //!
@@ -21,16 +23,42 @@ use anyhow::{Context, bail};
 
 use crate::plan::RendererSpec;
 
-/// What a generated CPU pipeline bakes in: the pipeline (its graph, with the values of the
-/// knobs in [`bakes`] on the nodes they belong to: its identity, the cache key), the lane's
-/// entry and the `backend_cpu::Spec` constants read off it.
+/// What a generated pipeline bakes in: the pipeline (its graph, with the values of the knobs
+/// in [`bakes`] on the nodes they belong to: its identity, the cache key), the executor, its
+/// entry and the `Spec` constants read off it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bake {
     pub graph: mr_components::graph::Graph,
-    /// The lane's renderer entry, a Rust expression over the spec `Baked`.
+    pub executor: Executor,
+    /// The renderer entry, a Rust expression over the spec `Baked`.
     pub entry: String,
     /// The `Spec` items (`const ...;`), `KNOBS` first.
     pub consts: Vec<String>,
+}
+
+/// The executor a generated pipeline instantiates.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Executor {
+    Cpu,
+    Gpu,
+}
+
+impl Executor {
+    /// Its crate (package name, path in the repository) and the worker's devices.
+    fn parts(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Executor::Cpu => ("backend-cpu", "backends/cpu", "mr_serve::cpu_devices"),
+            Executor::Gpu => ("backend-gpu", "backends/gpu", "mr_gpu::devices"),
+        }
+    }
+
+    /// The trait the generated `Baked` implements.
+    fn spec(self) -> &'static str {
+        match self {
+            Executor::Cpu => "backend_cpu::Spec",
+            Executor::Gpu => "backend_gpu::Spec",
+        }
+    }
 }
 
 /// The knobs a generated pipeline of CPU executor `backend` bakes in (each declared
@@ -44,15 +72,22 @@ pub fn bakes(backend: &str) -> &'static [&'static str] {
     }
 }
 
-/// The CPU executor's back ends and their knobs (`None`: not run by the CPU executor).
-fn params_of(backend: &str) -> Option<Vec<mr_core::ParamSpec>> {
-    let entry = match backend {
-        "cpu" => backend_cpu::cpu_entry(),
-        "cpu-raster" => backend_cpu::cpu_raster_entry(),
-        "cpu-voxelspace" => backend_cpu::cpu_voxelspace_entry(),
+/// The executor of `backend` and its knobs (`None`: no generated pipeline runs it).
+fn params_of(backend: &str) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
+    let (executor, entry) = match backend {
+        "cpu" => (Executor::Cpu, backend_cpu::cpu_entry()),
+        "cpu-raster" => (Executor::Cpu, backend_cpu::cpu_raster_entry()),
+        "cpu-voxelspace" => (Executor::Cpu, backend_cpu::cpu_voxelspace_entry()),
+        "gpu-raster" => (Executor::Gpu, backend_gpu::gpu_raster_entry()),
+        "gpu-discover" => (Executor::Gpu, backend_gpu::gpu_discover_entry()),
+        "cpu-discover" => (Executor::Gpu, backend_gpu::cpu_discover_entry()),
+        "gpu-compute" => (Executor::Gpu, backend_gpu::gpu_compute_entry()),
+        "gpu-rt" => (Executor::Gpu, backend_gpu::gpu_rt_entry()),
+        "gpu-splat" => (Executor::Gpu, backend_gpu::gpu_splat_entry()),
+        "gpu-voxelspace" => (Executor::Gpu, backend_gpu::gpu_voxelspace_entry()),
         _ => return None,
     };
-    Some((entry.info)().params)
+    Some((executor, (entry.info)().params))
 }
 
 /// A built pipeline worker.
@@ -64,10 +99,10 @@ pub struct Compiled {
     pub build_s: Option<f64>,
 }
 
-/// What a renderer run by the CPU executor bakes in (`None` for other renderers).
+/// What a renderer run by an executor bakes in (`None` for other renderers).
 pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
-    use mr_components::graph::Role;
-    let Some(params) = params_of(&spec.name) else { return Ok(None) };
+    use mr_components::graph::{Device, Role};
+    let Some((executor, params)) = params_of(&spec.name) else { return Ok(None) };
     let graph = spec.pipeline().context("the renderer has no graph")?;
     // A knob's value: the renderer's, else the back end's default.
     let value = |k: &str| -> anyhow::Result<(&mr_core::ParamSpec, toml::Value)> {
@@ -84,6 +119,23 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
     let rust = |v: &toml::Value| -> anyhow::Result<String> { Ok(format!("{:?}", serde_json::to_string(v)?)) };
     let variant = |s: &str| s[..1].to_uppercase() + &s[1..];
     let mut consts = vec![];
+    if executor == Executor::Gpu {
+        // The GPU executor's CPU work, built for this CPU; discovery on the CPU in the graph's
+        // storage alone (the storage its rays walk).
+        consts.push(format!("const BACKEND: &'static str = {:?};", spec.name));
+        let entry = "backend_gpu::compiled_entry::<Baked>()".to_string();
+        if ck.find(Role::Draw).is_some() && ck.find(Role::Visibility).is_some_and(|v| ck.devices[v] == Device::Cpu) {
+            let kernel = ck.input(Role::Visibility, "rays").context("discovery casts no rays")?;
+            let storage = ck.node(ck.node(kernel).inputs.get("storage").context("the discovery rays walk no storage")?).component.clone();
+            let ty = backend_cpu::storage_type(&storage).with_context(|| format!("storage `{storage}` has no CPU implementation"))?;
+            consts.push(format!("const CPU_WORLD: Option<fn() -> backend_gpu::CpuWorld> = Some(backend_gpu::CpuWorld::of::<{ty}>);"));
+            baked.insert(0, ("storage".into(), storage.as_str().into()));
+        }
+        let knobs = baked.iter().map(|(k, v)| Ok(format!("({k:?}, {})", rust(v)?))).collect::<anyhow::Result<Vec<_>>>()?;
+        consts.insert(0, format!("const KNOBS: &'static [(&'static str, &'static str)] = &[{}];", knobs.join(", ")));
+        consts.push("const NATIVE: bool = true;".into());
+        return Ok(Some(Bake { graph, executor, entry, consts }));
+    }
     consts.push(format!("const TONE: Option<backend_cpu::Tone> = Some(backend_cpu::Tone::{:?});", ck.tone()));
     if let Some((_, v)) = baked.iter().find(|(k, _)| k == "shadows") {
         consts.push(format!("const SHADOWS: Option<backend_cpu::Shadows> = Some(backend_cpu::Shadows::{});", variant(v.as_str().context("shadows: a choice")?)));
@@ -120,21 +172,23 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
     let knobs = baked.iter().map(|(k, v)| Ok(format!("({k:?}, {})", rust(v)?))).collect::<anyhow::Result<Vec<_>>>()?;
     consts.insert(0, format!("const KNOBS: &'static [(&'static str, &'static str)] = &[{}];", knobs.join(", ")));
     consts.push("const NATIVE: bool = true;".into());
-    Ok(Some(Bake { graph, entry, consts }))
+    Ok(Some(Bake { graph, executor, entry, consts }))
 }
 
 /// The generated crate's `src/main.rs`.
 pub fn source(b: &Bake) -> anyhow::Result<String> {
     let consts: String = b.consts.iter().map(|c| format!("    {c}\n")).collect();
+    let (_, _, devices) = b.executor.parts();
     Ok(format!(
-        "// Generated by multirenderer (PLAN steps 8 and 16a): the CPU executor compiled for one graph.\n\
+        "// Generated by multirenderer (PLAN steps 8 and 16a): an executor compiled for one graph.\n\
          struct Baked;\n\
-         impl backend_cpu::Spec for Baked {{\n{consts}}}\n\
+         impl {spec} for Baked {{\n{consts}}}\n\
          \n\
          fn main() -> anyhow::Result<()> {{\n\
          \x20   let socket = mr_serve::socket_arg(std::env::args().skip(1))?;\n\
-         \x20   mr_serve::run(&socket, vec![{entry}], mr_serve::cpu_devices)\n\
+         \x20   mr_serve::run(&socket, vec![{entry}], {devices})\n\
          }}\n",
+        spec = b.executor.spec(),
         entry = b.entry,
     ))
 }
@@ -144,12 +198,14 @@ fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn manifest(repo: &Path) -> String {
+fn manifest(repo: &Path, executor: Executor) -> String {
     let dep = |name: &str, path: &str| format!("{name} = {{ path = {:?} }}\n", repo.join(path));
+    let (name, path, _) = executor.parts();
+    let gpu = if executor == Executor::Gpu { dep("mr-gpu", "crates/mr-gpu") } else { String::new() };
     format!(
-        "[package]\nname = \"mr-pipeline\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\n{}{}{}{}\n\
+        "[package]\nname = \"mr-pipeline\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\n{}{gpu}{}{}{}\n\
          [profile.release]\ndebug = \"line-tables-only\"\ncodegen-units = 16\n",
-        dep("backend-cpu", "backends/cpu"),
+        dep(name, path),
         dep("mr-serve", "crates/mr-serve"),
         dep("mr-components", "components"),
         "anyhow = \"1\"\n",
@@ -171,10 +227,11 @@ fn fnv(h: u64, bytes: &[u8]) -> u64 {
     bytes.iter().fold(h, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
 }
 
-/// A hash over every source file the generated crate compiles against (and the lock file).
-fn sources_hash(repo: &Path) -> anyhow::Result<u64> {
+/// A hash over every source file the generated crate of `executor` compiles against (and the
+/// lock file).
+fn sources_hash(repo: &Path, executor: Executor) -> anyhow::Result<u64> {
     let mut files = vec![repo.join("Cargo.lock"), repo.join("Cargo.toml"), repo.join(".cargo/config.toml")];
-    for dir in ["backends/cpu", "components", "crates", "renderers/cpu-reference"] {
+    for dir in [executor.parts().1, "components", "crates", "renderers/cpu-reference"] {
         collect(&repo.join(dir), &mut files)?;
     }
     files.sort();
@@ -212,10 +269,14 @@ fn machine_id() -> anyhow::Result<String> {
 /// hash of what builds it here.
 pub fn key(b: &Bake) -> anyhow::Result<String> {
     let mut h = fnv(0xcbf2_9ce4_8422_2325, source(b)?.as_bytes());
-    h = fnv(h, manifest(repo()).as_bytes());
-    h = fnv(h, &sources_hash(repo())?.to_le_bytes());
+    h = fnv(h, manifest(repo(), b.executor).as_bytes());
+    h = fnv(h, &sources_hash(repo(), b.executor)?.to_le_bytes());
     h = fnv(h, machine_id()?.as_bytes());
-    Ok(format!("cpu-{}-{h:016x}", b.graph.key().map_err(anyhow::Error::msg)?))
+    let prefix = match b.executor {
+        Executor::Cpu => "cpu",
+        Executor::Gpu => "gpu",
+    };
+    Ok(format!("{prefix}-{}-{h:016x}", b.graph.key().map_err(anyhow::Error::msg)?))
 }
 
 /// Returns the worker for `b`, building it first if it is not cached (blocking; minutes
@@ -230,7 +291,7 @@ pub fn ensure(b: &Bake) -> anyhow::Result<Compiled> {
     let t = Instant::now();
     let src = root.join("src").join(&key);
     std::fs::create_dir_all(src.join("src"))?;
-    std::fs::write(src.join("Cargo.toml"), manifest(repo()))?;
+    std::fs::write(src.join("Cargo.toml"), manifest(repo(), b.executor))?;
     std::fs::write(src.join("src/main.rs"), source(b)?)?;
     // The workspace's lock file, so the generated crate builds the same dependency versions.
     std::fs::copy(repo().join("Cargo.lock"), src.join("Cargo.lock"))?;
@@ -382,14 +443,35 @@ mod tests {
         assert!(s.contains("columns_entry::<Baked>") && s.contains("Shadows::All") && s.contains("Tone::Clamp"), "{s}");
         let s = source(&bake(&spec("cpu-raster:naive+raster", &[])).unwrap().unwrap()).unwrap();
         assert!(s.contains("raster_entry::<Baked>") && s.contains("KNOBS: &'static [(&'static str, &'static str)] = &[];") && !s.contains("TONE"), "{s}");
-        assert!(bake(&spec("gpu-compute:prefix+refloor", &[])).unwrap().is_none(), "the GPU executor is not compiled here");
         for b in ["cpu", "cpu-raster", "cpu-voxelspace"] {
-            let params = params_of(b).unwrap();
+            let (_, params) = params_of(b).unwrap();
             for k in bakes(b) {
                 assert!(params.iter().any(|p| p.name == *k && p.baked && p.owner.is_some()), "{b}: `{k}` is declared specialisable and belongs to a node");
             }
         }
-        assert!(manifest(repo()).contains("[workspace]"), "the generated crate is its own workspace");
+        assert!(manifest(repo(), Executor::Cpu).contains("[workspace]"), "the generated crate is its own workspace");
+    }
+
+    /// Every GPU-executor graph has a generated worker, built for this CPU; discovery on the
+    /// CPU walks the graph's storage alone, baked (refused otherwise).
+    #[test]
+    fn every_gpu_graph_has_a_source() {
+        for b in ["gpu-raster", "gpu-discover", "cpu-discover", "gpu-compute", "gpu-rt", "gpu-splat", "gpu-voxelspace"] {
+            let bk = bake(&spec(b, &[])).unwrap().unwrap();
+            assert_eq!(bk.executor, Executor::Gpu, "{b}");
+            let s = source(&bk).unwrap();
+            for want in ["impl backend_gpu::Spec for Baked", &format!("BACKEND: &'static str = {b:?}"), "backend_gpu::compiled_entry::<Baked>()", "mr_gpu::devices", "NATIVE: bool = true"] {
+                assert!(s.contains(want), "{b}: {want} in {s}");
+            }
+            assert_eq!(s.contains("CPU_WORLD"), b == "cpu-discover", "{s}");
+        }
+        let s = source(&bake(&spec("cpu-discover", &[("storage", "prefix".into())])).unwrap().unwrap()).unwrap();
+        assert!(s.contains("CpuWorld::of::<mr_components::storage::prefix::cpu::Prefix>") && s.contains("(\"storage\", \"\\\"prefix\\\"\")"), "{s}");
+        let m = manifest(repo(), Executor::Gpu);
+        assert!(m.contains("backend-gpu") && m.contains("mr-gpu") && !m.contains("backend-cpu"), "{m}");
+        let key = |r: &str, o: &[(&str, toml::Value)]| self::key(&bake(&spec(r, o)).unwrap().unwrap()).unwrap();
+        assert!(key("gpu-compute", &[]).starts_with("gpu-"));
+        assert_ne!(key("cpu-discover", &[("storage", "prefix".into())]), key("cpu-discover", &[]));
     }
 
     /// The cache key is the pipeline's graph with its baked values: knobs it does not use

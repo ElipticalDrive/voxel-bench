@@ -13,6 +13,11 @@
 //! ([`accel`]), the shading state, the camera uniform and group 0 (camera, output, shading
 //! state, hit records, acceleration structures, then the lane's), the output, the frame ring
 //! and the timed stages' nodes.
+//!
+//! The executor is also compiled on demand for one graph (PLAN step 16a2: the host's
+//! `pipelines` generates a crate naming a [`Spec`]): its worker's CPU work (the client, the
+//! storages' encoding, meshing, discovery) is then built for this CPU, CPU discovery walks
+//! the graph's storage alone, and the knobs it baked cannot change.
 
 use std::sync::Arc;
 
@@ -32,6 +37,101 @@ mod faces;
 mod raycast;
 mod remote;
 mod splat;
+
+pub use mr_components::visibility::discover::grid::CpuWorld;
+
+/// What a pipeline compiled for one graph bakes in (PLAN step 16a2): a generated crate
+/// implements this with the graph's values. The GPU work stays the generic build's (its
+/// specialisation is step 16b).
+pub trait Spec: 'static {
+    /// The back end whose graph and knobs the worker takes.
+    const BACKEND: &'static str;
+    /// The knob values compiled in (name, value as JSON); another value needs another build.
+    const KNOBS: mr_core::baked::Knobs = &[];
+    /// Discovery on the CPU: its world, the graph's storage alone (`None`: by the knob).
+    const CPU_WORLD: Option<fn() -> CpuWorld> = None;
+    /// Compiled with `target-cpu=native`.
+    const NATIVE: bool = false;
+}
+
+/// The executor compiled for one graph (`S`); the generated crate's worker serves only this.
+pub fn compiled_entry<S: Spec>() -> RendererEntry {
+    RendererEntry {
+        info: || info(S::BACKEND),
+        create: |p, d, w| {
+            mr_core::baked::check(S::KNOBS, &p, || info(S::BACKEND))?;
+            let inner = create_with(S::BACKEND, p, d, w, S::CPU_WORLD)?;
+            Ok(Box::new(Compiled { inner, baked: S::KNOBS, native: S::NATIVE }))
+        },
+    }
+}
+
+/// The knobs of `backend` (a GPU executor's).
+fn info(backend: &str) -> RendererInfo {
+    match backend {
+        faces::mesh::BACKEND => faces::mesh::info(),
+        faces::gpu::BACKEND => faces::gpu::info(),
+        faces::cpu::BACKEND => faces::cpu::info(),
+        raycast::walk::BACKEND => raycast::walk::info(),
+        raycast::rayquery::BACKEND => raycast::rayquery::info(),
+        splat::BACKEND => splat::info(),
+        columns::BACKEND => columns::info(),
+        other => panic!("`{other}` is not run by the GPU executor"),
+    }
+}
+
+/// A compiled pipeline's executor: it refuses another value of a knob it baked in, and marks
+/// its frames (observations tell it from the generic build).
+struct Compiled {
+    inner: Box<dyn Renderer>,
+    baked: mr_core::baked::Knobs,
+    native: bool,
+}
+
+/// Adds `compiled_native` to every frame completed through it.
+struct Native<'a>(&'a mut dyn FrameSink);
+
+impl FrameSink for Native<'_> {
+    fn complete(&mut self, mut frame: CompletedFrame<'_>) {
+        frame.stats.counters.push(("compiled_native".into(), 1.0));
+        self.0.complete(frame);
+    }
+}
+
+impl Renderer for Compiled {
+    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        self.inner.update(updates)
+    }
+
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        self.inner.update_meshes(update)
+    }
+
+    fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        if self.native { self.inner.render(req, &mut Native(sink)) } else { self.inner.render(req, sink) }
+    }
+
+    fn poll(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        if self.native { self.inner.poll(&mut Native(sink)) } else { self.inner.poll(sink) }
+    }
+
+    fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
+        mr_core::baked::refuse(self.baked, name, &value.to_json())?;
+        self.inner.set_param(name, value)
+    }
+
+    fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        if self.native { self.inner.flush(&mut Native(sink)) } else { self.inner.flush(sink) }
+    }
+
+    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
+        self.inner.resize(width, height)
+    }
+
+    fn memory(&self) -> MemoryReport {
+        self.inner.memory()
+    }
+}
 
 pub fn gpu_raster_entry() -> RendererEntry {
     RendererEntry { info: faces::mesh::info, create: |p, d, w| create(faces::mesh::BACKEND, p, d, w) }
@@ -64,9 +164,14 @@ pub fn gpu_voxelspace_entry() -> RendererEntry {
 /// The executor for `backend`'s graph: the faces lane when a drawer draws them, else the lane
 /// of the visibility node's component.
 fn create(backend: &str, p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Box<dyn Renderer>> {
+    create_with(backend, p, devices, waker, None)
+}
+
+/// [`create`], CPU discovery in `cpu_world`'s storage when a compiled pipeline names one.
+fn create_with(backend: &str, p: InitParams, devices: &Devices, waker: Waker, cpu_world: Option<fn() -> CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
     let g = graph::of_init(backend, &p)?;
     if g.find(Role::Draw).is_some() {
-        return faces::create(backend, &p, devices, waker, &g);
+        return faces::create(backend, &p, devices, waker, &g, cpu_world);
     }
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{backend}: no visibility node"))?;
     match g.node(vis).component.as_str() {

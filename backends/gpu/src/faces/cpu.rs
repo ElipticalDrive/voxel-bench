@@ -230,7 +230,8 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
 }
 
 impl CpuSampler {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Draw, Self)> {
+    /// `world`: the CPU world of a pipeline compiled for one storage (else the `storage` knob's).
+    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<(Core, Draw, Self)> {
         let mut opts: Options = p.options()?;
         let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
@@ -264,7 +265,10 @@ impl CpuSampler {
         let tag_buf = GrowableBuffer::new(&core.gpu, "face tags", 1 << 21, 1020 << 20, wgpu::BufferUsages::STORAGE);
         let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(p.devices.cpu_threads(opts.threads)).thread_name(|i| format!("discover-{i}")).build()?);
         let s = Self {
-            cpu: grid::CpuWorld::new(&storage)?,
+            cpu: match world {
+                Some(world) => world(),
+                None => grid::CpuWorld::new(&storage)?,
+            },
             opts,
             pool,
             state: Some(State::default()),

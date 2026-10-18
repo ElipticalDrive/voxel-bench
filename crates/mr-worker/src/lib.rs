@@ -3,7 +3,6 @@
 //! [`registry`].
 
 use std::path::Path;
-use std::sync::Arc;
 
 use mr_core::{RendererEntry, RendererInfo};
 
@@ -17,11 +16,5 @@ pub fn infos() -> Vec<RendererInfo> {
 
 /// Connects to the host at `socket` and serves until shutdown.
 pub fn run(socket: &Path) -> anyhow::Result<()> {
-    mr_serve::run(socket, registry(), devices)
-}
-
-/// The process's devices, handed to the renderer: GPUs open on request (CPU back ends open
-/// none), in the slots the host's configuration names.
-fn devices(cfg: &mr_core::DeviceConfig) -> mr_core::Devices {
-    mr_core::Devices { gpus: Some(Arc::new(mr_gpu::GpuPool::new(&cfg.gpus))) }
+    mr_serve::run(socket, registry(), mr_gpu::devices)
 }

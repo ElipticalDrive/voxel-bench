@@ -128,6 +128,12 @@ pub struct GpuNeeds {
     pub optional_features: wgpu::Features,
 }
 
+/// A worker process's devices, handed to its renderer (`mr_serve::run`): GPUs open on
+/// request (CPU pipelines open none), in the slots the host's configuration names.
+pub fn devices(cfg: &mr_core::DeviceConfig) -> mr_core::Devices {
+    mr_core::Devices { gpus: Some(Arc::new(GpuPool::new(&cfg.gpus))) }
+}
+
 /// The GPU devices of one process (IDEAS §17, requirement 2): handed to renderers through
 /// `mr_core::Devices`, indexed by slot (the configuration's `DeviceConfig::gpus`). A
 /// request is served by an open device of that slot that has what it needs, else by a new

@@ -67,6 +67,7 @@ mr-ipc.workspace = true
 mr-worker.workspace = true
 mr-gpu.workspace = true
 backend-cpu.workspace = true
+backend-gpu.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 crossbeam-channel.workspace = true

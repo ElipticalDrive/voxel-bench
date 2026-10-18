@@ -204,6 +204,11 @@ impl CpuWorld {
         Ok(Self { store })
     }
 
+    /// The world in storage `R` (a pipeline compiled for one storage names it).
+    pub fn of<R: Repr>() -> Self {
+        Self { store: store::<R>() }
+    }
+
     pub fn apply(&mut self, updates: &[WorldUpdate]) {
         self.store.apply(updates);
     }

@@ -36,7 +36,7 @@ pub use raycast::{Traversal, level_mask, shadow_kernel, storage_type, traversal}
 /// change (at creation and live) with the reason.
 pub trait Spec: Send + Sync + 'static {
     /// The knob values compiled in (name, value as JSON); another value needs another build.
-    const KNOBS: &'static [(&'static str, &'static str)] = &[];
+    const KNOBS: mr_core::baked::Knobs = &[];
     /// Ray casting: the primary rays' kernel (the `traversal` and `exact` knobs).
     const TRAVERSAL: Option<Traversal> = None;
     /// Ray casting: rays per packet.
@@ -56,31 +56,6 @@ pub trait Spec: Send + Sync + 'static {
 /// The precompiled build: every knob live.
 pub struct Generic;
 impl Spec for Generic {}
-
-/// Fails if `value` (JSON) of knob `name` is not the one `baked` compiled in.
-fn baked(baked: &[(&str, &str)], name: &str, value: &serde_json::Value) -> anyhow::Result<()> {
-    match baked.iter().find(|(k, _)| *k == name) {
-        Some((_, v)) if serde_json::from_str::<serde_json::Value>(v).ok().as_ref() != Some(value) => {
-            anyhow::bail!("this pipeline was compiled for {name} = {v} (not {value}); a change needs another build")
-        }
-        _ => Ok(()),
-    }
-}
-
-/// Checks the creation options of a `S` pipeline against what it baked in: each baked knob's
-/// value, given or `info`'s default.
-fn check_baked<S: Spec>(p: &InitParams, info: fn() -> RendererInfo) -> anyhow::Result<()> {
-    if S::KNOBS.is_empty() {
-        return Ok(());
-    }
-    let options: serde_json::Map<String, serde_json::Value> = if p.options_json.trim().is_empty() { Default::default() } else { serde_json::from_str(&p.options_json)? };
-    let params = info().params;
-    for (name, _) in S::KNOBS {
-        let value = options.get(*name).cloned().or_else(|| params.iter().find(|q| q.name == *name).map(|q| q.default.to_json()));
-        baked(S::KNOBS, name, &value.ok_or_else(|| anyhow::anyhow!("baked knob `{name}` is not one of the executor's"))?)?;
-    }
-    Ok(())
-}
 
 /// A value the lane folds when `S` baked it, else its run-time one; creation fails if a baked
 /// graph value (tone, shadow kernel) differs from the graph's.
@@ -120,7 +95,7 @@ pub fn columns_entry<S: Spec>() -> RendererEntry {
 }
 
 fn compiled<S: Spec, L: Lane + 'static>(p: &InitParams, info: fn() -> RendererInfo, lane: anyhow::Result<(Core, L)>) -> anyhow::Result<Box<dyn Renderer>> {
-    check_baked::<S>(p, info)?;
+    mr_core::baked::check(S::KNOBS, p, info)?;
     let (core, lane) = lane?;
     Ok(Box::new(Executor { core, lane, baked: S::KNOBS, native: S::NATIVE }))
 }
@@ -199,7 +174,7 @@ struct Executor<L> {
     core: Core,
     lane: L,
     /// The knob values a compiled pipeline baked in ([`Spec::KNOBS`]).
-    baked: &'static [(&'static str, &'static str)],
+    baked: mr_core::baked::Knobs,
     /// Compiled for this machine ([`Spec::NATIVE`]).
     native: bool,
 }
@@ -223,7 +198,7 @@ impl<L: Lane> Renderer for Executor<L> {
     }
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
-        baked(self.baked, name, &value.to_json())?;
+        mr_core::baked::refuse(self.baked, name, &value.to_json())?;
         if let Some(r) = self.lane.set_param(name, value) {
             return r;
         }
@@ -264,15 +239,9 @@ impl<L: Lane> Renderer for Executor<L> {
 mod tests {
     use super::*;
 
-    /// A compiled pipeline refuses another value of a knob it baked in, and only that.
+    /// A graph value a compiled pipeline baked in cannot differ from the graph's.
     #[test]
-    fn baked_knobs_are_refused() {
-        let knobs = &[("packet", "\"4\""), ("exact", "true")];
-        assert!(baked(knobs, "packet", &"4".into()).is_ok());
-        let e = baked(knobs, "packet", &"8".into()).unwrap_err().to_string();
-        assert!(e.contains("compiled for packet = \"4\""), "{e}");
-        assert!(baked(knobs, "exact", &false.into()).is_err());
-        assert!(baked(knobs, "tile", &16.into()).is_ok(), "not baked: live");
+    fn baked_graph_values_are_fixed() {
         assert!(fixed("tone", Some(Tone::Aces), Tone::Clamp).is_err());
         assert_eq!(fixed("tone", None, Tone::Clamp).unwrap(), Tone::Clamp);
     }
