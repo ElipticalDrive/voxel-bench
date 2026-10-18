@@ -7,6 +7,7 @@
 
 pub mod camera;
 pub mod chunk;
+pub mod client;
 pub mod face;
 pub mod legend;
 pub mod lighting;

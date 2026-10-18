@@ -1,6 +1,8 @@
 //! The worker side of the IPC protocol: hosts exactly one renderer, driven by the host.
 //! The full worker (`mr-worker`, every renderer) and generated pipeline workers (PLAN step
-//! 8: one composition compiled for this machine) both serve through [`run`].
+//! 8: one composition compiled for this machine) both serve through [`run`]. The worker is
+//! the client side of the link (PLAN step 14b): it takes the server's stream and its
+//! [`Client`] derives what the renderer holds before the renderer sees it.
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -8,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
+use mr_core::client::Client;
 use mr_core::{CompletedFrame, FrameSink, Renderer, RendererEntry, Waker};
 use mr_ipc::{FrameSlots, HostMsg, MsgWriter, PROTOCOL_VERSION, WorkerMsg};
 
@@ -110,6 +113,9 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let t = Instant::now();
     // The process's devices, handed to the renderer.
     let devices = devices(&params.devices);
+    // The renderer's region: its radius, and the levels it asked for that it supports.
+    let supported = info.max_lod;
+    let mut client = Client::new(params.view_radius_chunks, params.max_lod.min(supported));
     let mut renderer: Box<dyn Renderer> = (entry.create)(params, &devices, waker)?;
     let mut shm = FrameSlots::open(&shm)?;
     out.send(&WorkerMsg::Ready { info, init_ms: t.elapsed().as_secs_f32() * 1e3 })?;
@@ -130,17 +136,33 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
             Input::Host(m) => m,
         };
         match msg {
-            HostMsg::Updates(u) => {
+            HostMsg::Stream { updates, at } => {
                 let t = Instant::now();
-                renderer.update(u)?;
+                let mut ups = vec![];
+                client.receive(&updates, &mut ups);
+                if let Some(at) = at {
+                    client.update(at, &mut ups);
+                }
+                if !ups.is_empty() {
+                    renderer.update(ups)?;
+                }
                 *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
             }
+            HostMsg::Follow { radius, max_lod } => client.follow(radius, max_lod),
             HostMsg::Meshes(m) => {
                 let t = Instant::now();
                 renderer.update_meshes(m)?;
                 *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
             }
             HostMsg::Render { req, slot } => {
+                // The camera may have crossed into chunks the replica holds.
+                let t = Instant::now();
+                let mut ups = vec![];
+                client.update(req.camera.position, &mut ups);
+                if !ups.is_empty() {
+                    renderer.update(ups)?;
+                    *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
+                }
                 sink.slots.insert(req.frame_id, slot.filter(|_| req.readback));
                 renderer.render(&req, &mut sink)?;
             }
@@ -155,7 +177,14 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
             }
             HostMsg::SetParams(ps) => {
                 for (name, value) in ps {
-                    if let Err(e) = renderer.set_param(&name, &value) {
+                    // The client's region (the host's `view_radius`, `max_lod`).
+                    let level = || value.as_i64().map(|v| v.clamp(0, 255) as u32);
+                    let r = match name.as_str() {
+                        "client.radius" => level().map(|v| client.set_radius(v)).context("client.radius takes an integer"),
+                        "client.max_lod" => level().map(|v| client.set_max_lod((v as u8).min(supported))).context("client.max_lod takes an integer"),
+                        _ => renderer.set_param(&name, &value),
+                    };
+                    if let Err(e) = r {
                         sink.out.send(&WorkerMsg::ParamError { name, error: format!("{e:#}") })?;
                     }
                 }

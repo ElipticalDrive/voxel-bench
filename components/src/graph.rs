@@ -39,6 +39,10 @@ pub enum Role {
     /// The generator, the authoritative chunk store and its change log (the host today;
     /// PLAN step 14 puts it on a server behind a modelled link).
     World,
+    /// The client of the world's stream (PLAN step 14b): what its renderer holds, derived
+    /// on the renderer's side from the one stream the server sends every client. `pick`:
+    /// the server's LOD levels, picked by the client's radius and levels.
+    Client,
     Storage,
     Geometry,
     Prepass,
@@ -52,19 +56,20 @@ pub enum Role {
 }
 
 impl Role {
-    pub const ALL: [Role; 10] = [Role::World, Role::Storage, Role::Geometry, Role::Prepass, Role::Traversal, Role::Visibility, Role::Holes, Role::Draw, Role::Shading, Role::Meshes];
+    pub const ALL: [Role; 11] = [Role::World, Role::Client, Role::Storage, Role::Geometry, Role::Prepass, Role::Traversal, Role::Visibility, Role::Holes, Role::Draw, Role::Shading, Role::Meshes];
 
     pub fn name(self) -> &'static str {
         match self {
             Role::World => "world",
+            Role::Client => "client",
             r => r.slot().unwrap().name(),
         }
     }
 
-    /// The registry slot whose components fill this role (none for the world).
+    /// The registry slot whose components fill this role (none for the world and the client).
     pub fn slot(self) -> Option<Slot> {
         Some(match self {
-            Role::World => return None,
+            Role::World | Role::Client => return None,
             Role::Storage => Slot::Storage,
             Role::Geometry => Slot::Geometry,
             Role::Prepass => Slot::Prepass,
@@ -184,6 +189,7 @@ const fn port(name: &'static str, data: Data, required: bool, description: &'sta
 }
 
 const CHANGES: &[Port] = &[port("changes", Data::Changes, true, "the world's change log")];
+const STREAM: &[Port] = &[port("changes", Data::Changes, true, "the server's stream: the world's change log over the link, the same for every client")];
 const ON_STORAGE: &[Port] = &[port("storage", Data::Storage, true, "the storage it reads")];
 const ON_GEOMETRY: &[Port] = &[port("geometry", Data::Faces, true, "the faces its acceleration structure is built from")];
 const RAYCAST: &[Port] = &[
@@ -217,6 +223,7 @@ const PATHTRACE: &[Port] = &[
 pub fn inputs(role: Role, name: &str) -> &'static [Port] {
     match (role, name) {
         (Role::World, _) => &[],
+        (Role::Client, _) => STREAM,
         (Role::Storage | Role::Geometry, _) => CHANGES,
         (Role::Meshes, _) => MESHES,
         (Role::Prepass, _) => ON_STORAGE,
@@ -238,7 +245,7 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
 /// What `role` component `name` outputs.
 pub fn output(role: Role, name: &str) -> Data {
     match (role, name) {
-        (Role::World, _) => Data::Changes,
+        (Role::World | Role::Client, _) => Data::Changes,
         (Role::Storage, _) => Data::Storage,
         (Role::Geometry, _) => Data::Faces,
         (Role::Prepass, _) => Data::Starts,
@@ -258,6 +265,7 @@ pub fn output(role: Role, name: &str) -> Data {
 pub fn state(role: Role, name: &str) -> Option<&'static str> {
     Some(match (role, name) {
         (Role::World, _) => "the authoritative chunks and their change log",
+        (Role::Client, _) => "a replica of what arrived and what its renderer holds",
         (Role::Storage, _) => "the representation, patched from the change log",
         (Role::Geometry, _) => "the faces, remeshed per changed chunk",
         (Role::Meshes, _) => "the mesh instances",
@@ -317,9 +325,14 @@ const FREE_TIMINGS: &[(&str, Role, &str, &[When])] = &[("cpu-discover", Role::Dr
 /// is true, when false.
 const TIMING_KNOBS: &[(&str, &str, Role, &str, When, When)] = &[("cpu-discover", "pipelined", Role::Draw, "faces", When::Prev, When::Now)];
 
+/// The client's components: `pick` takes the server's LOD levels (later: `derive`, levels
+/// built on the client from LOD 0).
+pub const CLIENTS: &[&str] = &["pick"];
+
 /// Whether `role` component `name` exists.
 fn known(role: Role, name: &str) -> bool {
     match role.slot() {
+        None if role == Role::Client => CLIENTS.contains(&name),
         None => name == "world",
         Some(s) => component(s, name).is_some(),
     }
@@ -330,8 +343,10 @@ fn known(role: Role, name: &str) -> bool {
 /// stage it has not (a free site's geometry) where the component runs, if on one kind of
 /// device only.
 fn default_device(executor: &str, role: Role, component: &str) -> Device {
-    if role == Role::World {
-        return Device::Server;
+    match role {
+        Role::World => return Device::Server,
+        Role::Client => return Device::Cpu,
+        _ => {}
     }
     let only = || role.slot().and_then(|s| crate::component(s, component)).and_then(|c| c.impls.iter().all(|i| i.kind == Kind::Cpu).then_some(Device::Cpu));
     match (backend(executor), role.slot()) {
@@ -549,7 +564,9 @@ impl Graph {
         g
     }
 
-    /// The world node added if missing; unbound `changes` inputs bound to it.
+    /// The world and the client added if missing; the client reads the world, and every
+    /// other `changes` input (unbound, or bound to the world) the client: the world's change
+    /// log reaches a renderer only through its client (PLAN step 14b).
     fn normalised(&self) -> Result<Graph, String> {
         let mut g = self.placed();
         let worlds: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == Role::World).map(|(k, _)| k.clone()).collect();
@@ -564,10 +581,26 @@ impl Graph {
             [w] => w.clone(),
             _ => return Err(format!("one world per graph (have: {})", worlds.join(", "))),
         };
-        for n in g.nodes.values_mut() {
+        let clients: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == Role::Client).map(|(k, _)| k.clone()).collect();
+        let client = match clients.as_slice() {
+            [] => {
+                if g.nodes.contains_key("client") {
+                    return Err("node `client` must be the client (role = \"client\")".into());
+                }
+                g.nodes.insert("client".into(), Node::new(Role::Client, "pick"));
+                "client".to_string()
+            }
+            [c] => c.clone(),
+            _ => return Err(format!("one client per graph (have: {})", clients.join(", "))),
+        };
+        for (id, n) in g.nodes.iter_mut() {
             n.timing.retain(|_, w| *w != When::Now);
+            let from = if *id == client { &world } else { &client };
             for p in inputs(n.role, &n.component).iter().filter(|p| p.data == Data::Changes) {
-                n.inputs.entry(p.name.into()).or_insert_with(|| world.clone());
+                let src = n.inputs.entry(p.name.into()).or_insert_with(|| from.clone());
+                if *src == world {
+                    *src = from.clone();
+                }
             }
         }
         // Unbound secondary rays follow the rays before them: the shading's shadow rays the
@@ -767,6 +800,8 @@ impl Graph {
             devices.insert(id.to_string(), d);
             if (n.role == Role::World) != (d == Device::Server) {
                 why.push(if n.role == Role::World { format!("`{id}`: the world runs on the server, not on {d}") } else { format!("`{id}`: only the world runs on the server") });
+            } else if n.role == Role::Client && d != Device::Cpu {
+                why.push(format!("`{id}`: the client runs on the cpu (the renderer's process), not on {d}"));
             }
         }
         for (id, n) in &g.nodes {
@@ -836,17 +871,24 @@ impl Graph {
     pub fn canonical(&self) -> Result<String, String> {
         let c = self.check()?;
         let g = &c.graph;
-        let mut ids: HashMap<&str, usize> = HashMap::new();
-        let mut order: Vec<&str> = Vec::new();
-        let mut stack = vec![c.output.as_str()];
+        // The default client (`pick`, nothing set) is left out: its readers are written as
+        // reading the world, as before step 14b, which keeps the keys.
+        let plain = |id: &str| {
+            let n = &g.nodes[id];
+            n.role == Role::Client && n.component == "pick" && n.knobs.is_empty() && n.timing.is_empty() && n.api.is_none() && n.device.is_none_or(|d| d == Device::Cpu)
+        };
+        let src = |s: &'_ str| -> String { if plain(s) { g.nodes[s].inputs["changes"].clone() } else { s.to_string() } };
+        let mut ids: HashMap<String, usize> = HashMap::new();
+        let mut order: Vec<String> = Vec::new();
+        let mut stack = vec![c.output.clone()];
         while let Some(id) = stack.pop() {
-            if ids.contains_key(id) {
+            if ids.contains_key(&id) {
                 continue;
             }
-            ids.insert(id, order.len());
-            order.push(id);
+            ids.insert(id.clone(), order.len());
             // Reversed so the first port by name is visited first.
-            stack.extend(g.nodes[id].inputs.values().rev().map(|s| s.as_str()));
+            stack.extend(g.nodes[&id].inputs.values().rev().map(|s| src(s)));
+            order.push(id);
         }
         // APIs only where the executor offers a choice (elsewhere a set API is checked to be
         // the one it runs, so it says nothing more).
@@ -854,18 +896,18 @@ impl Graph {
         let chosen = |n: &Node, a: &Api| backend(&g.executor).is_some_and(|b| n.role.slot().is_some_and(|sl| b.chooses(sl)) && b.api_choice.is_some_and(|ch| ch.default != Some(*a)));
         let mut s = format!("{}|", g.executor);
         for id in &order {
-            let n = &g.nodes[*id];
+            let n = &g.nodes[id];
             let when = |p: &str| match n.when(p) {
                 When::Now => String::new(),
                 When::Prev => "~prev".into(),
                 When::Iterate(k) => format!("~iterate{k}"),
             };
-            let ins: Vec<String> = n.inputs.iter().map(|(p, src)| format!("{p}=n{}{}", ids[src.as_str()], when(p))).collect();
+            let ins: Vec<String> = n.inputs.iter().map(|(p, s)| format!("{p}=n{}{}", ids[&src(s)], when(p))).collect();
             let knobs: Vec<String> = n.knobs.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            let api = c.apis.get(*id).filter(|a| chosen(n, a)).map_or(String::new(), |a| format!(":{}", a.name()));
+            let api = c.apis.get(id).filter(|a| chosen(n, a)).map_or(String::new(), |a| format!(":{}", a.name()));
             // (The server is written `cpu`, the world's device before step 14, which keeps
             // the keys: only the world runs there.)
-            let dev = match c.devices[*id] {
+            let dev = match c.devices[id] {
                 Device::Server => Device::Cpu,
                 d => d,
             };
@@ -1486,7 +1528,7 @@ impl Graph {
                 stack.extend(self.nodes.get(&id).into_iter().flat_map(|n| n.inputs.values().cloned()));
             }
         }
-        self.nodes.retain(|k, n| keep.contains(k) || n.role == Role::World);
+        self.nodes.retain(|k, n| keep.contains(k) || matches!(n.role, Role::World | Role::Client));
         self
     }
 
@@ -2528,7 +2570,10 @@ mod tests {
         let sched = g.check().unwrap().schedule().unwrap();
         let crosses = |s: &Schedule, from: &str, to: &str| s.transfers.iter().find(|e| e.from == from && e.to == to).map(|e| (e.from_device, e.to_device, e.when));
         assert_eq!(crosses(&sched, "visibility", "draw"), Some((Device::Cpu, Device::Gpu(0), When::Prev)), "{sched}");
-        assert_eq!(crosses(&sched, "world", "shadow.storage"), Some((Device::Server, Device::Gpu(0), When::Now)), "{sched}");
+        // The link: the server's stream to the client, the client's messages to the GPU.
+        assert_eq!(crosses(&sched, "world", "client"), Some((Device::Server, Device::Cpu, When::Now)), "{sched}");
+        assert_eq!(crosses(&sched, "client", "shadow.storage"), Some((Device::Cpu, Device::Gpu(0), When::Now)), "{sched}");
+        assert_eq!(crosses(&sched, "client", "storage"), None, "{sched}");
         assert!(sched.pipelined(), "{sched}");
         let vis = sched.passes().find(|p| p.node == "visibility").unwrap();
         assert_eq!((vis.device, vis.fused.clone()), (Device::Cpu, vec!["kernel".to_string(), "storage".to_string()]));

@@ -2191,6 +2191,7 @@ name = "mr-ipc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "glam",
  "memmap2",
  "mr-core",
  "postcard",

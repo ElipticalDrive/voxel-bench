@@ -11,11 +11,12 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
+use glam::DVec3;
 use memmap2::MmapMut;
 use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {
@@ -27,7 +28,13 @@ pub struct ShmSpec {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum HostMsg {
     Init { renderer: String, params: InitParams, shm: ShmSpec },
-    Updates(Vec<WorldUpdate>),
+    /// The server's stream (PLAN step 14b: the same for every client), in batches; the
+    /// worker's client derives its renderer's updates from it, at camera position `at`
+    /// (set on a batch that ends what the server sent for a frame).
+    Stream { updates: Vec<WorldUpdate>, at: Option<DVec3> },
+    /// The server streams this region (radius, LOD levels) and neither it nor the client's
+    /// changes: a client covering it takes the stream as it is.
+    Follow { radius: u32, max_lod: u8 },
     /// Mesh mode: geometry and instances, applied in order with `Updates`.
     Meshes(MeshUpdate),
     /// `slot` is the shared-memory slot to write pixels into when `req.readback` is set.

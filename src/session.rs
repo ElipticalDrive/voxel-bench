@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::bail;
-use glam::Vec3;
+use glam::{DVec3, Vec3};
 use mr_core::{Camera, FrameRequest, Light, MeshData, MeshInstance, MeshUpdate, PassMode, WorldUpdate};
 use mr_ipc::{HostMsg, WorkerMsg};
 use mr_world::scenario::{FrameEvents, resolve_edits};
@@ -16,8 +16,7 @@ use mr_world::{Scene, World};
 use crate::compare::{self, Quality};
 use crate::plan::{Pacing, Readback, RunSpec, SaveSpec};
 use crate::report::{FrameRecord, PassReport};
-use crate::client::Client;
-use crate::stream::Streamer;
+use crate::stream::{Region, Streamer};
 use crate::window::{UiEvent, UiHandle};
 use crate::worker::{Worker, WorkerEvent, recv_timeout};
 
@@ -171,7 +170,8 @@ struct InFlight {
 
 pub struct Lane {
     pub worker: Worker,
-    pub client: Client,
+    /// What its client takes of the server's stream (the client runs in the worker).
+    pub region: Region,
     pub report: PassReport,
     pub ui_index: usize,
     width: u32,
@@ -185,8 +185,8 @@ pub struct Lane {
 }
 
 impl Lane {
-    pub fn new(worker: Worker, client: Client, report: PassReport, ui_index: usize, width: u32, height: u32) -> Self {
-        Self { worker, client, report, ui_index, width, height, in_flight: VecDeque::new(), next_id: 0, completions: vec![], last_ui: None, pending_quality: vec![] }
+    pub fn new(worker: Worker, region: Region, report: PassReport, ui_index: usize, width: u32, height: u32) -> Self {
+        Self { worker, region, report, ui_index, width, height, in_flight: VecDeque::new(), next_id: 0, completions: vec![], last_ui: None, pending_quality: vec![] }
     }
 }
 
@@ -312,10 +312,13 @@ pub fn sanitize(s: &str) -> String {
 
 const BATCH: usize = 256;
 
-fn send_updates(w: &Worker, mut ups: Vec<WorldUpdate>) -> anyhow::Result<()> {
+/// Sends the server's stream to a worker in batches; its client derives its renderer's
+/// region at camera position `at` after the last.
+pub fn send_stream(w: &Worker, mut ups: Vec<WorldUpdate>, at: DVec3) -> anyhow::Result<()> {
     while !ups.is_empty() {
         let rest = if ups.len() > BATCH { ups.split_off(BATCH) } else { vec![] };
-        w.send(HostMsg::Updates(std::mem::replace(&mut ups, rest)))?;
+        let last = rest.is_empty();
+        w.send(HostMsg::Stream { updates: std::mem::replace(&mut ups, rest), at: last.then_some(at) })?;
     }
     Ok(())
 }
@@ -391,10 +394,12 @@ pub fn run_pass(
     let mut missed = 0u32;
     let mut sent_instances: Option<Vec<MeshInstance>> = None;
     // The server streams one region, as large as the largest any client takes.
-    let radius = lanes.iter().map(|l| l.client.radius()).max().unwrap_or(0);
-    let max_lod = lanes.iter().map(|l| l.client.max_lod()).max().unwrap_or(0);
+    let radius = lanes.iter().map(|l| l.region.radius).max().unwrap_or(0);
+    let max_lod = lanes.iter().map(|l| l.region.max_lod).max().unwrap_or(0);
     let mut server = Streamer::new(radius, max_lod, run.budget());
-    lanes.iter_mut().for_each(|l| l.client.follow(radius, max_lod));
+    for l in lanes.iter() {
+        l.worker.send(HostMsg::Follow { radius, max_lod })?;
+    }
     while let Some(input) = driver.next()? {
         // Mesh mode: geometry once, instances whenever they change.
         let instances = input.meshes.filter(|i| sent_instances.as_ref() != Some(i));
@@ -412,10 +417,10 @@ pub fn run_pass(
         if let Some(env) = input.events.environment {
             stream.push(WorldUpdate::SetEnvironment(env));
         }
+        // What crossed the link to each client.
+        let loads = stream.iter().filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. })).count() as u64;
         for lane in lanes.iter_mut() {
-            let mut ups = vec![];
-            lane.client.receive(&stream, &mut ups);
-            lane.client.update(input.camera.position, &mut ups);
+            lane.report.chunks_sent += loads;
             if first && !meshes.is_empty() {
                 lane.worker.send(HostMsg::Meshes(MeshUpdate::Meshes(meshes.to_vec())))?;
             }
@@ -424,11 +429,11 @@ pub fn run_pass(
             }
             if first {
                 let t = Instant::now();
-                send_updates(&lane.worker, ups)?;
+                send_stream(&lane.worker, stream.clone(), input.camera.position)?;
                 lane.worker.flush(|m| bail!("unexpected {m:?} during initial load"))?;
                 lane.report.initial_load_ms = t.elapsed().as_secs_f64() * 1e3;
-            } else if !ups.is_empty() {
-                send_updates(&lane.worker, ups)?;
+            } else if !stream.is_empty() {
+                send_stream(&lane.worker, stream.clone(), input.camera.position)?;
             }
         }
         first = false;
@@ -483,7 +488,6 @@ pub fn run_pass(
         if matches!(run.pacing, Pacing::Fps { .. }) {
             lane.report.missed_deadlines = Some(missed);
         }
-        lane.report.chunks_sent = lane.client.chunks_sent;
         lane.report.peak_rss_mb = lane.worker.peak_rss().map(|b| b as f64 / 1048576.0);
         lane.worker.send(HostMsg::QueryMemory)?;
         if let Ok(WorkerMsg::Memory(m)) = recv_timeout(&lane.worker.rx, Duration::from_secs(30)) {

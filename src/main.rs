@@ -5,7 +5,6 @@ mod bayes;
 mod compare;
 mod features;
 mod catalogue;
-mod client;
 mod gui;
 mod observe;
 mod pipelines;
@@ -28,8 +27,7 @@ use mr_world::{Scene, World, textures::default_registry};
 use plan::{Plan, RendererSpec, Streaming};
 use report::PassReport;
 use session::{InteractiveDriver, Lane, Outputs, ScriptedDriver, run_pass, sanitize};
-use client::Client;
-use stream::Streamer;
+use stream::{Region, Streamer};
 use window::{UiEvent, UiHandle};
 
 #[derive(Parser)]
@@ -296,7 +294,7 @@ impl Ctx<'_> {
                     report.tags = worker.info.tags.clone();
                     let max_lod = spec.max_lod(run, worker.info.max_lod);
                     let i = lanes.len();
-                    lanes.push(Lane::new(worker, Client::new(spec.view_radius(run), max_lod), report, i, w, h));
+                    lanes.push(Lane::new(worker, Region { radius: spec.view_radius(run), max_lod }, report, i, w, h));
                 }
                 Err(e) => {
                     tracing::error!("[{label}] failed to start: {e:#}");

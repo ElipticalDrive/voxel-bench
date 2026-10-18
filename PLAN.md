@@ -245,7 +245,10 @@ The user's architecture, settled with finality and without limits for later (IDE
       `Streamer`; the link a free pass-through edge. Pixels and speed unchanged. (Done
       2026-10-17; see the log.)
     - 14b: derivation on the client: LOD levels and storages built from the shared stream;
-      radius and `max_lod` move to the client.
+      radius and `max_lod` move to the client. (Done 2026-10-17 for the server's levels: the
+      graph's `client` node, component `pick`, run in the worker; see the log. User,
+      2026-10-17: both ways, as components of that node; `derive`, levels built on the
+      client from LOD 0, comes after `pick`.)
     - 14c: the link as a modelled network: latency, bandwidth, jitter, reordering, loss as
       knobs (zero cost when off); the strict contract (change messages only, nothing
       guaranteed to have arrived, holes tolerated).
@@ -1452,3 +1455,42 @@ root, `walk.wgsl` / `rayquery.wgsl` the lanes' roots), `components/src/graph.rs`
   host work cannot cause). The host now copies the stream once per lane instead of
   building it per lane; the losses at ~500 fps are not explained by that work (alone 8
   rounds: -1.4 / -0.6%).
+
+**2026-10-17, step 14b: the client as a graph node on the renderer's side.**
+`crates/mr-core/src/client.rs` (moved from `src/client.rs`), `crates/mr-serve`, `crates/mr-ipc`,
+`src/session.rs`, `src/stream.rs`, `src/gui/live.rs`, `components/src/graph.rs`:
+- **The decision (user):** the client gets its LOD levels both ways, as two components of
+  one graph node (pipelines are graphs). `pick` takes the server's levels (the generator
+  makes coarse chunks directly; built here). `derive` builds them on the client from LOD 0
+  (more on the wire, pixels change at a distance) and comes next. A fix for edits not
+  reaching coarse levels is part of `derive`'s territory.
+- **The graph:** `Role::Client` (`client`, component `pick`; `CLIENTS`), on `cpu` (check:
+  "the client runs on the cpu"), reads the world's `changes` (the link, `server -> cpu`).
+  Every other `changes` input (unbound or bound to the world) reads the client:
+  normalisation adds it like the world, and old graphs load unchanged. The canonical form
+  leaves out a default client (its readers written as reading the world), so every graph
+  key is unchanged (checked: twelve presets, old build against new). The GUI's stage tree
+  skips it like the world (nothing to choose yet).
+- **The runtime:** the worker (`mr-serve`) runs the client before its renderer. The host
+  sends every worker the same stream (`HostMsg::Stream { updates, at }`, replacing
+  `Updates`; protocol 4). The client receives it, derives at camera `at` and on each
+  `Render` (the camera may cross into chunks the replica holds), then passes the
+  renderer's messages on (timed into `update_ms`). Its region comes from `InitParams`
+  (radius, `max_lod` capped by what the renderer supports); the GUI's live view radius is
+  the param `client.radius` (also `client.max_lod`), handled by the worker.
+  `HostMsg::Follow` turns on the pass-through (batch passes; the GUI's reference with its
+  own server). The host keeps only each lane's `Region`, to size the server.
+- **Changed meaning:** `chunks_sent` (report, GUI) is now the chunks that crossed the
+  link to that client (the whole stream), not the chunks its renderer received. These are
+  the same for whole-region clients; larger for clients with a smaller region (`far`).
+- Verified: builds without warnings (dev, release), 85 unit tests (`client_derives_its_region`
+  now in `src/stream.rs`), 4 GPU end-to-end tests, headless GUI screenshot (two lanes
+  join and stream). Pixel A/B, old build against new, every renderer of the plan,
+  frames 0/20/39: `far` 36/36, `edits` 54/54, `streaming` 27/27, `terrain` 54/54,
+  `meshes` 12/12 identical. `showcase` 55/60 and `two-gpus` 16/18 had 1-2 px off by 1;
+  the old build against itself shows the same (55/60, 17/18).
+- Timing A/B (4 rounds, terrain 300 frames; GPU time / host-bound fps): gpu-compute
+  -0.0 / +1.3% lit, -0.1 / +0.9% unlit; gpu-raster +0.0 / -0.1%, -0.1 / +0.3%; gpu-rt
+  +0.2 / -0.5%, -0.0 / -0.1%; gpu-voxelspace pathtrace -0.0 / +0.0%, unlit -0.0 / +5.0%
+  (14a had logged -1.6% there); cpu -0.4 / +0.2% fps. `far` (replica clients in the
+  workers, 3 rounds): GPU within +0.4%, fps -0.9 to +1.0%. No losses to log.

@@ -1562,7 +1562,10 @@ Today's sweeps reward techniques that assume everything is resident at once.
 graph model treats the world as a node so the link is just an edge. Sub-steps 14a–e
 (2026-10-17). 14a: the host is the server (the world node's device `server`), one stream
 for every lane (the largest radius and levels any takes), a client per lane deriving its
-renderer's region from a replica of what arrived; the link still free and in-process.
+renderer's region from a replica of what arrived; the link still free and in-process. 14b
+(2026-10-17): the client is a graph node (`client`) run in the worker, on the renderer's
+side of the link; its LOD source is a component: `pick` (the server's levels) built,
+`derive` (levels built on the client from LOD 0) next (user: both).
 
 ## 20. Path tracing on incremental discovery (an observation, tricks to come)
 

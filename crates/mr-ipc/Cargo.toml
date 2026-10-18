@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 mr-core.workspace = true
+glam.workspace = true
 anyhow.workspace = true
 memmap2.workspace = true
 postcard.workspace = true

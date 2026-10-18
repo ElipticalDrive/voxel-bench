@@ -1,13 +1,15 @@
-//! A client of the server's stream (PLAN step 14a): keeps a replica of the chunks the
-//! server sent and derives from it what its renderer holds (its own radius and LOD levels),
-//! producing the renderer's load / unload / edit messages. The server streams one region
-//! for every client; nothing here asks it for more.
+//! A client of the server's stream (PLAN step 14a; on the renderer's side of the link since
+//! 14b: the graph's `client` node, run by the worker before its renderer): keeps a replica
+//! of the chunks the server sent and derives from it what its renderer holds (its own
+//! radius and LOD levels: component `pick`, the server's levels), producing the renderer's
+//! load / unload / edit messages. The server streams one region for every client; nothing
+//! here asks it for more.
 
 use std::collections::{HashMap, HashSet};
 
 use glam::IVec3;
-use mr_core::chunk::{CHUNK_BITS, local_of_block};
-use mr_core::{ChunkData, ChunkKey, WorldUpdate};
+use crate::chunk::{CHUNK_BITS, local_of_block};
+use crate::{ChunkData, ChunkKey, WorldUpdate};
 
 pub struct Client {
     radius: i32,
@@ -21,12 +23,11 @@ pub struct Client {
     centers: Vec<Option<IVec3>>,
     /// Takes the server's whole region: the stream is its renderer's as it is (no replica).
     whole: bool,
-    pub chunks_sent: u64,
 }
 
 impl Client {
     pub fn new(radius: u32, max_lod: u8) -> Self {
-        Self { radius: radius as i32, max_lod, replica: HashMap::new(), held: HashSet::new(), fresh: vec![], centers: vec![None; max_lod as usize + 1], whole: false, chunks_sent: 0 }
+        Self { radius: radius as i32, max_lod, replica: HashMap::new(), held: HashSet::new(), fresh: vec![], centers: vec![None; max_lod as usize + 1], whole: false }
     }
 
     /// A client of a server streaming `radius` and levels up to `max_lod` that will not
@@ -68,7 +69,6 @@ impl Client {
     /// the next `update`.
     pub fn receive(&mut self, stream: &[WorldUpdate], out: &mut Vec<WorldUpdate>) {
         if self.whole {
-            self.chunks_sent += stream.iter().filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. })).count() as u64;
             out.extend_from_slice(stream);
             return;
         }
@@ -78,7 +78,6 @@ impl Client {
                     self.replica.insert(*key, data.clone());
                     if self.held.contains(key) {
                         out.push(u.clone());
-                        self.chunks_sent += 1;
                     } else {
                         self.fresh.push(*key);
                     }
@@ -142,68 +141,6 @@ impl Client {
         for key in loads {
             self.held.insert(key);
             out.push(WorldUpdate::ChunkLoad { key, data: self.replica[&key].clone() });
-            self.chunks_sent += 1;
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::stream::Streamer;
-    use glam::DVec3;
-    use mr_core::BlockId;
-    use mr_core::renderer::BlockEdit;
-    use mr_world::World;
-    use mr_world::generators::GenSpec;
-
-    /// What a renderer holds after applying messages.
-    fn apply(held: &mut HashMap<ChunkKey, ChunkData>, ups: &[WorldUpdate]) {
-        for u in ups {
-            match u {
-                WorldUpdate::ChunkLoad { key, data } => {
-                    held.insert(*key, data.clone());
-                }
-                WorldUpdate::ChunkUnload { key } => {
-                    held.remove(key);
-                }
-                WorldUpdate::SetBlocks(edits) => {
-                    for e in edits {
-                        held.get_mut(&ChunkKey::of_block(e.pos)).expect("an edit of a chunk not held").set(local_of_block(e.pos), e.block);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// A client of a larger stream holds what a stream of its own region would give it.
-    #[test]
-    fn client_derives_its_region() {
-        let mut world = World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build());
-        let mut server = Streamer::new(4, 2, None);
-        let mut own = Streamer::new(2, 1, None);
-        let mut client = Client::new(2, 1);
-        let (mut a, mut b) = (HashMap::new(), HashMap::new());
-        for f in 0..40 {
-            let cam = DVec3::new(f as f64 * 13.0, 60.0, f as f64 * -7.0);
-            let edits: Vec<BlockEdit> = (0..20).map(|i| BlockEdit { pos: IVec3::new(f * 13 + i, 40 + i % 30, -f * 7 - i), block: if i % 2 == 0 { BlockId::AIR } else { BlockId(1) } }).collect();
-            let changed = world.apply_edits(&edits);
-            let (mut stream, mut ups, mut direct) = (vec![], vec![], vec![]);
-            server.edits(&edits, &changed, &mut stream);
-            server.update(&mut world, cam, &mut stream);
-            client.receive(&stream, &mut ups);
-            client.update(cam, &mut ups);
-            own.edits(&edits, &changed, &mut direct);
-            own.update(&mut world, cam, &mut direct);
-            apply(&mut a, &ups);
-            apply(&mut b, &direct);
-            assert_eq!(a.len(), b.len(), "frame {f}");
-            for (k, d) in &b {
-                let c = &a[k];
-                let cells = (0..mr_core::CHUNK_VOLUME).map(mr_core::chunk::cell_of_index);
-                assert!(c == d || cells.into_iter().all(|p| c.get(p) == d.get(p)), "frame {f}: {k:?}");
-            }
         }
     }
 }

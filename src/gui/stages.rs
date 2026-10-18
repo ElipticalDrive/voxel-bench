@@ -237,7 +237,7 @@ impl Tree<'_> {
     fn node(&mut self, ui: &mut Ui, id: &str, port: &str, depth: usize, site: Option<&str>) {
         let g = self.graph.clone().unwrap();
         let n = &g.nodes[id];
-        if n.role == Role::World {
+        if matches!(n.role, Role::World | Role::Client) {
             return;
         }
         let mut tip = format!("{port}: {} `{}`", n.role.name(), n.component);
