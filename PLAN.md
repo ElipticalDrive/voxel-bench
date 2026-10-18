@@ -239,11 +239,28 @@ The user's architecture, settled with finality and without limits for later (IDE
     on the client from a shared seed with the server sending only edits. The renderer
     contract becomes strict: change messages only, nothing guaranteed to have arrived.
     Measured: bytes on the wire, update cost per byte, time to the first complete frame,
-    holes while streaming.
+    holes while streaming. Sub-steps (2026-10-17):
+    - 14a: the world as a server node (generator, authoritative store, change log on a
+      server device); one stream shared by all clients instead of the per-renderer
+      `Streamer`; the link a free pass-through edge. Pixels and speed unchanged.
+    - 14b: derivation on the client: LOD levels and storages built from the shared stream;
+      radius and `max_lod` move to the client.
+    - 14c: the link as a modelled network: latency, bandwidth, jitter, reordering, loss as
+      knobs (zero cost when off); the strict contract (change messages only, nothing
+      guaranteed to have arrived, holes tolerated).
+    - 14d: generator placement: on the client from a shared seed, the server sending only
+      edits.
+    - 14e: the measurements above as counters, and a sweep.
 15. **History and post as nodes:** earlier frames' products as explicit inputs; tone
-    mapping and diagnostic views with colour scales written once.
+    mapping and diagnostic views with colour scales written once. Sub-steps:
+    - 15a: history: earlier frames' products as explicit inputs, including the edge `prev`
+      between GPUs (step 13's leftover: the second GPU shading frame N-1 while the first
+      casts N).
+    - 15b: post: tone mapping and diagnostic views, colour scales written once.
 16. **Compiled on demand everywhere:** every CPU graph (generated Rust), and on the GPU
     specialised constants and persistent pipeline caches; then the break-in layers.
+    Sub-steps: 16a CPU graphs as generated Rust; 16b GPU specialised constants and
+    persistent pipeline caches; 16c the break-in layers.
 17. **Windows and Linux both build and run** (user, 2026-10-16; after step 16, before
     optimisation and bug fixes): today only Linux compiles. Known Unix-only code: the
     worker IPC (`std::os::unix::net` Unix sockets in `mr-ipc`, `mr-serve`, `src/worker.rs`),
@@ -255,6 +272,10 @@ The user's architecture, settled with finality and without limits for later (IDE
     file mapping, Windows performance counters or the knob greyed with the reason), with
     no cost to the Linux build. Verified by cross-compiling for `x86_64-pc-windows-msvc`
     or `-gnu` (zero warnings) and, where a Windows machine is available, running the tests.
+    Sub-steps: 17a the portable forms, verified by cross-compiling (zero warnings); 17b
+    running the tests on Windows: under Wine (installed) for the `-gnu` build, or in a KVM
+    Windows guest (`/dev/kvm` is available; QEMU / virt-manager and a Windows image to be
+    installed, with the user), GPU tests there on a software or passed-through adapter.
 
 ## Exit criteria (when the architecture is done; then optimisation starts)
 
@@ -1389,5 +1410,6 @@ root, `walk.wgsl` / `rayquery.wgsl` the lanes' roots), `components/src/graph.rs`
   configuration, one pipeline split over two GPUs; stateful nodes and timings (incremental
   discovery, pipelining, accumulation) run. Not done within it (logged above): an edge `prev`
   between GPUs, other record writers feeding a remote shading, the rasterisers' lead shadow
-  rays as ray queries.
+  rays as ray queries. (2026-10-17: `prev` between GPUs moves to step 15a; the other two wait
+  until after the architecture.)
 
