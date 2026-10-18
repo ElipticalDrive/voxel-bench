@@ -93,7 +93,7 @@ fn params() -> Vec<ParamSpec> {
     p.push(ParamSpec::choice("schedule", "Work split over the threads: image rows (packets along the row), or screen tiles along a space-filling curve (packets as 2x2 / 4x2 / 4x4 pixel blocks; from cpu-simd-tiles)", &["rows", "tiles"], "rows", true));
     p.push(ParamSpec::choice("tile_order", "schedule = tiles: order tiles are handed out in", &["morton", "hilbert", "linear"], "morton", true));
     p.push(ParamSpec::int("tile", "schedule = tiles: tile edge in pixels", 4, 256, 16, true));
-    p.push(ParamSpec::bool("perf", "Hardware counters per frame (perf_event_open; cycles, instructions, cache misses per pixel)", false, true));
+    p.push(ParamSpec::bool("perf", "Hardware counters per frame (Linux: perf_event_open; cycles, instructions, cache misses per pixel)", false, true));
     p.push(ParamSpec::choice("view", "image: the rendered scene. steps: the walk's work per pixel on a colour scale (log; white above view_max): refloor = lockstep iterations of the pixel's packet, incremental = occupancy tests of the pixel's ray", &["image", "steps"], "image", true));
     p.push(ParamSpec::int("view_max", "steps view: the top of the colour scale", 1, 16384, 256, true));
     p
@@ -365,7 +365,7 @@ impl<R: Repr, S: Spec> Raycast<R, S> {
             tile_order: parse_order(&o.tile_order)?,
             tile: o.tile.clamp(4, 256),
             rects: vec![],
-            perf: o.perf,
+            perf: perf::allowed(o.perf)?,
             counters: None,
             scene: Scene {
                 chunks: HashMap::new(),
@@ -793,7 +793,7 @@ impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
         let cam = req.camera;
         let mode = req.mode;
         if self.perf && self.counters.is_none() {
-            self.counters = Some(perf::Counters::open_on(pool.rayon()));
+            self.counters = perf::Counters::open_on(pool.rayon());
         }
         let counters = if self.perf { self.counters.as_ref() } else { None };
         let pixels = &mut frame.pixels;
@@ -875,7 +875,7 @@ impl<R: Repr, S: Spec> Raycast<R, S> {
     /// Sets knob `name`; `false` if it is not one of the lane's.
     fn set(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<bool> {
         match name {
-            "perf" => self.perf = value.as_bool().unwrap_or(false),
+            "perf" => self.perf = perf::allowed(value.as_bool().unwrap_or(false))?,
             "view" => self.steps_view = parse_view(value.as_str().unwrap_or(""))?,
             "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,
             "skip2" | "skip4" | "skip8" | "skip16" => {

@@ -97,7 +97,7 @@ enum Cmd {
     #[command(hide = true)]
     Worker {
         #[arg(long)]
-        socket: PathBuf,
+        socket: String,
     },
 }
 

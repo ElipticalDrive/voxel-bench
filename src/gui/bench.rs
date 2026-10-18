@@ -129,7 +129,7 @@ pub fn report_ui(ui: &mut Ui, r: &Report) {
         ui.label(r.path.display().to_string());
         if ui.small_button("open folder").on_hover_text("Open the run directory (report.json, CSVs, saved frames) in the file manager").clicked() {
             if let Some(d) = r.path.parent() {
-                let _ = Command::new("xdg-open").arg(d).spawn();
+                let _ = Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(d).spawn();
             }
         }
     });

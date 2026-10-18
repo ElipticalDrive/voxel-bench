@@ -43,6 +43,8 @@ crossbeam-channel = "0.5"
 glam = { version = "0.34", features = ["serde", "bytemuck"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 memmap2 = "0.9"
+interprocess = "2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Memory"] }
 pollster = "1"
 postcard = { version = "1", features = ["use-std"] }
 rayon = "1"

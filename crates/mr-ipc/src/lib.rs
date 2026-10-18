@@ -1,18 +1,18 @@
 //! Host <-> worker protocol.
 //!
-//! Control messages travel over a Unix stream socket as length-prefixed postcard blobs.
-//! Frame pixels travel through a shared-memory file of fixed-size slots, so a 4K frame
-//! never goes through the socket.
+//! Control messages travel over a local socket (a Unix socket on Linux, a named pipe on
+//! Windows) as length-prefixed postcard blobs. Frame pixels travel through shared memory of
+//! fixed-size slots (a file under `/dev/shm` on Linux, a pagefile-backed named mapping on
+//! Windows), so a 4K frame never goes through the socket.
 
-use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::marker::PhantomData;
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use glam::DVec3;
-use memmap2::MmapMut;
+use interprocess::local_socket::prelude::*;
+use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, Name, RecvHalf, SendHalf};
+pub use interprocess::local_socket::{Listener, Stream};
 use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -20,7 +20,8 @@ pub const PROTOCOL_VERSION: u32 = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {
-    pub path: PathBuf,
+    /// The region's name (`FrameSlots::create`'s), the same on every system.
+    pub name: String,
     pub slots: u32,
     pub slot_bytes: u64,
 }
@@ -71,7 +72,7 @@ pub enum WorkerMsg {
 }
 
 pub struct MsgWriter<T> {
-    w: BufWriter<UnixStream>,
+    w: BufWriter<SendHalf>,
     buf: Vec<u8>,
     _t: PhantomData<T>,
 }
@@ -89,7 +90,7 @@ impl<T: Serialize> MsgWriter<T> {
 }
 
 pub struct MsgReader<T> {
-    r: BufReader<UnixStream>,
+    r: BufReader<RecvHalf>,
     buf: Vec<u8>,
     _t: PhantomData<T>,
 }
@@ -110,40 +111,75 @@ impl<T: DeserializeOwned> MsgReader<T> {
     }
 }
 
-/// Splits a connected socket into a typed reader and writer.
-pub fn split<In: DeserializeOwned, Out: Serialize>(s: UnixStream) -> anyhow::Result<(MsgReader<In>, MsgWriter<Out>)> {
-    let r = s.try_clone()?;
-    Ok((
-        MsgReader { r: BufReader::with_capacity(1 << 20, r), buf: vec![], _t: PhantomData },
-        MsgWriter { w: BufWriter::with_capacity(1 << 20, s), buf: vec![], _t: PhantomData },
-    ))
+/// The address a host listens on for one worker, from a name unique to it: a socket file in
+/// the runtime directory on Unix, a named pipe on Windows.
+pub fn endpoint(tag: &str) -> String {
+    if cfg!(unix) {
+        let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        dir.join(format!("{tag}.sock")).to_string_lossy().into_owned()
+    } else {
+        tag.to_string()
+    }
 }
 
-/// Fixed-size frame slots in a shared-memory file.
+fn name(endpoint: &str) -> std::io::Result<Name<'_>> {
+    if cfg!(unix) {
+        endpoint.to_fs_name::<interprocess::local_socket::GenericFilePath>()
+    } else {
+        endpoint.to_ns_name::<interprocess::local_socket::GenericNamespaced>()
+    }
+}
+
+/// Listens at `endpoint` (host side); `accept` does not block, the streams it returns do.
+pub fn listen(endpoint: &str) -> anyhow::Result<Listener> {
+    ListenerOptions::new()
+        .name(name(endpoint)?)
+        .try_overwrite(true)
+        .nonblocking(ListenerNonblockingMode::Accept)
+        .create_sync()
+        .with_context(|| format!("listening at {endpoint}"))
+}
+
+/// The next worker connecting to `l`, if one is waiting.
+pub fn try_accept(l: &Listener) -> anyhow::Result<Option<Stream>> {
+    match l.accept() {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Connects to the host listening at `endpoint` (worker side).
+pub fn connect(endpoint: &str) -> anyhow::Result<Stream> {
+    Stream::connect(name(endpoint)?).with_context(|| format!("connecting to {endpoint}"))
+}
+
+/// Splits a connected socket into a typed reader and writer.
+pub fn split<In: DeserializeOwned, Out: Serialize>(s: Stream) -> (MsgReader<In>, MsgWriter<Out>) {
+    let (r, w) = s.split();
+    (
+        MsgReader { r: BufReader::with_capacity(1 << 20, r), buf: vec![], _t: PhantomData },
+        MsgWriter { w: BufWriter::with_capacity(1 << 20, w), buf: vec![], _t: PhantomData },
+    )
+}
+
+/// Fixed-size frame slots in shared memory.
 pub struct FrameSlots {
-    map: MmapMut,
+    map: shm::Map,
     spec: ShmSpec,
-    owner: bool,
 }
 
 impl FrameSlots {
-    /// Creates (host side) a new shared-memory file under `/dev/shm`.
+    /// Creates (host side) a new region called `name`.
     pub fn create(name: &str, slots: u32, slot_bytes: u64) -> anyhow::Result<Self> {
-        let path = PathBuf::from(format!("/dev/shm/{name}"));
-        let f = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
-        f.set_len(slots as u64 * slot_bytes)?;
-        let map = unsafe { MmapMut::map_mut(&f)? };
-        Ok(Self { map, spec: ShmSpec { path, slots, slot_bytes }, owner: true })
+        let spec = ShmSpec { name: name.to_string(), slots, slot_bytes };
+        Ok(Self { map: shm::Map::create(name, spec.bytes()).with_context(|| format!("creating shared memory {name}"))?, spec })
     }
 
-    /// Opens (worker side) an existing shared-memory file.
+    /// Opens (worker side) an existing region.
     pub fn open(spec: &ShmSpec) -> anyhow::Result<Self> {
-        let f: File = OpenOptions::new().read(true).write(true).open(&spec.path)?;
-        if f.metadata()?.len() < spec.slots as u64 * spec.slot_bytes {
-            bail!("shared memory file {} too small", spec.path.display());
-        }
-        let map = unsafe { MmapMut::map_mut(&f)? };
-        Ok(Self { map, spec: spec.clone(), owner: false })
+        let map = shm::Map::open(&spec.name, spec.bytes()).with_context(|| format!("opening shared memory {}", spec.name))?;
+        Ok(Self { map, spec: spec.clone() })
     }
 
     pub fn spec(&self) -> &ShmSpec {
@@ -152,23 +188,165 @@ impl FrameSlots {
 
     pub fn slot(&self, i: u32) -> &[u8] {
         let n = self.spec.slot_bytes as usize;
-        &self.map[i as usize * n..(i as usize + 1) * n]
+        &self.map.bytes()[i as usize * n..(i as usize + 1) * n]
     }
 
     pub fn slot_mut(&mut self, i: u32) -> &mut [u8] {
         let n = self.spec.slot_bytes as usize;
-        &mut self.map[i as usize * n..(i as usize + 1) * n]
+        &mut self.map.bytes_mut()[i as usize * n..(i as usize + 1) * n]
     }
 
-    pub fn path(&self) -> &Path {
-        &self.spec.path
+    /// Host side, once the worker has the region open: it then lives only as long as the
+    /// mappings, so nothing leaks if the host is killed (Linux removes the file; a Windows
+    /// mapping already goes with its last handle).
+    pub fn unlink(&mut self) {
+        self.map.unlink();
     }
 }
 
-impl Drop for FrameSlots {
-    fn drop(&mut self) {
-        if self.owner {
-            let _ = std::fs::remove_file(&self.spec.path);
+impl ShmSpec {
+    fn bytes(&self) -> usize {
+        (self.slots as u64 * self.slot_bytes) as usize
+    }
+}
+
+#[cfg(unix)]
+mod shm {
+    use std::fs::OpenOptions;
+    use std::path::PathBuf;
+
+    use anyhow::bail;
+    use memmap2::MmapMut;
+
+    /// A file under `/dev/shm`, mapped; the creator removes it (`unlink`, or when dropped).
+    pub struct Map {
+        map: MmapMut,
+        owned: Option<PathBuf>,
+    }
+
+    fn path(name: &str) -> PathBuf {
+        PathBuf::from(format!("/dev/shm/{name}"))
+    }
+
+    impl Map {
+        pub fn create(name: &str, bytes: usize) -> anyhow::Result<Self> {
+            let path = path(name);
+            let f = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
+            f.set_len(bytes as u64)?;
+            Ok(Self { map: unsafe { MmapMut::map_mut(&f)? }, owned: Some(path) })
+        }
+
+        pub fn open(name: &str, bytes: usize) -> anyhow::Result<Self> {
+            let path = path(name);
+            let f = OpenOptions::new().read(true).write(true).open(&path)?;
+            if f.metadata()?.len() < bytes as u64 {
+                bail!("{} too small", path.display());
+            }
+            Ok(Self { map: unsafe { MmapMut::map_mut(&f)? }, owned: None })
+        }
+
+        pub fn bytes(&self) -> &[u8] {
+            &self.map
+        }
+
+        pub fn bytes_mut(&mut self) -> &mut [u8] {
+            &mut self.map
+        }
+
+        pub fn unlink(&mut self) {
+            if let Some(p) = self.owned.take() {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
+    impl Drop for Map {
+        fn drop(&mut self) {
+            self.unlink();
+        }
+    }
+}
+
+#[cfg(windows)]
+mod shm {
+    use anyhow::bail;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Memory::{
+        CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW, PAGE_READWRITE,
+        UnmapViewOfFile, VirtualQuery,
+    };
+
+    /// A pagefile-backed named mapping (session-local), freed with its last handle.
+    pub struct Map {
+        handle: HANDLE,
+        view: MEMORY_MAPPED_VIEW_ADDRESS,
+        len: usize,
+    }
+
+    // The view is plain memory shared with another process; the handle is process-wide.
+    unsafe impl Send for Map {}
+    unsafe impl Sync for Map {}
+
+    fn wide(name: &str) -> Vec<u16> {
+        format!("Local\\{name}").encode_utf16().chain([0]).collect()
+    }
+
+    impl Map {
+        pub fn create(name: &str, bytes: usize) -> anyhow::Result<Self> {
+            let size = bytes as u64;
+            let handle = unsafe { CreateFileMappingW(INVALID_HANDLE_VALUE, std::ptr::null(), PAGE_READWRITE, (size >> 32) as u32, size as u32, wide(name).as_ptr()) };
+            if handle.is_null() {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            Self::view(handle, bytes)
+        }
+
+        pub fn open(name: &str, bytes: usize) -> anyhow::Result<Self> {
+            let handle = unsafe { OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, wide(name).as_ptr()) };
+            if handle.is_null() {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let map = Self::view(handle, 0)?;
+            if map.len < bytes {
+                bail!("{name} too small");
+            }
+            Ok(Self { len: bytes, ..map })
+        }
+
+        /// Maps all of `handle`; `bytes` 0 takes the mapping's size (rounded up to pages).
+        fn view(handle: HANDLE, bytes: usize) -> anyhow::Result<Self> {
+            let view = unsafe { MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, 0) };
+            if view.Value.is_null() {
+                let e = std::io::Error::last_os_error();
+                unsafe { CloseHandle(handle) };
+                return Err(e.into());
+            }
+            let mut len = bytes;
+            if len == 0 {
+                let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+                unsafe { VirtualQuery(view.Value, &mut info, size_of::<MEMORY_BASIC_INFORMATION>()) };
+                len = info.RegionSize;
+            }
+            Ok(Self { handle, view, len })
+        }
+
+        pub fn bytes(&self) -> &[u8] {
+            unsafe { std::slice::from_raw_parts(self.view.Value.cast(), self.len) }
+        }
+
+        pub fn bytes_mut(&mut self) -> &mut [u8] {
+            unsafe { std::slice::from_raw_parts_mut(self.view.Value.cast(), self.len) }
+        }
+
+        pub fn unlink(&mut self) {}
+    }
+
+    impl Drop for Map {
+        fn drop(&mut self) {
+            unsafe {
+                UnmapViewOfFile(self.view);
+                CloseHandle(self.handle);
+            }
         }
     }
 }

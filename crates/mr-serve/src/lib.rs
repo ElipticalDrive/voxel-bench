@@ -8,8 +8,6 @@
 //! stream then carrying edits only.
 
 use std::collections::HashMap;
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
@@ -19,14 +17,14 @@ use mr_core::{CompletedFrame, FrameSink, Renderer, RendererEntry, Waker};
 use mr_ipc::{FrameSlots, HostMsg, MsgWriter, PROTOCOL_VERSION, WorkerMsg};
 use mr_world::stream::Generating;
 
-/// The `worker --socket <path>` arguments a worker process is started with.
-pub fn socket_arg(mut args: impl Iterator<Item = String>) -> anyhow::Result<PathBuf> {
+/// The `worker --socket <endpoint>` arguments a worker process is started with.
+pub fn socket_arg(mut args: impl Iterator<Item = String>) -> anyhow::Result<String> {
     while let Some(a) = args.next() {
         if a == "--socket" {
-            return args.next().map(PathBuf::from).context("--socket needs a path");
+            return args.next().context("--socket needs an endpoint");
         }
     }
-    bail!("usage: <worker> worker --socket <path>")
+    bail!("usage: <worker> worker --socket <endpoint>")
 }
 
 /// Devices for a process without a GPU API (CPU-only pipelines).
@@ -69,9 +67,8 @@ impl FrameSink for Sink<'_> {
 
 /// Connects to the host at `socket` and serves one of `entries` until shutdown. `devices`
 /// opens the process's devices for the configuration the host sends.
-pub fn run(socket: &Path, entries: Vec<RendererEntry>, devices: fn(&mr_core::DeviceConfig) -> mr_core::Devices) -> anyhow::Result<()> {
-    let stream = UnixStream::connect(socket).with_context(|| format!("connecting to {}", socket.display()))?;
-    let (mut input, mut out) = mr_ipc::split::<HostMsg, WorkerMsg>(stream)?;
+pub fn run(socket: &str, entries: Vec<RendererEntry>, devices: fn(&mr_core::DeviceConfig) -> mr_core::Devices) -> anyhow::Result<()> {
+    let (mut input, mut out) = mr_ipc::split::<HostMsg, WorkerMsg>(mr_ipc::connect(socket)?);
     out.send(&WorkerMsg::Hello { pid: std::process::id(), protocol: PROTOCOL_VERSION, renderers: entries.iter().map(|e| (e.info)()).collect() })?;
 
     // Drain the socket on a separate thread so the host never blocks on a busy renderer.

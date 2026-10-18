@@ -188,7 +188,8 @@ compose = { backend = "gpu-raster", storage = "bricks", geometry = "cubes", draw
 pipelines compiled on demand (PLAN step 8; `src/pipelines.rs`). For one composition a
 small crate is generated whose worker serves only it, with the storage, traversal kernel
 and packet width baked in as constants (`backend_cpu::Spec`), and `cargo` builds it with
-`-C target-cpu=native` into `~/.cache/multirenderer/pipelines` (or `$MR_PIPELINE_CACHE`).
+`-C target-cpu=native` into `~/.cache/multirenderer/pipelines` (Windows:
+`%LOCALAPPDATA%\multirenderer\pipelines`; or `$MR_PIPELINE_CACHE`).
 The build is cached by the generated source, the sources it compiles against, the
 toolchain and the CPU; the first build fills a shared target directory, later ones take
 seconds. Before a new pipeline is used it renders a short terrain flight next to the
@@ -311,14 +312,14 @@ multirenderer (host)                         worker process (one per renderer)
 ├─ plan.rs     TOML run plans + -s overrides ├─ mr-worker: IPC loop, owns one Renderer
 ├─ session.rs  frame loop, in-flight frames, │    └─ Box<dyn mr_core::Renderer>
 │              pacing, outputs               │
-├─ stream.rs   per-renderer chunk streaming ─┼─▶ Unix socket: Init / Updates / Render / Flush
+├─ stream.rs   per-renderer chunk streaming ─┼─▶ local socket: Init / Updates / Render / Flush
 ├─ worker.rs   spawn / handshake / logs      │◀─ Hello / Ready / FrameDone / Error
 ├─ compare.rs  PSNR / MAE / bad-pixel %      │
-├─ report.rs   summaries, tables, JSON       └─ pixels: shared-memory slots (/dev/shm)
+├─ report.rs   summaries, tables, JSON       └─ pixels: shared-memory slots
 └─ window.rs   live view (winit+softbuffer)
 crates/mr-core   shared vocabulary: camera, chunks, faces/UVs, lighting, Renderer trait
 crates/mr-world  generators, textures, authoritative world store, scripted scenes
-crates/mr-ipc    protocol messages, framing, shared-memory frame slots
+crates/mr-ipc    protocol messages, framing (Unix socket / Windows named pipe), shared-memory frame slots
 crates/mr-gpu    wgpu helpers: adapter choice, frame ring (readback/timestamps), GPU voxel world,
                  lighting WGSL with a pluggable `occluded()` (DDA, ray query, tree, ...)
 crates/mr-mesh   greedy mesher and quad decoding shared by the raster and triangle-RT renderers
@@ -470,7 +471,7 @@ it lists:
 Per back end and stage, it shows the paired effect of each component: fps against the
 best of otherwise equal compositions.
 
-`scripts/sweep.sh [plans…]` runs the full sweep over every scenario plan, one night's
+`scripts/sweep.py [plans…]` runs the full sweep over every scenario plan, one night's
 work at each plan's own length (`FRAMES=120` for shorter, faster camera paths), into
 `target/sweep/<time>/`, then writes the catalogue there.
 
@@ -484,7 +485,7 @@ Every value can be overridden from the command line, for example
 | `cpu-reference` | CPU ray casting | Multi-threaded f64 two-level DDA (chunk, then voxel), exact lighting with a shadow ray per light. Defines ground truth. |
 | `cpu-raster: greedy/naive + raster` *(back end; was the cpu-raster renderer)* | CPU software raster | The geometry component's quads (`greedy` or `naive`), then homogeneous clipping, tiled multithreaded edge-function rasterisation into a depth + visibility-ID buffer, then deferred shading from an exact per-pixel ray–plane hit, with CPU ray-traced shadows. Options: `tile_width`, `band_height`. |
 | `cpu: prefix` *(composition; was `cpu-simd-prefix`)* | CPU ray casting | The user's hierarchy: Morton-ordered 4³ occupancy masks (bits Morton-ordered too) plus a popcount prefix array, so any aligned 2–16 cube's emptiness is one compare. The prefix doubles as a rank into compressed, solid-only block ids. Fewest steps of any variant (−31 to −51% vs u16) and 20% less world memory, but 3–9% behind `hier` per pixel: big steps cost more than unit steps in this traversal. `visibility = "incremental"` (with `exact`, default on) is the incremental-level hierarchical DDA; it brings prefix within 2% of hier on terrain (+13% for prefix) but loses on short rays. `skip2`…`skip16` choose the levels. |
-| `cpu: bricks/u8/bits/hier/palette/brickmajor/morton` *(compositions; were cpu-simd and `cpu-simd-u16/u8/bits/hier/palette/brickmajor/morton`)* | CPU ray casting | The `cpu` back end with each storage component: `bricks` (u16 ids, cpu-simd's layout), u8 ids, 1-bit occupancy (one u64 per 4³ brick) with ids fetched on hit, `hier` (bits + 8³ region skips), and per-chunk palette compression (1–16-bit indices, 7× smaller on terrain). Knob `perf` adds hardware counters (cycles, instructions, cache and TLB misses per pixel). `brickmajor` / `morton` order the u16 ids so each 4³ brick is contiguous: L1 misses halve, but cycles do not drop (CPU traversal is not memory bound), so they run 3–4% behind `bricks`. Knob `schedule = tiles` (with `tile_order` morton/hilbert/linear and `tile`) hands out screen tiles along a space-filling curve with 2D packets (was cpu-simd-tiles; +4% over rows). Software prefetch (cpu-simd-loc's `prefetch`) was not carried over: it only added instructions. |
+| `cpu: bricks/u8/bits/hier/palette/brickmajor/morton` *(compositions; were cpu-simd and `cpu-simd-u16/u8/bits/hier/palette/brickmajor/morton`)* | CPU ray casting | The `cpu` back end with each storage component: `bricks` (u16 ids, cpu-simd's layout), u8 ids, 1-bit occupancy (one u64 per 4³ brick) with ids fetched on hit, `hier` (bits + 8³ region skips), and per-chunk palette compression (1–16-bit indices, 7× smaller on terrain). Knob `perf` (Linux) adds hardware counters (cycles, instructions, cache and TLB misses per pixel). `brickmajor` / `morton` order the u16 ids so each 4³ brick is contiguous: L1 misses halve, but cycles do not drop (CPU traversal is not memory bound), so they run 3–4% behind `bricks`. Knob `schedule = tiles` (with `tile_order` morton/hilbert/linear and `tile`) hands out screen tiles along a space-filling curve with 2D packets (was cpu-simd-tiles; +4% over rows). Software prefetch (cpu-simd-loc's `prefetch`) was not carried over: it only added instructions. |
 | `cpu-voxelspace: heightmap + columns` *(back end; was the cpu-voxelspace renderer)* | CPU, 2.5D | Rayon port of gpu-voxelspace (one task per screen column); identical image, about half its speed. |
 | `gpu-raster: … + greedy/naive/cubes + raster/visbuffer` *(back end; were gpu-raster, gpu-raster-naive, gpu-cubes, gpu-visbuffer)* | GPU raster plus hybrid | The `geometry` component meshes chunks on the CPU (parallel, incremental) into 8-byte instances: `greedy` quads (knob `merge` = `block`, or `exposure`: merge across block types with a per-pixel block lookup; −16% quads and −13% GPU time on menger, slightly slower on terrain), `naive` one quad per exposed face (2.6–18× more faces than greedy; `cull = false` emits every face), or `cubes` one 36-vertex instance per surface block. Vertex pulling, one `multi_draw_indirect`, per-chunk frustum and per-face-direction culling, analytic per-pixel UVs. `visibility` = `raster` (forward shading, `depth_prepass` in lit mode), `visbuffer` (ids + depth, then one compute shading pass per pixel: 1.5–2.5× faster lit with lots of overdraw; halves lit time for cubes) or `gbuffer` (was gpu-hybrid: the raster pass writes hit point, face and block, then one compute shading pass; 23% faster lit than the former renderer, a little slower than visbuffer). Lit-mode shadow rays walk the composed `storage` with refloor (7–18% faster than the former fixed walk). Options: `shadows`, `max_steps`, `mesh_budget`, `quad_buffer_mb`, `pool_mb`. |
 | `gpu-rt: greedy/naive/boxes + rayquery` *(back end; were gpu-rtx and gpu-rtx-bricks)* | GPU hardware ray tracing | wgpu ray queries on the RT cores. One BLAS per chunk from the `geometry` component, a TLAS of chunks rebuilt each frame relative to the camera block. `greedy` / `naive`: quads as triangles, traversal and intersection entirely in hardware (knob `cull_faces` for primary rays); `boxes`: one AABB per occupied 4³ brick with a small software DDA through the voxel pool inside each candidate. Shading `direct` or `pathtrace` (bounce rays are ray queries too). Same images and speed as the former renderers. Options: `fast_build`, `build_budget`, `shadows`. |

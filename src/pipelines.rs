@@ -203,7 +203,7 @@ fn repo() -> &'static Path {
 }
 
 fn manifest(repo: &Path, executor: Executor) -> String {
-    let dep = |name: &str, path: &str| format!("{name} = {{ path = {:?} }}\n", repo.join(path));
+    let dep = |name: &str, path: &str| format!("{name} = {{ path = {} }}\n", toml::Value::String(repo.join(path).to_string_lossy().into_owned()));
     let (name, path, _) = executor.parts();
     let gpu = if executor == Executor::Gpu { dep("mr-gpu", "crates/mr-gpu") } else { String::new() };
     format!(
@@ -298,7 +298,12 @@ fn cargo(key: &str, src: &Path, target: &Path, profile: &str, extra: &str) -> an
     if !out.status.success() {
         bail!("building pipeline {key} ({profile}) failed:\n{}", tail(&out.stderr, 30));
     }
-    Ok(target.join(profile).join("mr-pipeline"))
+    Ok(target.join(profile).join(exe_name("mr-pipeline")))
+}
+
+/// `name` as an executable's file name on this system.
+fn exe_name(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
 /// The last `n` lines of a child's output.
@@ -315,7 +320,7 @@ fn profdata() -> anyhow::Result<PathBuf> {
     let vv = Command::new(&rustc).arg("-vV").output().context("running rustc -vV")?;
     let vv = String::from_utf8_lossy(&vv.stdout);
     let host = vv.lines().find_map(|l| l.strip_prefix("host: ")).context("rustc -vV names no host")?;
-    let exe = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim()).join("lib/rustlib").join(host).join("bin/llvm-profdata");
+    let exe = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim()).join("lib").join("rustlib").join(host).join("bin").join(exe_name("llvm-profdata"));
     if !exe.exists() {
         bail!("break-in needs llvm-profdata ({} is missing): rustup component add llvm-tools", exe.display());
     }
@@ -392,7 +397,7 @@ fn break_in(b: &Bake, key: &str, src: &Path, root: &Path) -> anyhow::Result<Path
     let use_profile = format!("-C profile-use={}", merged.display());
     let mut candidates = vec![];
     for &(name, target, profile, pgo) in BREAK_IN {
-        let exe = train.join(format!("worker-{name}"));
+        let exe = train.join(exe_name(&format!("worker-{name}")));
         if pgo {
             // The profile's path is in the flags, so every dependency is built anew for this
             // pipeline (1.5 GB); nothing else can use the target.
@@ -432,7 +437,7 @@ fn break_in(b: &Bake, key: &str, src: &Path, root: &Path) -> anyhow::Result<Path
     tracing::info!("pipeline {key}: {summary}");
     std::fs::write(train.join("chosen.txt"), &summary)?;
     // Kept: the choice and the profile; the runs and the other candidates go.
-    let chosen = train.join("worker");
+    let chosen = train.join(exe_name("worker"));
     std::fs::rename(&candidates[best].1, &chosen)?;
     for e in std::fs::read_dir(&train)?.filter_map(|e| e.ok()).map(|e| e.path()) {
         if e.is_dir() {
@@ -450,7 +455,7 @@ fn break_in(b: &Bake, key: &str, src: &Path, root: &Path) -> anyhow::Result<Path
 pub fn ensure(b: &Bake, level: Compile) -> anyhow::Result<Compiled> {
     let key = key(b, level)?;
     let root = cache_dir();
-    let exe = root.join("bin").join(&key);
+    let exe = root.join("bin").join(exe_name(&key));
     if exe.exists() {
         return Ok(Compiled { exe, key, build_s: None });
     }

@@ -1,7 +1,6 @@
 //! Spawning and talking to renderer workers.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -105,18 +104,12 @@ pub fn spawn_renderer(
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
-}
-
 impl Worker {
     pub fn spawn(cfg: SpawnConfig) -> anyhow::Result<Self> {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let tag = format!("multirenderer-{}-{n}", std::process::id());
-        let sock = runtime_dir().join(format!("{tag}.sock"));
-        let _ = std::fs::remove_file(&sock);
-        let listener = UnixListener::bind(&sock).with_context(|| format!("binding {}", sock.display()))?;
-        listener.set_nonblocking(true)?;
+        let sock = mr_ipc::endpoint(&tag);
+        let listener = mr_ipc::listen(&sock)?;
 
         let mut child = None;
         let mut thread = None;
@@ -153,9 +146,8 @@ impl Worker {
         }
 
         let stream = accept(&listener, &mut child, Duration::from_secs(20))?;
-        let _ = std::fs::remove_file(&sock);
-        stream.set_nonblocking(false)?;
-        let (mut input, mut output) = mr_ipc::split::<WorkerMsg, HostMsg>(stream)?;
+        drop(listener);
+        let (mut input, mut output) = mr_ipc::split::<WorkerMsg, HostMsg>(stream);
 
         let (ev_tx, rx) = crossbeam_channel::unbounded();
         std::thread::Builder::new().name(format!("rx-{}", cfg.label)).spawn(move || {
@@ -188,14 +180,14 @@ impl Worker {
             m => bail!("unexpected first message {m:?}"),
         };
         let slot_bytes = (cfg.params.width * cfg.params.height * 4) as u64;
-        let shm = FrameSlots::create(&tag, cfg.slots, slot_bytes)?;
+        let mut shm = FrameSlots::create(&tag, cfg.slots, slot_bytes)?;
         tx.send(HostMsg::Init { renderer: cfg.renderer.to_string(), params: cfg.params, shm: shm.spec().clone() })?;
         let (info, init_ms) = match recv_timeout(&rx, Duration::from_secs(300))? {
             WorkerMsg::Ready { info, init_ms } => (info, init_ms),
             m => bail!("[{}] expected Ready, got {m:?}", cfg.label),
         };
         // Both sides have it mapped now; unlinking means nothing leaks if we're killed.
-        let _ = std::fs::remove_file(shm.path());
+        shm.unlink();
         Ok(Self {
             label: cfg.label.to_string(),
             info,
@@ -218,7 +210,7 @@ impl Worker {
     /// slots returned); a fresh shared-memory region is created for the new size.
     pub fn resize(&mut self, width: u32, height: u32, slots: u32) -> anyhow::Result<()> {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let shm = FrameSlots::create(&format!("multirenderer-{}-{n}", std::process::id()), slots, (width * height * 4) as u64)?;
+        let mut shm = FrameSlots::create(&format!("multirenderer-{}-{n}", std::process::id()), slots, (width * height * 4) as u64)?;
         self.send(HostMsg::Resize { width, height, shm: shm.spec().clone() })?;
         // The worker maps it while handling Resize; Flushed below proves it has.
         self.send(HostMsg::Flush)?;
@@ -229,7 +221,7 @@ impl Worker {
                 _ => {}
             }
         }
-        let _ = std::fs::remove_file(shm.path());
+        shm.unlink();
         self.shm = shm;
         self.free_slots = (0..slots).rev().collect();
         Ok(())
@@ -322,13 +314,11 @@ pub fn recv_timeout(rx: &Receiver<WorkerEvent>, t: Duration) -> anyhow::Result<W
     }
 }
 
-fn accept(l: &UnixListener, child: &mut Option<Child>, timeout: Duration) -> anyhow::Result<std::os::unix::net::UnixStream> {
+fn accept(l: &mr_ipc::Listener, child: &mut Option<Child>, timeout: Duration) -> anyhow::Result<mr_ipc::Stream> {
     let start = Instant::now();
     loop {
-        match l.accept() {
-            Ok((s, _)) => return Ok(s),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(e.into()),
+        if let Some(s) = mr_ipc::try_accept(l)? {
+            return Ok(s);
         }
         if let Some(c) = child {
             if let Some(status) = c.try_wait()? {

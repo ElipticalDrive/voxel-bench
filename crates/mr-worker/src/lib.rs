@@ -2,8 +2,6 @@
 //! (`mr_serve`). Adding a renderer = adding its crate as a dependency and one line in
 //! [`registry`].
 
-use std::path::Path;
-
 use mr_core::{RendererEntry, RendererInfo};
 
 pub fn registry() -> Vec<RendererEntry> {
@@ -15,6 +13,6 @@ pub fn infos() -> Vec<RendererInfo> {
 }
 
 /// Connects to the host at `socket` and serves until shutdown.
-pub fn run(socket: &Path) -> anyhow::Result<()> {
+pub fn run(socket: &str) -> anyhow::Result<()> {
     mr_serve::run(socket, registry(), mr_gpu::devices)
 }

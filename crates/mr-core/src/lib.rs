@@ -31,12 +31,17 @@ pub use texture::{BlockRegistry, BlockType, TEX_SIZE, Texture};
 pub use glam;
 
 /// Where compiled pipelines live (generated workers, the GPU drivers' pipeline caches):
-/// `$MR_PIPELINE_CACHE`, else `$XDG_CACHE_HOME` or `~/.cache`, `multirenderer/pipelines`.
+/// `$MR_PIPELINE_CACHE`, else `$XDG_CACHE_HOME` or `~/.cache` (Windows: `%LOCALAPPDATA%`),
+/// `multirenderer/pipelines`.
 pub fn cache_dir() -> std::path::PathBuf {
     use std::path::PathBuf;
     if let Some(d) = std::env::var_os("MR_PIPELINE_CACHE") {
         return PathBuf::from(d);
     }
-    let base = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"));
+    let base = if cfg!(windows) {
+        PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default())
+    } else {
+        std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"))
+    };
     base.join("multirenderer").join("pipelines")
 }
