@@ -145,7 +145,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::List => {
-            println!("Renderers are assembled from components (plan: compose = {{ backend, storage, geometry, prepass, visibility, shading, meshes }};\nCLI: -r backend:<its required slots in order>[+shading[+prepass[+meshes]]], e.g. gpu-compute:prefix+incremental, gpu-compute:bricks+refloor+direct+beam).\nSites bound otherwise (shadow, bounce, exposure, meshes-shadow; plan: sites = {{ ... }}; CLI: after commas):\n  gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere — a site's value is another site (shared), <kernel> (over the lead's storage),\n  <storage>/<kernel> or <site>/<kernel>; `multirenderer graph <renderer>` shows the graph.\n\nBack ends:");
+            println!("Renderers are assembled from components (plan: compose = {{ backend, storage, geometry, prepass, visibility, shading, meshes }};\nCLI: -r backend:<its required slots in order>[+shading[+prepass[+meshes]]], e.g. gpu-compute:prefix+incremental, gpu-compute:bricks+refloor+direct+beam).\nSites bound otherwise (shadow, bounce, exposure, meshes-shadow; plan: sites = {{ ... }}; CLI: after commas):\n  gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere — a site's value is another site (shared), <kernel> (over the lead's storage),\n  <storage>/<kernel> or <site>/<kernel>; `multirenderer graph <renderer>` shows the graph.\nThe world's side: link = free | net(latency_ms=30,jitter_ms=10,bandwidth_mbps=200,loss=0.01,reorder=true,seed=1),\n  client = pick | derive, with its region as knobs: client=derive(radius=4,max_lod=2) (unset: run.view_radius, run.max_lod).\n\nBack ends:");
             for b in mr_components::BACKENDS {
                 let slots: Vec<String> = b.slots.iter().map(|(s, d)| format!("{}={d}", s.name())).collect();
                 let mut at: Vec<String> = vec![format!("{} (default)", b.runs.label())];
@@ -281,7 +281,7 @@ impl Ctx<'_> {
                 graph_key: spec.pipeline().and_then(|g| g.key().ok()),
                 options: spec.extra_options(),
                 view_radius: spec.view_radius(run),
-                link: spec.link(run),
+                link: spec.link(),
                 mode,
                 resolution: [w, h],
                 ..Default::default()
@@ -399,7 +399,8 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         if let Some(c) = &plan.output.compare {
             out.recording_reference = true;
             out.references.retain(|k, _| k.0 != mode);
-            let spec = RendererSpec { label: Some(format!("{} (ref)", c.reference)), options: c.reference_options.clone(), link: Some(Default::default()), ..RendererSpec::new(c.reference.clone()) };
+            let mut spec = RendererSpec::new(c.reference.clone());
+            (spec.label, spec.options) = (Some(format!("{} (ref)", c.reference)), c.reference_options.clone());
             reports.extend(ctx.pass(&[spec], mode, &base, &mut out, Some(c.every), 0)?);
             out.recording_reference = false;
         }

@@ -77,13 +77,13 @@ pub fn spawn_renderer(
         // The world's comes over the stream (`SetEnvironment` first: PLAN step 14c).
         environment: Environment::default(),
         view_radius_chunks: spec.view_radius(run),
-        max_lod: spec.max_lod.unwrap_or(run.max_lod),
+        max_lod: spec.max_lod(run, u8::MAX),
         options_json: serde_json::to_string(&spec.options)?,
         graph_json: spec.pipeline().map(|g| serde_json::to_string(&g)).transpose()?.unwrap_or_default(),
         devices: spec.devices(run),
         stage_times: run.stage_times,
         client: spec.levels(),
-        link: spec.link(run),
+        link: spec.link(),
     };
     Worker::spawn(SpawnConfig {
         renderer: &spec.name,

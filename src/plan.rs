@@ -73,10 +73,11 @@ pub struct RunSpec {
     /// Time every stage of every frame (PLAN step 11): each GPU stage costs a timestamp
     /// (measured: +0.1–0.6% GPU time); `false` runs exactly as before step 11.
     pub stage_times: bool,
-    /// The link between the server and every renderer's client (PLAN step 14c: latency,
-    /// jitter, bandwidth, loss, reordering; default free), e.g. `link = { latency_ms = 80,
-    /// bandwidth_mbps = 50 }`; a renderer's own `link` overrides it. References stay free.
-    pub link: mr_core::link::LinkSpec,
+    /// Before step 14c2 the link of every renderer without its own (PLAN step 14c), e.g.
+    /// `link = { latency_ms = 80, bandwidth_mbps = 50 }`: loads as each renderer's link node
+    /// (`sites = { link = "net(latency_ms=80, bandwidth_mbps=50)" }`).
+    #[serde(skip_serializing)]
+    link: Option<mr_core::link::LinkSpec>,
     /// The rate of the simulated clock scripted runs keep: frame `n` (warm-up included) is
     /// at `n / clock_fps` seconds, the time the link's delays are measured in.
     pub clock_fps: f64,
@@ -119,7 +120,7 @@ impl Default for RunSpec {
             devices: Default::default(),
             compile: Compile::Off,
             stage_times: true,
-            link: Default::default(),
+            link: None,
             clock_fps: 60.0,
         }
     }
@@ -180,15 +181,15 @@ pub struct RendererSpec {
     pub label: Option<String>,
     #[serde(default)]
     pub options: toml::Table,
-    /// Overrides `run.view_radius` for this renderer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub view_radius: Option<u32>,
-    /// Overrides `run.max_lod` for this renderer (still capped by what it supports).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_lod: Option<u8>,
-    /// Overrides `run.link` for this renderer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub link: Option<mr_core::link::LinkSpec>,
+    /// Before step 14c2 this renderer's own view radius, max LOD and link: they load as its
+    /// client's knobs and its link node (`sites = { client = "pick(radius=4, max_lod=2)",
+    /// link = "net(latency_ms=30)" }`), see [`Self::view_radius`].
+    #[serde(default, skip_serializing)]
+    view_radius: Option<u32>,
+    #[serde(default, skip_serializing)]
+    max_lod: Option<u8>,
+    #[serde(default, skip_serializing)]
+    link: Option<mr_core::link::LinkSpec>,
     /// Overrides `run.devices` for this renderer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub devices: Option<mr_core::DeviceConfig>,
@@ -225,6 +226,7 @@ impl RendererSpec {
     pub fn resolve(&mut self) -> anyhow::Result<()> {
         self.ran_graph = None;
         self.compose_label = Default::default();
+        self.absorb_region()?;
         if let Some(g) = &self.graph {
             let (c, _) = g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
             for (k, v) in g.flat_knobs().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
@@ -300,6 +302,45 @@ impl RendererSpec {
         Ok(())
     }
 
+    /// Moves the fields before step 14c2 (`view_radius`, `max_lod`, `link`) into the graph's
+    /// client and link nodes: the sites form's `client` and `link`, or the graph's nodes.
+    fn absorb_region(&mut self) -> anyhow::Result<()> {
+        use mr_components::graph::{CLIENT, LINK, link_site, parse_site_knobs, site_with_knobs};
+        let (radius, max_lod, link) = (self.view_radius.take(), self.max_lod.take(), self.link.take());
+        if radius.is_none() && max_lod.is_none() && link.is_none() {
+            return Ok(());
+        }
+        if !self.has_graph() {
+            bail!("renderer `{}` has no graph, so no client or link of its own: `view_radius`, `max_lod` and the link are the run's", self.name);
+        }
+        let mut sites = BTreeMap::new();
+        let (client, mut knobs) = parse_site_knobs(self.sites.get(CLIENT).map_or("pick", String::as_str)).map_err(anyhow::Error::msg)?;
+        for (k, v) in [("radius", radius.map(i64::from)), ("max_lod", max_lod.map(i64::from))] {
+            if let Some(v) = v {
+                if knobs.insert(k.into(), v.into()).is_some_and(|old| old.as_integer() != Some(v)) {
+                    bail!("the client's `{k}` is set in `sites` and by the renderer's own field");
+                }
+            }
+        }
+        sites.insert(CLIENT.to_string(), site_with_knobs(&client, &knobs));
+        if let Some(l) = link.filter(|l| !l.free()) {
+            if self.sites.get(LINK).is_some_and(|s| *s != link_site(&l)) {
+                bail!("the link is set in `sites` and by the renderer's own `link`");
+            }
+            sites.insert(LINK.to_string(), link_site(&l));
+        }
+        match &mut self.graph {
+            Some(g) => *g = g.with_sites(&sites).map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?,
+            None => self.sites.extend(sites),
+        }
+        Ok(())
+    }
+
+    /// Whether it runs a graph (a composition, or a back end's renderer by name).
+    fn has_graph(&self) -> bool {
+        self.graph.is_some() || self.compose.is_some() || mr_components::BACKENDS.iter().any(|b| b.renderer == Some(self.name.as_str()))
+    }
+
     /// From the command line: `backend:slot+slot+...` for a composition (a bare back-end
     /// name gives its default composition): the back end's
     /// required slots in order, then optionally shading, prepass, meshes and its quiet slots
@@ -312,7 +353,12 @@ impl RendererSpec {
     /// `gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere`.
     pub fn from_cli(s: &str) -> anyhow::Result<Self> {
         use mr_components::Slot;
-        let mut parts = s.split(',');
+        // Commas inside a site's knobs (`link=net(latency_ms=30,loss=0.01)`) are its own.
+        let mut depth = 0i32;
+        let mut parts = s.split(|c: char| {
+            depth += (c == '(') as i32 - (c == ')') as i32;
+            c == ',' && depth == 0
+        });
         let s = parts.next().unwrap_or_default();
         let mut sites = BTreeMap::new();
         for p in parts {
@@ -441,13 +487,48 @@ impl RendererSpec {
         }
     }
 
+    /// Chunks streamed around the camera: its client's `radius`, else the run's.
     pub fn view_radius(&self, run: &RunSpec) -> u32 {
-        self.view_radius.unwrap_or(run.view_radius)
+        self.client_knob("radius").map_or(run.view_radius, |r| r as u32)
     }
 
-    /// The link its client receives the stream over.
-    pub fn link(&self, run: &RunSpec) -> mr_core::link::LinkSpec {
-        self.link.unwrap_or(run.link)
+    /// Its client's knob `name` (`radius`, `max_lod`), if set.
+    pub fn client_knob(&self, name: &str) -> Option<i64> {
+        self.pipeline().and_then(|g| g.client_knob(name))
+    }
+
+    /// Sets (or with `None` clears) its client's knob `name` and re-resolves.
+    pub fn set_client_knob(&mut self, name: &str, value: Option<i64>) -> anyhow::Result<()> {
+        use mr_components::graph::{CLIENT, parse_site_knobs, site_with_knobs};
+        let current = match &self.graph {
+            Some(g) => g.sites_value(CLIENT),
+            None => self.sites.get(CLIENT).cloned().unwrap_or_else(|| "pick".into()),
+        };
+        let (client, mut knobs) = parse_site_knobs(&current).map_err(anyhow::Error::msg)?;
+        match value {
+            Some(v) => drop(knobs.insert(name.into(), v.into())),
+            None => drop(knobs.remove(name)),
+        }
+        let entry: BTreeMap<String, String> = [(CLIENT.to_string(), site_with_knobs(&client, &knobs))].into();
+        match &self.graph {
+            Some(g) => {
+                self.graph = Some(g.with_sites(&entry).map_err(anyhow::Error::msg)?);
+                self.resolve()
+            }
+            None => {
+                let mut sites = self.sites.clone();
+                sites.extend(entry);
+                if sites[CLIENT] == "pick" {
+                    sites.remove(CLIENT);
+                }
+                self.set_sites(sites)
+            }
+        }
+    }
+
+    /// The link its client receives the stream over (its graph's link node).
+    pub fn link(&self) -> mr_core::link::LinkSpec {
+        self.pipeline().and_then(|g| g.link().ok()).unwrap_or_default()
     }
 
     pub fn devices(&self, run: &RunSpec) -> mr_core::DeviceConfig {
@@ -456,7 +537,7 @@ impl RendererSpec {
 
     /// LOD levels to stream, given what the renderer supports.
     pub fn max_lod(&self, run: &RunSpec, supported: u8) -> u8 {
-        self.max_lod.unwrap_or(run.max_lod).min(supported)
+        self.client_knob("max_lod").map_or(run.max_lod, |l| l as u8).min(supported)
     }
 
     /// How its client gets the LOD levels (its graph's `client` node; PLAN step 14b).
@@ -561,9 +642,15 @@ impl Plan {
         }
         expand_sweeps(&mut table)?;
         let mut plan: Plan = table.try_into()?;
+        let link = plan.run.link.take();
         for r in &mut plan.renderers {
             if r.graph.is_some() && (r.compose.is_some() || !r.sites.is_empty()) {
                 bail!("a renderer has `graph` or `compose` (with `sites`), not both");
+            }
+            // `run.link` (before step 14c2): the link of each renderer without its own.
+            let own = r.link.is_some() || r.sites.contains_key(mr_components::graph::LINK) || r.graph.as_ref().is_some_and(|g| g.nodes.values().any(|n| n.role == mr_components::graph::Role::Link));
+            if !own && r.has_graph() {
+                r.link = link;
             }
             r.resolve()?;
         }
@@ -800,6 +887,56 @@ fn apply_override(table: &mut toml::Table, ov: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plans before step 14c2 (`run.link`, a renderer's `link`, `view_radius`, `max_lod`)
+    /// load as the graphs they mean: the link node and the client's knobs.
+    #[test]
+    fn old_region_fields_load_as_nodes() {
+        let scene = "[scene]\ngenerator = { type = \"terrain\", seed = 1 }\ncamera = { type = \"line\", from = [0, 150, 0], to = [300, 150, 75] }\n";
+        let r = "[[renderer]]\ncompose = { backend = \"gpu-compute\", storage = \"bricks\", traversal = \"refloor\" }\n";
+        let home = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)";
+        let old = format!(
+            "{scene}[run]\nview_radius = 8\nlink = {{ latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01, reorder = true }}\n\
+             {r}link = {{}}\n{r}link = {{ latency_ms = 1, bandwidth_mbps = 1000 }}\n{r}\n{r}sites = {{ client = \"derive\" }}\nview_radius = 4\nmax_lod = 2\n\
+             [[renderer]]\ngraph = {{ executor = \"gpu-compute\", nodes = {{ s = {{ role = \"shading\", component = \"direct\", inputs = {{ hits = \"v\" }} }}, v = {{ role = \"visibility\", component = \"raycast\", inputs = {{ primary = \"k\" }} }}, k = {{ role = \"traversal\", component = \"refloor\", inputs = {{ storage = \"b\" }} }}, b = {{ role = \"storage\", component = \"bricks\" }} }} }}\nview_radius = 6\n\
+             [[renderer]]\nname = \"cpu-reference\"\n"
+        );
+        let new = format!(
+            "{scene}[run]\nview_radius = 8\n\
+             {r}\n{r}sites = {{ link = \"net(latency_ms=1, bandwidth_mbps=1000)\" }}\n{r}sites = {{ link = \"{home}\" }}\n{r}sites = {{ client = \"derive(radius=4, max_lod=2)\", link = \"{home}\" }}\n\
+             [[renderer]]\ngraph = {{ executor = \"gpu-compute\", nodes = {{ s = {{ role = \"shading\", component = \"direct\", inputs = {{ hits = \"v\" }} }}, v = {{ role = \"visibility\", component = \"raycast\", inputs = {{ primary = \"k\" }} }}, k = {{ role = \"traversal\", component = \"refloor\", inputs = {{ storage = \"b\" }} }}, b = {{ role = \"storage\", component = \"bricks\" }}, \
+             net = {{ role = \"link\", component = \"net\", knobs = {{ latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01, reorder = true }} }}, c = {{ role = \"client\", component = \"pick\", inputs = {{ changes = \"net\" }}, knobs = {{ radius = 6 }} }} }} }}\n\
+             [[renderer]]\nname = \"cpu-reference\"\n"
+        );
+        let (old, new) = (Plan::parse(&old, &[]).unwrap(), Plan::parse(&new, &[]).unwrap());
+        assert_eq!(old.renderers.len(), new.renderers.len());
+        let show = |p: &Plan, r: &RendererSpec| (r.label().to_string(), r.pipeline().map(|g| g.key().unwrap()), r.link(), r.view_radius(&p.run), r.max_lod(&p.run, 8), r.levels());
+        for (a, b) in old.renderers.iter().zip(&new.renderers) {
+            assert_eq!(show(&old, a), show(&new, b));
+        }
+        let free = &new.renderers[0];
+        assert!(free.link().free() && free.sites.is_empty());
+        assert_eq!(new.renderers[3].view_radius(&new.run), 4);
+        assert_ne!(new.renderers[1].pipeline().unwrap().key(), free.pipeline().unwrap().key(), "each network its own key");
+        let mut far = new.renderers[2].clone();
+        far.set_client_knob("radius", Some(3)).unwrap();
+        assert_eq!(far.pipeline().unwrap().key(), new.renderers[2].pipeline().unwrap().key(), "the radius is not in the key");
+        // Written back in the new form.
+        let again = Plan::parse(&toml::to_string(&old).unwrap(), &[]).unwrap();
+        for (a, b) in again.renderers.iter().zip(&new.renderers) {
+            assert_eq!(show(&again, a), show(&new, b));
+        }
+        // The CLI: commas inside a site's knobs are its own.
+        let cli = RendererSpec::from_cli(&format!("gpu-compute:bricks+refloor,link={},client=pick(radius=4)", home.replace(' ', ""))).unwrap();
+        assert_eq!((cli.link(), cli.view_radius(&new.run)), (new.renderers[2].link(), 4));
+        // The GUI's knob setter, both ways.
+        let mut s = new.renderers[0].clone();
+        s.set_client_knob("max_lod", Some(2)).unwrap();
+        assert_eq!((s.max_lod(&new.run, 8), s.sites.get("client").map(String::as_str)), (2, Some("pick(max_lod=2)")));
+        s.set_client_knob("max_lod", None).unwrap();
+        assert!(s.sites.is_empty());
+        assert!(Plan::parse(&format!("{scene}[[renderer]]\nname = \"cpu-reference\"\nview_radius = 3\n"), &[]).is_err(), "no graph, no client");
+    }
 
     #[test]
     fn parse_with_overrides() {

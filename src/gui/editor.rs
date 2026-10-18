@@ -559,21 +559,23 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
                     ui.weak(format!("[{}] {} — modes: {}", info.tags.join(", "), info.description, modes.join("/")));
                 }
                 ui.horizontal(|ui| {
-                    let mut on = r.view_radius.is_some();
-                    if ui.checkbox(&mut on, "own view radius").on_hover_text("overrides run.view_radius for this renderer").changed() {
-                        r.view_radius = on.then_some(8);
-                        c = true;
-                    }
-                    if let Some(v) = &mut r.view_radius {
-                        c |= ui.add(DragValue::new(v).range(1..=64).suffix(" chunks")).on_hover_text("Chunks (32 blocks) streamed around the camera for this renderer").changed();
-                    }
-                    let mut on = r.max_lod.is_some();
-                    if ui.checkbox(&mut on, "own max LOD").on_hover_text("overrides run.max_lod (capped by what the renderer supports)").changed() {
-                        r.max_lod = on.then_some(2);
-                        c = true;
-                    }
-                    if let Some(v) = &mut r.max_lod {
-                        c |= ui.add(DragValue::new(v).range(0..=8)).on_hover_text("Coarser detail levels beyond the view radius; each doubles reach at half resolution").changed();
+                    // The client's knobs (PLAN step 14c2): its region, unset the run's.
+                    for (knob, label, hover, start, range, unit) in [
+                        ("radius", "own view radius", "overrides run.view_radius for this renderer (its client's `radius`): chunks (32 blocks) streamed around the camera", 8, 1..=64, " chunks"),
+                        ("max_lod", "own max LOD", "overrides run.max_lod (its client's `max_lod`, capped by what the renderer supports): coarser levels beyond the view radius, each doubling reach at half resolution", 2, 0..=8, ""),
+                    ] {
+                        let mut value = r.client_knob(knob);
+                        let mut on = value.is_some();
+                        let mut changed = ui.checkbox(&mut on, label).on_hover_text(hover).changed();
+                        if changed {
+                            value = on.then_some(start);
+                        }
+                        if let Some(v) = &mut value {
+                            changed |= ui.add(DragValue::new(v).range(range).suffix(unit)).on_hover_text(hover).changed();
+                        }
+                        if changed && r.set_client_knob(knob, value).is_ok() {
+                            c = true;
+                        }
                     }
                 });
                 let text = &mut ctx.option_text[i];

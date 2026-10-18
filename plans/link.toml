@@ -1,10 +1,11 @@
-# The link as a modelled network (PLAN step 14c): a 10 s flight (600 frames on the 60 fps
+# The link as a modelled network (PLAN steps 14c, 14c2): a 10 s flight (600 frames on the 60 fps
 # simulated clock, ~30 m/s) over terrain, each renderer's client receiving the server's
 # stream over a link with latency, jitter, a bandwidth, losses (resent after a timeout) and,
 # with `reorder`, chunks overtaking each other. Chunks are sent uncompressed (a dense one is
 # 64 KiB): at 200 Mbit/s the first region takes seconds. Renderers draw what has arrived;
 # quality against the reference (which stays on a free link) shows the holes. Time is
-# simulated (`run.clock_fps`), so runs repeat.
+# simulated (`run.clock_fps`), so runs repeat. The link is a graph node (`sites = { link =
+# "net(..)" }`, knobs as in `mr_core::link::LinkSpec`); unset it is free.
 name = "link"
 
 [scene]
@@ -17,63 +18,68 @@ warmup = 0
 resolution = [1280, 720]
 modes = ["unlit"]
 view_radius = 8
-# The default for every renderer below without its own: a fast home connection.
-link = { latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01, reorder = true }
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
 label = "free"
-link = {}
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
 label = "lan"
-link = { latency_ms = 1, bandwidth_mbps = 1000 }
+sites = { link = "net(latency_ms=1, bandwidth_mbps=1000)" }
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
 label = "home"
+sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
 label = "home, in order"
-link = { latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01 }
+sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01)" }
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
 label = "bad"
-link = { latency_ms = 150, jitter_ms = 80, bandwidth_mbps = 50, loss = 0.05, reorder = true }
+sites = { link = "net(latency_ms=150, jitter_ms=80, bandwidth_mbps=50, loss=0.05, reorder=true)" }
 
 [[renderer]]
 compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
+# Every back end behind the home connection.
+sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
 compose = { backend = "gpu-discover" }
+sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
 compose = { backend = "cpu-discover" }
+sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
 compose = { backend = "gpu-rt", geometry = "greedy", traversal = "rayquery" }
+sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
 compose = { backend = "gpu-voxelspace" }
+sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
 compose = { backend = "gpu-splat" }
+sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
 compose = { backend = "cpu", storage = "bricks", traversal = "refloor" }
+sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
 compose = { backend = "cpu-raster", geometry = "greedy", draw = "raster" }
+sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
 label = "home, derive r4+2"
-sites = { client = "derive" }
-view_radius = 4
-max_lod = 2
+sites = { client = "derive(radius=4, max_lod=2)", link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [output]
 compare = { every = 50 }

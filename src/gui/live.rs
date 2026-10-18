@@ -686,7 +686,10 @@ impl Session {
             "host.in_flight" => {}
             "host.max_lod" => {
                 let mut new = lane.run.spec.clone();
-                new.max_lod = Some(value.as_i64().unwrap_or(0) as u8);
+                if let Err(e) = new.set_client_knob("max_lod", Some(value.as_i64().unwrap_or(0))) {
+                    self.log(format!("lane {i}: max LOD: {e}"));
+                    return;
+                }
                 self.hot_swap(i, new);
             }
             _ if spec.live => {
@@ -1132,7 +1135,8 @@ impl Session {
         if self.reference.is_none() {
             let name = self.plan.output.compare.as_ref().map(|c| c.reference.clone()).unwrap_or_else(|| "cpu-reference".into());
             let options = self.plan.output.compare.as_ref().map(|c| c.reference_options.clone()).unwrap_or_default();
-            let spec = RendererSpec { label: Some(format!("{name} (ref)")), options, link: Some(Default::default()), ..RendererSpec::new(name) };
+            let mut spec = RendererSpec::new(name.clone());
+            (spec.label, spec.options) = (Some(format!("{name} (ref)")), options);
             self.shared.lock().unwrap().reference = spec.label().to_string();
             self.log(format!("starting reference {}", spec.label()));
             let mut r = self.new_lane(spec);

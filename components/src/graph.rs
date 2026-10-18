@@ -39,6 +39,10 @@ pub enum Role {
     /// The generator, the authoritative chunk store and its change log (the host today;
     /// PLAN step 14 puts it on a server behind a modelled link).
     World,
+    /// The link the server's stream crosses to a client (PLAN step 14c2): `free` (everything
+    /// arrives at once, in order) or `net`, a modelled network (`mr_core::link::LinkSpec`
+    /// as its knobs). Runs in the client's process, in front of the client.
+    Link,
     /// The client of the world's stream (PLAN step 14b): what its renderer holds, derived
     /// on the renderer's side from the one stream the server sends every client. `pick`:
     /// the server's LOD levels, picked by the client's radius and levels.
@@ -56,20 +60,22 @@ pub enum Role {
 }
 
 impl Role {
-    pub const ALL: [Role; 11] = [Role::World, Role::Client, Role::Storage, Role::Geometry, Role::Prepass, Role::Traversal, Role::Visibility, Role::Holes, Role::Draw, Role::Shading, Role::Meshes];
+    pub const ALL: [Role; 12] = [Role::World, Role::Link, Role::Client, Role::Storage, Role::Geometry, Role::Prepass, Role::Traversal, Role::Visibility, Role::Holes, Role::Draw, Role::Shading, Role::Meshes];
 
     pub fn name(self) -> &'static str {
         match self {
             Role::World => "world",
+            Role::Link => "link",
             Role::Client => "client",
             r => r.slot().unwrap().name(),
         }
     }
 
-    /// The registry slot whose components fill this role (none for the world and the client).
+    /// The registry slot whose components fill this role (none for the world, the link and
+    /// the client).
     pub fn slot(self) -> Option<Slot> {
         Some(match self {
-            Role::World | Role::Client => return None,
+            Role::World | Role::Link | Role::Client => return None,
             Role::Storage => Slot::Storage,
             Role::Geometry => Slot::Geometry,
             Role::Prepass => Slot::Prepass,
@@ -189,7 +195,8 @@ const fn port(name: &'static str, data: Data, required: bool, description: &'sta
 }
 
 const CHANGES: &[Port] = &[port("changes", Data::Changes, true, "the world's change log")];
-const STREAM: &[Port] = &[port("changes", Data::Changes, true, "the server's stream: the world's change log over the link, the same for every client")];
+const SENT: &[Port] = &[port("changes", Data::Changes, true, "the server's stream: the world's change log, the same for every client")];
+const STREAM: &[Port] = &[port("changes", Data::Changes, true, "the server's stream as it arrives over the link")];
 const ON_STORAGE: &[Port] = &[port("storage", Data::Storage, true, "the storage it reads")];
 const ON_GEOMETRY: &[Port] = &[port("geometry", Data::Faces, true, "the faces its acceleration structure is built from")];
 const RAYCAST: &[Port] = &[
@@ -223,6 +230,7 @@ const PATHTRACE: &[Port] = &[
 pub fn inputs(role: Role, name: &str) -> &'static [Port] {
     match (role, name) {
         (Role::World, _) => &[],
+        (Role::Link, _) => SENT,
         (Role::Client, _) => STREAM,
         (Role::Storage | Role::Geometry, _) => CHANGES,
         (Role::Meshes, _) => MESHES,
@@ -245,7 +253,7 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
 /// What `role` component `name` outputs.
 pub fn output(role: Role, name: &str) -> Data {
     match (role, name) {
-        (Role::World | Role::Client, _) => Data::Changes,
+        (Role::World | Role::Link | Role::Client, _) => Data::Changes,
         (Role::Storage, _) => Data::Storage,
         (Role::Geometry, _) => Data::Faces,
         (Role::Prepass, _) => Data::Starts,
@@ -265,6 +273,7 @@ pub fn output(role: Role, name: &str) -> Data {
 pub fn state(role: Role, name: &str) -> Option<&'static str> {
     Some(match (role, name) {
         (Role::World, _) => "the authoritative chunks and their change log",
+        (Role::Link, "net") => "the messages in flight and the line's queue",
         (Role::Client, _) => "a replica of what arrived and what its renderer holds",
         (Role::Storage, _) => "the representation, patched from the change log",
         (Role::Geometry, _) => "the faces, remeshed per changed chunk",
@@ -333,10 +342,69 @@ pub const CLIENTS: &[&str] = &["pick", "derive"];
 /// The sites form's key for the client's component.
 pub const CLIENT: &str = "client";
 
+/// The client's knobs (PLAN step 14c2): its region, the chunks around the camera and the
+/// LOD levels beyond (capped by what the renderer supports); unset, the run's
+/// `view_radius` and `max_lod`. The workload, not the pipeline: left out of the key.
+pub const CLIENT_KNOBS: &[&str] = &["radius", "max_lod"];
+
+/// The link's components: `free`, or `net` with `mr_core::link::LinkSpec`'s fields as its
+/// knobs. The sites form writes a link other than `free` as `link = "net(latency_ms=30,
+/// loss=0.01)"`.
+pub const LINKS: &[&str] = &["free", "net"];
+
+/// The sites form's key for the link.
+pub const LINK: &str = "link";
+
+/// `component(knob=value, ...)`, the sites form of a node with knobs (the link, the
+/// client): the component and the knobs (values in TOML).
+pub fn parse_site_knobs(value: &str) -> Result<(String, toml::Table), String> {
+    let Some((name, rest)) = value.split_once('(') else { return Ok((value.trim().to_string(), toml::Table::new())) };
+    let body = rest.trim_end().strip_suffix(')').ok_or_else(|| format!("`{value}`: knobs are written `{name}(knob=value, ...)`"))?;
+    let mut t = toml::Table::new();
+    for kv in body.split(',').map(str::trim).filter(|kv| !kv.is_empty()) {
+        let (k, v) = kv.split_once('=').ok_or_else(|| format!("`{value}`: `{kv}` is not `knob=value`"))?;
+        let v: toml::Table = toml::from_str(&format!("v = {}", v.trim())).map_err(|e| format!("`{value}`: `{kv}`: {}", e.message()))?;
+        t.insert(k.trim().to_string(), v["v"].clone());
+    }
+    Ok((name.trim().to_string(), t))
+}
+
+/// The sites form of a component with knobs (see [`parse_site_knobs`]).
+pub fn site_with_knobs(component: &str, knobs: &toml::Table) -> String {
+    if knobs.is_empty() {
+        return component.to_string();
+    }
+    format!("{component}({})", knobs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", "))
+}
+
+/// A link's sites form (`free`, or `net(..)` with the knobs off their defaults).
+pub fn link_site(spec: &mr_core::link::LinkSpec) -> String {
+    if spec.free() && !spec.reorder { "free".into() } else { site_with_knobs("net", &link_knobs(spec)) }
+}
+
+/// The link node `n` models (its knobs read as a `LinkSpec`; `free`: the free link).
+fn link_spec(n: &Node) -> Result<mr_core::link::LinkSpec, String> {
+    match n.component.as_str() {
+        "free" if n.knobs.is_empty() => Ok(Default::default()),
+        "free" => Err("the free link has no knobs (`net` has them)".into()),
+        _ => toml::Value::Table(n.knobs.clone()).try_into().map_err(|e: toml::de::Error| format!("link `net`: {}", e.message())),
+    }
+}
+
+/// A link's knobs as the canonical form writes them: the `LinkSpec` read back, its fields
+/// off their defaults, so `latency_ms = 30` and `30.0` are one network.
+fn link_knobs(spec: &mr_core::link::LinkSpec) -> toml::Table {
+    let mut t = toml::Table::try_from(spec).expect("a LinkSpec is a table");
+    let none = toml::Table::try_from(mr_core::link::LinkSpec::default()).unwrap();
+    t.retain(|k, v| none.get(k) != Some(v));
+    t
+}
+
 /// Whether `role` component `name` exists.
 fn known(role: Role, name: &str) -> bool {
     match role.slot() {
         None if role == Role::Client => CLIENTS.contains(&name),
+        None if role == Role::Link => LINKS.contains(&name),
         None => name == "world",
         Some(s) => component(s, name).is_some(),
     }
@@ -349,7 +417,7 @@ fn known(role: Role, name: &str) -> bool {
 fn default_device(executor: &str, role: Role, component: &str) -> Device {
     match role {
         Role::World => return Device::Server,
-        Role::Client => return Device::Cpu,
+        Role::Link | Role::Client => return Device::Cpu,
         _ => {}
     }
     let only = || role.slot().and_then(|s| crate::component(s, component)).and_then(|c| c.impls.iter().all(|i| i.kind == Kind::Cpu).then_some(Device::Cpu));
@@ -568,41 +636,42 @@ impl Graph {
         g
     }
 
-    /// The world and the client added if missing; the client reads the world, and every
-    /// other `changes` input (unbound, or bound to the world) the client: the world's change
-    /// log reaches a renderer only through its client (PLAN step 14b).
+    /// The world, the link and the client added if missing, in a chain: the link reads the
+    /// world, the client the link, and every other `changes` input (unbound, or bound to the
+    /// world or the link) the client: the world's change log reaches a renderer only over
+    /// its link, through its client (PLAN steps 14b, 14c2).
     fn normalised(&self) -> Result<Graph, String> {
         let mut g = self.placed();
-        let worlds: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == Role::World).map(|(k, _)| k.clone()).collect();
-        let world = match worlds.as_slice() {
-            [] => {
-                if g.nodes.contains_key("world") {
-                    return Err("node `world` must be the world (role = \"world\")".into());
+        let one = |g: &mut Graph, role: Role, component: &str| -> Result<String, String> {
+            let ids: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == role).map(|(k, _)| k.clone()).collect();
+            match ids.as_slice() {
+                [] => {
+                    let id = role.name();
+                    if g.nodes.contains_key(id) {
+                        return Err(format!("node `{id}` must be the {id} (role = \"{id}\")"));
+                    }
+                    g.nodes.insert(id.into(), Node::new(role, component));
+                    Ok(id.to_string())
                 }
-                g.nodes.insert("world".into(), Node::new(Role::World, "world"));
-                "world".to_string()
+                [one] => Ok(one.clone()),
+                _ => Err(format!("one {} per graph (have: {})", role.name(), ids.join(", "))),
             }
-            [w] => w.clone(),
-            _ => return Err(format!("one world per graph (have: {})", worlds.join(", "))),
         };
-        let clients: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == Role::Client).map(|(k, _)| k.clone()).collect();
-        let client = match clients.as_slice() {
-            [] => {
-                if g.nodes.contains_key("client") {
-                    return Err("node `client` must be the client (role = \"client\")".into());
-                }
-                g.nodes.insert("client".into(), Node::new(Role::Client, "pick"));
-                "client".to_string()
-            }
-            [c] => c.clone(),
-            _ => return Err(format!("one client per graph (have: {})", clients.join(", "))),
-        };
+        let world = one(&mut g, Role::World, "world")?;
+        let link = one(&mut g, Role::Link, "free")?;
+        let client = one(&mut g, Role::Client, "pick")?;
         for (id, n) in g.nodes.iter_mut() {
             n.timing.retain(|_, w| *w != When::Now);
-            let from = if *id == client { &world } else { &client };
+            let from = if *id == link {
+                &world
+            } else if *id == client {
+                &link
+            } else {
+                &client
+            };
             for p in inputs(n.role, &n.component).iter().filter(|p| p.data == Data::Changes) {
                 let src = n.inputs.entry(p.name.into()).or_insert_with(|| from.clone());
-                if *src == world {
+                if *src == world || *src == link {
                     *src = from.clone();
                 }
             }
@@ -715,9 +784,31 @@ impl Graph {
         let mut why = Vec::new();
         for (id, n) in &g.nodes {
             if !known(n.role, &n.component) {
-                let have: Vec<&str> = n.role.slot().map(|s| crate::components(s).map(|c| c.name).collect()).unwrap_or_default();
+                let have: Vec<&str> = match n.role {
+                    Role::Client => CLIENTS.to_vec(),
+                    Role::Link => LINKS.to_vec(),
+                    r => r.slot().map(|s| crate::components(s).map(|c| c.name).collect()).unwrap_or_default(),
+                };
                 why.push(format!("`{id}`: unknown {} component `{}` (have: {})", n.role.name(), n.component, have.join(", ")));
                 continue;
+            }
+            match n.role {
+                Role::Link => {
+                    if let Err(e) = link_spec(n) {
+                        why.push(format!("`{id}`: {e}"));
+                    }
+                }
+                Role::Client => {
+                    for (k, v) in &n.knobs {
+                        match (CLIENT_KNOBS.iter().position(|c| c == k), v.as_integer()) {
+                            (None, _) => why.push(format!("`{id}`: the client has no knob `{k}` (has: {})", CLIENT_KNOBS.join(", "))),
+                            (Some(0), Some(1..=1024)) | (Some(1), Some(0..=15)) => {}
+                            (Some(0), _) => why.push(format!("`{id}`.radius: chunks around the camera, 1 to 1024 (not {v})")),
+                            _ => why.push(format!("`{id}`.max_lod: LOD levels beyond LOD 0, 0 to 15 (not {v})")),
+                        }
+                    }
+                }
+                _ => {}
             }
             let ports = inputs(n.role, &n.component);
             for (p, src) in &n.inputs {
@@ -806,6 +897,8 @@ impl Graph {
                 why.push(if n.role == Role::World { format!("`{id}`: the world runs on the server, not on {d}") } else { format!("`{id}`: only the world runs on the server") });
             } else if n.role == Role::Client && d != Device::Cpu {
                 why.push(format!("`{id}`: the client runs on the cpu (the renderer's process), not on {d}"));
+            } else if n.role == Role::Link && d != Device::Cpu {
+                why.push(format!("`{id}`: the link runs on the cpu (the client's process, in front of the client), not on {d}"));
             }
         }
         for (id, n) in &g.nodes {
@@ -875,13 +968,28 @@ impl Graph {
     pub fn canonical(&self) -> Result<String, String> {
         let c = self.check()?;
         let g = &c.graph;
-        // The default client (`pick`, nothing set) is left out: its readers are written as
-        // reading the world, as before step 14b, which keeps the keys.
+        // The client's region is the workload, not the pipeline (its knobs left out); the
+        // default link (`free`) and client (`pick`), nothing else set, are left out: their
+        // readers are written as reading what they read, as before steps 14b and 14c2,
+        // which keeps the keys.
+        let knobs = |n: &Node| -> toml::Table {
+            match n.role {
+                Role::Client => n.knobs.iter().filter(|(k, _)| !CLIENT_KNOBS.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect(),
+                Role::Link => link_spec(n).map(|l| link_knobs(&l)).unwrap_or_default(),
+                _ => n.knobs.clone(),
+            }
+        };
         let plain = |id: &str| {
             let n = &g.nodes[id];
-            n.role == Role::Client && n.component == "pick" && n.knobs.is_empty() && n.timing.is_empty() && n.api.is_none() && n.device.is_none_or(|d| d == Device::Cpu)
+            matches!((n.role, n.component.as_str()), (Role::Client, "pick") | (Role::Link, "free")) && knobs(n).is_empty() && n.timing.is_empty() && n.api.is_none() && n.device.is_none_or(|d| d == Device::Cpu)
         };
-        let src = |s: &'_ str| -> String { if plain(s) { g.nodes[s].inputs["changes"].clone() } else { s.to_string() } };
+        let src = |s: &'_ str| -> String {
+            let mut s = s;
+            while plain(s) {
+                s = &g.nodes[s].inputs["changes"];
+            }
+            s.to_string()
+        };
         let mut ids: HashMap<String, usize> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
         let mut stack = vec![c.output.clone()];
@@ -907,7 +1015,7 @@ impl Graph {
                 When::Iterate(k) => format!("~iterate{k}"),
             };
             let ins: Vec<String> = n.inputs.iter().map(|(p, s)| format!("{p}=n{}{}", ids[&src(s)], when(p))).collect();
-            let knobs: Vec<String> = n.knobs.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            let knobs: Vec<String> = knobs(n).iter().map(|(k, v)| format!("{k}={v}")).collect();
             let api = c.apis.get(id).filter(|a| chosen(n, a)).map_or(String::new(), |a| format!(":{}", a.name()));
             // (The server is written `cpu`, the world's device before step 14, which keeps
             // the keys: only the world runs there.)
@@ -1099,9 +1207,12 @@ impl Graph {
             g.nodes.values_mut().for_each(|n| {
                 n.knobs.clear();
                 n.api = None;
-                // The worker runs the client, whichever it is; the back end sees its messages.
-                if n.role == Role::Client {
-                    n.component = "pick".into();
+                // The worker runs the link and the client, whichever they are; the back end
+                // sees the client's messages.
+                match n.role {
+                    Role::Client => n.component = "pick".into(),
+                    Role::Link => n.component = "free".into(),
+                    _ => {}
                 }
                 let role = n.role;
                 n.timing.retain(|p, _| all || !FREE_TIMINGS.iter().any(|(e, r, port, _)| *e == self.executor && *r == role && port == p));
@@ -1258,7 +1369,8 @@ impl Graph {
         for (k, v) in self.normalised()?.timing_options() {
             t.insert(k.into(), v.into());
         }
-        for (id, n) in self.nodes.iter().filter(|(id, _)| skel.nodes.contains_key(*id)) {
+        // (The link's and the client's knobs are theirs: the worker's, not the back end's.)
+        for (id, n) in self.nodes.iter().filter(|(id, n)| skel.nodes.contains_key(*id) && n.role.slot().is_some()) {
             for (k, v) in &n.knobs {
                 if let Some(old) = t.insert(k.clone(), v.clone()).filter(|old| old != v) {
                     return Err(format!("knob `{k}` set to {old} and {v} (`{id}`): `{}` has one `{k}` for its stages", self.executor));
@@ -1443,16 +1555,22 @@ impl Graph {
     pub fn with_sites(&self, sites: &BTreeMap<String, String>) -> Result<Graph, String> {
         let mut g = self.normalised()?;
         let mut sites = sites.clone();
-        if let Some(c) = sites.remove(CLIENT) {
-            if !CLIENTS.contains(&c.as_str()) {
-                return Err(format!("unknown client `{c}` (have: {})", CLIENTS.join(", ")));
+        for (key, role, have) in [(CLIENT, Role::Client, CLIENTS), (LINK, Role::Link, LINKS)] {
+            if let Some(v) = sites.remove(key) {
+                let (c, knobs) = parse_site_knobs(&v)?;
+                if !have.contains(&c.as_str()) {
+                    return Err(format!("unknown {key} `{c}` (have: {})", have.join(", ")));
+                }
+                for n in g.nodes.values_mut().filter(|n| n.role == role) {
+                    n.component = c.clone();
+                    n.knobs = knobs.clone();
+                }
             }
-            g.nodes.values_mut().filter(|n| n.role == Role::Client).for_each(|n| n.component = c.clone());
         }
         let sites = &sites;
         let names: Vec<String> = g.site_ports().into_iter().map(|(n, ..)| n).collect();
         if let Some(bad) = sites.keys().find(|k| !names.contains(k)) {
-            return Err(format!("no site `{bad}` in this pipeline (have: {}, {CLIENT})", names.join(", ")));
+            return Err(format!("no site `{bad}` in this pipeline (have: {}, {LINK}, {CLIENT})", names.join(", ")));
         }
         // A value naming another listed site waits until that one is bound.
         let refers = |v: &str, n: &str| v == n || v.split_once('/').is_some_and(|(s, _)| s == n);
@@ -1544,13 +1662,48 @@ impl Graph {
                 stack.extend(self.nodes.get(&id).into_iter().flat_map(|n| n.inputs.values().cloned()));
             }
         }
-        self.nodes.retain(|k, n| keep.contains(k) || matches!(n.role, Role::World | Role::Client));
+        self.nodes.retain(|k, n| keep.contains(k) || matches!(n.role, Role::World | Role::Link | Role::Client));
         self
     }
 
     /// The client node's component (`pick` when the graph has none).
     pub fn client(&self) -> &str {
         self.nodes.values().find(|n| n.role == Role::Client).map_or("pick", |n| n.component.as_str())
+    }
+
+    /// The client's knob `name` ([`CLIENT_KNOBS`]), if set.
+    pub fn client_knob(&self, name: &str) -> Option<i64> {
+        self.nodes.values().find(|n| n.role == Role::Client).and_then(|n| n.knobs.get(name)).and_then(|v| v.as_integer())
+    }
+
+    /// The network the link node models (free when the graph has none).
+    pub fn link(&self) -> Result<mr_core::link::LinkSpec, String> {
+        self.nodes.values().find(|n| n.role == Role::Link).map_or(Ok(Default::default()), link_spec)
+    }
+
+    /// The sites form's value for the link or the client (`key`: [`LINK`], [`CLIENT`]),
+    /// the default written out.
+    pub fn sites_value(&self, key: &str) -> String {
+        let g = self.normalised().unwrap_or_else(|_| self.clone());
+        g.world_sites().remove(key).unwrap_or_else(|| if key == LINK { "free" } else { "pick" }.into())
+    }
+
+    /// The link and the client in the sites form (`link = "net(latency_ms=30)"`, `client =
+    /// "derive(radius=4)"`): those other than the default, nothing set.
+    fn world_sites(&self) -> BTreeMap<String, String> {
+        let mut t = BTreeMap::new();
+        for n in self.nodes.values() {
+            let (key, default) = match n.role {
+                Role::Link => (LINK, "free"),
+                Role::Client => (CLIENT, "pick"),
+                _ => continue,
+            };
+            let knobs = if n.role == Role::Link { link_spec(n).map(|l| link_knobs(&l)).unwrap_or_else(|_| n.knobs.clone()) } else { n.knobs.clone() };
+            if n.component != default || !knobs.is_empty() {
+                t.insert(key.to_string(), site_with_knobs(&n.component, &knobs));
+            }
+        }
+        t
     }
 
     /// The lead site's name (the strategy's own rays, or a rasteriser's shadow rays).
@@ -1605,8 +1758,9 @@ impl Graph {
     /// or a shape the form has no words for).
     pub fn sites_form(&self) -> Result<Option<(Composition, BTreeMap<String, String>)>, String> {
         let (c, exact) = self.accept()?;
-        // A client other than `pick` (which `accept` leaves to the worker) is written out.
-        let client: BTreeMap<String, String> = Some(self.client()).filter(|c| *c != "pick").map(|c| (CLIENT.to_string(), c.to_string())).into_iter().collect();
+        // A link or client other than the default (which `accept` leaves to the worker) is
+        // written out.
+        let client = self.normalised()?.world_sites();
         if exact && client.is_empty() {
             return Ok(Some((c, client)));
         }
@@ -1657,6 +1811,9 @@ impl Graph {
     pub fn site_choices(&self, name: &str) -> Vec<String> {
         if name == CLIENT {
             return CLIENTS.iter().map(|c| c.to_string()).collect();
+        }
+        if name == LINK {
+            return LINKS.iter().map(|c| c.to_string()).collect();
         }
         let ports = self.site_ports();
         let Some((_, _, port)) = ports.iter().find(|(n, ..)| n == name) else { return vec![] };
@@ -2425,6 +2582,48 @@ mod tests {
         assert!(pick.with_sites(&bad).unwrap_err().contains("unknown client"));
     }
 
+    /// The link as a node (PLAN step 14c2): `link = "net(..)"` in the sites form; the free
+    /// link and the client's region leave the key alone, each network has its own; the
+    /// back end runs the graph as its composition.
+    #[test]
+    fn link_and_client_knobs() {
+        let pick = Graph::from_composition(&Composition::new("gpu-compute")).unwrap();
+        let with = |kv: &[(&str, &str)]| pick.with_sites(&kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        let key = |g: &Graph| g.key().unwrap();
+        assert_eq!(key(&with(&[(LINK, "free")]).unwrap()), key(&pick));
+        assert_eq!(key(&with(&[(CLIENT, "pick(radius=4, max_lod=3)")]).unwrap()), key(&pick), "the region is not in the key");
+        let home = with(&[(LINK, "net(latency_ms=30, jitter_ms=10, loss=0.01, reorder=true)")]).unwrap();
+        assert_ne!(key(&home), key(&pick));
+        assert_eq!(key(&with(&[(LINK, "net(reorder=true, latency_ms=30.0, loss=0.01, jitter_ms=10)")]).unwrap()), key(&home), "knob order and 30 / 30.0");
+        assert_ne!(key(&with(&[(LINK, "net(latency_ms=31, jitter_ms=10, loss=0.01, reorder=true)")]).unwrap()), key(&home));
+        assert_eq!(home.link().unwrap(), mr_core::link::LinkSpec { latency_ms: 30.0, jitter_ms: 10.0, loss: 0.01, reorder: true, ..Default::default() });
+        assert_eq!(home.to_composition().unwrap().label(), pick.to_composition().unwrap().label());
+        let (_, form) = home.sites_form().unwrap().unwrap();
+        assert_eq!(form[LINK], "net(jitter_ms=10.0, latency_ms=30.0, loss=0.01, reorder=true)");
+        assert_eq!(key(&pick.with_sites(&form).unwrap()), key(&home));
+        let region = with(&[(CLIENT, "derive(radius=4)"), (LINK, "net(latency_ms=1)")]).unwrap();
+        assert_eq!((region.client(), region.client_knob("radius"), region.client_knob("max_lod")), ("derive", Some(4), None));
+        assert_eq!(region.sites_form().unwrap().unwrap().1[CLIENT], "derive(radius=4)");
+        assert!(region.label().unwrap().ends_with(", client = derive(radius=4), link = net(latency_ms=1.0)"), "{}", region.label().unwrap());
+        // The chain: world -> link -> client -> the renderer's readers.
+        let ck = home.check().unwrap();
+        let reads = |id: &str| ck.graph.nodes[id].inputs["changes"].as_str();
+        assert_eq!((reads("link"), reads("client")), ("world", "link"));
+        assert_eq!(ck.devices["link"], Device::Cpu);
+        for (bad, why) in [("net(latency=3)", "unknown field"), ("free(latency_ms=3)", "no knobs"), ("udp", "unknown link"), ("net(latency_ms=3", "knobs are written")] {
+            assert!(with(&[(LINK, bad)]).and_then(|g| g.check().map(|_| ())).unwrap_err().contains(why), "{bad}");
+        }
+        for bad in ["pick(radius=0)", "pick(levels=2)", "pick(max_lod=99)"] {
+            assert!(with(&[(CLIENT, bad)]).unwrap().check().is_err(), "{bad}");
+        }
+        // An old graph with the client reading the world gets the link in between.
+        let mut old = pick.normalised().unwrap();
+        old.nodes.remove("link");
+        old.nodes.get_mut("client").unwrap().inputs.insert("changes".into(), "world".into());
+        assert_eq!(old.normalised().unwrap().nodes["client"].inputs["changes"], "link");
+        assert_eq!(key(&old), key(&pick));
+    }
+
     /// casting's deferred shading, with its walks, on the second GPU); else the reasons
     /// (PLAN step 13e4c).
     #[test]
@@ -2619,8 +2818,10 @@ mod tests {
         let sched = g.check().unwrap().schedule().unwrap();
         let crosses = |s: &Schedule, from: &str, to: &str| s.transfers.iter().find(|e| e.from == from && e.to == to).map(|e| (e.from_device, e.to_device, e.when));
         assert_eq!(crosses(&sched, "visibility", "draw"), Some((Device::Cpu, Device::Gpu(0), When::Prev)), "{sched}");
-        // The link: the server's stream to the client, the client's messages to the GPU.
-        assert_eq!(crosses(&sched, "world", "client"), Some((Device::Server, Device::Cpu, When::Now)), "{sched}");
+        // The link: the server's stream into the link (in the client's process), the
+        // client's messages to the GPU.
+        assert_eq!(crosses(&sched, "world", "link"), Some((Device::Server, Device::Cpu, When::Now)), "{sched}");
+        assert_eq!(crosses(&sched, "link", "client"), None, "{sched}");
         assert_eq!(crosses(&sched, "client", "shadow.storage"), Some((Device::Cpu, Device::Gpu(0), When::Now)), "{sched}");
         assert_eq!(crosses(&sched, "client", "storage"), None, "{sched}");
         assert!(sched.pipelined(), "{sched}");
