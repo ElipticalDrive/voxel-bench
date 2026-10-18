@@ -15,7 +15,7 @@ use mr_world::{Scene, World};
 
 use crate::compare::{self, Quality};
 use crate::plan::{Pacing, Readback, RunSpec, SaveSpec};
-use crate::report::{FrameRecord, PassReport};
+use crate::report::{FirstComplete, FrameRecord, PassReport};
 use crate::stream::{Region, Streamer};
 use crate::window::{UiEvent, UiHandle};
 use crate::worker::{Worker, WorkerEvent, recv_timeout};
@@ -173,6 +173,10 @@ struct InFlight {
     mode: PassMode,
     sent: Instant,
     recorded: bool,
+    /// The frame's time on the run's clock (s).
+    time: f64,
+    /// The server's chunks of the lane's region not yet sent when the frame was requested.
+    backlog: u32,
 }
 
 pub struct Lane {
@@ -186,6 +190,8 @@ pub struct Lane {
     in_flight: VecDeque<InFlight>,
     next_id: u64,
     completions: Vec<f64>,
+    /// Bytes arrived over its link by the previous frame.
+    arrived: u64,
     last_ui: Option<Instant>,
     /// Comparisons still running off the frame loop: (index into `per_frame`, result).
     pending_quality: Vec<(usize, crossbeam_channel::Receiver<Quality>)>,
@@ -193,7 +199,7 @@ pub struct Lane {
 
 impl Lane {
     pub fn new(worker: Worker, region: Region, report: PassReport, ui_index: usize, width: u32, height: u32) -> Self {
-        Self { worker, region, report, ui_index, width, height, in_flight: VecDeque::new(), next_id: 0, completions: vec![], last_ui: None, pending_quality: vec![] }
+        Self { worker, region, report, ui_index, width, height, in_flight: VecDeque::new(), next_id: 0, completions: vec![], arrived: 0, last_ui: None, pending_quality: vec![] }
     }
 }
 
@@ -331,7 +337,7 @@ pub fn send_stream(w: &Worker, mut ups: Vec<WorldUpdate>, at: DVec3, time: f64) 
 }
 
 fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> anyhow::Result<()> {
-    let WorkerMsg::FrameDone { frame_id, stats, slot, update_ms } = m else {
+    let WorkerMsg::FrameDone { frame_id, stats, slot, update_ms, arrivals } = m else {
         bail!("[{}] unexpected message {m:?}", lane.report.label);
     };
     let Some(f) = lane.in_flight.pop_front() else { bail!("[{}] completed a frame never requested", lane.report.label) };
@@ -348,12 +354,21 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
         }
         None => None,
     };
+    // What its client lacked and what crossed its link (PLAN step 14e).
+    let holes = arrivals.holes + f.backlog;
+    let arrived_bytes = arrivals.arrived - lane.arrived;
+    lane.arrived = arrivals.arrived;
+    lane.report.wire_bytes = arrivals.bytes;
+    lane.report.arrived_bytes = arrivals.arrived;
+    if holes == 0 && lane.report.first_complete.is_none() {
+        lane.report.first_complete = Some(FirstComplete { frame: f.frame, ms: start.elapsed().as_secs_f64() * 1e3, clock_s: f.time });
+    }
     if f.recorded {
         lane.completions.push(start.elapsed().as_secs_f64() * 1e3);
         if let Some(rx) = quality {
             lane.pending_quality.push((lane.report.per_frame.len(), rx));
         }
-        lane.report.per_frame.push(FrameRecord { frame: f.frame, latency_ms, cpu_ms: stats.cpu_ms, gpu_ms: stats.gpu_ms, update_ms, counters: stats.counters, stages: stats.stages, quality: None });
+        lane.report.per_frame.push(FrameRecord { frame: f.frame, latency_ms, cpu_ms: stats.cpu_ms, gpu_ms: stats.gpu_ms, update_ms, arrived_bytes, holes, counters: stats.counters, stages: stats.stages, quality: None });
     }
     Ok(())
 }
@@ -500,7 +515,8 @@ pub fn run_pass(
             let id = lane.next_id;
             lane.next_id += 1;
             let req = FrameRequest { frame_id: id, camera: input.camera, mode: input.mode.lighting, meshes: input.mode.meshes, readback: slot.is_some() };
-            lane.in_flight.push_back(InFlight { id, frame: input.frame, mode: input.mode, sent: Instant::now(), recorded: input.recorded });
+            let backlog = if streams && !lane.region.generates { server.pending_within(&lane.region.streamed()) as u32 } else { 0 };
+            lane.in_flight.push_back(InFlight { id, frame: input.frame, mode: input.mode, sent: Instant::now(), recorded: input.recorded, time: input.time, backlog });
             lane.worker.send(HostMsg::Render { req, slot, time: input.time })?;
         }
         rendered += 1;
@@ -526,6 +542,10 @@ pub fn run_pass(
         }
         let completions = std::mem::take(&mut lane.completions);
         lane.report.finish(&completions);
+        // A client generating the world takes edits only: its update cost is generation's.
+        if lane.region.generates {
+            lane.report.update_ns_per_byte = None;
+        }
     }
     Ok(())
 }

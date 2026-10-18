@@ -1,0 +1,35 @@
+# The served split measured (PLAN step 14e): one pipeline swept over the link, the
+# generator's placement and how the client gets its LOD levels. Each pass reports the bytes
+# over its link, the update cost per byte, the chunks of its region missing per frame
+# (the server's backlog, on the link, not generated yet) and the first frame with none
+# missing (frame, simulated clock, wall time); the run prints them as the `stream` table
+# and observations carry them (`stream`). A 10 s flight over terrain with edits around the
+# start (so generating clients get some bytes too); time is simulated, so runs repeat.
+name = "stream"
+
+[scene]
+generator = { type = "terrain", seed = 21 }
+camera = { type = "line", from = [0, 150, 0], to = [300, 150, 75] }
+events = [
+    { type = "random_edits", every = 2, count = 500, seed = 5, center = [0, 120, 0], radius = 60, block = "toggle" },
+    { type = "sphere", frame = 120, center = [60, 120, 15], radius = 18, block = "air" },
+]
+
+[run]
+frames = 600
+warmup = 0
+resolution = [1280, 720]
+modes = ["unlit"]
+view_radius = 6
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+sites = { link = [
+    "free",
+    "net(latency_ms=1, bandwidth_mbps=1000)",
+    "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)",
+    "net(latency_ms=150, jitter_ms=80, bandwidth_mbps=50, loss=0.05, reorder=true)",
+], generator = "*", client = ["pick", "pick(radius=3, max_lod=2)", "derive(radius=3, max_lod=2)"] }
+
+[output]
+compare = { every = 50 }

@@ -104,6 +104,19 @@ impl Streamer {
         self.pending.len()
     }
 
+    /// Of the chunks not yet delivered, those within `radii` (per LOD level) of the camera:
+    /// a client's share of the backlog.
+    pub fn pending_within(&self, radii: &[u32]) -> usize {
+        if radii.len() >= self.radii.len() && radii.iter().zip(&self.radii).all(|(&a, &b)| a as i32 >= b) {
+            return self.pending.len();
+        }
+        let inside = |k: &&ChunkKey| {
+            let (Some(r), Some(Some(c))) = (radii.get(k.lod as usize), self.centers.get(k.lod as usize)) else { return false };
+            (k.pos - *c).abs().max_element() <= *r as i32
+        };
+        self.pending.iter().filter(inside).count()
+    }
+
     /// Streaming updates for a camera position.
     pub fn update(&mut self, world: &mut World, cam: DVec3, out: &mut Vec<WorldUpdate>) {
         let mut moved = false;
@@ -238,6 +251,11 @@ impl Generating {
         self.streamer.update(&mut self.world, cam, out);
     }
 
+    /// Chunks of its region not generated yet (budgeted).
+    pub fn pending(&self) -> usize {
+        self.streamer.pending()
+    }
+
     /// Chunks generated (non-air) so far.
     pub fn chunks(&self) -> u64 {
         self.streamer.chunks_sent
@@ -321,6 +339,10 @@ mod tests {
             let (mut free, mut linked) = (Client::new(2, 2, levels), Client::new(2, 2, levels));
             let (mut a, mut b) = (HashMap::new(), HashMap::new());
             let mut holes = 0;
+            // The whole region at once (no budget, no link): what "no holes" must mean.
+            let (mut whole_world, mut whole_server, mut whole) = (World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build()), Streamer::new(mr_core::client::reach(2, 2, levels), None), Client::new(2, 2, levels));
+            let mut c = HashMap::new();
+            let (mut counted, mut complete) = (0, 0);
             // Until everything arrived and the renderer caught up.
             for f in 0..600 {
                 if f > 60 && link.in_flight() == 0 && caught_up(&a, &b) {
@@ -343,11 +365,42 @@ mod tests {
                 apply(&mut a, &ups);
                 apply(&mut b, &direct);
                 holes += (a.len() < b.len()) as u32;
+                let (mut all, mut w) = (vec![], vec![]);
+                let changed = whole_world.apply_edits(&edits);
+                whole_server.edits(&edits, &changed, &mut all);
+                whole_server.update(&mut whole_world, cam, &mut all);
+                whole.receive(&all, &mut w);
+                whole.update(cam, &mut w);
+                apply(&mut c, &w);
+                // The holes counted (PLAN step 14e): none only when it holds the whole region.
+                assert_eq!(server.pending_within(&mr_core::client::reach(2, 2, levels)), server.pending());
+                let n = server.pending() + link.chunks_in_flight();
+                if n == 0 {
+                    complete += 1;
+                    assert!(c.keys().all(|k| a.contains_key(k)), "{levels:?} reorder {reorder} frame {f}: no holes counted, {} of {} chunks held", c.keys().filter(|k| a.contains_key(k)).count(), c.len());
+                }
+                counted += (n > 0) as u32;
             }
+            assert!(counted > 5 && complete > 0, "{levels:?} reorder {reorder}: {counted} frames with holes counted, {complete} without");
             assert_eq!(link.in_flight(), 0, "{levels:?} reorder {reorder}");
             assert!(holes > 5 && link.stats().resent > 0, "{levels:?} reorder {reorder}: holes {holes}, {:?}", link.stats());
             assert!(same(&a, &b), "{levels:?} reorder {reorder}: {} chunks held against {}", a.len(), b.len());
         }
+    }
+
+    /// A client's share of the server's backlog: the chunks not yet sent within its radius.
+    #[test]
+    fn backlog_within_a_region() {
+        let mut world = World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build());
+        let mut server = Streamer::new(vec![3, 3], Some(0));
+        let cam = DVec3::new(5.0, 60.0, 5.0);
+        server.update(&mut world, cam, &mut vec![]);
+        let center = (cam / 32.0).floor().as_ivec3();
+        let within = |r: i32| (-r..=r).flat_map(|z| (-r..=r).flat_map(move |y| (-r..=r).map(move |x| IVec3::new(x, y, z)))).filter(|d| world.may_contain_blocks(ChunkKey { pos: center + *d, lod: 0 })).count();
+        let n = within(1);
+        assert!(n > 0 && server.pending() > n);
+        assert_eq!(server.pending_within(&[1]), n);
+        assert_eq!(server.pending_within(&[3, 3]), server.pending());
     }
 
     /// A client generating the world from the server's spec, sent only edits, holds what a

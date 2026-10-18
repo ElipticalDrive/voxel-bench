@@ -16,7 +16,7 @@ use memmap2::MmapMut;
 use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {
@@ -60,8 +60,9 @@ pub enum HostMsg {
 pub enum WorkerMsg {
     Hello { pid: u32, protocol: u32, renderers: Vec<RendererInfo> },
     Ready { info: RendererInfo, init_ms: f32 },
-    /// `update_ms` is time spent applying world updates since the previous frame.
-    FrameDone { frame_id: u64, stats: FrameStats, slot: Option<u32>, update_ms: f32 },
+    /// `update_ms` is time spent applying world updates since the previous frame;
+    /// `arrivals` what had reached its client when the frame was requested (PLAN step 14e).
+    FrameDone { frame_id: u64, stats: FrameStats, slot: Option<u32>, update_ms: f32, arrivals: mr_core::link::Arrivals },
     Flushed,
     Memory(MemoryReport),
     /// A parameter change was rejected (non-fatal).
@@ -187,9 +188,10 @@ mod tests {
             legend: None,
             stages: vec![mr_core::StageTime::cpu("geometry", &["geometry".into()], 2.0), mr_core::StageTime { name: "draw".into(), nodes: vec!["draw".into()], cpu_ms: None, gpu_ms: Some(0.25) }],
         };
-        let msg = WorkerMsg::FrameDone { frame_id: 7, stats: stats.clone(), slot: Some(1), update_ms: 0.125 };
+        let arrivals = mr_core::link::Arrivals { bytes: 1 << 40, arrived: 1 << 39, holes: 3 };
+        let msg = WorkerMsg::FrameDone { frame_id: 7, stats: stats.clone(), slot: Some(1), update_ms: 0.125, arrivals };
         let back: WorkerMsg = postcard::from_bytes(&postcard::to_allocvec(&msg).unwrap()).unwrap();
-        let WorkerMsg::FrameDone { frame_id: 7, stats: s, slot: Some(1), update_ms } = back else { panic!("{back:?}") };
-        assert_eq!((s.stages, s.counters, s.gpu_ms, update_ms), (stats.stages, stats.counters, stats.gpu_ms, 0.125));
+        let WorkerMsg::FrameDone { frame_id: 7, stats: s, slot: Some(1), update_ms, arrivals: a } = back else { panic!("{back:?}") };
+        assert_eq!((s.stages, s.counters, s.gpu_ms, update_ms, a), (stats.stages, stats.counters, stats.gpu_ms, 0.125, arrivals));
     }
 }

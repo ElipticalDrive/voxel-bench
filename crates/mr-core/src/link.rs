@@ -59,6 +59,18 @@ pub fn wire_bytes(u: &WorldUpdate) -> usize {
     }
 }
 
+/// What reached a client by a frame (PLAN step 14e), reported by its worker with the frame.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Arrivals {
+    /// Bytes sent over its link so far (`wire_bytes`, resends included), and of those the
+    /// bytes that arrived (each message once).
+    pub bytes: u64,
+    pub arrived: u64,
+    /// Chunks of its region missing on the client's side: on the link, or not generated
+    /// yet (a client generating the world). The server's backlog is the host's to add.
+    pub holes: u32,
+}
+
 /// What crossed the link so far.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LinkStats {
@@ -66,6 +78,8 @@ pub struct LinkStats {
     pub bytes: u64,
     /// Losses (each a resend).
     pub resent: u64,
+    /// Bytes of the messages delivered (each once).
+    pub arrived: u64,
 }
 
 struct Pending {
@@ -127,6 +141,11 @@ impl Link {
     /// Messages still on the way.
     pub fn in_flight(&self) -> usize {
         self.queue.len()
+    }
+
+    /// Chunks still on the way (holes at the client until they arrive).
+    pub fn chunks_in_flight(&self) -> usize {
+        self.queue.iter().filter(|p| matches!(p.0.msg, WorldUpdate::ChunkLoad { .. })).count()
     }
 
     /// Uniform in [0, 1) (splitmix64).
@@ -192,7 +211,9 @@ impl Link {
     pub fn deliver(&mut self, now: f64, out: &mut Vec<WorldUpdate>) {
         let now = (now * 1e9) as u64;
         while self.queue.peek().is_some_and(|p| p.0.at <= now) {
-            out.push(self.queue.pop().unwrap().0.msg);
+            let msg = self.queue.pop().unwrap().0.msg;
+            self.stats.arrived += wire_bytes(&msg) as u64;
+            out.push(msg);
         }
         if self.queue.is_empty() {
             self.last.clear();
@@ -235,7 +256,7 @@ mod tests {
         assert_eq!(xs(&out), [0]);
         l.deliver(3.1, &mut out);
         assert_eq!(xs(&out), [0, 1, 2]);
-        assert_eq!(l.stats(), LinkStats { messages: 3, bytes: 3 * bytes as u64, resent: 0 });
+        assert_eq!(l.stats(), LinkStats { messages: 3, bytes: 3 * bytes as u64, resent: 0, arrived: 3 * bytes as u64 });
     }
 
     /// Jitter and losses reorder only across streams: one stream (or one chunk's) stays in

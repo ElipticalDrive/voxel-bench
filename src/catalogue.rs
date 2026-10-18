@@ -407,6 +407,7 @@ mod tests {
             bad_pct: None,
             counters: Default::default(),
             stages: Vec::new(),
+            stream: None,
         }
     }
 

@@ -42,6 +42,11 @@ pub struct FrameRecord {
     pub cpu_ms: f32,
     pub gpu_ms: Option<f32>,
     pub update_ms: f32,
+    /// Bytes arrived over its link since the previous frame (PLAN step 14e).
+    pub arrived_bytes: u64,
+    /// Chunks of its region missing when the frame was requested: the server's backlog, on
+    /// the link, not generated yet.
+    pub holes: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub counters: Vec<(String, f64)>,
     /// Time per stage and the graph nodes each ran (PLAN step 11).
@@ -113,6 +118,16 @@ pub struct QualitySummary {
     pub worst_frame: u32,
 }
 
+/// The first frame requested with nothing of its region missing (PLAN step 14e).
+#[derive(Copy, Clone, Debug, Serialize, serde::Deserialize)]
+pub struct FirstComplete {
+    pub frame: u32,
+    /// Wall time from the pass's start to its completion, the initial load included.
+    pub ms: f64,
+    /// Its time on the run's clock.
+    pub clock_s: f64,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct PassReport {
     pub label: String,
@@ -154,6 +169,16 @@ pub struct PassReport {
     pub stages: Vec<StageSummary>,
     pub missed_deadlines: Option<u32>,
     pub chunks_sent: u64,
+    /// Bytes sent over its link in the pass (resends included) and the bytes arrived,
+    /// warm-up included (PLAN step 14e).
+    pub wire_bytes: u64,
+    pub arrived_bytes: u64,
+    /// Update time per byte arrived (ns), over the recorded frames.
+    pub update_ns_per_byte: Option<f64>,
+    /// Chunks missing per recorded frame (`FrameRecord::holes`) and the frames with any.
+    pub holes: Option<Summary>,
+    pub frames_with_holes: usize,
+    pub first_complete: Option<FirstComplete>,
     pub peak_rss_mb: Option<f64>,
     pub memory: MemoryReport,
     pub quality: Option<QualitySummary>,
@@ -172,6 +197,10 @@ impl PassReport {
         self.gpu_ms = Summary::of(f.iter().filter_map(|r| r.gpu_ms.map(f64::from)));
         self.update_ms = Summary::of(f.iter().map(|r| r.update_ms as f64));
         self.stages = StageSummary::of(f.iter().map(|r| &r.stages[..]));
+        let bytes: u64 = f.iter().map(|r| r.arrived_bytes).sum();
+        self.update_ns_per_byte = (bytes > 0).then(|| f.iter().map(|r| r.update_ms as f64).sum::<f64>() * 1e6 / bytes as f64);
+        self.holes = Summary::of(f.iter().map(|r| r.holes as f64));
+        self.frames_with_holes = f.iter().filter(|r| r.holes > 0).count();
         self.frame_interval_ms = Summary::of(completions.windows(2).map(|w| w[1] - w[0]));
         if self.wall_s > 0.0 {
             self.fps = self.frames as f64 / self.wall_s;
@@ -224,6 +253,35 @@ pub fn table(reports: &[PassReport]) -> String {
         );
     }
     s
+}
+
+/// The stream to each pass's client (PLAN step 14e), `None` when every pass had its whole
+/// region at once over a free link (nothing to tell apart).
+pub fn stream_table(reports: &[PassReport]) -> Option<String> {
+    let ok: Vec<&PassReport> = reports.iter().filter(|r| r.error.is_none()).collect();
+    let first_at_once = |r: &PassReport| r.first_complete.is_some_and(|c| r.per_frame.first().is_none_or(|f| c.frame <= f.frame));
+    if ok.iter().all(|r| r.link.free() && r.frames_with_holes == 0 && first_at_once(r)) {
+        return None;
+    }
+    let mut s = String::new();
+    let _ = writeln!(s, "{:<6} {:>8} {:>8} {:>8} {:>7} {:>6} {:>6}  {:<28}  {}", "mode", "sent MB", "arr. MB", "ns/byte", "holes", "max", "frames", "first complete", "stream to");
+    for r in ok {
+        let first = r.first_complete.map_or_else(|| "never".into(), |c| format!("#{:<4} {:>6.2} s {:>7.0} ms", c.frame, c.clock_s, c.ms));
+        let _ = writeln!(
+            s,
+            "{:<6} {:>8.1} {:>8.1} {:>8} {:>7.1} {:>6.0} {:>6}  {:<28}  {}",
+            r.mode.map(|m| m.name()).unwrap_or("-"),
+            r.wire_bytes as f64 / 1048576.0,
+            r.arrived_bytes as f64 / 1048576.0,
+            r.update_ns_per_byte.map_or_else(|| "-".into(), |v| format!("{v:.2}")),
+            r.holes.as_ref().map_or(0.0, |h| h.mean),
+            r.holes.as_ref().map_or(0.0, |h| h.max),
+            r.frames_with_holes,
+            first,
+            r.label,
+        );
+    }
+    Some(s)
 }
 
 /// Mean time per stage of each pass (PLAN step 11), `None` when no pass reported stages.

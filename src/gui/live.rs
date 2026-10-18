@@ -1279,7 +1279,7 @@ impl Session {
                     }
                 }
                 WorkerMsg::ParamError { name, error } => shared.lock().unwrap().log(format!("lane {}: {name}: {error}", i.wrapping_add(1))),
-                WorkerMsg::FrameDone { frame_id, stats, slot, update_ms } => {
+                WorkerMsg::FrameDone { frame_id, stats, slot, update_ms, .. } => {
                     let Some(f) = lane.run.in_flight.pop_front() else { anyhow::bail!("unexpected frame") };
                     if f.id != frame_id {
                         anyhow::bail!("frames out of order");

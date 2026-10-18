@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use anyhow::{Context, bail};
 use mr_core::client::Client;
-use mr_core::link::Link;
+use mr_core::link::{Arrivals, Link};
 use mr_core::{CompletedFrame, FrameSink, Renderer, RendererEntry, Waker};
 use mr_ipc::{FrameSlots, HostMsg, MsgWriter, PROTOCOL_VERSION, WorkerMsg};
 use mr_world::stream::Generating;
@@ -37,14 +37,15 @@ pub fn cpu_devices(_: &mr_core::DeviceConfig) -> mr_core::Devices {
 struct Sink<'a> {
     out: &'a mut MsgWriter<WorkerMsg>,
     shm: &'a mut FrameSlots,
-    slots: &'a mut HashMap<u64, Option<u32>>,
+    /// Per frame requested: its readback slot and what had reached the client by then.
+    slots: &'a mut HashMap<u64, (Option<u32>, Arrivals)>,
     update_ms: &'a mut f32,
     error: Option<anyhow::Error>,
 }
 
 impl FrameSink for Sink<'_> {
     fn complete(&mut self, frame: CompletedFrame<'_>) {
-        let slot = self.slots.remove(&frame.frame_id).flatten();
+        let (slot, arrivals) = self.slots.remove(&frame.frame_id).unwrap_or_default();
         if let (Some(s), Some(px)) = (slot, frame.pixels) {
             let dst = self.shm.slot_mut(s);
             if px.len() > dst.len() {
@@ -58,6 +59,7 @@ impl FrameSink for Sink<'_> {
             stats: frame.stats,
             slot: slot.filter(|_| frame.pixels.is_some()),
             update_ms: std::mem::take(self.update_ms),
+            arrivals,
         };
         if let Err(e) = self.out.send(&msg) {
             self.error.get_or_insert(e);
@@ -141,6 +143,8 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
 
     let mut slots = HashMap::new();
     let mut update_ms = 0f32;
+    // Bytes over a free link (a modelled one counts its own).
+    let mut free_bytes = 0u64;
     while let Ok(msg) = rx.recv() {
         let mut new_shm = None;
         let mut sink = Sink { out, shm: &mut shm, slots: &mut slots, update_ms: &mut update_ms, error: None };
@@ -156,6 +160,9 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
         };
         match msg {
             HostMsg::Stream { updates, at, time } => {
+                if link.is_none() {
+                    free_bytes += updates.iter().map(|u| mr_core::link::wire_bytes(u) as u64).sum::<u64>();
+                }
                 let t = Instant::now();
                 let mut ups = vec![];
                 let got = match &mut link {
@@ -218,7 +225,10 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                     renderer.update(ups)?;
                     *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
                 }
-                sink.slots.insert(req.frame_id, slot.filter(|_| req.readback));
+                let holes = link.as_ref().map_or(0, |l| l.chunks_in_flight()) + generating.as_ref().map_or(0, |g| g.pending());
+                let (bytes, arrived) = link.as_ref().map_or((free_bytes, free_bytes), |l| (l.stats().bytes, l.stats().arrived));
+                let arrivals = Arrivals { bytes, arrived, holes: holes as u32 };
+                sink.slots.insert(req.frame_id, (slot.filter(|_| req.readback), arrivals));
                 renderer.render(&req, &mut sink)?;
             }
             HostMsg::Flush => {

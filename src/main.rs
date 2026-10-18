@@ -214,6 +214,9 @@ fn main() -> anyhow::Result<()> {
             if let Some(t) = report::stage_table(&reports) {
                 table = format!("{table}\nstages (mean per frame that ran them):\n{t}");
             }
+            if let Some(t) = report::stream_table(&reports) {
+                table = format!("{table}\n{t}");
+            }
             println!("\n{table}");
             std::fs::write(run_dir.join("summary.txt"), &table)?;
             std::fs::write(run_dir.join("report.json"), serde_json::to_string_pretty(&reports)?)?;

@@ -14,8 +14,8 @@ use crate::plan::Plan;
 use crate::report::PassReport;
 
 /// Bumped when fields change meaning or are added (2: `features`; 3: `sites`, `graph`,
-/// `graph_key`; 4: `stages`).
-pub const VERSION: u32 = 4;
+/// `graph_key`; 4: `stages`; 5: `stream`).
+pub const VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
@@ -115,6 +115,24 @@ pub struct Observation {
     /// Time per stage (PLAN step 11; version 4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<ObservedStage>,
+    /// The stream to its client (PLAN step 14e; version 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<ObservedStream>,
+}
+
+/// What crossed the link and what was missing (`PassReport`'s fields of the same names).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ObservedStream {
+    pub wire_bytes: u64,
+    pub arrived_bytes: u64,
+    pub update_ns_per_byte: Option<f64>,
+    /// Mean and largest chunks missing per frame, and the frames with any.
+    pub holes: f64,
+    pub holes_max: f64,
+    pub frames_with_holes: usize,
+    /// The first frame with nothing missing: its number and wall time from the pass's start.
+    pub first_complete_frame: Option<u32>,
+    pub first_complete_ms: Option<f64>,
 }
 
 /// A stage's mean times over the frames that ran it, and the nodes it ran.
@@ -182,6 +200,16 @@ impl Observation {
             bad_pct: q.map(|q| q.bad_pct.mean),
             counters: sums.into_iter().map(|(k, (s, n))| (k, s / n.max(1) as f64)).collect(),
             stages: Vec::new(),
+            stream: (r.error.is_none()).then(|| ObservedStream {
+                wire_bytes: r.wire_bytes,
+                arrived_bytes: r.arrived_bytes,
+                update_ns_per_byte: r.update_ns_per_byte,
+                holes: r.holes.as_ref().map_or(0.0, |h| h.mean),
+                holes_max: r.holes.as_ref().map_or(0.0, |h| h.max),
+                frames_with_holes: r.frames_with_holes,
+                first_complete_frame: r.first_complete.map(|c| c.frame),
+                first_complete_ms: r.first_complete.map(|c| c.ms),
+            }),
         }
         .with_stages(r)
     }

@@ -796,8 +796,11 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
             // Combinations whose components' needs cannot be met do not exist.
             for c in combos.into_iter().filter(|c| c.validate().is_ok()) {
                 for (c, sites) in expand_sites(&c, &site_axes)? {
-                    let key = mr_components::graph::Graph::from_composition(&c).and_then(|g| g.with_sites(&sites)).and_then(|g| g.with_options(&options).key()).map_err(anyhow::Error::msg)?;
-                    if !keys.insert(key) {
+                    let g = mr_components::graph::Graph::from_composition(&c).and_then(|g| g.with_sites(&sites)).map_err(anyhow::Error::msg)?;
+                    // The client's region is the workload, not in the key, but a pass of its own.
+                    let region: Vec<Option<i64>> = mr_components::graph::CLIENT_KNOBS.iter().map(|k| g.client_knob(k)).collect();
+                    let key = g.with_options(&options).key().map_err(anyhow::Error::msg)?;
+                    if !keys.insert((key, region)) {
                         continue;
                     }
                     let mut entry = e.as_table().unwrap().clone();
@@ -834,7 +837,9 @@ fn expand_sites(c: &mr_components::Composition, axes: &[(String, Pick)]) -> anyh
         return Ok(vec![(c.clone(), BTreeMap::new())]);
     }
     let base = mr_components::graph::Graph::from_composition(c).map_err(anyhow::Error::msg)?;
-    let names: Vec<String> = base.site_ports().into_iter().map(|(n, ..)| n).collect();
+    // The ray-casting sites, and the nodes on the world's side every pipeline has.
+    use mr_components::graph::{CLIENT, GENERATOR, LINK};
+    let names: Vec<String> = base.site_ports().into_iter().map(|(n, ..)| n).chain([LINK, CLIENT, GENERATOR].map(String::from)).collect();
     let mut lists: Vec<(&str, Vec<String>)> = vec![];
     for (site, pick) in axes {
         let values = match pick {
@@ -1159,6 +1164,15 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert!(labels.contains(&"gpu-raster: bricks + greedy + raster + pathtrace, bounce = rows/rowrun"), "{labels:?}");
         // A named site a pipeline lacks skips it.
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ shading = \"direct\" }}\nsites = {{ bounce = [\"rows/rowrun\"] }}\n"), &[]).is_err());
+        // Step 14e: sweeps over the world's side (link, client, generator); a client's region
+        // is not in the key but a pass of its own.
+        let p = Plan::parse(&format!("{base}[run]\nview_radius = 6\n[[renderer]]\nsites = {{ link = [\"free\", \"net(latency_ms=30)\"], generator = \"*\", client = [\"pick\", \"pick(radius=3, max_lod=2)\", \"derive(radius=3, max_lod=2)\"] }}\n"), &[]).unwrap();
+        assert_eq!(p.renderers.len(), 2 * 2 * 3);
+        let mut seen: Vec<(String, u32, bool, bool)> = p.renderers.iter().map(|r| (r.pipeline().unwrap().key().unwrap(), r.view_radius(&p.run), r.link().free(), r.pipeline().unwrap().generates())).collect();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 12);
+        assert_eq!(Plan::parse(&format!("{base}[[renderer]]\nsites = {{ link = \"*\", client = \"*\" }}\n"), &[]).unwrap().renderers.len(), 4);
     }
 
     /// Every shipped plan parses, and its compositions validate and resolve.
