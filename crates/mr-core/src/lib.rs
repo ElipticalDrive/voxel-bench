@@ -10,6 +10,7 @@ pub mod chunk;
 pub mod client;
 pub mod face;
 pub mod legend;
+pub mod link;
 pub mod lighting;
 pub mod mesh;
 pub mod params;

@@ -71,7 +71,7 @@ impl<R: Repr> World for StorageGrid<R> {
 
     fn bounds_rel(&self, cam: IVec3) -> (IVec3, IVec3) {
         if self.cells.is_empty() {
-            return (IVec3::ONE, IVec3::ZERO);
+            return crate::traversal::refloor::cpu::NOWHERE;
         }
         (self.min * 32 - cam, (self.min + self.dims) * 32 - cam)
     }

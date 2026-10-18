@@ -2,7 +2,8 @@
 //! The full worker (`mr-worker`, every renderer) and generated pipeline workers (PLAN step
 //! 8: one composition compiled for this machine) both serve through [`run`]. The worker is
 //! the client side of the link (PLAN step 14b): it takes the server's stream and its
-//! [`Client`] derives what the renderer holds before the renderer sees it.
+//! [`Client`] derives what the renderer holds before the renderer sees it; since 14c the
+//! stream reaches the client through its [`Link`] (latency, bandwidth, loss) unless free.
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -11,6 +12,7 @@ use std::time::Instant;
 
 use anyhow::{Context, bail};
 use mr_core::client::Client;
+use mr_core::link::Link;
 use mr_core::{CompletedFrame, FrameSink, Renderer, RendererEntry, Waker};
 use mr_ipc::{FrameSlots, HostMsg, MsgWriter, PROTOCOL_VERSION, WorkerMsg};
 
@@ -98,6 +100,13 @@ pub fn run(socket: &Path, entries: Vec<RendererEntry>, devices: fn(&mr_core::Dev
     result
 }
 
+/// The messages the link delivered by `time`.
+fn arrived(link: &mut Link, time: f64) -> Vec<mr_core::WorldUpdate> {
+    let mut v = vec![];
+    link.deliver(time, &mut v);
+    v
+}
+
 enum Input {
     Host(HostMsg),
     Wake,
@@ -116,6 +125,8 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     // The renderer's region: its radius, and the levels it asked for that it supports.
     let supported = info.max_lod;
     let mut client = Client::new(params.view_radius_chunks, params.max_lod.min(supported), params.client);
+    // The link in front of it (PLAN step 14c): none when free, the stream then as it came.
+    let mut link = (!params.link.free()).then(|| Link::new(params.link));
     let mut renderer: Box<dyn Renderer> = (entry.create)(params, &devices, waker)?;
     let mut shm = FrameSlots::open(&shm)?;
     out.send(&WorkerMsg::Ready { info, init_ms: t.elapsed().as_secs_f32() * 1e3 })?;
@@ -136,10 +147,16 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
             Input::Host(m) => m,
         };
         match msg {
-            HostMsg::Stream { updates, at } => {
+            HostMsg::Stream { updates, at, time } => {
                 let t = Instant::now();
                 let mut ups = vec![];
-                client.receive(&updates, &mut ups);
+                match &mut link {
+                    Some(l) => {
+                        l.send(time, updates);
+                        client.receive(&arrived(l, time), &mut ups);
+                    }
+                    None => client.receive(&updates, &mut ups),
+                }
                 if let Some(at) = at {
                     client.update(at, &mut ups);
                 }
@@ -154,10 +171,13 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 renderer.update_meshes(m)?;
                 *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
             }
-            HostMsg::Render { req, slot } => {
-                // The camera may have crossed into chunks the replica holds.
+            HostMsg::Render { req, slot, time } => {
+                // What arrived by now; the camera may have crossed into chunks the replica holds.
                 let t = Instant::now();
                 let mut ups = vec![];
+                if let Some(l) = &mut link {
+                    client.receive(&arrived(l, time), &mut ups);
+                }
                 client.update(req.camera.position, &mut ups);
                 if !ups.is_empty() {
                     renderer.update(ups)?;

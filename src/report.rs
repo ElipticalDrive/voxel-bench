@@ -132,6 +132,9 @@ pub struct PassReport {
     #[serde(skip_serializing_if = "toml::Table::is_empty")]
     pub options: toml::Table,
     pub view_radius: u32,
+    /// The link its client received the stream over (PLAN step 14c), when not free.
+    #[serde(skip_serializing_if = "mr_core::link::LinkSpec::free")]
+    pub link: mr_core::link::LinkSpec,
     pub mode: Option<PassMode>,
     pub tags: Vec<String>,
     pub resolution: [u32; 2],

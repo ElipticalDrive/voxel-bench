@@ -317,6 +317,12 @@ struct Flight {
 
 type Spawn = Receiver<anyhow::Result<Worker>>;
 
+/// The links' clock (PLAN step 14c): seconds since the GUI's first message.
+fn clock() -> f64 {
+    static START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+    START.elapsed().as_secs_f64()
+}
+
 /// One worker plus everything needed to keep it in sync with the world.
 struct Runner {
     spec: RendererSpec,
@@ -359,7 +365,8 @@ impl Runner {
         } else {
             None
         };
-        crate::session::send_stream(w, std::mem::take(&mut self.pending), camera.position)?;
+        let time = clock();
+        crate::session::send_stream(w, std::mem::take(&mut self.pending), camera.position, time)?;
         for m in std::mem::take(&mut self.pending_meshes) {
             w.send(HostMsg::Meshes(m))?;
         }
@@ -368,7 +375,7 @@ impl Runner {
         }
         let id = self.next_id;
         self.next_id += 1;
-        w.send(HostMsg::Render { req: FrameRequest { frame_id: id, camera, mode: mode.lighting, meshes: mode.meshes, readback: slot.is_some() }, slot })?;
+        w.send(HostMsg::Render { req: FrameRequest { frame_id: id, camera, mode: mode.lighting, meshes: mode.meshes, readback: slot.is_some() }, slot, time })?;
         self.in_flight.push_back(Flight { id, sent: Instant::now(), purpose });
         Ok(true)
     }
@@ -437,11 +444,11 @@ fn sync_compose(spec: &mut RendererSpec, knob: &str) {
     }
 }
 
-fn spawn_async(run: &RunSpec, spec: &RendererSpec, blocks: Arc<BlockRegistry>, env: Environment, res: [u32; 2]) -> Spawn {
+fn spawn_async(run: &RunSpec, spec: &RendererSpec, blocks: Arc<BlockRegistry>, res: [u32; 2]) -> Spawn {
     let (tx, rx) = crossbeam_channel::bounded(1);
     let (run, spec) = (run.clone(), spec.clone());
     std::thread::spawn(move || {
-        let _ = tx.send(worker::spawn_renderer(&run, &spec, blocks, env, None, res, SLOTS));
+        let _ = tx.send(worker::spawn_renderer(&run, &spec, blocks, None, res, SLOTS));
     });
     rx
 }
@@ -515,7 +522,7 @@ impl Session {
     fn new_runner(&self, spec: RendererSpec, res: [u32; 2], radius: u32) -> Runner {
         let levels = spec.levels();
         Runner {
-            spawning: Some(spawn_async(&self.plan.run, &spec, self.blocks.clone(), self.env, res)),
+            spawning: Some(spawn_async(&self.plan.run, &spec, self.blocks.clone(), res)),
             spec,
             worker: None,
             region: Region { radius, max_lod: 0, levels },
@@ -1125,7 +1132,7 @@ impl Session {
         if self.reference.is_none() {
             let name = self.plan.output.compare.as_ref().map(|c| c.reference.clone()).unwrap_or_else(|| "cpu-reference".into());
             let options = self.plan.output.compare.as_ref().map(|c| c.reference_options.clone()).unwrap_or_default();
-            let spec = RendererSpec { label: Some(format!("{name} (ref)")), options, ..RendererSpec::new(name) };
+            let spec = RendererSpec { label: Some(format!("{name} (ref)")), options, link: Some(Default::default()), ..RendererSpec::new(name) };
             self.shared.lock().unwrap().reference = spec.label().to_string();
             self.log(format!("starting reference {}", spec.label()));
             let mut r = self.new_lane(spec);

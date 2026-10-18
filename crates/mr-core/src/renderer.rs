@@ -34,6 +34,8 @@ pub struct InitParams {
     pub width: u32,
     pub height: u32,
     pub blocks: Arc<BlockRegistry>,
+    /// A starting environment; the world's arrives as `SetEnvironment` (the host sends it
+    /// first: PLAN step 14c).
     pub environment: Environment,
     /// Chunks within this many chunks (Chebyshev, at each LOD level) of the camera are
     /// streamed. Useful for sizing structures and the max ray distance.
@@ -60,6 +62,9 @@ pub struct InitParams {
     /// node's component).
     #[serde(default)]
     pub client: crate::client::Levels,
+    /// The link the worker's client receives the stream over (PLAN step 14c; free: none).
+    #[serde(default)]
+    pub link: crate::link::LinkSpec,
 }
 
 /// Which devices a renderer runs on (IDEAS §17, requirement 2: no hardware opinion in the
@@ -115,12 +120,16 @@ pub struct BlockEdit {
     pub block: BlockId,
 }
 
-/// Incremental change to the renderer's view of the world. Updates arrive in order and
-/// are always delivered before the [`FrameRequest`] they precede.
+/// Incremental change to the renderer's view of the world: the only way world state reaches
+/// a renderer (the strict contract, PLAN step 14c). Its client hands them over in order,
+/// before the [`FrameRequest`] they precede, but nothing is guaranteed to have arrived: the
+/// stream crosses a link that may delay, drop and resend, or reorder it, so a chunk inside
+/// the region may be missing for any number of frames, chunks arrive in any order, coarse
+/// levels before fine ones. Renderers draw what they hold (holes where nothing arrived).
 ///
-/// Chunk semantics: a chunk that is not loaded is air. The host only sends `SetBlocks`
-/// for chunks the renderer currently holds; an edit that makes an absent chunk non-empty
-/// arrives as a `ChunkLoad`.
+/// Chunk semantics: a chunk that is not loaded is air. A renderer only gets `SetBlocks`
+/// for chunks it currently holds; an edit that makes an absent chunk non-empty arrives as
+/// a `ChunkLoad`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum WorldUpdate {
     ChunkLoad { key: ChunkKey, data: ChunkData },

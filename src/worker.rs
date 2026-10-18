@@ -51,7 +51,6 @@ pub fn spawn_renderer(
     run: &RunSpec,
     spec: &RendererSpec,
     blocks: Arc<BlockRegistry>,
-    environment: Environment,
     log_path: Option<PathBuf>,
     resolution: [u32; 2],
     slots: u32,
@@ -75,7 +74,8 @@ pub fn spawn_renderer(
         width,
         height,
         blocks,
-        environment,
+        // The world's comes over the stream (`SetEnvironment` first: PLAN step 14c).
+        environment: Environment::default(),
         view_radius_chunks: spec.view_radius(run),
         max_lod: spec.max_lod.unwrap_or(run.max_lod),
         options_json: serde_json::to_string(&spec.options)?,
@@ -83,6 +83,7 @@ pub fn spawn_renderer(
         devices: spec.devices(run),
         stage_times: run.stage_times,
         client: spec.levels(),
+        link: spec.link(run),
     };
     Worker::spawn(SpawnConfig {
         renderer: &spec.name,

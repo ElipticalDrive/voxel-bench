@@ -15,6 +15,11 @@ impl crate::traversal::cpu::Kernel for Refloor {
     const CAPS: &'static [crate::Cap] = &[crate::Cap::Steps];
 }
 
+/// The bounds of an empty world (nothing loaded yet, PLAN step 14c): one cell so far away
+/// that every ray enters it beyond any `max_t`, so the slab tests reject it with no check
+/// of their own (an inverted box would pass them on some rays).
+pub const NOWHERE: (IVec3, IVec3) = (IVec3::splat(1 << 29), IVec3::splat((1 << 29) + 1));
+
 /// Traces `N` rays in lockstep from the shared origin `o` (relative to `cam`).
 /// Lanes with `d.x == NaN` are inactive. Each lane ignores the start cell (like the
 /// reference) and stops at `tfar`.

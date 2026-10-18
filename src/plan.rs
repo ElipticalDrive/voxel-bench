@@ -73,6 +73,13 @@ pub struct RunSpec {
     /// Time every stage of every frame (PLAN step 11): each GPU stage costs a timestamp
     /// (measured: +0.1–0.6% GPU time); `false` runs exactly as before step 11.
     pub stage_times: bool,
+    /// The link between the server and every renderer's client (PLAN step 14c: latency,
+    /// jitter, bandwidth, loss, reordering; default free), e.g. `link = { latency_ms = 80,
+    /// bandwidth_mbps = 50 }`; a renderer's own `link` overrides it. References stay free.
+    pub link: mr_core::link::LinkSpec,
+    /// The rate of the simulated clock scripted runs keep: frame `n` (warm-up included) is
+    /// at `n / clock_fps` seconds, the time the link's delays are measured in.
+    pub clock_fps: f64,
 }
 
 impl RunSpec {
@@ -112,6 +119,8 @@ impl Default for RunSpec {
             devices: Default::default(),
             compile: Compile::Off,
             stage_times: true,
+            link: Default::default(),
+            clock_fps: 60.0,
         }
     }
 }
@@ -177,6 +186,9 @@ pub struct RendererSpec {
     /// Overrides `run.max_lod` for this renderer (still capped by what it supports).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_lod: Option<u8>,
+    /// Overrides `run.link` for this renderer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<mr_core::link::LinkSpec>,
     /// Overrides `run.devices` for this renderer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub devices: Option<mr_core::DeviceConfig>,
@@ -197,7 +209,7 @@ pub struct RendererSpec {
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), compose: None, sites: BTreeMap::new(), graph: None, label: None, options: Default::default(), view_radius: None, max_lod: None, devices: None, compile: None, swept: false, compose_label: Default::default(), ran_graph: None }
+        Self { name: name.into(), compose: None, sites: BTreeMap::new(), graph: None, label: None, options: Default::default(), view_radius: None, max_lod: None, link: None, devices: None, compile: None, swept: false, compose_label: Default::default(), ran_graph: None }
     }
 
     /// A renderer assembled from components.
@@ -431,6 +443,11 @@ impl RendererSpec {
 
     pub fn view_radius(&self, run: &RunSpec) -> u32 {
         self.view_radius.unwrap_or(run.view_radius)
+    }
+
+    /// The link its client receives the stream over.
+    pub fn link(&self, run: &RunSpec) -> mr_core::link::LinkSpec {
+        self.link.unwrap_or(run.link)
     }
 
     pub fn devices(&self, run: &RunSpec) -> mr_core::DeviceConfig {

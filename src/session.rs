@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::bail;
 use glam::{DVec3, Vec3};
-use mr_core::{Camera, FrameRequest, Light, MeshData, MeshInstance, MeshUpdate, PassMode, WorldUpdate};
+use mr_core::{Camera, Environment, FrameRequest, Light, MeshData, MeshInstance, MeshUpdate, PassMode, WorldUpdate};
 use mr_ipc::{HostMsg, WorkerMsg};
 use mr_world::scenario::{FrameEvents, resolve_edits};
 use mr_world::{Scene, World};
@@ -32,6 +32,9 @@ pub struct FrameInput {
     pub render: bool,
     /// False for warm-up frames.
     pub recorded: bool,
+    /// The frame's time in seconds (the link's clock, PLAN step 14c): simulated in
+    /// scripted runs, the wall clock in interactive ones.
+    pub time: f64,
 }
 
 pub trait Driver {
@@ -46,12 +49,14 @@ pub struct ScriptedDriver {
     pub frames: u32,
     /// Render only frames where `f % n == 0` (and the last one).
     pub only_every: Option<u32>,
+    /// The simulated clock's frames per second (`run.clock_fps`).
+    pub clock_fps: f64,
     i: u32,
 }
 
 impl ScriptedDriver {
-    pub fn new(scene: Scene, mode: PassMode, warmup: u32, frames: u32, only_every: Option<u32>) -> Self {
-        Self { scene, mode, warmup, frames, only_every, i: 0 }
+    pub fn new(scene: Scene, mode: PassMode, warmup: u32, frames: u32, only_every: Option<u32>, clock_fps: f64) -> Self {
+        Self { scene, mode, warmup, frames, only_every, clock_fps, i: 0 }
     }
 }
 
@@ -59,10 +64,11 @@ impl Driver for ScriptedDriver {
     fn next(&mut self) -> anyhow::Result<Option<FrameInput>> {
         let i = self.i;
         self.i += 1;
+        let time = i as f64 / self.clock_fps;
         if i < self.warmup {
             let camera = self.scene.camera(0);
             let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(0));
-            return Ok(Some(FrameInput { frame: 0, camera, mode: self.mode, events: Default::default(), meshes, render: true, recorded: false }));
+            return Ok(Some(FrameInput { frame: 0, camera, mode: self.mode, events: Default::default(), meshes, render: true, recorded: false, time }));
         }
         let f = i - self.warmup;
         if f >= self.frames {
@@ -72,7 +78,7 @@ impl Driver for ScriptedDriver {
         let events = self.scene.events(f, &camera)?;
         let render = self.only_every.is_none_or(|n| sampled(f, n, self.frames));
         let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(f));
-        Ok(Some(FrameInput { frame: f, camera, mode: self.mode, events, meshes, render, recorded: true }))
+        Ok(Some(FrameInput { frame: f, camera, mode: self.mode, events, meshes, render, recorded: true, time }))
     }
 }
 
@@ -89,13 +95,14 @@ pub struct InteractiveDriver {
     pub speed: f32,
     frame: u32,
     last: Instant,
+    start: Instant,
     fps_window: (Instant, u32),
 }
 
 impl InteractiveDriver {
     pub fn new(ui: UiHandle, scene: Scene, mode: PassMode) -> Self {
         let camera = scene.camera(0);
-        Self { ui, scene, camera, mode, speed: 20.0, frame: 0, last: Instant::now(), fps_window: (Instant::now(), 0) }
+        Self { ui, scene, camera, mode, speed: 20.0, frame: 0, last: Instant::now(), start: Instant::now(), fps_window: (Instant::now(), 0) }
     }
 }
 
@@ -156,7 +163,7 @@ impl Driver for InteractiveDriver {
             self.fps_window = (Instant::now(), 0);
         }
         let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(self.frame));
-        Ok(Some(FrameInput { frame: self.frame, camera: self.camera, mode: self.mode, events, meshes, render: true, recorded: false }))
+        Ok(Some(FrameInput { frame: self.frame, camera: self.camera, mode: self.mode, events, meshes, render: true, recorded: false, time: self.start.elapsed().as_secs_f64() }))
     }
 }
 
@@ -312,13 +319,13 @@ pub fn sanitize(s: &str) -> String {
 
 const BATCH: usize = 256;
 
-/// Sends the server's stream to a worker in batches; its client derives its renderer's
-/// region at camera position `at` after the last.
-pub fn send_stream(w: &Worker, mut ups: Vec<WorldUpdate>, at: DVec3) -> anyhow::Result<()> {
+/// Sends the server's stream to a worker in batches, sent at `time`; its client derives its
+/// renderer's region at camera position `at` after the last.
+pub fn send_stream(w: &Worker, mut ups: Vec<WorldUpdate>, at: DVec3, time: f64) -> anyhow::Result<()> {
     while !ups.is_empty() {
         let rest = if ups.len() > BATCH { ups.split_off(BATCH) } else { vec![] };
         let last = rest.is_empty();
-        w.send(HostMsg::Stream { updates: std::mem::replace(&mut ups, rest), at: last.then_some(at) })?;
+        w.send(HostMsg::Stream { updates: std::mem::replace(&mut ups, rest), at: last.then_some(at), time })?;
     }
     Ok(())
 }
@@ -381,6 +388,7 @@ pub fn run_pass(
     lanes: &mut [Lane],
     driver: &mut dyn Driver,
     world: &mut World,
+    environment: Environment,
     lights: &[Light],
     meshes: &[Arc<MeshData>],
     run: &RunSpec,
@@ -405,7 +413,10 @@ pub fn run_pass(
         let edits = resolve_edits(world, input.events.edits);
         let changed = world.apply_edits(&edits);
         let mut stream = vec![];
+        // Everything a renderer knows of the world comes over the stream (PLAN step 14c),
+        // the environment too (its creation's is a default until then).
         if first {
+            stream.push(WorldUpdate::SetEnvironment(environment));
             stream.push(WorldUpdate::LightUpsert(lights.to_vec()));
         }
         server.edits(&edits, &changed, &mut stream);
@@ -428,11 +439,11 @@ pub fn run_pass(
             }
             if first {
                 let t = Instant::now();
-                send_stream(&lane.worker, stream.clone(), input.camera.position)?;
+                send_stream(&lane.worker, stream.clone(), input.camera.position, input.time)?;
                 lane.worker.flush(|m| bail!("unexpected {m:?} during initial load"))?;
                 lane.report.initial_load_ms = t.elapsed().as_secs_f64() * 1e3;
             } else if !stream.is_empty() {
-                send_stream(&lane.worker, stream.clone(), input.camera.position)?;
+                send_stream(&lane.worker, stream.clone(), input.camera.position, input.time)?;
             }
         }
         first = false;
@@ -472,7 +483,7 @@ pub fn run_pass(
             lane.next_id += 1;
             let req = FrameRequest { frame_id: id, camera: input.camera, mode: input.mode.lighting, meshes: input.mode.meshes, readback: slot.is_some() };
             lane.in_flight.push_back(InFlight { id, frame: input.frame, mode: input.mode, sent: Instant::now(), recorded: input.recorded });
-            lane.worker.send(HostMsg::Render { req, slot })?;
+            lane.worker.send(HostMsg::Render { req, slot, time: input.time })?;
         }
         rendered += 1;
     }

@@ -264,7 +264,7 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn spawn_lanes(&self, specs: &[RendererSpec], mode: Option<PassMode>, env: mr_core::Environment) -> (Vec<Lane>, Vec<PassReport>) {
+    fn spawn_lanes(&self, specs: &[RendererSpec], mode: Option<PassMode>) -> (Vec<Lane>, Vec<PassReport>) {
         let run = &self.plan.run;
         let [w, h] = run.resolution;
         let (mut lanes, mut failed) = (vec![], vec![]);
@@ -281,13 +281,14 @@ impl Ctx<'_> {
                 graph_key: spec.pipeline().and_then(|g| g.key().ok()),
                 options: spec.extra_options(),
                 view_radius: spec.view_radius(run),
+                link: spec.link(run),
                 mode,
                 resolution: [w, h],
                 ..Default::default()
             };
             let mode_tag = mode.map(|m| m.name()).unwrap_or("view");
             let log = self.run_dir.map(|d| d.join("logs").join(format!("{}-{mode_tag}.log", sanitize(&label))));
-            let spawn = || worker::spawn_renderer(run, spec, self.blocks.clone(), env, log, run.resolution, run.in_flight + 2);
+            let spawn = || worker::spawn_renderer(run, spec, self.blocks.clone(), log, run.resolution, run.in_flight + 2);
             match spawn() {
                 Ok(worker) => {
                     report.init_ms = worker.init_ms;
@@ -317,14 +318,15 @@ impl Ctx<'_> {
         let scene = Scene::new(self.plan.scene.clone(), self.blocks.clone(), &mut world, run.frames)?;
         let lights = scene.initial_lights().to_vec();
         let mesh_data = if mode.meshes { scene.mesh_data() } else { vec![] };
-        let (mut lanes, mut reports) = self.spawn_lanes(specs, Some(mode), scene.environment);
+        let (mut lanes, mut reports) = self.spawn_lanes(specs, Some(mode));
         if lanes.is_empty() {
             return Ok(reports);
         }
         let names: Vec<_> = lanes.iter().map(|l| l.report.label.clone()).collect();
         tracing::info!("pass: {} [{}]", names.join(", "), mode.name());
-        let mut driver = ScriptedDriver::new(scene, mode, warmup, run.frames, only_every);
-        let result = run_pass(&mut lanes, &mut driver, &mut world, &lights, &mesh_data, run, out);
+        let env = scene.environment;
+        let mut driver = ScriptedDriver::new(scene, mode, warmup, run.frames, only_every, run.clock_fps);
+        let result = run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, run, out);
         if let Err(e) = &result {
             tracing::error!("pass failed: {e:#}");
         }
@@ -397,7 +399,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         if let Some(c) = &plan.output.compare {
             out.recording_reference = true;
             out.references.retain(|k, _| k.0 != mode);
-            let spec = RendererSpec { label: Some(format!("{} (ref)", c.reference)), options: c.reference_options.clone(), ..RendererSpec::new(c.reference.clone()) };
+            let spec = RendererSpec { label: Some(format!("{} (ref)", c.reference)), options: c.reference_options.clone(), link: Some(Default::default()), ..RendererSpec::new(c.reference.clone()) };
             reports.extend(ctx.pass(&[spec], mode, &base, &mut out, Some(c.every), 0)?);
             out.recording_reference = false;
         }
@@ -466,7 +468,7 @@ fn view(plan: &Plan, ui: UiHandle) -> anyhow::Result<()> {
     let scene = Scene::new(plan.scene.clone(), ctx.blocks.clone(), &mut world, plan.run.frames)?;
     let lights = scene.initial_lights().to_vec();
     let mesh_data = scene.mesh_data();
-    let (mut lanes, failed) = ctx.spawn_lanes(&plan.renderers, None, scene.environment);
+    let (mut lanes, failed) = ctx.spawn_lanes(&plan.renderers, None);
     for f in failed {
         tracing::error!("{}: {}", f.label, f.error.unwrap_or_default());
     }
@@ -474,9 +476,10 @@ fn view(plan: &Plan, ui: UiHandle) -> anyhow::Result<()> {
         bail!("no renderer started");
     }
     let mode = plan.run.modes.first().copied().unwrap_or(PassMode::UNLIT);
+    let env = scene.environment;
     let mut driver = InteractiveDriver::new(ui.clone(), scene, mode);
     let mut out = Outputs::new(Some(ui), plan::Readback::Auto, None, None, u32::MAX);
-    run_pass(&mut lanes, &mut driver, &mut world, &lights, &mesh_data, &plan.run, &mut out).context("view session")?;
+    run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, &plan.run, &mut out).context("view session")?;
     for l in lanes {
         l.worker.shutdown();
     }

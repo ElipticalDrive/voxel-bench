@@ -22,7 +22,7 @@ use mr_components::storage::u8::cpu::U8;
 use mr_components::graph::{Checked, Role};
 use mr_components::traversal::cpu::Hit;
 use mr_components::traversal::incremental::cpu::trace_incremental;
-use mr_components::traversal::refloor::cpu::trace_packet;
+use mr_components::traversal::refloor::cpu::{NOWHERE, trace_packet};
 use mr_components::visibility::record::Record;
 use mr_components::{names_on, parse_placement, placement_param, require, Slot};
 use mr_core::chunk::local_of_block;
@@ -265,7 +265,7 @@ impl<R: Repr> Scene<R> {
 
     fn bounds_rel(&self, cam: IVec3) -> (IVec3, IVec3) {
         if self.grid.cells.is_empty() {
-            return (IVec3::ONE, IVec3::ZERO);
+            return NOWHERE;
         }
         (self.grid.min * 32 - cam, (self.grid.min + self.grid.dims) * 32 - cam)
     }

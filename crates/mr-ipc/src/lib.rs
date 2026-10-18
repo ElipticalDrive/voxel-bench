@@ -16,7 +16,7 @@ use memmap2::MmapMut;
 use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {
@@ -30,15 +30,19 @@ pub enum HostMsg {
     Init { renderer: String, params: InitParams, shm: ShmSpec },
     /// The server's stream (PLAN step 14b: the same for every client), in batches; the
     /// worker's client derives its renderer's updates from it, at camera position `at`
-    /// (set on a batch that ends what the server sent for a frame).
-    Stream { updates: Vec<WorldUpdate>, at: Option<DVec3> },
+    /// (set on a batch that ends what the server sent for a frame). `time`: when the server
+    /// sent it, in seconds of the host's clock (simulated in scripted runs), which the
+    /// client's link delays it by (PLAN step 14c).
+    Stream { updates: Vec<WorldUpdate>, at: Option<DVec3>, time: f64 },
     /// The server streams this region (a radius per LOD level) and neither it nor the
     /// client's changes: a client covering it takes the stream as it is.
     Follow { radii: Vec<u32> },
     /// Mesh mode: geometry and instances, applied in order with `Updates`.
     Meshes(MeshUpdate),
     /// `slot` is the shared-memory slot to write pixels into when `req.readback` is set.
-    Render { req: FrameRequest, slot: Option<u32> },
+    /// `time`: the frame's time on the host's clock (what has arrived over the link by then
+    /// reaches the renderer first).
+    Render { req: FrameRequest, slot: Option<u32>, time: f64 },
     Resize { width: u32, height: u32, shm: ShmSpec },
     /// Live parameter changes, applied in order before the next frame.
     SetParams(Vec<(String, ParamValue)>),

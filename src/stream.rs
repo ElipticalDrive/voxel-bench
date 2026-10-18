@@ -249,6 +249,53 @@ mod tests {
         }
     }
 
+    /// Behind a link that delays, loses and reorders the stream, a client's renderer holds
+    /// less while it streams (holes), never an edit of a chunk it does not hold, and once
+    /// everything arrived exactly what a client of the free link holds (PLAN step 14c).
+    #[test]
+    fn client_behind_a_link() {
+        use mr_core::link::{Link, LinkSpec};
+        let same = |a: &HashMap<ChunkKey, ChunkData>, b: &HashMap<ChunkKey, ChunkData>| {
+            a.len() == b.len() && b.iter().all(|(k, d)| a.get(k).is_some_and(|c| c == d || (0..mr_core::CHUNK_VOLUME).map(mr_core::chunk::cell_of_index).all(|p| c.get(p) == d.get(p))))
+        };
+        let caught_up = |a: &HashMap<ChunkKey, ChunkData>, b: &HashMap<ChunkKey, ChunkData>| a.len() == b.len();
+        for (levels, reorder) in [(Levels::Pick, false), (Levels::Pick, true), (Levels::Derive, true)] {
+            let mut world = World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build());
+            let mut server = Streamer::new(mr_core::client::reach(2, 2, levels), Some(40));
+            let spec = LinkSpec { latency_ms: 40.0, jitter_ms: 120.0, bandwidth_mbps: 400.0, loss: 0.2, reorder, seed: 5 };
+            let mut link = Link::new(spec);
+            let (mut free, mut linked) = (Client::new(2, 2, levels), Client::new(2, 2, levels));
+            let (mut a, mut b) = (HashMap::new(), HashMap::new());
+            let mut holes = 0;
+            // Until everything arrived and the renderer caught up.
+            for f in 0..600 {
+                if f > 60 && link.in_flight() == 0 && caught_up(&a, &b) {
+                    break;
+                }
+                let t = f as f64 / 60.0;
+                let g = f.min(30);
+                let cam = DVec3::new(g as f64 * 13.0, 60.0, g as f64 * -7.0);
+                let edits: Vec<BlockEdit> = if f < 30 { (0..20).map(|i| BlockEdit { pos: IVec3::new(f * 13 + i, 40 + i % 30, -f * 7 - i), block: if i % 2 == 0 { BlockId::AIR } else { BlockId(1) } }).collect() } else { vec![] };
+                let changed = world.apply_edits(&edits);
+                let (mut stream, mut ups, mut direct, mut got) = (vec![], vec![], vec![], vec![]);
+                server.edits(&edits, &changed, &mut stream);
+                server.update(&mut world, cam, &mut stream);
+                free.receive(&stream, &mut direct);
+                free.update(cam, &mut direct);
+                link.send(t, stream);
+                link.deliver(t, &mut got);
+                linked.receive(&got, &mut ups);
+                linked.update(cam, &mut ups);
+                apply(&mut a, &ups);
+                apply(&mut b, &direct);
+                holes += (a.len() < b.len()) as u32;
+            }
+            assert_eq!(link.in_flight(), 0, "{levels:?} reorder {reorder}");
+            assert!(holes > 5 && link.stats().resent > 0, "{levels:?} reorder {reorder}: holes {holes}, {:?}", link.stats());
+            assert!(same(&a, &b), "{levels:?} reorder {reorder}: {} chunks held against {}", a.len(), b.len());
+        }
+    }
+
     /// The coarse cell `cell` of level `lod` as `derive` defines it: the topmost non-air of
     /// its eight finer cells (top layer first, then x, then z), down to the world's blocks.
     fn derived(world: &mut World, lod: u8, cell: IVec3) -> BlockId {
