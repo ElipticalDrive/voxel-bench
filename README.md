@@ -8,6 +8,26 @@ The world is the simplest possible volume: an axis-aligned unit-cube lattice. Ev
 either air (fully transparent) or an opaque block with a 16x16 texture per face. Point
 lights occupy no volume and are invisible. Worlds are unbounded and streamed in 32³ chunks.
 
+## Install
+
+Linux and Windows, with Python 3.9+ (Windows: `winget install Python.Python.3.13`):
+
+```sh
+python3 install.py              # a wizard: install, update or uninstall
+python3 install.py install --yes
+python3 install.py update       # new sources, rebuild; plans you edited are kept
+python3 install.py uninstall    # add --purge for your plans, runs and the prerequisites it installed
+```
+
+It installs what is missing after asking: the Rust toolchain (rustup, with `llvm-tools`) and a C
+compiler (Windows: Visual Studio Build Tools with C++ and ATL). Then it builds from this checkout
+(or `--source <git URL or directory>`, without a checkout GitHub) into
+`~/.local/share/multirenderer` (Windows: `%LOCALAPPDATA%\multirenderer`), links
+`~/.local/bin/multirenderer` (Windows: puts it on the user's PATH), and adds a desktop entry (a
+Start menu shortcut). The sources and the toolchain stay installed because pipelines compile
+against them on demand. Building on Windows by hand also needs ATL: DX12's shader compiler
+(DXC) is linked in, so no `dxcompiler.dll` has to be shipped.
+
 ## Quick start
 
 ```sh

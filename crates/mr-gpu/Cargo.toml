@@ -13,3 +13,8 @@ naga_oil.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 serde.workspace = true
+
+# DX12 needs DXC (FXC cannot compile our shaders); linked in, so no dxcompiler.dll to ship
+# next to the host or the compiled pipelines' workers.
+[target.'cfg(windows)'.dependencies]
+wgpu = { workspace = true, features = ["static-dxc"] }
