@@ -1590,7 +1590,7 @@ mod tests {
         let control = Control { camera: CameraControl::Path, mode: PassMode::UNLIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.0 };
         // Process workers start from the real executable, not this test harness
         // (target/<profile>/deps/<test> -> target/<profile>/multirenderer; build it first).
-        let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("multirenderer");
+        let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join(format!("multirenderer{}", std::env::consts::EXE_SUFFIX));
         assert!(exe.exists(), "build the binary first ({})", exe.display());
         // SAFETY: set before any worker thread of this test starts; no other test reads it.
         unsafe { std::env::set_var("MR_WORKER_EXE", &exe) };

@@ -752,6 +752,12 @@ pub fn pick_adapter(filter: Option<&str>) -> anyhow::Result<wgpu::Adapter> {
     // safe with several Vulkan instances on threads of one process (thread isolation):
     // it segfaults intermittently. Opt in explicitly when debugging a renderer.
     desc.flags = if std::env::var_os("MR_GPU_DEBUG").is_some() { wgpu::InstanceFlags::debugging() } else { wgpu::InstanceFlags::empty() };
+    // On DX12 wgpu's indirect-call pass also rewrites indirect draws into the arguments its
+    // command signatures read (first_instance as a root constant); without it they draw
+    // garbage. Elsewhere it only validates, at a pass per indirect batch.
+    if desc.backends.contains(wgpu::Backends::DX12) {
+        desc.flags |= wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL;
+    }
     let instance = wgpu::Instance::new(desc);
     let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
     if adapters.is_empty() {
