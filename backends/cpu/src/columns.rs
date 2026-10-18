@@ -18,7 +18,7 @@ use mr_components::visibility::record::Record;
 use mr_core::*;
 use rayon::prelude::*;
 
-use crate::{Core, Frame, Lane};
+use crate::{Core, Frame, Generic, Lane, Spec, fixed};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -38,7 +38,8 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-pub(crate) struct CpuColumns {
+pub(crate) struct CpuColumns<S = Generic> {
+    spec: std::marker::PhantomData<S>,
     /// The heightmap storage.
     hm: Heightmap,
     /// `placement = deferred`: the march writes records (`recs`, column-major), the common
@@ -68,7 +69,7 @@ impl Default for Options {
 
 pub(crate) const BACKEND: &str = "cpu-voxelspace";
 
-impl CpuColumns {
+impl<S: Spec> CpuColumns<S> {
     pub(crate) fn new(p: &InitParams, g: &mr_components::graph::Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
         use mr_components::{Slot, require};
@@ -76,7 +77,9 @@ impl CpuColumns {
             require(BACKEND, slot, name)?;
         }
         let deferred = mr_components::parse_placement(&opts.placement)?;
+        fixed("tone", S::TONE, g.tone())?;
         let lane = Self {
+            spec: std::marker::PhantomData,
             hm: Heightmap::new(p.view_radius_chunks),
             deferred,
             recs: if deferred { vec![Record::SKY; (p.width * p.height) as usize] } else { Vec::new() },
@@ -87,7 +90,7 @@ impl CpuColumns {
     }
 }
 
-impl Lane for CpuColumns {
+impl<S: Spec> Lane for CpuColumns<S> {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let changed = self.chunks.apply(updates);
         let scene = &self.chunks;
@@ -106,15 +109,16 @@ impl Lane for CpuColumns {
         let sky = scene.sky();
         let m = March::new(hm, cam, w, h, hm.march_cells() as usize);
         // Shadow rays walk the heightmap.
+        let shadows = S::SHADOWS.unwrap_or(scene.shadows);
         let ctx = Ctx {
             blocks: &scene.blocks,
             env: &scene.env,
             cam: cam_block,
-            sun_shadows: scene.shadows != Shadows::None,
-            light_shadows: scene.shadows == Shadows::All,
+            sun_shadows: shadows != Shadows::None,
+            light_shadows: shadows == Shadows::All,
             lights_near: |world: IVec3| scene.lights_near(world),
             occluded: |p: Vec3, d: Vec3, dist: f32| hm.trace(cam_block, p, d, dist).is_some(),
-            tone: scene.tone,
+            tone: S::TONE.unwrap_or(scene.tone),
         };
         let shade_s = |s: &Surface| shade(&ctx, s, req.mode);
         let (t_march, stages) = if self.deferred {

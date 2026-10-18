@@ -504,6 +504,7 @@ dependencies = [
  "mr-mesh",
  "rayon",
  "serde",
+ "serde_json",
  "tracing",
 ]
 

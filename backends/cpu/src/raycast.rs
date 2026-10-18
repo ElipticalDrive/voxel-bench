@@ -30,7 +30,7 @@ use mr_core::*;
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use crate::{Core, Frame, Lane, perf};
+use crate::{Core, Frame, Generic, Lane, Spec, fixed, perf};
 
 /// The Rust type of each CPU storage, for generated code.
 pub fn storage_type(name: &str) -> Option<&'static str> {
@@ -130,24 +130,6 @@ impl Default for Options {
     }
 }
 
-/// What a pipeline compiled for one composition bakes in (PLAN step 8): a generated
-/// crate implements this with the composition's values, so they are constants the
-/// compiler folds (no per-ray `match`, one packet width, no ISA dispatch: the whole crate
-/// is compiled for this CPU). [`Generic`], the precompiled build, leaves everything open.
-/// Live changes of a baked knob are refused with the reason.
-pub trait Spec: Send + Sync + 'static {
-    /// The storage this pipeline was compiled for (checked against the options).
-    const STORAGE: Option<&'static str> = None;
-    const TRAVERSAL: Option<Traversal> = None;
-    const PACKET: Option<usize> = None;
-    /// Compiled with `target-cpu=native`: the hot loop needs no ISA dispatch.
-    const NATIVE: bool = false;
-}
-
-/// The precompiled build: every knob live.
-pub struct Generic;
-impl Spec for Generic {}
-
 /// The traversal kernel, with the `exact` knob folded in.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Traversal {
@@ -236,8 +218,23 @@ struct Scene<R> {
     shadow: Option<(Traversal, u32)>,
 }
 
-/// The skip knobs as a level mask (levels 0 and 5 always allowed).
-fn level_mask(skips: [bool; 4]) -> u32 {
+/// The shadow rays' own kernel and levels in graph `g` (PLAN step 9c: a kernel node of their
+/// own, its knobs or their defaults), `None` if they share the primary rays' (also for
+/// generated code).
+pub fn shadow_kernel(g: &Checked) -> anyhow::Result<Option<(Traversal, u32)>> {
+    let primary = g.site(Role::Visibility, "primary").map(|s| s.kernel);
+    match g.site(Role::Shading, "shadow") {
+        Some(s) if Some(s.kernel) != primary => {
+            let n = g.node(s.kernel);
+            let on = |k: &str| n.knobs.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
+            Ok(Some((traversal(&n.component, on("exact"))?, level_mask(["skip2", "skip4", "skip8", "skip16"].map(on)))))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The skip knobs as a level mask (levels 0 and 5 always allowed; also for generated code).
+pub fn level_mask(skips: [bool; 4]) -> u32 {
     skips.iter().enumerate().fold(0b100001, |m, (i, &on)| m | (on as u32) << (i + 1))
 }
 
@@ -269,9 +266,11 @@ impl<R: Repr> Scene<R> {
         (self.grid.min * 32 - cam, (self.grid.min + self.grid.dims) * 32 - cam)
     }
 
-    fn occluded(&self, cam: IVec3, p: Vec3, d: Vec3, dist: f32) -> bool {
+    /// Shadow rays: their own kernel, else the primary rays' (constants where `S` baked them).
+    fn occluded<S: Spec>(&self, cam: IVec3, p: Vec3, d: Vec3, dist: f32) -> bool {
         let (bmin, bmax) = self.bounds_rel(cam);
-        let (kernel, levels) = self.shadow.unwrap_or((self.traversal, self.levels));
+        let primary = (S::TRAVERSAL.unwrap_or(self.traversal), S::LEVELS.unwrap_or(self.levels));
+        let (kernel, levels) = S::SHADOW.unwrap_or(self.shadow).unwrap_or(primary);
         match kernel {
             Traversal::Refloor => {}
             Traversal::Incremental => return trace_incremental::<R, false>(&self.grid, levels, cam, p, d, dist, bmin, bmax).0.is_some(),
@@ -288,23 +287,24 @@ impl<R: Repr> Scene<R> {
         (self.grid.block_at(h.cell + cam), Face::entered(h.axis as usize, if d[h.axis as usize] > 0.0 { 1 } else { -1 }))
     }
 
-    fn shade(&self, world: &World, cam: IVec3, o: Vec3, d: Vec3, h: &Hit, mode: RenderMode) -> [u8; 4] {
+    fn shade<S: Spec>(&self, world: &World, cam: IVec3, o: Vec3, d: Vec3, h: &Hit, mode: RenderMode) -> [u8; 4] {
         let (block, face) = self.hit_face(cam, d, h);
-        self.shade_surface(world, cam, &mr_components::shading::direct::cpu::Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
+        self.shade_surface::<S>(world, cam, &mr_components::shading::direct::cpu::Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
     }
 
     /// Shades surface `s` of `world` (its blocks, environment, lights), shadow rays walking
     /// these chunks.
-    fn shade_surface(&self, world: &World, cam: IVec3, s: &mr_components::shading::direct::cpu::Surface, mode: RenderMode) -> [u8; 4] {
+    fn shade_surface<S: Spec>(&self, world: &World, cam: IVec3, s: &mr_components::shading::direct::cpu::Surface, mode: RenderMode) -> [u8; 4] {
+        let shadows = S::SHADOWS.unwrap_or(world.shadows);
         let ctx = mr_components::shading::direct::cpu::Ctx {
             blocks: &world.blocks,
             env: &world.env,
             cam,
-            sun_shadows: world.shadows != Shadows::None,
-            light_shadows: world.shadows == Shadows::All,
+            sun_shadows: shadows != Shadows::None,
+            light_shadows: shadows == Shadows::All,
             lights_near: |w: IVec3| world.lights_near(w),
-            occluded: |p: Vec3, d: Vec3, dist: f32| self.occluded(cam, p, d, dist),
-            tone: world.tone,
+            occluded: |p: Vec3, d: Vec3, dist: f32| self.occluded::<S>(cam, p, d, dist),
+            tone: S::TONE.unwrap_or(world.tone),
         };
         mr_components::shading::direct::cpu::shade(&ctx, s, mode)
     }
@@ -344,9 +344,6 @@ pub(crate) struct Raycast<R, S: Spec = Generic> {
 impl<R: Repr, S: Spec> Raycast<R, S> {
     pub(crate) fn new(p: &InitParams, g: &Checked) -> anyhow::Result<(Core, Self)> {
         let o: Options = p.options()?;
-        if let Some(st) = S::STORAGE.filter(|&st| st != o.storage) {
-            anyhow::bail!("this pipeline was compiled for storage `{st}`, not `{}`", o.storage);
-        }
         if o.storage == "u8" && p.blocks.blocks.len() > 256 {
             anyhow::bail!("storage u8 needs <= 256 block types, registry has {}", p.blocks.blocks.len());
         }
@@ -354,17 +351,12 @@ impl<R: Repr, S: Spec> Raycast<R, S> {
         tracing::info!("cpu: storage {}, traversal {}, {:?} hot loop, packets of {}", o.storage, o.traversal, isa, o.packet);
         require(BACKEND, Slot::Visibility, &o.visibility)?;
         require(BACKEND, Slot::Shading, &o.shading)?;
-        // Shadow rays through a kernel node of their own (its knobs, defaults otherwise).
-        let primary = g.site(Role::Visibility, "primary").map(|s| s.kernel);
-        let shadow = match g.site(Role::Shading, "shadow") {
-            Some(s) if Some(s.kernel) != primary => {
-                let n = g.node(s.kernel);
-                let on = |k: &str| n.knobs.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
-                tracing::info!("cpu: shadow rays through their own {}", n.component);
-                Some((traversal(&n.component, on("exact"))?, level_mask(["skip2", "skip4", "skip8", "skip16"].map(on))))
-            }
-            _ => None,
-        };
+        let shadow = shadow_kernel(g)?;
+        if let Some((t, _)) = shadow {
+            tracing::info!("cpu: shadow rays through their own kernel ({t:?})");
+        }
+        fixed("shadow rays", S::SHADOW, shadow)?;
+        fixed("tone", S::TONE, g.tone())?;
         let b = Self {
             spec: std::marker::PhantomData,
             kernel: o.traversal.clone(),
@@ -379,7 +371,7 @@ impl<R: Repr, S: Spec> Raycast<R, S> {
                 chunks: HashMap::new(),
                 grid: Grid::default(),
                 grid_dirty: false,
-                traversal: traversal(&o.traversal, o.exact)?,
+                traversal: fixed("traversal", S::TRAVERSAL, traversal(&o.traversal, o.exact)?)?,
                 levels: level_mask([o.skip2, o.skip4, o.skip8, o.skip16]),
                 shadow,
             },
@@ -392,19 +384,9 @@ impl<R: Repr, S: Spec> Raycast<R, S> {
             records: vec![],
             deferred: parse_placement(&o.placement)?,
         };
-        b.check_baked()?;
+        fixed("packets of", S::PACKET, b.packet)?;
+        fixed("levels", S::LEVELS, b.scene.levels)?;
         Ok((Core::new(p, g, o.threads, o.shadows)?, b))
-    }
-
-    /// Fails if a knob differs from the value this pipeline baked in.
-    fn check_baked(&self) -> anyhow::Result<()> {
-        if let Some(t) = S::TRAVERSAL.filter(|&t| t != self.scene.traversal) {
-            anyhow::bail!("this pipeline was compiled for traversal {t:?} (not {:?}); a change needs another build", self.scene.traversal);
-        }
-        if let Some(n) = S::PACKET.filter(|&n| n != self.packet) {
-            anyhow::bail!("this pipeline was compiled for packets of {n} (not {}); a change needs another build", self.packet);
-        }
-        Ok(())
     }
 }
 
@@ -504,6 +486,7 @@ fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r:
             let mut lane_work = [0u32; N];
             // A baked kernel is a constant: the other branches fold away.
             let kernel = S::TRAVERSAL.unwrap_or(scene.traversal);
+            let levels = S::LEVELS.unwrap_or(scene.levels);
             if kernel == Traversal::Refloor {
                 let it = trace_packet::<R, N>(&scene.grid, cam_block, o, &dx, &dy, &dz, 1e7, bmin, bmax, &mut hits);
                 work.lane_steps += it as u64 * N as u64;
@@ -514,8 +497,8 @@ fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r:
                 for l in 0..N {
                     if !dx[l].is_nan() {
                         let (hit, t) = match kernel {
-                            Traversal::IncrementalExact => trace_incremental::<R, true>(&scene.grid, scene.levels, cam_block, o, dirs[l], 1e7, bmin, bmax),
-                            _ => trace_incremental::<R, false>(&scene.grid, scene.levels, cam_block, o, dirs[l], 1e7, bmin, bmax),
+                            Traversal::IncrementalExact => trace_incremental::<R, true>(&scene.grid, levels, cam_block, o, dirs[l], 1e7, bmin, bmax),
+                            _ => trace_incremental::<R, false>(&scene.grid, levels, cam_block, o, dirs[l], 1e7, bmin, bmax),
                         };
                         hits[l] = hit;
                         // Occupancy tests: one per step and per descent, plus the first
@@ -547,7 +530,7 @@ fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r:
                     continue;
                 }
                 let px = match &hits[l] {
-                    Some(hit) => scene.shade(job.world, cam_block, o, dirs[l], hit, mode),
+                    Some(hit) => scene.shade::<S>(job.world, cam_block, o, dirs[l], hit, mode),
                     None => sky,
                 };
                 // SAFETY: pix < w * h, and each pixel belongs to exactly one rectangle.
@@ -604,7 +587,8 @@ fn render_rect_isa<R: Repr, S: Spec, const D: bool>(isa: Isa, job: &Job<R>, r: R
 
 /// `placement = deferred`: the frame's hit records, shaded by the common deferred pass
 /// (`shading::deferred`).
-struct Deferred<'a, R> {
+struct Deferred<'a, R, S> {
+    spec: std::marker::PhantomData<S>,
     scene: &'a Scene<R>,
     world: &'a World,
     records: &'a [Record],
@@ -618,15 +602,15 @@ struct Deferred<'a, R> {
     sky: [u8; 4],
 }
 
-impl<'a, R: Repr> Deferred<'a, R> {
+impl<'a, R: Repr, S: Spec> Deferred<'a, R, S> {
     fn new(scene: &'a Scene<R>, world: &'a World, records: &'a [Record], cam: &Camera, w: u32, h: u32, mode: RenderMode) -> Self {
         let (cam_block, o) = cam.split_position();
         let basis = (cam.forward(), cam.right(), cam.up(), (cam.fov_y * 0.5).tan(), w as f32 / h as f32);
-        Self { scene, world, records, cam: cam_block, o, basis, w, h, mode, sky: world.sky() }
+        Self { spec: std::marker::PhantomData, scene, world, records, cam: cam_block, o, basis, w, h, mode, sky: world.sky() }
     }
 }
 
-impl<R: Repr> mr_components::shading::deferred::Records for Deferred<'_, R> {
+impl<R: Repr, S: Spec> mr_components::shading::deferred::Records for Deferred<'_, R, S> {
     type Record = Record;
     #[inline]
     fn record_at(&self, x: u32, y: u32) -> Record {
@@ -640,7 +624,7 @@ impl<R: Repr> mr_components::shading::deferred::Records for Deferred<'_, R> {
     fn shade(&self, r: Record, x: u32, y: u32) -> [u8; 4] {
         let (f, rt, u, tan, aspect) = self.basis;
         let d = pixel_dir(f, rt, u, tan, aspect, self.w, self.h, x, y);
-        self.scene.shade_surface(self.world, self.cam, &r.surface(self.o, d), self.mode)
+        self.scene.shade_surface::<S>(self.world, self.cam, &r.surface(self.o, d), self.mode)
     }
     #[inline]
     fn miss(&self, _: u32, _: u32) -> [u8; 4] {
@@ -838,7 +822,7 @@ impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
             stages.push(StageTime::cpu("cast", &frame.stage_nodes[1], cast.elapsed().as_secs_f32() * 1e3));
             let shade = Instant::now();
             let records = &self.records;
-            let deferred = Deferred::new(scene, world, records, &cam, w, h, mode);
+            let deferred = Deferred::<R, S>::new(scene, world, records, &cam, w, h, mode);
             mr_components::shading::deferred::shade(&deferred, w, pixels);
             stages.push(StageTime::cpu("shade", &frame.stage_nodes[2], shade.elapsed().as_secs_f32() * 1e3));
         } else {
@@ -855,10 +839,6 @@ impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
             ("world_traversal_mb".into(), trav as f64 / 1048576.0),
             ("world_total_mb".into(), total as f64 / 1048576.0),
         ];
-        if S::NATIVE {
-            // A pipeline compiled for this machine (observations tell it from the generic build).
-            counters.push(("compiled_native".into(), 1.0));
-        }
         if self.scene.traversal != Traversal::Refloor {
             counters.push(("dda_steps_per_pixel".into(), work.steps as f64 / px));
             counters.push(("ascent_tests_per_pixel".into(), work.up as f64 / px));
@@ -913,20 +893,13 @@ impl<R: Repr, S: Spec> Raycast<R, S> {
                     _ => (self.kernel.clone(), value.as_bool().unwrap_or(true)),
                 };
                 let t = traversal(&kernel, exact)?;
-                if let Some(b) = S::TRAVERSAL.filter(|&b| b != t) {
-                    anyhow::bail!("this pipeline was compiled for traversal {b:?}; {t:?} needs another build");
-                }
                 (self.kernel, self.exact, self.scene.traversal) = (kernel, exact, t);
             }
             "shading" => {
                 require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?;
             }
             "packet" => {
-                let n = value.as_str().and_then(|s| s.parse().ok()).unwrap_or(8);
-                if let Some(b) = S::PACKET.filter(|&b| b != n) {
-                    anyhow::bail!("this pipeline was compiled for packets of {b}; {n} needs another build");
-                }
-                self.packet = n;
+                self.packet = value.as_str().and_then(|s| s.parse().ok()).unwrap_or(8);
             }
             "schedule" => (self.tiles, self.rects) = (parse_schedule(value.as_str().unwrap_or(""))?, vec![]),
             "tile_order" => (self.tile_order, self.rects) = (parse_order(value.as_str().unwrap_or(""))?, vec![]),
