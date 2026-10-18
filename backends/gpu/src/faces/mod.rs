@@ -23,7 +23,6 @@ use mr_components::draw::{self, drawer::{DrawMode, DrawNodes, DrawerSpec, FaceDr
 use mr_components::graph::{self, Device, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state::{self as shade_state, ShadeState};
-use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::Shadows;
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
@@ -296,7 +295,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
 }
 
 fn sky_rgba(core: &Core) -> [f32; 4] {
-    let s = encode_srgb(core.world.env.sky);
+    let s = core.sky();
     [s[0] as f32 / 255.0, s[1] as f32 / 255.0, s[2] as f32 / 255.0, 1.0]
 }
 
@@ -473,7 +472,7 @@ mod tests {
             for shading in ["direct", "pathtrace"] {
                 let c = mr_components::Composition { shadow_storage: st.into(), shading: shading.into(), ..mr_components::Composition::new(backend) };
                 let ck = Graph::from_composition(&c).unwrap().check().unwrap();
-                let mut walks = Walks::default();
+                let mut walks = Walks::of(&ck);
                 let groups = &[2, 4];
                 let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), groups, false);
                 let bounce = ck.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&ck, s, groups, false));

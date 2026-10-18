@@ -28,5 +28,5 @@ fn direct_light(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
 
 fn shade_lit(texel: vec4<f32>, p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
     let albedo = vec3<f32>(srgb_to_linear(texel.r), srgb_to_linear(texel.g), srgb_to_linear(texel.b));
-    return encode_srgb(albedo * direct_light(p + n * 1e-3, n) * vp.exposure);
+    return display(albedo * direct_light(p + n * 1e-3, n) * vp.exposure);
 }

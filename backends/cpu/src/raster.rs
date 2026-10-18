@@ -26,7 +26,6 @@ use std::time::Instant;
 
 use cpu_reference::{Chunks, Pool, Shadows, VoxelScene, World};
 use glam::{IVec3, Mat4, Vec3, Vec4};
-use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::geometry::{Knobs, MeshFn};
 use mr_components::{names_on, require, Slot};
@@ -298,7 +297,7 @@ impl CpuRaster {
         // Rasterise: each band owns its rows of the depth/id buffers (and of the image when
         // shading is inline).
         let quads = Quads { visible: &visible, bases: visible.iter().map(|v| v.2).collect(), scene: VoxelScene { world, chunks: &self.chunks }, cam, w, h, mode: req.mode };
-        let sky = encode_srgb(world.env.sky);
+        let sky = world.sky();
         let raster = Raster { tris: &tris, bins: &bins, tiles_x, tw, bh, w, quads: &quads, sky };
         let rows = (bh * w) as usize;
         let bands = self.depth.par_chunks_mut(rows).zip(self.ids.par_chunks_mut(rows)).zip(frame.pixels.par_chunks_mut(rows * 4)).enumerate();

@@ -38,7 +38,6 @@ use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
 use mr_components::visibility::discover::{Output, Settings, State, grid};
 use mr_components::{names_on, require, Slot};
-use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GrowableBuffer, wgpu};
@@ -244,7 +243,7 @@ impl CpuSampler {
         let faces = schedule.transfers.iter().find(|e| e.port == "faces" && g.node(&e.to).role == Role::Draw).ok_or_else(|| anyhow::anyhow!("{BACKEND}: the faces do not cross from the CPU to the GPU"))?;
         opts.pipelined = faces.when == mr_components::graph::When::Prev;
         // The GPU sites' walks: shadow rays (the shadow stages), bounces their own or the same.
-        let mut walks = Walks::default();
+        let mut walks = Walks::of(g);
         let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("{BACKEND}: GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         let o = CoreOpts { shading: &opts.shading, draw: &opts.draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
@@ -412,7 +411,7 @@ impl FaceSource for CpuSampler {
         }
         let bind0 = self.bind0.clone().unwrap();
         let binds: Vec<&wgpu::BindGroup> = [Some(&bind0), Some(&world_bg), storage_bg].into_iter().flatten().collect();
-        let sky = encode_srgb(core.world.env.sky);
+        let sky = core.sky();
         let clear = wgpu::Color { r: sky[0] as f64 / 255.0, g: sky[1] as f64 / 255.0, b: sky[2] as f64 / 255.0, a: 1.0 };
         let out_view = core.output.create_view(&Default::default());
         let frame = DrawFrame {

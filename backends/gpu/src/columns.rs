@@ -93,7 +93,7 @@ impl Columns {
             g,
             CoreSpec {
                 gpu: GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY },
-                walks: &Default::default(),
+                walks: &mr_components::shaders::Walks::of(g),
                 accel: None,
                 stages: wgpu::ShaderStages::COMPUTE,
                 max_lod: 0,
@@ -115,7 +115,7 @@ impl Columns {
         let hm_info = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("heightmap info"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         gpu.queue.write_buffer(&hm_info, 0, bytemuck::cast_slice(&hm.info()));
         // Shadow and bounce rays walk the heightmap (its `ctrace`).
-        let (program, root, deps) = program(&opts.shading, deferred);
+        let (program, root, deps) = program(&opts.shading, deferred, g.tone());
         let module = mr_gpu::program::compile(&gpu.device, "voxelspace", &program, &root, &deps);
         let mut entries = core.layout_entries();
         entries.push(storage_entry(LANE_BINDING, true, core.stages));
@@ -213,11 +213,12 @@ impl Lane for Columns {
 
 /// The shader: the heightmap storage (group 2) is its own kernel (`ctrace`; storage and walk
 /// in one, IDEAS §18's exceptions), the ray services through it, the column march and the
-/// shading component as the root; with `deferred`, the march writes records and
+/// shading component as the root, the post's `tone` in its output; with `deferred`, the march writes records and
 /// the common deferred pass shades them.
-fn program(shading: &str, deferred: bool) -> (mr_gpu::program::Program, String, [&'static str; 5]) {
+fn program(shading: &str, deferred: bool, tone: mr_components::post::Tone) -> (mr_gpu::program::Program, String, [&'static str; 5]) {
     use mr_gpu::program::{COMMON, LIGHTING, Program, VOXELS};
     let mut p = Program::world(Some("heightmap::rays"));
+    mr_components::post::add_to(tone, &mut p);
     p.add("heightmap", heightmap::gpu_wgsl(0, LANE_BINDING), &[VOXELS]);
     mr_components::shaders::rays(&mut p, "heightmap::rays", "heightmap");
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
@@ -238,7 +239,7 @@ mod tests {
         use mr_gpu::wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         for shading in mr_components::names_on("gpu-voxelspace", mr_components::Slot::Shading) {
             for deferred in [false, true] {
-                let (p, root, deps) = super::program(shading, deferred);
+                let (p, root, deps) = super::program(shading, deferred, mr_components::post::Tone::Aces);
                 let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{shading} {deferred}: {e}"));
                 Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{shading} {deferred}: {e:?}"));
             }

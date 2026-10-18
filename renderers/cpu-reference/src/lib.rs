@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use glam::{DVec3, IVec3, Vec3};
 use mr_core::chunk::{CHUNK_BITS, local_of_block};
-use mr_core::lighting::{encode_srgb, point_light, srgb_to_linear, srgb_to_linear_f, texel_coord};
+use mr_core::lighting::{Tone, point_light, srgb_to_linear, srgb_to_linear_f, texel_coord};
 use mr_core::*;
 use rayon::prelude::*;
 
@@ -125,6 +125,8 @@ pub struct World {
     pub blocks: Arc<BlockRegistry>,
     pub env: Environment,
     pub shadows: Shadows,
+    /// The post's tone mapper (PLAN step 15b; the reference's own: `clamp`).
+    pub tone: Tone,
     lights: HashMap<u32, Light>,
     light_grid: HashMap<IVec3, Vec<Light>>,
     lights_dirty: bool,
@@ -132,7 +134,12 @@ pub struct World {
 
 impl World {
     pub fn new(p: &InitParams) -> Self {
-        Self { blocks: p.blocks.clone(), env: p.environment, shadows: Shadows::All, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false }
+        Self { blocks: p.blocks.clone(), env: p.environment, shadows: Shadows::All, tone: Tone::Clamp, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false }
+    }
+
+    /// The sky's pixel (a linear colour, through the post).
+    pub fn sky(&self) -> [u8; 4] {
+        self.tone.encode(self.env.sky)
     }
 
     /// Applies the updates that are the world's (lights, environment); returns the others
@@ -420,7 +427,7 @@ impl VoxelScene<'_> {
             return texel;
         }
         let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
-        encode_srgb(albedo * self.light_at(p, face.normal().as_vec3()) * self.world.env.exposure)
+        self.world.tone.encode(albedo * self.light_at(p, face.normal().as_vec3()) * self.world.env.exposure)
     }
 
     /// Shades a mesh surface (mesh mode): `color` is the interpolated sRGB vertex colour,
@@ -432,7 +439,7 @@ impl VoxelScene<'_> {
             return [q(color.x), q(color.y), q(color.z), 255];
         }
         let albedo = Vec3::new(srgb_to_linear_f(color.x), srgb_to_linear_f(color.y), srgb_to_linear_f(color.z));
-        encode_srgb(albedo * self.light_at(p, n) * self.world.env.exposure)
+        self.world.tone.encode(albedo * self.light_at(p, n) * self.world.env.exposure)
     }
 
     /// Incoming light (linear) at surface point `p` with normal `n`: ambient, sun and
@@ -497,7 +504,7 @@ impl Renderer for CpuReference {
         let o = cam.position;
         let this = VoxelScene { world: &self.world, chunks: &self.chunks };
         let max_dist = this.max_dist();
-        let sky = encode_srgb(self.world.env.sky);
+        let sky = self.world.sky();
         let mut pixels = std::mem::take(&mut self.pixels);
         self.pool.install(|| pixels.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
             for x in 0..w {

@@ -72,5 +72,5 @@ fn shade_surface(s: Surface, d: vec3<f32>, lit: bool, px: vec2<u32>) -> vec4<f32
         mean = (accum[idx].rgb * f32(sp.prev_count) + sum) / f32(sp.prev_count + sp.spp);
     }
     accum[idx] = vec4<f32>(mean, 1.0);
-    return encode_srgb(mean * vp.exposure);
+    return display(mean * vp.exposure);
 }

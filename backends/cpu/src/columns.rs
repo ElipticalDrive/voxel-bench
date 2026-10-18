@@ -15,7 +15,6 @@ use mr_components::shading::direct::cpu::{Ctx, Surface, shade};
 use mr_components::storage::heightmap::Heightmap;
 use mr_components::visibility::columns::cpu::{Deferred, Inline, March, Records};
 use mr_components::visibility::record::Record;
-use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use rayon::prelude::*;
 
@@ -104,7 +103,7 @@ impl Lane for CpuColumns {
         let cam_block = cam.split_position().0;
         let (hm, scene) = (&self.hm, world);
         let lit = req.mode == RenderMode::Lit;
-        let sky = encode_srgb(scene.env.sky);
+        let sky = scene.sky();
         let m = March::new(hm, cam, w, h, hm.march_cells() as usize);
         // Shadow rays walk the heightmap.
         let ctx = Ctx {
@@ -115,6 +114,7 @@ impl Lane for CpuColumns {
             light_shadows: scene.shadows == Shadows::All,
             lights_near: |world: IVec3| scene.lights_near(world),
             occluded: |p: Vec3, d: Vec3, dist: f32| hm.trace(cam_block, p, d, dist).is_some(),
+            tone: scene.tone,
         };
         let shade_s = |s: &Surface| shade(&ctx, s, req.mode);
         let (t_march, stages) = if self.deferred {

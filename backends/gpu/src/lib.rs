@@ -22,7 +22,6 @@ use mr_components::graph::{self, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state::ShadeState;
 use mr_components::storage::gpu_data::{self, StorageSet};
-use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, VoxelWorld, VoxelWorldConfig};
 use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
@@ -161,6 +160,9 @@ pub(crate) struct Core {
     width: u32,
     height: u32,
     waker: Waker,
+    /// The post's tone mapper (the walks'; PLAN step 15b): in the programs' `display`, and
+    /// here for the sky.
+    tone: mr_core::lighting::Tone,
 }
 
 /// The records of `placement = deferred` (8 bytes per pixel; copied between GPUs when the
@@ -237,12 +239,18 @@ impl Core {
             width: p.width,
             height: p.height,
             waker,
+            tone: s.walks.post,
             storages,
             accel_nodes: s.walks.geometry.iter().map(|g| g.node.clone()).collect(),
             accel,
             world,
             gpu,
         })
+    }
+
+    /// The sky's pixel (a linear colour, through the post).
+    fn sky(&self) -> [u8; 4] {
+        self.tone.encode(self.world.env.sky)
     }
 
     /// Adds the ray queries' root code to `p` (the bindings and the trace; `flags`: the ray
@@ -328,7 +336,7 @@ impl Core {
             up: c.up().to_array(),
             mode: (mode == RenderMode::Lit) as u32,
             origin: c.split_position().1.to_array(),
-            sky: u32::from_le_bytes(encode_srgb(self.world.env.sky)),
+            sky: u32::from_le_bytes(self.sky()),
             width: self.width,
             height: self.height,
             lane,

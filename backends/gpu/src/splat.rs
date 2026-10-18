@@ -175,7 +175,7 @@ fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, pts: &wgpu::Buffer, z: &wg
 /// The shader: the shadow and bounce rays' walks (PLAN step 9c), the splat passes, the
 /// shading component and the common deferred pass (the resolve) as the root.
 fn program(g: &graph::Checked, shading: &str) -> anyhow::Result<(Walks, mr_gpu::program::Program, String, Vec<String>)> {
-    let mut walks = Walks::default();
+    let mut walks = Walks::of(g);
     let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("gpu-splat: shadow rays are not bound"))?, &[2, 3, 4], false);
     let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, &[2, 3, 4], false));
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");

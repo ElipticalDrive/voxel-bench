@@ -26,7 +26,6 @@ use mr_components::traversal::refloor::cpu::{NOWHERE, trace_packet};
 use mr_components::visibility::record::Record;
 use mr_components::{names_on, parse_placement, placement_param, require, Slot};
 use mr_core::chunk::local_of_block;
-use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -305,6 +304,7 @@ impl<R: Repr> Scene<R> {
             light_shadows: world.shadows == Shadows::All,
             lights_near: |w: IVec3| world.lights_near(w),
             occluded: |p: Vec3, d: Vec3, dist: f32| self.occluded(cam, p, d, dist),
+            tone: world.tone,
         };
         mr_components::shading::direct::cpu::shade(&ctx, s, mode)
     }
@@ -472,7 +472,7 @@ fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r:
     let tan = (job.cam.fov_y * 0.5).tan();
     let aspect = w as f32 / h as f32;
     let (bmin, bmax) = scene.bounds_rel(cam_block);
-    let sky = encode_srgb(job.world.env.sky);
+    let sky = job.world.sky();
     let (bw, bh) = if job.two_d {
         match N {
             1 => (1, 1),
@@ -622,7 +622,7 @@ impl<'a, R: Repr> Deferred<'a, R> {
     fn new(scene: &'a Scene<R>, world: &'a World, records: &'a [Record], cam: &Camera, w: u32, h: u32, mode: RenderMode) -> Self {
         let (cam_block, o) = cam.split_position();
         let basis = (cam.forward(), cam.right(), cam.up(), (cam.fov_y * 0.5).tan(), w as f32 / h as f32);
-        Self { scene, world, records, cam: cam_block, o, basis, w, h, mode, sky: encode_srgb(world.env.sky) }
+        Self { scene, world, records, cam: cam_block, o, basis, w, h, mode, sky: world.sky() }
     }
 }
 

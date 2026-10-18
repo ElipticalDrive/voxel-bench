@@ -56,7 +56,6 @@ use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
-use mr_core::lighting::encode_srgb;
 use mr_core::*;
 use mr_components::graph::{Checked, Role};
 use mr_components::shaders::Walks;
@@ -537,7 +536,7 @@ impl GpuSampler {
         opts.incremental = g.find(Role::Holes).is_some();
         // The sites' walks (PLAN step 9c): discovery rays (the storage and traversal stages),
         // the storage exposure tests read, shadow and bounce rays; each its own or shared.
-        let mut walks = Walks::default();
+        let mut walks = Walks::of(g);
         let bound = |role, port: &str| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{BACKEND}: `{port}` rays are not bound"));
         let rays = walks.site(g, bound(Role::Visibility, "rays")?, STORAGE_GROUPS, false);
         let exposure = walks.storage(g, g.input(Role::Visibility, "exposure").ok_or_else(|| anyhow::anyhow!("{BACKEND}: exposure is not bound"))?, STORAGE_GROUPS);
@@ -1096,7 +1095,7 @@ impl GpuSampler {
     fn encode_shade(&self, core: &Core, drawing: &Draw, enc: &mut wgpu::CommandEncoder, parity: usize, world_bg: &wgpu::BindGroup, bound: &Bound, mode: RenderMode, ts: (bool, bool), ticket: mr_gpu::Ticket) {
         let painter = self.opts.order == "painter";
         let overdraw = view_code(&self.opts.view) == 4;
-        let sky = if overdraw { [0, 0, 0, 255] } else { encode_srgb(core.world.env.sky) };
+        let sky = if overdraw { [0, 0, 0, 255] } else { core.sky() };
         let clear = wgpu::Color { r: sky[0] as f64 / 255.0, g: sky[1] as f64 / 255.0, b: sky[2] as f64 / 255.0, a: 1.0 };
         let out_view = core.output.create_view(&Default::default());
         let prepass = drawing.depth_prepass && mode == RenderMode::Lit && !painter && !overdraw;
@@ -1757,7 +1756,7 @@ mod tests {
                 for g in graphs {
                     g.validate().unwrap_or_else(|e| panic!("{g:?}: {e}"));
                     let ck = g.check().unwrap();
-                    let mut walks = Walks::default();
+                    let mut walks = Walks::of(&ck);
                     let rays = walks.site(&ck, ck.site(Role::Visibility, "rays").unwrap(), STORAGE_GROUPS, false);
                     let exposure = walks.storage(&ck, ck.input(Role::Visibility, "exposure").unwrap(), STORAGE_GROUPS);
                     let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), STORAGE_GROUPS, false);

@@ -837,9 +837,9 @@ fn expand_sites(c: &mr_components::Composition, axes: &[(String, Pick)]) -> anyh
         return Ok(vec![(c.clone(), BTreeMap::new())]);
     }
     let base = mr_components::graph::Graph::from_composition(c).map_err(anyhow::Error::msg)?;
-    // The ray-casting sites, and the nodes on the world's side every pipeline has.
-    use mr_components::graph::{CLIENT, GENERATOR, LINK};
-    let names: Vec<String> = base.site_ports().into_iter().map(|(n, ..)| n).chain([LINK, CLIENT, GENERATOR].map(String::from)).collect();
+    // The ray-casting sites, and the nodes every pipeline has (the world's side, the post).
+    use mr_components::graph::{CLIENT, GENERATOR, LINK, POST};
+    let names: Vec<String> = base.site_ports().into_iter().map(|(n, ..)| n).chain([LINK, CLIENT, GENERATOR, POST].map(String::from)).collect();
     let mut lists: Vec<(&str, Vec<String>)> = vec![];
     for (site, pick) in axes {
         let values = match pick {
@@ -1173,6 +1173,11 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         seen.dedup();
         assert_eq!(seen.len(), 12);
         assert_eq!(Plan::parse(&format!("{base}[[renderer]]\nsites = {{ link = \"*\", client = \"*\" }}\n"), &[]).unwrap().renderers.len(), 4);
+        // Step 15b: the post's tone mappers, each its own key.
+        let p = Plan::parse(&format!("{base}[[renderer]]\nsites = {{ post = \"*\" }}\n"), &[]).unwrap();
+        let keys: std::collections::BTreeSet<String> = p.renderers.iter().map(|r| r.pipeline().unwrap().key().unwrap()).collect();
+        assert_eq!((p.renderers.len(), keys.len()), (3, 3));
+        assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces"]);
     }
 
     /// Every shipped plan parses, and its compositions validate and resolve.

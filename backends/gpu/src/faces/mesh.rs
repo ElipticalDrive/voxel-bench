@@ -148,7 +148,7 @@ const STORAGE_GROUPS: &[u32] = &[2, 4, 5];
 /// traversal stages), bounces and mesh shadows their own or the same; returns the walks and
 /// the indices of (shadow, bounce, mesh shadow).
 fn walks(g: &Checked) -> anyhow::Result<(Walks, usize, usize, usize)> {
-    let mut walks = Walks::default();
+    let mut walks = Walks::of(g);
     let shadow = g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("{BACKEND}: shadow rays are not bound"))?;
     let shadow = walks.site(g, shadow, STORAGE_GROUPS, false);
     let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));

@@ -7,6 +7,7 @@
 use mr_gpu::program::{LIGHTING, Program, VOXELS};
 
 use crate::graph::{Checked, Node, Site};
+use crate::post::Tone;
 use crate::storage::GpuStorage;
 use crate::traversal;
 
@@ -104,6 +105,8 @@ pub struct Walks {
     pub storages: Vec<StorageInst>,
     pub kernels: Vec<KernelInst>,
     pub geometry: Option<QueryGeometry>,
+    /// The post node's tone mapper, compiled into the shading's output (PLAN step 15b).
+    pub post: Tone,
 }
 
 /// A module path for node `id` under `kind` (`kernel::shadow_kernel`).
@@ -113,6 +116,11 @@ fn node_path(kind: &str, id: &str) -> String {
 }
 
 impl Walks {
+    /// No walks yet, for graph `ck` (its post node's tone mapper).
+    pub fn of(ck: &Checked) -> Self {
+        Self { post: ck.tone(), ..Self::default() }
+    }
+
     /// Adds storage node `node` (once), at the next bind group of `groups`; its index.
     pub fn storage(&mut self, ck: &Checked, node: &str, groups: &[u32]) -> usize {
         if let Some(i) = self.storages.iter().position(|s| s.node == node) {
@@ -198,8 +206,9 @@ impl Walks {
         node_path("kernel", &self.kernels[i].node)
     }
 
-    /// Adds every storage and kernel module to `p`.
+    /// Adds every storage and kernel module and the post module to `p`.
     pub fn add_to(&self, p: &mut Program) {
+        crate::post::add_to(self.post, p);
         for (i, s) in self.storages.iter().enumerate() {
             storage(p, &self.storage_path(i), &self.gpu_storage(i), s.group);
         }
@@ -225,6 +234,7 @@ impl Walks {
     pub fn shadow_program(&self, k: usize) -> (Program, String) {
         let rays = "walk::rays".to_string();
         let mut p = Program::world(Some(&rays));
+        crate::post::add_to(self.post, &mut p);
         let ki = &self.kernels[k];
         let st = ki.storage.expect("mesh shadows walk a storage");
         storage(&mut p, "walk::storage", &self.gpu_storage(st), 2);
@@ -255,7 +265,7 @@ pub fn meshes(p: &mut Program, walks: &Walks, shadow: usize, mesh_shadow: usize,
         LIGHTING
     } else {
         walks.services(p, "rays::mesh", mesh_shadow, true, false);
-        p.add("lighting::mesh", mr_gpu::voxels::LIGHTING_WGSL, &["rays::mesh", VOXELS]);
+        p.add("lighting::mesh", mr_gpu::voxels::LIGHTING_WGSL, &["rays::mesh", VOXELS, mr_gpu::program::POST]);
         "lighting::mesh"
     };
     p.add(MESH_SURFACE, surface_wgsl(group, binding), &[lighting, VOXELS, mr_gpu::program::COMMON]);

@@ -128,7 +128,7 @@ impl Far {
     pub(crate) fn of(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, near: &Core, spec: &CoreSpec) -> anyhow::Result<Option<Self>> {
         let Some(slot) = far_slot(g) else { return Ok(None) };
         anyhow::ensure!(near.records.is_some(), "the shading on gpu{slot} shades the hit records the rays write on another GPU: placement = deferred");
-        let mut walks = Walks::default();
+        let mut walks = Walks::of(g);
         let site = |port| g.site(Role::Shading, port);
         let shadow = walks.site(g, site("shadow").ok_or_else(|| anyhow::anyhow!("the shading's shadow rays are not bound"))?, STORAGE_GROUPS, false);
         let bounce = site("bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
@@ -394,7 +394,7 @@ mod tests {
                 g.accept().unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));
                 assert_eq!(far_slot(&ck), Some(1));
                 assert_eq!((ck.devices["s.kernel"], ck.devices["s.storage"], ck.devices["kernel"]), (Device::Gpu(1), Device::Gpu(1), Device::Gpu(0)));
-                let mut walks = Walks::default();
+                let mut walks = Walks::of(&ck);
                 let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), STORAGE_GROUPS, false);
                 let (program, root, deps) = program(&walks, shadow, shadow, shading);
                 let deps: Vec<&str> = deps.iter().map(String::as_str).collect();

@@ -41,6 +41,7 @@ pub mod draw;
 pub mod geometry;
 pub mod graph;
 pub mod holes;
+pub mod post;
 pub mod impls;
 pub mod prepass;
 pub mod shaders;

@@ -60,10 +60,13 @@ pub enum Role {
     Draw,
     Shading,
     Meshes,
+    /// What turns the shading's linear colour into the output's (PLAN step 15b): a tone
+    /// mapper (`crate::post::Tone`), compiled into the shading's output on its device.
+    Post,
 }
 
 impl Role {
-    pub const ALL: [Role; 13] = [Role::World, Role::Generator, Role::Link, Role::Client, Role::Storage, Role::Geometry, Role::Prepass, Role::Traversal, Role::Visibility, Role::Holes, Role::Draw, Role::Shading, Role::Meshes];
+    pub const ALL: [Role; 14] = [Role::World, Role::Generator, Role::Link, Role::Client, Role::Storage, Role::Geometry, Role::Prepass, Role::Traversal, Role::Visibility, Role::Holes, Role::Draw, Role::Shading, Role::Meshes, Role::Post];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -71,15 +74,16 @@ impl Role {
             Role::Generator => "generator",
             Role::Link => "link",
             Role::Client => "client",
+            Role::Post => "post",
             r => r.slot().unwrap().name(),
         }
     }
 
     /// The registry slot whose components fill this role (none for the world, its generator,
-    /// the link and the client).
+    /// the link, the client and the post).
     pub fn slot(self) -> Option<Slot> {
         Some(match self {
-            Role::World | Role::Generator | Role::Link | Role::Client => return None,
+            Role::World | Role::Generator | Role::Link | Role::Client | Role::Post => return None,
             Role::Storage => Slot::Storage,
             Role::Geometry => Slot::Geometry,
             Role::Prepass => Slot::Prepass,
@@ -231,6 +235,7 @@ const FACES: &[Port] = &[port("faces", Data::Faces, true, "the faces to draw")];
 const SPLAT: &[Port] = &[port("points", Data::Faces, true, "the points to splat")];
 const DRAW: &[Port] = &[port("faces", Data::Faces, true, "the faces to draw"), port("meshes", Data::Surfaces, false, "meshes in the same depth buffer (mesh mode)")];
 const DIRECT: &[Port] = &[port("hits", Data::Hits, true, "the visible surface per pixel"), port("shadow", Data::Rays, false, "shadow rays (unbound: the back end's own)")];
+const POSTED: &[Port] = &[port("image", Data::Image, true, "the shading's linear colour (compiled into its output)")];
 const PATHTRACE: &[Port] = &[
     port("hits", Data::Hits, true, "the visible surface per pixel"),
     port("shadow", Data::Rays, false, "shadow rays (unbound: the back end's own)"),
@@ -259,6 +264,7 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
         (Role::Draw, _) => DRAW,
         (Role::Shading, "pathtrace") => PATHTRACE,
         (Role::Shading, _) => DIRECT,
+        (Role::Post, _) => POSTED,
     }
 }
 
@@ -274,7 +280,7 @@ pub fn output(role: Role, name: &str) -> Data {
         (Role::Visibility, "quadtree" | "cluster" | "faces") => Data::Faces,
         (Role::Visibility | Role::Draw, _) => Data::Hits,
         (Role::Holes, _) => Data::Tiles,
-        (Role::Shading, _) => Data::Image,
+        (Role::Shading | Role::Post, _) => Data::Image,
         (Role::Meshes, _) => Data::Surfaces,
     }
 }
@@ -382,6 +388,14 @@ pub const GENERATORS: &[&str] = &["procedural"];
 /// `cpu` (on the client: `generator = "cpu"`).
 pub const GENERATOR: &str = "generator";
 
+/// The post's components (PLAN step 15b): the tone mappers (`crate::post::Tone`), `clamp`
+/// (the output before step 15b) the default. The sites form writes another as
+/// `post = "aces"`.
+pub const POSTS: &[&str] = &["clamp", "reinhard", "aces"];
+
+/// The sites form's key for the post.
+pub const POST: &str = "post";
+
 /// `component(knob=value, ...)`, the sites form of a node with knobs (the link, the
 /// client): the component and the knobs (values in TOML).
 pub fn parse_site_knobs(value: &str) -> Result<(String, toml::Table), String> {
@@ -433,6 +447,7 @@ fn known(role: Role, name: &str) -> bool {
         None if role == Role::Client => CLIENTS.contains(&name),
         None if role == Role::Link => LINKS.contains(&name),
         None if role == Role::Generator => GENERATORS.contains(&name),
+        None if role == Role::Post => POSTS.contains(&name),
         None => name == "world",
         Some(s) => component(s, name).is_some(),
     }
@@ -730,6 +745,10 @@ impl Graph {
                     }
                 }
             }
+            // The post after the shading (PLAN step 15b): `clamp` if missing, reading the
+            // shading if unbound.
+            let post = one(&mut g, Role::Post, "clamp")?;
+            g.nodes.get_mut(&post).unwrap().inputs.entry("image".into()).or_insert(sid);
         }
         Ok(g)
     }
@@ -822,6 +841,7 @@ impl Graph {
                     Role::Client => CLIENTS.to_vec(),
                     Role::Link => LINKS.to_vec(),
                     Role::Generator => GENERATORS.to_vec(),
+                    Role::Post => POSTS.to_vec(),
                     r => r.slot().map(|s| crate::components(s).map(|c| c.name).collect()).unwrap_or_default(),
                 };
                 why.push(format!("`{id}`: unknown {} component `{}` (have: {})", n.role.name(), n.component, have.join(", ")));
@@ -843,6 +863,7 @@ impl Graph {
                         }
                     }
                 }
+                Role::Post if !n.knobs.is_empty() => why.push(format!("`{id}`: the post has no knobs (its component is the tone mapper: {})", POSTS.join(", "))),
                 _ => {}
             }
             let ports = inputs(n.role, &n.component);
@@ -881,7 +902,7 @@ impl Graph {
         if !why.is_empty() {
             return Err(why.join("; "));
         }
-        let outs: Vec<&String> = g.nodes.iter().filter(|(_, n)| output(n.role, &n.component) == Data::Image).map(|(k, _)| k).collect();
+        let outs: Vec<&String> = g.nodes.iter().filter(|(k, n)| output(n.role, &n.component) == Data::Image && !g.nodes.values().any(|r| r.inputs.values().any(|s| s == *k))).map(|(k, _)| k).collect();
         let [out] = outs.as_slice() else {
             return Err(format!("a graph has one image output (have: {})", if outs.is_empty() { "none".into() } else { outs.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ") }));
         };
@@ -925,6 +946,11 @@ impl Graph {
                     }
                     d
                 }
+                // The post runs where the image it maps is made (compiled into its output).
+                None if n.role == Role::Post => {
+                    let s = &g.nodes[&n.inputs["image"]];
+                    s.device.unwrap_or_else(|| default_device(&g.executor, s.role, &s.component))
+                }
                 None => default_device(&g.executor, n.role, &n.component),
             };
             devices.insert(id.to_string(), d);
@@ -943,6 +969,9 @@ impl Graph {
         for (id, n) in &g.nodes {
             for (p, src) in &n.inputs {
                 let s = &g.nodes[src];
+                if n.role == Role::Post && devices[src] != devices[id] {
+                    return Err(format!("`{id}` on {} cannot map `{src}`'s image on {}: the post is compiled into the shading's output, on its device", devices[id], devices[src]));
+                }
                 if output(s.role, &s.component).fused() && devices[src] != devices[id] {
                     return Err(format!("`{id}`.{p} on {} cannot read `{src}` on {}: {} are compiled into their caller", devices[id], devices[src], output(s.role, &s.component).name()));
                 }
@@ -1032,7 +1061,11 @@ impl Graph {
         };
         let mut ids: HashMap<String, usize> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
-        let mut stack = vec![c.output.clone()];
+        // The default post (`clamp`), nothing else set, is left out too (step 15b): the
+        // shading's image is the output, as before.
+        let out = &g.nodes[&c.output];
+        let start = if out.role == Role::Post && out.component == "clamp" && out.device.is_none_or(|d| d == c.devices[&out.inputs["image"]]) && out.api.is_none() && out.timing.is_empty() { out.inputs["image"].clone() } else { c.output.clone() };
+        let mut stack = vec![start];
         while let Some(id) = stack.pop() {
             if ids.contains_key(&id) {
                 continue;
@@ -1253,6 +1286,8 @@ impl Graph {
                     Role::Client => n.component = "pick".into(),
                     Role::Link => n.component = "free".into(),
                     Role::Generator => n.device = None,
+                    // Every executor compiles in any tone mapper.
+                    Role::Post => n.component = "clamp".into(),
                     _ => {}
                 }
                 let role = n.role;
@@ -1284,7 +1319,7 @@ impl Graph {
         // The secondary-ray stages where the composition has them.
         let b = backend(&self.executor).unwrap();
         let g = &ck.graph;
-        let shading = ck.output.as_str();
+        let shading = ck.shading();
         if let (true, Some(s), Some(k)) = (b.has(Slot::ShadowTraversal), g.nodes[shading].inputs.get("shadow"), g.lead().and_then(|(c, p)| g.nodes[&c].inputs.get(p).cloned())) {
             let mut e = c.clone();
             if *s == k {
@@ -1346,7 +1381,7 @@ impl Graph {
         let input = |id: &str, p: &str| n(id).inputs.get(p).map(String::as_str);
         let mut c = Composition { backend: g.executor.clone(), ..Composition::new("") };
         let b = backend(&g.executor).unwrap();
-        let shading = ck.output.as_str();
+        let shading = ck.shading();
         c.shading = n(shading).component.clone();
         let hits = input(shading, "hits").unwrap();
         let vis = if n(hits).role == Role::Draw {
@@ -1473,9 +1508,9 @@ fn device_blocker(ck: &Checked) -> Option<String> {
         return Some(format!("a pipeline over two GPUs is split between its visibility and shading nodes (here: {used})"));
     };
     let (near, far) = (ck.devices[vis.0], ck.devices[shading.0]);
-    // The nodes on the shading's GPU are the shading and what is compiled into it (fused
-    // nodes follow their callers), the rest on the visibility's.
-    let stray: Vec<String> = g.nodes.iter().filter(|(id, n)| matches!(ck.devices[*id], Device::Gpu(_)) && ck.devices[*id] != near && (far == near || (*id != shading.0 && !output(n.role, &n.component).fused()))).map(|(id, _)| format!("`{id}` on {}", ck.devices[id])).collect();
+    // The nodes on the shading's GPU are the shading and what is compiled into it (the post;
+    // fused nodes follow their callers), the rest on the visibility's.
+    let stray: Vec<String> = g.nodes.iter().filter(|(id, n)| matches!(ck.devices[*id], Device::Gpu(_)) && ck.devices[*id] != near && (far == near || (*id != shading.0 && n.role != Role::Post && !output(n.role, &n.component).fused()))).map(|(id, _)| format!("`{id}` on {}", ck.devices[id])).collect();
     if slots.len() > 2 || far == near || !stray.is_empty() {
         return Some(format!("only the shading and the walks compiled into it run on a second GPU (here: {used}{})", if stray.is_empty() { String::new() } else { format!("; not so: {}", stray.join(", ")) }));
     }
@@ -1611,6 +1646,12 @@ impl Graph {
                 }
             }
         }
+        if let Some(v) = sites.remove(POST) {
+            if !POSTS.contains(&v.as_str()) {
+                return Err(format!("unknown {POST} `{v}` (have: {})", POSTS.join(", ")));
+            }
+            g.nodes.values_mut().filter(|n| n.role == Role::Post).for_each(|n| n.component = v.clone());
+        }
         if let Some(v) = sites.remove(GENERATOR) {
             let d = match v.as_str() {
                 "server" => Device::Server,
@@ -1625,7 +1666,7 @@ impl Graph {
         let sites = &sites;
         let names: Vec<String> = g.site_ports().into_iter().map(|(n, ..)| n).collect();
         if let Some(bad) = sites.keys().find(|k| !names.contains(k)) {
-            return Err(format!("no site `{bad}` in this pipeline (have: {}, {LINK}, {CLIENT}, {GENERATOR})", names.join(", ")));
+            return Err(format!("no site `{bad}` in this pipeline (have: {}, {LINK}, {CLIENT}, {GENERATOR}, {POST})", names.join(", ")));
         }
         // A value naming another listed site waits until that one is bound.
         let refers = |v: &str, n: &str| v == n || v.split_once('/').is_some_and(|(s, _)| s == n);
@@ -1709,7 +1750,8 @@ impl Graph {
 
     /// Without the nodes that lead to no image (the world stays).
     fn pruned(mut self) -> Graph {
-        let Some(out) = self.nodes.iter().find(|(_, n)| known(n.role, &n.component) && output(n.role, &n.component) == Data::Image).map(|(k, _)| k.clone()) else { return self };
+        let read = |k: &String| self.nodes.values().any(|r| r.inputs.values().any(|s| s == k));
+        let Some(out) = self.nodes.iter().find(|(k, n)| known(n.role, &n.component) && output(n.role, &n.component) == Data::Image && !read(k)).map(|(k, _)| k.clone()) else { return self };
         let mut keep = std::collections::HashSet::new();
         let mut stack = vec![out];
         while let Some(id) = stack.pop() {
@@ -1736,31 +1778,38 @@ impl Graph {
         self.nodes.values().find(|n| n.role == Role::Client).and_then(|n| n.knobs.get(name)).and_then(|v| v.as_integer())
     }
 
+    /// The post node's tone mapper (`clamp` when the graph has none).
+    pub fn tone(&self) -> crate::post::Tone {
+        self.nodes.values().find(|n| n.role == Role::Post).and_then(|n| crate::post::Tone::parse(&n.component)).unwrap_or_default()
+    }
+
     /// The network the link node models (free when the graph has none).
     pub fn link(&self) -> Result<mr_core::link::LinkSpec, String> {
         self.nodes.values().find(|n| n.role == Role::Link).map_or(Ok(Default::default()), link_spec)
     }
 
-    /// The sites form's value for the link, the client or the generator (`key`: [`LINK`],
-    /// [`CLIENT`], [`GENERATOR`]), the default written out.
+    /// The sites form's value for the link, the client, the generator or the post (`key`:
+    /// [`LINK`], [`CLIENT`], [`GENERATOR`], [`POST`]), the default written out.
     pub fn sites_value(&self, key: &str) -> String {
         let g = self.normalised().unwrap_or_else(|_| self.clone());
         g.world_sites().remove(key).unwrap_or_else(|| match key {
             LINK => "free".into(),
             GENERATOR => "server".into(),
+            POST => "clamp".into(),
             _ => "pick".into(),
         })
     }
 
-    /// The link, the client and the generator in the sites form (`link = "net(latency_ms=30)"`,
-    /// `client = "derive(radius=4)"`, `generator = "cpu"`): those other than the default,
-    /// nothing set.
+    /// The link, the client, the generator and the post in the sites form (`link =
+    /// "net(latency_ms=30)"`, `client = "derive(radius=4)"`, `generator = "cpu"`, `post =
+    /// "aces"`): those other than the default, nothing set.
     fn world_sites(&self) -> BTreeMap<String, String> {
         let mut t = BTreeMap::new();
         for n in self.nodes.values() {
             let (key, default) = match n.role {
                 Role::Link => (LINK, "free"),
                 Role::Client => (CLIENT, "pick"),
+                Role::Post => (POST, "clamp"),
                 Role::Generator => {
                     if let Some(d) = n.device.filter(|d| *d != Device::Server) {
                         t.insert(GENERATOR.to_string(), d.to_string());
@@ -1889,6 +1938,9 @@ impl Graph {
         if name == GENERATOR {
             return vec!["server".into(), "cpu".into()];
         }
+        if name == POST {
+            return POSTS.iter().map(|c| c.to_string()).collect();
+        }
         let ports = self.site_ports();
         let Some((_, _, port)) = ports.iter().find(|(n, ..)| n == name) else { return vec![] };
         let others = ports.iter().filter(|(n, _, p)| n != name && p.data == port.data).map(|(n, ..)| n.clone());
@@ -1966,6 +2018,17 @@ fn site_binding(executor: &str, role: Role, port: &str) -> Bind {
 impl Checked {
     pub fn node(&self, id: &str) -> &Node {
         &self.graph.nodes[id]
+    }
+
+    /// The node making the image the post maps (the output, without a post).
+    pub fn shading(&self) -> &str {
+        let out = &self.graph.nodes[&self.output];
+        if out.role == Role::Post { &out.inputs["image"] } else { &self.output }
+    }
+
+    /// The post's tone mapper (`clamp` without a post).
+    pub fn tone(&self) -> crate::post::Tone {
+        self.graph.tone()
     }
 
     /// The API node `id` runs with: its own or its callers' (`apis`), else its component's
@@ -2110,10 +2173,11 @@ impl Checked {
     pub fn schedule(&self) -> Result<Schedule, String> {
         let g = &self.graph;
         let out_of = |id: &str| output(g.nodes[id].role, &g.nodes[id].component);
-        // Work of its own: a non-fused output, or an update from a non-fused input.
+        // Work of its own: a non-fused output, or an update from a non-fused input. The post
+        // is compiled into the output of the pass making its image.
         let is_pass = |id: &str| {
             let n = &g.nodes[id];
-            !out_of(id).fused() || n.inputs.is_empty() || n.inputs.values().any(|s| !out_of(s).fused())
+            n.role != Role::Post && (!out_of(id).fused() || n.inputs.is_empty() || n.inputs.values().any(|s| !out_of(s).fused()))
         };
         let pass = |id: &str| {
             let n = &g.nodes[id];
@@ -2125,6 +2189,7 @@ impl Checked {
                     stack.extend(g.nodes[x].inputs.values().map(String::as_str).filter(|s| out_of(s).fused()));
                 }
             }
+            fused.extend(g.nodes.iter().filter(|(_, r)| r.role == Role::Post && r.inputs.values().any(|s| s == id)).map(|(k, _)| k.clone()));
             fused.sort();
             Pass { node: id.to_string(), device: self.devices[id], api: self.apis.get(id).copied(), fused, state: state(n.role, &n.component) }
         };
@@ -2700,6 +2765,34 @@ mod tests {
 
     /// The generator: on the server it feeds the world and is left out of the key; on the
     /// client's cpu it feeds the client, a pipeline of its own (PLAN step 14d).
+    /// Step 15b: the post after the shading, its tone mapper a choice; `clamp` keeps the key.
+    #[test]
+    fn post_node() {
+        for backend in ["gpu-compute", "cpu", "gpu-raster", "cpu-discover", "gpu-voxelspace"] {
+            let g = Graph::from_composition(&Composition::new(backend)).unwrap();
+            let with = |v: &str| g.with_sites(&[(POST.to_string(), v.to_string())].into());
+            let key = |g: &Graph| g.key().unwrap();
+            let ck = g.check().unwrap();
+            assert_eq!((ck.graph.nodes[&ck.output].role, ck.shading(), ck.tone()), (Role::Post, "shading", crate::post::Tone::Clamp), "{backend}");
+            assert_eq!(ck.devices[&ck.output], ck.devices["shading"], "{backend}: with the shading");
+            assert!(!g.canonical().unwrap().contains("post"), "{backend}: clamp is left out");
+            assert_eq!(key(&with("clamp").unwrap()), key(&g));
+            let aces = with("aces").unwrap();
+            assert_ne!(key(&aces), key(&g));
+            assert_eq!(aces.tone(), crate::post::Tone::Aces);
+            assert_eq!(aces.accept().unwrap(), g.accept().unwrap(), "{backend}: every executor compiles any tone in");
+            assert_eq!(aces.sites_value(POST), "aces");
+            assert_eq!(aces.sites_form().unwrap().unwrap().1[POST], "aces");
+            assert!(with("filmic").unwrap_err().contains("reinhard"));
+        }
+        let mut g = Graph::from_composition(&Composition::new("gpu-compute")).unwrap().check().unwrap().graph;
+        g.nodes.get_mut("post").unwrap().device = Some(Device::Gpu(1));
+        assert!(g.check().unwrap_err().contains("compiled into the shading's output"));
+        g.nodes.get_mut("post").unwrap().device = None;
+        g.nodes.get_mut("post").unwrap().knobs.insert("white".into(), toml::Value::Float(4.0));
+        assert!(g.check().unwrap_err().contains("no knobs"));
+    }
+
     #[test]
     fn generator_placement() {
         let pick = Graph::from_composition(&Composition::new("gpu-compute")).unwrap();
@@ -2962,8 +3055,9 @@ mod tests {
         assert_ne!(sync.key().unwrap(), g.key().unwrap());
     }
 
-    /// Every composition schedules: the output after what it reads, walking kernels only compiled in, every other
-    /// node a pass of its own, fused nodes compiled into a pass on their device.
+    /// Every composition schedules: the shading after what it reads, walking kernels and the
+    /// post only compiled in, every other node a pass of its own, fused nodes compiled into a
+    /// pass on their device.
     #[test]
     fn every_composition_schedules() {
         for c in every_composition() {
@@ -2973,8 +3067,9 @@ mod tests {
             // The output after everything it reads within the frame (discovery a frame ahead
             // runs after it).
             let at = |id: &str| passes.iter().position(|p| p.node == id);
-            let out = at(&ck.output).unwrap();
-            assert!(ck.graph.nodes.keys().filter(|id| ck.graph.depends(&ck.output, id)).filter_map(|id| at(id)).all(|i| i <= out), "{}\n{s}", c.label());
+            let out = at(ck.shading()).unwrap();
+            assert!(ck.graph.nodes.keys().filter(|id| ck.graph.depends(ck.shading(), id)).filter_map(|id| at(id)).all(|i| i <= out), "{}\n{s}", c.label());
+            assert!(passes[out].fused.contains(&ck.output), "{}: the post compiled into the shading\n{s}", c.label());
             // Kept values and loops only where discovery's timings are.
             let looped = s.steps.iter().any(|x| matches!(x, Step::Loop { .. }));
             assert_eq!(looped, c.holes == "coverage", "{}\n{s}", c.label());
@@ -2982,7 +3077,7 @@ mod tests {
             for (id, n) in &ck.graph.nodes {
                 let is_pass = passes.iter().any(|p| p.node == *id);
                 // Ray queries build their acceleration structures from faces: a pass too.
-                assert_eq!(is_pass, n.role != Role::Traversal || n.component == "rayquery", "{}: `{id}`\n{s}", c.label());
+                assert_eq!(is_pass, (n.role != Role::Traversal || n.component == "rayquery") && n.role != Role::Post, "{}: `{id}`\n{s}", c.label());
                 if output(n.role, &n.component).fused() {
                     assert!(passes.iter().any(|p| p.fused.contains(id) && p.device == ck.devices[id.as_str()]), "{}: `{id}` compiled into nothing\n{s}", c.label());
                 }

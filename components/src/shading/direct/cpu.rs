@@ -3,7 +3,7 @@
 //! a shadow ray through the composed visibility walk (`occluded`).
 
 use glam::{IVec3, Vec3};
-use mr_core::lighting::{encode_srgb, point_light, srgb_to_linear, texel_coord};
+use mr_core::lighting::{Tone, point_light, srgb_to_linear, texel_coord};
 use mr_core::{BlockId, BlockRegistry, Environment, Face, Light, RenderMode};
 
 /// What the shading needs from its back end.
@@ -18,6 +18,8 @@ pub struct Ctx<'a, L, O> {
     pub lights_near: L,
     /// Whether a ray from `p` along unit `d` hits something within `dist`.
     pub occluded: O,
+    /// The post's tone mapper, compiled into the output (PLAN step 15b).
+    pub tone: Tone,
 }
 
 /// What shading reads from visibility (as the GPU's `Surface`): the camera-relative
@@ -74,5 +76,5 @@ where
             }
         }
     }
-    encode_srgb(albedo * light * ctx.env.exposure)
+    ctx.tone.encode(albedo * light * ctx.env.exposure)
 }

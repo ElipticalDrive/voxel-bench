@@ -81,6 +81,7 @@ impl Core {
     fn new(p: &InitParams, g: &graph::Checked, threads: usize, shadows: Shadows) -> anyhow::Result<Self> {
         let mut world = World::new(p);
         world.shadows = shadows;
+        world.tone = g.tone();
         Ok(Self {
             pool: Pool::new(p.devices.cpu_threads(threads))?,
             world,

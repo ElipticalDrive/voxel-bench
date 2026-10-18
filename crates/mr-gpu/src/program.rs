@@ -45,20 +45,26 @@ pub const COMMON: &str = "mr::common";
 pub const VOXELS: &str = "mr::voxels";
 /// The reference lighting model (`shade_lit`), its shadow rays through `RAYS`.
 pub const LIGHTING: &str = "mr::lighting";
+/// The post node's module (PLAN step 15b): `display(c) -> vec4<f32>`, a linear colour to the
+/// output pixel. [`Program::world`] adds [`POST_WGSL`] (clamp); a pipeline's tone mapper
+/// replaces it (`mr_components::post::Tone::add_to`).
+pub const POST: &str = "mr::post";
+pub const POST_WGSL: &str = "// Post: clamp (no tone mapper).\nfn display(c: vec3<f32>) -> vec4<f32> { return encode_srgb(c); }\n";
 
 impl Program {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// The shared world modules ([`COMMON`], [`VOXELS`]) and, when shadow rays are bound
-    /// (`occluded` from the module at `rays`), [`LIGHTING`].
+    /// The shared world modules ([`COMMON`], [`VOXELS`], [`POST`]) and, when shadow rays are
+    /// bound (`occluded` from the module at `rays`), [`LIGHTING`].
     pub fn world(rays: Option<&str>) -> Self {
         let mut p = Self::new();
         p.add(COMMON, crate::COMMON_WGSL, &[]);
         p.add(VOXELS, crate::voxels::VOXELS_WGSL, &[COMMON]);
+        p.add(POST, POST_WGSL, &[COMMON]);
         if let Some(r) = rays {
-            p.add(LIGHTING, crate::voxels::LIGHTING_WGSL, &[r, VOXELS]);
+            p.add(LIGHTING, crate::voxels::LIGHTING_WGSL, &[r, VOXELS, POST]);
         }
         p
     }

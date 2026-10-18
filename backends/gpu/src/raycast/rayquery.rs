@@ -149,7 +149,7 @@ impl RayQuery {
         require(BACKEND, Slot::Traversal, &opts.traversal)?;
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
         anyhow::ensure!(opts.merge == "block", "merge = `{}`: gpu-rt has no per-pixel block lookup (only `block`)", opts.merge);
-        let mut walks = Walks::default();
+        let mut walks = Walks::of(g);
         let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{BACKEND}: {} `{port}` rays are not bound", role.name()));
         let primary = walks.site(g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
         anyhow::ensure!(primary == 0 && walks.is_query(0), "{BACKEND}: the primary rays are ray queries");
@@ -295,7 +295,7 @@ mod tests {
                 for deferred in [false, true] {
                     let c = mr_components::Composition { geometry: geometry.into(), shading: shading.into(), ..mr_components::Composition::new(BACKEND) };
                     let ck = Graph::from_composition(&c).unwrap().check().unwrap();
-                    let mut walks = Walks::default();
+                    let mut walks = Walks::of(&ck);
                     walks.site(&ck, ck.site(Role::Visibility, "primary").unwrap(), STORAGE_GROUPS, false);
                     let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), STORAGE_GROUPS, false);
                     let mut lp = program(&walks, shadow, shadow, shading);

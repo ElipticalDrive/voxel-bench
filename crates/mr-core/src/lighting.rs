@@ -177,3 +177,56 @@ pub fn encode_srgb(c: Vec3) -> [u8; 4] {
     let q = |v: f32| (linear_to_srgb(v) * 255.0 + 0.5) as u8;
     [q(c.x), q(c.y), q(c.z), 255]
 }
+
+/// Tone mapping: the post node's components (PLAN step 15b; `mr_components::post`), linear
+/// colour into display range before [`encode_srgb`]. GPU twins: `components/src/post`.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Tone {
+    /// Clamp to 0..1 (no tone mapper): the output before step 15b.
+    #[default]
+    Clamp,
+    /// Reinhard on luminance: `c / (1 + L)`, hue kept, highlights compressed without a limit.
+    Reinhard,
+    /// ACES filmic (Narkowicz's fit of the reference rendering transform): a toe and a
+    /// shoulder, saturated highlights.
+    Aces,
+}
+
+impl Tone {
+    pub const ALL: [Tone; 3] = [Tone::Clamp, Tone::Reinhard, Tone::Aces];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Tone::Clamp => "clamp",
+            Tone::Reinhard => "reinhard",
+            Tone::Aces => "aces",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Tone> {
+        Tone::ALL.into_iter().find(|t| t.name() == name)
+    }
+
+    /// Linear colour `c` mapped into display range (still linear; 0..1 except `clamp`'s).
+    #[inline(always)]
+    pub fn map(self, c: Vec3) -> Vec3 {
+        match self {
+            Tone::Clamp => c,
+            Tone::Reinhard => c / (1.0 + c.dot(LUMA)),
+            Tone::Aces => {
+                let x = c.max(Vec3::ZERO);
+                (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)
+            }
+        }
+    }
+
+    /// The output pixel of linear colour `c`: mapped, then sRGB-encoded (as the GPU's
+    /// `display`).
+    #[inline(always)]
+    pub fn encode(self, c: Vec3) -> [u8; 4] {
+        encode_srgb(self.map(c))
+    }
+}
+
+/// Rec. 709 luminance weights.
+const LUMA: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);

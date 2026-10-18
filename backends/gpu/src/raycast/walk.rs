@@ -175,7 +175,7 @@ impl Composition {
     fn of(g: &graph::Checked, opts: &Options, max_lod: u8) -> anyhow::Result<Self> {
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         // Every site's walk; the primary kernel's constants are this back end's knobs.
-        let mut walks = Walks::default();
+        let mut walks = Walks::of(g);
         let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("gpu-compute: {} `{port}` rays are not bound", role.name()));
         let primary = walks.site(&g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
         walks.kernels[primary].component = require(BACKEND, Slot::Traversal, &opts.traversal)?;
