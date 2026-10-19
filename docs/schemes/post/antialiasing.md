@@ -40,4 +40,6 @@ Not built.
 
 ## Measured
 
-Untested.
+Untested. Test beds where aliasing is worst: `lattice` (thin beams shimmer at a distance),
+`checker` (a one-block checkerboard: pure pixel-scale pattern), `city` (window grids
+receding down a street), and the far ends of `far` (foliage).

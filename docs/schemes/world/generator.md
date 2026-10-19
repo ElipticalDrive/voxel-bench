@@ -23,7 +23,8 @@ the edits made so far.
 
 ## In this project
 
-`crates/mr-world/src/generators.rs` (terrain, flat, menger, room, random, showcase, empty)
+`crates/mr-world/src/generators.rs` (terrain, flat, menger, room, random, showcase, empty, and the stress worlds city, islands,
+lattice, gyroid, checker; see `docs/plans.md` § Worlds)
 and `stream.rs` (`Generating`); in plans `sites = { generator = "cpu" }`.
 
 ## Measured
