@@ -144,6 +144,8 @@ pub struct LaneView {
     pub frames: u64,
     pub chunks_sent: u64,
     pub pending_chunks: usize,
+    /// What reached the lane's client by its latest frame (bytes over its link, holes).
+    pub arrivals: mr_core::link::Arrivals,
     /// Knobs (host first, then renderer) with current values.
     pub params: Vec<(ParamSpec, ParamValue)>,
     pub quality: VecDeque<QualitySample>,
@@ -208,6 +210,7 @@ impl LaneView {
             frames: 0,
             chunks_sent: 0,
             pending_chunks: 0,
+            arrivals: Default::default(),
             params: vec![],
             quality: VecDeque::new(),
             swap: None,
@@ -248,6 +251,8 @@ pub struct Shared {
     pub cached_chunks: usize,
     pub finished: bool,
     pub reference: String,
+    /// When the session started: the zero of the lanes' event times.
+    pub start: Option<Instant>,
 }
 
 impl Shared {
@@ -536,6 +541,8 @@ impl Session {
         let mesh_data = scene.mesh_data();
         let instances = scene.mesh_instances(0);
         let server = Streamer::new(vec![plan.run.view_radius], budget(&plan));
+        let start = Instant::now();
+        shared.lock().unwrap().start = Some(start);
         let mut s = Session {
             blocks,
             world,
@@ -549,7 +556,7 @@ impl Session {
             reference: None,
             shared,
             repaint,
-            start: Instant::now(),
+            start,
             applied_frame: None,
             next_light: USER_LIGHT_BASE,
             probe: None,
@@ -1368,8 +1375,15 @@ impl Session {
                         v.gpu_mb = (m.gpu_bytes > 0).then(|| m.gpu_bytes as f64 / 1048576.0);
                     }
                 }
-                WorkerMsg::ParamError { name, error } => shared.lock().unwrap().log(format!("lane {}: {name}: {error}", i.wrapping_add(1))),
-                WorkerMsg::FrameDone { frame_id, stats, slot, update_ms, .. } => {
+                WorkerMsg::ParamError { name, error } => {
+                    let what = format!("refused {name}: {error}");
+                    let mut sh = shared.lock().unwrap();
+                    if let Some(v) = sh.lanes.get_mut(i) {
+                        v.events.push((start.elapsed().as_secs_f64(), what.clone()));
+                    }
+                    sh.log(format!("lane {}: {what}", i.wrapping_add(1)));
+                }
+                WorkerMsg::FrameDone { frame_id, stats, slot, update_ms, arrivals } => {
                     let Some(f) = lane.run.in_flight.pop_front() else { anyhow::bail!("unexpected frame") };
                     if f.id != frame_id {
                         anyhow::bail!("frames out of order");
@@ -1400,6 +1414,7 @@ impl Session {
                                 v.counters = stats.counters;
                                 v.smooth_stages(stats.stages);
                                 v.legend = stats.legend;
+                                v.arrivals = arrivals;
                                 v.frames += 1;
                                 if let Some(px) = pixels {
                                     lane.seq += 1;
@@ -1509,7 +1524,9 @@ impl Session {
         lane.run.in_flight.clear();
         let mut sh = self.shared.lock().unwrap();
         sh.log(format!("lane {} failed: {msg}", i + 1));
+        let t = self.now();
         if let Some(v) = sh.lanes.get_mut(i) {
+            v.events.push((t, format!("failed: {}", msg.lines().next().unwrap_or(""))));
             v.status = LaneStatus::Failed(msg);
         }
         drop(sh);

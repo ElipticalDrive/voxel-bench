@@ -8,6 +8,7 @@ mod graph;
 mod knobs;
 mod legend;
 mod live;
+mod schemes;
 
 use std::path::{Path, PathBuf};
 
@@ -46,6 +47,7 @@ enum RightTab {
     Metrics,
     Compare,
     Benchmark,
+    Schemes,
     Help,
 }
 
@@ -116,6 +118,7 @@ struct App {
     /// The pipeline editor window, if open.
     graph_win: Option<graph::Window>,
     trials: graph::Trials,
+    schemes: schemes::Browser,
 }
 
 /// Knob value as a plan option value.
@@ -182,6 +185,7 @@ impl App {
             message: String::new(),
             graph_win: None,
             trials: Default::default(),
+            schemes: Default::default(),
         };
         app.option_text = option_texts(&app.plan);
         if let Some(p) = initial {
@@ -201,6 +205,7 @@ impl App {
                 self.dirty = false;
                 self.toml_text = self.plan.to_toml().unwrap_or_default();
                 self.message = format!("loaded {}", p.display());
+                remember_plan(p);
             }
             Err(e) => self.message = format!("load failed: {e:#}"),
         }
@@ -216,6 +221,7 @@ impl App {
         match r {
             Ok(()) => {
                 self.message = format!("saved {}", p.display());
+                remember_plan(&p);
                 self.path_text = p.display().to_string();
                 self.plan_path = Some(p);
                 self.dirty = false;
@@ -398,6 +404,17 @@ impl App {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.menu_button("📂 Open", |ui| {
+                let recent = recent_plans();
+                if !recent.is_empty() {
+                    ui.weak("Recent");
+                    for p in recent {
+                        if ui.button(p.display().to_string()).on_hover_text("Load this plan again (unsaved changes to the current one are lost)").clicked() {
+                            self.load(&p);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                }
                 ui.weak("Plans in ./plans");
                 for p in plan_files().into_iter().filter(|p| !is_demo(p)) {
                     if ui.button(p.display().to_string()).on_hover_text("Load this plan (unsaved changes to the current one are lost)").clicked() {
@@ -579,7 +596,7 @@ impl App {
                     }
                 });
                 if let Some((i, sel)) = open_graph {
-                    self.graph_win = Some(graph::Window::new(graph::Of::Plan(i), sel));
+                    self.graph_win = Some(graph::Window::new(ui.ctx(), graph::Of::Plan(i), sel));
                 }
                 if let Some(i) = restart {
                     let n = self.live.as_ref().map(|l| l.shared.lock().unwrap().lanes.len()).unwrap_or(0);
@@ -646,16 +663,19 @@ impl App {
         };
 
         // Snapshot lane state.
-        type LaneSnap = (String, LaneStatus, Option<live::LiveFrame>, f64, Option<f64>, bool, Option<mr_core::Legend>);
+        type LaneSnap = (String, LaneStatus, Option<live::LiveFrame>, f64, Option<f64>, bool, Option<mr_core::Legend>, Vec<(f64, String)>);
         let lanes: Vec<LaneSnap> = {
             let sh = live.shared.lock().unwrap();
+            let now = sh.start.map_or(0.0, |s| s.elapsed().as_secs_f64());
             sh.lanes
                 .iter()
                 .map(|l| {
                     let (fps, gpu) = recent(&l.samples, 1.0);
                     // Lanes whose renderer can't draw meshes say so while mesh mode is on.
                     let no_meshes = self.mode.meshes && !self.infos.iter().any(|i| i.name == l.spec.name && l.spec.supports(i, self.mode));
-                    (l.spec.label().to_string(), l.status.clone(), l.frame.clone(), fps, gpu, no_meshes, l.legend.clone())
+                    // The events of the last seconds, newest first, with their age.
+                    let recent: Vec<(f64, String)> = l.events.iter().rev().map(|(t, e)| (now - t, e.clone())).take_while(|(age, _)| *age < EVENT_SECS).take(3).collect();
+                    (l.spec.label().to_string(), l.status.clone(), l.frame.clone(), fps, gpu, no_meshes, l.legend.clone(), recent)
                 })
                 .collect()
         };
@@ -673,7 +693,7 @@ impl App {
         let ppp = ui.ctx().pixels_per_point();
         let snap = |p: Pos2| Pos2::new((p.x * ppp).round() / ppp, (p.y * ppp).round() / ppp);
         for (k, &i) in visible.iter().enumerate() {
-            let (label, status, frame, fps, gpu, no_meshes, legend) = &lanes[i];
+            let (label, status, frame, fps, gpu, no_meshes, legend, recent) = &lanes[i];
             let mut reading = None;
             let mut t = Rect::from_min_size(rect.min + Vec2::new((k % cols) as f32 * tile.x, (k / cols) as f32 * tile.y), tile);
             if visible.len() > 1 {
@@ -746,9 +766,26 @@ impl App {
                 LaneStatus::Running => {}
             }
             let galley = painter.layout_no_wrap(text, egui::FontId::monospace(13.0), Color32::WHITE);
+            // Clipped to the tile: narrow tiles would overlap their neighbours.
+            let painter = painter.with_clip_rect(t);
             let bg = Rect::from_min_size(t.min + Vec2::splat(4.0), galley.size() + Vec2::splat(8.0));
             painter.rect_filled(bg, 3.0, Color32::from_black_alpha(170));
             painter.galley(bg.min + Vec2::splat(4.0), galley, Color32::WHITE);
+            // The lane's latest events, fading out.
+            let mut y = bg.max.y + 3.0;
+            for (age, e) in recent {
+                let a = (((EVENT_SECS - age) / 1.5).min(1.0) * 255.0) as u8;
+                let bad = e.starts_with("failed") || e.starts_with("refused") || e.starts_with("hot swap failed");
+                let col = if bad { Color32::from_rgba_unmultiplied(255, 140, 120, a) } else { Color32::from_rgba_unmultiplied(200, 230, 255, a) };
+                let galley = painter.layout(e.clone(), egui::FontId::proportional(12.0), col, (t.width() - 24.0).max(80.0));
+                let bg = Rect::from_min_size(Pos2::new(t.min.x + 4.0, y), galley.size() + Vec2::splat(6.0));
+                painter.rect_filled(bg, 3.0, Color32::from_black_alpha((a as f32 * 0.6) as u8));
+                painter.galley(bg.min + Vec2::splat(3.0), galley, col);
+                y = bg.max.y + 2.0;
+            }
+            if !recent.is_empty() {
+                ui.ctx().request_repaint();
+            }
             if resp.double_clicked() && hover.is_some_and(|h| t.contains(h)) {
                 self.focus = if self.focus.is_some() { None } else { Some(i) };
             }
@@ -792,6 +829,7 @@ impl App {
             ui.selectable_value(&mut self.right_tab, RightTab::Metrics, "📈 Metrics").on_hover_text("Live statistics, knobs and auto-tuners per renderer");
             ui.selectable_value(&mut self.right_tab, RightTab::Compare, "⚖ Compare").on_hover_text("Image comparison of the current view against the reference (C)");
             ui.selectable_value(&mut self.right_tab, RightTab::Benchmark, "⏱ Benchmark").on_hover_text("Results of the last benchmark run");
+            ui.selectable_value(&mut self.right_tab, RightTab::Schemes, "📖 Schemes").on_hover_text("The encyclopedia: every rendering scheme and idea (docs/schemes), with what was measured");
             ui.selectable_value(&mut self.right_tab, RightTab::Help, "❓ Keys").on_hover_text("Key bindings (H)");
         });
         ui.separator();
@@ -799,6 +837,7 @@ impl App {
             RightTab::Metrics => self.metrics(ui),
             RightTab::Compare => self.compare(ui),
             RightTab::Benchmark => self.benchmark(ui),
+            RightTab::Schemes => schemes::browser(ui, &mut self.schemes),
             RightTab::Help => help(ui),
         });
     }
@@ -978,6 +1017,12 @@ impl App {
                     ui.label("streaming").on_hover_text("Chunks sent to this renderer so far, and chunks queued for it (limited per frame)");
                     ui.monospace(format!("{} chunks sent · {} pending", l.chunks_sent, l.pending_chunks));
                     ui.end_row();
+                    let a = l.arrivals;
+                    ui.label("arrivals").on_hover_text("What reached this renderer's client: bytes arrived (each message once) and, where more, bytes sent over its link (in flight and resends included); holes = chunks of its region still missing on its side (on the link, or not generated yet), plus the server's backlog");
+                    let mb = |b: u64| b as f64 / 1048576.0;
+                    let sent = if a.bytes > a.arrived { format!(" of {:.1} MB sent", mb(a.bytes)) } else { String::new() };
+                    ui.monospace(format!("{:.1} MB arrived{sent} · {} holes", mb(a.arrived), a.holes as usize + l.pending_chunks));
+                    ui.end_row();
                     for s in &l.stages {
                         let ms = |x: Option<f32>, what| x.map(|x| format!("{what} {x:.3} ms"));
                         let nodes = if s.nodes.is_empty() { "no node (the executor's own work)".to_string() } else { s.nodes.join(", ") };
@@ -1026,7 +1071,7 @@ impl App {
                         Some((slot, c)) => actions.push(LaneAction::Set(i, slot, mr_core::ParamValue::Choice(c))),
                         None => actions.push(LaneAction::Swap(i, spec)),
                     },
-                    graph::Edit::Open(sel) => self.graph_win = Some(graph::Window::new(graph::Of::Lane(i), sel)),
+                    graph::Edit::Open(sel) => self.graph_win = Some(graph::Window::new(ui.ctx(), graph::Of::Lane(i), sel)),
                 }
             }
         });
@@ -1303,6 +1348,10 @@ impl App {
             }
             return;
         }
+        if let Some(p) = schemes::take_request(&ctx) {
+            self.schemes.open = Some(p);
+            self.right_tab = RightTab::Schemes;
+        }
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("log").resizable(true).default_size(110.0).show(ui, |ui| {
             egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
@@ -1417,6 +1466,35 @@ fn plan_files() -> Vec<PathBuf> {
     v
 }
 
+/// The list of recently loaded or saved plans, in the user's configuration directory.
+fn recent_file() -> Option<PathBuf> {
+    let base = std::env::var_os("APPDATA").or_else(|| std::env::var_os("XDG_CONFIG_HOME")).map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("multirenderer").join("recent-plans.txt"))
+}
+
+/// The recent plans that still exist, newest first (shown relative to the working
+/// directory when under it).
+fn recent_plans() -> Vec<PathBuf> {
+    let text = recent_file().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    text.lines().map(PathBuf::from).filter(|p| p.is_file()).map(|p| p.strip_prefix(&cwd).map(Path::to_path_buf).unwrap_or(p)).collect()
+}
+
+fn remember_plan(p: &Path) {
+    let (Some(f), Ok(p)) = (recent_file(), std::fs::canonicalize(p)) else { return };
+    if cfg!(test) {
+        return;
+    }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut list: Vec<PathBuf> = vec![p.clone()];
+    list.extend(recent_plans().into_iter().map(|q| cwd.join(q)).filter(|q| *q != p).take(7));
+    let text: String = list.iter().map(|q| format!("{}\n", q.display())).collect();
+    if let Some(d) = f.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(f, text);
+}
+
 fn is_demo(p: &Path) -> bool {
     p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("demo-"))
 }
@@ -1435,6 +1513,9 @@ fn window(s: &std::collections::VecDeque<Sample>, secs: f64) -> Vec<Sample> {
 }
 
 /// (fps, mean gpu ms) over the last `secs` seconds.
+/// How long a lane's event shows on its view.
+const EVENT_SECS: f64 = 6.0;
+
 fn recent(s: &std::collections::VecDeque<Sample>, secs: f64) -> (f64, Option<f64>) {
     let w = window(s, secs);
     if w.len() < 2 {
@@ -1568,11 +1649,16 @@ mod tests {
         app.option_text = option_texts(&app.plan);
         app.start_live(&ctx);
         app.right_tab = RightTab::Metrics;
+        // `SHOT_SCHEMES=storage/bits.md` (or empty): the Schemes tab, on that entry.
+        if let Ok(v) = std::env::var("SHOT_SCHEMES") {
+            app.right_tab = RightTab::Schemes;
+            app.schemes.open = (!v.is_empty()).then_some(v);
+        }
         // `SHOT_GRAPH=lane0` / `plan1:shading`: the pipeline editor open on a renderer (and node).
         if let Ok(v) = std::env::var("SHOT_GRAPH") {
             let (of, sel) = v.split_once(':').map_or((v.as_str(), None), |(a, b)| (a, Some(b.to_string())));
             let n: usize = of.trim_start_matches(|c: char| c.is_alphabetic()).parse().unwrap_or(0);
-            app.graph_win = Some(graph::Window::new(if of.starts_with("plan") { graph::Of::Plan(n) } else { graph::Of::Lane(n) }, sel));
+            app.graph_win = Some(graph::Window::new(&ctx, if of.starts_with("plan") { graph::Of::Plan(n) } else { graph::Of::Lane(n) }, sel));
         }
         // Every texture update, in order: the font atlas only arrives in the first frames.
         let mut deltas = vec![];

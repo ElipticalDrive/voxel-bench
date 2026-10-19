@@ -273,11 +273,27 @@ pub struct Window {
     canvas: canvas::View,
     undo: Vec<RendererSpec>,
     redo: Vec<RendererSpec>,
+    /// In an OS window of its own (else a window inside the main one).
+    separate: bool,
+    /// Fit the whole graph again whenever a dragged node is released.
+    auto_frame: bool,
+}
+
+/// The editor's view settings outlive the window (kept in egui's memory).
+#[derive(Clone, Copy)]
+struct Settings {
+    separate: bool,
+    auto_frame: bool,
+}
+
+fn settings_id() -> egui::Id {
+    egui::Id::new("pipeline-editor-settings")
 }
 
 impl Window {
-    pub fn new(of: Of, selected: Option<String>) -> Self {
-        Self { of, selected, port: None, canvas: Default::default(), undo: vec![], redo: vec![] }
+    pub fn new(ctx: &egui::Context, of: Of, selected: Option<String>) -> Self {
+        let st = ctx.data(|d| d.get_temp::<Settings>(settings_id())).unwrap_or(Settings { separate: true, auto_frame: false });
+        Self { of, selected, port: None, canvas: Default::default(), undo: vec![], redo: vec![], separate: st.separate, auto_frame: st.auto_frame }
     }
 }
 
@@ -287,24 +303,39 @@ pub fn window(ctx: &egui::Context, win: &mut Window, title: &str, spec: &Rendere
     let mut open = true;
     let mut edits = vec![];
     let key = format!("{:?}", win.of);
-    egui::Window::new(format!("Pipeline — {title}"))
-        .id(egui::Id::new("pipeline-editor"))
-        .open(&mut open)
-        .default_size([1400.0, 620.0])
-        .resizable(true)
-        .collapsible(true)
-        .show(ctx, |ui| {
-            let Some(trial) = trials.get(&key, spec) else {
-                ui.label("A standalone renderer: it has no graph.");
-                return;
-            };
-            edits = editor(ui, win, spec, knobs, marks, trial, infos, run);
+    let title = format!("Pipeline — {title}");
+    let mut body = |ui: &mut Ui, win: &mut Window, open: &mut bool| {
+        let Some(trial) = trials.get(&key, spec) else {
+            ui.label("A standalone renderer: it has no graph.");
+            return vec![];
+        };
+        editor(ui, win, spec, knobs, marks, trial, infos, run, open)
+    };
+    if win.separate {
+        let vb = egui::ViewportBuilder::default().with_title(&title).with_inner_size([1400.0, 640.0]);
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("pipeline-editor"), vb, |ui, _| {
+            if ui.ctx().input(|i| i.viewport().close_requested()) {
+                open = false;
+            }
+            egui::CentralPanel::default().show(ui, |ui| edits = body(ui, win, &mut open));
         });
+    } else {
+        let mut shown = true;
+        egui::Window::new(&title)
+            .id(egui::Id::new("pipeline-editor"))
+            .open(&mut shown)
+            .default_size([1400.0, 620.0])
+            .resizable(true)
+            .collapsible(true)
+            .show(ctx, |ui| edits = body(ui, win, &mut open));
+        open &= shown;
+    }
+    ctx.data_mut(|d| d.insert_temp(settings_id(), Settings { separate: win.separate, auto_frame: win.auto_frame }));
     (edits, open)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn editor(ui: &mut Ui, win: &mut Window, spec: &RendererSpec, knobs: &[(ParamSpec, ParamValue)], marks: bool, trial: &mut Trial, infos: &[RendererInfo], run: &RunSpec) -> Vec<Edit> {
+fn editor(ui: &mut Ui, win: &mut Window, spec: &RendererSpec, knobs: &[(ParamSpec, ParamValue)], marks: bool, trial: &mut Trial, infos: &[RendererInfo], run: &RunSpec, open: &mut bool) -> Vec<Edit> {
     let mut edits = vec![];
     let g = trial.graph().clone();
     if win.selected.as_ref().is_some_and(|s| !g.nodes.contains_key(s)) {
@@ -344,8 +375,17 @@ fn editor(ui: &mut Ui, win: &mut Window, spec: &RendererSpec, knobs: &[(ParamSpe
                 }
             }
         });
-        if ui.button("fit").on_hover_text("Lay the graph out again and fit it to the window (dragged nodes go back)").clicked() {
+        if ui.button("fit").on_hover_text("Lay the graph out again and fit it to the window (dragged nodes go back); a double click on the background fits without moving nodes").clicked() {
             win.canvas = Default::default();
+        }
+        ui.toggle_value(&mut win.auto_frame, "auto-frame").on_hover_text("Fit the whole graph to the window again whenever you release a dragged node (off: the view stays where you put it; the wheel zooms about the pointer)");
+        ui.separator();
+        let (to, tip) = if win.separate { ("⧉ into main window", "Show the editor as a window inside the main one") } else { ("⧉ own window", "Show the editor in an OS window of its own (move it to another screen, or beside the main one)") };
+        if ui.button(to).on_hover_text(tip).clicked() {
+            win.separate = !win.separate;
+        }
+        if win.separate && ui.button("✖ close").clicked() {
+            *open = false;
         }
     });
     ui.separator();
@@ -356,7 +396,7 @@ fn editor(ui: &mut Ui, win: &mut Window, spec: &RendererSpec, knobs: &[(ParamSpe
         });
     });
     egui::CentralPanel::default().show(ui, |ui| {
-        let r = canvas::show(ui, &mut win.canvas, &g, &devices(&g), win.selected.as_deref(), trial, infos);
+        let r = canvas::show(ui, &mut win.canvas, win.auto_frame, &g, &devices(&g), win.selected.as_deref(), trial, infos);
         if let Some(sel) = r.select {
             win.selected = sel;
             win.port = r.port;
@@ -442,6 +482,7 @@ fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, Para
     });
     ui.add_space(4.0);
     ui.weak(description(n.role, &n.component));
+    super::schemes::link(ui, n.role.name(), &n.component);
     if let Some(s) = state(n.role, &n.component) {
         ui.weak(format!("Keeps: {s}"));
     }

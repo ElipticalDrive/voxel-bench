@@ -6,7 +6,9 @@
 
 - **Workflow (left).** A form for every plan setting: world generator, camera path,
   environment, lights, scripted events, renderers, run settings and benchmark outputs. The
-  TOML tab edits the raw plan. Open, save and Ctrl+S are in the toolbar; 📂 Open ▸ New is a
+  TOML tab edits the raw plan. Open, save and Ctrl+S are in the toolbar; 📂 Open lists the
+  recently loaded or saved plans first (kept in the user's configuration directory,
+  `multirenderer/recent-plans.txt`), and 📂 Open ▸ New is a
   plain start (terrain, the sun, a camera to fly, one renderer: `plans/playground.toml`), and
   🎬 Demos loads a set-up that shows something off (`plans/demo-*.toml`; hovering one says
   what). "⌖ cam" copies the
@@ -15,13 +17,19 @@
 - **Viewport (centre).** Every renderer in the plan runs live, tiled side by side. Each one
   renders the latest camera as fast as it can (or up to the fps cap), independently of the
   others. Frames are read back only at the display rate, so the numbers measure the renderer
-  rather than the GUI.
+  rather than the GUI. A lane's events (started, hot swaps, refused knobs, failures) show
+  under its label for a few seconds; the Metrics tab keeps the full list.
 - **Metrics (right).** Live fps, frame interval, latency, and CPU, GPU and update time (mean
-  and p99); renderer counters, process memory, GPU memory and streaming progress, with plots.
+  and p99); renderer counters, process memory, GPU memory and streaming progress, and what
+  reached the renderer's client (bytes arrived and sent over its link, holes), with plots.
   Each renderer has its pipeline and knobs here, ↻ to restart it with the editor's settings,
   and ✖ to remove it.
 - **Compare (right).** Renders the exact current view on every renderer and on the reference,
   then shows PSNR, MAE and the percentage of bad pixels, with the images and diff images.
+- **Schemes (right).** The encyclopedia (`docs/schemes/`, built into the binary): every
+  entry by category, with a filter; an entry shows its full text and links its related
+  entries. Untested ideas are marked. Hovering a node in the pipeline editor shows its
+  component's entry, and the inspector links to it.
 - **Benchmark (right).** Runs the whole plan as a separate `multirenderer run` process,
   streams its output, and shows the report table and an fps chart. It can also load earlier
   reports from `runs/`.
@@ -56,14 +64,16 @@ A renderer is its pipeline graph (see [pipelines.md](pipelines.md)). The plan ed
 Metrics tab show it in compact form: the back end it runs on (derived from the graph, never
 chosen directly), then one row per node with its component and that component's knobs.
 
-**✏ graph** opens the editor window. The graph is laid out from the world (left) to the image
+**✏ graph** opens the editor in an OS window of its own (⧉ moves it into the main window and
+back; the choice is remembered for the session). The graph is laid out from the world (left) to the image
 (right). Edges are coloured by the kind of data they carry. An edge whose value comes from
 the previous frame is dashed, and a node shared by several readers is drawn once. Clicking a
 node shows its component, device, API, the node each input is bound to (an existing node,
 which shares it, or a new one), when each input's value arrives, and the node's knobs.
 Dragging from an output onto an input rebinds the input. Dragging a node moves it, dragging
 the background pans and the wheel zooms about the pointer; the view fits the graph until then,
-and a double click on the background fits it again. Undo and redo are available, and
+and a double click on the background fits it again (with **auto-frame** on, so does
+releasing a dragged node). Undo and redo are available, and
 "start from…" loads a back end's default pipeline.
 
 Every choice is tried before it is offered. If the resulting graph cannot run, the choice is

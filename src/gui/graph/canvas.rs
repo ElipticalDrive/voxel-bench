@@ -2,7 +2,8 @@
 //! each column after what it reads; edges coloured by what they carry, the previous frame's
 //! dashed. Click a node or an input to inspect it; drag a node to move it, the background to
 //! pan, the wheel to zoom (about the pointer); drag from an output onto an input to rebind it.
-//! The view fits the graph until the user moves, pans or zooms; a double click fits it again.
+//! The view fits the graph until the user moves, pans or zooms; a double click fits it again
+//! (with auto-frame on, so does releasing a dragged node).
 
 use std::collections::HashMap;
 
@@ -114,7 +115,7 @@ fn bezier(from: Pos2, to: Pos2, s: f32) -> Vec<Pos2> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn show(ui: &mut Ui, view: &mut View, g: &Graph, devs: &HashMap<String, Device>, selected: Option<&str>, trial: &mut Trial, infos: &[RendererInfo]) -> Response {
+pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &HashMap<String, Device>, selected: Option<&str>, trial: &mut Trial, infos: &[RendererInfo]) -> Response {
     let mut out = Response::default();
     let rect = ui.available_rect_before_wrap();
     let bg = ui.interact(rect, ui.id().with("canvas"), Sense::click_and_drag());
@@ -193,6 +194,7 @@ pub fn show(ui: &mut Ui, view: &mut View, g: &Graph, devs: &HashMap<String, Devi
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let mut hovered_port: Option<(String, String)> = None;
     let mut moved: Vec<(String, Vec2)> = vec![];
+    let mut refit = false;
     for id in model::order(g) {
         let n = &g.nodes[&id];
         let r = node_rect(&id);
@@ -271,9 +273,15 @@ pub fn show(ui: &mut Ui, view: &mut View, g: &Graph, devs: &HashMap<String, Devi
         if resp.dragged() && view.wire.is_none() {
             moved.push((id.clone(), resp.drag_delta() / s));
         }
+        if resp.drag_stopped() && auto_frame {
+            refit = true;
+        }
         resp.on_hover_ui(|ui| {
             ui.label(egui::RichText::new(format!("{id}: {} {}", n.role.name(), n.component)).strong());
             ui.label(super::description(n.role, &n.component));
+            if let Some(e) = crate::gui::schemes::of(n.role.name(), &n.component) {
+                crate::gui::schemes::hover(ui, e);
+            }
             if let Some(st) = mr_components::graph::state(n.role, &n.component) {
                 ui.weak(format!("Keeps: {st}"));
             }
@@ -290,6 +298,9 @@ pub fn show(ui: &mut Ui, view: &mut View, g: &Graph, devs: &HashMap<String, Devi
     }
     for (id, d) in moved {
         *view.offsets.entry(id).or_default() += d;
+    }
+    if refit {
+        (view.frame, view.pan) = (None, Vec2::ZERO);
     }
 
     // A wire being dragged: inputs of its type light up, green where binding it runs.
