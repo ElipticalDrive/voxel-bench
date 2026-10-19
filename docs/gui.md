@@ -58,7 +58,9 @@ chosen directly), then one row per node with its component and that component's 
 the previous frame is dashed, and a node shared by several readers is drawn once. Clicking a
 node shows its component, device, API, the node each input is bound to (an existing node,
 which shares it, or a new one), when each input's value arrives, and the node's knobs.
-Dragging from an output onto an input rebinds the input. Undo and redo are available, and
+Dragging from an output onto an input rebinds the input. Dragging a node moves it, dragging
+the background pans and the wheel zooms about the pointer; the view fits the graph until then,
+and a double click on the background fits it again. Undo and redo are available, and
 "start from…" loads a back end's default pipeline.
 
 Every choice is tried before it is offered. If the resulting graph cannot run, the choice is

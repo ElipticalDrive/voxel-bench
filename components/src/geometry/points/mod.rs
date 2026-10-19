@@ -72,9 +72,16 @@ impl Points {
         }
     }
 
-    /// Every point, if any changed since the last call (else `None`).
+    /// Every point, if any changed since the last call (else `None`), chunk by chunk in
+    /// position order: splatting breaks depth ties by point index, so the order must not
+    /// depend on the map's.
     pub fn changed(&mut self) -> Option<Vec<Point>> {
-        std::mem::take(&mut self.dirty).then(|| self.chunks.values().flatten().copied().collect())
+        if !std::mem::take(&mut self.dirty) {
+            return None;
+        }
+        let mut keys: Vec<&IVec3> = self.chunks.keys().collect();
+        keys.sort_unstable_by_key(|c| (c.x, c.y, c.z));
+        Some(keys.into_iter().flat_map(|c| self.chunks[c].iter().copied()).collect())
     }
 
     pub fn bytes(&self) -> u64 {

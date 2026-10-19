@@ -362,12 +362,12 @@ impl RendererSpec {
     /// (`BackendInfo::quiet`, e.g. `gpu-raster:bricks+greedy+raster+direct+depth+sphere`)
     /// (`gpu-compute:prefix+incremental`, `gpu-compute:tree64+refloor+direct+beam`,
     /// `gpu-raster:bricks+greedy+visbuffer`); otherwise a renderer name (a back end's, giving its default composition, or a
-    /// standalone one).
+    /// standalone one). A label as the renderer prints it reads back as the same renderer
+    /// (`gpu-compute: prefix + beam + incremental, bounce = tree64/sphere`).
     ///
     /// Sites bound otherwise follow after commas:
     /// `gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere`.
     pub fn from_cli(s: &str) -> anyhow::Result<Self> {
-        use mr_components::Slot;
         // Commas inside a site's knobs (`link=net(latency_ms=30,loss=0.01)`) are its own.
         let mut depth = 0i32;
         let mut parts = s.split(|c: char| {
@@ -388,19 +388,39 @@ impl RendererSpec {
             }
             return Ok(spec);
         };
-        let parts: Vec<&str> = rest.split('+').collect();
+        let backend = backend.trim();
+        if mr_components::backend(backend).is_none() {
+            bail!("composition `{s}`: no back end `{backend}` (`multirenderer list` shows them)");
+        }
+        let parts: Vec<&str> = rest.split('+').map(str::trim).collect();
+        let c = match Self::cli_composition(s, backend, &parts) {
+            Ok(c) => c,
+            // A label as printed (`gpu-discover: bricks + quadtree + coverage`) reads back too.
+            Err(e) => Self::label_composition(backend, &parts).ok_or(e)?,
+        };
+        let mut spec = Self::new("");
+        spec.sites = sites;
+        spec.set_compose(c)?;
+        Ok(spec)
+    }
+
+    /// The command-line order: the back end's required slots, then the optional ones in
+    /// the order shading, prepass, meshes, quiet slots.
+    fn cli_composition(s: &str, backend: &str, parts: &[&str]) -> anyhow::Result<mr_components::Composition> {
+        use mr_components::Slot;
         let mut c = mr_components::Composition::new(backend);
         let all: Vec<Slot> = c.slots().collect();
         let b = mr_components::backend(backend).unwrap();
         let mut order: Vec<Slot> = all.iter().copied().filter(|&s| !b.is_quiet(s)).collect();
         let required = order.len();
         order.extend([Slot::Shading, Slot::Prepass, Slot::Meshes].into_iter().filter(|s| all.contains(s)));
-        order.extend(all.iter().copied().filter(|&s| b.is_quiet(s) && !s.optional()));
+        let quiet: Vec<Slot> = all.iter().copied().filter(|&s| b.is_quiet(s) && !order.contains(&s)).collect();
+        order.extend(quiet);
         if all.is_empty() || !(required..=order.len()).contains(&parts.len()) {
             let names = |sl: &[Slot]| sl.iter().map(|s| s.name()).collect::<Vec<_>>().join("+");
             bail!("composition `{s}` should be {backend}:{}[+{}]", names(&order[..required]), names(&order[required..]));
         }
-        for (&slot, name) in order[..required].iter().zip(&parts) {
+        for (&slot, name) in order[..required].iter().zip(parts) {
             c.set(slot, name);
         }
         // The optional parts in order, each in the next slot that has a component so named.
@@ -412,10 +432,43 @@ impl RendererSpec {
             c.set(order[i], name);
             next = i + 1;
         }
-        let mut spec = Self::new("");
-        spec.sites = sites;
-        spec.set_compose(c)?;
-        Ok(spec)
+        c.validate().map_err(|e| anyhow::anyhow!("composition `{s}`: {e}"))?;
+        Ok(c)
+    }
+
+    /// The label order ([`mr_components::Composition::label`]): the back end's slots in
+    /// composition order, quiet ones at their default left out, `shadow <x>` for the
+    /// secondary-ray stages and `no meshes`. The composition whose label this is, if any.
+    fn label_composition(backend: &str, parts: &[&str]) -> Option<mr_components::Composition> {
+        use mr_components::{Composition, Slot};
+        fn fit(c: &Composition, slots: &[Slot], parts: &[&str], target: &str) -> Option<Composition> {
+            let Some((part, rest)) = parts.split_first() else {
+                return (c.validate().is_ok() && c.label() == target).then(|| c.clone());
+            };
+            let b = mr_components::backend(&c.backend)?;
+            for (i, &slot) in slots.iter().enumerate() {
+                let name = match (slot, part.strip_prefix("shadow ")) {
+                    (s, Some(n)) if s.secondary() => Some(n),
+                    (s, None) if !s.secondary() => Some(if s == Slot::Meshes && *part == "no meshes" { "none" } else { part }),
+                    _ => None,
+                };
+                if let Some(name) = name.filter(|&n| mr_components::component(slot.source(), n).is_some() || (slot.secondary() && n == "same")) {
+                    let mut c = c.clone();
+                    c.set(slot, name);
+                    if let Some(c) = fit(&c, &slots[i + 1..], rest, target) {
+                        return Some(c);
+                    }
+                }
+                // Only a quiet slot at its default is left out of a label.
+                if !b.is_quiet(slot) {
+                    return None;
+                }
+            }
+            None
+        }
+        let c = Composition::new(backend);
+        let slots: Vec<Slot> = c.slots().collect();
+        fit(&c, &slots, parts, &format!("{backend}: {}", parts.join(" + ")))
     }
 
     /// Replaces the composition (a graph given becomes this composition; sites stay) and
@@ -1108,6 +1161,52 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert!(p.to_toml().unwrap().contains("[renderer.sites]"));
         let both = graph.replace("[[renderer]]\n", "[[renderer]]\nsites = { bounce = \"rows/rowrun\" }\n");
         assert!(Plan::parse(&format!("{base}{both}"), &[]).unwrap_err().to_string().contains("not both"));
+    }
+
+    /// A renderer's label reads back on the command line as the same graph: every
+    /// preset, every composition one slot away from it, and sites as sweeps vary them.
+    #[test]
+    fn labels_read_back() {
+        let key = |r: &RendererSpec| r.pipeline().unwrap().key().unwrap();
+        let check = |r: &RendererSpec| {
+            let l = r.label().to_string();
+            let back = RendererSpec::from_cli(&l).unwrap_or_else(|e| panic!("{l}: {e}"));
+            assert_eq!(key(&back), key(r), "{l} read back as {}", back.label());
+        };
+        let mut n = 0;
+        for b in mr_components::BACKENDS.iter().filter(|b| b.renderer.is_some()) {
+            let mut r = RendererSpec::new(b.name);
+            r.resolve().unwrap();
+            check(&r);
+            let c = mr_components::Composition::new(b.name);
+            for slot in c.slots() {
+                let names = mr_components::components(slot.source()).map(|x| x.name).chain(slot.secondary().then_some("same"));
+                for name in names {
+                    let mut v = c.clone();
+                    v.set(slot, name);
+                    if v.validate().is_err() {
+                        continue;
+                    }
+                    let mut r = RendererSpec::new("");
+                    if r.set_compose(v).is_ok() {
+                        check(&r);
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert!(n > 100, "{n}");
+        let base = RendererSpec::from_cli("gpu-compute:bricks+refloor+pathtrace").unwrap();
+        let g = base.pipeline().unwrap();
+        for site in ["shadow", "bounce", "client", "link"] {
+            for v in g.site_choices(site) {
+                let mut r = base.clone();
+                if r.set_sites(BTreeMap::from([(site.to_string(), v)])).is_ok() {
+                    check(&r);
+                }
+            }
+        }
+        check(&RendererSpec::from_cli("gpu-compute:bricks+refloor,link=net(latency_ms=30,loss=0.01),client=derive(radius=4)").unwrap());
     }
 
     /// Sites from the command line and in plans, run as graphs.

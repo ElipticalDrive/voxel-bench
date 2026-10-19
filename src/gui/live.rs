@@ -61,8 +61,11 @@ pub enum Cmd {
     ClearUserLights,
     /// Change one knob (renderer parameter or `host.*`). Restart-only ones hot-swap.
     SetParam { lane: usize, name: String, value: ParamValue },
-    /// Hot-swap a lane to a new renderer spec.
+    /// Restart a lane with the plan's spec for it (a hot swap), keeping the knob values
+    /// changed since that the plan's spec leaves as it was ([`keep_knobs`]).
     Restart { lane: usize, spec: RendererSpec },
+    /// Hot-swap a lane to a spec made from its running one (a graph edit).
+    Swap { lane: usize, spec: RendererSpec },
     AddLane(RendererSpec),
     RemoveLane(usize),
     /// Quality probe that also keeps the images (for the Compare tab).
@@ -123,6 +126,8 @@ pub struct TunerView {
 
 pub struct LaneView {
     pub spec: RendererSpec,
+    /// The spec the plan gave it last (start, ↻); `spec` adds the knobs changed since.
+    pub given: RendererSpec,
     pub status: LaneStatus,
     pub frame: Option<LiveFrame>,
     pub samples: VecDeque<Sample>,
@@ -188,6 +193,7 @@ impl LaneView {
 
     fn new(spec: RendererSpec) -> Self {
         Self {
+            given: spec.clone(),
             spec,
             status: LaneStatus::Starting,
             frame: None,
@@ -262,8 +268,58 @@ pub struct LiveHandle {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+/// What a lane of a session hands the lane of the next one (F5) that runs the same plan
+/// renderer: the spec the plan gave it, the one it runs, and its host knobs
+/// (name, default, value).
+pub struct Carry {
+    pub given: RendererSpec,
+    pub now: RendererSpec,
+    pub host: Vec<(String, ParamValue, ParamValue)>,
+}
+
+impl Carry {
+    /// From the lanes of a running session.
+    pub fn of(lanes: &[LaneView]) -> Vec<Carry> {
+        lanes
+            .iter()
+            .map(|v| Carry {
+                given: v.given.clone(),
+                now: v.spec.clone(),
+                host: v.params.iter().filter(|(p, _)| p.name.starts_with("host.") && p.name != "host.max_lod").map(|(p, v)| (p.name.clone(), p.default.clone(), v.clone())).collect(),
+            })
+            .collect()
+    }
+}
+
+/// The spec a lane restarts with when the plan gives it `new` (it was given `given` last
+/// and runs `now`): `new` with the knob values changed since (where `now` differs from
+/// `given`) that `new` leaves as `given` had them. The components are `new`'s; renderer
+/// knobs carry over on the same back end only.
+pub fn keep_knobs(given: &RendererSpec, now: &RendererSpec, new: RendererSpec) -> RendererSpec {
+    let mut kept = new.clone();
+    if new.name == now.name {
+        for (k, v) in &now.options {
+            let component = mr_components::Slot::ALL.iter().any(|s| s.name() == k);
+            if !component && given.options.get(k) != Some(v) && new.options.get(k) == given.options.get(k) {
+                kept.options.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    let lod = |s: &RendererSpec| s.client_knob("max_lod");
+    if lod(now) != lod(given) && lod(&new) == lod(given) && kept.set_client_knob("max_lod", lod(now)).is_err() {
+        return new;
+    }
+    if kept.resolve().is_err() {
+        return new;
+    }
+    kept
+}
+
 impl LiveHandle {
-    pub fn start(plan: Plan, control: Control, repaint: impl Fn() + Send + 'static) -> Self {
+    /// Starts a session whose lanes take over what `carry` (the previous session's lanes,
+    /// [`Carry::of`]) changed: lane `i` from carry `i` when the counts match, else from
+    /// the carry given the same spec.
+    pub fn start(plan: Plan, carry: Vec<Carry>, control: Control, repaint: impl Fn() + Send + 'static) -> Self {
         let control = Arc::new(Mutex::new(control));
         let shared = Arc::new(Mutex::new(Shared { status: "starting".into(), ..Default::default() }));
         let (cmd, rx) = crossbeam_channel::unbounded();
@@ -271,7 +327,7 @@ impl LiveHandle {
         let thread = std::thread::Builder::new()
             .name("live-session".into())
             .spawn(move || {
-                let r = Session::run(plan, c, s.clone(), rx, Box::new(repaint));
+                let r = Session::run(plan, carry, c, s.clone(), rx, Box::new(repaint));
                 let mut sh = s.lock().unwrap();
                 match r {
                     Err(e) => {
@@ -383,6 +439,8 @@ impl Runner {
 
 struct Lane {
     run: Runner,
+    /// The spec the plan gave it last ([`keep_knobs`]).
+    given: RendererSpec,
     info: Option<RendererInfo>,
     /// Replacement being loaded for a hot swap.
     standby: Option<Runner>,
@@ -395,6 +453,13 @@ struct Lane {
     last_mem: Instant,
     seq: u64,
     tuner: Option<Tuner>,
+}
+
+impl Lane {
+    /// The spec it runs, or the one a hot swap is loading.
+    fn latest(&self) -> &RendererSpec {
+        self.standby.as_ref().map_or(&self.run.spec, |s| &s.spec)
+    }
 }
 
 struct Probe {
@@ -461,7 +526,7 @@ fn budget(plan: &Plan) -> Option<usize> {
 }
 
 impl Session {
-    fn run(plan: Plan, control: Arc<Mutex<Control>>, shared: Arc<Mutex<Shared>>, rx: Receiver<Cmd>, repaint: Box<dyn Fn() + Send>) -> anyhow::Result<()> {
+    fn run(plan: Plan, carry: Vec<Carry>, control: Arc<Mutex<Control>>, shared: Arc<Mutex<Shared>>, rx: Receiver<Cmd>, repaint: Box<dyn Fn() + Send>) -> anyhow::Result<()> {
         shared.lock().unwrap().status = "generating world".into();
         let blocks = Arc::new(default_registry());
         let mut world = World::new(plan.scene.generator.build());
@@ -494,8 +559,12 @@ impl Session {
             plan,
         };
         s.shared.lock().unwrap().status = "running".into();
-        for spec in s.plan.renderers.clone() {
-            s.add_lane(spec);
+        let renderers = s.plan.renderers.clone();
+        let same = carry.len() == renderers.len();
+        for (i, spec) in renderers.into_iter().enumerate() {
+            let label = toml::to_string(&spec).ok();
+            let c = if same { carry.get(i) } else { carry.iter().find(|c| toml::to_string(&c.given).ok() == label) };
+            s.add_lane(spec, c);
         }
         loop {
             let mut busy = false;
@@ -550,6 +619,7 @@ impl Session {
         }
         values.insert("host.in_flight".into(), ParamValue::Int(self.plan.run.in_flight.clamp(1, 8) as i64));
         Lane {
+            given: spec.clone(),
             run: self.new_runner(spec, self.plan.run.resolution, radius),
             info: None,
             standby: None,
@@ -565,7 +635,8 @@ impl Session {
         }
     }
 
-    fn add_lane(&mut self, spec: RendererSpec) {
+    fn add_lane(&mut self, given: RendererSpec, carry: Option<&Carry>) {
+        let spec = carry.map_or(given.clone(), |c| keep_knobs(&c.given, &c.now, given.clone()));
         // A pipeline compiled for this machine: the generic build runs while
         // it compiles and is checked, then it hot-swaps in.
         let native = spec.compiled(&self.plan.run).is_some();
@@ -573,12 +644,20 @@ impl Session {
         if native {
             first.compile = Some(crate::plan::Compile::Off);
         }
-        let lane = self.new_lane(first.clone());
+        let mut lane = self.new_lane(first.clone());
+        lane.given = given;
         self.lanes.push(lane);
         self.shared.lock().unwrap().lanes.push(LaneView::new(first));
-        self.publish_params(self.lanes.len() - 1);
+        let i = self.lanes.len() - 1;
+        self.publish_params(i);
+        // Host knobs changed in the previous session whose default the plan left alone.
+        for (name, default, value) in carry.map_or(&[][..], |c| &c.host[..]) {
+            if value != default && self.specs(i).iter().any(|p| p.name == *name && p.default == *default) {
+                self.set_param(i, name, value.clone());
+            }
+        }
         if native {
-            self.hot_swap(self.lanes.len() - 1, spec);
+            self.hot_swap(i, spec);
         }
         (self.repaint)();
     }
@@ -609,7 +688,8 @@ impl Session {
         let mut sh = self.shared.lock().unwrap();
         if let Some(v) = sh.lanes.get_mut(i) {
             v.params = params;
-            v.spec = lane.run.spec.clone();
+            v.spec = lane.latest().clone();
+            v.given = lane.given.clone();
             v.resolution = lane.run.res;
         }
     }
@@ -695,12 +775,16 @@ impl Session {
                 self.hot_swap(i, new);
             }
             _ if spec.live => {
-                lane.run.spec.options.insert(name.into(), crate::gui::param_to_toml(&value));
-                sync_compose(&mut lane.run.spec, name);
-                lane.run.pending_params.push((name.to_string(), value));
+                // The replacement a hot swap is loading takes it too.
+                let back_end = lane.run.spec.name.clone();
+                for run in std::iter::once(&mut lane.run).chain(lane.standby.as_mut().filter(|s| s.spec.name == back_end)) {
+                    run.spec.options.insert(name.into(), crate::gui::param_to_toml(&value));
+                    sync_compose(&mut run.spec, name);
+                    run.pending_params.push((name.to_string(), value.clone()));
+                }
             }
             _ => {
-                let mut new = lane.run.spec.clone();
+                let mut new = lane.latest().clone();
                 new.options.insert(name.into(), crate::gui::param_to_toml(&value));
                 sync_compose(&mut new, name);
                 self.hot_swap(i, new);
@@ -751,11 +835,18 @@ impl Session {
             }
             Cmd::SetParam { lane, name, value } => self.set_param(lane, &name, value),
             Cmd::Restart { lane, spec } => {
+                if let Some(l) = self.lanes.get_mut(lane) {
+                    let kept = keep_knobs(&l.given, l.latest(), spec.clone());
+                    l.given = spec;
+                    self.hot_swap(lane, kept);
+                }
+            }
+            Cmd::Swap { lane, spec } => {
                 if lane < self.lanes.len() {
                     self.hot_swap(lane, spec);
                 }
             }
-            Cmd::AddLane(spec) => self.add_lane(spec),
+            Cmd::AddLane(spec) => self.add_lane(spec, None),
             Cmd::RemoveLane(i) => {
                 if i < self.lanes.len() {
                     let lane = self.lanes.remove(i);
@@ -1105,9 +1196,8 @@ impl Session {
             let info = lane.run.worker.as_ref().map(|w| w.info.clone());
             if let Some(info) = info {
                 for p in &info.params {
-                    if let Some(v) = lane.run.spec.options.get(&p.name).and_then(|t| serde_json::to_value(t).ok()).and_then(|j| p.from_json(&j)) {
-                        lane.values.insert(p.name.clone(), v);
-                    }
+                    let v = lane.run.spec.options.get(&p.name).and_then(|t| serde_json::to_value(t).ok()).and_then(|j| p.from_json(&j)).unwrap_or(p.default.clone());
+                    lane.values.insert(p.name.clone(), v);
                 }
                 lane.info = Some(info);
             }
@@ -1489,7 +1579,7 @@ mod tests {
         )
         .unwrap();
         let control = Control { camera: CameraControl::Path, mode: PassMode::UNLIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.0 };
-        let live = LiveHandle::start(plan.clone(), control, || {});
+        let live = LiveHandle::start(plan.clone(), vec![], control, || {});
         wait(&live.shared, "frames from all lanes", 60, |s| s.lanes.len() == 3 && s.lanes.iter().all(|l| l.frame.is_some() && l.samples.len() > 20));
         assert!(live.shared.lock().unwrap().lanes[0].params.iter().any(|(p, _)| p.name == "max_steps"));
         // Stage times: GPU stages from timestamps, CPU stages timed by the back end.
@@ -1532,6 +1622,22 @@ mod tests {
         wait(&live.shared, "lod hot swap", 60, |s| s.lanes[2].events.iter().filter(|e| e.1 == "hot swap complete").count() >= 1 && s.lanes[2].swap.is_none());
         assert!(live.shared.lock().unwrap().lanes[2].params.iter().any(|(p, v)| p.name == "host.max_lod" && *v == ParamValue::Int(1)));
 
+        // ↻ from the plan keeps the knob values changed live (lane 0's shadows and render
+        // scale, lane 2's LOD depth).
+        for lane in [0, 2] {
+            let swaps = live.shared.lock().unwrap().lanes[lane].events.iter().filter(|e| e.1 == "hot swap complete").count();
+            live.send(Cmd::Restart { lane, spec: plan.renderers[lane].clone() });
+            wait(&live.shared, "restart", 60, |s| s.lanes[lane].swap.is_none() && s.lanes[lane].events.iter().filter(|e| e.1 == "hot swap complete").count() > swaps);
+        }
+        {
+            let sh = live.shared.lock().unwrap();
+            let value = |lane: usize, name: &str| sh.lanes[lane].params.iter().find(|(p, _)| p.name == name).map(|(_, v)| v.clone());
+            assert_eq!(value(0, "shadows"), Some(ParamValue::Choice("sun".into())));
+            assert_eq!(value(0, "host.render_scale"), Some(ParamValue::Float(0.5)));
+            assert_eq!(value(2, "host.max_lod"), Some(ParamValue::Int(1)));
+            assert!(sh.lanes[0].spec.options.get("shadows").is_some_and(|v| v.as_str() == Some("sun")));
+        }
+
         // Comparison (keeps images, includes a lane at half resolution).
         live.send(Cmd::Compare);
         wait(&live.shared, "comparison", 60, |s| s.compare.is_some());
@@ -1560,7 +1666,47 @@ mod tests {
 
         live.send(Cmd::RemoveLane(0));
         wait(&live.shared, "remove", 10, |s| s.lanes.len() == 2);
+        // A restart of the session (F5) keeps them too; with a lane removed, each lane
+        // finds its predecessor by the spec the plan gave it.
+        let carry = Carry::of(&live.shared.lock().unwrap().lanes);
         drop(live);
+        let live = LiveHandle::start(plan, carry, control, || {});
+        wait(&live.shared, "restarted session", 60, |s| s.lanes.len() == 3 && s.lanes.iter().all(|l| l.frame.is_some()));
+        {
+            let sh = live.shared.lock().unwrap();
+            let value = |lane: usize, name: &str| sh.lanes[lane].params.iter().find(|(p, _)| p.name == name).map(|(_, v)| v.clone());
+            assert_eq!(value(0, "shadows"), Some(ParamValue::Choice("all".into())), "the removed lane's values stay with it");
+            assert_eq!(value(1, "frames_in_flight"), Some(ParamValue::Int(2)));
+            assert_eq!(value(2, "host.max_lod"), Some(ParamValue::Int(1)));
+        }
+        drop(live);
+    }
+
+    /// A restart from the plan keeps the knobs changed since, unless the plan changes them.
+    #[test]
+    fn restarts_keep_knobs() {
+        let given = RendererSpec::from_cli("gpu-compute:bricks+refloor").unwrap();
+        let mut now = given.clone();
+        now.options.insert("max_steps".into(), toml::Value::Integer(300));
+        now.options.insert("accumulate".into(), toml::Value::Boolean(false));
+        let value = |s: &RendererSpec, k: &str| s.options.get(k).cloned();
+        // The plan unchanged: both kept.
+        let kept = keep_knobs(&given, &now, given.clone());
+        assert_eq!(value(&kept, "max_steps"), Some(toml::Value::Integer(300)));
+        assert_eq!(value(&kept, "accumulate"), Some(toml::Value::Boolean(false)));
+        // The plan changes one knob and the storage: its knob and components win.
+        let mut new = RendererSpec::from_cli("gpu-compute:prefix+refloor").unwrap();
+        new.options.insert("max_steps".into(), toml::Value::Integer(500));
+        let kept = keep_knobs(&given, &now, new);
+        assert_eq!((value(&kept, "max_steps"), value(&kept, "accumulate")), (Some(toml::Value::Integer(500)), Some(toml::Value::Boolean(false))));
+        assert_eq!(kept.options.get("storage").and_then(|v| v.as_str()), Some("prefix"));
+        // Another back end: its own knobs only.
+        let kept = keep_knobs(&given, &now, RendererSpec::from_cli("gpu-raster").unwrap());
+        assert_eq!(value(&kept, "max_steps"), None);
+        // The LOD depth (a client knob).
+        let mut now = given.clone();
+        now.set_client_knob("max_lod", Some(2)).unwrap();
+        assert_eq!(keep_knobs(&given, &now, given.clone()).client_knob("max_lod"), Some(2));
     }
 
     /// Mesh mode through a live session (needs a GPU; run with `--ignored`): the probe's
@@ -1594,7 +1740,7 @@ mod tests {
         assert!(exe.exists(), "build the binary first ({})", exe.display());
         // SAFETY: set before any worker thread of this test starts; no other test reads it.
         unsafe { std::env::set_var("MR_WORKER_EXE", &exe) };
-        let live = LiveHandle::start(plan, control, || {});
+        let live = LiveHandle::start(plan, vec![], control, || {});
         // The generic build first, then the compiled pipeline swaps in.
         wait(&live.shared, "the swap to start", 30, |s| s.lanes.len() == 1 && s.lanes[0].events.iter().any(|e| e.1.starts_with("hot swap →")));
         wait(&live.shared, "the compiled pipeline swapped in", 600, |s| s.lanes[0].events.iter().any(|e| e.1 == "hot swap complete" || e.1.starts_with("hot swap failed")));
@@ -1617,7 +1763,7 @@ mod tests {
         .unwrap();
         let mode = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
         let control = Control { camera: CameraControl::Path, mode, scene_frame: 50, events: true, fps_cap: 0.0, display_hz: 30.0, probe_interval: 0.3 };
-        let live = LiveHandle::start(plan, control, || {});
+        let live = LiveHandle::start(plan, vec![], control, || {});
         wait(&live.shared, "probes on both lanes", 120, |s| s.lanes.len() == 2 && s.lanes.iter().all(|l| !l.quality.is_empty()));
         let (with, without) = {
             let sh = live.shared.lock().unwrap();
@@ -1649,7 +1795,7 @@ mod demo {
         ])
         .unwrap();
         let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0 };
-        let live = LiveHandle::start(plan, control, || {});
+        let live = LiveHandle::start(plan, vec![], control, || {});
         let t0 = Instant::now();
         while live.shared.lock().unwrap().lanes.first().is_none_or(|l| l.samples.len() < 50) {
             assert!(t0.elapsed().as_secs() < 60);
@@ -1696,7 +1842,7 @@ mod scale_curve {
         let mut plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/terrain.toml")), &["run.isolation=\"thread\"".into(), "run.resolution=[1280,720]".into()]).unwrap();
         plan.renderers = vec![RendererSpec::from_cli(&renderer).unwrap()];
         let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0 };
-        let live = LiveHandle::start(plan, control, || {});
+        let live = LiveHandle::start(plan, vec![], control, || {});
         let wait = |f: &dyn Fn(&Shared) -> bool| {
             let t = Instant::now();
             while !f(&live.shared.lock().unwrap()) {

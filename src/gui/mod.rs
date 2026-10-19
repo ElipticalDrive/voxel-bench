@@ -247,6 +247,8 @@ impl App {
     }
 
     fn start_live(&mut self, ctx: &egui::Context) {
+        // A restart keeps the knob values changed in the running session.
+        let carry = self.live.as_ref().map_or(vec![], |l| live::Carry::of(&l.shared.lock().unwrap().lanes));
         self.live = None; // stops the previous session (joins its thread)
         self.textures.clear();
         self.compare_tex = None;
@@ -254,7 +256,7 @@ impl App {
         self.follow_path = true;
         self.scene_frame = 0.0;
         let c = ctx.clone();
-        self.live = Some(LiveHandle::start(self.plan.clone(), self.control(), move || c.request_repaint()));
+        self.live = Some(LiveHandle::start(self.plan.clone(), carry, self.control(), move || c.request_repaint()));
         self.message = "live session starting".into();
     }
 
@@ -840,7 +842,7 @@ impl App {
                         self.send(Cmd::Restart { lane: i, spec });
                     }
                 }
-                LaneAction::Swap(lane, spec) => self.send(Cmd::Restart { lane, spec }),
+                LaneAction::Swap(lane, spec) => self.send(Cmd::Swap { lane, spec }),
                 LaneAction::Remove(i) => {
                     self.send(Cmd::RemoveLane(i));
                     self.textures.clear();
@@ -1372,7 +1374,7 @@ impl App {
                         }
                         graph::Edit::Spec(new) => match graph::live_switch(&spec, &new, &knobs) {
                             Some((slot, c)) => self.send(Cmd::SetParam { lane: i, name: slot, value: mr_core::ParamValue::Choice(c) }),
-                            None => self.send(Cmd::Restart { lane: i, spec: new }),
+                            None => self.send(Cmd::Swap { lane: i, spec: new }),
                         },
                         graph::Edit::Open(_) => {}
                     }

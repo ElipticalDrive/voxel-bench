@@ -1,7 +1,8 @@
 //! The graph drawn: nodes in columns from the world's side (left) to the image (right),
 //! each column after what it reads; edges coloured by what they carry, the previous frame's
 //! dashed. Click a node or an input to inspect it; drag a node to move it, the background to
-//! pan, the wheel to zoom; drag from an output onto an input to rebind it.
+//! pan, the wheel to zoom (about the pointer); drag from an output onto an input to rebind it.
+//! The view fits the graph until the user moves, pans or zooms; a double click fits it again.
 
 use std::collections::HashMap;
 
@@ -23,7 +24,9 @@ const GAP_Y: f32 = 14.0;
 pub struct View {
     offsets: HashMap<String, Vec2>,
     pan: Vec2,
-    zoom: Option<f32>,
+    /// The layout point at the view's corner and the scale, once the user took the view over
+    /// (`None`: fitted to the graph every frame).
+    frame: Option<(Pos2, f32)>,
     /// The node whose output is being dragged to an input.
     wire: Option<String>,
 }
@@ -130,14 +133,25 @@ pub fn show(ui: &mut Ui, view: &mut View, g: &Graph, devs: &HashMap<String, Devi
     }
     let size = (hi - lo).max(vec2(1.0, 1.0));
     let fit = ((rect.width() - 40.0) / size.x).min((rect.height() - 40.0) / size.y).clamp(0.7, 1.0);
+    if bg.double_clicked() {
+        (view.frame, view.pan) = (None, Vec2::ZERO);
+    }
+    let (lo, mut s) = view.frame.unwrap_or((lo, fit));
+    let corner = rect.min + vec2(20.0, 20.0);
     if bg.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
         if scroll != 0.0 {
-            view.zoom = Some((view.zoom.unwrap_or(fit) * (1.0 + scroll * 0.002)).clamp(0.3, 2.0));
+            let z = (s * (1.0 + scroll * 0.002)).clamp(0.3, 2.0);
+            // The layout point under the pointer stays there.
+            if let Some(c) = ui.input(|i| i.pointer.hover_pos()) {
+                let q = (c - corner - view.pan) / s;
+                view.pan = c - corner - q * z;
+            }
+            view.frame = Some((lo, z));
+            s = z;
         }
     }
-    let s = view.zoom.unwrap_or(fit);
-    let origin = rect.min + vec2(20.0, 20.0) - lo.to_vec2() * s + view.pan;
+    let origin = corner - lo.to_vec2() * s + view.pan;
     let screen = |p: Pos2| origin + p.to_vec2() * s;
     let font = |px: f32| FontId::proportional(px * s);
     let node_rect = |id: &str| Rect::from_min_size(screen(at(id)), vec2(W, height(g, id)) * s);
@@ -146,6 +160,7 @@ pub fn show(ui: &mut Ui, view: &mut View, g: &Graph, devs: &HashMap<String, Devi
 
     if bg.dragged() && view.wire.is_none() {
         view.pan += bg.drag_delta();
+        view.frame.get_or_insert((lo, s));
     }
     if bg.clicked() {
         out.select = Some(None);
@@ -269,6 +284,10 @@ pub fn show(ui: &mut Ui, view: &mut View, g: &Graph, devs: &HashMap<String, Devi
         });
     }
 
+    // Moving a node keeps the view where it is (refitting would move and zoom everything).
+    if !moved.is_empty() {
+        view.frame.get_or_insert((lo, s));
+    }
     for (id, d) in moved {
         *view.offsets.entry(id).or_default() += d;
     }
