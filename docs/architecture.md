@@ -72,7 +72,7 @@ every face, so UV and orientation mistakes are obvious.
 | `crates/mr-serve`, `mr-worker` | the worker side: one renderer driven over the protocol; the worker with every back end |
 | `crates/mr-gpu` | wgpu plumbing: adapter choice, the frame ring (readback, timestamps), shader programs composed from modules, meshes |
 | `crates/mr-mesh` | the greedy mesher and quad encoding |
-| `components/` | the registry (`lib.rs`: back ends, components, their implementations), the graph (`graph.rs`: model, checks, canonical form and key, schedule), capabilities and adapters (`caps.rs`), and one directory per component: `storage/prefix/{gpu.wgsl,cpu.rs}`, `traversal/sphere/...`, ... |
+| `components/` | the registry (`lib.rs`: back ends, components, their implementations), the graph (`graph/`: model, checks, canonical form and key, accept, sites form, schedule), capabilities and adapters (`caps.rs`), and one directory per component: `storage/prefix/{gpu.wgsl,cpu.rs}`, `traversal/sphere/...`, ... |
 | `backends/gpu` | the GPU executor: one core and a lane per kind of visibility (ray casting, faces, discovery, splats, columns) |
 | `backends/cpu` | the CPU executor: ray casting, the software rasteriser, columns |
 | `renderers/cpu-reference` | the reference renderer (f64, exact), standing alone on purpose |
