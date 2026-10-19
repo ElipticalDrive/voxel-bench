@@ -2,6 +2,7 @@
 name = "backend-gpu"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 mr-core.workspace = true

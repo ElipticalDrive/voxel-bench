@@ -1,7 +1,8 @@
 [package]
 name = "multirenderer"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 default-run = "multirenderer"
 
 [workspace]
@@ -22,6 +23,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 mr-core = { path = "crates/mr-core" }
