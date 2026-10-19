@@ -1040,6 +1040,9 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let key = |r: &RendererSpec| r.pipeline().unwrap().key().unwrap();
         let check = |r: &RendererSpec| {
             let l = r.label().to_string();
+            // A shadow walk is named once: by the composition's stages or by the site.
+            let (stages, sites) = l.split_once(", ").unwrap_or((&l, ""));
+            assert!(!(stages.contains(" shadow ") && sites.contains("shadow =")), "{l}");
             let back = RendererSpec::from_cli(&l).unwrap_or_else(|e| panic!("{l}: {e}"));
             assert_eq!(key(&back), key(r), "{l} read back as {}", back.label());
         };

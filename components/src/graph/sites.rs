@@ -385,14 +385,25 @@ impl Graph {
             g.canonical()
         };
         let target = strip(&me)?;
-        let base = Graph::from_composition(&c)?;
         let described = me.site_values();
         let order: Vec<String> = described.iter().map(|(n, _)| n.clone()).collect();
         let mut sites: BTreeMap<String, String> = described.into_iter().chain(client).collect();
-        let same = |s: &BTreeMap<String, String>| base.with_sites(s).and_then(|g| strip(&g)).is_ok_and(|x| x == target);
-        if !same(&sites) {
+        let same_on = |c: &Composition, s: &BTreeMap<String, String>| Graph::from_composition(c).and_then(|b| b.with_sites(s)).and_then(|g| strip(&g)).is_ok_and(|x| x == target);
+        if !same_on(&c, &sites) {
             return Ok(None);
         }
+        // The composition's secondary-ray stages, where the sites say it all (a shadow walk
+        // with a storage of its own, which the stages cannot say), back at their defaults.
+        let mut c = c;
+        let defaults = crate::backend(&c.backend).map(|b| c.slots().filter(|s| s.secondary()).filter_map(|s| Some((s, b.default_for(s)?))).collect::<Vec<_>>()).unwrap_or_default();
+        for &(slot, d) in defaults.iter().rev() {
+            let mut fewer = c.clone();
+            fewer.set(slot, d);
+            if fewer.get(slot) != c.get(slot) && fewer.validate().is_ok() && same_on(&fewer, &sites) {
+                c = fewer;
+            }
+        }
+        let same = |s: &BTreeMap<String, String>| same_on(&c, s);
         // Only what differs from the composition: drop the sites it binds so anyway, last first.
         for name in order.iter().rev() {
             let mut fewer = sites.clone();
