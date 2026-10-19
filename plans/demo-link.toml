@@ -1,0 +1,26 @@
+# Demo: the world streamed over modelled networks. Each lane's client receives the server's
+# chunks over its own link (a free one, a home connection, a bad one with heavy loss); fly
+# fast (Ctrl+WASD) and watch the slower links leave holes that fill in as chunks arrive.
+name = "demo-link"
+
+[scene]
+generator = { type = "terrain", seed = 21 }
+camera = { type = "static", pitch_deg = -8 }
+
+[run]
+resolution = [1280, 720]
+view_radius = 8
+
+[[renderer]]
+compose = { backend = "gpu-compute" }
+label = "free"
+
+[[renderer]]
+compose = { backend = "gpu-compute" }
+label = "home"
+sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
+
+[[renderer]]
+compose = { backend = "gpu-compute" }
+label = "bad"
+sites = { link = "net(latency_ms=150, jitter_ms=80, bandwidth_mbps=50, loss=0.05, reorder=true)" }

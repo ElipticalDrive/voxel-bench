@@ -6,7 +6,10 @@
 
 - **Workflow (left).** A form for every plan setting: world generator, camera path,
   environment, lights, scripted events, renderers, run settings and benchmark outputs. The
-  TOML tab edits the raw plan. Open, save and Ctrl+S are in the toolbar. "⌖ cam" copies the
+  TOML tab edits the raw plan. Open, save and Ctrl+S are in the toolbar; 📂 Open ▸ New is a
+  plain start (terrain, the sun, a camera to fly, one renderer: `plans/playground.toml`), and
+  🎬 Demos loads a set-up that shows something off (`plans/demo-*.toml`; hovering one says
+  what). "⌖ cam" copies the
   live camera into a position or a camera-path point, which is a quick way to author a
   fly-through.
 - **Viewport (centre).** Every renderer in the plan runs live, tiled side by side. Each one

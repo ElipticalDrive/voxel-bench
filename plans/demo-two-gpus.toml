@@ -1,0 +1,54 @@
+# Demo: one pipeline over two GPUs. Primary rays walk on GPU slot 0 and write hit records;
+# the records cross to slot 1 (read back, uploaded), which shades them with its own shadow
+# walk. The second lane shades the previous frame's records, so slot 1 shades frame N - 1
+# while slot 0 casts N (its image is a frame late); the third runs the same graph on one
+# GPU. Slot 1 is the adapter whose name contains "amd"; change `gpus` to yours, or leave it
+# out (both slots then open the default GPU).
+name = "demo-two-gpus"
+
+[scene]
+generator = { type = "terrain", seed = 7 }
+camera = { type = "static", pitch_deg = -10 }
+lights = [{ type = "scatter", count = 150, seed = 1, center = [0, 60, 0], extent = [150, 60, 150], on_surface = true }]
+
+[run]
+resolution = [1280, 720]
+modes = ["lit"]
+view_radius = 10
+devices = { gpus = ["", "amd"] }
+
+[[renderer]]
+label = "split over two GPUs"
+[renderer.graph]
+executor = "gpu-compute"
+nodes.world = { role = "world", component = "world" }
+nodes.storage = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes.kernel = { role = "traversal", component = "refloor", inputs = { storage = "storage" } }
+nodes.visibility = { role = "visibility", component = "raycast", inputs = { primary = "kernel" } }
+nodes."s.storage" = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes."s.kernel" = { role = "traversal", component = "refloor", inputs = { storage = "s.storage" } }
+nodes.shading = { role = "shading", component = "direct", device = "gpu1", knobs = { placement = "deferred" }, inputs = { hits = "visibility", shadow = "s.kernel" } }
+
+[[renderer]]
+label = "split, shading a frame behind"
+[renderer.graph]
+executor = "gpu-compute"
+nodes.world = { role = "world", component = "world" }
+nodes.storage = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes.kernel = { role = "traversal", component = "refloor", inputs = { storage = "storage" } }
+nodes.visibility = { role = "visibility", component = "raycast", inputs = { primary = "kernel" } }
+nodes."s.storage" = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes."s.kernel" = { role = "traversal", component = "refloor", inputs = { storage = "s.storage" } }
+nodes.shading = { role = "shading", component = "direct", device = "gpu1", knobs = { placement = "deferred" }, inputs = { hits = "visibility", shadow = "s.kernel" }, timing = { hits = "prev" } }
+
+[[renderer]]
+label = "on one GPU"
+[renderer.graph]
+executor = "gpu-compute"
+nodes.world = { role = "world", component = "world" }
+nodes.storage = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes.kernel = { role = "traversal", component = "refloor", inputs = { storage = "storage" } }
+nodes.visibility = { role = "visibility", component = "raycast", inputs = { primary = "kernel" } }
+nodes."s.storage" = { role = "storage", component = "bricks", inputs = { changes = "world" } }
+nodes."s.kernel" = { role = "traversal", component = "refloor", inputs = { storage = "s.storage" } }
+nodes.shading = { role = "shading", component = "direct", knobs = { placement = "deferred" }, inputs = { hits = "visibility", shadow = "s.kernel" } }

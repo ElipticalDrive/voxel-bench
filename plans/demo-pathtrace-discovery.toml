@@ -1,0 +1,20 @@
+# Demo: path tracing on incremental discovery. The left lane finds its visible faces with a
+# quadtree kept across frames (holes filled by coverage) and path traces from them; the right
+# lane path traces from ray-cast primary hits. Hold the camera still to watch samples
+# accumulate; fly (WASD) to see how each copes with motion.
+name = "demo-pathtrace-discovery"
+
+[scene]
+generator = { type = "terrain", seed = 7 }
+camera = { type = "static", pitch_deg = -12 }
+
+[run]
+resolution = [1280, 720]
+modes = ["lit"]
+view_radius = 8
+
+[[renderer]]
+compose = { backend = "gpu-discover", visibility = "quadtree", holes = "coverage", shading = "pathtrace" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor", shading = "pathtrace" }

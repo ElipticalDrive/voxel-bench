@@ -21,30 +21,8 @@ use live::{CameraControl, Cmd, Control, LaneStatus, LiveHandle, Sample};
 use crate::tune::{self, Algorithm};
 use std::collections::{HashMap, HashSet};
 
-const DEFAULT_PLAN: &str = r#"
-name = "playground"
-
-[scene]
-generator = { type = "terrain", seed = 7 }
-camera = { type = "orbit", center = [0, 70, 0], radius = 120, height = 50, period = 1200 }
-lights = [{ type = "scatter", count = 150, seed = 1, center = [0, 60, 0], extent = [150, 60, 150], on_surface = true }]
-events = [{ type = "animate_lights", amplitude = 1.5, period = 90 }]
-
-[run]
-resolution = [1280, 720]
-view_radius = 10
-streaming = { budget = 512 }
-
-# Renderers are assembled from components (back end, storage, geometry, visibility, shading).
-[[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
-
-[[renderer]]
-compose = { backend = "gpu-compute", storage = "prefix", traversal = "refloor" }
-
-[[renderer]]
-compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
-"#;
+/// The plain starting point (New); the showy set-ups are `plans/demo-*.toml` (🎬 Demos).
+const DEFAULT_PLAN: &str = include_str!("../../plans/playground.toml");
 
 const SCENE_FPS: f64 = 60.0;
 
@@ -162,7 +140,7 @@ impl App {
         let mut app = Self {
             plan: Plan::parse(DEFAULT_PLAN, &[]).expect("default plan"),
             plan_path: None,
-            path_text: "plans/playground.toml".into(),
+            path_text: "plans/untitled.toml".into(),
             dirty: false,
             left_tab: LeftTab::Form,
             toml_text: String::new(),
@@ -421,19 +399,34 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             ui.menu_button("📂 Open", |ui| {
                 ui.weak("Plans in ./plans");
-                for p in plan_files() {
+                for p in plan_files().into_iter().filter(|p| !is_demo(p)) {
                     if ui.button(p.display().to_string()).on_hover_text("Load this plan (unsaved changes to the current one are lost)").clicked() {
                         self.load(&p);
                         ui.close();
                     }
                 }
                 ui.separator();
-                if ui.button("New (playground template)").on_hover_text("Start from a small built-in plan with a few renderers").clicked() {
+                if ui.button("New").on_hover_text("Start from the plain built-in plan: terrain, the sun, a camera to fly, one renderer").clicked() {
                     self.plan = Plan::parse(DEFAULT_PLAN, &[]).unwrap();
                     self.option_text = option_texts(&self.plan);
                     self.plan_path = None;
+                    self.path_text = "plans/untitled.toml".into();
                     self.dirty = true;
                     ui.close();
+                }
+            });
+            ui.menu_button("🎬 Demos", |ui| {
+                ui.weak("Set-ups that show something off (plans/demo-*.toml); load one, then ▶ Start live");
+                let demos: Vec<PathBuf> = plan_files().into_iter().filter(|p| is_demo(p)).collect();
+                if demos.is_empty() {
+                    ui.weak("none found in ./plans");
+                }
+                for p in demos {
+                    let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").trim_start_matches("demo-").to_string();
+                    if ui.button(name).on_hover_text(lead_comment(&p)).clicked() {
+                        self.load(&p);
+                        ui.close();
+                    }
                 }
             });
             ui.add(egui::TextEdit::singleline(&mut self.path_text).desired_width(240.0)).on_hover_text("Plan file path used by Load path and Save");
@@ -1424,6 +1417,17 @@ fn plan_files() -> Vec<PathBuf> {
     v
 }
 
+fn is_demo(p: &Path) -> bool {
+    p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("demo-"))
+}
+
+/// A plan file's leading comment (what it shows), joined into one paragraph.
+fn lead_comment(p: &Path) -> String {
+    let text = std::fs::read_to_string(p).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().map_while(|l| l.strip_prefix('#')).map(str::trim).collect();
+    if lines.is_empty() { p.display().to_string() } else { lines.join(" ") }
+}
+
 /// Samples within the last `secs` seconds of the newest one.
 fn window(s: &std::collections::VecDeque<Sample>, secs: f64) -> Vec<Sample> {
     let Some(last) = s.back() else { return vec![] };
@@ -1497,6 +1501,20 @@ fn help(ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// New starts plain (one renderer, no scattered lights); every demo says what it shows.
+    #[test]
+    fn default_plan_and_demos() {
+        let plan = Plan::parse(DEFAULT_PLAN, &[]).unwrap();
+        assert_eq!(plan.renderers.len(), 1);
+        assert!(plan.scene.lights.is_empty() && plan.scene.events.is_empty());
+        let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans"));
+        let demos: Vec<PathBuf> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).filter(|p| is_demo(p)).collect();
+        assert!(demos.len() >= 5, "{demos:?}");
+        for p in demos {
+            assert!(lead_comment(&p).starts_with("Demo: "), "{}", p.display());
+        }
+    }
 
     fn frame(ctx: &egui::Context, app: &mut App, keys: &[Key], t: &mut f64) {
         *t += 1.0 / 60.0;

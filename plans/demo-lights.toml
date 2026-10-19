@@ -1,0 +1,25 @@
+# Demo: 150 point lights wandering over the terrain, with shadows, seen from an orbiting
+# camera; three renderers side by side (two storages under ray casting, and rasterised
+# greedy meshes). Toggle 💡 Lit (L) to see the textures alone.
+name = "demo-lights"
+
+[scene]
+generator = { type = "terrain", seed = 7 }
+camera = { type = "orbit", center = [0, 70, 0], radius = 120, height = 50, period = 1200 }
+lights = [{ type = "scatter", count = 150, seed = 1, center = [0, 60, 0], extent = [150, 60, 150], on_surface = true }]
+events = [{ type = "animate_lights", amplitude = 1.5, period = 90 }]
+
+[run]
+resolution = [1280, 720]
+modes = ["lit"]
+view_radius = 10
+streaming = { budget = 512 }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "prefix", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }

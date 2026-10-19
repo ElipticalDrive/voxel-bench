@@ -53,6 +53,8 @@ streaming, a modelled network link, two GPUs and others.
 
 - **Left:** the plan, edited as a form or as raw TOML: the world, camera path, lights,
   scripted events, the renderers and the run settings.
+  It starts plain (terrain, the sun, one renderer); **🎬 Demos** loads showier set-ups:
+  many lights, path tracing on discovery, meshes, a modelled network, two GPUs.
 - **Centre:** every renderer in the plan runs live, side by side, each as fast as it can.
   Fly with WASD, Space and Shift, and look around with the mouse. F11 switches to fullscreen.
   The ❓ tab lists every key.

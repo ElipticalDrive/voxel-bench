@@ -1,7 +1,7 @@
 # Run plans
 
 A plan is a TOML file describing a scene, the renderers and how to run them. `plans/` has
-complete examples. `multirenderer run <plan>` runs one; the GUI edits and runs them live.
+complete examples (benchmark workloads; `demo-*.toml` are set-ups for the GUI's 🎬 Demos). `multirenderer run <plan>` runs one; the GUI edits and runs them live.
 
 ```toml
 name = "my-test"
