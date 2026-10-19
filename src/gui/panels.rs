@@ -1,10 +1,9 @@
-//! The toolbar, the plan editor, the right-hand tabs (compare and benchmark results among
-//! them), and the pipeline editor window.
+//! The toolbar, the plan editor (form and TOML), the compare and benchmark results, and the
+//! pipeline editor window.
 
 use egui::{Color32, TextureOptions, Vec2};
 use glam::Vec3;
 
-use super::input::help;
 use super::*;
 
 impl App {
@@ -80,7 +79,7 @@ impl App {
                 match bench::BenchRun::start(&self.plan, &[]) {
                     Ok(b) => {
                         self.bench = Some(b);
-                        self.right_tab = RightTab::Benchmark;
+                        self.docks.show(ui.ctx(), dock::Pane::Benchmark);
                     }
                     Err(e) => self.message = format!("benchmark failed to start: {e:#}"),
                 }
@@ -164,102 +163,78 @@ impl App {
             ui.toggle_value(&mut self.overlays, "overlays (O)").on_hover_text("Renderer names, fps and the status line over the views");
             if ui.button("⚖ Compare (C)").on_hover_text("Render this exact view on every renderer and the reference, then score them").clicked() {
                 self.send(Cmd::Compare);
-                self.right_tab = RightTab::Compare;
+                self.docks.show(ui.ctx(), dock::Pane::Compare);
             }
         });
     }
 
-    pub(super) fn left(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn form(&mut self, ui: &mut egui::Ui) {
+        let camera = self.live_camera();
+        let mut restart = None;
+        let mut open_graph = None;
+        let live = self.live.is_some();
+        steady_scroll(ui, "form", |ui| {
+            let mut ectx = editor::EditorCtx {
+                infos: &self.infos,
+                block_names: &self.block_names,
+                camera,
+                option_text: &mut self.option_text,
+                restart_lane: &mut restart,
+                live,
+                trials: &mut self.trials,
+                open_graph: &mut open_graph,
+            };
+            if editor::plan_editor(ui, &mut self.plan, &mut ectx) {
+                self.dirty = true;
+            }
+            ui.add_space(8.0);
+            if live {
+                ui.weak("World, path and run-setting changes take effect when you restart the live session (F5). Use ↻ on a renderer to restart just that one.");
+            }
+        });
+        if let Some((i, sel)) = open_graph {
+            self.graph_win = Some(graph::Window::new(ui.ctx(), graph::Of::Plan(i), sel));
+        }
+        if let Some(i) = restart {
+            let n = self.live.as_ref().map(|l| l.shared.lock().unwrap().lanes.len()).unwrap_or(0);
+            let spec = self.plan.renderers[i].clone();
+            self.send(if i < n { Cmd::Restart { lane: i, spec } } else { Cmd::AddLane(spec) });
+        }
+    }
+
+    pub(super) fn toml(&mut self, ui: &mut egui::Ui) {
+        let pass = ui.ctx().cumulative_pass_nr();
+        if self.toml_pass.is_none_or(|q| pass > q + 1) {
+            self.toml_text = self.plan.to_toml().unwrap_or_default();
+            self.toml_error = None;
+        }
+        self.toml_pass = Some(pass);
         ui.horizontal(|ui| {
-            ui.heading("Workflow");
-            ui.selectable_value(&mut self.left_tab, LeftTab::Form, "Form").on_hover_text("Edit the plan with forms");
-            if ui.selectable_value(&mut self.left_tab, LeftTab::Toml, "TOML").on_hover_text("Edit the plan as raw TOML (what Save writes)").clicked() {
+            if ui.button("Apply").on_hover_text("Parse this TOML and replace the plan with it").clicked() {
+                match Plan::parse(&self.toml_text, &[]) {
+                    Ok(p) => {
+                        self.plan = p;
+                        self.option_text = option_texts(&self.plan);
+                        self.toml_error = None;
+                        self.dirty = true;
+                    }
+                    Err(e) => self.toml_error = Some(format!("{e:#}")),
+                }
+            }
+            if ui.button("Revert").on_hover_text("Discard text edits; show the current plan again").clicked() {
                 self.toml_text = self.plan.to_toml().unwrap_or_default();
                 self.toml_error = None;
             }
         });
-        ui.separator();
-        match self.left_tab {
-            LeftTab::Form => {
-                let camera = self.live_camera();
-                let mut restart = None;
-                let mut open_graph = None;
-                let live = self.live.is_some();
-                steady_scroll(ui, "form", |ui| {
-                    let mut ectx = editor::EditorCtx {
-                        infos: &self.infos,
-                        block_names: &self.block_names,
-                        camera,
-                        option_text: &mut self.option_text,
-                        restart_lane: &mut restart,
-                        live,
-                        trials: &mut self.trials,
-                        open_graph: &mut open_graph,
-                    };
-                    if editor::plan_editor(ui, &mut self.plan, &mut ectx) {
-                        self.dirty = true;
-                    }
-                    ui.add_space(8.0);
-                    if live {
-                        ui.weak("World, path and run-setting changes take effect when you restart the live session (F5). Use ↻ on a renderer to restart just that one.");
-                    }
-                });
-                if let Some((i, sel)) = open_graph {
-                    self.graph_win = Some(graph::Window::new(ui.ctx(), graph::Of::Plan(i), sel));
-                }
-                if let Some(i) = restart {
-                    let n = self.live.as_ref().map(|l| l.shared.lock().unwrap().lanes.len()).unwrap_or(0);
-                    let spec = self.plan.renderers[i].clone();
-                    self.send(if i < n { Cmd::Restart { lane: i, spec } } else { Cmd::AddLane(spec) });
-                }
-            }
-            LeftTab::Toml => {
-                ui.horizontal(|ui| {
-                    if ui.button("Apply").on_hover_text("Parse this TOML and replace the plan with it").clicked() {
-                        match Plan::parse(&self.toml_text, &[]) {
-                            Ok(p) => {
-                                self.plan = p;
-                                self.option_text = option_texts(&self.plan);
-                                self.toml_error = None;
-                                self.dirty = true;
-                            }
-                            Err(e) => self.toml_error = Some(format!("{e:#}")),
-                        }
-                    }
-                    if ui.button("Revert").on_hover_text("Discard text edits; show the current plan again").clicked() {
-                        self.toml_text = self.plan.to_toml().unwrap_or_default();
-                        self.toml_error = None;
-                    }
-                });
-                if let Some(e) = &self.toml_error {
-                    ui.colored_label(Color32::LIGHT_RED, e);
-                }
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut self.toml_text).code_editor().desired_width(f32::INFINITY).desired_rows(40)).on_hover_text("Edit, then Apply. Field reference: docs/plans.md.");
-                });
-            }
+        if let Some(e) = &self.toml_error {
+            ui.colored_label(Color32::LIGHT_RED, e);
         }
-    }
-
-    pub(super) fn right(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.right_tab, RightTab::Metrics, "📈 Metrics").on_hover_text("Live statistics, knobs and auto-tuners per renderer");
-            ui.selectable_value(&mut self.right_tab, RightTab::Compare, "⚖ Compare").on_hover_text("Image comparison of the current view against the reference (C)");
-            ui.selectable_value(&mut self.right_tab, RightTab::Benchmark, "⏱ Benchmark").on_hover_text("Results of the last benchmark run");
-            ui.selectable_value(&mut self.right_tab, RightTab::Schemes, "📖 Schemes").on_hover_text("The encyclopedia: every rendering scheme and idea (docs/schemes), with what was measured");
-            ui.selectable_value(&mut self.right_tab, RightTab::Help, "❓ Keys").on_hover_text("Key bindings (H)");
-        });
-        ui.separator();
-        steady_scroll(ui, "right", |ui| match self.right_tab {
-            RightTab::Metrics => self.metrics(ui),
-            RightTab::Compare => self.compare(ui),
-            RightTab::Benchmark => self.benchmark(ui),
-            RightTab::Schemes => schemes::browser(ui, &mut self.schemes),
-            RightTab::Help => help(ui),
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.add(egui::TextEdit::multiline(&mut self.toml_text).code_editor().desired_width(f32::INFINITY).desired_rows(40)).on_hover_text("Edit, then Apply. Field reference: docs/plans.md.");
         });
     }
 
-    fn compare(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn compare(&mut self, ui: &mut egui::Ui) {
         let Some(live) = &self.live else {
             ui.weak("Start a live session, frame a view, then press C.");
             return;
@@ -330,7 +305,7 @@ impl App {
         ui.weak("Diff: grey = match, red = differs (brighter = larger).");
     }
 
-    fn benchmark(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn benchmark(&mut self, ui: &mut egui::Ui) {
         if self.live.is_some() && self.bench.as_ref().is_some_and(|b| !b.finished) {
             ui.colored_label(Color32::YELLOW, "The live session is sharing the GPU with this benchmark; stop it for clean numbers.");
         }

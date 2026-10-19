@@ -3,6 +3,7 @@
 //! reference, and launch full benchmarks.
 
 mod bench;
+mod dock;
 mod editor;
 mod graph;
 mod input;
@@ -39,21 +40,6 @@ pub fn run(initial: Option<PathBuf>) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-#[derive(PartialEq, Clone, Copy)]
-enum LeftTab {
-    Form,
-    Toml,
-}
-
-#[derive(PartialEq, Clone, Copy)]
-enum RightTab {
-    Metrics,
-    Compare,
-    Benchmark,
-    Schemes,
-    Help,
-}
-
 struct LaneTex {
     tex: TextureHandle,
     seq: u64,
@@ -72,8 +58,11 @@ struct App {
     plan_path: Option<PathBuf>,
     path_text: String,
     dirty: bool,
-    left_tab: LeftTab,
+    /// Where each pane is: in a dock or a window of its own.
+    docks: dock::Docks,
     toml_text: String,
+    /// The pass the TOML pane was last drawn in: shown again after a gap, it re-reads the plan.
+    toml_pass: Option<u64>,
     toml_error: Option<String>,
     option_text: Vec<String>,
     infos: Vec<RendererInfo>,
@@ -112,7 +101,6 @@ struct App {
     light_intensity: f32,
     light_radius: f32,
 
-    right_tab: RightTab,
     /// In-progress knob edits not yet applied (restart-only knobs apply on release).
     knob_edits: HashMap<(usize, String), mr_core::ParamValue>,
     /// Knobs the tuner may not touch, per lane.
@@ -180,7 +168,8 @@ impl App {
             plan_path: None,
             path_text: "plans/untitled.toml".into(),
             dirty: false,
-            left_tab: LeftTab::Form,
+            docks: dock::Docks::load(),
+            toml_pass: None,
             toml_text: String::new(),
             toml_error: None,
             option_text: vec![],
@@ -212,7 +201,6 @@ impl App {
             light_color: [1.0, 0.8, 0.5],
             light_intensity: 30.0,
             light_radius: 20.0,
-            right_tab: RightTab::Metrics,
             knob_edits: HashMap::new(),
             locks: HashSet::new(),
             tune_ui: HashMap::new(),
@@ -313,7 +301,7 @@ impl App {
 
     fn set_fullscreen(&mut self, ctx: &egui::Context, on: bool) {
         self.fullscreen = on;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Fullscreen(on));
     }
 
     /// Sets the render resolution to the current tile's physical pixel size and restarts
@@ -370,28 +358,24 @@ impl App {
         let title = format!("MultiRenderer — {}{}", self.plan_path.as_ref().map(|p| p.display().to_string()).unwrap_or("(unsaved)".into()), if self.dirty { " *" } else { "" });
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 
+        if let Some(p) = schemes::take_request(&ctx) {
+            self.schemes.open = Some(p);
+            self.docks.show(&ctx, dock::Pane::Schemes);
+        }
         if self.fullscreen {
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
+            self.pane_windows(&ctx);
+            if self.graph_win.as_ref().is_some_and(|w| w.separate) {
+                self.pipeline_window(&ctx);
+            }
             self.sync_live(&ctx);
             return;
         }
-        if let Some(p) = schemes::take_request(&ctx) {
-            self.schemes.open = Some(p);
-            self.right_tab = RightTab::Schemes;
-        }
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
-        egui::Panel::bottom("log").resizable(true).default_size(110.0).show(ui, |ui| {
-            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                if let Some(l) = &self.live {
-                    for line in l.shared.lock().unwrap().log.iter() {
-                        ui.monospace(line);
-                    }
-                }
-            });
-        });
-        egui::Panel::left("editor").resizable(true).default_size(400.0).show(ui, |ui| self.left(ui));
-        egui::Panel::right("side").resizable(true).default_size(430.0).show(ui, |ui| self.right(ui));
+        self.docks(ui);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
+        self.finish_docks(&ctx);
+        self.pane_windows(&ctx);
         self.pipeline_window(&ctx);
 
         self.sync_live(&ctx);
@@ -407,10 +391,15 @@ fn plan_files() -> Vec<PathBuf> {
     v
 }
 
-/// The list of recently loaded or saved plans, in the user's configuration directory.
-fn recent_file() -> Option<PathBuf> {
+/// The GUI's directory in the user's configuration directory.
+fn config_dir() -> Option<PathBuf> {
     let base = std::env::var_os("APPDATA").or_else(|| std::env::var_os("XDG_CONFIG_HOME")).map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("multirenderer").join("recent-plans.txt"))
+    Some(base.join("multirenderer"))
+}
+
+/// The list of recently loaded or saved plans.
+fn recent_file() -> Option<PathBuf> {
+    Some(config_dir()?.join("recent-plans.txt"))
 }
 
 /// The recent plans that still exist, newest first (shown relative to the working

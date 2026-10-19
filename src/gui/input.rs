@@ -54,10 +54,10 @@ impl App {
                 }
                 Key::C => {
                     self.send(Cmd::Compare);
-                    self.right_tab = RightTab::Compare;
+                    self.docks.show(ctx, dock::Pane::Compare);
                 }
                 Key::E => self.edit_mode = !self.edit_mode,
-                Key::H => self.right_tab = RightTab::Help,
+                Key::H => self.docks.show(ctx, dock::Pane::Keys),
                 Key::Tab => {
                     let n = self.textures.len().max(1);
                     self.focus = Some(self.focus.map(|f| (f + 1) % n).unwrap_or(0));

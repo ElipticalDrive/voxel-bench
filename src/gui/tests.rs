@@ -109,11 +109,15 @@ fn gui_screenshot() {
     };
     app.option_text = option_texts(&app.plan);
     app.start_live(&ctx);
-    app.right_tab = RightTab::Metrics;
+    app.docks.show(&ctx, dock::Pane::Metrics);
     // `SHOT_SCHEMES=storage/bits.md` (or empty): the Schemes tab, on that entry.
     if let Ok(v) = std::env::var("SHOT_SCHEMES") {
-        app.right_tab = RightTab::Schemes;
+        app.docks.show(&ctx, dock::Pane::Schemes);
         app.schemes.open = (!v.is_empty()).then_some(v);
+    }
+    // `SHOT_DOCKS=schemes:bottom,log:window,left:collapsed`: panes moved, torn off, docks collapsed.
+    if let Ok(v) = std::env::var("SHOT_DOCKS") {
+        app.docks.arrange(&v).unwrap();
     }
     // `SHOT_GRAPH=lane0` / `plan1:shading`: the pipeline editor open on a renderer (and node).
     if let Ok(v) = std::env::var("SHOT_GRAPH") {
@@ -224,10 +228,16 @@ fn gui_headless_smoke() {
     .unwrap();
     app.option_text = option_texts(&app.plan);
     let mut t = 0.0;
-    for tab in [RightTab::Metrics, RightTab::Compare, RightTab::Benchmark, RightTab::Help] {
-        app.right_tab = tab;
+    for pane in [dock::Pane::Metrics, dock::Pane::Compare, dock::Pane::Benchmark, dock::Pane::Keys] {
+        app.docks.show(&ctx, pane);
         frame(&ctx, &mut app, &[], &mut t);
     }
+    // Panes torn off into windows of their own, moved between docks, and docked again.
+    app.docks.tear(dock::Pane::Metrics);
+    app.docks.tear(dock::Pane::Log);
+    app.docks.move_to(dock::Pane::Schemes, dock::Side::Bottom);
+    frame(&ctx, &mut app, &[], &mut t);
+    app.docks = dock::Docks::default();
     frame(&ctx, &mut app, &[Key::F5], &mut t);
     assert!(app.live.is_some());
     let start = std::time::Instant::now();
@@ -243,7 +253,7 @@ fn gui_headless_smoke() {
         frame(&ctx, &mut app, &[], &mut t);
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    app.right_tab = RightTab::Metrics;
+    app.docks.show(&ctx, dock::Pane::Metrics);
     for keys in [&[Key::L][..], &[Key::F], &[Key::W], &[Key::E], &[Key::Num1], &[Key::Escape], &[Key::C]] {
         for _ in 0..5 {
             frame(&ctx, &mut app, keys, &mut t);
@@ -261,7 +271,7 @@ fn gui_headless_smoke() {
     assert!(app.compare_tex.is_some(), "compare tab should have uploaded images");
 
     // Tuner + periodic probes: the Metrics tab must draw knobs, tuner and quality plots.
-    app.right_tab = RightTab::Metrics;
+    app.docks.show(&ctx, dock::Pane::Metrics);
     app.probe_interval = 0.3;
     app.send(Cmd::Tune { lane: 0, config: Some(tune::TunerConfig { goal: tune::Goal::MaxFps, settle_s: 0.1, window_s: 0.3, ..Default::default() }) });
     app.send(Cmd::SetParam { lane: 1, name: "depth_prepass".into(), value: mr_core::ParamValue::Bool(false) });
@@ -280,7 +290,7 @@ fn gui_headless_smoke() {
     }
     app.probe_interval = 0.0;
     frame(&ctx, &mut app, &[], &mut t);
-    app.left_tab = LeftTab::Toml;
+    app.docks.show(&ctx, dock::Pane::Toml);
     frame(&ctx, &mut app, &[], &mut t);
 
     // Fullscreen + 1:1 + match resolution: the viewport becomes the whole screen and

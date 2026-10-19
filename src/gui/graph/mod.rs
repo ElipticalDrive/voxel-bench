@@ -281,7 +281,7 @@ pub struct Window {
     undo: Vec<RendererSpec>,
     redo: Vec<RendererSpec>,
     /// In an OS window of its own (else a window inside the main one).
-    separate: bool,
+    pub separate: bool,
     /// Fit the whole graph again whenever a dragged node is released.
     auto_frame: bool,
 }
@@ -387,7 +387,7 @@ fn editor(ui: &mut Ui, win: &mut Window, spec: &RendererSpec, knobs: &[(ParamSpe
         }
         ui.toggle_value(&mut win.auto_frame, "auto-frame").on_hover_text("Fit the whole graph to the window again whenever you release a dragged node (off: the view stays where you put it; the wheel zooms about the pointer)");
         ui.separator();
-        let (to, tip) = if win.separate { ("⧉ into main window", "Show the editor as a window inside the main one") } else { ("⧉ own window", "Show the editor in an OS window of its own (move it to another screen, or beside the main one)") };
+        let (to, tip) = if win.separate { ("↙ into main window", "Show the editor as a window inside the main one") } else { ("↗ own window", "Show the editor in an OS window of its own (move it to another screen, or beside the main one)") };
         if ui.button(to).on_hover_text(tip).clicked() {
             win.separate = !win.separate;
         }
