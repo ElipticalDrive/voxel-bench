@@ -18,7 +18,7 @@ pub struct Ctx<'a, L, O> {
     pub lights_near: L,
     /// Whether a ray from `p` along unit `d` hits something within `dist`.
     pub occluded: O,
-    /// The post's tone mapper, compiled into the output (PLAN step 15b).
+    /// The post's tone mapper, compiled into the output.
     pub tone: Tone,
 }
 

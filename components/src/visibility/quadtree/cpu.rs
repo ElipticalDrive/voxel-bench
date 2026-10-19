@@ -1,4 +1,4 @@
-//! The quadtree sampler on the CPU (PLAN step 13b: discovery's pieces as components; was
+//! The quadtree sampler on the CPU (discovery's pieces as components; was
 //! part of cpu-discover's `discover.rs`): adaptive screen-space tiles of corner rays, see
 //! [`crate::visibility::discover`] for the tile rules and the shared state.
 

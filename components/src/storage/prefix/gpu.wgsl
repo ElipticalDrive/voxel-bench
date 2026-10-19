@@ -1,4 +1,4 @@
-// Storage `prefix` (IDEAS §1): per slot in `aux`, 512 Morton-ordered 4^3 occupancy masks
+// Storage `prefix`: per slot in `aux`, 512 Morton-ordered 4^3 occupancy masks
 // (u64 as lo, hi u32 pairs; bits Morton-ordered too, so each byte is a 2^3 cube), then the
 // popcount prefix (513 u16, packed in pairs). An aligned cube of n bricks is a contiguous
 // Morton range [a, a + n), empty exactly when prefix[a] == prefix[a + n]. Block ids are

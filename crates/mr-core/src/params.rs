@@ -5,7 +5,7 @@
 //! parameters can then be changed between frames with [`crate::Renderer::set_param`];
 //! the others need a restart (the live session hot-swaps a fresh worker).
 //!
-//! Independently, a parameter is *baked* (specialisable, PLAN step 10, IDEAS §17) or not: a
+//! Independently, a parameter is *baked* (specialisable) or not: a
 //! baked knob's value may be compiled in as a constant where a pipeline is compiled for its
 //! values (GPU shader constants; CPU pipelines compiled on demand), so a different value is
 //! a different compiled pipeline and part of its cache key. The generic builds still read

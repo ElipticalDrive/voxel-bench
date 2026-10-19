@@ -1,4 +1,4 @@
-// Adapters for the optional storage queries (`caps::ADAPTERS`; IDEAS §9: every storage
+// Adapters for the optional storage queries (`caps::ADAPTERS`: every storage
 // answers every query, slowly where it has no fast path). The assembler appends the ones
 // the chosen storage does not provide. Only the sections are compiled, not this header.
 

@@ -1,8 +1,8 @@
-//! The columns lane (`gpu-voxelspace`; components, IDEAS §12; PLAN step 13e3): storage
+//! The columns lane (`gpu-voxelspace`; components): storage
 //! `heightmap`, visibility `columns`, shading `direct` or `pathtrace` (heightmap-gradient
 //! normals on column tops; shadow and bounce rays walk the heightmap, `hm_trace`). The march
 //! is the columns component's root (`mr_components::visibility::columns::GPU_WGSL`) in one
-//! compute pass; shading inline in the march or deferred (`placement`, PLAN step 12c: the
+//! compute pass; shading inline in the march or deferred (`placement`: the
 //! march writes hit records, the common pass `shading/deferred.wgsl` shades them). The
 //! heightmap is kept on the CPU, patched from the change log, its changed rows uploaded (the
 //! change log's transfer to the GPU).
@@ -212,7 +212,7 @@ impl Lane for Columns {
 }
 
 /// The shader: the heightmap storage (group 2) is its own kernel (`ctrace`; storage and walk
-/// in one, IDEAS §18's exceptions), the ray services through it, the column march and the
+/// in one), the ray services through it, the column march and the
 /// shading component as the root, the post's `tone` in its output; with `deferred`, the march writes records and
 /// the common deferred pass shades them.
 fn program(shading: &str, deferred: bool, tone: mr_components::post::Tone) -> (mr_gpu::program::Program, String, [&'static str; 5]) {

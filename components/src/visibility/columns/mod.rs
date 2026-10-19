@@ -1,5 +1,4 @@
-//! Visibility `columns` (Voxel Space, Comanche 1992; PLAN step 13d: was the voxelspace back
-//! ends' code): per screen column, a march front to back over the heightmap storage
+//! Visibility `columns` (Voxel Space, Comanche 1992): per screen column, a march front to back over the heightmap storage
 //! (`crate::storage::heightmap`), drawing spans with a y-buffer. Shading inline in the march
 //! or deferred (`placement`: the march writes hit records, the common pass shades them).
 //! CPU: [`cpu`]. GPU: [`GPU_WGSL`] (the root: the march, entry `main`; its `Camera` uniform,

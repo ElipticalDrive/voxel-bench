@@ -476,7 +476,7 @@ impl App {
             ui.weak(&self.message);
         });
         ui.horizontal_wrapped(|ui| {
-            // Two latching toggles (IDEAS §13): lighting and meshes are independent.
+            // Two latching toggles: lighting and meshes are independent.
             let mut lit = self.mode.lighting == mr_core::RenderMode::Lit;
             if ui.toggle_value(&mut lit, "💡 Lit").on_hover_text("Sun, sky and point lights with shadows; off = textures only (L toggles)").changed() {
                 self.mode.lighting = if lit { mr_core::RenderMode::Lit } else { mr_core::RenderMode::Unlit };

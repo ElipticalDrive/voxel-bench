@@ -336,7 +336,7 @@ impl StorageData {
     }
 }
 
-/// A pipeline's GPU storage instances (PLAN step 9c, [`crate::shaders::Walks`]): each its
+/// A pipeline's GPU storage instances ([`crate::shaders::Walks`]): each its
 /// own data, bind group layout and bind group index.
 pub struct StorageSet {
     items: Vec<Instance>,

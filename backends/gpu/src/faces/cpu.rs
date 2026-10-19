@@ -2,13 +2,13 @@
 //! casting on the CPU, drawn by the executor's GPU lane. The CPU **storage** discovery rays
 //! walk (any CPU representation, refloor walk, monomorphised:
 //! `mr_components::visibility::discover::grid`), the **visibility** component (`quadtree`,
-//! or `cluster`, the user's face-cluster design of IDEAS §10; was the cpu-cluster renderer);
+//! or `cluster`, the user's face-cluster design);
 //! the shading's shadow rays walk the GPU storage `shadow_storage`.
 //!
 //! Instead of one ray per pixel, an adaptive screen-space quadtree of CPU rays decides
 //! where to look so that it casts as few rays as possible while still discovering every
 //! block face visible from the camera (the discovery code is the components':
-//! `mr_components::visibility::{discover, quadtree, cluster}`, PLAN step 13b). The discovered face set S lives
+//! `mr_components::visibility::{discover, quadtree, cluster}`). The discovered face set S lives
 //! in world space and persists across frames (faces not re-confirmed for `keep_frames`
 //! discovery passes expire). S is rasterised on the GPU as one instanced unit quad per
 //! face (8-byte face record, analytic UVs, lit mode with ray-traced shadows in the fragment
@@ -62,7 +62,7 @@ pub(crate) fn info() -> RendererInfo {
 fn params() -> Vec<ParamSpec> {
     vec![
         ParamSpec::choice("storage", "Storage component: the CPU representation discovery rays walk (refloor)", &names_on(BACKEND, Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (IDEAS §10; was cpu-cluster)", &names_on(BACKEND, Slot::Visibility), "quadtree", true),
+        ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (was cpu-cluster)", &names_on(BACKEND, Slot::Visibility), "quadtree", true),
         ParamSpec::choice("traversal", "Traversal kernel of the CPU discovery rays and the GPU shadow and bounce rays", &names_on(BACKEND, Slot::Traversal), "refloor", false),
         ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false),
         ParamSpec::choice("shadow_storage", "GPU storage the GPU's shadow and bounce rays walk (`same`: the GPU twin of the storage discovery rays walk, if it has one); the storage slot is the CPU representation discovery rays walk", &names_on(BACKEND, Slot::ShadowStorage), "bricks", false),
@@ -205,7 +205,7 @@ pub(crate) struct CpuSampler {
     tag_buf: GrowableBuffer,
     tags_valid: bool,
     bind0: Option<wgpu::BindGroup>,
-    /// The nodes of the timed stage (PLAN step 11): discovery on the CPU.
+    /// The nodes of the timed stage: discovery on the CPU.
     vis_nodes: Vec<String>,
     overflowed: bool,
 }

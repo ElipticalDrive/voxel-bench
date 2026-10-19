@@ -82,14 +82,14 @@ fn surface_of(h: Hit, o: vec3<f32>, d: vec3<f32>) -> Surface {
     return Surface(p, face_normal(face), local, h.block, face);
 }
 
-// The stored hit record (the visibility buffer, PLAN step 12): what a visibility strategy
+// The stored hit record (the visibility buffer): what a visibility strategy
 // writes per pixel when shading is deferred, and all a shading pass needs to rebuild the
 // `Surface` exactly. Core, 8 bytes (an rg32uint texel): x = `t`, the distance along the
 // pixel's unit primary ray (f32 bits); y = 0 for no hit (sky), else bit 0 set, the face in
 // bits 1-3, the block in bits 4-19, and in bits 20-22 the parity of the surface's cell per
 // axis (x, y, z), which tells the cell from its neighbours where the point lies on a block
 // edge. Bits 23-31 belong to optional capabilities (`caps::RECORD_CAPS`: mesh surfaces,
-// transparency's layers; IDEAS §23) and are 0 in pipelines without them.
+// transparency's layers) and are 0 in pipelines without them.
 fn pack_hit(t: f32, s: Surface) -> vec2<u32> {
     let cell = bitcast<vec3<u32>>(vec3<i32>(round(s.p - s.local))) & vec3<u32>(1u);
     let parity = cell.x | (cell.y << 1u) | (cell.z << 2u);
@@ -108,7 +108,7 @@ fn record_surface(r: vec2<u32>, o: vec3<f32>, d: vec3<f32>) -> Surface {
     return Surface(p, face_normal(face), p - cell, (r.y >> 4u) & 0xffffu, face);
 }
 
-// The mesh-surface capability of the record (PLAN step 12d; compiled in only with meshes):
+// The mesh-surface capability of the record (compiled in only with meshes):
 // bit 23 marks a mesh triangle's hit, whose index is in bits 1-22 instead of the face, block
 // and parity (`MESH_TRIS` triangles at most); `t` as for voxels. `visbuffer`'s face ids
 // encode one as `VIS_MESH | tri`.

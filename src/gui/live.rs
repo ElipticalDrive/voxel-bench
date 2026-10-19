@@ -127,7 +127,7 @@ pub struct LaneView {
     pub frame: Option<LiveFrame>,
     pub samples: VecDeque<Sample>,
     pub counters: Vec<(String, f64)>,
-    /// Time per stage (PLAN step 11), smoothed over recent frames, with the frame each
+    /// Time per stage, smoothed over recent frames, with the frame each
     /// last ran in.
     pub stages: Vec<mr_core::StageTime>,
     stage_seen: Vec<u64>,
@@ -317,7 +317,7 @@ struct Flight {
 
 type Spawn = Receiver<anyhow::Result<Worker>>;
 
-/// The links' clock (PLAN step 14c): seconds since the GUI's first message.
+/// The links' clock: seconds since the GUI's first message.
 fn clock() -> f64 {
     static START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
     START.elapsed().as_secs_f64()
@@ -329,7 +329,7 @@ struct Runner {
     worker: Option<Worker>,
     spawning: Option<Spawn>,
     /// What its client takes of the server's stream (the client, in the worker, derives
-    /// what its renderer holds: PLAN step 14b).
+    /// what its renderer holds).
     region: Region,
     /// Has taken the server's snapshot (then follows its stream).
     joined: bool,
@@ -566,7 +566,7 @@ impl Session {
     }
 
     fn add_lane(&mut self, spec: RendererSpec) {
-        // A pipeline compiled for this machine (PLAN step 8): the generic build runs while
+        // A pipeline compiled for this machine: the generic build runs while
         // it compiles and is checked, then it hot-swaps in.
         let native = spec.compiled(&self.plan.run).is_some();
         let mut first = spec.clone();
@@ -648,7 +648,7 @@ impl Session {
         }
         let mut stream = vec![];
         self.server.edits(&edits, &changed, &mut stream);
-        // Clients generating the world get every edit (PLAN step 14d).
+        // Clients generating the world get every edit.
         let all = [WorldUpdate::SetBlocks(edits)];
         for r in self.lanes.iter_mut().flat_map(|l| std::iter::once(&mut l.run).chain(l.standby.as_mut())) {
             if r.joined {
@@ -883,7 +883,7 @@ impl Session {
             sh.cached_chunks = self.world.cached_chunks();
         }
         // The server's region: as large as the largest any lane needs streamed at each level
-        // (none for lanes generating the world: PLAN step 14d).
+        // (none for lanes generating the world).
         let runners = || self.lanes.iter().flat_map(|l| std::iter::once(&l.run).chain(l.standby.as_ref()));
         let mut stream = vec![];
         if runners().any(|r| !r.region.generates) {
@@ -1492,7 +1492,7 @@ mod tests {
         let live = LiveHandle::start(plan.clone(), control, || {});
         wait(&live.shared, "frames from all lanes", 60, |s| s.lanes.len() == 3 && s.lanes.iter().all(|l| l.frame.is_some() && l.samples.len() > 20));
         assert!(live.shared.lock().unwrap().lanes[0].params.iter().any(|(p, _)| p.name == "max_steps"));
-        // Stage times (PLAN step 11): GPU stages from timestamps, CPU stages timed by the back end.
+        // Stage times: GPU stages from timestamps, CPU stages timed by the back end.
         {
             let sh = live.shared.lock().unwrap();
             let has = |lane: usize, name: &str, nodes: &[&str], gpu: bool| sh.lanes[lane].stages.iter().any(|s| s.name == name && s.nodes == nodes && if gpu { s.gpu_ms.is_some_and(|x| x > 0.0) } else { s.cpu_ms.is_some() });

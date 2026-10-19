@@ -1,4 +1,4 @@
-// Traversal `incremental` (IDEAS §1, port of cpu-simd-mem's `trace_incremental`): a
+// Traversal `incremental` (port of cpu-simd-mem's `trace_incremental`): a
 // hierarchical DDA that keeps a cell `c` at the current level (absolute coords >> level)
 // with per-axis exit times `tmax` and cell sizes in t `tdelta`. Steps, ascents and
 // descents are incremental; nothing is re-floored. With EXACT, exit times are recomputed
@@ -10,7 +10,7 @@
 // ray's result is consumed, but only ~1.4x in `view = "steps"` and ~1.3x on AMD (RADV).
 // Ruled out: dynamic vector indexing, private globals, struct writes and returns inside
 // the loop, unbounded inner loops, a flattened one-test-per-iteration form, runaway rays,
-// `continue`, extra live state. Cause still open (see IDEAS §1).
+// `continue`, extra live state. Cause still open.
 
 const TOP: u32 = S_TOP;
 

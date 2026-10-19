@@ -2,7 +2,7 @@
 //! tagged with the machine it ran on. `run` appends them to `observations.jsonl` in the run
 //! directory; `catalogue` reads any number of them back. They are the raw material for
 //! deciding what each renderer is good at, and later for a planner that learns which
-//! composition and knobs suit this machine and the scene at hand (IDEAS §14).
+//! composition and knobs suit this machine and the scene at hand.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -78,7 +78,7 @@ pub struct Observation {
     pub label: String,
     pub renderer: String,
     pub composition: Option<mr_components::Composition>,
-    /// Sites bound otherwise (PLAN step 9d; absent before version 3).
+    /// Sites bound otherwise (absent before version 3).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sites: BTreeMap<String, String>,
     /// The graph, when composition and sites cannot express it (version 3).
@@ -112,10 +112,10 @@ pub struct Observation {
     pub bad_pct: Option<f64>,
     /// The renderer's own counters, averaged over the frames.
     pub counters: BTreeMap<String, f64>,
-    /// Time per stage (PLAN step 11; version 4).
+    /// Time per stage (version 4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<ObservedStage>,
-    /// The stream to its client (PLAN step 14e; version 5).
+    /// The stream to its client (version 5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<ObservedStream>,
 }
@@ -237,8 +237,8 @@ impl Observation {
     /// The pipeline it measured: its graph, or its composition with its sites (`None` for
     /// standalone renderers).
     pub fn pipeline(&self) -> Option<mr_components::graph::Graph> {
-        // Records keep the knobs that spell timings (cpu-discover `pipelined`) and, before
-        // step 13b, hole detection (`incremental`): they load as the graphs they ran.
+        // Records keep the knobs that spell timings (cpu-discover `pipelined`) and, in older
+        // records, hole detection (`incremental`): they load as the graphs they ran.
         let options: toml::Table = serde_json::from_value(self.options.clone()).unwrap_or_default();
         let incremental = options.get("incremental").and_then(|v| v.as_bool()) == Some(true);
         if let Some(g) = self.graph.as_ref().filter(|g| !incremental || g.nodes.values().any(|n| n.role == mr_components::graph::Role::Holes)) {

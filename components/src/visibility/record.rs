@@ -1,4 +1,4 @@
-//! The stored hit record on the CPU (PLAN step 12), laid out as the GPU's (`pack_hit` in
+//! The stored hit record on the CPU, laid out as the GPU's (`pack_hit` in
 //! `mr::voxels`, so a record could cross devices): the low 32 bits are `t`, the distance
 //! along the pixel's unit primary ray (f32 bits); the high 32 an id: 0 = no hit (sky), else
 //! bit 0 set, the face in bits 1-3, the block in bits 4-19, the parity of the surface's cell

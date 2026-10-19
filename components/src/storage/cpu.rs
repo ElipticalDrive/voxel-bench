@@ -1,4 +1,4 @@
-//! CPU storage interface (IDEAS §12): per-chunk voxel representations, each a storage
+//! CPU storage interface: per-chunk voxel representations, each a storage
 //! component (`storage/<name>/cpu.rs`). All answer the same two questions:
 //! `probe(local)` → (non-zero if solid, step size for the DDA) and `block(local)` → id.
 //! Only `probe` is used inside the traversal loop; `block` runs once per primary hit.
@@ -16,7 +16,7 @@ pub trait Repr: Clone + Send + Sync + 'static {
     /// Levels `k` (bit k set) at which `occupied` answers directly for aligned 2^k cubes.
     /// Always includes 0; the chunk level (5) is answered by the chunk grid instead.
     const LEVELS: u32;
-    /// The capabilities this CPU storage provides (PLAN step 10; the registry reads them):
+    /// The capabilities this CPU storage provides (the registry reads them):
     /// every `Repr` answers the voxel queries; none has LOD, distances or rows yet.
     const CAPS: &'static [crate::Cap] = &[crate::Cap::Voxels];
     /// Whether the aligned 2^`level` cube at level coordinates `c` (chunk-local,

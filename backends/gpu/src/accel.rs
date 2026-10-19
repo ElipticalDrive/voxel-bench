@@ -1,4 +1,4 @@
-//! Ray queries' acceleration structures (PLAN step 13e4b): one BLAS per chunk from the
+//! Ray queries' acceleration structures: one BLAS per chunk from the
 //! geometry node the `rayquery` kernels trace (`greedy` / `naive` quads as triangles, or
 //! `boxes`, one AABB per occupied 4^3 brick with a software DDA inside), and a TLAS of the
 //! chunks translated relative to the camera's block, rebuilt every frame (precision never

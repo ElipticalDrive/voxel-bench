@@ -1,9 +1,9 @@
-# One pipeline over two GPUs (PLAN step 13e4c): the primary rays walk on GPU slot 0 and write
+# One pipeline over two GPUs: the primary rays walk on GPU slot 0 and write
 # hit records; the records cross to slot 1 each frame (read back, uploaded: the transfer
 # adapter); deferred shading with its own shadow walk runs there. Beside it, the same graph
 # on one GPU. Slot 1 here is the adapter whose name contains "amd" (this machine's iGPU);
 # change `gpus` to yours, or leave it out: both slots then open the default GPU (two devices).
-# The third lane (PLAN step 15a) shades the last frame's records (`timing = { hits = "prev" }`):
+# The third lane shades the last frame's records (`timing = { hits = "prev" }`):
 # slot 1 shades frame N - 1 while slot 0 casts N, so each image shows the view a frame late.
 name = "two-gpus"
 

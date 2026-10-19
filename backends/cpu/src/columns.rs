@@ -1,9 +1,9 @@
-//! The CPU columns lane (`cpu-voxelspace`; components, IDEAS §12; PLAN step 13e3): storage
+//! The CPU columns lane (`cpu-voxelspace`; components): storage
 //! `heightmap`, visibility `columns`, shading `direct`. The march is the columns component's
 //! (`mr_components::visibility::columns::cpu`), rayon-parallel over screen columns. Lit
 //! mode: the shading component (`direct::cpu::shade`) with the heightmap gradient as the top
 //! faces' normal; ambient, sun and point lights, shadow rays walking the heightmap storage
-//! (`Heightmap::trace`), as gpu-voxelspace. Shading placement (PLAN step 12c): inline in the
+//! (`Heightmap::trace`), as gpu-voxelspace. Shading placement: inline in the
 //! march, or deferred (the march writes hit records, the common pass `shading::deferred`
 //! shades them). The heightmap is patched from the change log.
 

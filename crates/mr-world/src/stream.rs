@@ -1,8 +1,7 @@
-//! The server's stream (PLAN step 14a): one region around the camera (a radius per LOD
+//! The server's stream: one region around the camera (a radius per LOD
 //! level: the largest any client needs there), the chunks in it as load / unload / edit
 //! messages, the same for every client (`mr_core::client`, in each worker, derives what its
-//! renderer holds). A client may generate the world itself instead ([`Generating`], PLAN
-//! step 14d): the server then sends it edits only. Also walks the world for tools
+//! renderer holds). A client may generate the world itself instead ([`Generating`]): the server then sends it edits only. Also walks the world for tools
 //! (pre-generation, scene features).
 
 use std::collections::{HashMap, HashSet};
@@ -16,14 +15,14 @@ use crate::World;
 
 /// What a client takes of the stream: its renderer's radius and LOD levels, how it gets
 /// the levels, and whether it generates its chunks itself. The host sizes the server's
-/// region from its clients' (the clients run in the workers: PLAN step 14b).
+/// region from its clients' (the clients run in the workers).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Region {
     pub radius: u32,
     pub max_lod: u8,
     pub levels: Levels,
     /// Generates the world itself from the server's spec (the graph's generator on the
-    /// client: PLAN step 14d); the server sends it edits, lights and the environment only.
+    /// client); the server sends it edits, lights and the environment only.
     pub generates: bool,
 }
 
@@ -213,7 +212,7 @@ impl Streamer {
     }
 }
 
-/// The world generated on a client (PLAN step 14d: the graph's generator node on the
+/// The world generated on a client (the graph's generator node on the
 /// client's side): the server's generator built from its spec, the server's edits applied,
 /// and the client's region streamed to it as the server would.
 pub struct Generating {
@@ -290,8 +289,7 @@ mod tests {
         }
     }
 
-    /// A client of a larger stream holds what a stream of its own region would give it
-    /// (PLAN step 14a; the client runs in the worker since 14b).
+    /// A client of a larger stream holds what a stream of its own region would give it.
     #[test]
     fn client_derives_its_region() {
         let mut world = World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build());
@@ -323,7 +321,7 @@ mod tests {
 
     /// Behind a link that delays, loses and reorders the stream, a client's renderer holds
     /// less while it streams (holes), never an edit of a chunk it does not hold, and once
-    /// everything arrived exactly what a client of the free link holds (PLAN step 14c).
+    /// everything arrived exactly what a client of the free link holds.
     #[test]
     fn client_behind_a_link() {
         use mr_core::link::{Link, LinkSpec};
@@ -372,7 +370,7 @@ mod tests {
                 whole.receive(&all, &mut w);
                 whole.update(cam, &mut w);
                 apply(&mut c, &w);
-                // The holes counted (PLAN step 14e): none only when it holds the whole region.
+                // The holes counted: none only when it holds the whole region.
                 assert_eq!(server.pending_within(&mr_core::client::reach(2, 2, levels)), server.pending());
                 let n = server.pending() + link.chunks_in_flight();
                 if n == 0 {
@@ -405,8 +403,7 @@ mod tests {
 
     /// A client generating the world from the server's spec, sent only edits, holds what a
     /// client of the server's stream holds, every frame, `pick` and `derive`; so does one
-    /// joining late with the edits so far (`World::edits`), once its budget caught up
-    /// (PLAN step 14d).
+    /// joining late with the edits so far (`World::edits`), once its budget caught up.
     #[test]
     fn client_generating_the_world() {
         let spec = GenSpec::Terrain { seed: 3, caves: true, trees: true };
@@ -478,8 +475,7 @@ mod tests {
 
     /// A `derive` client builds its coarse levels from the LOD 0 it receives: each held
     /// coarse chunk matches the world downsampled, chunks it does not hold inside its region
-    /// are air, edits reach every level, and LOD 0 is what a stream of its own gives
-    /// (PLAN step 14b).
+    /// are air, edits reach every level, and LOD 0 is what a stream of its own gives.
     #[test]
     fn client_derives_its_levels() {
         let mut world = World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build());

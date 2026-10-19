@@ -1,4 +1,4 @@
-# The link as a modelled network (PLAN steps 14c, 14c2): a 10 s flight (600 frames on the 60 fps
+# The link as a modelled network: a 10 s flight (600 frames on the 60 fps
 # simulated clock, ~30 m/s) over terrain, each renderer's client receiving the server's
 # stream over a link with latency, jitter, a bandwidth, losses (resent after a timeout) and,
 # with `reorder`, chunks overtaking each other. Chunks are sent uncompressed (a dense one is
@@ -6,7 +6,7 @@
 # quality against the reference (which stays on a free link) shows the holes. Time is
 # simulated (`run.clock_fps`), so runs repeat. The link is a graph node (`sites = { link =
 # "net(..)" }`, knobs as in `mr_core::link::LinkSpec`); unset it is free. With the generator
-# on the client (`generator = "cpu"`, PLAN step 14d) only edits cross the link: the client
+# on the client (`generator = "cpu"`) only edits cross the link: the client
 # generates its region from the world's spec.
 name = "link"
 

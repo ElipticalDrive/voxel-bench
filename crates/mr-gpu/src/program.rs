@@ -1,4 +1,4 @@
-//! Shader programs assembled from modules (PLAN step 9b) through an existing module system,
+//! Shader programs assembled from modules through an existing module system,
 //! `naga_oil` (the composer Bevy uses; built on the same naga as wgpu). Each piece of a
 //! pipeline (the shared world code, every storage and kernel instance, the ray services,
 //! lighting, shading) is its own module with its own path, so two instances of one storage
@@ -45,7 +45,7 @@ pub const COMMON: &str = "mr::common";
 pub const VOXELS: &str = "mr::voxels";
 /// The reference lighting model (`shade_lit`), its shadow rays through `RAYS`.
 pub const LIGHTING: &str = "mr::lighting";
-/// The post node's module (PLAN step 15b): `display(c) -> vec4<f32>`, a linear colour to the
+/// The post node's module: `display(c) -> vec4<f32>`, a linear colour to the
 /// output pixel. [`Program::world`] adds [`POST_WGSL`] (clamp); a pipeline's tone mapper
 /// replaces it (`mr_components::post::Tone::add_to`).
 pub const POST: &str = "mr::post";

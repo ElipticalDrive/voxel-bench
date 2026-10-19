@@ -1,4 +1,4 @@
-//! Face-cluster discovery (IDEAS §10, the user's design; PLAN step 5).
+//! Face-cluster discovery (the user's design).
 //!
 //! Instead of judging screen tiles by their corner rays (the quadtree in `discover`),
 //! discovery grows over the geometry itself:
@@ -19,7 +19,7 @@
 //! 4. Repeat until every pixel is covered or has been sampled by a seed ray.
 //!
 //! Completeness: an occluder in front of a face projects onto the face's plane as a region
-//! containing a square of side > 1 (IDEAS §5), and any such square overlapping a unit face
+//! containing a square of side > 1, and any such square overlapping a unit face
 //! contains one of that face's corners. The occluder's full shadow is the hull of its near
 //! and far faces, though, and a sliver of it can overlap a face without covering a corner;
 //! so this is not proven complete. `audit` measures it.
@@ -336,7 +336,7 @@ mod tests {
     use crate::visibility::discover::grid::{CpuWorld, Snapshot};
 
     /// One chunk: a floor, a back wall, a pillar in front of the wall, and a floating
-    /// block — the pillar-in-front-of-a-wall case of IDEAS §5.
+    /// block — the pillar-in-front-of-a-wall case.
     fn world() -> Arc<dyn Snapshot> {
         let mut d = DenseChunk(Box::new([BlockId::AIR; CHUNK_VOLUME]));
         for i in 0..CHUNK_VOLUME {

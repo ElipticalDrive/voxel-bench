@@ -1,7 +1,6 @@
-// The ray-casting executor's view of the frame (PLAN step 13e2): the camera uniform, the
+// The ray-casting executor's view of the frame: the camera uniform, the
 // output and the unit primary ray through a pixel; the rays' pass (`cast.wgsl`) and the
-// deferred shading pass (`records.wgsl`, also on another GPU than the rays: PLAN step
-// 13e4c) read it.
+// deferred shading pass (`records.wgsl`, also on another GPU than the rays) read it.
 
 struct Camera {
     forward: vec3<f32>, tan_half_fov: f32,

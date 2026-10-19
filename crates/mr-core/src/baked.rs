@@ -1,4 +1,4 @@
-//! The rule every pipeline compiled for one graph keeps (PLAN steps 8 and 16a): the knob
+//! The rule every pipeline compiled for one graph keeps: the knob
 //! values it baked in (name, value as JSON) cannot change, at creation or live; another value
 //! needs another build. The executors' `Spec`s list them; the generic builds bake none.
 

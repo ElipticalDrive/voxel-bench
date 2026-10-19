@@ -76,7 +76,7 @@ enum Cmd {
     },
     /// List available renderers.
     List,
-    /// A pipeline as a graph (PLAN step 9): its nodes (TOML, for a plan's
+    /// A pipeline as a graph: its nodes (TOML, for a plan's
     /// `[renderer.graph]`), sites form, canonical form and cache key. The renderer as for
     /// `view -r` (`gpu-compute:prefix+incremental,shadow=tree64/sphere`).
     /// With `--keys`: reads observations (JSON lines) on stdin and prints each one's graph

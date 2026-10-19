@@ -1,5 +1,5 @@
 //! The walking lane (`gpu-compute`; the primary rays' kernel API `compute`): a renderer from
-//! components (`mr-components`, IDEAS §12): a **storage**, a **traversal** kernel walked by
+//! components (`mr-components`): a **storage**, a **traversal** kernel walked by
 //! ray casting (the visibility strategy, `raycast`) and a **shading** component, each a WGSL
 //! module from `components/`, composed into one shader, so the compiler optimises across them
 //! and the split costs nothing at run time.
@@ -143,7 +143,7 @@ impl Default for Options {
 /// The compile-time part of a composition: everything baked into the shader.
 #[derive(Clone, PartialEq, Debug)]
 struct Composition {
-    /// The ray-casting sites' storages and kernels (PLAN step 9c): kernel 0 is the primary
+    /// The ray-casting sites' storages and kernels: kernel 0 is the primary
     /// rays' (its constants from this back end's knobs); the other sites' kernels are their
     /// own nodes, or the primary's when the graph binds them to it.
     walks: Walks,
@@ -227,7 +227,7 @@ impl Composition {
         self.walks.kernels.iter_mut().for_each(|k| k.consts.lod = lod);
     }
 
-    /// The shader as modules (PLAN steps 9b, 9c): every storage and kernel node its own
+    /// The shader as modules: every storage and kernel node its own
     /// module (`Walks`), the shadow and bounce rays' services through their kernels, the
     /// shading component, and the lane's root, which casts the primary rays through kernel 0
     /// and reads its storage (the prepass); `meshed`: with the mesh capability (`MESHES`) and
@@ -310,7 +310,7 @@ pub(crate) struct Walk {
     copy_stats: bool,
     /// `view = steps`: the top of the colour scale.
     view_max: u32,
-    /// The nodes of the lane's timed stages: meshes and prepass (PLAN step 11).
+    /// The nodes of the lane's timed stages: meshes and prepass.
     stage_nodes: [Vec<String>; 2],
 }
 

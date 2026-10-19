@@ -32,7 +32,7 @@ pub struct FrameInput {
     pub render: bool,
     /// False for warm-up frames.
     pub recorded: bool,
-    /// The frame's time in seconds (the link's clock, PLAN step 14c): simulated in
+    /// The frame's time in seconds (the link's clock): simulated in
     /// scripted runs, the wall clock in interactive ones.
     pub time: f64,
 }
@@ -354,7 +354,7 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
         }
         None => None,
     };
-    // What its client lacked and what crossed its link (PLAN step 14e).
+    // What its client lacked and what crossed its link.
     let holes = arrivals.holes + f.backlog;
     let arrived_bytes = arrivals.arrived - lane.arrived;
     lane.arrived = arrivals.arrived;
@@ -417,7 +417,7 @@ pub fn run_pass(
     let mut missed = 0u32;
     let mut sent_instances: Option<Vec<MeshInstance>> = None;
     // The server streams one region, as large as the largest any client needs streamed at
-    // each level; clients generating the world (PLAN step 14d) need nothing streamed.
+    // each level; clients generating the world need nothing streamed.
     let streams = lanes.iter().any(|l| !l.region.generates);
     let radii = crate::stream::union(lanes.iter().map(|l| l.region.streamed()), 0);
     let mut server = Streamer::new(radii.clone(), run.budget());
@@ -430,7 +430,7 @@ pub fn run_pass(
         let edits = resolve_edits(world, input.events.edits);
         let changed = world.apply_edits(&edits);
         let (mut head, mut tail) = (vec![], vec![]);
-        // Everything a renderer knows of the world comes over the stream (PLAN step 14c),
+        // Everything a renderer knows of the world comes over the stream,
         // the environment too (its creation's is a default until then).
         if first {
             head.push(WorldUpdate::SetEnvironment(environment));

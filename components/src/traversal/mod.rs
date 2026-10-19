@@ -1,4 +1,4 @@
-//! Traversal kernels (IDEAS §18): answer ray queries against a storage. A GPU kernel
+//! Traversal kernels: answer ray queries against a storage. A GPU kernel
 //! provides `ctrace(o, d, max_t) -> Hit`, written only against the storage interface (the
 //! capabilities it relies on are declared in the registry, `caps`). Visibility strategies
 //! call it for primary rays (ray casting, discovery), shading for shadow and bounce rays

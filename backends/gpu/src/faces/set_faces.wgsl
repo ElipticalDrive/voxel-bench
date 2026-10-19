@@ -52,7 +52,7 @@ fn src_block(ii: u32) -> u32 {
     return select(e.z, LOOKUP_BLOCK, (e.w >> 1u) != 0u);
 }
 
-// Merged run: the block of the cell actually under the hit (IDEAS §2), so seams and the
+// Merged run: the block of the cell actually under the hit, so seams and the
 // T-junction overlap texture exactly like a ray caster would.
 fn src_lookup(ii: u32, face: u32, h: Hit, d: vec3<f32>) -> u32 {
     let b = s_block_at(h.cell + vp.cam_block);

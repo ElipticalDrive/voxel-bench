@@ -1,7 +1,7 @@
 //! Minimal hardware-counter access through the raw `perf_event_open` syscall
 //! (user-space only, so `perf_event_paranoid = 2` suffices). One counter set per rayon
 //! worker thread, opened on that thread; enabled/read from the render thread via ioctl.
-//! Linux only: elsewhere the knob is refused with the reason (PLAN step 17a; Windows's
+//! Linux only: elsewhere the knob is refused with the reason (Windows's
 //! counters need a kernel driver or an administrator's ETW session).
 
 const PERF_TYPE_HARDWARE: u32 = 0;

@@ -1,4 +1,4 @@
-//! The common deferred shading pass on the CPU (PLAN step 12), as `deferred.wgsl` on the
+//! The common deferred shading pass on the CPU, as `deferred.wgsl` on the
 //! GPU: every pixel's stored record is read, decoded into a surface and shaded, rows in
 //! parallel. The record's encoding is the strategy's (the common [`Record`], or an id its
 //! source decodes: cpu-raster's quad ids), and so is the shading call (the f32 component,

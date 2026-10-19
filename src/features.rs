@@ -1,6 +1,6 @@
 //! Scene features: cheap, renderer-independent measurements of a scenario (how much world
 //! is in range, how solid and how open it is, how the camera moves, what changes), stored
-//! with every observation. A planner that learns this machine (IDEAS §14) can then relate
+//! with every observation. A planner that learns this machine can then relate
 //! performance to properties of a scene instead of to scenario names, and so generalise
 //! to scenes it has not measured.
 

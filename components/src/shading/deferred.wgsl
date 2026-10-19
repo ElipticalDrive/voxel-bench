@@ -1,4 +1,4 @@
-// Deferred shading (PLAN step 12), the same for every visibility strategy: one compute
+// Deferred shading, the same for every visibility strategy: one compute
 // thread per pixel reads the hit record the strategy stored, decodes it into the surface
 // and shades it with the shading component, once per pixel.
 //

@@ -1,4 +1,4 @@
-//! The post node (PLAN step 15b, IDEAS §18 part 8): what turns the shading's linear colour
+//! The post node: what turns the shading's linear colour
 //! into the output's display colour, written once for every pipeline. Today: tone mapping,
 //! compiled into the shading's final encode (fused: no pass, no image of its own), on the
 //! GPU as the `mr::post` module (`display`), on the CPU as [`Tone::encode`].

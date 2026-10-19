@@ -95,7 +95,7 @@ impl World {
     }
 
     /// Every edit made so far, as the blocks that differ from the generator's (what a client
-    /// generating the world itself needs to join: PLAN step 14d).
+    /// generating the world itself needs to join).
     pub fn edits(&self) -> Vec<BlockEdit> {
         let mut out = vec![];
         let mut keys: Vec<&IVec3> = self.edited.iter().collect();

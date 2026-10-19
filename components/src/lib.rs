@@ -1,4 +1,4 @@
-//! Renderer components (IDEAS §12): instead of choosing a monolithic renderer, a renderer is
+//! Renderer components: instead of choosing a monolithic renderer, a renderer is
 //! assembled from one component per slot and run on a back end:
 //!
 //! `backend` × `storage` × `geometry` × `prepass` × `visibility` × `draw` × `traversal` × `shading` × `meshes`
@@ -56,12 +56,12 @@ pub enum Slot {
     Geometry,
     Prepass,
     Visibility,
-    /// Discovery's hole detection (PLAN step 13b): where the sampler looks; `none` looks
+    /// Discovery's hole detection: where the sampler looks; `none` looks
     /// everywhere every frame, `coverage` only where last frame's faces leave holes.
     Holes,
     Draw,
     Traversal,
-    /// What shadow and bounce rays walk (PLAN step 7c, the graph's secondary-ray edge):
+    /// What shadow and bounce rays walk (the graph's secondary-ray edge):
     /// `same` as the primary rays, or another storage / kernel.
     ShadowStorage,
     ShadowTraversal,
@@ -140,7 +140,7 @@ pub struct BackendInfo {
     pub at: &'static [(Slot, Place)],
     /// Slots whose components this hand-written back end's own code limits, with the ones it
     /// hosts (its strategy, the geometry its drawer reads, its mesh drawing). Executors
-    /// (step 13) have no such list: there a component's implementations and ports decide.
+    /// have no such list: there a component's implementations and ports decide.
     pub hosts: &'static [(Slot, &'static [&'static str])],
     /// Capabilities its own code reads from a slot whatever the other components (the storage
     /// interface: voxel queries for walks, exposure tests and prepasses, columns for the
@@ -329,7 +329,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     // Storage.
     ComponentInfo { slot: Slot::Storage, name: "bricks", description: "The shared pool: a u16 id per voxel and one bit per 4^3 brick (levels 1, 4). gpu-dda's data.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Voxels, Cap::Lod] }, Impl { kind: Kind::Cpu, apis: ISAS, provides: <storage::bricks::cpu::U16 as Repr>::CAPS }], needs: &[] },
     ComponentInfo { slot: Slot::Storage, name: "hier", description: "Bricks plus one bit per 8^3 region (levels 1, 4, 8), as cpu-simd-hier.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Voxels, Cap::Lod] }, Impl { kind: Kind::Cpu, apis: ISAS, provides: <storage::hier::cpu::Hier as Repr>::CAPS }], needs: &[] },
-    ComponentInfo { slot: Slot::Storage, name: "prefix", description: "The user's structure (IDEAS §1): Morton-ordered 4^3 masks plus a popcount prefix; any aligned 2..16 cube's emptiness is one compare (levels 1-16).", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Voxels, Cap::Lod] }, Impl { kind: Kind::Cpu, apis: ISAS, provides: <storage::prefix::cpu::Prefix as Repr>::CAPS }], needs: &[] },
+    ComponentInfo { slot: Slot::Storage, name: "prefix", description: "The user's structure: Morton-ordered 4^3 masks plus a popcount prefix; any aligned 2..16 cube's emptiness is one compare (levels 1-16).", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Voxels, Cap::Lod] }, Impl { kind: Kind::Cpu, apis: ISAS, provides: <storage::prefix::cpu::Prefix as Repr>::CAPS }], needs: &[] },
     ComponentInfo { slot: Slot::Storage, name: "distance", description: "Per-voxel Chebyshev distance to the nearest solid voxel (from gpu-sdf). Fast `s_dist`.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Voxels, Cap::Dist, Cap::Lod] }], needs: &[] },
     ComponentInfo { slot: Slot::Storage, name: "rows", description: "Bricks plus 32x32 occupancy rows per chunk (from gpu-bitmask). Fast `s_row`.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Voxels, Cap::Row, Cap::Lod] }], needs: &[] },
     ComponentInfo { slot: Slot::Storage, name: "tree64", description: "Sparse 64-tree per 64^3 region (from gpu-tree64): 4x4x4 child masks, popcount-packed children, compressed leaves, uniform subtrees collapsed (levels 0, 2, 4, 6). Owns its data: no voxel pool, ~15% of its VRAM.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Voxels] }], needs: &[] },
@@ -343,12 +343,12 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Storage, name: "palette", description: "Per-chunk palette with indices packed at 1/2/4/8/16 bits (7x smaller than bricks on terrain).", impls: &[Impl { kind: Kind::Cpu, apis: ISAS, provides: <storage::palette::cpu::Palette as Repr>::CAPS }], needs: &[] },
     // Visibility.
     ComponentInfo { slot: Slot::Visibility, name: "raycast", description: "Ray casting: one primary ray per pixel through the traversal kernel, shaded at its hit.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute, Api::Raster], provides: &[] }, Impl { kind: Kind::Gpu, apis: &[Api::RayQuery], provides: &[] }, Impl { kind: Kind::Cpu, apis: ISAS, provides: &[] }], needs: &[] },
-    ComponentInfo { slot: Slot::Visibility, name: "quadtree", description: "Discovery (the user's idea, IDEAS §3): an adaptive screen-space quadtree of corner rays; coherent tiles add every exposed face of the hit plane in their footprint to a face set kept across frames, which is rasterised. Knobs: tile, criterion, incremental, events, merge, order, views tiles/rays/churn/overdraw/quads, ...", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }, Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] }], needs: &[(Slot::Storage, Cap::Voxels)] },
-    ComponentInfo { slot: Slot::Visibility, name: "cluster", description: "Face-cluster discovery (the user's design, IDEAS §10; was cpu-cluster): seed rays on a coarse-to-fine pixel lattice; from each hit a flood fill over coplanar exposed faces confirmed by corner rays; confirmed faces cover their screen area. Knobs: seed_step, sky, views clusters/kinds.", impls: &[Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] }], needs: &[(Slot::Storage, Cap::Voxels)] },
+    ComponentInfo { slot: Slot::Visibility, name: "quadtree", description: "Discovery (the user's idea): an adaptive screen-space quadtree of corner rays; coherent tiles add every exposed face of the hit plane in their footprint to a face set kept across frames, which is rasterised. Knobs: tile, criterion, incremental, events, merge, order, views tiles/rays/churn/overdraw/quads, ...", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }, Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] }], needs: &[(Slot::Storage, Cap::Voxels)] },
+    ComponentInfo { slot: Slot::Visibility, name: "cluster", description: "Face-cluster discovery (the user's design; was cpu-cluster): seed rays on a coarse-to-fine pixel lattice; from each hit a flood fill over coplanar exposed faces confirmed by corner rays; confirmed faces cover their screen area. Knobs: seed_step, sky, views clusters/kinds.", impls: &[Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] }], needs: &[(Slot::Storage, Cap::Voxels)] },
     ComponentInfo { slot: Slot::Visibility, name: "splat", description: "Point splatting in compute (from gpu-splat): each point's square footprint (sized from its projected size, capped at max_splat px) atomicMin's its depth, a second pass writes the winning id, a resolve pass ray-boxes the block. Knob: max_splat.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }], needs: &[] },
     ComponentInfo { slot: Slot::Visibility, name: "columns", description: "Voxel Space column march (Comanche, 1992): per screen column, front to back over the heightmap, drawing spans with a y-buffer.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }, Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] }], needs: &[(Slot::Storage, Cap::Heights)] },
     ComponentInfo { slot: Slot::Visibility, name: "faces", description: "Every face of the geometry component goes to the draw stage, which depth-tests them (rasterisation).", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[] }, Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] }], needs: &[] },
-    // Holes (discovery's hole detection, PLAN step 13b).
+    // Holes (discovery's hole detection).
     ComponentInfo { slot: Slot::Holes, name: "none", description: "No hole detection: the sampler looks at the whole screen every frame (jittered lattice).", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }], needs: &[] },
     ComponentInfo { slot: Slot::Holes, name: "coverage", description: "Incremental discovery (was `incremental = true`): the drawer first draws last frame's faces at this camera; the sampler then looks only at tiles with uncovered pixels (not known sky), occlusion edges the camera's translation can reveal, edited blocks or changed chunks, and a round-robin refresh; faces covering a pixel count as seen. In the graph a loop: the drawer's faces iterate twice. Knobs: keep_unseen, refresh, parallax_px, reveal_tiles, events, still_holes.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }], needs: &[] },
     // Draw (the face drawer).
@@ -357,7 +357,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Draw, name: "visbuffer", description: "Visibility buffer: the raster pass writes only a face id and depth; a compute pass reconstructs the hit and shades once per pixel, independent of overdraw.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[] }], needs: &[] },
     // Traversal kernels.
     ComponentInfo { slot: Slot::Traversal, name: "refloor", description: "Per-pixel DDA: ask the storage for the largest empty cube, step out of it, re-floor (gpu-dda's walk).", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Lod, Cap::Steps] }, Impl { kind: Kind::Cpu, apis: ISAS, provides: <traversal::refloor::cpu::Refloor as Kernel>::CAPS }], needs: &[(Slot::Storage, Cap::Voxels)] },
-    ComponentInfo { slot: Slot::Traversal, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally (IDEAS §1). Knobs: exact, skip2..16.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Steps] }, Impl { kind: Kind::Cpu, apis: ISAS, provides: <traversal::incremental::cpu::Incremental as Kernel>::CAPS }], needs: &[(Slot::Storage, Cap::Voxels)] },
+    ComponentInfo { slot: Slot::Traversal, name: "incremental", description: "Hierarchical DDA keeping per-level exit times, moving between levels incrementally. Knobs: exact, skip2..16.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Steps] }, Impl { kind: Kind::Cpu, apis: ISAS, provides: <traversal::incremental::cpu::Incremental as Kernel>::CAPS }], needs: &[(Slot::Storage, Cap::Voxels)] },
     ComponentInfo { slot: Slot::Traversal, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Steps] }], needs: &[(Slot::Storage, Cap::Voxels), (Slot::Storage, Cap::Dist)] },
     ComponentInfo { slot: Slot::Traversal, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Steps] }], needs: &[(Slot::Storage, Cap::Voxels), (Slot::Storage, Cap::Row)] },
     ComponentInfo { slot: Slot::Traversal, name: "rayquery", description: "Hardware ray queries against the acceleration structure (RT cores) for primary, shadow and bounce rays. Knob: cull (triangle facing culled for primary rays).", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::RayQuery], provides: &[] }], needs: &[] },
@@ -373,7 +373,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     // Shading.
     ComponentInfo { slot: Slot::Shading, name: "pathtrace", description: "Diffuse path tracing (from gpu-pathtrace): NEE for sun and point lights, cosine-weighted bounces through the composed walk, progressive accumulation while the view is still. bounces = 0 reproduces direct. Knobs: bounces, spp, accumulate.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[] }], needs: &[] },
     ComponentInfo { slot: Slot::Shading, name: "direct", description: "The reference lighting model: texel (unlit); ambient, sun and point lights with shadow rays through the same walk (lit).", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[] }, Impl { kind: Kind::Cpu, apis: ISAS, provides: &[] }], needs: &[] },
-    // Meshes (mesh mode, IDEAS §13): how polygon meshes join the voxel image.
+    // Meshes (mesh mode): how polygon meshes join the voxel image.
     ComponentInfo { slot: Slot::Meshes, name: "none", description: "Meshes are not drawn: voxels only. Benchmarks skip the composition in +meshes passes; the GUI labels it \"(no meshes)\".", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[] }], needs: &[] },
     ComponentInfo { slot: Slot::Meshes, name: "composite", description: "Meshes as a surface source: their hit records (the record's mesh capability) rasterised first into a record and depth target; each primary ray is cast only up to the mesh depth at its pixel, and where no voxel is nearer the pixel's surface is the mesh's, shaded where the walk shades (inline, or the deferred pass; voxel shadows in lit mode). Exact for primary visibility; capped rays trace less (mr_gpu::meshes::MeshRecords).", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[] }], needs: &[] },
     ComponentInfo { slot: Slot::Meshes, name: "depth", description: "Meshes drawn into the same depth buffer as the voxel faces: shaded forward with `raster`, written into the ids or records with `visibility` / `gbuffer` and shaded by the deferred pass (voxels shadow meshes). Exact (mr_gpu::meshes::GpuMeshes).", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[] }], needs: &[] },
@@ -414,7 +414,7 @@ fn default_backend() -> String {
     "gpu-compute".into()
 }
 
-/// A composition as stored (plans, observations): before step 7 the traversal kernel sat
+/// A composition as stored (plans, observations): in older records the traversal kernel sat
 /// in `visibility` (`visibility = "refloor"`), and the rasterisers' draw choice too
 /// (`visibility = "visbuffer"`); such records load with them moved to `traversal` / `draw`.
 #[derive(Deserialize)]
@@ -452,7 +452,7 @@ impl From<Stored> for Composition {
         if c.traversal.is_empty() && component(Slot::Traversal, &c.visibility).is_some() {
             c.traversal = std::mem::take(&mut c.visibility);
         }
-        // Before step 7b the rasterisers' draw choice sat in `visibility`.
+        // In older records the rasterisers' draw choice sat in `visibility`.
         if c.draw.is_empty() && component(Slot::Draw, &c.visibility).is_some() && backend(&c.backend).is_some_and(|b| b.has(Slot::Draw)) {
             c.draw = std::mem::take(&mut c.visibility);
         }
@@ -659,7 +659,7 @@ pub fn unavailable(backend_name: &str, slot: Slot, name: &str) -> Option<String>
         return None; // `same`
     }
     if let Some(h) = b.hosted(slot).filter(|h| !h.contains(&name)) {
-        return Some(format!("`{backend_name}` hosts only {} in its {} slot (its own code; executors lift this, PLAN step 13)", h.join(", "), slot.name()));
+        return Some(format!("`{backend_name}` hosts only {} in its {} slot (its own code; executors lift this)", h.join(", "), slot.name()));
     }
     let place = b.place(slot);
     unimplemented_at(&place, slot, name).or_else(|| {
@@ -698,7 +698,7 @@ pub fn lighting_knobs(backend: &str, mut params: Vec<mr_core::ParamSpec>) -> Vec
     params
 }
 
-/// The shading node's placement knob (PLAN step 12) for back ends that offer it: `inline`
+/// The shading node's placement knob for back ends that offer it: `inline`
 /// shades where the strategy finds the hit, in the same pass; `deferred` has the strategy
 /// write hit records and one common pass shade each pixel. Fixed at creation: inline
 /// pipelines carry nothing of the deferred one (no record buffer, binding or pass).

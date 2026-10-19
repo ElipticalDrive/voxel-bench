@@ -1,4 +1,4 @@
-//! Pipelines as graphs (PLAN step 9, IDEAS §17–§18): a pipeline is a graph of component
+//! Pipelines as graphs: a pipeline is a graph of component
 //! instances (nodes, each with its own knobs and device) joined by edges from an output to
 //! an input *port*, not a fixed list of stages. Any graph whose every required input is
 //! bound to a compatible output, and that leads from the world to one image, is a valid
@@ -12,12 +12,12 @@
 //! look blocks up, they cast no rays). Unbound secondary rays follow the rays before them
 //! (shadow rays the strategy's own on the same device, bounces the shadow rays, mesh
 //! shadows the shading's). Storages and ray queries are *fused* data: compiled together
-//! with their caller, so they never cross devices; everything else may (IDEAS §18, the two
+//! with their caller, so they never cross devices; everything else may (the two
 //! kinds of composition).
 //!
-//! Step 9a: the model, validation with reasons, a canonical form (hashable: the cache key),
+//! The model, validation with reasons, a canonical form (hashable: the cache key),
 //! and the conversion from today's flat [`Composition`]s (so every stored record loads as a
-//! graph). Step 9c: back ends consume graphs ([`of_init`], [`Checked::site`]). Each back end
+//! graph). Back ends consume graphs ([`of_init`], [`Checked::site`]). Each back end
 //! has a *lead* site (its strategy's own rays, or a rasteriser's shadow rays: the storage
 //! and traversal stages of its compositions) and binds its other sites freely, over the
 //! lead's storage only, or only to the lead ([`site_binding`]). [`Graph::accept`] checks
@@ -32,21 +32,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Api, Composition, Kind, Slot, backend, caps, component};
 
-/// What a node does: the roles of IDEAS §18's pieces that exist so far.
+/// What a node does: the roles of the pipeline's pieces that exist so far.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
-    /// The authoritative chunk store and its change log, on the server (PLAN step 14).
+    /// The authoritative chunk store and its change log, on the server.
     World,
-    /// The world's generator (PLAN step 14d): on the server (the default), feeding the world,
+    /// The world's generator: on the server (the default), feeding the world,
     /// which streams its chunks; or on the client's `cpu`, feeding the client from the
     /// world's spec (a shared seed), the server then sending that client edits only.
     Generator,
-    /// The link the server's stream crosses to a client (PLAN step 14c2): `free` (everything
+    /// The link the server's stream crosses to a client: `free` (everything
     /// arrives at once, in order) or `net`, a modelled network (`mr_core::link::LinkSpec`
     /// as its knobs). Runs in the client's process, in front of the client.
     Link,
-    /// The client of the world's stream (PLAN step 14b): what its renderer holds, derived
+    /// The client of the world's stream: what its renderer holds, derived
     /// on the renderer's side from the one stream the server sends every client. `pick`:
     /// the server's LOD levels, picked by the client's radius and levels.
     Client,
@@ -60,7 +60,7 @@ pub enum Role {
     Draw,
     Shading,
     Meshes,
-    /// What turns the shading's linear colour into the output's (PLAN step 15b): a tone
+    /// What turns the shading's linear colour into the output's: a tone
     /// mapper (`crate::post::Tone`), compiled into the shading's output on its device.
     Post,
 }
@@ -137,14 +137,14 @@ impl Data {
         }
     }
 
-    /// Compiled together with the caller (IDEAS §18 fused composition): never crosses devices.
+    /// Compiled together with the caller: never crosses devices.
     pub fn fused(self) -> bool {
         matches!(self, Data::Storage | Data::Rays)
     }
 }
 
 /// Where a node runs. `gpu` is GPU slot 0 of the run's device configuration; `server` is
-/// the world's machine (PLAN step 14), reached from the client's devices over the link.
+/// the world's machine, reached from the client's devices over the link.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Device {
@@ -285,7 +285,7 @@ pub fn output(role: Role, name: &str) -> Data {
     }
 }
 
-/// What a stateful component keeps across frames (PLAN step 13, IDEAS §22): owned by the
+/// What a stateful component keeps across frames: owned by the
 /// node instance on its device, kept by the executor, reset on resize or a structural
 /// change. State only the node reads is not an edge; another node reads it through an
 /// output edge with timing [`When::Prev`].
@@ -305,7 +305,7 @@ pub fn state(role: Role, name: &str) -> Option<&'static str> {
     })
 }
 
-/// When the value on an edge arrives (PLAN step 13, IDEAS §22: state flows both ways).
+/// When the value on an edge arrives (state flows both ways).
 /// Written per input port in a node's `timing`; unset ports are [`When::Now`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -346,7 +346,7 @@ fn faces_timing(executor: &str, holes: bool) -> Option<When> {
 
 /// Edge timings a back end lets a graph choose, with the values it runs (the rest are its
 /// composition's): cpu-discover's faces now or a frame late; ray casting's shading on a
-/// second GPU shading this frame's hit records or the last frame's (PLAN step 15a: the GPUs
+/// second GPU shading this frame's hit records or the last frame's (the GPUs
 /// then overlap; `device_blocker` says why not on one GPU).
 const FREE_TIMINGS: &[(&str, Role, &str, &[When])] = &[
     ("cpu-discover", Role::Draw, "faces", &[When::Now, When::Prev]),
@@ -367,7 +367,7 @@ pub const CLIENTS: &[&str] = &["pick", "derive"];
 /// The sites form's key for the client's component.
 pub const CLIENT: &str = "client";
 
-/// The client's knobs (PLAN step 14c2): its region, the chunks around the camera and the
+/// The client's knobs: its region, the chunks around the camera and the
 /// LOD levels beyond (capped by what the renderer supports); unset, the run's
 /// `view_radius` and `max_lod`. The workload, not the pipeline: left out of the key.
 pub const CLIENT_KNOBS: &[&str] = &["radius", "max_lod"];
@@ -380,7 +380,7 @@ pub const LINKS: &[&str] = &["free", "net"];
 /// The sites form's key for the link.
 pub const LINK: &str = "link";
 
-/// The generator's components (PLAN step 14d): `procedural`, the world's generator built
+/// The generator's components: `procedural`, the world's generator built
 /// from its spec (the run's world: terrain, menger, ...).
 pub const GENERATORS: &[&str] = &["procedural"];
 
@@ -388,8 +388,8 @@ pub const GENERATORS: &[&str] = &["procedural"];
 /// `cpu` (on the client: `generator = "cpu"`).
 pub const GENERATOR: &str = "generator";
 
-/// The post's components (PLAN step 15b): the tone mappers (`crate::post::Tone`), `clamp`
-/// (the output before step 15b) the default. The sites form writes another as
+/// The post's components: the tone mappers (`crate::post::Tone`), `clamp`
+/// (no tone mapping) the default. The sites form writes another as
 /// `post = "aces"`.
 pub const POSTS: &[&str] = &["clamp", "reinhard", "aces"];
 
@@ -526,7 +526,7 @@ impl Node {
 }
 
 /// A pipeline: nodes by id, run by `executor`: the preset its shape and devices name
-/// ([`Graph::preset`]; step 13e4), so a graph may leave it out or name another (its
+/// ([`Graph::preset`]), so a graph may leave it out or name another (its
 /// nodes without a device run where that one runs their role).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -641,7 +641,7 @@ impl Graph {
         Ok(Graph { executor: c.backend, nodes })
     }
 
-    /// The preset this graph's shape and devices name (PLAN step 13e4: the back ends'
+    /// The preset this graph's shape and devices name (the back ends'
     /// names are presets of graphs, not what a graph is written for): the face drawer's
     /// source (meshing: `gpu-raster` / `cpu-raster` by the drawer's device; discovery:
     /// `gpu-discover` / `cpu-discover` by the sampler's), else the visibility node's
@@ -707,7 +707,7 @@ impl Graph {
     /// The world, the link and the client added if missing, in a chain: the link reads the
     /// world, the client the link, and every other `changes` input (unbound, or bound to the
     /// world or the link) the client: the world's change log reaches a renderer only over
-    /// its link, through its client (PLAN steps 14b, 14c2).
+    /// its link, through its client.
     fn normalised(&self) -> Result<Graph, String> {
         let mut g = self.placed();
         let one = |g: &mut Graph, role: Role, component: &str| -> Result<String, String> {
@@ -770,7 +770,7 @@ impl Graph {
                     }
                 }
             }
-            // The post after the shading (PLAN step 15b): `clamp` if missing, reading the
+            // The post after the shading: `clamp` if missing, reading the
             // shading if unbound.
             let post = one(&mut g, Role::Post, "clamp")?;
             g.nodes.get_mut(&post).unwrap().inputs.entry("image".into()).or_insert(sid);
@@ -1063,8 +1063,8 @@ impl Graph {
         let g = &c.graph;
         // The client's region is the workload, not the pipeline (its knobs left out); the
         // default link (`free`) and client (`pick`), nothing else set, are left out: their
-        // readers are written as reading what they read, as before steps 14b and 14c2,
-        // which keeps the keys. So is the generator on the server (step 14d).
+        // readers are written as reading what they read, as before the link and client were nodes,
+        // which keeps the keys. So is the generator on the server.
         let knobs = |n: &Node| -> toml::Table {
             match n.role {
                 Role::Client => n.knobs.iter().filter(|(k, _)| !CLIENT_KNOBS.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -1086,7 +1086,7 @@ impl Graph {
         };
         let mut ids: HashMap<String, usize> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
-        // The default post (`clamp`), nothing else set, is left out too (step 15b): the
+        // The default post (`clamp`), nothing else set, is left out too: the
         // shading's image is the output, as before.
         let out = &g.nodes[&c.output];
         let start = if out.role == Role::Post && out.component == "clamp" && out.device.is_none_or(|d| d == c.devices[&out.inputs["image"]]) && out.api.is_none() && out.timing.is_empty() { out.inputs["image"].clone() } else { c.output.clone() };
@@ -1115,7 +1115,7 @@ impl Graph {
             let ins: Vec<String> = n.inputs.iter().filter(|(_, s)| !served(s)).map(|(p, s)| format!("{p}=n{}{}", ids[&src(s)], when(p))).collect();
             let knobs: Vec<String> = knobs(n).iter().map(|(k, v)| format!("{k}={v}")).collect();
             let api = c.apis.get(id).filter(|a| chosen(n, a)).map_or(String::new(), |a| format!(":{}", a.name()));
-            // (The server is written `cpu`, the world's device before step 14, which keeps
+            // (The server is written `cpu`, the world's device before the server was modelled, which keeps
             // the keys: only the world runs there.)
             let dev = match c.devices[id] {
                 Device::Server => Device::Cpu,
@@ -1483,7 +1483,7 @@ impl Graph {
 }
 
 impl Graph {
-    /// The graph with flat knob values placed on the nodes they belong to (step 10: what a
+    /// The graph with flat knob values placed on the nodes they belong to (what a
     /// compiled build bakes in, for its cache key): each `(spec, value)` goes to the
     /// skeleton's nodes its `owner` names (the back end's stages; nodes on free sites keep
     /// their own knobs). A knob whose owner is not in the graph is moot here and left out;
@@ -1505,7 +1505,7 @@ impl Graph {
     }
 }
 
-/// Why the GPUs `ck` places its nodes on cannot run, if they can't (PLAN step 13e4c): a
+/// Why the GPUs `ck` places its nodes on cannot run, if they can't: a
 /// pipeline runs on one GPU (any slot), or split over two at the hit records: ray casting's
 /// shading (`placement = deferred`, with the walks compiled into it) on another GPU than the
 /// rest, the records crossing between them (the schedule's transfer), this frame's or the
@@ -1601,7 +1601,7 @@ pub fn site_name(role: Role, port: &str) -> String {
     }
 }
 
-/// Step 9d: the *sites form* of a graph, its flat composition plus a binding per site that
+/// The *sites form* of a graph, its flat composition plus a binding per site that
 /// the composition binds otherwise (`shadow = "tree64/sphere"`), for the CLI
 /// (`gpu-compute:prefix+incremental,bounce=tree64/sphere`), plans (`sites = { ... }`),
 /// labels, sweeps and the GUI. A site's value is one of:
@@ -1993,7 +1993,7 @@ pub fn sites_label(c: &Composition, sites: &BTreeMap<String, String>) -> String 
     s
 }
 
-/// The graph back end `backend` runs (PLAN step 9c): the host's
+/// The graph back end `backend` runs: the host's
 /// ([`mr_core::InitParams::graph_json`]), else the graph of the flat composition in its
 /// options (its slots by name), checked and accepted.
 pub fn of_init(backend: &str, p: &mr_core::InitParams) -> anyhow::Result<Checked> {
@@ -2028,7 +2028,7 @@ enum Bind {
     Lead,
 }
 
-/// How back end `executor` binds the `port` site of its `role` node (PLAN step 9c).
+/// How back end `executor` binds the `port` site of its `role` node.
 fn site_binding(executor: &str, role: Role, port: &str) -> Bind {
     match (executor, role, port) {
         ("gpu-compute", Role::Shading | Role::Meshes, _) | ("gpu-rt", Role::Shading, _) => Bind::Free,
@@ -2075,8 +2075,7 @@ impl Checked {
         self.graph.nodes.iter().find(|(_, n)| n.role == role).map(|(k, _)| k.as_str())
     }
 
-    /// The ids of the nodes of `roles`, in that order: what a timed stage runs (PLAN step
-    /// 11; callers only, the storages and kernels fused into them are timed with them).
+    /// The ids of the nodes of `roles`, in that order: what a timed stage runs (callers only, the storages and kernels fused into them are timed with them).
     /// A role without a node (added live, e.g. a prepass switched on) is named as
     /// [`Graph::from_composition`] names it: by the role.
     pub fn ids(&self, roles: &[Role]) -> Vec<String> {
@@ -2095,7 +2094,7 @@ impl Checked {
     }
 }
 
-/// How an executor runs a checked graph (PLAN step 13): computed once when the pipeline is
+/// How an executor runs a checked graph: computed once when the pipeline is
 /// created, so it costs nothing per frame. A *pass* is a node that does work of its own
 /// (it has an input that is not fused data, or no inputs: the world); nodes whose inputs
 /// and output are all fused data (traversal kernels) are only compiled into the passes that
@@ -2458,9 +2457,9 @@ mod tests {
         assert!(e.contains("two devices"), "{e}");
     }
 
-    /// Step 9c: sites off the lead bind their own kernel and storage where the back end
+    /// Sites off the lead bind their own kernel and storage where the back end
     /// runs them so; elsewhere they are rejected with the reason.
-    /// Step 10: a node's `api`, checked against its device, its component's implementations
+    /// A node's `api`, checked against its device, its component's implementations
     /// and the executor; written into the canonical form only where it is a choice.
     #[test]
     fn apis() {
@@ -2564,7 +2563,7 @@ mod tests {
         h.nodes.get_mut("shading").unwrap().inputs.remove("bounce");
         assert_eq!(h.canonical(), g.canonical());
         // gpu-raster: bounces apart from the shadow rays, also as ray queries over the
-        // geometry it draws (step 13e4b; before, a kernel it lacked).
+        // geometry it draws (before, a kernel it lacked).
         let r = Composition { shading: "pathtrace".into(), ..Composition::new("gpu-raster") };
         assert!(!with(r.clone(), &|g| own(g, "b", "prefix", "incremental", &[("shading", "bounce")])).accept().unwrap().1);
         let q = with(r, &|g| {
@@ -2597,7 +2596,7 @@ mod tests {
         assert!(!g.accept().unwrap().1);
         let e = with(cpu, &|g| own(g, "s", "hier", "refloor", &[("shading", "shadow")])).validate().unwrap_err();
         assert!(e.contains("over the storage of its primary rays"), "{e}");
-        // gpu-rt: its shading's rays free (step 13e4b): a kernel node of their own over its
+        // gpu-rt: its shading's rays free: a kernel node of their own over its
         // one acceleration structure.
         let g = with(Composition { shading: "pathtrace".into(), ..Composition::new("gpu-rt") }, &|g| {
             g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "geometry")]));
@@ -2611,7 +2610,7 @@ mod tests {
         assert_eq!(g.flat_knobs().unwrap().get("exact"), Some(&toml::Value::Boolean(true)));
     }
 
-    /// Step 9d: every graph one or two site bindings away from a back end's compositions
+    /// Every graph one or two site bindings away from a back end's compositions
     /// has a sites form, and that form gives the graph back.
     #[test]
     fn sites_form_round_trips() {
@@ -2676,7 +2675,7 @@ mod tests {
         assert!(e.contains("cycle"), "{e}");
     }
 
-    /// Step 13e4: the back ends' names are presets, named by a graph's shape and devices,
+    /// The back ends' names are presets, named by a graph's shape and devices,
     /// whatever executor it is written for (or none).
     #[test]
     fn presets() {
@@ -2746,7 +2745,7 @@ mod tests {
         assert!(pick.with_sites(&bad).unwrap_err().contains("unknown client"));
     }
 
-    /// The link as a node (PLAN step 14c2): `link = "net(..)"` in the sites form; the free
+    /// The link as a node: `link = "net(..)"` in the sites form; the free
     /// link and the client's region leave the key alone, each network has its own; the
     /// back end runs the graph as its composition.
     #[test]
@@ -2789,8 +2788,8 @@ mod tests {
     }
 
     /// The generator: on the server it feeds the world and is left out of the key; on the
-    /// client's cpu it feeds the client, a pipeline of its own (PLAN step 14d).
-    /// Step 15b: the post after the shading, its tone mapper a choice; `clamp` keeps the key.
+    /// client's cpu it feeds the client, a pipeline of its own.
+    /// The post after the shading, its tone mapper a choice; `clamp` keeps the key.
     #[test]
     fn post_node() {
         for backend in ["gpu-compute", "cpu", "gpu-raster", "cpu-discover", "gpu-voxelspace"] {
@@ -2853,8 +2852,8 @@ mod tests {
         assert_eq!(key(&local.with_sites(&[(GENERATOR.to_string(), "server".to_string())].into()).unwrap()), key(&pick));
     }
 
-    /// casting's deferred shading, with its walks, on the second GPU); else the reasons
-    /// (PLAN step 13e4c).
+    /// Graphs split over GPUs are accepted where an executor runs them (ray casting's deferred
+    /// shading, with its walks, on the second GPU); else the reasons.
     #[test]
     fn two_gpus() {
         let split = |b: &str, placement: &str| {
@@ -2879,7 +2878,7 @@ mod tests {
             assert!(sched.contains("gpu -> gpu1"), "{b}: {sched}");
             let why = split(b, "inline").accept().unwrap_err();
             assert!(why.contains("placement = deferred"), "{b}: {why}");
-            // Step 15a: the shading a frame behind, the GPUs overlapping; not on one GPU.
+            // The shading a frame behind, the GPUs overlapping; not on one GPU.
             let mut late = split(b, "deferred");
             late.nodes.get_mut("shading").unwrap().timing.insert("hits".into(), When::Prev);
             late.accept().unwrap_or_else(|e| panic!("{b}: {e}"));
@@ -2915,7 +2914,7 @@ mod tests {
     }
 
 
-    /// Step 13e4b: any GPU ray-casting site binds any kernel with a GPU implementation: ray
+    /// Any GPU ray-casting site binds any kernel with a GPU implementation: ray
     /// queries over a geometry node's acceleration structures (one per pipeline) beside
     /// walks, walks beside ray queries; the reasons where not.
     #[test]
@@ -2984,7 +2983,7 @@ mod tests {
         assert!(e.contains("input `shadow`"), "{e}");
     }
 
-    /// Step 13a/b: edge timings. Hole detection is a loop through the drawer (it draws last
+    /// Edge timings. Hole detection is a loop through the drawer (it draws last
     /// frame's faces, the holes node finds where they leave holes, the sampler looks there,
     /// the drawer draws again) plus last frame's image read `prev`; and the reasons for what
     /// is not a pipeline.

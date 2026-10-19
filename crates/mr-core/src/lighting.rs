@@ -178,11 +178,11 @@ pub fn encode_srgb(c: Vec3) -> [u8; 4] {
     [q(c.x), q(c.y), q(c.z), 255]
 }
 
-/// Tone mapping: the post node's components (PLAN step 15b; `mr_components::post`), linear
+/// Tone mapping: the post node's components (`mr_components::post`), linear
 /// colour into display range before [`encode_srgb`]. GPU twins: `components/src/post`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum Tone {
-    /// Clamp to 0..1 (no tone mapper): the output before step 15b.
+    /// Clamp to 0..1 (no tone mapper).
     #[default]
     Clamp,
     /// Reinhard on luminance: `c / (1 + L)`, hue kept, highlights compressed without a limit.

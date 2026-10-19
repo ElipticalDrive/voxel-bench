@@ -2,7 +2,7 @@
 //! writes camera-relative world-space triangles each frame (meshes are small), and draws
 //! them into the renderer's targets and depth.
 //!
-//! Meshes are a surface source (PLAN step 12d): their fragments write the hit record's mesh
+//! Meshes are a surface source: their fragments write the hit record's mesh
 //! capability (`Records`: the packed record, `Ids`: `visbuffer`'s encoding), and the pixel is
 //! shaded wherever the strategy shades (the ray caster's walk, the common deferred pass),
 //! decoding the triangle from the same vertices ([`surface_wgsl`]). Forward drawers shade
@@ -316,7 +316,7 @@ struct CompUniform {
     _p: [u32; 2],
 }
 
-/// Mesh mode for ray casters (PLAN 7c, 12d): meshes are rasterised first into a record and
+/// Mesh mode for ray casters: meshes are rasterised first into a record and
 /// depth target of the frame's size (records only: no shading); the ray caster casts each
 /// primary ray only up to the mesh's distance at that pixel (`mesh_t`), and where no voxel is
 /// nearer the pixel's surface is the mesh's record, shaded inline by the walk or written for

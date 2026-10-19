@@ -1,4 +1,4 @@
-//! Geometry `points` (PLAN step 13d: was gpu-splat's code): one point per block with an
+//! Geometry `points` (was gpu-splat's code): one point per block with an
 //! exposed face, for visibility `splat` (`crate::visibility::splat`). A [`Point`] is the
 //! block's world position and `block | face_mask << 16` (bit `i` of the mask: the
 //! neighbour across `Face::ALL[i]` is air). [`Points`] is the node's state: every chunk's

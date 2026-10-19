@@ -1,10 +1,9 @@
 //! The worker side of the IPC protocol: hosts exactly one renderer, driven by the host.
-//! The full worker (`mr-worker`, every renderer) and generated pipeline workers (PLAN step
-//! 8: one composition compiled for this machine) both serve through [`run`]. The worker is
-//! the client side of the link (PLAN step 14b): it takes the server's stream and its
-//! [`Client`] derives what the renderer holds before the renderer sees it; since 14c the
+//! The full worker (`mr-worker`, every renderer) and generated pipeline workers (one composition compiled for this machine) both serve through [`run`]. The worker is
+//! the client side of the link: it takes the server's stream and its
+//! [`Client`] derives what the renderer holds before the renderer sees it; the
 //! stream reaches the client through its [`Link`] (latency, bandwidth, loss) unless free;
-//! since 14d the client may generate the world itself ([`Generating`]), the server's
+//! the client may generate the world itself ([`Generating`]), the server's
 //! stream then carrying edits only.
 
 use std::collections::HashMap;
@@ -132,7 +131,7 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let mut generating: Option<Generating> = None;
     let mut generated = false;
     let reach = |c: &Client| mr_core::client::reach(c.radius(), c.max_lod(), levels);
-    // The link in front of it (PLAN step 14c): none when free, the stream then as it came.
+    // The link in front of it: none when free, the stream then as it came.
     let mut link = (!params.link.free()).then(|| Link::new(params.link));
     let mut renderer: Box<dyn Renderer> = (entry.create)(params, &devices, waker)?;
     let mut shm = FrameSlots::open(&shm)?;

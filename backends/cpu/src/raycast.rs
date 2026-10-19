@@ -1,5 +1,5 @@
-//! The CPU ray-casting lane (`cpu`; PLAN step 13e3: was the cpu back end): a renderer from
-//! components (`mr-components`, IDEAS §12): a
+//! The CPU ray-casting lane (`cpu`): a renderer from
+//! components (`mr-components`): a
 //! **storage** (`Repr`, one generic instantiation per storage: monomorphised, so the split
 //! costs nothing), a **traversal** kernel cast per pixel (`refloor` with SIMD-friendly ray
 //! packets, or `incremental`; the visibility strategy is `raycast`) and the **shading** component (`direct`), multi-threaded with rayon.
@@ -213,12 +213,12 @@ struct Scene<R> {
     traversal: Traversal,
     /// Levels the incremental traversals may use (bit k = 2^k cubes), from the `skip*` knobs.
     levels: u32,
-    /// The shadow rays' own kernel and levels (PLAN step 9c: a kernel node of their own over
+    /// The shadow rays' own kernel and levels (a kernel node of their own over
     /// the same storage), `None`: the primary rays' kernel.
     shadow: Option<(Traversal, u32)>,
 }
 
-/// The shadow rays' own kernel and levels in graph `g` (PLAN step 9c: a kernel node of their
+/// The shadow rays' own kernel and levels in graph `g` (a kernel node of their
 /// own, its knobs or their defaults), `None` if they share the primary rays' (also for
 /// generated code).
 pub fn shadow_kernel(g: &Checked) -> anyhow::Result<Option<(Traversal, u32)>> {
@@ -329,7 +329,7 @@ pub(crate) struct Raycast<R, S: Spec = Generic> {
     tile_order: TileOrder,
     tile: u32,
     rects: Vec<Rect>,
-    /// The nodes of the storage's timed rebuild (PLAN step 11; the rays' and shading's are
+    /// The nodes of the storage's timed rebuild (the rays' and shading's are
     /// the core's).
     storage_nodes: Vec<String>,
     /// `placement = deferred`: the walk writes one hit record per pixel here, then a second

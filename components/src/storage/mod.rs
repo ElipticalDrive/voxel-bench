@@ -1,6 +1,6 @@
 //! Storage components: how the world is held and which queries it answers.
 //!
-//! GPU interface (WGSL; see IDEAS §12). Walks work in absolute cell coordinates and reach
+//! GPU interface (WGSL). Walks work in absolute cell coordinates and reach
 //! the storage only through:
 //! * the top level: `S_TOP` (log2 edge of the storage's top cell: 5 for 32^3 chunks, 6 for
 //!   tree64's 64^3 regions) and `s_top(key) -> handle` for the top cell `abs >> S_TOP`:

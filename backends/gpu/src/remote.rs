@@ -1,4 +1,4 @@
-//! The shading node on a second GPU (PLAN step 13e4c): one pipeline split over two GPUs at
+//! The shading node on a second GPU: one pipeline split over two GPUs at
 //! the hit records. The visibility node casts the primary rays on its GPU and writes one
 //! record per pixel (`placement = deferred`); the schedule's transfer adapter for that edge
 //! (`visibility` -> `shading`.hits, `now`) carries them to the shading's GPU, through the
@@ -13,7 +13,7 @@
 //! first GPU, its records copied out and submitted ([`Far::send`]), then ([`Far::render`])
 //! the records the shading reads waited for, written to the second GPU and shaded there with
 //! the camera they were cast with. Edge `now` shades the records just sent (the GPUs take
-//! turns); edge `prev` (PLAN step 15a: history) the last frame's, so the second GPU shades
+//! turns); edge `prev` (history) the last frame's, so the second GPU shades
 //! frame N - 1 while the first casts N: frame N's image shows the view of frame N - 1 (the
 //! first frame's, nothing arrived yet: sky), and the last records cast are never shaded.
 //! The frame's GPU time is both GPUs' passes; its stages are the first's (`cast`, `copy`:

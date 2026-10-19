@@ -42,14 +42,14 @@ pub struct FrameRecord {
     pub cpu_ms: f32,
     pub gpu_ms: Option<f32>,
     pub update_ms: f32,
-    /// Bytes arrived over its link since the previous frame (PLAN step 14e).
+    /// Bytes arrived over its link since the previous frame.
     pub arrived_bytes: u64,
     /// Chunks of its region missing when the frame was requested: the server's backlog, on
     /// the link, not generated yet.
     pub holes: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub counters: Vec<(String, f64)>,
-    /// Time per stage and the graph nodes each ran (PLAN step 11).
+    /// Time per stage and the graph nodes each ran.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<StageTime>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,7 +118,7 @@ pub struct QualitySummary {
     pub worst_frame: u32,
 }
 
-/// The first frame requested with nothing of its region missing (PLAN step 14e).
+/// The first frame requested with nothing of its region missing.
 #[derive(Copy, Clone, Debug, Serialize, serde::Deserialize)]
 pub struct FirstComplete {
     pub frame: u32,
@@ -135,7 +135,7 @@ pub struct PassReport {
     /// The composition and the options beyond it (knobs), when composed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub composition: Option<mr_components::Composition>,
-    /// Sites bound otherwise than the composition binds them (PLAN step 9d).
+    /// Sites bound otherwise than the composition binds them.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub sites: std::collections::BTreeMap<String, String>,
     /// The graph run, when it has no sites form (else composition and sites give it).
@@ -147,7 +147,7 @@ pub struct PassReport {
     #[serde(skip_serializing_if = "toml::Table::is_empty")]
     pub options: toml::Table,
     pub view_radius: u32,
-    /// The link its client received the stream over (PLAN step 14c), when not free.
+    /// The link its client received the stream over, when not free.
     #[serde(skip_serializing_if = "mr_core::link::LinkSpec::free")]
     pub link: mr_core::link::LinkSpec,
     pub mode: Option<PassMode>,
@@ -164,13 +164,13 @@ pub struct PassReport {
     pub cpu_ms: Option<Summary>,
     pub gpu_ms: Option<Summary>,
     pub update_ms: Option<Summary>,
-    /// Time per stage (PLAN step 11).
+    /// Time per stage.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<StageSummary>,
     pub missed_deadlines: Option<u32>,
     pub chunks_sent: u64,
     /// Bytes sent over its link in the pass (resends included) and the bytes arrived,
-    /// warm-up included (PLAN step 14e).
+    /// warm-up included.
     pub wire_bytes: u64,
     pub arrived_bytes: u64,
     /// Update time per byte arrived (ns), over the recorded frames.
@@ -255,7 +255,7 @@ pub fn table(reports: &[PassReport]) -> String {
     s
 }
 
-/// The stream to each pass's client (PLAN step 14e), `None` when every pass had its whole
+/// The stream to each pass's client, `None` when every pass had its whole
 /// region at once over a free link (nothing to tell apart).
 pub fn stream_table(reports: &[PassReport]) -> Option<String> {
     let ok: Vec<&PassReport> = reports.iter().filter(|r| r.error.is_none()).collect();
@@ -284,7 +284,7 @@ pub fn stream_table(reports: &[PassReport]) -> Option<String> {
     Some(s)
 }
 
-/// Mean time per stage of each pass (PLAN step 11), `None` when no pass reported stages.
+/// Mean time per stage of each pass, `None` when no pass reported stages.
 pub fn stage_table(reports: &[PassReport]) -> Option<String> {
     let mut s = String::new();
     for r in reports.iter().filter(|r| r.error.is_none() && !r.stages.is_empty()) {

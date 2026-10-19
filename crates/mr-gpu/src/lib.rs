@@ -92,7 +92,7 @@ impl Gpu {
 
     /// Opens the persistent pipeline cache `name` (the pipelines' graph key): a file per
     /// adapter and name under [`mr_core::cache_dir`], so the driver skips compiling pipelines
-    /// it compiled in an earlier run (PLAN step 16b). The first call in a process wins; no-op
+    /// it compiled in an earlier run. The first call in a process wins; no-op
     /// where the device has no pipeline cache (wgpu: Vulkan only) or `$MR_GPU_CACHE` is `0`.
     pub fn open_cache(&self, name: &str) {
         if !self.device.features().contains(wgpu::Features::PIPELINE_CACHE) || std::env::var_os("MR_GPU_CACHE").is_some_and(|v| v == "0") {
@@ -194,7 +194,7 @@ pub fn devices(cfg: &mr_core::DeviceConfig) -> mr_core::Devices {
     mr_core::Devices { gpus: Some(Arc::new(GpuPool::new(&cfg.gpus))) }
 }
 
-/// The GPU devices of one process (IDEAS §17, requirement 2): handed to renderers through
+/// The GPU devices of one process: handed to renderers through
 /// `mr_core::Devices`, indexed by slot (the configuration's `DeviceConfig::gpus`). A
 /// request is served by an open device of that slot that has what it needs, else by a new
 /// device opened with them; renderers in one process (thread isolation, a library) share
@@ -277,7 +277,7 @@ pub struct FrameRing {
     free: Vec<usize>,
     pending: VecDeque<Pending>,
     query_set: Option<wgpu::QuerySet>,
-    /// Stage marks (PLAN step 11): `MAX_MARKS` per slot.
+    /// Stage marks: `MAX_MARKS` per slot.
     marks: Option<wgpu::QuerySet>,
     /// The GPU stages of the frame being recorded.
     recording: std::sync::Mutex<Vec<StageTime>>,

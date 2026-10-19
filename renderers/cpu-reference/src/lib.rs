@@ -118,14 +118,14 @@ fn info() -> RendererInfo {
 
 const LIGHT_CELL_BITS: i32 = 4;
 
-/// The world every CPU renderer shares (the CPU executor's core keeps one, PLAN step 13e4d):
+/// The world every CPU renderer shares (the CPU executor's core keeps one):
 /// the block registry, the environment, the point lights (and their grid) and the shadow
 /// setting. The chunks are each renderer's own representation ([`Chunks`]: dense blocks).
 pub struct World {
     pub blocks: Arc<BlockRegistry>,
     pub env: Environment,
     pub shadows: Shadows,
-    /// The post's tone mapper (PLAN step 15b; the reference's own: `clamp`).
+    /// The post's tone mapper (the reference's own: `clamp`).
     pub tone: Tone,
     lights: HashMap<u32, Light>,
     light_grid: HashMap<IVec3, Vec<Light>>,

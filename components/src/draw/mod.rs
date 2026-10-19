@@ -1,5 +1,4 @@
-//! Draw components: how a set of block faces becomes the image (the face drawer, IDEAS
-//! §16 step 2). The faces come from the visibility strategy: every face of the geometry
+//! Draw components: how a set of block faces becomes the image (the face drawer). The faces come from the visibility strategy: every face of the geometry
 //! component (`faces`, the rasterisers) or the face set discovery found (`quadtree`,
 //! `cluster`). `raster` depth-tests and shades each fragment; `visbuffer` writes face ids
 //! (an encoding of the hit record its face source decodes) and `gbuffer` the common packed

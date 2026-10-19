@@ -4,7 +4,7 @@
 //! `WorldUpdate` stream. Discovery jobs hold immutable snapshots (`Arc<dyn Snapshot>`) while
 //! the render thread applies new updates. (Was a copy of cpu-simd's grid and DDA.)
 //!
-//! Monomorphised per storage (PLAN step 13c): discovery is generic over the [`World`] it
+//! Monomorphised per storage: discovery is generic over the [`World`] it
 //! walks, and a snapshot is the storage's own grid behind [`Snapshot`], so the one dynamic
 //! call is per frame (a discovery pass, an audit), never per ray.
 

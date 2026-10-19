@@ -1,4 +1,4 @@
-//! The quadtree sampler (the user's discovery, IDEAS §3): rays at the corners of screen
+//! The quadtree sampler (the user's discovery): rays at the corners of screen
 //! tiles; a coherent tile adds the exposed faces of its plane in its footprint to the face
 //! set, an incoherent one splits. CPU: [`cpu`]. GPU: [`GPU_WGSL`] (the sampler's root:
 //! survivors, rays, classification, footprints, audit, painter sort, row merge) over

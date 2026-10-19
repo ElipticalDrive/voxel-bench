@@ -1,4 +1,4 @@
-//! Visibility `splat` (point splatting in compute; PLAN step 13d: was gpu-splat's code): each
+//! Visibility `splat` (point splatting in compute): each
 //! point of geometry `points` (`crate::geometry::points`) is projected and `atomicMin`s its
 //! view depth over a square footprint sized from its projected size (capped at `max_splat`
 //! px), a second pass writes the winning point id, and the common deferred pass is the

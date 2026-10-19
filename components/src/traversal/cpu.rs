@@ -4,7 +4,7 @@ use glam::IVec3;
 
 use crate::Cap;
 
-/// A CPU traversal kernel's declaration (PLAN step 10): the optional capabilities it
+/// A CPU traversal kernel's declaration: the optional capabilities it
 /// provides, read by the registry (as `Repr::CAPS` for storages). Implemented by a unit type
 /// next to the kernel's functions, which generated pipelines will name as type parameters.
 pub trait Kernel {

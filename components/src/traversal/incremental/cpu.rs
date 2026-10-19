@@ -1,4 +1,4 @@
-//! CPU implementation of the `incremental` visibility component (IDEAS §1): hierarchical DDA
+//! CPU implementation of the `incremental` visibility component: hierarchical DDA
 //! with per-level exit times, moving between levels incrementally.
 
 use glam::{IVec3, Vec3};
@@ -26,7 +26,7 @@ pub fn level_below(mask: u32, level: u32) -> u32 {
     31 - (mask & ((1 << level) - 1)).leading_zeros()
 }
 
-/// Incremental-level hierarchical DDA (IDEAS §1, the user's intended traversal). The ray
+/// Incremental-level hierarchical DDA (the user's intended traversal). The ray
 /// keeps a cell `c` at the current level (absolute coordinates `>> level`) with per-axis
 /// `tmax` (exit times) and `tdelta` (cell size in t). Every move is incremental, with no
 /// re-flooring:

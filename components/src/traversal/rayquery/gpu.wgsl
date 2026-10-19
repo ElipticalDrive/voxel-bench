@@ -1,6 +1,6 @@
 // Traversal `rayquery`: hardware ray queries against the acceleration structures the
 // executor builds from the geometry node this kernel reads, through the geometry
-// component's `g_rt_trace` (PLAN step 13e4b: any GPU ray-casting site may be one). Ray
+// component's `g_rt_trace` (any GPU ray-casting site may be one). Ray
 // queries cannot sit in a shader module (naga cannot write them back), so this kernel is
 // root code: the primary rays' `ctrace` here, the ray services of other sites
 // (`occluded`, `strace`) virtual functions the root overrides (`Walks::services`).

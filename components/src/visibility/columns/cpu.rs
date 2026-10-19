@@ -29,7 +29,7 @@ pub struct March<'a> {
     max_cells: usize,
 }
 
-/// Where the march's pixels go (PLAN step 12c): shaded inline, or hit records for the
+/// Where the march's pixels go: shaded inline, or hit records for the
 /// common deferred pass.
 pub trait Out {
     /// The march enters drawn column `cell` (camera-relative x, z).

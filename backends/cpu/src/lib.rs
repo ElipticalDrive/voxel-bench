@@ -1,4 +1,4 @@
-//! The CPU executor (PLAN step 13e3): every pipeline whose image is made on the CPU, one
+//! The CPU executor: every pipeline whose image is made on the CPU, one
 //! executor over one core with a lane per kind of visibility node:
 //! - ray casting ([`raycast`]): one primary ray per pixel walked over a storage, monomorphised
 //!   per storage (`cpu`);
@@ -8,10 +8,10 @@
 //! Which lane runs is the graph's: rasterisation when a drawer draws faces, else by the
 //! visibility node's component. The rest is shared ([`Core`]): the thread pool every frame
 //! runs in (the `threads` knob), the world (`cpu_reference::World`: blocks, environment,
-//! lights, the `shadows` knob; PLAN step 13e4d), the output image, its size and the timed
+//! lights, the `shadows` knob), the output image, its size and the timed
 //! stages' nodes. The chunks are each lane's representation (its storage).
 //!
-//! Every lane is also compiled on demand for one graph (PLAN steps 8 and 16a: the host's
+//! Every lane is also compiled on demand for one graph (the host's
 //! `pipelines` generates a crate naming the lane, its storage type and a [`Spec`]): its
 //! choices are then constants the compiler folds, and the crate is built for this CPU.
 
@@ -28,7 +28,7 @@ pub use cpu_reference::Shadows;
 pub use mr_core::lighting::Tone;
 pub use raycast::{Traversal, level_mask, shadow_kernel, storage_type, traversal};
 
-/// What a pipeline compiled for one graph bakes in (PLAN steps 8 and 16a): a generated crate
+/// What a pipeline compiled for one graph bakes in: a generated crate
 /// implements this with the graph's values, so they are constants the compiler folds (no
 /// per-ray `match`, one packet width, no ISA dispatch: the whole crate is compiled for this
 /// CPU). [`Generic`], the precompiled build, leaves everything open (`None`: read at run
@@ -131,7 +131,7 @@ pub(crate) struct Frame {
     pixels: Vec<u8>,
     width: u32,
     height: u32,
-    /// The nodes of the timed stages (PLAN step 11): visibility with shading, visibility,
+    /// The nodes of the timed stages: visibility with shading, visibility,
     /// shading.
     stage_nodes: [Vec<String>; 3],
 }

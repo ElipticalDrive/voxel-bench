@@ -1,11 +1,11 @@
-//! The splat lane (components, IDEAS §12; PLAN step 13e3: was the gpu-splat back end):
+//! The splat lane (components):
 //! geometry `points`, visibility `splat`, shading `direct`, and the **storage** lit-mode
 //! shadow rays walk (refloor; group 2).
 //!
 //! GPU point splatting: every face-exposed block becomes one point (geometry `points` on
 //! the CPU, `mr_components::geometry::points`), uploaded as the schedule's transfer of the
 //! points to the GPU; the splat passes and their resolve, the common deferred shading pass
-//! over the ids (PLAN step 12c), are visibility `splat` (`mr_components::visibility::splat`).
+//! over the ids, are visibility `splat` (`mr_components::visibility::splat`).
 //! The lane keeps the points, their buffers and the passes.
 
 use std::time::Instant;
@@ -106,7 +106,7 @@ impl Splat {
         if !schedule.transfers.iter().any(|e| e.port == "points" && g.node(&e.to).role == Role::Visibility) {
             anyhow::bail!("{BACKEND}: the points do not cross from the CPU to the GPU");
         }
-        // The sites' walks (PLAN step 9c): shadow rays (the storage and traversal stages),
+        // The sites' walks: shadow rays (the storage and traversal stages),
         // bounces their own or the same.
         let (walks, mut program, own, deps) = program(g, &opts.shading)?;
         let core = Core::new(
@@ -172,7 +172,7 @@ fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, pts: &wgpu::Buffer, z: &wg
     core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("splat"), layout, entries: &entries })
 }
 
-/// The shader: the shadow and bounce rays' walks (PLAN step 9c), the splat passes, the
+/// The shader: the shadow and bounce rays' walks, the splat passes, the
 /// shading component and the common deferred pass (the resolve) as the root.
 fn program(g: &graph::Checked, shading: &str) -> anyhow::Result<(Walks, mr_gpu::program::Program, String, Vec<String>)> {
     let mut walks = Walks::of(g);

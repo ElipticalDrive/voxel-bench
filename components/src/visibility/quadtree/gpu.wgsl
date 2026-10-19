@@ -1,4 +1,4 @@
-// The quadtree sampler on the GPU (PLAN step 13b; a root over `quadtree::set`): temporal
+// The quadtree sampler on the GPU (a root over `quadtree::set`): temporal
 // survivors, rays at lattice points, tile classification, footprints, the audit, and for
 // the drawer the painter's sort and the row merge.
 
@@ -493,7 +493,7 @@ fn sort_scatter(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) n
     sorted[atomicAdd(&hist[sort_key(e)], 1u)] = e;
 }
 
-// ---- greedy row merge (`merge = rows`, PLAN step 2b) ----
+// ---- greedy row merge (`merge = rows`) ----
 // Each face of S whose predecessor along its face's u axis differs (not in S, another
 // block, or another v-neighbour pattern) starts a run; the run takes every following face
 // with the same signature, up to MERGE_MAX. One quad per run is drawn instead of one per face. Texturing stays

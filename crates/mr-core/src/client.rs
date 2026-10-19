@@ -1,4 +1,4 @@
-//! A client of the server's stream (PLAN step 14a; on the renderer's side of the link since
+//! A client of the server's stream (on the renderer's side of the link since
 //! 14b: the graph's `client` node, run by the worker before its renderer): keeps a replica
 //! of the chunks the server sent and derives from it what its renderer holds (its own
 //! radius and LOD levels), producing the renderer's load / unload / edit messages. The

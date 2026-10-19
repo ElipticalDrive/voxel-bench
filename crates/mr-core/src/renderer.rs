@@ -35,7 +35,7 @@ pub struct InitParams {
     pub height: u32,
     pub blocks: Arc<BlockRegistry>,
     /// A starting environment; the world's arrives as `SetEnvironment` (the host sends it
-    /// first: PLAN step 14c).
+    /// first).
     pub environment: Environment,
     /// Chunks within this many chunks (Chebyshev, at each LOD level) of the camera are
     /// streamed. Useful for sizing structures and the max ray distance.
@@ -46,7 +46,7 @@ pub struct InitParams {
     pub max_lod: u8,
     /// Renderer-specific options from the run plan, as a JSON object string.
     pub options_json: String,
-    /// The pipeline graph to run (`mr_components::graph::Graph` as JSON; PLAN step 9c),
+    /// The pipeline graph to run (`mr_components::graph::Graph` as JSON),
     /// empty for renderers that are not back ends or to run the flat composition in
     /// `options_json`.
     #[serde(default)]
@@ -54,22 +54,22 @@ pub struct InitParams {
     /// The devices to run on: a configuration from the host, not an option of the renderer.
     #[serde(default)]
     pub devices: DeviceConfig,
-    /// Time each stage of a frame (PLAN step 11; `FrameStats::stages`). GPU stages cost a
+    /// Time each stage of a frame (`FrameStats::stages`). GPU stages cost a
     /// timestamp each (a few µs per frame).
     #[serde(default)]
     pub stage_times: bool,
-    /// How the worker's client gets the LOD levels (PLAN step 14b: the graph's `client`
+    /// How the worker's client gets the LOD levels (the graph's `client`
     /// node's component).
     #[serde(default)]
     pub client: crate::client::Levels,
-    /// The link the worker's client receives the stream over (PLAN step 14c; free: none).
+    /// The link the worker's client receives the stream over (free: none).
     #[serde(default)]
     pub link: crate::link::LinkSpec,
 }
 
-/// Which devices a renderer runs on (IDEAS §17, requirement 2: no hardware opinion in the
+/// Which devices a renderer runs on (no hardware opinion in the
 /// renderers). Several GPUs, or a GPU and the CPU, are a configuration; a graph's nodes
-/// pick their device by slot (`gpu` = slot 0, `gpu1` = slot 1, ...; PLAN step 13e4c: a
+/// pick their device by slot (`gpu` = slot 0, `gpu1` = slot 1, ...: a
 /// pipeline runs on its drawer's or visibility node's GPU, its deferred shading may run on
 /// another).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -121,7 +121,7 @@ pub struct BlockEdit {
 }
 
 /// Incremental change to the renderer's view of the world: the only way world state reaches
-/// a renderer (the strict contract, PLAN step 14c). Its client hands them over in order,
+/// a renderer (the strict contract). Its client hands them over in order,
 /// before the [`FrameRequest`] they precede, but nothing is guaranteed to have arrived: the
 /// stream crosses a link that may delay, drop and resend, or reorder it, so a chunk inside
 /// the region may be missing for any number of frames, chunks arrive in any order, coarse
@@ -164,7 +164,7 @@ pub struct FrameStats {
     /// What the colours mean while a diagnostic `view` is active (`None`: the image).
     #[serde(default)]
     pub legend: Option<crate::Legend>,
-    /// The frame's time per stage (PLAN step 11): CPU stages as the renderer timed them,
+    /// The frame's time per stage: CPU stages as the renderer timed them,
     /// GPU stages from timestamps between them (filled in when the frame completes).
     #[serde(default)]
     pub stages: Vec<StageTime>,

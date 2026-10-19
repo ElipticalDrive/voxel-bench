@@ -1,6 +1,6 @@
-//! The CPU raster lane (`cpu-raster`; PLAN step 13e3: was the cpu-raster back end): a
+//! The CPU raster lane (`cpu-raster`): a
 //! software rasteriser on the CPU, assembled from components
-//! (`mr-components`, IDEAS §12): **geometry** (`greedy` or `naive` quads, meshed on the
+//! (`mr-components`): **geometry** (`greedy` or `naive` quads, meshed on the
 //! CPU), **visibility** `faces` with **draw** `raster` (below), **shading** `direct` (here the reference
 //! scene's f64 model, with CPU ray-traced shadows). Was the cpu-raster renderer.
 //!
@@ -18,7 +18,7 @@
 //! 6. deferred shading per pixel (the common pass, `shading::deferred`; the quad id is the
 //!    record's encoding): the surface point is recomputed exactly by intersecting the
 //!    pixel's ray with the quad's plane (f64), then shaded with the reference model (CPU
-//!    ray-traced shadows in lit mode). With `placement = inline` (PLAN step 12c), step 5
+//!    ray-traced shadows in lit mode). With `placement = inline`, step 5
 //!    shades every fragment that passes the depth test instead (forward shading).
 
 use std::collections::{HashMap, HashSet};
@@ -93,7 +93,7 @@ struct Tri {
 }
 
 pub(crate) struct CpuRaster {
-    /// The nodes of the timed stages (PLAN step 11): meshing, transform, raster, shading;
+    /// The nodes of the timed stages: meshing, transform, raster, shading;
     /// raster with inline shading.
     stage_nodes: [Vec<String>; 5],
     /// `placement = deferred` (the default): the rasteriser writes quad ids, the common

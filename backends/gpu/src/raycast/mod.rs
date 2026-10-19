@@ -1,4 +1,4 @@
-//! The ray-casting lane (PLAN steps 13e2, 13e3): every pipeline whose image is one primary
+//! The ray-casting lane: every pipeline whose image is one primary
 //! ray per pixel, shaded inline or (`placement = deferred`) through hit records and the common
 //! shading pass. One lane for the two ways the visibility node's primary rays are cast, its
 //! kernel's API:
@@ -13,7 +13,7 @@
 //! lane's ([`Raycast`], [`Passes`]) over the executor's core: the shader (the caster's root
 //! and modules, then `view.wgsl` and `cast.wgsl`, and when deferred `records.wgsl` and
 //! `deferred.wgsl` with the common pass), the rays' pass and the deferred shading pass, or
-//! (the shading on another GPU, PLAN step 13e4c) the records sent to it ([`crate::remote`]).
+//! (the shading on another GPU) the records sent to it ([`crate::remote`]).
 
 use std::time::Instant;
 

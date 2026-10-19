@@ -1,7 +1,7 @@
 // Visibility `columns` on the GPU (the root of gpu-voxelspace's program): Comanche-style
 // column march. One invocation per screen column marches front-to-back over the heightmap
 // storage, drawing spans with a y-buffer; shadow and bounce rays walk the same heightmap
-// (`hm_trace`). Shading placement (PLAN step 12c): inline in the march, or deferred (the
+// (`hm_trace`). Shading placement: inline in the march, or deferred (the
 // march writes records, the common pass shades).
 
 struct Camera {
@@ -39,7 +39,7 @@ fn slope_normal(cell: vec2<i32>) -> vec3<f32> {
 
 // Every pixel the march covers is shaded inline or, with shader def `DEFERRED`, written as
 // a hit record (`deferred.wgsl`). One body either way: a function between the march and
-// the shading (a hook per pixel) cost 2.5% of unlit GPU time on NVIDIA (PLAN step 12c).
+// the shading (a hook per pixel) cost 2.5% of unlit GPU time on NVIDIA.
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= cam.width) { return; }

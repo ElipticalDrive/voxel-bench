@@ -1,5 +1,4 @@
-// The quadtree's GPU face set and discovery buffers (module `quadtree::set`, PLAN step
-// 13b), shared by the sampler (`gpu.wgsl`) and hole detection (`holes/coverage/gpu.wgsl`),
+// The quadtree's GPU face set and discovery buffers (module `quadtree::set`), shared by the sampler (`gpu.wgsl`) and hole detection (`holes/coverage/gpu.wgsl`),
 // which are separate roots over it. Was gpu-discover's `discover.wgsl`.
 //
 // gpu-discover: GPU face discovery. Adaptive screen-space quadtree of corner rays; coherent

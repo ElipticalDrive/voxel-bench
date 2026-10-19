@@ -1,4 +1,4 @@
-//! The link between the server and a client (PLAN step 14c): the bottleneck the server's
+//! The link between the server and a client: the bottleneck the server's
 //! stream crosses, modelled as a network so renderers face data that has not arrived yet.
 //! The worker runs it in front of its client, on the simulated time the host stamps on
 //! its messages (scripted runs are reproducible); a free link ([`LinkSpec::free`]) is not
@@ -59,7 +59,7 @@ pub fn wire_bytes(u: &WorldUpdate) -> usize {
     }
 }
 
-/// What reached a client by a frame (PLAN step 14e), reported by its worker with the frame.
+/// What reached a client by a frame, reported by its worker with the frame.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Arrivals {
     /// Bytes sent over its link so far (`wire_bytes`, resends included), and of those the

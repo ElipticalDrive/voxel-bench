@@ -1,4 +1,4 @@
-// Hole detection `coverage` on the GPU (PLAN step 13b; a root over `quadtree::set`): which
+// Hole detection `coverage` on the GPU (a root over `quadtree::set`): which
 // faces of the previous list still cover a pixel, which level-0 tiles need discovery, and
 // the sky mask after the final draw. See the incremental notes in `quadtree::set`.
 
@@ -172,6 +172,6 @@ fn need_still(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg
     finish_need(i, why);
 }
 
-// ---- back-to-front order (`order = painter`, PLAN step 4) ----
+// ---- back-to-front order (`order = painter`) ----
 // Along any ray the voxel walk only moves away from the camera's cell on each axis, so the
 // Manhattan distance of a cell from the camera cell strictly increases along the ray: an

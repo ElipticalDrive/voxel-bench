@@ -1,4 +1,4 @@
-//! The graph-first pipeline editor (PLAN A, IDEAS §26). A renderer is its graph: the side
+//! The graph-first pipeline editor. A renderer is its graph: the side
 //! panels show it compactly (`summary`: a row per node, its component and knobs), the
 //! editor window draws it (`canvas`) with an inspector for the selected node. Every choice
 //! is listed; one whose graph cannot run is greyed and says why (`model::Trial`). The back

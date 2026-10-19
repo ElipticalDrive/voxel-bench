@@ -1,4 +1,4 @@
-//! The pipeline editor's edits (PLAN A, IDEAS §26): each is a change to the renderer's graph
+//! The pipeline editor's edits: each is a change to the renderer's graph
 //! that is completed (inputs a new component needs are filled from a preset that has it,
 //! nodes no longer reaching the image dropped) and tried as the renderer would load it. A
 //! choice whose graph cannot run carries the reason instead.

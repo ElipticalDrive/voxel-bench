@@ -1,5 +1,4 @@
-// The face-drawing executor's frame: the core's camera uniform (group 0, binding 0; PLAN step
-// 13e4d), shared by every face source: the GPU face set's list (`set_faces.wgsl`), the CPU
+// The face-drawing executor's frame: the core's camera uniform (group 0, binding 0), shared by every face source: the GPU face set's list (`set_faces.wgsl`), the CPU
 // sampler's records (`records.wgsl`) and meshed chunks (`chunks.wgsl`), their two buffers at
 // bindings 8 and 9.
 

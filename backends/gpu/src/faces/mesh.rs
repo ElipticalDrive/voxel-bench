@@ -1,5 +1,5 @@
 //! Meshing (`gpu-raster`): the face source of view-independent geometry. The executor's
-//! drawer rasterises the geometry component's faces (IDEAS §12, §24):
+//! drawer rasterises the geometry component's faces:
 //!
 //! * **geometry** turns each chunk into packed face instances on the CPU (parallel,
 //!   incremental; `greedy`, `naive`, `cubes`), uploaded per chunk (the schedule's transfer of
@@ -144,7 +144,7 @@ fn parse_merge(s: &str) -> anyhow::Result<Merge> {
 /// deferred drawers' images (group 3).
 const STORAGE_GROUPS: &[u32] = &[2, 4, 5];
 
-/// The ray-casting sites' walks (PLAN step 9c): the shadow rays' first (the storage and
+/// The ray-casting sites' walks: the shadow rays' first (the storage and
 /// traversal stages), bounces and mesh shadows their own or the same; returns the walks and
 /// the indices of (shadow, bounce, mesh shadow).
 fn walks(g: &Checked) -> anyhow::Result<(Walks, usize, usize, usize)> {
@@ -203,7 +203,7 @@ pub(crate) struct Meshing {
     chunk_buf: wgpu::Buffer,
     indirect: wgpu::Buffer,
     bind0: Option<wgpu::BindGroup>,
-    /// The nodes of the timed stages (PLAN step 11): geometry and culling on the CPU (the
+    /// The nodes of the timed stages: geometry and culling on the CPU (the
     /// drawer's are the core's).
     geometry_nodes: Vec<String>,
     cull_nodes: Vec<String>,
@@ -623,7 +623,7 @@ mod tests {
                     for shading in names_on(BACKEND, Slot::Shading) {
                         let flat = mr_components::Composition { storage: st.into(), geometry: g.into(), traversal: k.into(), shading: shading.into(), ..mr_components::Composition::new(BACKEND) };
                         let mut graphs = vec![mr_components::graph::Graph::from_composition(&flat).unwrap()];
-                        // Bounces and mesh shadows through walks of their own (PLAN step 9c).
+                        // Bounces and mesh shadows through walks of their own.
                         if shading == "pathtrace" && g == "greedy" {
                             let mut gr = graphs[0].clone();
                             let node = |role, c: &str, ins: &[(&str, &str)]| {

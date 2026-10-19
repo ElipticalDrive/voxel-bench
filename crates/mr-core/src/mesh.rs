@@ -1,4 +1,4 @@
-//! Mesh mode (IDEAS §13): arbitrary triangle meshes, rigidly animated, rendered together
+//! Mesh mode: arbitrary triangle meshes, rigidly animated, rendered together
 //! with the voxel world.
 //!
 //! * Geometry ([`MeshData`]) is uploaded once per mesh; instances ([`MeshInstance`]) place
@@ -8,7 +8,7 @@
 //!   taken on the side facing the ray, so meshes need not be closed or consistently wound.
 //! * Unlit: pixel = interpolated vertex colour. Lit: the same lighting model as voxels
 //!   ([`crate::lighting`]), with the voxel world shadowing meshes. Meshes cast no shadows in
-//!   this baseline (neither on voxels nor on each other); see PLAN step 7d.
+//!   this baseline (neither on voxels nor on each other).
 //! * Meshes occlude voxels and voxels occlude meshes, by distance along the primary ray.
 //!
 //! Renderers opt in with the `meshes` tag in [`crate::RendererInfo::tags`] and receive mesh

@@ -1,15 +1,14 @@
-//! The face drawer's host side (IDEAS §16 step 2), shared by every back end that
+//! The face drawer's host side, shared by every back end that
 //! rasterises block faces (gpu-raster, gpu-discover, cpu-discover): the pipelines of the
 //! three raster visibility components and the passes that run them.
 //!
 //! * `raster` (forward): faces drawn and shaded in one pass (`fill`); in lit mode with a
 //!   depth prepass first, then shaded where the depth is equal (`depth`, `equal`).
-//! * `visbuffer` / `gbuffer` (deferred): faces drawn into an id (or hit record, PLAN step
-//!   12) target, then one compute pass shades each pixel once (`shade`), reading the target
+//! * `visbuffer` / `gbuffer` (deferred): faces drawn into an id (or hit record) target, then one compute pass shades each pixel once (`shade`), reading the target
 //!   through the images group ([`FaceDrawer::images_layout`], the shade layout's last
 //!   group).
 //!
-//! Meshes (PLAN step 12d, gpu-raster) are drawn into the same depth: forward drawers shade
+//! Meshes (gpu-raster) are drawn into the same depth: forward drawers shade
 //! their fragments in each pass; deferred ones draw them into the same id or record target
 //! (the record's mesh capability), and the shade pass decodes them from the triangles in the
 //! images group.
@@ -96,7 +95,7 @@ pub struct DrawFrame<'a> {
     /// The render layout's groups, in order (also set for the deferred shade pass, whose
     /// images follow them at group 3).
     pub binds: &'a [&'a wgpu::BindGroup],
-    /// Further groups after the images (storages of rays walking their own, PLAN step 9c).
+    /// Further groups after the images (storages of rays walking their own).
     pub more: &'a [(u32, &'a wgpu::BindGroup)],
     /// The mesh triangles for the images group (`images_layout(.., true)`).
     pub mesh_verts: Option<&'a wgpu::Buffer>,
@@ -108,7 +107,7 @@ pub struct DrawFrame<'a> {
     pub nodes: &'a DrawNodes,
 }
 
-/// The graph nodes the drawer's stages run (PLAN step 11): drawing the faces, deferred
+/// The graph nodes the drawer's stages run: drawing the faces, deferred
 /// shading, and what `extra` draws (meshes). A forward drawer runs them in one stage.
 #[derive(Clone, Debug, Default)]
 pub struct DrawNodes {

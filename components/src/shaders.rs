@@ -1,4 +1,4 @@
-//! A pipeline's GPU code as modules (PLAN step 9b, `mr_gpu::program`): every storage and
+//! A pipeline's GPU code as modules (`mr_gpu::program`): every storage and
 //! kernel instance is its own module, and so is each ray service (`occluded`, `strace`
 //! through one kernel), so the primary and the secondary rays' storages and kernels sit side
 //! by side without renaming. Back ends add the instances their graph has and compile their
@@ -19,7 +19,7 @@ pub struct KernelConsts {
     pub lod: bool,
     pub exact: bool,
     pub levels: u32,
-    /// The loop's iteration limit: a constant, not a uniform (PLAN step 16b: as a uniform it
+    /// The loop's iteration limit: a constant, not a uniform (as a uniform it
     /// cost incremental 45 % of its GPU time on NVIDIA).
     pub max_steps: u32,
 }
@@ -100,10 +100,10 @@ pub struct QueryGeometry {
     pub component: String,
 }
 
-/// The walks of a pipeline's GPU ray-casting sites (PLAN step 9c): one module per storage
+/// The walks of a pipeline's GPU ray-casting sites: one module per storage
 /// node and one per kernel node, so sites bound to one node share it and sites bound to
 /// their own each have theirs; every storage at its own bind group. Sites bound to a ray
-/// query (step 13e4b) trace the acceleration structures built from `geometry`: their ray
+/// query trace the acceleration structures built from `geometry`: their ray
 /// services are virtual functions the root overrides (naga cannot write ray queries back
 /// into a module).
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -111,7 +111,7 @@ pub struct Walks {
     pub storages: Vec<StorageInst>,
     pub kernels: Vec<KernelInst>,
     pub geometry: Option<QueryGeometry>,
-    /// The post node's tone mapper, compiled into the shading's output (PLAN step 15b).
+    /// The post node's tone mapper, compiled into the shading's output.
     pub post: Tone,
     /// Every kernel's iteration limit (the executor's `max_steps`).
     pub max_steps: u32,
@@ -270,7 +270,7 @@ pub fn shading_rays(p: &mut Program, walks: &Walks, shadow: usize, bounce: usize
     vec!["rays::shadow".to_string(), "rays::bounce".to_string()]
 }
 
-/// Adds mesh surfaces to `p` (PLAN step 12d): the mesh-surface module (`mesh_surface`,
+/// Adds mesh surfaces to `p`: the mesh-surface module (`mesh_surface`,
 /// `shade_mesh`) with the triangles at `group`, `binding`, lit through the mesh-shadow
 /// site's kernel `mesh_shadow` (the program's lighting when that is the shadow rays' kernel
 /// `shadow`, else a lighting instance of its own), and shader def `MESHES`, which compiles in

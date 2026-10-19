@@ -1,11 +1,11 @@
-//! Where components run (PLAN step 10, IDEAS §21): every component declares its
+//! Where components run: every component declares its
 //! implementations per device kind and API ([`Impl`]), with the capabilities each one
 //! provides (they differ: `bricks` has LOD on the GPU, not on the CPU). An API is how code
 //! runs on a device: on the GPU a compute pass, a raster pass or a compute pass with ray
 //! queries; on the CPU a hot loop compiled for the base x86-64 target (`scalar`) or for
 //! AVX2 / AVX-512.
 //!
-//! An executor (a back end until step 13) declares where it runs each slot ([`Place`]: one
+//! An executor (each back end, formerly) declares where it runs each slot ([`Place`]: one
 //! device kind and the APIs it may run that slot with); a component fills the slot if it
 //! has an implementation of that kind covering every one of those APIs. Graph nodes carry an
 //! optional `api` beside `device` (unset: the executor's choice), checked against both.

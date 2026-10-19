@@ -1,6 +1,5 @@
 //! The ray-query lane (`gpu-rt`; the primary rays' kernel API `rayquery`): hardware ray
-//! tracing (RT cores) through wgpu ray queries, assembled from components (`mr-components`,
-//! IDEAS §12):
+//! tracing (RT cores) through wgpu ray queries, assembled from components (`mr-components`):
 //!
 //! * **geometry** decides what goes into each chunk's BLAS: `greedy` / `naive` quads as
 //!   triangles (traversal and intersection entirely in fixed-function hardware), or `boxes`,

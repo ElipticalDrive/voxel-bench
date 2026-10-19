@@ -1,5 +1,5 @@
 //! The GPU sampler (`gpu-discover`): self-directed visibility discovery, entirely on the
-//! GPU, drawn by the executor's raster lane. Assembled from components (IDEAS §12): the **storage**
+//! GPU, drawn by the executor's raster lane. Assembled from components: the **storage**
 //! (discovery rays, exposure tests and lit-mode shadow rays all read the composed storage,
 //! group 2, and rays walk it with `refloor`), the **visibility** component `quadtree`
 //! (the discovery below) and the **shading** component (`direct`, via `shade_surface`). Was the
@@ -34,7 +34,7 @@
 //! `audit` adds one ray per pixel after the timed passes and counts pixels whose visible
 //! face is not in S.
 //!
-//! The quadtree's shaders are the components' (PLAN step 13b): the sampler
+//! The quadtree's shaders are the components': the sampler
 //! (`mr_components::visibility::quadtree`) and hole detection (`mr_components::holes`, the
 //! `holes = coverage` stage, was `incremental`), two roots over the shared face set.
 //!
@@ -450,7 +450,7 @@ pub(crate) struct GpuSampler {
     ts_period: f32,
     last_stats: Option<Vec<u32>>,
     last_parity: usize,
-    /// The nodes of the timed stages (PLAN step 11): discovery's, then the drawer's.
+    /// The nodes of the timed stages: discovery's, then the drawer's.
     vis_nodes: Vec<String>,
     /// Hole detection's node (timed stages `holes` and `sky mask`).
     holes_nodes: Vec<String>,
@@ -534,7 +534,7 @@ impl GpuSampler {
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
         // Hole detection is a node of the graph (the drawer's faces iterating through it).
         opts.incremental = g.find(Role::Holes).is_some();
-        // The sites' walks (PLAN step 9c): discovery rays (the storage and traversal stages),
+        // The sites' walks: discovery rays (the storage and traversal stages),
         // the storage exposure tests read, shadow and bounce rays; each its own or shared.
         let mut walks = Walks::of(g);
         let bound = |role, port: &str| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{BACKEND}: `{port}` rays are not bound"));
@@ -559,7 +559,7 @@ impl GpuSampler {
         })?;
         let (gpu, dev) = (&core.gpu, &core.gpu.device);
         let module = |label, src: String| mr_gpu::shader(dev, label, src);
-        // Discovery's pieces (PLAN step 13b): the quadtree sampler and hole detection, each
+        // Discovery's pieces: the quadtree sampler and hole detection, each
         // its own root over the shared face set (a module after the walks'). The sampler
         // reads hole detection's tiles only where they are bound (shader def `HOLES`).
         let mut program = drawing.program.clone();
@@ -1736,8 +1736,7 @@ mod tests {
             for k in names_on(BACKEND, Slot::Traversal) {
                 let flat = mr_components::Composition { storage: st.into(), traversal: k.into(), shading: "pathtrace".into(), ..mr_components::Composition::new(BACKEND) };
                 let mut graphs = vec![Graph::from_composition(&flat).unwrap()];
-                // Exposure, shadow and bounce rays through storages and kernels of their own
-                // (PLAN step 9c).
+                // Exposure, shadow and bounce rays through storages and kernels of their own.
                 if k == "refloor" {
                     let mut g = graphs[0].clone();
                     let node = |role, c: &str, ins: &[(&str, &str)]| {

@@ -1,4 +1,4 @@
-// The face drawer (IDEAS §16 step 2): what every rasteriser of block faces shares
+// The face drawer: what every rasteriser of block faces shares
 // (gpu-raster, gpu-discover, cpu-discover): the vertex stage, the pixel's ray and the
 // analytic surface point. The fragment and compute entry points come from the raster
 // visibility components (`raster`, `visbuffer`, `gbuffer`), built on `face_hit`.

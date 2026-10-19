@@ -29,16 +29,16 @@ pub struct ShmSpec {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum HostMsg {
     Init { renderer: String, params: InitParams, shm: ShmSpec },
-    /// The server's stream (PLAN step 14b: the same for every client), in batches; the
+    /// The server's stream (the same for every client), in batches; the
     /// worker's client derives its renderer's updates from it, at camera position `at`
     /// (set on a batch that ends what the server sent for a frame). `time`: when the server
     /// sent it, in seconds of the host's clock (simulated in scripted runs), which the
-    /// client's link delays it by (PLAN step 14c).
+    /// client's link delays it by.
     Stream { updates: Vec<WorldUpdate>, at: Option<DVec3>, time: f64 },
     /// The server streams this region (a radius per LOD level) and neither it nor the
     /// client's changes: a client covering it takes the stream as it is.
     Follow { radii: Vec<u32> },
-    /// The client generates the world itself (PLAN step 14d: the graph's generator on the
+    /// The client generates the world itself (the graph's generator on the
     /// client): `world` is the server's generator spec (`mr_world::GenSpec` as JSON, the
     /// shared seed), `budget` the chunks it generates per frame (`None`: all at once). The
     /// server then sends it edits, lights and the environment only.
@@ -62,7 +62,7 @@ pub enum WorkerMsg {
     Hello { pid: u32, protocol: u32, renderers: Vec<RendererInfo> },
     Ready { info: RendererInfo, init_ms: f32 },
     /// `update_ms` is time spent applying world updates since the previous frame;
-    /// `arrivals` what had reached its client when the frame was requested (PLAN step 14e).
+    /// `arrivals` what had reached its client when the frame was requested.
     FrameDone { frame_id: u64, stats: FrameStats, slot: Option<u32>, update_ms: f32, arrivals: mr_core::link::Arrivals },
     Flushed,
     Memory(MemoryReport),

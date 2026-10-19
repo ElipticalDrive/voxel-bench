@@ -1,4 +1,4 @@
-//! Capabilities (PLAN step 6, IDEAS §17): every interface between stages has a required
+//! Capabilities: every interface between stages has a required
 //! core, which each component implements, plus optional capabilities. A component declares
 //! the capabilities it provides and the ones it needs from other stages (`(slot, cap)`); a
 //! feature (a knob such as LOD) can need capabilities too. A need is met by the component in
@@ -9,7 +9,7 @@
 //!
 //! So far the storage interface on the GPU (`storage/adapters.wgsl`) and the hit record's
 //! optional fields (`Lod`, `Steps`; `crates/mr-gpu/src/voxels.wgsl`). Capabilities are
-//! declared per implementation ([`crate::Impl`], step 10), not per back end: `bricks` has
+//! declared per implementation ([`crate::Impl`]), not per back end: `bricks` has
 //! `Lod` on the GPU, not on the CPU (CPU walks have no LOD). CPU implementations declare
 //! theirs as associated consts (`Repr::CAPS`, `Kernel::CAPS`), which the registry reads.
 //!
@@ -50,7 +50,7 @@ impl Cap {
     }
 }
 
-/// An optional capability of the stored hit record (PLAN step 12, IDEAS §23): bits of the
+/// An optional capability of the stored hit record: bits of the
 /// record's id word (or, for layers, more records per pixel) that pipelines without it never
 /// write, and code compiled in only with it. Not every one is built yet.
 pub struct RecordCap {
@@ -69,7 +69,7 @@ pub const RECORD_CAPS: &[RecordCap] = &[
     RecordCap {
         name: "meshes",
         bits: Some(23..=23),
-        description: "Mesh surfaces (step 12d): bit 23 flags a mesh triangle's hit, its index in bits 1-22 (`pack_mesh_hit`; `visbuffer`: `VIS_MESH | tri`); decoded from the mesh vertices and shaded by `shade_mesh`. Compiled in with a meshes stage (`MESHES`).",
+        description: "Mesh surfaces: bit 23 flags a mesh triangle's hit, its index in bits 1-22 (`pack_mesh_hit`; `visbuffer`: `VIS_MESH | tri`); decoded from the mesh vertices and shaded by `shade_mesh`. Compiled in with a meshes stage (`MESHES`).",
         built: true,
     },
     RecordCap {

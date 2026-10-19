@@ -68,16 +68,15 @@ pub struct RunSpec {
     /// `devices = { gpus = ["nvidia"] }`; a renderer's own `devices` overrides it.
     pub devices: mr_core::DeviceConfig,
     /// `native`: run every renderer an executor runs (CPU or GPU) as a pipeline compiled for
-    /// its graph and this machine (PLAN steps 8 and 16a, `pipelines`), built before their pass
-    /// if not cached; `break-in`: the same, built for speed whatever the build takes (PLAN step
-    /// 16c: native, whole-program LTO, profile-guided and both, each timed here, the fastest
+    /// its graph and this machine (`pipelines`), built before their pass
+    /// if not cached; `break-in`: the same, built for speed whatever the build takes (native, whole-program LTO, profile-guided and both, each timed here, the fastest
     /// kept);
     /// `off`: the generic build.
     pub compile: Compile,
-    /// Time every stage of every frame (PLAN step 11): each GPU stage costs a timestamp
-    /// (measured: +0.1–0.6% GPU time); `false` runs exactly as before step 11.
+    /// Time every stage of every frame: each GPU stage costs a timestamp
+    /// (measured: +0.1–0.6% GPU time); `false` times nothing.
     pub stage_times: bool,
-    /// Before step 14c2 the link of every renderer without its own (PLAN step 14c), e.g.
+    /// In older plans, the link of every renderer without its own, e.g.
     /// `link = { latency_ms = 80, bandwidth_mbps = 50 }`: loads as each renderer's link node
     /// (`sites = { link = "net(latency_ms=80, bandwidth_mbps=50)" }`).
     #[serde(skip_serializing)]
@@ -171,7 +170,7 @@ pub enum Isolation {
     Thread,
 }
 
-/// One renderer of a plan: a composition of components (`compose`, IDEAS §12), or a
+/// One renderer of a plan: a composition of components (`compose`), or a
 /// standalone renderer (cpu-reference) by `name`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -182,13 +181,13 @@ pub struct RendererSpec {
     /// The components this renderer is assembled from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compose: Option<mr_components::Composition>,
-    /// Sites of the composition bound otherwise (PLAN step 9d, the sites form of
+    /// Sites of the composition bound otherwise (the sites form of
     /// `mr_components::graph`): site → `<site>`, `<kernel>`, `<storage>/<kernel>` or
     /// `<site>/<kernel>` (exposure tests: `<storage>` or `<site>`), e.g.
     /// `sites = { bounce = "tree64/sphere" }`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sites: BTreeMap<String, String>,
-    /// The pipeline as a graph (PLAN step 9; `mr_components::graph`), instead of
+    /// The pipeline as a graph (`mr_components::graph`), instead of
     /// `compose`: run as such; `compose` becomes the nearest composition (labels, the flat
     /// options), its skeleton nodes' knobs the options.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,7 +196,7 @@ pub struct RendererSpec {
     pub label: Option<String>,
     #[serde(default)]
     pub options: toml::Table,
-    /// Before step 14c2 this renderer's own view radius, max LOD and link: they load as its
+    /// In older plans, this renderer's own view radius, max LOD and link: they load as its
     /// client's knobs and its link node (`sites = { client = "pick(radius=4, max_lod=2)",
     /// link = "net(latency_ms=30)" }`), see [`Self::view_radius`].
     #[serde(default, skip_serializing)]
@@ -267,7 +266,7 @@ impl RendererSpec {
         // `name = "<back end's renderer>"` (older plans, the CLI): the back end's
         // composition, with stages taken from the options where given.
         if self.compose.is_none() {
-            // Before step 7 the traversal kernel was the `visibility` option.
+            // In older plans the traversal kernel was the `visibility` option.
             if !self.options.contains_key("traversal") {
                 if let Some(v) = self.options.get("visibility").and_then(|v| v.as_str()).filter(|v| mr_components::component(mr_components::Slot::Traversal, v).is_some()).map(String::from) {
                     self.options.remove("visibility");
@@ -284,7 +283,7 @@ impl RendererSpec {
                 self.compose = Some(c);
             }
         }
-        // Before step 13b hole detection was gpu-discover's `incremental` knob.
+        // In older plans hole detection was gpu-discover's `incremental` knob.
         if let Some(on) = self.options.remove("incremental").and_then(|v| v.as_bool()) {
             if let Some(c) = self.compose.as_mut().filter(|c| c.holes.is_empty() || c.holes == "none") {
                 c.holes = if on { "coverage" } else { "none" }.into();
@@ -318,7 +317,7 @@ impl RendererSpec {
         Ok(())
     }
 
-    /// Moves the fields before step 14c2 (`view_radius`, `max_lod`, `link`) into the graph's
+    /// Moves older plans' fields (`view_radius`, `max_lod`, `link`) into the graph's
     /// client and link nodes: the sites form's `client` and `link`, or the graph's nodes.
     fn absorb_region(&mut self) -> anyhow::Result<()> {
         use mr_components::graph::{CLIENT, LINK, link_site, parse_site_knobs, site_with_knobs};
@@ -365,7 +364,7 @@ impl RendererSpec {
     /// `gpu-raster:bricks+greedy+visbuffer`); otherwise a renderer name (a back end's, giving its default composition, or a
     /// standalone one).
     ///
-    /// Sites bound otherwise follow after commas (PLAN step 9d):
+    /// Sites bound otherwise follow after commas:
     /// `gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere`.
     pub fn from_cli(s: &str) -> anyhow::Result<Self> {
         use mr_components::Slot;
@@ -556,7 +555,7 @@ impl RendererSpec {
         self.client_knob("max_lod").map_or(run.max_lod, |l| l as u8).min(supported)
     }
 
-    /// How its client gets the LOD levels (its graph's `client` node; PLAN step 14b).
+    /// How its client gets the LOD levels (its graph's `client` node).
     pub fn levels(&self) -> mr_core::client::Levels {
         self.pipeline().and_then(|g| mr_core::client::Levels::of(g.client())).unwrap_or_default()
     }
@@ -566,8 +565,7 @@ impl RendererSpec {
         crate::stream::Region { radius: self.view_radius(run), max_lod: self.max_lod(run, supported), levels: self.levels(), generates: self.generates() }
     }
 
-    /// Whether its client generates the world itself (its graph's generator on the client:
-    /// PLAN step 14d).
+    /// Whether its client generates the world itself (its graph's generator on the client).
     pub fn generates(&self) -> bool {
         self.pipeline().is_some_and(|g| g.generates())
     }
@@ -669,7 +667,7 @@ impl Plan {
             if r.graph.is_some() && (r.compose.is_some() || !r.sites.is_empty()) {
                 bail!("a renderer has `graph` or `compose` (with `sites`), not both");
             }
-            // `run.link` (before step 14c2): the link of each renderer without its own.
+            // `run.link` (older plans): the link of each renderer without its own.
             let own = r.link.is_some() || r.sites.contains_key(mr_components::graph::LINK) || r.graph.as_ref().is_some_and(|g| g.nodes.values().any(|n| n.role == mr_components::graph::Role::Link));
             if !own && r.has_graph() {
                 r.link = link;
@@ -749,7 +747,7 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
         let site_axes: Vec<(String, Pick)> = e.get("sites").and_then(|s| s.as_table()).map(|t| t.iter().map(|(k, v)| Ok((k.clone(), Pick::of(Some(v), &format!("sites.{k}"))?))).collect::<anyhow::Result<_>>()).transpose()?.unwrap_or_default();
         // Distinct pipelines once each (several spellings can give one graph).
         let mut keys = std::collections::HashSet::new();
-        // Before step 7 the traversal kernel was `visibility` (`visibility = ["refloor", "sphere"]`).
+        // In older plans the traversal kernel was `visibility` (`visibility = ["refloor", "sphere"]`).
         if !compose.contains_key("traversal") {
             let names: Vec<&str> = match compose.get("visibility") {
                 Some(toml::Value::String(v)) => vec![v.as_str()],
@@ -761,7 +759,7 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
                 compose.insert("traversal".into(), v);
             }
         }
-        // Before step 7b the rasterisers' draw choice was `visibility` too.
+        // In older plans the rasterisers' draw choice was `visibility` too.
         if !compose.contains_key("draw") {
             let names: Vec<&str> = match compose.get("visibility") {
                 Some(toml::Value::String(v)) => vec![v.as_str()],
@@ -915,7 +913,7 @@ fn apply_override(table: &mut toml::Table, ov: &str) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    /// Plans before step 14c2 (`run.link`, a renderer's `link`, `view_radius`, `max_lod`)
+    /// Older plans (`run.link`, a renderer's `link`, `view_radius`, `max_lod`)
     /// load as the graphs they mean: the link node and the client's knobs.
     #[test]
     fn old_region_fields_load_as_nodes() {
@@ -1009,7 +1007,7 @@ mod tests {
         let r = &p.renderers[0];
         assert_eq!(r.name, "gpu-compute");
         assert_eq!(r.options.get("storage").and_then(|v| v.as_str()), Some("prefix"));
-        // Written before step 7 (the kernel as `visibility`): loads with it as `traversal`.
+        // An older plan (the kernel as `visibility`): loads with it as `traversal`.
         assert_eq!(r.options.get("traversal").and_then(|v| v.as_str()), Some("incremental"));
         assert_eq!(r.options.get("visibility").and_then(|v| v.as_str()), Some("raycast"));
         assert_eq!(r.label(), "gpu-compute: prefix + incremental");
@@ -1064,7 +1062,7 @@ mod tests {
         assert_eq!(RendererSpec::from_cli("gpu-raster:bricks+greedy+raster+direct+none").unwrap().options.get("meshes").and_then(|v| v.as_str()), Some("none"));
     }
 
-    /// A renderer written as a graph (PLAN step 9a) loads as the composition it is.
+    /// A renderer written as a graph loads as the composition it is.
     #[test]
     fn graph_renderers() {
         let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
@@ -1086,7 +1084,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let bad = graph.replace("primary = \"k\"", "primary = \"s\"");
         let e = Plan::parse(&format!("{base}{bad}"), &[]).unwrap_err().to_string();
         assert!(e.contains("takes ray queries"), "{e}");
-        // Step 9c: shadow rays through a kernel of their own (its knob stays with it) run as
+        // Shadow rays through a kernel of their own (its knob stays with it) run as
         // the graph, labelled as their nearest composition and the graph's key.
         let own = graph.replace("shadow = \"k\" } }", "shadow = \"k2\" } }\nnodes.k2 = { role = \"traversal\", component = \"incremental\", inputs = { storage = \"s\" }, knobs = { exact = true, skip8 = false } }");
         let p = Plan::parse(&format!("{base}{own}"), &[]).unwrap();
@@ -1112,7 +1110,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert!(Plan::parse(&format!("{base}{both}"), &[]).unwrap_err().to_string().contains("not both"));
     }
 
-    /// Step 9d: sites from the command line and in plans, run as graphs.
+    /// Sites from the command line and in plans, run as graphs.
     #[test]
     fn sites() {
         let r = RendererSpec::from_cli("gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere").unwrap();
@@ -1167,12 +1165,12 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert_eq!(names, ["cpu", "cpu-discover"], "named components: only back ends that have them");
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = [\"palette\"] }}\n"), &[]).is_err());
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = \"*\", nope = \"x\" }}\n"), &[]).is_err());
-        // Step 9d: sweeps over sites, once per distinct graph.
+        // Sweeps over sites, once per distinct graph.
         let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ shading = \"pathtrace\" }}\nsites = {{ bounce = \"*\" }}\n"), &[]).unwrap();
         let keys: std::collections::HashSet<String> = p.renderers.iter().map(|r| r.pipeline().unwrap().key().unwrap()).collect();
         assert_eq!(keys.len(), p.renderers.len());
         // shared with the shadow rays, 4 kernels over the primary storage, 8 storages x 4 kernels,
-        // ray queries over 3 geometries (step 13e4b).
+        // ray queries over 3 geometries.
         assert!(p.renderers.len() == 40 && p.renderers.iter().any(|r| r.sites.is_empty()), "{}", p.renderers.len());
         let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = [\"gpu-compute\", \"gpu-raster\"], shading = \"pathtrace\" }}\nsites = {{ bounce = [\"shadow\", \"rows/rowrun\"] }}\n"), &[]).unwrap();
         let labels: Vec<&str> = p.renderers.iter().map(|r| r.label()).collect();
@@ -1180,7 +1178,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert!(labels.contains(&"gpu-raster: bricks + greedy + raster + pathtrace, bounce = rows/rowrun"), "{labels:?}");
         // A named site a pipeline lacks skips it.
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ shading = \"direct\" }}\nsites = {{ bounce = [\"rows/rowrun\"] }}\n"), &[]).is_err());
-        // Step 14e: sweeps over the world's side (link, client, generator); a client's region
+        // Sweeps over the world's side (link, client, generator); a client's region
         // is not in the key but a pass of its own.
         let p = Plan::parse(&format!("{base}[run]\nview_radius = 6\n[[renderer]]\nsites = {{ link = [\"free\", \"net(latency_ms=30)\"], generator = \"*\", client = [\"pick\", \"pick(radius=3, max_lod=2)\", \"derive(radius=3, max_lod=2)\"] }}\n"), &[]).unwrap();
         assert_eq!(p.renderers.len(), 2 * 2 * 3);
@@ -1189,7 +1187,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         seen.dedup();
         assert_eq!(seen.len(), 12);
         assert_eq!(Plan::parse(&format!("{base}[[renderer]]\nsites = {{ link = \"*\", client = \"*\" }}\n"), &[]).unwrap().renderers.len(), 4);
-        // Step 15b: the post's tone mappers, each its own key.
+        // The post's tone mappers, each its own key.
         let p = Plan::parse(&format!("{base}[[renderer]]\nsites = {{ post = \"*\" }}\n"), &[]).unwrap();
         let keys: std::collections::BTreeSet<String> = p.renderers.iter().map(|r| r.pipeline().unwrap().key().unwrap()).collect();
         assert_eq!((p.renderers.len(), keys.len()), (3, 3));

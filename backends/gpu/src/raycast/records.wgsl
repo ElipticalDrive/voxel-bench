@@ -1,6 +1,6 @@
 // The hit records of `placement = deferred` and the deferred pass's view of them (the
 // common pass `shading/deferred.wgsl` expects these): where the rays' pass wrote them, or
-// (PLAN step 13e4c) where they arrived from the GPU that cast the rays.
+// where they arrived from the GPU that cast the rays.
 
 @group(0) @binding(4) var<storage, read_write> records: array<vec2<u32>>;
 

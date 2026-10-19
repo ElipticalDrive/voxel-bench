@@ -4,7 +4,7 @@
 //! accumulation) and `shade` on the CPU (`direct::cpu`). Lit / unlit is
 //! the pass mode, not a component; a shading component decides how either is computed.
 //!
-//! Placement (PLAN step 12): inline, called where the strategy finds the hit, or deferred,
+//! Placement: inline, called where the strategy finds the hit, or deferred,
 //! the common pass over the hit records the strategy wrote (`deferred.wgsl` on the GPU,
 //! [`deferred`] on the CPU).
 

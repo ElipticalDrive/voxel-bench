@@ -46,7 +46,7 @@ pub struct SpawnConfig<'a> {
 }
 
 /// Spawns a worker for `spec` using the plan's run settings; `world` is the world's
-/// generator, which its client runs if the graph places the generator there (PLAN step 14d).
+/// generator, which its client runs if the graph places the generator there.
 pub fn spawn_renderer(
     run: &RunSpec,
     spec: &RendererSpec,
@@ -75,7 +75,7 @@ pub fn spawn_renderer(
         width,
         height,
         blocks,
-        // The world's comes over the stream (`SetEnvironment` first: PLAN step 14c).
+        // The world's comes over the stream (`SetEnvironment` first).
         environment: Environment::default(),
         view_radius_chunks: spec.view_radius(run),
         max_lod: spec.max_lod(run, u8::MAX),

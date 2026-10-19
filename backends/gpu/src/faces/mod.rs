@@ -1,4 +1,4 @@
-//! The faces lane (PLAN steps 13e1, 13e3; IDEAS §24): every pipeline whose image is the
+//! The faces lane: every pipeline whose image is the
 //! shared face drawer's (`draw`: raster, visbuffer or gbuffer) over a set of block faces, one
 //! lane for the three face sources that can feed the drawer's `faces`:
 //! - `gpu-raster`: meshing ([`mesh`]): the geometry component meshes changed chunks on the
@@ -89,11 +89,11 @@ struct SourceSpec {
     features: wgpu::Features,
     /// The source reads the depth buffer (hole detection: last frame's depth).
     depth_read: bool,
-    /// The drawer's timed stages' nodes (PLAN step 11).
+    /// The drawer's timed stages' nodes.
     nodes: DrawNodes,
 }
 
-/// The mesh capability's variant of a program (PLAN step 12d).
+/// The mesh capability's variant of a program.
 struct Meshed {
     program: mr_gpu::program::Program,
     deps: Vec<String>,
@@ -124,7 +124,7 @@ pub(crate) struct Draw {
     images: wgpu::BindGroupLayout,
     depth: wgpu::TextureView,
     depth_read: bool,
-    /// The drawer's timed stages' nodes (PLAN step 11).
+    /// The drawer's timed stages' nodes.
     draw_nodes: DrawNodes,
     depth_prepass: bool,
 }

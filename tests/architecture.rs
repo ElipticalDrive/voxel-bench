@@ -1,4 +1,4 @@
-//! Architecture guard (IDEAS §16 step 4): catches code of redundant purpose creeping back.
+//! Architecture guard: catches code of redundant purpose creeping back.
 //!
 //! 1. No WGSL function is defined by more than one back end (`backends/*`), except the
 //!    functions a component interface asks every implementer for (`INTERFACE`) and entry
@@ -58,20 +58,20 @@ const LIGHTING_ALLOWED: &[(&str, &str)] = &[
 ];
 
 /// Each executor lane's shading entry point (a string its sources must contain), by its path
-/// under `backends/` (PLAN step 13e3: the GPU and the CPU executor, a lane per visibility).
+/// under `backends/` (the GPU and the CPU executor, a lane per visibility).
 const SHADING_USE: &[(&str, &str)] = &[
-    // `shaders::shading`: the shading component's module (`shading::gpu_wgsl`; PLAN step 9b).
-    // The ray-casting lane (gpu-compute and gpu-rt; PLAN step 13e2): each caster.
+    // `shaders::shading`: the shading component's module (`shading::gpu_wgsl`).
+    // The ray-casting lane (gpu-compute and gpu-rt): each caster.
     ("gpu/src/raycast/walk.rs", "shaders::shading(&mut program, shading, &rays"),
     ("gpu/src/raycast/rayquery.rs", "shaders::shading(&mut program, shading, &rays"),
-    // The faces lane (gpu-raster, gpu-discover and cpu-discover; PLAN step 13e1).
+    // The faces lane (gpu-raster, gpu-discover and cpu-discover).
     ("gpu/src/faces", "shading::gpu_wgsl("),
     ("gpu/src/splat.rs", "shading::gpu_wgsl("),
     ("gpu/src/columns.rs", "shading::gpu_wgsl("),
     ("cpu/src/raycast.rs", "direct::cpu::"),
     ("cpu/src/columns.rs", "direct::cpu::"),
     // The reference's f64 model on purpose: the same algorithm at a higher precision (the
-    // f32 component cost 4-22 dB of lit PSNR; PLAN, step 1).
+    // f32 component cost 4-22 dB of lit PSNR).
     ("cpu/src/raster.rs", "shade_surface("),
 ];
 
@@ -242,7 +242,7 @@ fn no_wgsl_function_is_defined_twice() {
             problems.push(format!("`{name}` is shared but redefined by a back end: {}", ds.iter().map(|d| d.file.as_str()).collect::<Vec<_>>().join(", ")));
         }
     }
-    assert!(problems.is_empty(), "redundant WGSL functions (IDEAS §16):\n  {}", problems.join("\n  "));
+    assert!(problems.is_empty(), "redundant WGSL functions:\n  {}", problems.join("\n  "));
 }
 
 #[test]

@@ -1,4 +1,4 @@
-// Mesh surfaces (PLAN step 12d): a mesh triangle's hit, decoded from its record (the
+// Mesh surfaces: a mesh triangle's hit, decoded from its record (the
 // record's mesh capability, `pack_mesh_hit`) wherever the pixel is shaded: the ray
 // caster's walk (inline) or the common deferred pass. The triangles are the mesh pass's
 // vertices (`mr_gpu::meshes::GpuMeshes`, camera-block relative, three per triangle), bound

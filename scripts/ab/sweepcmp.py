@@ -1,17 +1,17 @@
 # sweepcmp.py BASE_SWEEP NEW_SWEEP (e.g. baselines/sweep-20261011 target/sweep/<time>): compares two sweeps per (plan, mode, pipeline, options): GPU ms, fps, PSNR.
-# Pipelines are keyed by their canonical graph (`graph_key`, PLAN step 9d), recomputed for every record by
+# Pipelines are keyed by their canonical graph (`graph_key`), recomputed for every record by
 # `multirenderer graph --keys` (MR_BIN, default target/release/multirenderer), so records written before they
-# carried one, or under an older canonical form (step 10 placed geometry on the CPU), compare by one key.
+# carried one, or under an older canonical form (geometry later placed on the CPU), compare by one key.
 import sys, json, glob, gzip, os, subprocess, statistics as st, collections
 KERNELS = {'refloor', 'incremental', 'sphere', 'rowrun', 'rayquery'}
 DRAWS = {'raster', 'visbuffer', 'gbuffer'}
-# Slots added by the architecture refactor (step 7) and their defaults per back end.
+# Slots added by the architecture refactor and their defaults per back end.
 ADDED = {'gpu-compute': {'visibility': 'raycast'}, 'cpu': {'visibility': 'raycast'}, 'gpu-rt': {'visibility': 'raycast'},
          'gpu-raster': {'visibility': 'faces', 'draw': 'raster', 'traversal': 'refloor'}, 'cpu-raster': {'visibility': 'faces', 'draw': 'raster'},
          'gpu-discover': {'draw': 'raster', 'traversal': 'refloor'}, 'cpu-discover': {'draw': 'raster', 'traversal': 'refloor'},
          'gpu-splat': {'traversal': 'refloor'}}
 def canonical(comp, opts):
-    """One form for records from before and after step 7: kernels in `traversal`, the
+    """One form for records from before and after the slots were split: kernels in `traversal`, the
     rasterisers' and discovery's drawer in `draw`, added slots at their defaults."""
     c, opts = dict(comp), dict(opts)
     if 'traversal' not in c and c.get('visibility') in KERNELS: c['traversal'] = c.pop('visibility')

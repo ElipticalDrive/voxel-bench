@@ -1,4 +1,4 @@
-//! The GPU executor (PLAN step 13e3): every pipeline whose image is made on the GPU, one
+//! The GPU executor: every pipeline whose image is made on the GPU, one
 //! executor over one core with a lane per kind of visibility node:
 //! - faces ([`faces`]): the shared face drawer over a set of block faces from meshing
 //!   (`gpu-raster`) or discovery on the GPU or the CPU (`gpu-discover`, `cpu-discover`);
@@ -14,7 +14,7 @@
 //! state, hit records, acceleration structures, then the lane's), the output, the frame ring
 //! and the timed stages' nodes.
 //!
-//! The executor is also compiled on demand for one graph (PLAN step 16a2: the host's
+//! The executor is also compiled on demand for one graph (the host's
 //! `pipelines` generates a crate naming a [`Spec`]): its worker's CPU work (the client, the
 //! storages' encoding, meshing, discovery) is then built for this CPU, CPU discovery walks
 //! the graph's storage alone, and the knobs it baked cannot change.
@@ -40,9 +40,9 @@ mod splat;
 
 pub use mr_components::visibility::discover::grid::CpuWorld;
 
-/// What a pipeline compiled for one graph bakes in (PLAN step 16a2): a generated crate
-/// implements this with the graph's values. The GPU work stays the generic build's (its
-/// specialisation is step 16b).
+/// What a pipeline compiled for one graph bakes in: a generated crate
+/// implements this with the graph's values. The GPU work stays the generic build's (the
+/// driver specialises it, through the pipeline cache).
 pub trait Spec: 'static {
     /// The back end whose graph and knobs the worker takes.
     const BACKEND: &'static str;
@@ -188,7 +188,7 @@ fn run<L: Lane + 'static>((core, lane): (Core, L)) -> anyhow::Result<Box<dyn Ren
 
 /// The camera uniform every lane's root reads (group 0, binding 0); `lane` holds the lane's
 /// two words. The rasterising lanes also read the view-projection and the anchor (the faces
-/// lane: the CPU sampler's face records are relative to it; PLAN step 13e4d), which the
+/// lane: the CPU sampler's face records are relative to it), which the
 /// others' shaders leave undeclared.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -246,9 +246,9 @@ struct CoreSpec<'a> {
 pub(crate) struct Core {
     gpu: Arc<Gpu>,
     world: VoxelWorld,
-    /// The storage instances the GPU's rays walk (PLAN step 9c).
+    /// The storage instances the GPU's rays walk.
     storages: StorageSet,
-    /// The acceleration structures the GPU's ray queries trace (PLAN step 13e4b), and the
+    /// The acceleration structures the GPU's ray queries trace, and the
     /// geometry node they are built from (their timed stage).
     accel: Option<accel::Accel>,
     accel_nodes: Vec<String>,
@@ -261,13 +261,13 @@ pub(crate) struct Core {
     stages: wgpu::ShaderStages,
     ring: FrameRing,
     frames_in_flight: usize,
-    /// The nodes of the timed stages (PLAN step 11): visibility with shading, visibility,
+    /// The nodes of the timed stages: visibility with shading, visibility,
     /// shading.
     stage_nodes: [Vec<String>; 3],
     width: u32,
     height: u32,
     waker: Waker,
-    /// The post's tone mapper (the walks'; PLAN step 15b): in the programs' `display`, and
+    /// The post's tone mapper (the walks'): in the programs' `display`, and
     /// here for the sky.
     tone: mr_core::lighting::Tone,
 }
@@ -283,7 +283,7 @@ fn records_size(width: u32, height: u32) -> u64 {
     (width as u64 * height as u64 * 8).max(16)
 }
 
-/// The GPU slot a pipeline's nodes run on (the device configuration's, PLAN step 13e4c): its
+/// The GPU slot a pipeline's nodes run on (the device configuration's): its
 /// drawer's, else its visibility node's (the shading may run on another: [`remote`]).
 fn home_slot(g: &graph::Checked) -> usize {
     let at = |r| g.find(r).map(|id| g.devices[id]);
@@ -313,7 +313,7 @@ impl Core {
             needs.required_features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
         }
         let gpu = mr_gpu::gpu(devices, slot, &needs)?;
-        // Every pipeline of this graph goes through one persistent cache (PLAN step 16b).
+        // Every pipeline of this graph goes through one persistent cache.
         gpu.open_cache(&g.graph.key().map_err(anyhow::Error::msg)?);
         let accel = s.accel.as_ref().map(|a| accel::Accel::new(&gpu, a)).transpose()?;
         let world = VoxelWorld::new(

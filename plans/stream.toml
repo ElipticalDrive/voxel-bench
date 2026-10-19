@@ -1,4 +1,4 @@
-# The served split measured (PLAN step 14e): one pipeline swept over the link, the
+# The served split measured: one pipeline swept over the link, the
 # generator's placement and how the client gets its LOD levels. Each pass reports the bytes
 # over its link, the update cost per byte, the chunks of its region missing per frame
 # (the server's backlog, on the link, not generated yet) and the first frame with none
