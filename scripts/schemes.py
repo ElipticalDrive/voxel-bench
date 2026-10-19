@@ -12,7 +12,7 @@ import sys
 import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent / "docs" / "schemes"
-CATEGORIES = ["storage", "traversal", "visibility", "discovery", "geometry", "draw", "prepass", "shading", "meshes", "post", "world"]
+CATEGORIES = ["storage", "traversal", "visibility", "discovery", "geometry", "draw", "prepass", "shading", "meshes", "post", "world", "architecture", "tools"]
 STATUSES = ["idea", "built", "measured", "rejected"]
 ORIGINS = ["user", "project", "literature"]
 FIELDS = {"title": str, "category": str, "status": str, "components": list, "related": list, "origin": str, "sources": list}
@@ -74,7 +74,8 @@ def index(entries):
         for title, where, h in rows:
             comps = ", ".join(f"`{c.split('/', 1)[1]}`" for c in h["components"])
             note = f" ({comps})" if comps else ""
-            lines.append(f"- [{title}]({where.as_posix()}){note}: {h['status']}, {h['origin']}")
+            status = "untested idea" if h["status"] == "idea" else h["status"]
+            lines.append(f"- [{title}]({where.as_posix()}){note}: {status}, {h['origin']}")
         lines.append("")
     return "\n".join(lines).rstrip("\n")
 

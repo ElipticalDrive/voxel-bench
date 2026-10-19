@@ -1,8 +1,10 @@
 # Encyclopedia of rendering schemes
 
-One entry per scheme: every component this project implements, and the techniques around
-them. Each entry says what the scheme is, how it works, how it is built here, what has been
-measured, and how it relates to the other entries.
+One entry per scheme: every component this project implements, the techniques around them,
+every idea for one (built or not), and the ideas behind the bench's own design and tools.
+Each entry says what the scheme is, how it works, how it is built here, what has been
+measured, and how it relates to the other entries. An entry whose status is `idea` is
+untested, and says so at its top.
 
 ## An entry
 
@@ -21,9 +23,12 @@ sources = ["Author, Title, Venue Year"]
 +++
 ```
 
-- `status`: `idea` (not built), `built` (works and is tested for correctness, but has not
+- `status`: `idea` (untested: not built, or built but not yet tried; the entry starts with
+  **Untested idea.**), `built` (works and is tested for correctness, but has not
   been measured), `measured` (numbers in the entry), `rejected` (tried and dropped; the entry
   says why).
+- Categories: the folders. Most are kinds of pipeline node; `world` is the server, link and
+  client side; `architecture` the bench's design; `tools` the GUI and tooling.
 - `origin`: `user` (the project owner's idea), `project` (devised while building this
   bench), `literature` (published or well known; see `sources`).
 
@@ -52,6 +57,7 @@ cannot be added without one.
 - [Distance field: Chebyshev distance per voxel](storage/distance.md) (`distance`): measured, literature
 - [Heightmap: top block per column](storage/heightmap.md) (`heightmap`): measured, literature
 - [Hier: bricks plus 8³ region bits](storage/hier.md) (`hier`): measured, project
+- [Max-height mipmaps](storage/max-height-mipmaps.md): untested idea, literature
 - [Palette compression](storage/palette.md) (`palette`): measured, literature
 - [Prefix: Morton masks with a popcount prefix](storage/prefix.md) (`prefix`): measured, user
 - [Rows: occupancy bitmasks along x](storage/rows.md) (`rows`): measured, literature
@@ -62,10 +68,12 @@ cannot be added without one.
 
 - [Chebyshev sphere tracing](traversal/sphere.md) (`sphere`): measured, literature
 - [CPU ray packets and SIMD hot loops](traversal/ray-packets.md): measured, literature
+- [Early-out ray casting](traversal/early-out.md): built, user
 - [Hardware ray queries](traversal/rayquery.md) (`rayquery`): measured, literature
 - [Incremental hierarchical DDA](traversal/incremental.md) (`incremental`): measured, user
 - [Refloor: probe, step out, re-floor](traversal/refloor.md) (`refloor`): measured, literature
 - [Row runs: bit-scan jumps along x](traversal/rowrun.md) (`rowrun`): measured, literature
+- [Starting rays at last frame's distance](traversal/temporal-ray-start.md): untested idea, user
 - [The reference: an exact two-level DDA in f64](traversal/reference-dda.md): measured, literature
 
 ### Visibility
@@ -77,9 +85,13 @@ cannot be added without one.
 
 ### Discovery
 
+- [Discovery and meshing as face sources](discovery/face-sources.md): built, user
+- [Discovery in signed fixed-point clip space](discovery/clip-space-discovery.md): untested idea, user
 - [Discovery with a screen-space quadtree](discovery/quadtree.md) (`quadtree`): measured, user
+- [Discovery with heads that walk the faces](discovery/heads.md): untested idea, user
 - [Face-cluster discovery](discovery/cluster.md) (`cluster`): measured, user
 - [Incremental discovery: coverage-based hole detection](discovery/coverage.md) (`coverage`): measured, user
+- [Self-balancing breadth-first discovery levels](discovery/balanced-levels.md): measured, user
 
 ### Geometry
 
@@ -105,9 +117,12 @@ cannot be added without one.
 - [Deferred shading over a common hit record](shading/deferred-shading.md): measured, literature
 - [Diffuse path tracing](shading/pathtrace.md) (`pathtrace`): measured, literature
 - [Direct lighting: the reference model](shading/direct.md) (`direct`): measured, literature
+- [Path tracing on incremental discovery](shading/pathtrace-on-discovery.md): untested idea, user
+- [Transparency and surface effects](shading/transparency.md): untested idea, user
 
 ### Meshes
 
+- [Mesh mode: animated meshes with voxels](meshes/mesh-mode.md): built, user
 - [Meshes composited into ray casting](meshes/mesh-composite.md) (`composite`): built, project
 - [Meshes in the rasteriser's depth buffer](meshes/mesh-depth.md) (`depth`): built, literature
 
@@ -120,5 +135,21 @@ cannot be added without one.
 - [A modelled network link](world/link.md) (`free`, `net`): measured, project
 - [Level of detail by chunk rings](world/lod.md): measured, literature
 - [The client: picked or derived LOD levels](world/client.md) (`pick`, `derive`): measured, project
+- [The served split: server, link and client](world/served-split.md): built, user
 - [World generation on the server or the client](world/generator.md) (`procedural`): measured, project
+
+### Architecture
+
+- [A cached inventory of every device and API](architecture/device-inventory.md): untested idea, user
+- [A device and an API per node](architecture/device-per-node.md): built, user
+- [A planner that learns the machine](architecture/learning-planner.md): untested idea, user
+- [Composition at no cost, without redundant code](architecture/zero-cost-composition.md): built, user
+- [Pipelines as graphs](architecture/pipeline-graph.md): built, user
+- [Pipelines compiled on demand, and break-in mode](architecture/compile-on-demand.md): built, user
+- [The bench as a renderer library](architecture/library-interface.md): untested idea, user
+
+### Tools
+
+- [A graph-first pipeline editor](tools/graph-editor.md): built, user
+- [Docking panes](tools/docking.md): untested idea, user
 <!-- end index -->
