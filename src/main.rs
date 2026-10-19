@@ -228,7 +228,14 @@ fn main() -> anyhow::Result<()> {
         Cmd::View { plan: path, renderers, overrides } => {
             let mut plan = Plan::load(&path, &overrides)?;
             if !renderers.is_empty() {
-                plan.renderers = renderers.iter().map(|r| plan::RendererSpec::from_cli(r)).collect::<anyhow::Result<_>>()?;
+                plan.renderers = renderers
+                    .iter()
+                    .map(|r| {
+                        let mut s = plan::RendererSpec::from_cli(r)?;
+                        s.resolve()?;
+                        Ok(s)
+                    })
+                    .collect::<anyhow::Result<_>>()?;
             }
             if plan.run.streaming == Streaming::Complete {
                 // Keep the view responsive when flying fast.

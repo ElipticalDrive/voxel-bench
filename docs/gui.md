@@ -56,7 +56,13 @@
 The ❓ Keys tab lists everything.
 
 `multirenderer view` is a minimal viewer without the GUI. It uses the same movement keys,
-plus `P` to print the camera as a plan snippet and Esc to quit.
+plus `P` to print the camera as a plan snippet and Esc to quit. It presents through an HDR
+surface where the display offers one (scRGB, extended sRGB or HDR10), so a renderer with
+`post = "hdr"` shows its values above 1 as brighter than white instead of clipped: H switches
+between HDR and SDR, `[` / `]` make the frames darker / brighter against the desktop's SDR
+white (in quarter stops). Frames' 1.0 sits at SDR white, decoded with the curve the
+compositor uses for SDR windows (gamma 2.2 on Linux, sRGB on Windows), so an SDR frame looks
+the same in both modes.
 
 ## The pipeline editor
 

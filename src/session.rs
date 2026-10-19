@@ -273,9 +273,10 @@ impl Outputs {
 
     /// Hands a finished frame to the window, the saver and the comparison. The comparison runs on
     /// the comparer threads; its result arrives on the returned channel.
-    /// `px` is the frame in the worker's format. The window, comparisons and PNGs take its
-    /// RGBA8 form (a float frame converted only when one of them does); the float frame of an
-    /// `hdr` post is saved as Radiance `.hdr` next to the PNG.
+    /// `px` is the frame in the worker's format; the window takes it as it is (it presents a
+    /// float frame in HDR where the display can). Comparisons and PNGs take its RGBA8 form (a
+    /// float frame converted only when one of them does); the float frame of an `hdr` post is
+    /// saved as Radiance `.hdr` next to the PNG.
     fn deliver(&mut self, lane: &mut Lane, frame: u32, mode: PassMode, recorded: bool, px: Vec<u8>) -> Option<crossbeam_channel::Receiver<Quality>> {
         let (w, h) = (lane.width, lane.height);
         // Throttle what goes to the window to ~60 Hz per lane.
@@ -283,14 +284,14 @@ impl Outputs {
         if !to_ui && !(recorded && (self.compare_hit(frame) || self.save_hit(frame))) {
             return None;
         }
-        let (px, hdr) = crate::worker::rgba8(lane.worker.format, px);
         if let (true, Some(ui)) = (to_ui, &self.ui) {
             lane.last_ui = Some(Instant::now());
-            ui.send(UiEvent::Frame { lane: lane.ui_index, width: w, height: h, pixels: Arc::new(px.to_vec()) });
+            ui.send(UiEvent::Frame { lane: lane.ui_index, width: w, height: h, format: lane.worker.format, pixels: Arc::new(px.clone()) });
         }
         if !recorded {
             return None;
         }
+        let (px, hdr) = crate::worker::rgba8(lane.worker.format, px);
         let tag = format!("{}-{}", sanitize(&lane.report.label), mode.name());
         let mut quality = None;
         if self.compare_hit(frame) {
