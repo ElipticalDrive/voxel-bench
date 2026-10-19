@@ -21,6 +21,8 @@ pub enum UiEvent {
     Frame { lane: usize, width: u32, height: u32, format: PixelFormat, pixels: Arc<Vec<u8>> },
     Lanes(usize),
     Title(String),
+    /// The frames' 1.0 on an HDR surface, relative to SDR white.
+    Gain(f32),
     Exit,
 }
 
@@ -33,6 +35,10 @@ pub struct Input {
     pub toggle_mode: bool,
     pub print_camera: bool,
     pub speed_steps: i32,
+    /// The gain `[` / `]` set, since last read.
+    pub gain: Option<f32>,
+    /// How the window presents ([`Gpu::status`]), since last read.
+    pub status: Option<String>,
 }
 
 #[derive(Clone)]
@@ -78,6 +84,7 @@ pub fn run_with_window<T: Send + 'static>(
         handle: handle.clone(),
         mouse_down: false,
         last_cursor: None,
+        gain: 1.0,
     };
     event_loop.run_app(&mut app)?;
     handle.closed.store(true, Ordering::Relaxed);
@@ -107,6 +114,15 @@ enum Encoding {
 }
 
 impl Encoding {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Sdr | Self::SdrSrgbFormat => "SDR",
+            Self::ExtendedLinear => "scRGB",
+            Self::Extended => "extended sRGB",
+            Self::Pq => "HDR10 (PQ)",
+        }
+    }
+
     fn hdr(self) -> bool {
         matches!(self, Self::ExtendedLinear | Self::Extended | Self::Pq)
     }
@@ -262,6 +278,15 @@ impl Gpu {
         let mut gpu = Self { surface, adapter, device, queue, config, encoding: Encoding::Sdr, hdr: true, gain: 1.0, sdr_white, pipelines: vec![], layout, shader, uniform, textures: vec![] };
         gpu.configure(size.width, size.height);
         Ok(gpu)
+    }
+
+    /// How it presents: the colour space and, in HDR, the gain.
+    fn status(&self) -> String {
+        match (self.encoding.hdr(), self.hdr) {
+            (true, _) => format!("{}, 1.0 at {:.2}× SDR white", self.encoding.name(), self.gain),
+            (false, true) => "SDR (the display offers no HDR surface)".into(),
+            (false, false) => "SDR (H: HDR)".into(),
+        }
     }
 
     /// (Re)configures the surface for the window's size and the HDR choice.
@@ -434,6 +459,8 @@ struct App {
     handle: UiHandle,
     mouse_down: bool,
     last_cursor: Option<(f64, f64)>,
+    /// The gain last set by `UiEvent::Gain` (the surface's until then).
+    gain: f32,
 }
 
 impl App {
@@ -456,12 +483,14 @@ impl App {
             KeyCode::BracketRight => gpu.gain = (gpu.gain * 2f32.powf(0.25)).min(16.0),
             _ => return,
         }
+        self.gain = gpu.gain;
         let size = window.inner_size();
         gpu.configure(size.width, size.height);
-        if !gpu.encoding.hdr() && code == KeyCode::KeyH && gpu.hdr {
-            tracing::info!("view window: the display offers no HDR surface");
-        } else if code != KeyCode::KeyH {
-            tracing::info!("view window: frames' 1.0 at {:.2} × SDR white", gpu.gain);
+        tracing::info!("view window: {}", gpu.status());
+        let mut input = self.handle.input.lock().unwrap();
+        input.status = Some(gpu.status());
+        if code != KeyCode::KeyH {
+            input.gain = Some(gpu.gain);
         }
         window.request_redraw();
     }
@@ -477,7 +506,11 @@ impl ApplicationHandler<UiEvent> for App {
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
         let window = Arc::new(el.create_window(attrs).expect("create window"));
         match Gpu::new(window.clone()) {
-            Ok(g) => self.gpu = Some(g),
+            Ok(mut g) => {
+                g.gain = self.gain;
+                self.handle.input.lock().unwrap().status = Some(g.status());
+                self.gpu = Some(g);
+            }
             Err(e) => tracing::error!("view window: no GPU surface: {e:#}"),
         }
         self.window = Some(window);
@@ -502,6 +535,14 @@ impl ApplicationHandler<UiEvent> for App {
             UiEvent::Title(t) => {
                 if let Some(w) = &self.window {
                     w.set_title(&t);
+                }
+            }
+            UiEvent::Gain(gain) => {
+                self.gain = gain.clamp(1.0 / 16.0, 16.0);
+                if let (Some(w), Some(g)) = (&self.window, &mut self.gpu) {
+                    g.gain = self.gain;
+                    self.handle.input.lock().unwrap().status = Some(g.status());
+                    w.request_redraw();
                 }
             }
             UiEvent::Exit => el.exit(),

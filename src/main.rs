@@ -9,6 +9,7 @@ mod gui;
 mod observe;
 mod pipelines;
 mod plan;
+mod present;
 mod report;
 mod session;
 pub(crate) use mr_world::stream;
@@ -99,6 +100,14 @@ enum Cmd {
         #[arg(long)]
         socket: String,
     },
+    /// Internal: present one lane's frames in a window of its own (spawned by the GUI).
+    #[command(hide = true)]
+    Present {
+        #[arg(long)]
+        socket: String,
+        #[arg(long)]
+        title: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -117,6 +126,7 @@ fn main() -> anyhow::Result<()> {
     match cmd {
         Cmd::Gui { plan } => gui::run(plan),
         Cmd::Worker { socket } => mr_worker::run(&socket),
+        Cmd::Present { socket, title } => present::run(&socket, &title),
         Cmd::Graph { keys: true, .. } => {
             for line in std::io::stdin().lines() {
                 let line = line?;

@@ -87,6 +87,10 @@ struct App {
     fps_cap: f64,
     display_hz: f64,
     probe_interval: f64,
+    /// Lanes shown in an HDR window of their own (bit `i`: lane `i`).
+    windows: u64,
+    /// Those windows' paper white: the frames' 1.0 relative to the display's SDR white.
+    paper_white: f32,
     edit_mode: bool,
     /// Viewport only, OS fullscreen (F11).
     fullscreen: bool,
@@ -190,6 +194,8 @@ impl App {
             fps_cap: 0.0,
             display_hz: 60.0,
             probe_interval: 0.0,
+            windows: 0,
+            paper_white: 1.0,
             edit_mode: false,
             fullscreen: false,
             pixel_exact: false,
@@ -272,6 +278,22 @@ impl App {
         self.message = "live session starting".into();
     }
 
+    /// Takes over what the session's windows changed, then hands it the controls.
+    fn sync_live(&mut self, ctx: &egui::Context) {
+        let Some(l) = &self.live else { return };
+        {
+            let mut sh = l.shared.lock().unwrap();
+            for i in sh.closed_windows.drain(..) {
+                self.windows &= !(1u64 << i.min(63));
+            }
+            if let Some(g) = sh.paper_white.take() {
+                self.paper_white = g;
+            }
+        }
+        *l.control.lock().unwrap() = self.control();
+        ctx.request_repaint();
+    }
+
     fn control(&self) -> Control {
         Control {
             camera: if self.follow_path { CameraControl::Path } else { CameraControl::Free(self.cam) },
@@ -281,6 +303,8 @@ impl App {
             fps_cap: self.fps_cap,
             display_hz: self.display_hz,
             probe_interval: self.probe_interval,
+            windows: self.windows,
+            paper_white: self.paper_white,
         }
     }
 
@@ -905,6 +929,8 @@ impl App {
                 LaneAction::Swap(lane, spec) => self.send(Cmd::Swap { lane, spec }),
                 LaneAction::Remove(i) => {
                     self.send(Cmd::RemoveLane(i));
+                    let below = (1u64 << i.min(63)) - 1;
+                    self.windows = self.windows & below | (self.windows >> 1) & !below;
                     self.textures.clear();
                     self.focus = None;
                 }
@@ -979,7 +1005,34 @@ impl App {
             if ui.small_button("✖").on_hover_text("Remove from the live session (the plan is unchanged)").clicked() {
                 actions.push(LaneAction::Remove(i));
             }
+            if i < 64 {
+                let bit = 1u64 << i;
+                let mut open = self.windows & bit != 0;
+                if ui
+                    .toggle_value(&mut open, "☀ HDR")
+                    .on_hover_text(
+                        "Show this renderer in a window of its own, presented in HDR where the display offers it (an `hdr` post's values above 1 \
+                         stay above SDR white; other posts look as here). In the window: H switches HDR / SDR, [ and ] set the paper white, Esc closes.",
+                    )
+                    .changed()
+                {
+                    self.windows ^= bit;
+                }
+            }
         });
+        if let Some(w) = &l.window {
+            ui.horizontal(|ui| {
+                ui.weak(format!("window: {w}"));
+                let mut stops = self.paper_white.log2();
+                if ui
+                    .add(egui::DragValue::new(&mut stops).speed(0.05).range(-4.0..=4.0).custom_formatter(|v, _| format!("{:.2}×", 2f64.powf(v))).prefix("paper white ").update_while_editing(false))
+                    .on_hover_text("The frames' 1.0 (an SDR frame's white) relative to the display's SDR white, in every HDR window. Above 1 brightens the frame, highlights included. Shared by all windows; [ and ] in a window set it too.")
+                    .changed()
+                {
+                    self.paper_white = 2f32.powf(stops);
+                }
+            });
+        }
         if let Some(sw) = &l.swap {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -1374,10 +1427,7 @@ impl App {
 
         if self.fullscreen {
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
-            if let Some(l) = &self.live {
-                *l.control.lock().unwrap() = self.control();
-                ctx.request_repaint();
-            }
+            self.sync_live(&ctx);
             return;
         }
         if let Some(p) = schemes::take_request(&ctx) {
@@ -1399,10 +1449,7 @@ impl App {
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
         self.pipeline_window(&ctx);
 
-        if let Some(l) = &self.live {
-            *l.control.lock().unwrap() = self.control();
-            ctx.request_repaint();
-        }
+        self.sync_live(&ctx);
         if self.bench.as_ref().is_some_and(|b| !b.finished) {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }

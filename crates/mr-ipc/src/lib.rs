@@ -71,6 +71,31 @@ pub enum WorkerMsg {
     Error(String),
 }
 
+/// Host -> presenter (a window of its own presenting one lane's frames, HDR where the
+/// display offers it: the GUI's own surface cannot).
+#[derive(Debug, Serialize, Deserialize)]
+pub enum PresentMsg {
+    /// The frame region (one slot), sent before the first frame and when frames outgrow it.
+    Shm(ShmSpec),
+    /// A frame is in the slot; the presenter answers `Shown` once it has copied it.
+    Frame { width: u32, height: u32, format: mr_core::lighting::PixelFormat },
+    /// The frames' 1.0 relative to the display's SDR white (paper white).
+    Gain(f32),
+    Title(String),
+    Shutdown,
+}
+
+/// Presenter -> host.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum PresentReply {
+    /// The slot is free again.
+    Shown,
+    /// The window's own keys changed the gain.
+    Gain(f32),
+    /// How the window presents (colour space, gain), for the host to show.
+    Status(String),
+}
+
 pub struct MsgWriter<T> {
     w: BufWriter<SendHalf>,
     buf: Vec<u8>,

@@ -64,6 +64,13 @@ white (in quarter stops). Frames' 1.0 sits at SDR white, decoded with the curve 
 compositor uses for SDR windows (gamma 2.2 on Linux, sRGB on Windows), so an SDR frame looks
 the same in both modes.
 
+In the GUI, **☀ HDR** on a renderer's Metrics panel opens that renderer in a window of its own,
+presented the same way (the GUI's own window is SDR). The panel then shows how the window
+presents (e.g. `scRGB, 1.0 at 1.00× SDR white`) and the **paper white**: the frames' 1.0
+relative to the desktop's SDR white, shared by every such window (`[` / `]` in a window set it
+too). Closing the window (or Esc in it) unticks the button. A live-session restart (F5)
+reopens the windows.
+
 ## The pipeline editor
 
 A renderer is its pipeline graph (see [pipelines.md](pipelines.md)). The plan editor and the

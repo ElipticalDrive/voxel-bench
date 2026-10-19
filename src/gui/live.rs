@@ -26,6 +26,7 @@ use mr_world::{Scene, World};
 
 use crate::compare::{self, Quality};
 use crate::plan::{Plan, RendererSpec, RunSpec, Streaming};
+use crate::present::{self, Presenter};
 use crate::stream::{Region, Streamer};
 use crate::tune::{self, Action, HistoryPoint, Tuner, TunerConfig};
 use crate::worker::{self, Worker, WorkerEvent};
@@ -53,6 +54,10 @@ pub struct Control {
     pub display_hz: f64,
     /// Seconds between automatic quality probes; 0 = only on demand.
     pub probe_interval: f64,
+    /// Lanes shown in a presenter window of their own (bit `i`: lane `i`).
+    pub windows: u64,
+    /// Those windows' paper white: the frames' 1.0 relative to the display's SDR white.
+    pub paper_white: f32,
 }
 
 pub enum Cmd {
@@ -155,6 +160,8 @@ pub struct LaneView {
     pub events: Vec<(f64, String)>,
     pub tuner: Option<TunerView>,
     pub resolution: [u32; 2],
+    /// How its presenter window presents, while one is open.
+    pub window: Option<String>,
 }
 
 impl LaneView {
@@ -217,6 +224,7 @@ impl LaneView {
             events: vec![],
             tuner: None,
             resolution: [0, 0],
+            window: None,
         }
     }
 }
@@ -253,6 +261,11 @@ pub struct Shared {
     pub reference: String,
     /// When the session started: the zero of the lanes' event times.
     pub start: Option<Instant>,
+    /// Lanes whose presenter window went (closed by the user, or failed): the GUI takes
+    /// them out of [`Control::windows`].
+    pub closed_windows: Vec<usize>,
+    /// A presenter window's keys changed the paper white: the GUI takes it over.
+    pub paper_white: Option<f32>,
 }
 
 impl Shared {
@@ -501,6 +514,8 @@ struct Session {
     probe_seq: u64,
     last_probe: Instant,
     compare_seq: u64,
+    /// Presenter windows by lane.
+    presenters: BTreeMap<usize, Presenter>,
 }
 
 /// A component knob changed in the options: carry it into the composition, so restarts and
@@ -563,6 +578,7 @@ impl Session {
             probe_seq: 0,
             last_probe: Instant::now(),
             compare_seq: 0,
+            presenters: BTreeMap::new(),
             plan,
         };
         s.shared.lock().unwrap().status = "running".into();
@@ -861,6 +877,8 @@ impl Session {
                     for w in [lane.run.worker, lane.standby.and_then(|s| s.worker)].into_iter().flatten() {
                         std::thread::spawn(move || w.shutdown());
                     }
+                    self.presenters.remove(&i);
+                    self.presenters = std::mem::take(&mut self.presenters).into_iter().map(|(k, p)| (if k > i { k - 1 } else { k }, p)).collect();
                     let mut sh = self.shared.lock().unwrap();
                     sh.lanes.remove(i);
                     sh.comparing = false;
@@ -926,10 +944,73 @@ impl Session {
         }
     }
 
+    /// Opens and closes presenter windows as [`Control::windows`] asks, takes their
+    /// reports and drops the ones that went.
+    fn sync_presenters(&mut self, ctl: &Control) {
+        let mut gone = vec![];
+        for i in 0..self.lanes.len().min(64) {
+            let want = ctl.windows >> i & 1 != 0;
+            if want && !self.presenters.contains_key(&i) {
+                match Presenter::spawn(&self.window_title(i), ctl.paper_white) {
+                    Ok(p) => {
+                        self.presenters.insert(i, p);
+                    }
+                    Err(e) => {
+                        self.event(i, format!("no window: {e:#}"));
+                        gone.push(i);
+                    }
+                }
+            } else if !want && self.presenters.remove(&i).is_some() {
+                self.shared.lock().unwrap().lanes.get_mut(i).map(|v| v.window = None);
+            }
+        }
+        let titles: Vec<(usize, String)> = self.presenters.keys().map(|&i| (i, self.window_title(i))).collect();
+        for (i, title) in titles {
+            let p = self.presenters.get_mut(&i).unwrap();
+            let r = p.poll().and_then(|r| {
+                p.set_gain(ctl.paper_white)?;
+                p.set_title(&title)?;
+                Ok(r)
+            });
+            let mut sh = self.shared.lock().unwrap();
+            match r {
+                Ok(reports) => {
+                    for r in reports {
+                        match r {
+                            present::Report::Gain(g) => sh.paper_white = Some(g),
+                            present::Report::Status(s) => {
+                                if let Some(v) = sh.lanes.get_mut(i) {
+                                    v.window = Some(s);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::info!("lane {}: window: {e:#}", i + 1);
+                    gone.push(i);
+                }
+            }
+        }
+        for i in gone {
+            self.presenters.remove(&i);
+            let mut sh = self.shared.lock().unwrap();
+            sh.closed_windows.push(i);
+            if let Some(v) = sh.lanes.get_mut(i) {
+                v.window = None;
+            }
+        }
+    }
+
+    fn window_title(&self, i: usize) -> String {
+        format!("multirenderer — {} {}", i + 1, self.lanes[i].run.spec.label())
+    }
+
     fn tick(&mut self, ctl: &Control) -> anyhow::Result<bool> {
         let mut busy = false;
         let now = self.now();
         busy |= self.poll_spawns();
+        self.sync_presenters(ctl);
 
         // Scripted scene time.
         if ctl.events && self.applied_frame != Some(ctl.scene_frame) {
@@ -1347,11 +1428,13 @@ impl Session {
         let start = self.start;
         let shared = self.shared.clone();
         let server_pending = self.server.pending();
+        let presenting = self.presenters.contains_key(&i);
         let Some(lane) = self.lane_mut(i) else { return Ok(false) };
         let Some(w) = &mut lane.run.worker else { return Ok(false) };
         let mut busy = false;
         let mut repaint = false;
         let mut probe_px: Vec<(u64, [u32; 2], Arc<Vec<u8>>)> = vec![];
+        let mut shown = None;
         if lane.last_mem.elapsed() > Duration::from_secs(1) && i != REFERENCE {
             lane.last_mem = Instant::now();
             w.send(HostMsg::QueryMemory)?;
@@ -1391,7 +1474,11 @@ impl Session {
                     }
                     let now = Instant::now();
                     let res = lane.run.res;
-                    let pixels = slot.map(|s| Arc::new(crate::worker::rgba8(w.format, w.take_frame(s, (res[0] * res[1]) as usize)).0));
+                    let raw = slot.map(|s| w.take_frame(s, (res[0] * res[1]) as usize));
+                    if let (Some(px), Purpose::Live, true) = (&raw, &f.purpose, presenting) {
+                        shown = Some((res, w.format, px.clone()));
+                    }
+                    let pixels = raw.map(|px| Arc::new(crate::worker::rgba8(w.format, px).0));
                     match f.purpose {
                         Purpose::Live => {
                             let t = now.duration_since(start).as_secs_f64();
@@ -1428,6 +1515,13 @@ impl Session {
                     }
                 }
                 m => anyhow::bail!("unexpected message {m:?}"),
+            }
+        }
+        if let (Some((res, format, px)), Some(p)) = (shown, self.presenters.get_mut(&i)) {
+            if let Err(e) = p.offer(res[0], res[1], format, &px) {
+                tracing::info!("lane {}: window: {e:#}", i + 1);
+                self.presenters.remove(&i);
+                self.shared.lock().unwrap().closed_windows.push(i);
             }
         }
         for (id, res, px) in probe_px {
@@ -1534,6 +1628,7 @@ impl Session {
     }
 
     fn shutdown(&mut self) {
+        self.presenters.clear();
         let mut handles = vec![];
         for l in self.lanes.drain(..).chain(self.reference.take()) {
             for w in [l.run.worker, l.standby.and_then(|s| s.worker)].into_iter().flatten() {
@@ -1591,7 +1686,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        let control = Control { camera: CameraControl::Path, mode: PassMode::UNLIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.0 };
+        let control = Control { camera: CameraControl::Path, mode: PassMode::UNLIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.0, windows: 0, paper_white: 1.0 };
         let live = LiveHandle::start(plan.clone(), vec![], control, || {});
         wait(&live.shared, "frames from all lanes", 60, |s| s.lanes.len() == 3 && s.lanes.iter().all(|l| l.frame.is_some() && l.samples.len() > 20));
         assert!(live.shared.lock().unwrap().lanes[0].params.iter().any(|(p, _)| p.name == "max_steps"));
@@ -1722,6 +1817,42 @@ mod tests {
         assert_eq!(keep_knobs(&given, &now, given.clone()).client_knob("max_lod"), Some(2));
     }
 
+    /// A lane in a presenter window of its own (needs a GPU and a display; run with
+    /// `--ignored`): the window opens, reports how it presents, shows frames, and closes.
+    #[test]
+    #[ignore]
+    fn live_hdr_window() {
+        let plan = Plan::parse(
+            r#"
+            [scene]
+            generator = { type = "showcase" }
+            camera = { type = "orbit", center = [20, 2, 0], radius = 26, height = 12, period = 120 }
+            [run]
+            resolution = [320, 180]
+            view_radius = 3
+            isolation = "thread"
+            [[renderer]]
+            compose = { backend = "gpu-compute" }
+            sites = { post = "hdr" }
+            "#,
+            &[],
+        )
+        .unwrap();
+        let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join(format!("multirenderer{}", std::env::consts::EXE_SUFFIX));
+        assert!(exe.exists(), "build the binary first ({})", exe.display());
+        // SAFETY: set before any thread of this test starts; the other tests that read it set the same.
+        unsafe { std::env::set_var("MR_WORKER_EXE", &exe) };
+        let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 30.0, probe_interval: 0.0, windows: 1, paper_white: 1.0 };
+        let live = LiveHandle::start(plan, vec![], control, || {});
+        wait(&live.shared, "the window's status", 30, |s| s.lanes.first().is_some_and(|l| l.window.is_some()));
+        let frames = live.shared.lock().unwrap().lanes[0].frames;
+        wait(&live.shared, "frames while the window is open", 30, |s| s.lanes[0].frames > frames + 30);
+        assert!(live.shared.lock().unwrap().closed_windows.is_empty(), "the window went: {:?}", live.shared.lock().unwrap().log);
+        eprintln!("window: {}", live.shared.lock().unwrap().lanes[0].window.as_deref().unwrap());
+        live.control.lock().unwrap().windows = 0;
+        wait(&live.shared, "the window to close", 10, |s| s.lanes[0].window.is_none());
+    }
+
     /// Mesh mode through a live session (needs a GPU; run with `--ignored`): the probe's
     /// reference draws the meshes, so a mesh-capable lane matches it closely and a lane
     /// without mesh support does not.
@@ -1746,7 +1877,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        let control = Control { camera: CameraControl::Path, mode: PassMode::UNLIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.0 };
+        let control = Control { camera: CameraControl::Path, mode: PassMode::UNLIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.0, windows: 0, paper_white: 1.0 };
         // Process workers start from the real executable, not this test harness
         // (target/<profile>/deps/<test> -> target/<profile>/multirenderer; build it first).
         let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join(format!("multirenderer{}", std::env::consts::EXE_SUFFIX));
@@ -1775,7 +1906,7 @@ mod tests {
         ])
         .unwrap();
         let mode = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
-        let control = Control { camera: CameraControl::Path, mode, scene_frame: 50, events: true, fps_cap: 0.0, display_hz: 30.0, probe_interval: 0.3 };
+        let control = Control { camera: CameraControl::Path, mode, scene_frame: 50, events: true, fps_cap: 0.0, display_hz: 30.0, probe_interval: 0.3, windows: 0, paper_white: 1.0 };
         let live = LiveHandle::start(plan, vec![], control, || {});
         wait(&live.shared, "probes on both lanes", 120, |s| s.lanes.len() == 2 && s.lanes.iter().all(|l| !l.quality.is_empty()));
         let (with, without) = {
@@ -1807,7 +1938,7 @@ mod demo {
             "run.resolution=[1920,1080]".into(),
         ])
         .unwrap();
-        let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0 };
+        let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0, windows: 0, paper_white: 1.0 };
         let live = LiveHandle::start(plan, vec![], control, || {});
         let t0 = Instant::now();
         while live.shared.lock().unwrap().lanes.first().is_none_or(|l| l.samples.len() < 50) {
@@ -1854,7 +1985,7 @@ mod scale_curve {
         let renderer = std::env::var("RENDERER").unwrap_or("gpu-compute:bricks+refloor".into());
         let mut plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/terrain.toml")), &["run.isolation=\"thread\"".into(), "run.resolution=[1280,720]".into()]).unwrap();
         plan.renderers = vec![RendererSpec::from_cli(&renderer).unwrap()];
-        let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0 };
+        let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0, windows: 0, paper_white: 1.0 };
         let live = LiveHandle::start(plan, vec![], control, || {});
         let wait = |f: &dyn Fn(&Shared) -> bool| {
             let t = Instant::now();
