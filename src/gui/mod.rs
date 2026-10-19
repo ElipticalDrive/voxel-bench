@@ -4,9 +4,10 @@
 
 mod bench;
 mod editor;
+mod graph;
+mod knobs;
 mod legend;
 mod live;
-mod stages;
 
 use std::path::{Path, PathBuf};
 
@@ -134,6 +135,9 @@ struct App {
     bench: Option<bench::BenchRun>,
     report: Option<bench::Report>,
     message: String,
+    /// The pipeline editor window, if open.
+    graph_win: Option<graph::Window>,
+    trials: graph::Trials,
 }
 
 /// Knob value as a plan option value.
@@ -198,6 +202,8 @@ impl App {
             bench: None,
             report: None,
             message: String::new(),
+            graph_win: None,
+            trials: Default::default(),
         };
         app.option_text = option_texts(&app.plan);
         if let Some(p) = initial {
@@ -556,6 +562,7 @@ impl App {
             LeftTab::Form => {
                 let camera = self.live_camera();
                 let mut restart = None;
+                let mut open_graph = None;
                 let live = self.live.is_some();
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut ectx = editor::EditorCtx {
@@ -565,6 +572,8 @@ impl App {
                         option_text: &mut self.option_text,
                         restart_lane: &mut restart,
                         live,
+                        trials: &mut self.trials,
+                        open_graph: &mut open_graph,
                     };
                     if editor::plan_editor(ui, &mut self.plan, &mut ectx) {
                         self.dirty = true;
@@ -574,6 +583,9 @@ impl App {
                         ui.weak("World, path and run-setting changes take effect when you restart the live session (F5). Use ↻ on a renderer to restart just that one.");
                     }
                 });
+                if let Some((i, sel)) = open_graph {
+                    self.graph_win = Some(graph::Window::new(graph::Of::Plan(i), sel));
+                }
                 if let Some(i) = restart {
                     let n = self.live.as_ref().map(|l| l.shared.lock().unwrap().lanes.len()).unwrap_or(0);
                     let spec = self.plan.renderers[i].clone();
@@ -985,7 +997,7 @@ impl App {
                     }
                 });
             });
-        egui::CollapsingHeader::new("stages & knobs").id_salt(("knobs", i)).default_open(true).show(ui, |ui| {
+        egui::CollapsingHeader::new("pipeline & knobs").id_salt(("knobs", i)).default_open(true).show(ui, |ui| {
             ui.weak("↻ = changing it hot-swaps the renderer · 🔒 = the tuner may not touch it");
             let locks = &mut self.locks;
             let mut lock_box = |ui: &mut egui::Ui, spec: &mr_core::ParamSpec| {
@@ -1001,28 +1013,10 @@ impl App {
             };
             // Values being dragged are shown before they are applied.
             let knobs: Vec<(mr_core::ParamSpec, mr_core::ParamValue)> = l.params.iter().map(|(s, v)| (s.clone(), self.knob_edits.get(&(i, s.name.clone())).cloned().unwrap_or(v.clone()))).collect();
-            let edits = match &l.spec.compose {
-                Some(_) => stages::stage_grid(ui, &l.spec, &knobs, true, &mut lock_box),
-                // A standalone renderer: its knobs only.
-                None => {
-                    let mut edits = vec![];
-                    egui::Grid::new("knobs").num_columns(3).striped(true).show(ui, |ui| {
-                        for (spec, value) in &knobs {
-                            let label = if spec.live { spec.name.clone() } else { format!("{} ↻", spec.name) };
-                            ui.label(label).on_hover_text(stages::knob_tip(spec));
-                            if let Some((v, commit)) = stages::knob_widget(ui, spec, value) {
-                                edits.push(stages::StageEdit::Knob { name: spec.name.clone(), value: v, commit });
-                            }
-                            lock_box(ui, spec);
-                            ui.end_row();
-                        }
-                    });
-                    edits
-                }
-            };
+            let edits = graph::summary(ui, &format!("{:?}", graph::Of::Lane(i)), &l.spec, &knobs, true, &mut lock_box, &mut self.trials, &self.infos, &self.plan.run);
             for e in edits {
                 match e {
-                    stages::StageEdit::Knob { name, value, commit } => {
+                    graph::Edit::Knob { name, value, commit } => {
                         let key = (i, name.clone());
                         let live = l.params.iter().find(|(s, _)| s.name == name).is_some_and(|(s, _)| s.live);
                         if (live && name != "host.render_scale") || commit {
@@ -1032,43 +1026,12 @@ impl App {
                             self.knob_edits.insert(key, value);
                         }
                     }
-                    // Live where the back end can switch the component, else a hot swap. A
-                    // pipeline with sites of its own is swapped whole (its graph changes).
-                    stages::StageEdit::Slot(slot, name) if l.spec.ran_graph.is_some() => {
-                        let mut spec = l.spec.clone();
-                        if let Some(mut c) = spec.compose.clone() {
-                            c.set(slot, &name);
-                            if spec.set_compose(c.clone()).is_err() {
-                                spec.sites.clear();
-                                if spec.set_compose(c).is_err() {
-                                    continue;
-                                }
-                            }
-                            actions.push(LaneAction::Swap(i, spec));
-                        }
-                    }
-                    stages::StageEdit::Slot(slot, name) => actions.push(LaneAction::Set(i, slot.name().into(), mr_core::ParamValue::Choice(name))),
-                    stages::StageEdit::Sites(sites) => {
-                        let mut spec = l.spec.clone();
-                        if spec.set_sites(sites).is_ok() {
-                            actions.push(LaneAction::Swap(i, spec));
-                        }
-                    }
-                    stages::StageEdit::Backend(b) => {
-                        let mut spec = l.spec.clone();
-                        if let Some(mut comp) = spec.compose.clone() {
-                            comp.backend = b;
-                            comp.adapt_to_backend();
-                            let renderer = mr_components::backend(&comp.backend).and_then(|bk| bk.renderer);
-                            if let Some(info) = self.infos.iter().find(|x| Some(x.name.as_str()) == renderer) {
-                                stages::prune_options(&mut spec.options, &info.params);
-                            }
-                            spec.sites.clear();
-                            if spec.set_compose(comp).is_ok() {
-                                actions.push(LaneAction::Swap(i, spec));
-                            }
-                        }
-                    }
+                    // A component the running back end switches live, else a hot swap.
+                    graph::Edit::Spec(spec) => match graph::live_switch(&l.spec, &spec, &l.params) {
+                        Some((slot, c)) => actions.push(LaneAction::Set(i, slot, mr_core::ParamValue::Choice(c))),
+                        None => actions.push(LaneAction::Swap(i, spec)),
+                    },
+                    graph::Edit::Open(sel) => self.graph_win = Some(graph::Window::new(graph::Of::Lane(i), sel)),
                 }
             }
         });
@@ -1358,6 +1321,7 @@ impl App {
         egui::Panel::left("editor").resizable(true).default_size(400.0).show(ui, |ui| self.left(ui));
         egui::Panel::right("side").resizable(true).default_size(430.0).show(ui, |ui| self.right(ui));
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
+        self.pipeline_window(&ctx);
 
         if let Some(l) = &self.live {
             *l.control.lock().unwrap() = self.control();
@@ -1365,6 +1329,58 @@ impl App {
         }
         if self.bench.as_ref().is_some_and(|b| !b.finished) {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+    }
+}
+
+impl App {
+    /// The pipeline editor window, on a plan's renderer or a live lane.
+    fn pipeline_window(&mut self, ctx: &egui::Context) {
+        let Some(mut win) = self.graph_win.take() else { return };
+        let target = match win.of {
+            graph::Of::Plan(i) => self.plan.renderers.get(i).map(|r| {
+                let params: &[mr_core::ParamSpec] = self.infos.iter().find(|x| x.name == r.name).map_or(&[], |x| &x.params);
+                (format!("plan renderer {} ({})", i + 1, r.label()), r.clone(), params.iter().map(|p| (p.clone(), knobs::option_value(p, &r.options))).collect::<Vec<_>>())
+            }),
+            graph::Of::Lane(i) => self.live.as_ref().and_then(|l| {
+                let sh = l.shared.lock().unwrap();
+                sh.lanes.get(i).map(|l| (format!("live lane {} ({})", i + 1, l.spec.label()), l.spec.clone(), l.params.iter().map(|(s, v)| (s.clone(), self.knob_edits.get(&(i, s.name.clone())).cloned().unwrap_or(v.clone()))).collect()))
+            }),
+        };
+        let Some((title, spec, knobs)) = target else { return };
+        let marks = matches!(win.of, graph::Of::Lane(_));
+        let (edits, open) = graph::window(ctx, &mut win, &title, &spec, &knobs, marks, &mut self.trials, &self.infos, &self.plan.run);
+        match win.of {
+            graph::Of::Plan(i) => {
+                let (changed, _) = graph::apply_to_plan(&mut self.plan.renderers[i], edits);
+                if changed {
+                    self.option_text = option_texts(&self.plan);
+                    self.dirty = true;
+                }
+            }
+            graph::Of::Lane(i) => {
+                for e in edits {
+                    match e {
+                        graph::Edit::Knob { name, value, commit } => {
+                            let live = knobs.iter().find(|(s, _)| s.name == name).is_some_and(|(s, _)| s.live);
+                            if (live && name != "host.render_scale") || commit {
+                                self.knob_edits.remove(&(i, name.clone()));
+                                self.send(Cmd::SetParam { lane: i, name, value });
+                            } else {
+                                self.knob_edits.insert((i, name), value);
+                            }
+                        }
+                        graph::Edit::Spec(new) => match graph::live_switch(&spec, &new, &knobs) {
+                            Some((slot, c)) => self.send(Cmd::SetParam { lane: i, name: slot, value: mr_core::ParamValue::Choice(c) }),
+                            None => self.send(Cmd::Restart { lane: i, spec: new }),
+                        },
+                        graph::Edit::Open(_) => {}
+                    }
+                }
+            }
+        }
+        if open {
+            self.graph_win = Some(win);
         }
     }
 }
@@ -1499,7 +1515,7 @@ mod tests {
     }
 
     /// Renders the GUI offscreen to `target/gui-shot.png` (needs a GPU; `--ignored`): a live
-    /// session with composed renderers, so the stage grids of the plan editor and of the
+    /// session with composed renderers, so the pipeline summaries of the plan editor and of the
     /// Metrics tab can be looked at. `SHOT_PLAN` may name a plan file instead.
     #[test]
     #[ignore]
@@ -1532,6 +1548,12 @@ mod tests {
         app.option_text = option_texts(&app.plan);
         app.start_live(&ctx);
         app.right_tab = RightTab::Metrics;
+        // `SHOT_GRAPH=lane0` / `plan1:shading`: the pipeline editor open on a renderer (and node).
+        if let Ok(v) = std::env::var("SHOT_GRAPH") {
+            let (of, sel) = v.split_once(':').map_or((v.as_str(), None), |(a, b)| (a, Some(b.to_string())));
+            let n: usize = of.trim_start_matches(|c: char| c.is_alphabetic()).parse().unwrap_or(0);
+            app.graph_win = Some(graph::Window::new(if of.starts_with("plan") { graph::Of::Plan(n) } else { graph::Of::Lane(n) }, sel));
+        }
         // Every texture update, in order: the font atlas only arrives in the first frames.
         let mut deltas = vec![];
         let mut last = None;

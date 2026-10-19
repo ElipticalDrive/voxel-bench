@@ -46,7 +46,7 @@ cargo build --release
 GUI. It has five areas:
 
 - **Workflow (left).** A form for every plan setting: world generator, camera path,
-  environment, lights, scripted events, renderers (each as a stage grid, see below), run
+  environment, lights, scripted events, renderers (each as its pipeline graph, see below), run
   settings and benchmark outputs. A TOML tab lets you edit the raw plan. Open, save and Ctrl+S are in
   the toolbar. "⌖ cam" buttons copy the live camera into positions and camera-path
   points, which is a quick way to author fly-throughs.
@@ -122,15 +122,20 @@ stage renders lit and unlit and owns the lighting knobs (`shadows`). The meshes 
 decides how meshes are drawn (`composite` on gpu-compute, `depth` on gpu-raster), or that
 they are not (`none`).
 
-**The stage grid** (plan editor and live Metrics tab) edits a renderer in one compact
-block: the back end with its own knobs, then one row per stage with the chosen component
-and *that component's* knobs next to it (e.g. `exact` / `skip2…16` beside traversal
-`incremental`, `bounces` / `spp` beside shading `pathtrace`, `cull` beside geometry
-`naive`). Every component of a stage is listed; ones that cannot run with this back end
-are greyed out, and hovering them says what they conflict with. In the live session a
-component switch applies in place where the back end can (or hot-swaps), and a back-end
-switch hot-swaps the renderer. Back ends declare each knob's owner with
-`ParamSpec::of(slot, &[components])`.
+**The pipeline editor.** A renderer is its graph. The plan editor and the live Metrics tab
+show it compactly: the preset it runs as (derived from the graph, never chosen), then a row
+per node with its component and *that component's* knobs (e.g. `exact` / `skip2…16` beside
+traversal `incremental`, `bounces` / `spp` beside shading `pathtrace`). "✏ graph" opens the
+editor window: the graph drawn from the world (left) to the image (right), edges coloured by
+what they carry, the previous frame's dashed, a shared node drawn once. Click a node to pick
+its component, device, API, what each input is bound to (an existing node: shared; or a new
+one), when each edge's value arrives, and its knobs; drag from an output onto an input to
+rebind it. Every choice is listed; one whose graph cannot run is greyed and hovering it says
+why; a choice that moves the graph to another preset says so (`→ gpu-discover`). Inputs a
+new component needs are filled from a preset that has it, nodes left unread are dropped, so
+the graph always runs. "start from…" loads a preset's default pipeline; undo / redo. In the
+live session an edit applies in place where the executor can (a live component knob), else
+as a hot swap. Back ends declare each knob's owner with `ParamSpec::of(slot, &[components])`.
 
 ```toml
 [[renderer]]
@@ -249,8 +254,7 @@ whether it can change *live*. Every lane also has host knobs:
 - `host.view_radius`: streamed chunks.
 - `host.in_flight`: frames the host lets this renderer queue.
 
-The **Metrics → stages & knobs** section shows them in the stage grid, each next to its
-component, as sliders, checkboxes and dropdowns.
+The **Metrics → pipeline & knobs** section shows them, each next to its node, as sliders, checkboxes and dropdowns.
 Live knobs apply between frames. Knobs marked ↻ need a restart, which is done as a
 **hot swap**: a replacement worker spawns, streams the world and renders three unseen
 warm-up frames, while the old one keeps rendering. Then it takes over in one step.

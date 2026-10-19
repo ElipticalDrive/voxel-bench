@@ -18,6 +18,10 @@ pub struct EditorCtx<'a> {
     /// Set when the user asks to restart a live lane with its edited spec.
     pub restart_lane: &'a mut Option<usize>,
     pub live: bool,
+    /// One `Trial` per renderer (the pipeline editor's choices).
+    pub trials: &'a mut super::graph::Trials,
+    /// Set when the user opens the pipeline editor on a renderer (and a node).
+    pub open_graph: &'a mut Option<(usize, Option<String>)>,
 }
 
 type Changed = bool;
@@ -469,57 +473,21 @@ fn events(ui: &mut Ui, es: &mut Vec<EventSpec>, ctx: &EditorCtx) -> Changed {
     c
 }
 
-/// Whether `name` is a back end's renderer (edited through the stage grid).
+/// Whether `name` is a back end's renderer (edited as a pipeline graph).
 fn is_backend_renderer(name: &str) -> bool {
     mr_components::BACKENDS.iter().any(|b| b.renderer == Some(name))
 }
 
-/// The stage grid (`stages::stage_grid`) for a composed renderer: edits go into its
-/// composition and its options. Returns whether anything changed.
-fn composition(ui: &mut Ui, r: &mut RendererSpec, infos: &[RendererInfo]) -> Changed {
-    use super::stages::{StageEdit, option_value, prune_options, stage_grid};
-    let Some(mut comp) = r.compose.clone() else { return false };
-    let params: &[mr_core::ParamSpec] = infos.iter().find(|i| i.name == r.name).map_or(&[], |i| &i.params);
-    let knobs: Vec<_> = params.iter().map(|p| (p.clone(), option_value(p, &r.options))).collect();
-    let edits = stage_grid(ui, r, &knobs, false, &mut |_, _| {});
-    let mut sites = None;
-    let mut changed = false;
-    for e in edits {
-        match e {
-            StageEdit::Backend(b) => {
-                comp.backend = b;
-                comp.adapt_to_backend();
-                if let Some(bk) = mr_components::backend(&comp.backend) {
-                    // Options the new back end doesn't know would make it refuse to start.
-                    if let Some(info) = infos.iter().find(|i| Some(i.name.as_str()) == bk.renderer) {
-                        prune_options(&mut r.options, &info.params);
-                    }
-                }
-            }
-            StageEdit::Slot(slot, name) => comp.set(slot, &name),
-            StageEdit::Sites(s) => sites = Some(s),
-            StageEdit::Knob { name, value, .. } => {
-                r.options.insert(name, super::param_to_toml(&value));
-                changed = true;
-            }
-        }
-    }
-    if comp != *r.compose.as_ref().unwrap() {
-        // Sites the new composition cannot keep are dropped (with a note).
-        if let Err(e) = r.set_compose(comp.clone()) {
-            tracing::warn!("composition: {e:#}; its sites dropped");
-            r.sites.clear();
-            if let Err(e) = r.set_compose(comp) {
-                tracing::warn!("composition: {e:#}");
-            }
-        }
-        changed = true;
-    }
-    if let Some(s) = sites {
-        if let Err(e) = r.set_sites(s) {
-            tracing::warn!("sites: {e:#}");
-        }
-        changed = true;
+/// A composed renderer's summary (`graph::summary`): edits go into it. Returns whether
+/// anything changed.
+fn composition(ui: &mut Ui, i: usize, r: &mut RendererSpec, run: &crate::plan::RunSpec, ctx: &mut EditorCtx) -> Changed {
+    use super::graph::{self, Of};
+    let params: &[mr_core::ParamSpec] = ctx.infos.iter().find(|x| x.name == r.name).map_or(&[], |x| &x.params);
+    let knobs: Vec<_> = params.iter().map(|p| (p.clone(), super::knobs::option_value(p, &r.options))).collect();
+    let edits = graph::summary(ui, &format!("{:?}", Of::Plan(i)), r, &knobs, false, &mut |_, _| {}, ctx.trials, ctx.infos, run);
+    let (changed, open) = graph::apply_to_plan(r, edits);
+    if let Some(sel) = open {
+        *ctx.open_graph = Some((i, sel));
     }
     changed
 }
@@ -528,12 +496,13 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
     let mut c = false;
     ctx.option_text.resize_with(plan.renderers.len(), String::new);
     let mut remove = None;
+    let run = plan.run.clone();
     for (i, r) in plan.renderers.iter_mut().enumerate() {
         ui.push_id(("renderer", i), |ui| {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     if r.compose.is_some() {
-                        ui.strong(r.label()).on_hover_text("Assembled from components (IDEAS §12): pick the back end, then a component for each stage; each component's knobs sit next to it");
+                        ui.strong(r.label()).on_hover_text("A pipeline graph: a row per node with its component and knobs; ✏ graph opens the editor");
                     } else {
                         ui.strong(&r.name).on_hover_text("A standalone renderer (cpu-reference defines the reference images)");
                     }
@@ -550,7 +519,7 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
                     }
                 });
                 if r.compose.is_some() {
-                    if composition(ui, r, ctx.infos) {
+                    if composition(ui, i, r, &run, ctx) {
                         ctx.option_text[i] = toml::to_string(&r.extra_options()).unwrap_or_default();
                         c = true;
                     }
@@ -558,26 +527,6 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
                     let modes: Vec<_> = info.modes.iter().map(|m| m.name()).collect();
                     ui.weak(format!("[{}] {} — modes: {}", info.tags.join(", "), info.description, modes.join("/")));
                 }
-                ui.horizontal(|ui| {
-                    // The client's knobs (PLAN step 14c2): its region, unset the run's.
-                    for (knob, label, hover, start, range, unit) in [
-                        ("radius", "own view radius", "overrides run.view_radius for this renderer (its client's `radius`): chunks (32 blocks) streamed around the camera", 8, 1..=64, " chunks"),
-                        ("max_lod", "own max LOD", "overrides run.max_lod (its client's `max_lod`, capped by what the renderer supports): coarser levels beyond the view radius, each doubling reach at half resolution", 2, 0..=8, ""),
-                    ] {
-                        let mut value = r.client_knob(knob);
-                        let mut on = value.is_some();
-                        let mut changed = ui.checkbox(&mut on, label).on_hover_text(hover).changed();
-                        if changed {
-                            value = on.then_some(start);
-                        }
-                        if let Some(v) = &mut value {
-                            changed |= ui.add(DragValue::new(v).range(range).suffix(unit)).on_hover_text(hover).changed();
-                        }
-                        if changed && r.set_client_knob(knob, value).is_ok() {
-                            c = true;
-                        }
-                    }
-                });
                 let text = &mut ctx.option_text[i];
                 egui::CollapsingHeader::new("options as TOML").id_salt("toml").show(ui, |ui| {
                     if ui.add(egui::TextEdit::multiline(text).code_editor().desired_rows(2).desired_width(f32::INFINITY)).on_hover_text("The knobs above as `key = value` lines (only the ones set); edits apply as you type when valid").changed() {
@@ -600,7 +549,7 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
         c = true;
     }
     ui.horizontal(|ui| {
-        if ui.button("+ renderer").on_hover_text("Add a renderer assembled from components (then pick its back end and stages)").clicked() {
+        if ui.button("+ renderer").on_hover_text("Add a renderer (gpu-compute's default pipeline; then change its graph: ✏ graph)").clicked() {
             plan.renderers.push(RendererSpec::composed(Default::default()));
             ctx.option_text.push(String::new());
             c = true;

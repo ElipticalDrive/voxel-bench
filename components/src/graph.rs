@@ -441,6 +441,19 @@ fn link_knobs(spec: &mr_core::link::LinkSpec) -> toml::Table {
     t
 }
 
+/// The components that can fill `role` (the world has none to choose; "none" means the
+/// optional input it would feed is left unbound).
+pub fn role_components(role: Role) -> Vec<&'static str> {
+    match role.slot() {
+        None if role == Role::Client => CLIENTS.to_vec(),
+        None if role == Role::Link => LINKS.to_vec(),
+        None if role == Role::Generator => GENERATORS.to_vec(),
+        None if role == Role::Post => POSTS.to_vec(),
+        None => vec![],
+        Some(s) => crate::components(s).map(|c| c.name).filter(|n| *n != "none").collect(),
+    }
+}
+
 /// Whether `role` component `name` exists.
 fn known(role: Role, name: &str) -> bool {
     match role.slot() {
@@ -676,6 +689,18 @@ impl Graph {
             }
         }
         g.executor = p.into();
+        g
+    }
+
+    /// The graph without the devices that only repeat where its executor runs a node, so
+    /// another preset its shape names places them.
+    pub fn unpinned(&self) -> Graph {
+        let mut g = self.clone();
+        for n in g.nodes.values_mut() {
+            if n.device == Some(default_device(&self.executor, n.role, &n.component)) {
+                n.device = None;
+            }
+        }
         g
     }
 
@@ -1749,7 +1774,7 @@ impl Graph {
     }
 
     /// Without the nodes that lead to no image (the world stays).
-    fn pruned(mut self) -> Graph {
+    pub fn pruned(mut self) -> Graph {
         let read = |k: &String| self.nodes.values().any(|r| r.inputs.values().any(|s| s == k));
         let Some(out) = self.nodes.iter().find(|(k, n)| known(n.role, &n.component) && output(n.role, &n.component) == Data::Image && !read(k)).map(|(k, _)| k.clone()) else { return self };
         let mut keep = std::collections::HashSet::new();
