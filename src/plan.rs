@@ -1291,9 +1291,9 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let keys: std::collections::BTreeSet<String> = p.renderers.iter().map(|r| r.pipeline().unwrap().key().unwrap()).collect();
         assert_eq!((p.renderers.len(), keys.len()), (4, 4));
         assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces", "hdr"]);
-        // `hdr` is GPU-only: a CPU pipeline's sweep leaves it out.
+        // A CPU pipeline's sweep takes all four too (`hdr`: float pixels on the CPU as well).
         let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = \"cpu\" }}\nsites = {{ post = \"*\" }}\n"), &[]).unwrap();
-        assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces"]);
+        assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces", "hdr"]);
     }
 
     /// Every shipped plan parses, and its compositions validate and resolve.

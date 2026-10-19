@@ -33,7 +33,7 @@ use mr_mesh::{FACE_AXES, Mesh, Quad};
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use crate::{Core, Frame, Lane};
+use crate::{Core, Frame, Lane, Pixel};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -92,7 +92,9 @@ struct Tri {
     id: u32,
 }
 
-pub(crate) struct CpuRaster {
+pub(crate) struct CpuRaster<P> {
+    /// The output's pixel.
+    px: std::marker::PhantomData<P>,
     /// The nodes of the timed stages: meshing, transform, raster, shading;
     /// raster with inline shading.
     stage_nodes: [Vec<String>; 5],
@@ -110,8 +112,8 @@ pub(crate) struct CpuRaster {
     ids: Vec<u32>,
 }
 
-impl CpuRaster {
-    pub(crate) fn new(p: &InitParams, g: &mr_components::graph::Checked) -> anyhow::Result<(Core, Self)> {
+impl<P: Pixel> CpuRaster<P> {
+    pub(crate) fn new(p: &InitParams, g: &mr_components::graph::Checked) -> anyhow::Result<(Core<P>, Self)> {
         let n = (p.width * p.height) as usize;
         let opts: Options = p.options()?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
@@ -123,6 +125,7 @@ impl CpuRaster {
         use mr_components::graph::Role;
         let core = Core::new(p, g, opts.threads, opts.shadows)?;
         Ok((core, Self {
+            px: std::marker::PhantomData,
             stage_nodes: [g.ids(&[Role::Geometry]), g.ids(&[Role::Visibility]), g.ids(&[Role::Draw]), g.ids(&[Role::Shading]), g.ids(&[Role::Draw, Role::Shading])],
             deferred: mr_components::parse_placement(&opts.placement)?,
             opts,
@@ -206,8 +209,8 @@ fn clip(poly: &mut Vec<Vec4>, scratch: &mut Vec<Vec4>) {
     }
 }
 
-impl CpuRaster {
-    fn frame(&mut self, frame: &mut Frame, world: &World, req: &FrameRequest) -> FrameStats {
+impl<P: Pixel> CpuRaster<P> {
+    fn frame(&mut self, frame: &mut Frame<P>, world: &World, req: &FrameRequest) -> FrameStats {
         let start = Instant::now();
 
         self.chunks.prepare();
@@ -297,10 +300,10 @@ impl CpuRaster {
         // Rasterise: each band owns its rows of the depth/id buffers (and of the image when
         // shading is inline).
         let quads = Quads { visible: &visible, bases: visible.iter().map(|v| v.2).collect(), scene: VoxelScene { world, chunks: &self.chunks }, cam, w, h, mode: req.mode };
-        let sky = world.sky();
+        let sky: P = world.sky();
         let raster = Raster { tris: &tris, bins: &bins, tiles_x, tw, bh, w, quads: &quads, sky };
         let rows = (bh * w) as usize;
-        let bands = self.depth.par_chunks_mut(rows).zip(self.ids.par_chunks_mut(rows)).zip(frame.pixels.par_chunks_mut(rows * 4)).enumerate();
+        let bands = self.depth.par_chunks_mut(rows).zip(self.ids.par_chunks_mut(rows)).zip(frame.pixels.par_chunks_mut(rows)).enumerate();
         if self.deferred {
             bands.for_each(|(band, ((depth, ids), _))| raster.band::<false>(band, depth, ids, &mut []));
         } else {
@@ -354,7 +357,7 @@ struct Quads<'a> {
 
 impl Quads<'_> {
     #[inline]
-    fn shade(&self, id: u32, x: u32, y: u32) -> [u8; 4] {
+    fn shade<P: Pixel>(&self, id: u32, x: u32, y: u32) -> P {
         let k = self.bases.partition_point(|&b| b <= id) - 1;
         let (pos, m, base) = self.visible[k];
         let q = Quad::decode(m.quads[(id - base) as usize]);
@@ -373,7 +376,7 @@ impl Quads<'_> {
 }
 
 /// What every band of a frame's rasterisation reads.
-struct Raster<'a> {
+struct Raster<'a, P> {
     tris: &'a [Tri],
     bins: &'a [Vec<u32>],
     tiles_x: usize,
@@ -381,20 +384,18 @@ struct Raster<'a> {
     bh: u32,
     w: u32,
     quads: &'a Quads<'a>,
-    sky: [u8; 4],
+    sky: P,
 }
 
-impl Raster<'_> {
+impl<P: Pixel> Raster<'_, P> {
     /// Rasterises band `band` into its rows of the depth and id buffers; with `INLINE`
     /// (`placement = inline`) every fragment that passes the depth test is shaded into
     /// `pixels` instead (forward shading: overdrawn fragments are shaded too).
-    fn band<const INLINE: bool>(&self, band: usize, depth: &mut [f32], ids: &mut [u32], pixels: &mut [u8]) {
+    fn band<const INLINE: bool>(&self, band: usize, depth: &mut [f32], ids: &mut [u32], pixels: &mut [P]) {
         let (w, tw, bh) = (self.w, self.tw, self.bh);
         depth.fill(0.0);
         if INLINE {
-            for px in pixels.chunks_exact_mut(4) {
-                px.copy_from_slice(&self.sky);
-            }
+            pixels.fill(self.sky);
         } else {
             ids.fill(0);
         }
@@ -431,7 +432,7 @@ impl Raster<'_> {
                         if z > depth[i] {
                             depth[i] = z;
                             if INLINE {
-                                pixels[i * 4..i * 4 + 4].copy_from_slice(&self.quads.shade(t.id, x, y));
+                                pixels[i] = self.quads.shade(t.id, x, y);
                             } else {
                                 ids[i] = t.id;
                             }
@@ -444,14 +445,15 @@ impl Raster<'_> {
 }
 
 /// `placement = deferred`: the frame's quad ids, shaded by the common deferred pass.
-struct QuadIds<'a> {
+struct QuadIds<'a, P> {
     ids: &'a [u32],
     quads: &'a Quads<'a>,
-    sky: [u8; 4],
+    sky: P,
 }
 
-impl mr_components::shading::deferred::Records for QuadIds<'_> {
+impl<P: Pixel> mr_components::shading::deferred::Records for QuadIds<'_, P> {
     type Record = u32;
+    type Px = P;
     #[inline]
     fn record_at(&self, x: u32, y: u32) -> u32 {
         self.ids[(y * self.quads.w + x) as usize]
@@ -461,16 +463,18 @@ impl mr_components::shading::deferred::Records for QuadIds<'_> {
         id != 0
     }
     #[inline]
-    fn shade(&self, id: u32, x: u32, y: u32) -> [u8; 4] {
+    fn shade(&self, id: u32, x: u32, y: u32) -> P {
         self.quads.shade(id, x, y)
     }
     #[inline]
-    fn miss(&self, _: u32, _: u32) -> [u8; 4] {
+    fn miss(&self, _: u32, _: u32) -> P {
         self.sky
     }
 }
 
-impl Lane for CpuRaster {
+impl<P: Pixel> Lane for CpuRaster<P> {
+    type Px = P;
+
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         for p in self.chunks.apply(updates) {
             self.dirty.insert(p);
@@ -484,7 +488,7 @@ impl Lane for CpuRaster {
         Ok(())
     }
 
-    fn render(&mut self, frame: &mut Frame, _: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
+    fn render(&mut self, frame: &mut Frame<P>, _: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
         self.frame(frame, world, req)
     }
 
@@ -508,7 +512,7 @@ impl Lane for CpuRaster {
         Some(Ok(()))
     }
 
-    fn resize(&mut self, frame: &Frame) {
+    fn resize(&mut self, frame: &Frame<P>) {
         let n = (frame.width * frame.height) as usize;
         self.depth = vec![0.0; n];
         self.ids = vec![0; n];

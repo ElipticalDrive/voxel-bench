@@ -144,12 +144,17 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
     if let Some((_, v)) = baked.iter().find(|(k, _)| k == "shadows") {
         consts.push(format!("const SHADOWS: Option<backend_cpu::Shadows> = Some(backend_cpu::Shadows::{});", variant(v.as_str().context("shadows: a choice")?)));
     }
+    // The output's pixel (the post's format).
+    let px = match ck.tone().format() {
+        mr_core::lighting::PixelFormat::Rgba8 => "[u8; 4]",
+        mr_core::lighting::PixelFormat::Rgba16F => "backend_cpu::Half4",
+    };
     let entry = if ck.find(Role::Draw).is_some() {
         // The raster lane's shading is the reference model's (tone and shadows read at run time).
         consts.clear();
-        "backend_cpu::raster_entry::<Baked>()".to_string()
+        format!("backend_cpu::raster_entry::<Baked, {px}>()")
     } else if ck.find(Role::Visibility).is_some_and(|v| ck.node(v).component == "columns") {
-        "backend_cpu::columns_entry::<Baked>()".to_string()
+        format!("backend_cpu::columns_entry::<Baked, {px}>()")
     } else {
         // Ray casting: the primary walk, the strategy's kernel and its storage.
         let kernel = ck.input(Role::Visibility, "primary").context("no primary rays")?;
@@ -171,7 +176,7 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
         consts.push(format!("const SHADOW: Option<Option<(backend_cpu::Traversal, u32)>> = Some({});", shadow.as_deref().unwrap_or("None")));
         baked.insert(0, ("storage".into(), storage.as_str().into()));
         baked.insert(1, ("traversal".into(), k.component.as_str().into()));
-        format!("backend_cpu::raycast_entry::<{ty}, Baked>()")
+        format!("backend_cpu::raycast_entry::<{ty}, Baked, {px}>()")
     };
     let knobs = baked.iter().map(|(k, v)| Ok(format!("({k:?}, {})", rust(v)?))).collect::<anyhow::Result<Vec<_>>>()?;
     consts.insert(0, format!("const KNOBS: &'static [(&'static str, &'static str)] = &[{}];", knobs.join(", ")));
@@ -606,7 +611,7 @@ mod tests {
             for k in mr_components::names_on("cpu", mr_components::Slot::Traversal) {
                 let b = bake(&spec(&format!("cpu:{st}+{k}"), &[("packet", "4".into())])).unwrap().unwrap();
                 let s = source(&b).unwrap();
-                assert!(s.contains("NATIVE: bool = true") && s.contains(&format!("raycast_entry::<{}, Baked>", backend_cpu::storage_type(st).unwrap())), "{s}");
+                assert!(s.contains("NATIVE: bool = true") && s.contains(&format!("raycast_entry::<{}, Baked, [u8; 4]>", backend_cpu::storage_type(st).unwrap())), "{s}");
                 assert_eq!(s.contains("PACKET: Option<usize> = Some(4)"), k == "refloor", "{s}");
                 assert_eq!(s.contains("LEVELS"), k != "refloor", "{s}");
                 assert!(s.contains(&format!("(\"storage\", \"\\\"{st}\\\"\")")), "{s}");
@@ -617,9 +622,14 @@ mod tests {
             assert!(s.contains(want), "{want} in {s}");
         }
         let s = source(&bake(&spec("cpu-voxelspace", &[])).unwrap().unwrap()).unwrap();
-        assert!(s.contains("columns_entry::<Baked>") && s.contains("Shadows::All") && s.contains("Tone::Clamp"), "{s}");
+        assert!(s.contains("columns_entry::<Baked, [u8; 4]>") && s.contains("Shadows::All") && s.contains("Tone::Clamp"), "{s}");
         let s = source(&bake(&spec("cpu-raster:naive+raster", &[])).unwrap().unwrap()).unwrap();
-        assert!(s.contains("raster_entry::<Baked>") && s.contains("KNOBS: &'static [(&'static str, &'static str)] = &[];") && !s.contains("TONE"), "{s}");
+        assert!(s.contains("raster_entry::<Baked, [u8; 4]>") && s.contains("KNOBS: &'static [(&'static str, &'static str)] = &[];") && !s.contains("TONE"), "{s}");
+        // `hdr`: every lane writes float pixels.
+        for (r, entry) in [("cpu,post=hdr", "raycast_entry::<mr_components::storage::bricks::cpu::U16, Baked, backend_cpu::Half4>"), ("cpu-voxelspace,post=hdr", "columns_entry::<Baked, backend_cpu::Half4>"), ("cpu-raster,post=hdr", "raster_entry::<Baked, backend_cpu::Half4>")] {
+            let s = source(&bake(&spec(r, &[])).unwrap().unwrap()).unwrap();
+            assert!(s.contains(entry), "{entry} in {s}");
+        }
         for b in ["cpu", "cpu-raster", "cpu-voxelspace"] {
             let (_, params) = params_of(b).unwrap();
             for k in bakes(b) {

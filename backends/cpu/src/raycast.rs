@@ -30,7 +30,7 @@ use mr_core::*;
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use crate::{Core, Frame, Generic, Lane, Spec, fixed, perf};
+use crate::{Core, Frame, Generic, Lane, Pixel, Spec, fixed, perf};
 
 /// The Rust type of each CPU storage, for generated code.
 pub fn storage_type(name: &str) -> Option<&'static str> {
@@ -59,18 +59,18 @@ pub(crate) fn info() -> RendererInfo {
 }
 
 /// The lane for graph `g`, monomorphised for its storage.
-pub(crate) fn create(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
+pub(crate) fn create<P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let opts: Options = p.options()?;
     let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
     match storage.as_str() {
-        "bricks" => crate::run(Raycast::<U16>::new(p, g)?),
-        "u8" => crate::run(Raycast::<U8>::new(p, g)?),
-        "bits" => crate::run(Raycast::<Bits>::new(p, g)?),
-        "hier" => crate::run(Raycast::<Hier>::new(p, g)?),
-        "prefix" => crate::run(Raycast::<Prefix>::new(p, g)?),
-        "palette" => crate::run(Raycast::<Palette>::new(p, g)?),
-        "brickmajor" => crate::run(Raycast::<mr_components::storage::brickmajor::Cpu>::new(p, g)?),
-        "morton" => crate::run(Raycast::<mr_components::storage::morton::Cpu>::new(p, g)?),
+        "bricks" => crate::run(Raycast::<U16, Generic, P>::new(p, g)?),
+        "u8" => crate::run(Raycast::<U8, Generic, P>::new(p, g)?),
+        "bits" => crate::run(Raycast::<Bits, Generic, P>::new(p, g)?),
+        "hier" => crate::run(Raycast::<Hier, Generic, P>::new(p, g)?),
+        "prefix" => crate::run(Raycast::<Prefix, Generic, P>::new(p, g)?),
+        "palette" => crate::run(Raycast::<Palette, Generic, P>::new(p, g)?),
+        "brickmajor" => crate::run(Raycast::<mr_components::storage::brickmajor::Cpu, Generic, P>::new(p, g)?),
+        "morton" => crate::run(Raycast::<mr_components::storage::morton::Cpu, Generic, P>::new(p, g)?),
         s => anyhow::bail!("storage `{s}` has no CPU implementation"),
     }
 }
@@ -296,14 +296,14 @@ impl<R: Repr> Scene<R> {
         (self.grid.block_at(h.cell + cam), Face::entered(h.axis as usize, if d[h.axis as usize] > 0.0 { 1 } else { -1 }))
     }
 
-    fn shade<S: Spec>(&self, world: &World, cam: IVec3, o: Vec3, d: Vec3, h: &Hit, mode: RenderMode) -> [u8; 4] {
+    fn shade<S: Spec, P: Pixel>(&self, world: &World, cam: IVec3, o: Vec3, d: Vec3, h: &Hit, mode: RenderMode) -> P {
         let (block, face) = self.hit_face(cam, d, h);
-        self.shade_surface::<S>(world, cam, &mr_components::shading::direct::cpu::Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
+        self.shade_surface::<S, P>(world, cam, &mr_components::shading::direct::cpu::Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
     }
 
     /// Shades surface `s` of `world` (its blocks, environment, lights), shadow rays walking
     /// these chunks.
-    fn shade_surface<S: Spec>(&self, world: &World, cam: IVec3, s: &mr_components::shading::direct::cpu::Surface, mode: RenderMode) -> [u8; 4] {
+    fn shade_surface<S: Spec, P: Pixel>(&self, world: &World, cam: IVec3, s: &mr_components::shading::direct::cpu::Surface, mode: RenderMode) -> P {
         let shadows = S::SHADOWS.unwrap_or(world.shadows);
         let ctx = mr_components::shading::direct::cpu::Ctx {
             blocks: &world.blocks,
@@ -321,8 +321,9 @@ impl<R: Repr> Scene<R> {
 
 // ------------------------------------------------------------------------- the lane
 
-pub(crate) struct Raycast<R, S: Spec = Generic> {
-    spec: std::marker::PhantomData<S>,
+pub(crate) struct Raycast<R, S: Spec, P> {
+    /// The baked choices and the output's pixel.
+    spec: std::marker::PhantomData<(S, P)>,
     scene: Scene<R>,
     perf: bool,
     counters: Option<perf::Counters>,
@@ -350,8 +351,8 @@ pub(crate) struct Raycast<R, S: Spec = Generic> {
     view_max: u32,
 }
 
-impl<R: Repr, S: Spec> Raycast<R, S> {
-    pub(crate) fn new(p: &InitParams, g: &Checked) -> anyhow::Result<(Core, Self)> {
+impl<R: Repr, S: Spec, P: Pixel> Raycast<R, S, P> {
+    pub(crate) fn new(p: &InitParams, g: &Checked) -> anyhow::Result<(Core<P>, Self)> {
         let o: Options = p.options()?;
         if o.storage == "u8" && p.blocks.blocks.len() > 256 {
             anyhow::bail!("storage u8 needs <= 256 block types, registry has {}", p.blocks.blocks.len());
@@ -409,11 +410,10 @@ struct Rect {
 }
 
 /// Output pixels, written by disjoint rectangles from several threads.
-#[derive(Copy, Clone)]
-struct OutPtr(*mut u8);
+struct OutPtr<P>(*mut P);
 // SAFETY: every pixel belongs to exactly one rectangle of a frame.
-unsafe impl Send for OutPtr {}
-unsafe impl Sync for OutPtr {}
+unsafe impl<P> Send for OutPtr<P> {}
+unsafe impl<P> Sync for OutPtr<P> {}
 
 /// `placement = deferred`: the frame's hit records (one per pixel).
 struct RecPtr(*mut Record);
@@ -432,7 +432,7 @@ fn pixel_dir(f: Vec3, rt: Vec3, u: Vec3, tan: f32, aspect: f32, w: u32, h: u32, 
 }
 
 /// What every rectangle of a frame shares.
-struct Job<'a, R> {
+struct Job<'a, R, P> {
     scene: &'a Scene<R>,
     world: &'a World,
     cam: Camera,
@@ -445,7 +445,7 @@ struct Job<'a, R> {
     /// A diagnostic view: pixels show the walk's work (`View::Steps`) or the hit's
     /// distance on this scale instead of the image.
     steps: Option<(Legend, View)>,
-    out: OutPtr,
+    out: OutPtr<P>,
     /// Where deferred rectangles write their records instead of pixels.
     records: RecPtr,
 }
@@ -455,7 +455,7 @@ struct Job<'a, R> {
 /// `#[inline(always)]` so each ISA wrapper below compiles its own copy with its target
 /// features.
 #[inline(always)]
-fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r: Rect) -> RowWork {
+fn render_rect<R: Repr, S: Spec, P: Pixel, const N: usize, const D: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
     let (scene, w, h, mode) = (job.scene, job.w, job.h, job.mode);
     let mut work = RowWork::default();
     let (cam_block, o) = job.cam.split_position();
@@ -464,7 +464,7 @@ fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r:
     let tan = (job.cam.fov_y * 0.5).tan();
     let aspect = w as f32 / h as f32;
     let (bmin, bmax) = scene.bounds_rel(cam_block);
-    let sky = job.world.sky();
+    let sky: P = job.world.sky();
     let (bw, bh) = if job.two_d {
         match N {
             1 => (1, 1),
@@ -540,11 +540,11 @@ fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r:
                     continue;
                 }
                 let px = match &hits[l] {
-                    Some(hit) => scene.shade::<S>(job.world, cam_block, o, dirs[l], hit, mode),
+                    Some(hit) => scene.shade::<S, P>(job.world, cam_block, o, dirs[l], hit, mode),
                     None => sky,
                 };
                 // SAFETY: pix < w * h, and each pixel belongs to exactly one rectangle.
-                unsafe { std::ptr::copy_nonoverlapping(px.as_ptr(), job.out.0.add(pix[l] as usize * 4), 4) };
+                unsafe { *job.out.0.add(pix[l] as usize) = px };
             }
             if let Some((scale, view)) = &job.steps {
                 for l in 0..N {
@@ -552,7 +552,7 @@ fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r:
                         let v = if *view == View::Steps { lane_work[l] as f64 } else { hits[l].as_ref().map_or(f64::INFINITY, |h| h.t as f64) };
                         let [r, g, b] = scale.color(v);
                         // SAFETY: as above.
-                        unsafe { std::ptr::copy_nonoverlapping([r, g, b, 255].as_ptr(), job.out.0.add(pix[l] as usize * 4), 4) };
+                        unsafe { *job.out.0.add(pix[l] as usize) = P::from_rgba8([r, g, b, 255]) };
                     }
                 }
             }
@@ -564,41 +564,41 @@ fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r:
 }
 
 #[inline(always)]
-fn render_rect_dyn<R: Repr, S: Spec, const D: bool>(job: &Job<R>, r: Rect) -> RowWork {
+fn render_rect_dyn<R: Repr, S: Spec, P: Pixel, const D: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
     match S::PACKET.unwrap_or(job.packet) {
-        1 => render_rect::<R, S, 1, D>(job, r),
-        4 => render_rect::<R, S, 4, D>(job, r),
-        16 => render_rect::<R, S, 16, D>(job, r),
-        _ => render_rect::<R, S, 8, D>(job, r),
+        1 => render_rect::<R, S, P, 1, D>(job, r),
+        4 => render_rect::<R, S, P, 4, D>(job, r),
+        16 => render_rect::<R, S, P, 16, D>(job, r),
+        _ => render_rect::<R, S, P, 8, D>(job, r),
     }
 }
 
 #[target_feature(enable = "avx2,fma")]
-fn render_rect_avx2<R: Repr, S: Spec, const D: bool>(job: &Job<R>, r: Rect) -> RowWork {
-    render_rect_dyn::<R, S, D>(job, r)
+fn render_rect_avx2<R: Repr, S: Spec, P: Pixel, const D: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
+    render_rect_dyn::<R, S, P, D>(job, r)
 }
 
 #[target_feature(enable = "avx512f,avx512vl,avx512bw,avx2,fma")]
-fn render_rect_avx512<R: Repr, S: Spec, const D: bool>(job: &Job<R>, r: Rect) -> RowWork {
-    render_rect_dyn::<R, S, D>(job, r)
+fn render_rect_avx512<R: Repr, S: Spec, P: Pixel, const D: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
+    render_rect_dyn::<R, S, P, D>(job, r)
 }
 
-fn render_rect_isa<R: Repr, S: Spec, const D: bool>(isa: Isa, job: &Job<R>, r: Rect) -> RowWork {
+fn render_rect_isa<R: Repr, S: Spec, P: Pixel, const D: bool>(isa: Isa, job: &Job<R, P>, r: Rect) -> RowWork {
     if S::NATIVE {
         // The whole crate is compiled for this CPU.
-        return render_rect_dyn::<R, S, D>(job, r);
+        return render_rect_dyn::<R, S, P, D>(job, r);
     }
     match isa {
         // SAFETY: only selected when the CPU reports these features.
-        Isa::Avx512 => unsafe { render_rect_avx512::<R, S, D>(job, r) },
-        Isa::Avx2 => unsafe { render_rect_avx2::<R, S, D>(job, r) },
-        Isa::Scalar => render_rect_dyn::<R, S, D>(job, r),
+        Isa::Avx512 => unsafe { render_rect_avx512::<R, S, P, D>(job, r) },
+        Isa::Avx2 => unsafe { render_rect_avx2::<R, S, P, D>(job, r) },
+        Isa::Scalar => render_rect_dyn::<R, S, P, D>(job, r),
     }
 }
 
 /// `placement = deferred`: the frame's hit records, shaded by the common deferred pass
 /// (`shading::deferred`).
-struct Deferred<'a, R, S> {
+struct Deferred<'a, R, S, P> {
     spec: std::marker::PhantomData<S>,
     scene: &'a Scene<R>,
     world: &'a World,
@@ -610,10 +610,10 @@ struct Deferred<'a, R, S> {
     w: u32,
     h: u32,
     mode: RenderMode,
-    sky: [u8; 4],
+    sky: P,
 }
 
-impl<'a, R: Repr, S: Spec> Deferred<'a, R, S> {
+impl<'a, R: Repr, S: Spec, P: Pixel> Deferred<'a, R, S, P> {
     fn new(scene: &'a Scene<R>, world: &'a World, records: &'a [Record], cam: &Camera, w: u32, h: u32, mode: RenderMode) -> Self {
         let (cam_block, o) = cam.split_position();
         let basis = (cam.forward(), cam.right(), cam.up(), (cam.fov_y * 0.5).tan(), w as f32 / h as f32);
@@ -621,8 +621,9 @@ impl<'a, R: Repr, S: Spec> Deferred<'a, R, S> {
     }
 }
 
-impl<R: Repr, S: Spec> mr_components::shading::deferred::Records for Deferred<'_, R, S> {
+impl<R: Repr, S: Spec, P: Pixel> mr_components::shading::deferred::Records for Deferred<'_, R, S, P> {
     type Record = Record;
+    type Px = P;
     #[inline]
     fn record_at(&self, x: u32, y: u32) -> Record {
         self.records[(y * self.w + x) as usize]
@@ -632,13 +633,13 @@ impl<R: Repr, S: Spec> mr_components::shading::deferred::Records for Deferred<'_
         r.is_hit()
     }
     #[inline]
-    fn shade(&self, r: Record, x: u32, y: u32) -> [u8; 4] {
+    fn shade(&self, r: Record, x: u32, y: u32) -> P {
         let (f, rt, u, tan, aspect) = self.basis;
         let d = pixel_dir(f, rt, u, tan, aspect, self.w, self.h, x, y);
-        self.scene.shade_surface::<S>(self.world, self.cam, &r.surface(self.o, d), self.mode)
+        self.scene.shade_surface::<S, P>(self.world, self.cam, &r.surface(self.o, d), self.mode)
     }
     #[inline]
-    fn miss(&self, _: u32, _: u32) -> [u8; 4] {
+    fn miss(&self, _: u32, _: u32) -> P {
         self.sky
     }
 }
@@ -716,7 +717,7 @@ fn rects(w: u32, h: u32, tiles: bool, tile: u32, order: TileOrder) -> Vec<Rect> 
     v.into_iter().map(|e| e.1).collect()
 }
 
-impl<R: Repr, S: Spec> Raycast<R, S> {
+impl<R: Repr, S: Spec, P: Pixel> Raycast<R, S, P> {
     /// (bytes read by traversal, bytes kept alive) over all dense chunks.
     fn world_bytes(&self) -> (u64, u64) {
         self.scene.chunks.values().fold((0, 0), |(t, a), e| match e {
@@ -731,7 +732,9 @@ fn dense_of<R: Repr>(r: &R) -> DenseChunk {
     r.to_dense()
 }
 
-impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
+impl<R: Repr, S: Spec, P: Pixel> Lane for Raycast<R, S, P> {
+    type Px = P;
+
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let s = &mut self.scene;
         for u in updates {
@@ -792,7 +795,7 @@ impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
         Ok(())
     }
 
-    fn render(&mut self, frame: &mut Frame, pool: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
+    fn render(&mut self, frame: &mut Frame<P>, pool: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
         let start = Instant::now();
         let mut stages = Vec::new();
         if self.scene.grid_dirty {
@@ -830,14 +833,14 @@ impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
         let job = Job { scene, world, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone().map(|l| (l, self.view)), out: OutPtr(pixels.as_mut_ptr()), records: RecPtr(self.records.as_mut_ptr()) };
         let rect_list = &self.rects;
         let cast = Instant::now();
-        let rect: fn(Isa, &Job<R>, Rect) -> RowWork = if deferred { render_rect_isa::<R, S, true> } else { render_rect_isa::<R, S, false> };
+        let rect: fn(Isa, &Job<R, P>, Rect) -> RowWork = if deferred { render_rect_isa::<R, S, P, true> } else { render_rect_isa::<R, S, P, false> };
         let work: RowWork = rect_list.par_iter().map(|&r| rect(isa, &job, r)).reduce(RowWork::default, |a, b| a + b);
         drop(job);
         if deferred {
             stages.push(StageTime::cpu("cast", &frame.stage_nodes[1], cast.elapsed().as_secs_f32() * 1e3));
             let shade = Instant::now();
             let records = &self.records;
-            let deferred = Deferred::<R, S>::new(scene, world, records, &cam, w, h, mode);
+            let deferred = Deferred::<R, S, P>::new(scene, world, records, &cam, w, h, mode);
             mr_components::shading::deferred::shade(&deferred, w, pixels);
             stages.push(StageTime::cpu("shade", &frame.stage_nodes[2], shade.elapsed().as_secs_f32() * 1e3));
         } else {
@@ -876,7 +879,7 @@ impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
         self.set(name, value).map(|known| known.then_some(())).transpose()
     }
 
-    fn resize(&mut self, _: &Frame) {
+    fn resize(&mut self, _: &Frame<P>) {
         self.rects.clear();
     }
 
@@ -886,7 +889,7 @@ impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
     }
 }
 
-impl<R: Repr, S: Spec> Raycast<R, S> {
+impl<R: Repr, S: Spec, P: Pixel> Raycast<R, S, P> {
     /// Sets knob `name`; `false` if it is not one of the lane's.
     fn set(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<bool> {
         match name {

@@ -23,7 +23,7 @@ and `multirenderer graph <renderer>` prints a renderer as its graph.
 | `draw` | hits | the shared face drawer: `raster`, `visbuffer` (face ids) or `gbuffer` (hit records) |
 | `meshes` | surfaces | how triangle meshes join the image (`composite`, `depth`) |
 | `shading` | image | `direct` (the reference lighting model) or `pathtrace` (diffuse path tracing with next-event estimation) |
-| `post` | image | tone mapping: `clamp` (default), `reinhard`, `aces`; `hdr` (GPU only): a float RGBA16F output in extended sRGB, unlimited, saved as `.hdr` beside the PNG, presented in HDR by `multirenderer view` |
+| `post` | image | tone mapping: `clamp` (default), `reinhard`, `aces`; `hdr`: a float RGBA16F output (every executor, CPU ones included) in extended sRGB, unlimited, saved as `.hdr` beside the PNG, presented in HDR by `multirenderer view` |
 
 Every place where rays are cast picks its own traversal and storage: primary rays,
 discovery rays, shadow rays, bounce rays and mesh shadows. These sites can share a node or

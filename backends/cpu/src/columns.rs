@@ -18,7 +18,7 @@ use mr_components::visibility::record::Record;
 use mr_core::*;
 use rayon::prelude::*;
 
-use crate::{Core, Frame, Generic, Lane, Spec, fixed};
+use crate::{Core, Frame, Lane, Pixel, Spec, fixed};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -38,7 +38,7 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-pub(crate) struct CpuColumns<S = Generic> {
+pub(crate) struct CpuColumns<S, P> {
     spec: std::marker::PhantomData<S>,
     /// The heightmap storage.
     hm: Heightmap,
@@ -47,7 +47,7 @@ pub(crate) struct CpuColumns<S = Generic> {
     deferred: bool,
     recs: Vec<Record>,
     chunks: Chunks,
-    cols: Vec<u8>,
+    cols: Vec<P>,
 }
 
 #[derive(serde::Deserialize)]
@@ -69,8 +69,8 @@ impl Default for Options {
 
 pub(crate) const BACKEND: &str = "cpu-voxelspace";
 
-impl<S: Spec> CpuColumns<S> {
-    pub(crate) fn new(p: &InitParams, g: &mr_components::graph::Checked) -> anyhow::Result<(Core, Self)> {
+impl<S: Spec, P: Pixel> CpuColumns<S, P> {
+    pub(crate) fn new(p: &InitParams, g: &mr_components::graph::Checked) -> anyhow::Result<(Core<P>, Self)> {
         let opts: Options = p.options()?;
         use mr_components::{Slot, require};
         for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
@@ -84,13 +84,15 @@ impl<S: Spec> CpuColumns<S> {
             deferred,
             recs: if deferred { vec![Record::SKY; (p.width * p.height) as usize] } else { Vec::new() },
             chunks: Chunks::default(),
-            cols: if deferred { Vec::new() } else { vec![0; (p.width * p.height * 4) as usize] },
+            cols: if deferred { Vec::new() } else { vec![P::zeroed(); (p.width * p.height) as usize] },
         };
         Ok((Core::new(p, g, opts.threads, opts.shadows)?, lane))
     }
 }
 
-impl<S: Spec> Lane for CpuColumns<S> {
+impl<S: Spec, P: Pixel> Lane for CpuColumns<S, P> {
+    type Px = P;
+
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let changed = self.chunks.apply(updates);
         let scene = &self.chunks;
@@ -98,7 +100,7 @@ impl<S: Spec> Lane for CpuColumns<S> {
         Ok(())
     }
 
-    fn render(&mut self, frame: &mut Frame, _: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
+    fn render(&mut self, frame: &mut Frame<P>, _: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
         let start = Instant::now();
         self.chunks.prepare();
         let (w, h) = (frame.width as usize, frame.height as usize);
@@ -106,7 +108,7 @@ impl<S: Spec> Lane for CpuColumns<S> {
         let cam_block = cam.split_position().0;
         let (hm, scene) = (&self.hm, world);
         let lit = req.mode == RenderMode::Lit;
-        let sky = scene.sky();
+        let sky: P = scene.sky();
         let m = March::new(hm, cam, w, h, hm.march_cells() as usize);
         // Shadow rays walk the heightmap.
         let shadows = S::SHADOWS.unwrap_or(scene.shadows);
@@ -120,7 +122,7 @@ impl<S: Spec> Lane for CpuColumns<S> {
             occluded: |p: Vec3, d: Vec3, dist: f32| hm.trace(cam_block, p, d, dist).is_some(),
             tone: S::TONE.unwrap_or(scene.tone),
         };
-        let shade_s = |s: &Surface| shade(&ctx, s, req.mode);
+        let shade_s = |s: &Surface| -> P { shade(&ctx, s, req.mode) };
         let (t_march, stages) = if self.deferred {
             // The march writes column-major records (one contiguous column per task); the
             // common pass reads them across and writes rows, so no transpose remains.
@@ -133,13 +135,12 @@ impl<S: Spec> Lane for CpuColumns<S> {
             (t_march, vec![StageTime::cpu("columns", &frame.stage_nodes[1], t_march as f32), StageTime::cpu("shade", &frame.stage_nodes[2], t_shade as f32)])
         } else {
             // Column-major output (one contiguous column per task), transposed afterwards.
-            self.cols.par_chunks_mut(h * 4).enumerate().for_each(|(gx, col)| m.column(gx, &mut Inline::new(col, &m, &shade_s, lit, sky)));
+            self.cols.par_chunks_mut(h).enumerate().for_each(|(gx, col)| m.column(gx, &mut Inline::new(col, &m, &shade_s, lit, sky)));
             let t_march = start.elapsed().as_secs_f64() * 1e3;
             let cols = &self.cols;
-            frame.pixels.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
-                for x in 0..w {
-                    let s = (x * h + y) * 4;
-                    row[x * 4..x * 4 + 4].copy_from_slice(&cols[s..s + 4]);
+            frame.pixels.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+                for (x, px) in row.iter_mut().enumerate() {
+                    *px = cols[x * h + y];
                 }
             });
             let t_transpose = start.elapsed().as_secs_f64() * 1e3 - t_march;
@@ -163,16 +164,16 @@ impl<S: Spec> Lane for CpuColumns<S> {
         None
     }
 
-    fn resize(&mut self, frame: &Frame) {
+    fn resize(&mut self, frame: &Frame<P>) {
         let n = (frame.width * frame.height) as usize;
         if self.deferred {
             self.recs = vec![Record::SKY; n];
         } else {
-            self.cols = vec![0; n * 4];
+            self.cols = vec![P::zeroed(); n];
         }
     }
 
     fn memory(&self) -> u64 {
-        self.chunks.dense_bytes() + (self.cols.len() + self.recs.len() * 8 + self.hm.hm.len() * 4) as u64
+        self.chunks.dense_bytes() + (std::mem::size_of_val(&self.cols[..]) + self.recs.len() * 8 + self.hm.hm.len() * 4) as u64
     }
 }

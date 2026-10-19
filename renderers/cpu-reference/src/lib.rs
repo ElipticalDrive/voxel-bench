@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use glam::{DVec3, IVec3, Vec3};
 use mr_core::chunk::{CHUNK_BITS, local_of_block};
-use mr_core::lighting::{Tone, point_light, srgb_to_linear, srgb_to_linear_f, texel_coord};
+use mr_core::lighting::{Pixel, Tone, point_light, srgb_to_linear, srgb_to_linear_f, texel_coord};
 use mr_core::*;
 use rayon::prelude::*;
 
@@ -138,8 +138,8 @@ impl World {
     }
 
     /// The sky's pixel (a linear colour, through the post).
-    pub fn sky(&self) -> [u8; 4] {
-        self.tone.encode(self.env.sky)
+    pub fn sky<P: Pixel>(&self) -> P {
+        P::encode(self.tone, self.env.sky)
     }
 
     /// Applies the updates that are the world's (lights, environment); returns the others
@@ -419,15 +419,15 @@ impl VoxelScene<'_> {
 
     /// Shades a surface point `p` on `face` of `block` (`local` = position within the
     /// block) with the reference model.
-    pub fn shade_surface(&self, p: DVec3, local: Vec3, face: Face, block: BlockId, mode: RenderMode) -> [u8; 4] {
+    pub fn shade_surface<P: Pixel>(&self, p: DVec3, local: Vec3, face: Face, block: BlockId, mode: RenderMode) -> P {
         let uv = face.uv(local);
         let tex = self.world.blocks.texture_of(block, face);
         let texel = tex.texel(texel_coord(uv.x), texel_coord(uv.y));
         if mode == RenderMode::Unlit {
-            return texel;
+            return P::from_rgba8(texel);
         }
         let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
-        self.world.tone.encode(albedo * self.light_at(p, face.normal().as_vec3()) * self.world.env.exposure)
+        P::encode(self.world.tone, albedo * self.light_at(p, face.normal().as_vec3()) * self.world.env.exposure)
     }
 
     /// Shades a mesh surface (mesh mode): `color` is the interpolated sRGB vertex colour,

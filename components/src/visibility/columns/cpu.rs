@@ -4,6 +4,7 @@
 //! pass shades through [`Deferred`]. The executor parallelises over columns.
 
 use glam::{IVec2, IVec3, Vec2, Vec3};
+use mr_core::lighting::Pixel;
 use mr_core::{Camera, Face};
 
 use crate::shading::direct::cpu::Surface;
@@ -172,26 +173,26 @@ impl<'a> March<'a> {
     }
 }
 
-/// `placement = inline`: rows shaded as the march covers them (into a column of RGBA8).
-pub struct Inline<'a, S> {
-    col: &'a mut [u8],
+/// `placement = inline`: rows shaded as the march covers them (into a column of pixels).
+pub struct Inline<'a, S, P> {
+    col: &'a mut [P],
     m: &'a March<'a>,
     shade: &'a S,
     lit: bool,
     /// The current column's top normal (lit: the heightmap slope).
     top_n: Vec3,
-    sky: [u8; 4],
+    sky: P,
 }
 
-impl<'a, S> Inline<'a, S> {
-    /// Shades into `col` (a column of RGBA8) with `shade`; `lit` tops take the heightmap
+impl<'a, S, P> Inline<'a, S, P> {
+    /// Shades into `col` (a column of pixels) with `shade`; `lit` tops take the heightmap
     /// slope as their normal.
-    pub fn new(col: &'a mut [u8], m: &'a March<'a>, shade: &'a S, lit: bool, sky: [u8; 4]) -> Self {
+    pub fn new(col: &'a mut [P], m: &'a March<'a>, shade: &'a S, lit: bool, sky: P) -> Self {
         Self { col, m, shade, lit, top_n: Vec3::Y, sky }
     }
 }
 
-impl<S: Fn(&Surface) -> [u8; 4]> Out for Inline<'_, S> {
+impl<P: Pixel, S: Fn(&Surface) -> P> Out for Inline<'_, S, P> {
     #[inline]
     fn cell(&mut self, cell: IVec2) {
         self.top_n = if self.lit { self.m.slope(cell) } else { Vec3::Y };
@@ -201,11 +202,11 @@ impl<S: Fn(&Surface) -> [u8; 4]> Out for Inline<'_, S> {
         if s.face == Face::PosY {
             s.n = self.top_n;
         }
-        self.col[row * 4..row * 4 + 4].copy_from_slice(&(self.shade)(&s));
+        self.col[row] = (self.shade)(&s);
     }
     #[inline]
     fn miss(&mut self, row: usize) {
-        self.col[row * 4..row * 4 + 4].copy_from_slice(&self.sky);
+        self.col[row] = self.sky;
     }
 }
 
@@ -231,16 +232,17 @@ impl Out for Records<'_> {
 /// pass. The decoded surface gets the march's own details back from the record's cell (as
 /// the GPU's `view_surface`): texture coordinates relative to the column's top block, the
 /// heightmap slope on lit tops.
-pub struct Deferred<'a, S> {
+pub struct Deferred<'a, S, P> {
     pub recs: &'a [Record],
     pub m: &'a March<'a>,
     pub shade: &'a S,
     pub lit: bool,
-    pub sky: [u8; 4],
+    pub sky: P,
 }
 
-impl<S: Fn(&Surface) -> [u8; 4] + Sync> crate::shading::deferred::Records for Deferred<'_, S> {
+impl<P: Pixel, S: Fn(&Surface) -> P + Sync> crate::shading::deferred::Records for Deferred<'_, S, P> {
     type Record = Record;
+    type Px = P;
     #[inline]
     fn record_at(&self, x: u32, y: u32) -> Record {
         self.recs[x as usize * self.m.h + y as usize]
@@ -249,7 +251,7 @@ impl<S: Fn(&Surface) -> [u8; 4] + Sync> crate::shading::deferred::Records for De
     fn hit(r: Record) -> bool {
         r.is_hit()
     }
-    fn shade(&self, r: Record, x: u32, y: u32) -> [u8; 4] {
+    fn shade(&self, r: Record, x: u32, y: u32) -> P {
         let d = self.m.pixel_ray(x as f32 + 0.5, y as f32 + 0.5);
         let mut s = r.surface(self.m.o, d);
         let c = (s.p - s.local).round();
@@ -261,7 +263,7 @@ impl<S: Fn(&Surface) -> [u8; 4] + Sync> crate::shading::deferred::Records for De
         (self.shade)(&s)
     }
     #[inline]
-    fn miss(&self, _: u32, _: u32) -> [u8; 4] {
+    fn miss(&self, _: u32, _: u32) -> P {
         self.sky
     }
 }

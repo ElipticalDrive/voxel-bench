@@ -989,8 +989,6 @@ impl Graph {
                 why.push(format!("`{id}`: the client runs on the cpu (the renderer's process), not on {d}"));
             } else if n.role == Role::Link && d != Device::Cpu {
                 why.push(format!("`{id}`: the link runs on the cpu (the client's process, in front of the client), not on {d}"));
-            } else if n.role == Role::Post && n.component == "hdr" && d == Device::Cpu {
-                why.push(format!("`{id}`: `hdr` (a float output) is built on GPUs only; the CPU executors write RGBA8"));
             }
         }
         for (id, n) in &g.nodes {

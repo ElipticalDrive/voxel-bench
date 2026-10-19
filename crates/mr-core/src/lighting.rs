@@ -281,6 +281,96 @@ pub fn hdr_to_rgba8(px: &[u8]) -> Vec<u8> {
     px.chunks_exact(2).map(|h| t[u16::from_le_bytes([h[0], h[1]]) as usize]).collect()
 }
 
+/// A pixel of a CPU-made frame, in its frame's [`PixelFormat`]: RGBA8 (`[u8; 4]`) or
+/// RGBA16F ([`Half4`]). The CPU executors are monomorphised over it, so an RGBA8 pipeline
+/// compiles as if there were no other.
+pub trait Pixel: bytemuck::Pod + Send + Sync {
+    const FORMAT: PixelFormat;
+    /// The pixel of linear colour `c` through the post's tone mapper.
+    fn encode(tone: Tone, c: Vec3) -> Self;
+    /// An sRGB-encoded RGBA8 colour (an unlit texel, a diagnostic view's colour).
+    fn from_rgba8(c: [u8; 4]) -> Self;
+}
+
+impl Pixel for [u8; 4] {
+    const FORMAT: PixelFormat = PixelFormat::Rgba8;
+    #[inline(always)]
+    fn encode(tone: Tone, c: Vec3) -> Self {
+        tone.encode(c)
+    }
+    #[inline(always)]
+    fn from_rgba8(c: [u8; 4]) -> Self {
+        c
+    }
+}
+
+/// An RGBA16F pixel (IEEE halves), extended sRGB: what `hdr` writes, as the GPU's
+/// `rgba16float` output.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(transparent)]
+pub struct Half4(pub [u16; 4]);
+
+impl Pixel for Half4 {
+    const FORMAT: PixelFormat = PixelFormat::Rgba16F;
+    /// Mapped (`hdr`: not at all), then the extended sRGB transfer, unquantised.
+    #[inline(always)]
+    fn encode(tone: Tone, c: Vec3) -> Self {
+        let m = tone.map(c);
+        let h = |v: f32| f32_to_half(linear_to_srgb_extended(v));
+        Half4([h(m.x), h(m.y), h(m.z), ONE_HALF])
+    }
+    #[inline(always)]
+    fn from_rgba8(c: [u8; 4]) -> Self {
+        Half4(c.map(|v| RGBA8_HALF[v as usize]))
+    }
+}
+
+/// An 8-bit channel's value (`v / 255`) as a half.
+const RGBA8_HALF: [u16; 256] = {
+    let mut t = [0; 256];
+    let mut v = 0;
+    while v < 256 {
+        t[v] = f32_to_half(v as f32 / 255.0);
+        v += 1;
+    }
+    t
+};
+
+/// 1.0 as a half.
+const ONE_HALF: u16 = 0x3c00;
+
+/// f32 to IEEE half, rounded to nearest even (as the GPU stores `rgba16float`); beyond the
+/// half's range infinity, NaN stays NaN.
+#[inline]
+pub const fn f32_to_half(x: f32) -> u16 {
+    let b = x.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32;
+    let man = b & 0x7f_ffff;
+    if exp == 0xff {
+        return sign | 0x7c00 | if man != 0 { 0x200 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 0x1f {
+        sign | 0x7c00
+    } else if e > 0 {
+        sign | round_even((e as u32) << 23 | man, 13) as u16
+    } else if e >= -10 {
+        // A subnormal half: the implicit bit joins the mantissa.
+        sign | round_even(man | 0x80_0000, (14 - e) as u32) as u16
+    } else {
+        sign
+    }
+}
+
+/// `m` without its low `shift` bits, rounded to nearest even (a carry may reach the exponent,
+/// which is then right: the next power of two, or infinity).
+#[inline]
+const fn round_even(m: u32, shift: u32) -> u32 {
+    let (q, rem, half) = (m >> shift, m & ((1 << shift) - 1), 1 << (shift - 1));
+    q + (rem > half || (rem == half && q & 1 == 1)) as u32
+}
+
 /// IEEE half to f32 (subnormals included; no NaN payloads).
 #[inline]
 pub fn half_to_f32(h: u16) -> f32 {
@@ -296,3 +386,45 @@ pub fn half_to_f32(h: u16) -> f32 {
 
 /// Rec. 709 luminance weights.
 const LUMA: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn half_round_trip_and_rounding() {
+        // Every half (NaNs aside) comes back from its f32.
+        for h in 0..=u16::MAX {
+            let f = half_to_f32(h);
+            if !f.is_nan() {
+                assert_eq!(f32_to_half(f), h, "{h:#06x} ({f})");
+            }
+        }
+        // Halfway between two halves: to the even one; beyond the range: infinity.
+        let (a, b) = (half_to_f32(0x3c00), half_to_f32(0x3c01));
+        assert_eq!(f32_to_half((a + b) / 2.0), 0x3c00);
+        let (a, b) = (half_to_f32(0x3c01), half_to_f32(0x3c02));
+        assert_eq!(f32_to_half((a + b) / 2.0), 0x3c02);
+        assert_eq!(f32_to_half(1e6), 0x7c00);
+        assert_eq!(f32_to_half(1e-9), 0);
+        assert_eq!(f32_to_half(half_to_f32(1) * 0.75), 1, "subnormal rounding");
+    }
+
+    #[test]
+    fn float_pixels_hold_the_8_bit_ones() {
+        // An RGBA8 colour as a float pixel quantises back to itself; an encoded colour's
+        // 8-bit form is clamp's (within the half's rounding).
+        for v in 0..=255u8 {
+            let h = Half4::from_rgba8([v, v, v, 255]);
+            assert_eq!(hdr_to_rgba8(bytemuck::bytes_of(&h)), [v, v, v, 255]);
+        }
+        for x in [0.0, 0.001, 0.2, 0.5, 0.99, 1.0, 3.0, 40.0] {
+            let c = Vec3::splat(x);
+            let h = Half4::encode(Tone::Hdr, c);
+            let eight = hdr_to_rgba8(bytemuck::bytes_of(&h));
+            let want = Tone::Clamp.encode(c);
+            assert!(eight.iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 1), "{x}: {eight:?} vs {want:?}");
+            assert!((half_to_f32(h.0[0]) - linear_to_srgb_extended(x)).abs() <= linear_to_srgb_extended(x) * 1e-3);
+        }
+    }
+}

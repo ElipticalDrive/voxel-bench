@@ -3,7 +3,7 @@
 //! a shadow ray through the composed visibility walk (`occluded`).
 
 use glam::{IVec3, Vec3};
-use mr_core::lighting::{Tone, point_light, srgb_to_linear, texel_coord};
+use mr_core::lighting::{Pixel, Tone, point_light, srgb_to_linear, texel_coord};
 use mr_core::{BlockId, BlockRegistry, Environment, Face, Light, RenderMode};
 
 /// What the shading needs from its back end.
@@ -42,8 +42,8 @@ impl Surface {
     }
 }
 
-/// Colour of surface `s`.
-pub fn shade<'a, L, O>(ctx: &Ctx<'a, L, O>, s: &Surface, mode: RenderMode) -> [u8; 4]
+/// Colour of surface `s`, as output pixel `P`.
+pub fn shade<'a, P: Pixel, L, O>(ctx: &Ctx<'a, L, O>, s: &Surface, mode: RenderMode) -> P
 where
     L: Fn(IVec3) -> Option<&'a [Light]>,
     O: Fn(Vec3, Vec3, f32) -> bool,
@@ -51,7 +51,7 @@ where
     let uv = s.face.uv(s.local);
     let texel = ctx.blocks.texture_of(BlockId(s.block), s.face).texel(texel_coord(uv.x), texel_coord(uv.y));
     if mode == RenderMode::Unlit {
-        return texel;
+        return P::from_rgba8(texel);
     }
     let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
     let n = s.n;
@@ -76,5 +76,5 @@ where
             }
         }
     }
-    ctx.tone.encode(albedo * light * ctx.env.exposure)
+    P::encode(ctx.tone, albedo * light * ctx.env.exposure)
 }
