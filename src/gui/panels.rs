@@ -86,10 +86,9 @@ impl App {
             }
             if running {
                 ui.spinner();
-                if ui.button("Cancel benchmark").on_hover_text("Kill the benchmark process; finished passes stay in the Benchmark tab").clicked() {
-                    if let Some(b) = &mut self.bench {
-                        b.cancel();
-                    }
+                if ui.button("Cancel benchmark").on_hover_text("Kill the benchmark process; finished passes stay in the Benchmark tab").clicked()
+                    && let Some(b) = &mut self.bench {
+                    b.cancel();
                 }
             }
             ui.separator();
@@ -141,10 +140,9 @@ impl App {
                 });
                 ui.add(egui::Slider::new(&mut self.light_intensity, 1.0..=500.0).logarithmic(true).text("intensity").update_while_editing(false)).on_hover_text("Brightness of the next dropped light");
                 ui.add(egui::Slider::new(&mut self.light_radius, 2.0..=100.0).text("radius").update_while_editing(false)).on_hover_text("Distance in blocks at which the light's contribution reaches zero");
-                if ui.button("Drop light at camera (G)").on_hover_text("Place a point light where the camera is (visible in Lit mode)").clicked() {
-                    if let Some(c) = self.live_camera() {
-                        self.send(Cmd::AddLight { position: c.position, color: Vec3::from_array(self.light_color), intensity: self.light_intensity, radius: self.light_radius });
-                    }
+                if ui.button("Drop light at camera (G)").on_hover_text("Place a point light where the camera is (visible in Lit mode)").clicked()
+                    && let Some(c) = self.live_camera() {
+                    self.send(Cmd::AddLight { position: c.position, color: Vec3::from_array(self.light_color), intensity: self.light_intensity, radius: self.light_radius });
                 }
                 if ui.button("Remove dropped lights").on_hover_text("Remove lights placed with G; the plan's own lights stay").clicked() {
                     self.send(Cmd::ClearUserLights);
@@ -155,10 +153,9 @@ impl App {
                 self.set_fullscreen(ui.ctx(), true);
             }
             ui.toggle_value(&mut self.pixel_exact, "1:1 (Z)").on_hover_text("One frame pixel per physical screen pixel (no scaling; larger frames are cropped)");
-            if let Some([w, h]) = self.tile_px {
-                if ui.button(format!("match {w}×{h} (M)")).on_hover_text("Set the render resolution to this tile's exact pixel size and restart live").clicked() {
-                    self.match_resolution(ui.ctx());
-                }
+            if let Some([w, h]) = self.tile_px
+                && ui.button(format!("match {w}×{h} (M)")).on_hover_text("Set the render resolution to this tile's exact pixel size and restart live").clicked() {
+                self.match_resolution(ui.ctx());
             }
             ui.toggle_value(&mut self.overlays, "overlays (O)").on_hover_text("Renderer names, fps and the status line over the views");
             if ui.button("⚖ Compare (C)").on_hover_text("Render this exact view on every renderer and the reference, then score them").clicked() {
@@ -310,12 +307,11 @@ impl App {
             ui.colored_label(Color32::YELLOW, "The live session is sharing the GPU with this benchmark; stop it for clean numbers.");
         }
         if let Some(b) = &mut self.bench {
-            if b.poll() {
-                if let Some(p) = b.report.lock().unwrap().take() {
-                    match bench::load_report(&p) {
-                        Ok(r) => self.report = Some(r),
-                        Err(e) => self.message = format!("report: {e:#}"),
-                    }
+            if b.poll()
+                && let Some(p) = b.report.lock().unwrap().take() {
+                match bench::load_report(&p) {
+                    Ok(r) => self.report = Some(r),
+                    Err(e) => self.message = format!("report: {e:#}"),
                 }
             }
             egui::CollapsingHeader::new("benchmark output").default_open(!b.finished).show(ui, |ui| {

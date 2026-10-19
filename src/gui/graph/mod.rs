@@ -18,7 +18,8 @@ use super::knobs;
 use crate::plan::{RendererSpec, RunSpec};
 use model::{Change, Target, Trial};
 
-/// What the user changed.
+/// What the user changed (at most one a frame).
+#[allow(clippy::large_enum_variant)]
 pub enum Edit {
     /// The renderer with another graph (already loaded: it runs).
     Spec(RendererSpec),
@@ -181,7 +182,6 @@ fn node_knobs<'a>(g: &Graph, id: Option<&str>, knobs: &'a [(ParamSpec, ParamValu
 
 /// Node `id`'s knobs as one grid: the executor's knobs it owns, then (client and link) its
 /// graph knobs, which run as a hot swap. `lock` adds the tuner's column.
-#[allow(clippy::too_many_arguments)]
 fn node_grid<'l>(ui: &mut Ui, salt: &str, g: &Graph, id: Option<&str>, knobs: &[(ParamSpec, ParamValue)], marks: bool, lock: Option<&mut (dyn FnMut(&mut Ui, &ParamSpec) + 'l)>, run: &RunSpec, trial: &mut Trial, infos: &[RendererInfo]) -> Vec<Edit> {
     let mut vals = node_knobs(g, id, knobs);
     let own = vals.len();
@@ -214,7 +214,6 @@ fn devices(g: &Graph) -> HashMap<String, Device> {
 
 /// The compact form for a side panel: the preset it runs as, then per node its component
 /// and its knobs. `marks` labels restart-only knobs; `lock` adds the tuner's lock column.
-#[allow(clippy::too_many_arguments)]
 pub fn summary<'l>(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamSpec, ParamValue)], marks: bool, mut lock: Option<&mut (dyn FnMut(&mut Ui, &ParamSpec) + 'l)>, trials: &mut Trials, infos: &[RendererInfo], run: &RunSpec) -> Vec<Edit> {
     let mut edits = vec![];
     let Some(trial) = trials.get(key, spec) else {
@@ -297,7 +296,6 @@ impl Window {
 }
 
 /// The editor for `spec`, titled `title`. Returns the edits and whether it stays open.
-#[allow(clippy::too_many_arguments)]
 pub fn pane(ui: &mut Ui, win: &mut Window, title: &str, spec: &RendererSpec, knobs: &[(ParamSpec, ParamValue)], marks: bool, trials: &mut Trials, infos: &[RendererInfo], run: &RunSpec) -> (Vec<Edit>, bool) {
     let mut open = true;
     let key = format!("{:?}", win.of);
@@ -316,7 +314,6 @@ pub fn pane(ui: &mut Ui, win: &mut Window, title: &str, spec: &RendererSpec, kno
     (edits, open)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn editor(ui: &mut Ui, win: &mut Window, title: &str, spec: &RendererSpec, knobs: &[(ParamSpec, ParamValue)], marks: bool, trial: &mut Trial, infos: &[RendererInfo], run: &RunSpec, open: &mut bool) -> Vec<Edit> {
     let mut edits = vec![];
     let g = trial.graph().clone();
@@ -396,7 +393,6 @@ fn editor(ui: &mut Ui, win: &mut Window, title: &str, spec: &RendererSpec, knobs
     edits
 }
 
-#[allow(clippy::too_many_arguments)]
 fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, ParamValue)], marks: bool, trial: &mut Trial, infos: &[RendererInfo], run: &RunSpec) -> Vec<Edit> {
     let mut edits = vec![];
     let Some(id) = win.selected.clone() else {

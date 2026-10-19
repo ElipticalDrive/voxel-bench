@@ -424,7 +424,6 @@ unsafe impl Sync for RecPtr {}
 /// The unit primary ray through pixel (`x`, `y`) of a `w` x `h` image, for the camera basis
 /// `f`, `rt`, `u`, `tan` (of half the vertical field of view) and `aspect`.
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
 fn pixel_dir(f: Vec3, rt: Vec3, u: Vec3, tan: f32, aspect: f32, w: u32, h: u32, x: u32, y: u32) -> Vec3 {
     let sy = (1.0 - 2.0 * (y as f32 + 0.5) / h as f32) * tan;
     let sx = (2.0 * (x as f32 + 0.5) / w as f32 - 1.0) * tan * aspect;

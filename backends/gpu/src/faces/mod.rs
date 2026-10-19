@@ -160,10 +160,9 @@ impl DrawParts<'_> {
     /// the mesh capability's variant, for frames with meshes.
     fn drawer(&self, draw: &str) -> anyhow::Result<FaceDrawer> {
         let mode = DrawMode::parse(draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`"))?;
-        if !mode.deferred() {
-            if let Some(why) = shade_state::fragment_blocker(self.shading, &self.gpu.device) {
-                anyhow::bail!(why);
-            }
+        if !mode.deferred()
+            && let Some(why) = shade_state::fragment_blocker(self.shading, &self.gpu.device) {
+            anyhow::bail!(why);
         }
         let vis = draw_wgsl(mode, self.shading);
         let module = self.module("face drawer", &vis);

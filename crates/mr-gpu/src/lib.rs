@@ -661,12 +661,11 @@ impl RangeAlloc {
         if n == 0 {
             return;
         }
-        if let Some((&p, &pl)) = self.free.range(..off).next_back() {
-            if p + pl == off {
-                self.free.remove(&p);
-                off = p;
-                n += pl;
-            }
+        if let Some((&p, &pl)) = self.free.range(..off).next_back()
+            && p + pl == off {
+            self.free.remove(&p);
+            off = p;
+            n += pl;
         }
         if let Some(&nl) = self.free.get(&(off + n)) {
             self.free.remove(&(off + n));
@@ -698,7 +697,7 @@ pub struct GrowableBuffer {
 impl GrowableBuffer {
     pub fn new(gpu: &Gpu, label: &'static str, initial: u64, max: u64, usage: wgpu::BufferUsages) -> Self {
         let limits = gpu.device.limits();
-        let max = max.min(limits.max_buffer_size).min(limits.max_storage_buffer_binding_size as u64).max(256);
+        let max = max.min(limits.max_buffer_size).min(limits.max_storage_buffer_binding_size).max(256);
         let usage = usage | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
         let size = initial.clamp(256, max).next_multiple_of(16);
         Self { buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false }), label, usage, max }

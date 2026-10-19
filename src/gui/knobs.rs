@@ -71,21 +71,21 @@ pub fn knob_widget(ui: &mut Ui, spec: &ParamSpec, value: &ParamValue) -> Option<
     match &spec.kind {
         ParamKind::Bool => {
             let mut b = value.as_bool().unwrap_or(false);
-            ui.checkbox(&mut b, "").on_hover_text(&spec.description).changed().then(|| (ParamValue::Bool(b), true))
+            ui.checkbox(&mut b, "").on_hover_text(&spec.description).changed().then_some((ParamValue::Bool(b), true))
         }
         ParamKind::Int { min, max } => {
             let mut v = value.as_i64().unwrap_or(*min);
             let speed = ((*max - *min) as f64 / 300.0).max(0.05);
             let r = ui.add(egui::DragValue::new(&mut v).range(*min..=*max).speed(speed).update_while_editing(false)).on_hover_text(format!("{}\nRange {min}–{max}. Drag, or double-click to type and Enter to apply.", spec.description));
             let commit = r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus());
-            (r.changed() || commit).then(|| (ParamValue::Int(v), commit))
+            (r.changed() || commit).then_some((ParamValue::Int(v), commit))
         }
         ParamKind::Float { min, max, log } => {
             let mut v = value.as_f64().unwrap_or(*min);
             fit_slider(ui);
             let r = ui.add(egui::Slider::new(&mut v, *min..=*max).logarithmic(*log).max_decimals(3).update_while_editing(false)).on_hover_text(&spec.description);
             let commit = r.drag_stopped() || (r.changed() && !r.dragged());
-            (r.changed() || commit).then(|| (ParamValue::Float(v), commit))
+            (r.changed() || commit).then_some((ParamValue::Float(v), commit))
         }
         ParamKind::Choice(opts) => {
             let cur = value.as_str().unwrap_or("").to_string();

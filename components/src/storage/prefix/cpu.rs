@@ -107,8 +107,7 @@ impl Repr for Prefix {
     fn build(d: &Arc<DenseChunk>) -> Self {
         let mut h = Box::new(PrefixData { occ: [0; 512], prefix: [0; 513] });
         let mut ids = Vec::with_capacity(CHUNK_VOLUME / 4);
-        for m in 0..512 {
-            let base = BRICK_BASE[m];
+        for (m, &base) in BRICK_BASE.iter().enumerate() {
             let mut w = 0u64;
             for (k, off) in BIT_OFFSET.iter().enumerate() {
                 let b = d.0[base + *off as usize];
@@ -173,11 +172,11 @@ impl Repr for Prefix {
     fn to_dense(&self) -> DenseChunk {
         let mut d = DenseChunk(Box::new([BlockId::AIR; CHUNK_VOLUME]));
         let mut next = self.ids.iter();
-        for m in 0..512 {
-            let mut w = self.h.occ[m];
+        for (&base, &occ) in BRICK_BASE.iter().zip(&self.h.occ) {
+            let mut w = occ;
             while w != 0 {
                 let k = w.trailing_zeros() as usize;
-                d.0[BRICK_BASE[m] + BIT_OFFSET[k] as usize] = BlockId(*next.next().unwrap());
+                d.0[base + BIT_OFFSET[k] as usize] = BlockId(*next.next().unwrap());
                 w &= w - 1;
             }
         }

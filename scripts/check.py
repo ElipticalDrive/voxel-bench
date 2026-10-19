@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Quiet verification: prints only problems and one-line totals; full logs in target/logs/.
 
-  scripts/check.py [build|test|gpu|windows|wine|all]...
+  scripts/check.py [build|clippy|test|gpu|windows|wine|all]...
 
-Default: build test. `build`: dev and release builds, warnings count as failures. `test`: the
-workspace's tests. `gpu`: the end-to-end tests that need a GPU. `windows`: zero-warning
+Default: build clippy test. `build`: dev and release builds, warnings count as failures.
+`clippy`: clippy over the workspace, every warning a failure. `test`: the workspace's tests. `gpu`: the end-to-end tests that need a GPU. `windows`: zero-warning
 cross-checks for both Windows targets (`rustup target add x86_64-pc-windows-gnu
 x86_64-pc-windows-msvc`). `wine`: the unit and GPU end-to-end tests of the `-gnu` build under
 Wine (mingw64-gcc, wine); not in `all`."""
@@ -17,9 +17,9 @@ from mr import ROOT
 
 logs = ROOT / "target" / "logs"
 logs.mkdir(parents=True, exist_ok=True)
-what = sys.argv[1:] or ["build", "test"]
+what = sys.argv[1:] or ["build", "clippy", "test"]
 if "all" in what:
-    what = ["build", "test", "gpu", "windows"]
+    what = ["build", "clippy", "test", "gpu", "windows"]
 
 
 def cargo(args, log):
@@ -57,6 +57,9 @@ for w in what:
         for prof, args in (("dev", ["build", "--workspace", "--all-targets", "--message-format=short"]), ("release", ["build", "--release", "--workspace", "--message-format=short"])):
             s, t = cargo(args, logs / f"build-{prof}.log")
             rc |= compiled(f"build {prof}", s, t)
+    elif w == "clippy":
+        s, t = cargo(["clippy", "--workspace", "--all-targets", "--message-format=short"], logs / "clippy.log")
+        rc |= compiled("clippy", s, t)
     elif w == "test":
         s, t = cargo(["test", "-q", "--workspace"], logs / "test.log")
         rc |= tests("tests", s, t)

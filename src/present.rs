@@ -94,8 +94,7 @@ impl Presenter {
             self.send(PresentMsg::Title(title))?;
         }
         let mut out = vec![];
-        loop {
-            let Link::Connected { rx, .. } = &self.link else { break };
+        while let Link::Connected { rx, .. } = &self.link {
             match rx.try_recv() {
                 Ok(PresentReply::Shown) => {
                     self.busy = false;

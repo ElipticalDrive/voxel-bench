@@ -58,10 +58,9 @@ impl Graph {
         // shading's shadow rays.
         if let Some(sid) = g.nodes.iter().find(|(_, n)| n.role == Role::Shading).map(|(k, _)| k.clone()) {
             let has = |g: &Graph, id: &str, port: &str| g.nodes.get(id).is_some_and(|n| inputs(n.role, &n.component).iter().any(|p| p.name == port));
-            if has(&g, &sid, "shadow") && !g.nodes[&sid].inputs.contains_key("shadow") {
-                if let Some(k) = g.lead_kernel(&sid) {
-                    g.nodes.get_mut(&sid).unwrap().inputs.insert("shadow".into(), k);
-                }
+            if has(&g, &sid, "shadow") && !g.nodes[&sid].inputs.contains_key("shadow")
+                && let Some(k) = g.lead_kernel(&sid) {
+                g.nodes.get_mut(&sid).unwrap().inputs.insert("shadow".into(), k);
             }
             if let Some(k) = g.nodes[&sid].inputs.get("shadow").cloned() {
                 if has(&g, &sid, "bounce") {

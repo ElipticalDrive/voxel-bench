@@ -307,7 +307,7 @@ mod tests {
         l.send(0.001, vec![WorldUpdate::SetBlocks(vec![e(1), e(40), e(2)])]);
         let mut out = vec![];
         l.deliver(10.0, &mut out);
-        let pos = |p: &dyn Fn(&WorldUpdate) -> bool| out.iter().position(|u| p(u)).unwrap();
+        let pos = |p: &dyn Fn(&WorldUpdate) -> bool| out.iter().position(p).unwrap();
         let edits: Vec<&WorldUpdate> = out.iter().filter(|u| matches!(u, WorldUpdate::SetBlocks(_))).collect();
         assert_eq!(edits.len(), 2);
         let at0 = pos(&|u| matches!(u, WorldUpdate::SetBlocks(v) if v.len() == 2));

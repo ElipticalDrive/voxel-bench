@@ -177,19 +177,19 @@ impl Composition {
         // Every site's walk; the primary kernel's constants are this back end's knobs.
         let mut walks = Walks::of(g);
         let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("gpu-compute: {} `{port}` rays are not bound", role.name()));
-        let primary = walks.site(&g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
+        let primary = walks.site(g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
         walks.kernels[primary].component = require(BACKEND, Slot::Traversal, &opts.traversal)?;
         walks.kernels[primary].consts = mr_components::shaders::KernelConsts { lod: false, exact: opts.exact, levels: [opts.skip2, opts.skip4, opts.skip8, opts.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)), max_steps: opts.max_steps };
         walks.set_max_steps(opts.max_steps);
         let shadow = match super::shading_site(g, "shadow") {
-            Some(_) => walks.site(&g, site(Role::Shading, "shadow")?, STORAGE_GROUPS, false),
+            Some(_) => walks.site(g, site(Role::Shading, "shadow")?, STORAGE_GROUPS, false),
             None => primary,
         };
         let bounce = match super::shading_site(g, "bounce") {
-            Some(Some(s)) => walks.site(&g, s, STORAGE_GROUPS, false),
+            Some(Some(s)) => walks.site(g, s, STORAGE_GROUPS, false),
             _ => shadow,
         };
-        let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(shadow, |s| walks.site(&g, s, STORAGE_GROUPS, false));
+        let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         let mut comp = Self {
             walks,
             shadow,

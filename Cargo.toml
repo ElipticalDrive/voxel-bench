@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 default-run = "multirenderer"
 
+[lints]
+workspace = true
+
 [workspace]
 members = [
     "crates/mr-core",
@@ -24,6 +27,11 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+
+# Hot loops take their state as arguments, and one-off tuples are clearer than aliases.
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
 
 [workspace.dependencies]
 mr-core = { path = "crates/mr-core" }

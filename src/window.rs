@@ -577,7 +577,6 @@ impl ApplicationHandler<UiEvent> for App {
                             KeyCode::KeyH | KeyCode::BracketLeft | KeyCode::BracketRight => {
                                 drop(input);
                                 self.present_key(code);
-                                return;
                             }
                             KeyCode::Escape => {
                                 self.handle.closed.store(true, Ordering::Relaxed);

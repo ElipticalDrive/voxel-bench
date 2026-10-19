@@ -48,7 +48,7 @@ mod tests {
                     for i in 0..CHUNK_VOLUME {
                         let w = pos * 32 + cell_of(i);
                         let h = (8.0 * ((w.x as f32 * 0.21).sin() + (w.z as f32 * 0.17).cos())) as i32 - 12;
-                        if w.y < h || rng(&mut s) % 400 == 0 {
+                        if w.y < h || rng(&mut s).is_multiple_of(400) {
                             d.0[i] = BlockId(1 + (rng(&mut s) % 4) as u16);
                         }
                     }

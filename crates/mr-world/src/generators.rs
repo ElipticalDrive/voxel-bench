@@ -371,10 +371,9 @@ impl WorldGen for TerrainGen {
     fn block(&self, p: IVec3) -> BlockId {
         let h = self.height(p.x, p.z);
         let b = self.column(p, h);
-        if b.is_air() && p.y > h {
-            if let Some(t) = self.tree_block(p, &|x, z| self.height(x, z)) {
-                return t;
-            }
+        if b.is_air() && p.y > h
+            && let Some(t) = self.tree_block(p, &|x, z| self.height(x, z)) {
+            return t;
         }
         b
     }
@@ -453,11 +452,10 @@ impl WorldGen for TerrainGen {
                             let q = (step / 4).max(1);
                             for off in [IVec3::new(half, half, half), IVec3::new(q, half, q), IVec3::new(step - q, half, step - q), IVec3::new(q, half, step - q), IVec3::new(step - q, half, q)] {
                                 let p = IVec3::new(o.x + x * step, y0, o.z + z * step) + off;
-                                if p.y > self.height(p.x, p.z) {
-                                    if let Some(t) = self.tree_block(p, &|wx, wz| self.height(wx, wz)) {
-                                        b = t;
-                                        break;
-                                    }
+                                if p.y > self.height(p.x, p.z)
+                                    && let Some(t) = self.tree_block(p, &|wx, wz| self.height(wx, wz)) {
+                                    b = t;
+                                    break;
                                 }
                             }
                         }

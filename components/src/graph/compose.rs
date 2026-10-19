@@ -200,10 +200,9 @@ impl Graph {
         }
         let skel = self.normalised()?.skeleton();
         let mut t = toml::Table::new();
-        if let Some((b, ch)) = backend(&self.executor).and_then(|b| b.api_choice.map(|ch| (b, ch))) {
-            if let Some(v) = self.nodes.values().filter(|n| n.role.slot().is_some_and(|sl| b.chooses(sl))).find_map(|n| n.api).and_then(|a| ch.value(a)) {
-                t.insert(ch.knob.into(), v.into());
-            }
+        if let Some((b, ch)) = backend(&self.executor).and_then(|b| b.api_choice.map(|ch| (b, ch)))
+            && let Some(v) = self.nodes.values().filter(|n| n.role.slot().is_some_and(|sl| b.chooses(sl))).find_map(|n| n.api).and_then(|a| ch.value(a)) {
+            t.insert(ch.knob.into(), v.into());
         }
         for (k, v) in self.normalised()?.timing_options() {
             t.insert(k.into(), v.into());
@@ -234,7 +233,7 @@ impl Graph {
                 return Err(format!("knob `{}` belongs to the back end, not to a node", spec.name));
             };
             for (_, n) in g.nodes.iter_mut().filter(|(id, _)| skel.nodes.contains_key(*id)) {
-                if n.role.name() == slot && comps.iter().any(|c| *c == n.component) {
+                if n.role.name() == slot && comps.contains(&n.component) {
                     n.knobs.entry(spec.name.clone()).or_insert_with(|| v.clone());
                 }
             }

@@ -252,10 +252,9 @@ impl Client {
                 Some(ChunkData::Dense(_)) => None,
             };
             // A uniform chunk keeps its block where the octant brings the same.
-            if let (Some(b), ChunkData::Uniform(u), None) = (fill, &*c, &out) {
-                if b == *u {
-                    continue;
-                }
+            if let (Some(b), ChunkData::Uniform(u), None) = (fill, &*c, &out)
+                && b == *u {
+                continue;
             }
             let d = out.get_or_insert_with(|| match c {
                 ChunkData::Uniform(u) => DenseChunk::filled(*u),

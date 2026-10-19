@@ -83,7 +83,7 @@ impl Driver for ScriptedDriver {
 }
 
 pub fn sampled(frame: u32, every: u32, frames: u32) -> bool {
-    (every > 0 && frame % every == 0) || frame + 1 == frames
+    (every > 0 && frame.is_multiple_of(every)) || frame + 1 == frames
 }
 
 /// Free-flying camera controlled from the window.
@@ -297,33 +297,31 @@ impl Outputs {
         if self.compare_hit(frame) {
             if self.recording_reference {
                 self.references.insert((mode, frame), Arc::new(px.to_vec()));
-            } else if let Some(r) = self.references.get(&(mode, frame)) {
-                if r.len() == px.len() {
-                    let diff = match (self.save_hit(frame), &self.save, &self.writer) {
-                        (true, Some((s, dir)), Some(tx)) if s.diffs => Some((dir.join(format!("{tag}/{frame:06}-diff.png")), tx.clone())),
-                        _ => None,
-                    };
-                    let (r, px) = (r.clone(), px.clone());
-                    let (tx, rx) = crossbeam_channel::bounded(1);
-                    self.comparer
-                        .send(Box::new(move || {
-                            let _ = tx.send(compare::compare(&r, &px, w));
-                            if let Some((path, saver)) = diff {
-                                let _ = saver.send((path, w, h, compare::diff_image(&r, &px)));
-                            }
-                        }))
-                        .expect("comparer threads stopped");
-                    quality = Some(rx);
-                }
+            } else if let Some(r) = self.references.get(&(mode, frame))
+                && r.len() == px.len() {
+                let diff = match (self.save_hit(frame), &self.save, &self.writer) {
+                    (true, Some((s, dir)), Some(tx)) if s.diffs => Some((dir.join(format!("{tag}/{frame:06}-diff.png")), tx.clone())),
+                    _ => None,
+                };
+                let (r, px) = (r.clone(), px.clone());
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                self.comparer
+                    .send(Box::new(move || {
+                        let _ = tx.send(compare::compare(&r, &px, w));
+                        if let Some((path, saver)) = diff {
+                            let _ = saver.send((path, w, h, compare::diff_image(&r, &px)));
+                        }
+                    }))
+                    .expect("comparer threads stopped");
+                quality = Some(rx);
             }
         }
-        if self.save_hit(frame) {
-            if let (Some((_, dir)), Some(tx)) = (&self.save, &self.writer) {
-                if let Some(hdr) = hdr {
-                    let _ = tx.send((dir.join(format!("{tag}/{frame:06}.hdr")), w, h, hdr));
-                }
-                let _ = tx.send((dir.join(format!("{tag}/{frame:06}.png")), w, h, px));
+        if self.save_hit(frame)
+            && let (Some((_, dir)), Some(tx)) = (&self.save, &self.writer) {
+            if let Some(hdr) = hdr {
+                let _ = tx.send((dir.join(format!("{tag}/{frame:06}.hdr")), w, h, hdr));
             }
+            let _ = tx.send((dir.join(format!("{tag}/{frame:06}.png")), w, h, px));
         }
         quality
     }

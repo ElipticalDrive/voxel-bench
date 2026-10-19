@@ -260,7 +260,7 @@ impl Meshing {
             },
         )?;
         let gpu = &core.gpu;
-        let max_bytes = (gpu.device.limits().max_storage_buffer_binding_size as u64).min(gpu.device.limits().max_buffer_size);
+        let max_bytes = gpu.device.limits().max_storage_buffer_binding_size.min(gpu.device.limits().max_buffer_size);
         // Capped below 2 GiB: GrowableBuffer rounds sizes up to powers of two, which would
         // overshoot a 2^31-4 storage-binding limit.
         let quad_capacity = ((opts.quad_buffer_mb.min(2040) as u64 * 1024 * 1024).min(max_bytes) / QUAD_BYTES) as u32;

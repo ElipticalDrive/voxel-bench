@@ -24,7 +24,7 @@ mod tests {
         let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
         let mut d = DenseChunk(Box::new([BlockId::AIR; CHUNK_VOLUME]));
         // Some chunks: sparse bricks (whole 4^3 / 8^3 regions empty) to exercise skips.
-        let sparse = seed % 3 == 0;
+        let sparse = seed.is_multiple_of(3);
         for (i, b) in d.0.iter_mut().enumerate() {
             let l = cell_of_index(i);
             if sparse && (l.x >> 3) % 2 == 1 {

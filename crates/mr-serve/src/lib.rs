@@ -108,6 +108,8 @@ fn arrived(link: &mut Link, time: f64) -> Vec<mr_core::WorldUpdate> {
     v
 }
 
+// Few in flight at a time: boxing `HostMsg` would save no memory worth having.
+#[allow(clippy::large_enum_variant)]
 enum Input {
     Host(HostMsg),
     Wake,

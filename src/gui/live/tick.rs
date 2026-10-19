@@ -420,22 +420,20 @@ impl Session {
                 m => anyhow::bail!("unexpected message {m:?}"),
             }
         }
-        if let (Some((res, format, px)), Some(p)) = (shown, self.presenters.get_mut(&i)) {
-            if let Err(e) = p.offer(res[0], res[1], format, &px) {
-                tracing::info!("lane {}: window: {e:#}", i + 1);
-                self.presenters.remove(&i);
-                self.shared.lock().unwrap().closed_windows.push(i);
-            }
+        if let (Some((res, format, px)), Some(p)) = (shown, self.presenters.get_mut(&i))
+            && let Err(e) = p.offer(res[0], res[1], format, &px) {
+            tracing::info!("lane {}: window: {e:#}", i + 1);
+            self.presenters.remove(&i);
+            self.shared.lock().unwrap().closed_windows.push(i);
         }
         for (id, res, px) in probe_px {
-            if let Some(p) = &mut self.probe {
-                if p.id == id && p.waiting > 0 {
-                    p.waiting -= 1;
-                    if i == REFERENCE {
-                        p.reference = Some(px);
-                    } else {
-                        p.lanes.insert(i, (res, px));
-                    }
+            if let Some(p) = &mut self.probe
+                && p.id == id && p.waiting > 0 {
+                p.waiting -= 1;
+                if i == REFERENCE {
+                    p.reference = Some(px);
+                } else {
+                    p.lanes.insert(i, (res, px));
                 }
             }
         }
@@ -474,10 +472,9 @@ impl Session {
             v.status = LaneStatus::Failed(msg);
         }
         drop(sh);
-        if let Some(p) = &mut self.probe {
-            if p.started && !p.lanes.contains_key(&i) {
-                p.waiting = p.waiting.saturating_sub(1);
-            }
+        if let Some(p) = &mut self.probe
+            && p.started && !p.lanes.contains_key(&i) {
+            p.waiting = p.waiting.saturating_sub(1);
         }
     }
 

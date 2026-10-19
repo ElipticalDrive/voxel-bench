@@ -309,10 +309,9 @@ impl<C: Cast> Raycast<C> {
 
 impl<C: Cast> Lane for Raycast<C> {
     fn updating(&mut self, updates: &[WorldUpdate]) {
-        if let Some(f) = &mut self.far {
-            if let Err(e) = f.update(updates) {
-                tracing::error!("the shading's GPU: {e}");
-            }
+        if let Some(f) = &mut self.far
+            && let Err(e) = f.update(updates) {
+            tracing::error!("the shading's GPU: {e}");
         }
     }
 

@@ -30,6 +30,8 @@ pub fn host_params(base_view_radius: u32) -> Vec<ParamSpec> {
     ]
 }
 
+// The names are the plans' words for the goals.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Goal {
     /// Best quality while holding at least `fps`.
@@ -571,17 +573,16 @@ impl Tuner {
             return if now - self.phase_start >= self.cfg.settle_s { self.propose(now) } else { Action::Idle };
         }
         // Early abort: a trial that collapses the frame rate is reverted immediately.
-        if let Phase::Trial { knob, revert, value } = self.phase.clone() {
-            if self.collapsed(now) {
-                self.note(format!("abort {knob} = {}: frame rate collapsed ({:.0} fps)", value.display(), self.measure().0));
-                self.rejected.insert((knob.clone(), value.display()));
-                self.fail_step(&knob);
-                self.trials += 1;
-                self.trials_since_baseline += 1;
-                self.stale += 1;
-                self.phase = Phase::Reverting;
-                return self.set(&knob, revert, now);
-            }
+        if let Phase::Trial { knob, revert, value } = self.phase.clone()
+            && self.collapsed(now) {
+            self.note(format!("abort {knob} = {}: frame rate collapsed ({:.0} fps)", value.display(), self.measure().0));
+            self.rejected.insert((knob.clone(), value.display()));
+            self.fail_step(&knob);
+            self.trials += 1;
+            self.trials_since_baseline += 1;
+            self.stale += 1;
+            self.phase = Phase::Reverting;
+            return self.set(&knob, revert, now);
         }
         if let Err(a) = self.ready(now) {
             return a;
@@ -592,10 +593,9 @@ impl Tuner {
                 self.note(format!("baseline: score {:.2} ({:.0}±{:.0} fps{})", eval.score, eval.fps, 2.0 * eval.noise, q(eval.psnr)));
                 self.push_history(now, &eval, PointKind::Accepted);
                 // The incumbent is re-measured: its fresh measurement replaces the old one.
-                if let Some((v, b)) = &mut self.best {
-                    if *v == self.values {
-                        *b = eval.clone();
-                    }
+                if let Some((v, b)) = &mut self.best
+                    && *v == self.values {
+                    *b = eval.clone();
                 }
                 if self.best.is_none() {
                     self.consider_best(&eval);
@@ -722,10 +722,9 @@ impl Tuner {
             self.bo = Some(BoState { opt: Optimizer::new(self.cfg.goal), dims, init, evals: 0, predicted: None });
         }
         let collapsed = self.collapsed(now);
-        if !collapsed {
-            if let Err(a) = self.ready(now) {
-                return a;
-            }
+        if !collapsed
+            && let Err(a) = self.ready(now) {
+            return a;
         }
         let mut eval = self.evaluate();
         eval.fps = eval.fps.max(1e-3);
@@ -764,7 +763,7 @@ impl Tuner {
         let best_x = self.best.as_ref().map(|(v, _)| bo.dims.iter().map(|d| encode(d, v.get(&d.name).unwrap_or(&d.default))).collect::<Vec<f64>>());
         let next = if let Some(x) = bo.init.pop() {
             x
-        } else if bo.evals % 7 == 0 && best_x.is_some() {
+        } else if bo.evals.is_multiple_of(7) && best_x.is_some() {
             best_x.clone().unwrap()
         } else {
             let d = bo.dims.len();

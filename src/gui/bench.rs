@@ -52,11 +52,10 @@ impl BenchRun {
 
     /// Returns true once the child process has exited.
     pub fn poll(&mut self) -> bool {
-        if !self.finished {
-            if let Ok(Some(status)) = self.child.try_wait() {
-                self.lines.lock().unwrap().push(format!("(benchmark exited: {status})"));
-                self.finished = true;
-            }
+        if !self.finished
+            && let Ok(Some(status)) = self.child.try_wait() {
+            self.lines.lock().unwrap().push(format!("(benchmark exited: {status})"));
+            self.finished = true;
         }
         self.finished
     }
@@ -127,10 +126,9 @@ fn f(v: &Value, path: &[&str]) -> Option<f64> {
 pub fn report_ui(ui: &mut Ui, r: &Report) {
     ui.horizontal(|ui| {
         ui.label(r.path.display().to_string());
-        if ui.small_button("open folder").on_hover_text("Open the run directory (report.json, CSVs, saved frames) in the file manager").clicked() {
-            if let Some(d) = r.path.parent() {
-                let _ = Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(d).spawn();
-            }
+        if ui.small_button("open folder").on_hover_text("Open the run directory (report.json, CSVs, saved frames) in the file manager").clicked()
+            && let Some(d) = r.path.parent() {
+            let _ = Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(d).spawn();
         }
     });
     let cols = ["renderer", "mode", "fps", "frame ms", "p99 ms", "gpu ms", "cpu ms", "PSNR", "bad %", "init ms", "RSS MB", "GPU MB"];

@@ -136,12 +136,10 @@ impl Graph {
             }
         }
         // Back ends that cast shadow rays through a kernel need one bound.
-        if b.has(Slot::Traversal) {
-            if let Some(n) = g.nodes.values().find(|n| n.role == Role::Shading) {
-                if !n.inputs.contains_key("shadow") {
-                    why.push(format!("shading `{}`: input `shadow` (shadow rays) is not bound, and `{}` has no rays of its own on the shading's device", n.component, g.executor));
-                }
-            }
+        if b.has(Slot::Traversal)
+            && let Some(n) = g.nodes.values().find(|n| n.role == Role::Shading)
+            && !n.inputs.contains_key("shadow") {
+            why.push(format!("shading `{}`: input `shadow` (shadow rays) is not bound, and `{}` has no rays of its own on the shading's device", n.component, g.executor));
         }
         (!why.is_empty()).then(|| why.join("; "))
     }

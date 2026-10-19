@@ -87,7 +87,7 @@ mod tests {
             s ^= s << 17;
             let l = cell_of_index(i);
             // Sparse: whole 8^3 and 16^3 regions empty, dense elsewhere.
-            if (l.x >> 4) % 2 == 0 && (l.y >> 3) % 2 == 0 && s % 5 == 0 {
+            if (l.x >> 4) % 2 == 0 && (l.y >> 3) % 2 == 0 && s.is_multiple_of(5) {
                 *b = BlockId(1);
             }
         }

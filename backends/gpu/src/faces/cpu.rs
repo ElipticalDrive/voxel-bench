@@ -224,7 +224,7 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
     if dp.length() < 64.0 {
         c.position += dp;
         c.yaw += wrap(cur.yaw - prev.yaw);
-        c.pitch = (c.pitch + (cur.pitch - prev.pitch)).clamp(-1.5707, 1.5707);
+        c.pitch = (c.pitch + (cur.pitch - prev.pitch)).clamp(-1.55, 1.55);
     }
     c
 }
@@ -287,10 +287,9 @@ impl CpuSampler {
 
     /// Takes back the state from an in-flight job (discarding its result).
     fn cancel_pending(&mut self) {
-        if let Some(rx) = self.pending.take() {
-            if let Ok(out) = rx.recv() {
-                self.state = Some(out.state);
-            }
+        if let Some(rx) = self.pending.take()
+            && let Ok(out) = rx.recv() {
+            self.state = Some(out.state);
         }
         if self.state.is_none() {
             self.state = Some(State::default());
@@ -322,14 +321,13 @@ impl CpuSampler {
         }
         // Tags for the views, when the algorithm provides them.
         self.tags_valid = false;
-        if out.tags.len() == out.instances.len() && !out.tags.is_empty() && self.opts.view != "image" {
-            if let Ok(grew) = self.tag_buf.reserve(&core.gpu, out.tags.len() as u64 * 4) {
-                if grew {
-                    self.bind0 = None;
-                }
-                core.gpu.queue.write_buffer(self.tag_buf.buffer(), 0, bytemuck::cast_slice(&out.tags));
-                self.tags_valid = true;
+        if out.tags.len() == out.instances.len() && !out.tags.is_empty() && self.opts.view != "image"
+            && let Ok(grew) = self.tag_buf.reserve(&core.gpu, out.tags.len() as u64 * 4) {
+            if grew {
+                self.bind0 = None;
             }
+            core.gpu.queue.write_buffer(self.tag_buf.buffer(), 0, bytemuck::cast_slice(&out.tags));
+            self.tags_valid = true;
         }
         if bytes <= self.rec_buf.size() { n } else { 0 }
     }

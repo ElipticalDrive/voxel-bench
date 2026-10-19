@@ -432,8 +432,10 @@ impl Session {
                         gone.push(i);
                     }
                 }
-            } else if !want && self.presenters.remove(&i).is_some() {
-                self.shared.lock().unwrap().lanes.get_mut(i).map(|v| v.window = None);
+            } else if !want
+                && self.presenters.remove(&i).is_some()
+                && let Some(v) = self.shared.lock().unwrap().lanes.get_mut(i) {
+                v.window = None;
             }
         }
         let titles: Vec<(usize, String)> = self.presenters.keys().map(|&i| (i, self.window_title(i))).collect();

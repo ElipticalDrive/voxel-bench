@@ -214,10 +214,9 @@ impl StorageData {
             .collect();
         self.rebuilt = built.len();
         for (r, blob) in built {
-            if let Some(old) = self.regions.remove(&r) {
-                if let Some((off, n)) = old.words {
-                    self.alloc.free(off, n);
-                }
+            if let Some(old) = self.regions.remove(&r)
+                && let Some((off, n)) = old.words {
+                self.alloc.free(off, n);
             }
             self.table_dirty = true;
             let region = match blob {

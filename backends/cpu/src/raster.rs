@@ -323,7 +323,8 @@ impl<P: Pixel> CpuRaster<P> {
         } else {
             stages.push(StageTime::cpu("raster+shade", &n[4], (t_raster - t_geom) as f32));
         }
-        let stats = FrameStats {
+
+        FrameStats {
             cpu_ms: total as f32,
             gpu_ms: None,
             legend: None,
@@ -337,8 +338,7 @@ impl<P: Pixel> CpuRaster<P> {
                 ("shade_ms".into(), total - t_raster),
             ],
             stages,
-        };
-        stats
+        }
     }
 }
 
@@ -362,7 +362,7 @@ impl Quads<'_> {
         let (pos, m, base) = self.visible[k];
         let q = Quad::decode(m.quads[(id - base) as usize]);
         let (a, ua, va) = FACE_AXES[q.face as usize];
-        let positive = q.face as usize % 2 == 0;
+        let positive = (q.face as usize).is_multiple_of(2);
         let plane = (pos * 32 + q.pos)[a] as f64 + positive as i32 as f64;
         let d = self.cam.ray_dir(x, y, self.w, self.h).as_dvec3();
         let o = self.cam.position;

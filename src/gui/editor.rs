@@ -45,11 +45,10 @@ fn opt_v3(ui: &mut Ui, label: &str, v: &mut Option<[f64; 3]>, default: [f64; 3],
             *v = on.then_some(default);
             c = true;
         }
-        if let Some(p) = cam {
-            if ui.small_button("⌖ cam").on_hover_text("Use the live camera position").clicked() {
-                *v = Some(p.position.to_array());
-                c = true;
-            }
+        if let Some(p) = cam
+            && ui.small_button("⌖ cam").on_hover_text("Use the live camera position").clicked() {
+            *v = Some(p.position.to_array());
+            c = true;
         }
     });
     if let Some(x) = v {
@@ -223,14 +222,13 @@ fn camera(ui: &mut Ui, plan: &mut Plan, cam: Option<Camera>) -> Changed {
         .inner;
     match p {
         CameraPathSpec::Static { position, target, yaw_deg, pitch_deg } => {
-            if let Some(k) = cam {
-                if ui.button("⌖ Set from live camera").on_hover_text("Copy the live camera's position and direction").clicked() {
-                    *position = Some(k.position.to_array());
-                    *target = None;
-                    *yaw_deg = k.yaw.to_degrees();
-                    *pitch_deg = k.pitch.to_degrees();
-                    c = true;
-                }
+            if let Some(k) = cam
+                && ui.button("⌖ Set from live camera").on_hover_text("Copy the live camera's position and direction").clicked() {
+                *position = Some(k.position.to_array());
+                *target = None;
+                *yaw_deg = k.yaw.to_degrees();
+                *pitch_deg = k.pitch.to_degrees();
+                c = true;
             }
             c |= opt_v3(ui, "position (else spawn)", position, [0.0, 80.0, 0.0], cam, "Camera position in blocks; unset = the generator's spawn point");
             c |= opt_v3(ui, "look at target", target, [0.0; 3], None, "Point the camera at this position (overrides yaw and pitch)");
@@ -272,11 +270,10 @@ fn camera(ui: &mut Ui, plan: &mut Plan, cam: Option<Camera>) -> Changed {
                     points.push(points.last().copied().unwrap_or([0.0, 100.0, 0.0]));
                     c = true;
                 }
-                if let Some(k) = cam {
-                    if ui.button("+ live camera position").on_hover_text("Append the live camera's position: fly somewhere, click, repeat").clicked() {
-                        points.push(k.position.to_array());
-                        c = true;
-                    }
+                if let Some(k) = cam
+                    && ui.button("+ live camera position").on_hover_text("Append the live camera's position: fly somewhere, click, repeat").clicked() {
+                    points.push(k.position.to_array());
+                    c = true;
                 }
             });
         }
@@ -357,11 +354,10 @@ fn lights(ui: &mut Ui, ls: &mut Vec<LightSpec>, cam: Option<Camera>) -> Changed 
                     LightSpec::Point { position, color: col, intensity, radius } => {
                         ui.horizontal(|ui| {
                             ui.label("position");
-                            if let Some(k) = cam {
-                                if ui.small_button("⌖ cam").on_hover_text("Use the live camera position").clicked() {
-                                    *position = k.position.to_array();
-                                    c = true;
-                                }
+                            if let Some(k) = cam
+                                && ui.small_button("⌖ cam").on_hover_text("Use the live camera position").clicked() {
+                                *position = k.position.to_array();
+                                c = true;
                             }
                         });
                         c |= v3(ui, position, 0.5);
@@ -529,12 +525,11 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
                 }
                 let text = &mut ctx.option_text[i];
                 egui::CollapsingHeader::new("options as TOML").id_salt("toml").show(ui, |ui| {
-                    if ui.add(egui::TextEdit::multiline(text).code_editor().desired_rows(2).desired_width(f32::INFINITY)).on_hover_text("The knobs above as `key = value` lines (only the ones set); edits apply as you type when valid").changed() {
-                        if let Ok(t) = text.parse::<toml::Table>() {
-                            r.options = t;
-                            let _ = r.resolve();
-                            c = true;
-                        }
+                    if ui.add(egui::TextEdit::multiline(text).code_editor().desired_rows(2).desired_width(f32::INFINITY)).on_hover_text("The knobs above as `key = value` lines (only the ones set); edits apply as you type when valid").changed()
+                        && let Ok(t) = text.parse::<toml::Table>() {
+                        r.options = t;
+                        let _ = r.resolve();
+                        c = true;
                     }
                     if text.parse::<toml::Table>().is_err() {
                         ui.colored_label(egui::Color32::LIGHT_RED, "invalid TOML (not applied)");

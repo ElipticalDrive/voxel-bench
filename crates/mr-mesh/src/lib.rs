@@ -248,7 +248,7 @@ impl Quad {
     pub fn corners(&self) -> [glam::Vec3; 4] {
         let (a, ua, va) = FACE_AXES[self.face as usize];
         let mut base = self.pos.as_vec3();
-        if self.face as usize % 2 == 0 {
+        if (self.face as usize).is_multiple_of(2) {
             base[a] += 1.0;
         }
         let mut du = glam::Vec3::ZERO;

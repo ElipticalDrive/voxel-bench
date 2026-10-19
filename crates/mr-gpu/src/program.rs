@@ -238,10 +238,9 @@ pub fn declared(src: &str) -> Vec<String> {
         }
         let Some(kw) = ["fn ", "virtual fn ", "const ", "struct ", "alias ", "override ", "var"].into_iter().find(|k| rest.starts_with(k)) else { continue };
         let mut after = &rest[kw.len()..];
-        if kw == "var" {
-            if let Some(r) = after.strip_prefix('<') {
-                after = &r[r.find('>').map_or(r.len(), |i| i + 1)..];
-            }
+        if kw == "var"
+            && let Some(r) = after.strip_prefix('<') {
+            after = &r[r.find('>').map_or(r.len(), |i| i + 1)..];
         }
         let name: String = after.trim_start().chars().take_while(|&c| ident(c)).collect();
         if !name.is_empty() {

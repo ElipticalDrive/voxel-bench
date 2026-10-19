@@ -333,10 +333,9 @@ fn accept(l: &mr_ipc::Listener, child: &mut Option<Child>, timeout: Duration) ->
         if let Some(s) = mr_ipc::try_accept(l)? {
             return Ok(s);
         }
-        if let Some(c) = child {
-            if let Some(status) = c.try_wait()? {
-                bail!("worker exited before connecting: {status}");
-            }
+        if let Some(c) = child
+            && let Some(status) = c.try_wait()? {
+            bail!("worker exited before connecting: {status}");
         }
         if start.elapsed() > timeout {
             bail!("worker did not connect within {timeout:?}");

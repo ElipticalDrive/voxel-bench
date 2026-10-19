@@ -179,8 +179,8 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
                 Some(key) => {
                     found.push(key);
                     cov[(y * w + x) as usize] = 1;
-                    if !done.contains_key(&key) {
-                        done.insert(key, clusters as u32);
+                    if let std::collections::hash_map::Entry::Vacant(e) = done.entry(key) {
+                        e.insert(clusters as u32);
                         frontier.push((key, clusters as u32));
                         clusters += 1;
                     }
@@ -274,8 +274,8 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
                     cov[p as usize] = 1;
                 }
                 for nk in nbs {
-                    if !done.contains_key(&nk) {
-                        done.insert(nk, id);
+                    if let std::collections::hash_map::Entry::Vacant(e) = done.entry(nk) {
+                        e.insert(id);
                         next.push((nk, id));
                     }
                 }

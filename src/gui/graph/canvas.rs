@@ -114,7 +114,6 @@ fn bezier(from: Pos2, to: Pos2, s: f32) -> Vec<Pos2> {
     c.flatten(Some(0.5))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &HashMap<String, Device>, selected: Option<&str>, trial: &mut Trial, infos: &[RendererInfo]) -> Response {
     let mut out = Response::default();
     let rect = ui.available_rect_before_wrap();

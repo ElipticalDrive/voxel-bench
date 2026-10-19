@@ -48,7 +48,7 @@ pub fn load(base: &RendererSpec, g: &Graph, infos: &[RendererInfo]) -> Result<Re
     s.resolve().map_err(|e| format!("{e:#}").trim_start_matches("renderer graph: ").to_string())?;
     if let Some(info) = infos.iter().find(|i| i.name == s.name) {
         let before = s.options.len();
-        s.options.retain(|k, _| info.params.iter().any(|p| &p.name == k));
+        s.options.retain(|k, _| info.params.iter().any(|p| p.name == k));
         if s.options.len() != before {
             s.resolve().map_err(|e| format!("{e:#}"))?;
         }

@@ -264,7 +264,7 @@ pub fn stream_table(reports: &[PassReport]) -> Option<String> {
         return None;
     }
     let mut s = String::new();
-    let _ = writeln!(s, "{:<6} {:>8} {:>8} {:>8} {:>7} {:>6} {:>6}  {:<28}  {}", "mode", "sent MB", "arr. MB", "ns/byte", "holes", "max", "frames", "first complete", "stream to");
+    let _ = writeln!(s, "{:<6} {:>8} {:>8} {:>8} {:>7} {:>6} {:>6}  {:<28}  stream to", "mode", "sent MB", "arr. MB", "ns/byte", "holes", "max", "frames", "first complete");
     for r in ok {
         let first = r.first_complete.map_or_else(|| "never".into(), |c| format!("#{:<4} {:>6.2} s {:>7.0} ms", c.frame, c.clock_s, c.ms));
         let _ = writeln!(

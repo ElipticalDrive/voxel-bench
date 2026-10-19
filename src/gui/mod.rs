@@ -135,7 +135,7 @@ fn steady_scroll_area<R>(ui: &mut egui::Ui, salt: &str, add: impl FnOnce(&mut eg
         want = off;
     } else if off < want - 0.5 && max > off + 0.5 {
         // Taller again: back to the user's offset (from the next frame).
-        let mut st = out.state.clone();
+        let mut st = out.state;
         st.offset.y = want.min(max);
         st.store(ui.ctx(), out.id);
         ui.ctx().request_repaint();

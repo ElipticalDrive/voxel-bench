@@ -281,11 +281,11 @@ pub struct VoxelWorld {
 impl VoxelWorld {
     pub fn new(gpu: &Gpu, blocks: &BlockRegistry, env: Environment, cfg: VoxelWorldConfig) -> anyhow::Result<Self> {
         let limits = gpu.device.limits();
-        let max_bytes = (limits.max_storage_buffer_binding_size as u64).min(limits.max_buffer_size);
+        let max_bytes = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
         let max_slots = if cfg.upload_voxels { ((cfg.pool_mb as u64 * 1024 * 1024).min(max_bytes) / CHUNK_BYTES).max(1) as u32 } else { 1 };
         let pool_slots = max_slots.min(64);
         if cfg.upload_voxels {
-            tracing::info!("voxel pool: grows up to {max_slots} chunks ({} MiB)", max_slots as u64 * CHUNK_BYTES >> 20);
+            tracing::info!("voxel pool: grows up to {max_slots} chunks ({} MiB)", (max_slots as u64 * CHUNK_BYTES) >> 20);
         }
         let side = 2 * cfg.view_radius as usize + 1;
         let table = Table::new((side * side * side * 2 * (cfg.max_lod as usize + 1)).next_power_of_two().max(1024));

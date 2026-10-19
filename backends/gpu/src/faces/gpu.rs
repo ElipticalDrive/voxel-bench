@@ -31,6 +31,7 @@
 //!    level's queues with one global atomic per workgroup). 1-px tiles insert their corner
 //!    pixel faces. Small single-thread passes turn counters into indirect args.
 //! 3. raster the list (depth pre-pass + equal-depth shading in lit mode).
+//!
 //! `audit` adds one ray per pixel after the timed passes and counts pixels whose visible
 //! face is not in S.
 //!
@@ -1093,7 +1094,6 @@ impl GpuSampler {
 
     /// Rasterises list `parity` into the output (depth pre-pass + equal-depth shading in lit
     /// mode). `ts` = (begin, end) frame timestamps carried by these passes.
-    #[allow(clippy::too_many_arguments)]
     fn encode_shade(&self, core: &Core, drawing: &Draw, enc: &mut wgpu::CommandEncoder, parity: usize, world_bg: &wgpu::BindGroup, bound: &Bound, mode: RenderMode, ts: (bool, bool), ticket: mr_gpu::Ticket) {
         let painter = self.opts.order == "painter";
         let overdraw = view_code(&self.opts.view) == 4;
@@ -1138,7 +1138,6 @@ impl GpuSampler {
     /// `view = tiles | rays`: blends the diagnostic overlay over the output (`overdraw`:
     /// replaces the counts with their colours). `frame` is the
     /// discovery frame to show (0: nothing was discovered this frame).
-    #[allow(clippy::too_many_arguments)]
     fn encode_overlay(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, frame: u32, off_x: u32, off_y: u32, cols: u32, rows: u32) {
         let view = view_code(&self.opts.view);
         if view < 2 {
@@ -1684,7 +1683,6 @@ impl FaceSource for GpuSampler {
 /// if it is off screen. A box straddling the camera plane that may be visible gets the
 /// whole screen (its projection is unbounded); `None` is never returned for boxes behind
 /// or beside the camera, only kept for callers that want a forced full frame.
-#[allow(clippy::too_many_arguments)]
 fn box_rect(view_proj: &glam::Mat4, min: IVec3, size: i32, cam: glam::DVec3, width: u32, height: u32, tile: u32, cols: u32, rows: u32) -> Option<Option<[u32; 4]>> {
     let clips: [glam::Vec4; 8] = std::array::from_fn(|k| {
         let k = k as i32;

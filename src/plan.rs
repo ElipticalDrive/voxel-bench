@@ -249,10 +249,9 @@ impl RendererSpec {
         }
         // `name = "<back end's renderer>"` (the CLI, the GUI's presets): the back end's
         // default composition.
-        if self.compose.is_none() {
-            if let Some(b) = mr_components::BACKENDS.iter().find(|b| b.renderer == Some(self.name.as_str())) {
-                self.compose = Some(mr_components::Composition::new(b.name));
-            }
+        if self.compose.is_none()
+            && let Some(b) = mr_components::BACKENDS.iter().find(|b| b.renderer == Some(self.name.as_str())) {
+            self.compose = Some(mr_components::Composition::new(b.name));
         }
         if let Some(c) = &mut self.compose {
             let (name, opts) = c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?;

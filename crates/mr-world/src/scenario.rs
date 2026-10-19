@@ -209,10 +209,9 @@ impl Scene {
         let mut s = Self { spec, blocks, environment, base_lights: vec![], spawn, frames: frames.max(1) };
         s.base_lights = s.build_lights(world)?;
         for e in &s.spec.events {
-            if let EventSpec::Sphere { block, .. } | EventSpec::Box { block, .. } | EventSpec::RandomEdits { block, .. } = e {
-                if block != "toggle" {
-                    s.block_id(block)?;
-                }
+            if let EventSpec::Sphere { block, .. } | EventSpec::Box { block, .. } | EventSpec::RandomEdits { block, .. } = e
+                && block != "toggle" {
+                s.block_id(block)?;
             }
         }
         Ok(s)
@@ -362,7 +361,7 @@ impl Scene {
                         }
                     }
                 }
-                EventSpec::RandomEdits { every, count, seed, center, radius, block } if frame % every.max(1) == 0 => {
+                EventSpec::RandomEdits { every, count, seed, center, radius, block } if frame.is_multiple_of(every.max(1)) => {
                     let toggle = block == "toggle";
                     let b = if toggle { BlockId::AIR } else { self.block_id(&block)? };
                     let c = center.map(v).unwrap_or(camera.position);

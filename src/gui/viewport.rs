@@ -182,22 +182,20 @@ impl App {
             );
             painter.text(rect.left_bottom() + Vec2::new(8.0, -8.0), egui::Align2::LEFT_BOTTOM, hud, egui::FontId::monospace(13.0), Color32::LIGHT_GRAY);
         }
-        if self.edit_mode {
-            if let Some(h) = hover {
-                painter.circle_stroke(h, 6.0, egui::Stroke::new(1.5, Color32::YELLOW));
-            }
+        if self.edit_mode
+            && let Some(h) = hover {
+            painter.circle_stroke(h, 6.0, egui::Stroke::new(1.5, Color32::YELLOW));
         }
 
         // Block editing.
-        if self.edit_mode && resp.clicked_by(PointerButton::Primary) {
-            if let (Some((r, w, h)), Some(p), Some(cam)) = (pick, resp.interact_pointer_pos(), self.live_camera()) {
-                let x = (p.x - r.min.x) / r.width() * w as f32;
-                let y = (p.y - r.min.y) / r.height() * h as f32;
-                let dir = cam.ray_dir_at(x, y, w, h);
-                let ctrl = ui.input(|i| i.modifiers.ctrl);
-                let place = ctrl.then_some(BlockId(self.place_block as u16 + 1));
-                self.send(Cmd::Edit { origin: cam.position, dir, place });
-            }
+        if self.edit_mode && resp.clicked_by(PointerButton::Primary)
+            && let (Some((r, w, h)), Some(p), Some(cam)) = (pick, resp.interact_pointer_pos(), self.live_camera()) {
+            let x = (p.x - r.min.x) / r.width() * w as f32;
+            let y = (p.y - r.min.y) / r.height() * h as f32;
+            let dir = cam.ray_dir_at(x, y, w, h);
+            let ctrl = ui.input(|i| i.modifiers.ctrl);
+            let place = ctrl.then_some(BlockId(self.place_block as u16 + 1));
+            self.send(Cmd::Edit { origin: cam.position, dir, place });
         }
     }
 }

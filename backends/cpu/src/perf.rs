@@ -14,11 +14,14 @@ pub const EVENTS: &[(&str, u32, u64)] = &[
     ("cache_refs", PERF_TYPE_HARDWARE, 2),
     ("cache_misses", PERF_TYPE_HARDWARE, 3),
     ("stall_backend", PERF_TYPE_HARDWARE, 8),
-    // L1D read miss
-    ("l1d_miss", PERF_TYPE_HW_CACHE, 0 | (0 << 8) | (1 << 16)),
-    // dTLB read miss
-    ("dtlb_miss", PERF_TYPE_HW_CACHE, 3 | (0 << 8) | (1 << 16)),
+    ("l1d_miss", PERF_TYPE_HW_CACHE, read_miss(0)),
+    ("dtlb_miss", PERF_TYPE_HW_CACHE, read_miss(3)),
 ];
+
+/// A `PERF_TYPE_HW_CACHE` config: the cache (0 L1D, 3 dTLB), operation read (0), result miss (1).
+const fn read_miss(cache: u64) -> u64 {
+    cache | (1 << 16)
+}
 
 /// The `perf` knob's value, refused where this system has no counters.
 pub fn allowed(on: bool) -> anyhow::Result<bool> {

@@ -201,7 +201,7 @@ impl Docks {
     }
 
     /// `p` in place of the viewport (a pane there before goes back to its dock).
-    pub(super) fn to_middle(&mut self, p: Pane) {
+    pub(super) fn set_middle(&mut self, p: Pane) {
         if let Some(t) = self.middle.take() {
             self.dock_mut(t.back).panes.push(t.pane);
         }
@@ -238,7 +238,7 @@ impl Docks {
             } else if b == "window" {
                 self.tear(Pane::deserialize(name(a))?);
             } else if b == "middle" {
-                self.to_middle(Pane::deserialize(name(a))?);
+                self.set_middle(Pane::deserialize(name(a))?);
             } else {
                 self.move_to(Pane::deserialize(name(a))?, Side::deserialize(name(b))?);
             }
@@ -380,7 +380,7 @@ impl App {
             }
             Some(Action::Move(p, s)) => self.docks.move_to(p, s),
             Some(Action::Tear(p)) => self.docks.tear(p),
-            Some(Action::Middle(p)) => self.docks.to_middle(p),
+            Some(Action::Middle(p)) => self.docks.set_middle(p),
             Some(Action::Collapse(s, on)) => {
                 self.docks.dock_mut(s).collapsed = on;
                 self.docks.peek = None;
@@ -476,7 +476,7 @@ impl App {
                             back = true;
                         }
                         if t.pane == Pane::Pipeline && ui.button("⛶ Middle").on_hover_text("Show the editor in the main window, in place of the view").clicked() {
-                            self.docks.to_middle(t.pane);
+                            self.docks.set_middle(t.pane);
                         }
                     });
                     ui.separator();
@@ -642,12 +642,12 @@ mod tests {
     #[test]
     fn the_pipeline_takes_the_middle_and_goes_back() {
         let mut d = Docks::default();
-        d.to_middle(Pane::Pipeline);
+        d.set_middle(Pane::Pipeline);
         assert!(d.windows.is_empty() && d.middle() == Some(Pane::Pipeline));
         d.move_to(Pane::Pipeline, Side::Right);
         assert_eq!((d.middle(), d.right.panes.last()), (None, Some(&Pane::Pipeline)));
-        d.to_middle(Pane::Pipeline);
-        d.to_middle(Pane::Schemes);
+        d.set_middle(Pane::Pipeline);
+        d.set_middle(Pane::Schemes);
         assert_eq!(d.middle(), Some(Pane::Schemes));
         assert!(d.right.panes.contains(&Pane::Pipeline), "the pane in the middle before goes back to its dock");
         assert_eq!(all(&d), Pane::ALL);
