@@ -87,6 +87,12 @@ enum Cmd {
         #[arg(long)]
         keys: bool,
     },
+    /// The cache of pipelines compiled for this machine: where it is and what it holds;
+    /// `--clear` empties it (each pipeline compiles again when next used).
+    Cache {
+        #[arg(long)]
+        clear: bool,
+    },
     /// Compare two PNG images.
     Diff {
         a: PathBuf,
@@ -173,6 +179,20 @@ fn main() -> anyhow::Result<()> {
             for i in mr_worker::infos().into_iter().filter(|i| !mr_components::BACKENDS.iter().any(|b| b.renderer == Some(i.name.as_str()))) {
                 let modes: Vec<_> = i.modes.iter().map(|m| m.name()).collect();
                 println!("  {:<16} [{}] modes={} max_lod={}\n      {}", i.name, i.tags.join(","), modes.join(","), i.max_lod, i.description);
+            }
+            Ok(())
+        }
+        Cmd::Cache { clear } => {
+            let root = mr_core::cache_dir();
+            if clear {
+                std::fs::remove_dir_all(&root).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).with_context(|| format!("removing {}", root.display()))?;
+                println!("cleared {}", root.display());
+                return Ok(());
+            }
+            let gb = |p: &std::path::Path| pipelines::size(p) as f64 / 1e9;
+            println!("{}: {:.2} GB (limit: MR_PIPELINE_CACHE_GB, default 4)", root.display(), gb(&root));
+            for e in std::fs::read_dir(&root).into_iter().flatten().filter_map(|e| e.ok()) {
+                println!("  {:<16} {:>7.2} GB", e.file_name().to_string_lossy(), gb(&e.path()));
             }
             Ok(())
         }

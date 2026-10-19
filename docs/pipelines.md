@@ -138,6 +138,12 @@ short terrain flight next to the generic build and must match it pixel for pixel
 pipeline compiles, and the compiled one then hot-swaps in. Its label gains ` [native]` or
 ` [break-in]`. A baked knob cannot change live: changing it needs another build.
 
+The cache stays bounded: a new build replaces older builds of the same pipeline (from
+older sources, toolchain or CPU), a passed check's frames are deleted, and above 4 GB
+(`MR_PIPELINE_CACHE_GB`) the least recently used workers go, then the shared target
+directories. `multirenderer cache` shows what it holds; `multirenderer cache --clear`
+empties it.
+
 GPU pipelines also keep the driver's pipeline cache per adapter and graph
 (`MR_GPU_CACHE=0` turns it off).
 

@@ -462,6 +462,8 @@ pub fn ensure(b: &Bake, level: Compile) -> anyhow::Result<Compiled> {
     let root = cache_dir();
     let exe = root.join("bin").join(exe_name(&key));
     if exe.exists() {
+        // Its use, for the cache's least-recently-used order.
+        let _ = std::fs::File::options().write(true).open(&exe).and_then(|f| f.set_modified(std::time::SystemTime::now()));
         return Ok(Compiled { exe, key, build_s: None });
     }
     let t = Instant::now();
@@ -486,7 +488,78 @@ pub fn ensure(b: &Bake, level: Compile) -> anyhow::Result<Compiled> {
     std::fs::rename(&tmp, &exe)?;
     let build_s = t.elapsed().as_secs_f64();
     tracing::info!("compiled pipeline {key} in {build_s:.1} s");
+    prune(&root, &key, cache_limit());
     Ok(Compiled { exe, key, build_s: Some(build_s) })
+}
+
+/// The cache's size limit: `$MR_PIPELINE_CACHE_GB`, else 4 GB.
+fn cache_limit() -> u64 {
+    let gb = std::env::var("MR_PIPELINE_CACHE_GB").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(4.0);
+    (gb * 1e9) as u64
+}
+
+/// The bytes under `p` (0 if it is missing).
+pub fn size(p: &Path) -> u64 {
+    match std::fs::symlink_metadata(p) {
+        Ok(m) if m.is_dir() => std::fs::read_dir(p).map(|d| d.filter_map(|e| e.ok()).map(|e| size(&e.path())).sum()).unwrap_or(0),
+        Ok(m) => m.len(),
+        Err(_) => 0,
+    }
+}
+
+/// Removes worker `key` and everything kept for it.
+fn forget(root: &Path, key: &str) {
+    let exe = root.join("bin").join(exe_name(key));
+    for f in [exe.with_extension("trusted"), exe.with_extension("rejected"), exe] {
+        let _ = std::fs::remove_file(f);
+    }
+    for d in ["src", "train", "check"] {
+        let _ = std::fs::remove_dir_all(root.join(d).join(key));
+    }
+}
+
+/// Keeps the cache bounded after `key` was built: other builds of the same pipeline and
+/// level (older sources, toolchain or CPU: never asked for again) go; then, while the cache
+/// is over `limit` bytes, the least recently used workers, and last the shared target
+/// directories (the next build fills them again).
+fn prune(root: &Path, key: &str, limit: u64) {
+    let level = |k: &str| k.ends_with("-break-in");
+    let pipeline = |k: &str| k.trim_end_matches("-break-in").rsplit_once('-').map(|(p, _)| p.to_string());
+    // Workers: the files without an extension (`.exe` on Windows); not `.trusted` and the like.
+    let mut workers: Vec<(std::time::SystemTime, String)> = std::fs::read_dir(root.join("bin"))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_none_or(|x| x == "exe"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path().file_stem()?.to_string_lossy().into_owned())))
+        .filter(|(_, k)| !k.starts_with('.'))
+        .collect();
+    workers.retain(|(_, k)| {
+        let stale = k != key && level(k) == level(key) && pipeline(k) == pipeline(key);
+        if stale {
+            tracing::info!("pipeline cache: {k} replaced by {key}");
+            forget(root, k);
+        }
+        !stale
+    });
+    workers.sort();
+    let mut total = size(root);
+    for (_, k) in workers.iter().filter(|(_, k)| k != key) {
+        if total <= limit {
+            return;
+        }
+        tracing::info!("pipeline cache over {:.1} GB: {k} removed (least recently used)", limit as f64 / 1e9);
+        forget(root, k);
+        total = size(root);
+    }
+    for d in ["target-pgo", "target-lto", "target-break-in", "target-pgo-use", "target"] {
+        if total <= limit {
+            return;
+        }
+        tracing::info!("pipeline cache over {:.1} GB: {d} removed", limit as f64 / 1e9);
+        let _ = std::fs::remove_dir_all(root.join(d));
+        total = size(root);
+    }
 }
 
 /// Returns the worker for `b` once it is trusted: a freshly built pipeline must render
@@ -510,6 +583,8 @@ pub fn trusted(b: &Bake, level: Compile) -> anyhow::Result<Compiled> {
     let t = Instant::now();
     match verify(b, &c, level) {
         Ok(summary) => {
+            // The check's frames are not needed once it passed (a failure keeps them).
+            let _ = std::fs::remove_dir_all(cache_dir().join("check").join(&c.key));
             tracing::info!("pipeline {} trusted in {:.1} s: {summary}", c.key, t.elapsed().as_secs_f64());
             std::fs::write(&ok, summary)?;
             Ok(c)
@@ -595,6 +670,40 @@ fn verify(b: &Bake, c: &Compiled, level: Compile) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Older builds of the same pipeline and level go at once; over the limit, the least
+    /// recently used workers, then the shared targets; the new worker always stays.
+    #[test]
+    fn the_cache_stays_bounded() {
+        let root = std::env::temp_dir().join(format!("mr-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("target/lib"), [0; 1000]).unwrap();
+        let t0 = std::time::SystemTime::now() - std::time::Duration::from_secs(1000);
+        let worker = |k: &str, age: u64| {
+            let p = root.join("bin").join(exe_name(k));
+            std::fs::write(&p, [0; 1000]).unwrap();
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(t0 + std::time::Duration::from_secs(age)).unwrap();
+            std::fs::write(p.with_extension("trusted"), "").unwrap();
+        };
+        let (old, new) = ("cpu-aaaa-1111", "cpu-aaaa-2222");
+        worker(old, 0);
+        worker("cpu-aaaa-1111-break-in", 1);
+        worker("cpu-bbbb-1111", 2);
+        worker("cpu-cccc-1111", 3);
+        worker(new, 4);
+        let has = |k: &str| root.join("bin").join(exe_name(k)).exists();
+        prune(&root, new, 100_000);
+        assert!(!has(old) && !root.join("bin").join(old).with_extension("trusted").exists(), "the older build of the same pipeline went");
+        assert!(has("cpu-aaaa-1111-break-in") && has("cpu-bbbb-1111") && has("cpu-cccc-1111") && has(new));
+        prune(&root, new, 3_000);
+        assert!(!has("cpu-aaaa-1111-break-in") && !has("cpu-bbbb-1111") && has("cpu-cccc-1111") && has(new), "least recently used first");
+        assert!(root.join("target").exists());
+        prune(&root, new, 1_500);
+        assert!(!has("cpu-cccc-1111") && has(new) && !root.join("target").exists(), "then the target; never the new worker");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn spec(r: &str, options: &[(&str, toml::Value)]) -> RendererSpec {
         let mut s = RendererSpec::from_cli(r).unwrap();
