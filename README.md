@@ -79,6 +79,9 @@ quality at 120 fps.
   scripts.
 - [docs/architecture.md](docs/architecture.md): processes, streaming, measurement, the
   conventions renderers follow, the code layout, and how to add a component.
-- [docs/schemes/](docs/schemes/README.md): the encyclopedia of rendering schemes, one entry
-  per technique: what it is, how it works, where it is implemented, what was measured.
+- [docs/design.md](docs/design.md): the requirements behind the architecture and how each is
+  met: pipelines as graphs, composition at no cost, a device per node, compiling on demand.
+- [docs/schemes/](docs/schemes/README.md): the encyclopedia of volume-rendering schemes, one
+  entry per technique: what it is, how it works, where it is implemented, what was measured.
+- [ROADMAP.md](ROADMAP.md): ideas for the bench itself, not built yet.
 - [docs/findings.md](docs/findings.md): what has been measured so far, in brief.

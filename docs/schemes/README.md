@@ -1,7 +1,8 @@
 # Encyclopedia of rendering schemes
 
-One entry per scheme: every component this project implements, the techniques around them,
-every idea for one (built or not), and the ideas behind the bench's own design and tools.
+One entry per volume-rendering scheme: every component this project implements, the
+techniques around them, and every idea for one (built or not). The bench's own design is in
+[docs/design.md](../design.md), ideas for the bench in [ROADMAP.md](../../ROADMAP.md).
 Each entry says what the scheme is, how it works, how it is built here, what has been
 measured, and how it relates to the other entries. An entry whose status is `idea` is
 untested, and says so at its top.
@@ -28,7 +29,7 @@ sources = ["Author, Title, Venue Year"]
   been measured), `measured` (numbers in the entry), `rejected` (tried and dropped; the entry
   says why).
 - Categories: the folders. Most are kinds of pipeline node; `world` is the server, link and
-  client side; `architecture` the bench's design; `tools` the GUI and tooling.
+  client side.
 - `origin`: `user` (the project owner's idea), `project` (devised while building this
   bench), `literature` (published or well known; see `sources`).
 
@@ -140,20 +141,4 @@ cannot be added without one.
 - [The client: picked or derived LOD levels](world/client.md) (`pick`, `derive`): measured, project
 - [The served split: server, link and client](world/served-split.md): built, user
 - [World generation on the server or the client](world/generator.md) (`procedural`): measured, project
-
-### Architecture
-
-- [A cached inventory of every device and API](architecture/device-inventory.md): untested idea, user
-- [A device and an API per node](architecture/device-per-node.md): built, user
-- [A planner that learns the machine](architecture/learning-planner.md): untested idea, user
-- [Composition at no cost, without redundant code](architecture/zero-cost-composition.md): built, user
-- [Pipelines as graphs](architecture/pipeline-graph.md): built, user
-- [Pipelines compiled on demand, and break-in mode](architecture/compile-on-demand.md): built, user
-- [The bench as a renderer library](architecture/library-interface.md): untested idea, user
-
-### Tools
-
-- [A graph-first pipeline editor](tools/graph-editor.md): built, user
-- [Docking panes](tools/docking.md): untested idea, user
-- [Game controller support](tools/controller.md): untested idea, user
 <!-- end index -->

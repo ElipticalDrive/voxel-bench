@@ -122,6 +122,12 @@ Python, for Linux and Windows (`scripts/`):
 - `sweep.py [plans…]`: the full sweep over every scenario plan (one night's work at each
   plan's own length; `FRAMES=120` for shorter, faster camera paths), into
   `target/sweep/<time>/`, then the catalogue there.
+- `check.py [build|test|gpu|windows|wine|all]`: quiet verification (builds without warnings,
+  tests, the GPU end-to-end tests, Windows cross-checks); prints only problems and totals, full
+  logs in `target/logs/`.
+- `run1.py RENDERER_TOML [plan] [-s …]`: one quiet run of one renderer (default plan terrain)
+  into `target/run1/`, then its summary; `report.py [dir|report.json]…` prints that summary
+  (one line per pass, then its stages) for any run, by default the newest.
 - `schemes.py`: checks the encyclopedia's entries and rewrites its index
   (`docs/schemes/README.md`).
 - `suite.py`, then `summarise.py target/catalogue`: the whole catalogue of default pipelines.

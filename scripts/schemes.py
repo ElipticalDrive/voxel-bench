@@ -12,7 +12,7 @@ import sys
 import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent / "docs" / "schemes"
-CATEGORIES = ["storage", "traversal", "visibility", "discovery", "geometry", "draw", "prepass", "shading", "meshes", "post", "world", "architecture", "tools"]
+CATEGORIES = ["storage", "traversal", "visibility", "discovery", "geometry", "draw", "prepass", "shading", "meshes", "post", "world"]
 STATUSES = ["idea", "built", "measured", "rejected"]
 ORIGINS = ["user", "project", "literature"]
 FIELDS = {"title": str, "category": str, "status": str, "components": list, "related": list, "origin": str, "sources": list}
