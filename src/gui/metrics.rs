@@ -271,7 +271,7 @@ impl App {
                         Some((slot, c)) => actions.push(LaneAction::Set(i, slot, mr_core::ParamValue::Choice(c))),
                         None => actions.push(LaneAction::Swap(i, spec)),
                     },
-                    graph::Edit::Open(sel) => self.graph_win = Some(graph::Window::new(ui.ctx(), graph::Of::Lane(i), sel)),
+                    graph::Edit::Open(sel) => self.open_graph(ui.ctx(), graph::Of::Lane(i), sel),
                 }
             }
         });
@@ -344,9 +344,9 @@ impl App {
                 ui.label(format!("{:?} via {:?}", tv.config.goal, tv.config.algorithm));
                 ui.horizontal(|ui| {
                     if tv.holding {
-                        ui.colored_label(Color32::LIGHT_GREEN, "● holding").on_hover_text("Converged: the best configuration is applied and re-measured periodically");
+                        ui.colored_label(Color32::LIGHT_GREEN, "⚫ holding").on_hover_text("Converged: the best configuration is applied and re-measured periodically");
                     } else {
-                        ui.colored_label(Color32::GOLD, "● exploring").on_hover_text("Trying configurations");
+                        ui.colored_label(Color32::GOLD, "⚫ exploring").on_hover_text("Trying configurations");
                     }
                     ui.label(format!("{} · {} trials, {} accepted", tv.status, tv.trials, tv.accepted));
                 });
@@ -356,7 +356,7 @@ impl App {
                         ui.weak("   (the starting configuration)");
                     }
                     for (k, from, to) in &tv.best_diff {
-                        ui.monospace(format!("   {k}: {from} → {to}"));
+                        ui.monospace(format!("   {k}: {from} ➡ {to}"));
                     }
                 }
                 let pts: Vec<[f64; 2]> = tv.history.iter().map(|h| [h.t, h.score]).collect();

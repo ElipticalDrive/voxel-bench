@@ -322,7 +322,7 @@ impl Session {
         lane.standby_warm = 0;
         let native = spec.compiled(&self.plan.run).is_some();
         self.shared.lock().unwrap().lanes[i].swap = Some(if native { "compiling for this machine (generic build meanwhile)".into() } else { "spawning".into() });
-        self.event(i, format!("hot swap → {} {}", spec.name, toml::to_string(&spec.options).unwrap_or_default().replace('\n', " ")));
+        self.event(i, format!("hot swap ➡ {} {}", spec.name, toml::to_string(&spec.options).unwrap_or_default().replace('\n', " ")));
     }
 
     fn command(&mut self, cmd: Cmd) {

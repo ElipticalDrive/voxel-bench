@@ -110,7 +110,7 @@ struct App {
     bench: Option<bench::BenchRun>,
     report: Option<bench::Report>,
     message: String,
-    /// The pipeline editor window, if open.
+    /// The pipeline editor, if open (shown by the Pipeline pane).
     graph_win: Option<graph::Window>,
     trials: graph::Trials,
     schemes: schemes::Browser,
@@ -362,21 +362,20 @@ impl App {
             self.schemes.open = Some(p);
             self.docks.show(&ctx, dock::Pane::Schemes);
         }
+        if !self.fullscreen {
+            egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+            self.docks(ui);
+        }
+        match self.middle_pane() {
+            Some(p) => egui::CentralPanel::default().show(ui, |ui| self.middle(ui, p)),
+            None => egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui)),
+        };
+        self.finish_docks(&ctx);
+        self.pane_windows(&ctx);
         if self.fullscreen {
-            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
-            self.pane_windows(&ctx);
-            if self.graph_win.as_ref().is_some_and(|w| w.separate) {
-                self.pipeline_window(&ctx);
-            }
             self.sync_live(&ctx);
             return;
         }
-        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
-        self.docks(ui);
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
-        self.finish_docks(&ctx);
-        self.pane_windows(&ctx);
-        self.pipeline_window(&ctx);
 
         self.sync_live(&ctx);
         if self.bench.as_ref().is_some_and(|b| !b.finished) {

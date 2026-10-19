@@ -245,7 +245,7 @@ fn live_compiled_pipeline() {
     unsafe { std::env::set_var("MR_WORKER_EXE", &exe) };
     let live = LiveHandle::start(plan, vec![], control, || {});
     // The generic build first, then the compiled pipeline swaps in.
-    wait(&live.shared, "the swap to start", 30, |s| s.lanes.len() == 1 && s.lanes[0].events.iter().any(|e| e.1.starts_with("hot swap →")));
+    wait(&live.shared, "the swap to start", 30, |s| s.lanes.len() == 1 && s.lanes[0].events.iter().any(|e| e.1.starts_with("hot swap ➡")));
     wait(&live.shared, "the compiled pipeline swapped in", 600, |s| s.lanes[0].events.iter().any(|e| e.1 == "hot swap complete" || e.1.starts_with("hot swap failed")));
     let sh = live.shared.lock().unwrap();
     assert!(!sh.log.iter().any(|l| l.contains("failed")), "{:?}", sh.log);

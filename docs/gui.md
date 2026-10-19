@@ -37,19 +37,23 @@ The renderers' viewport fills the middle; every other pane is a tab in one of th
   streams its output, and shows the report table and an fps chart. It can also load earlier
   reports from `runs/`.
 - **Keys (right)** lists every key; **Log (bottom)** is the live session's log.
+- **Pipeline (its own window).** The pipeline editor (below), shown while it is open.
 
 ## Docks
 
 Three docks: the bottom one spans the full width, the left and right ones run down to its
 upper edge. Drag a tab onto another dock to move it there, or over the viewport to give it an
 OS window of its own; right-clicking a tab offers the same. ↗ in a dock's tab bar opens the
-shown pane in a window, ◀ / ▶ / ▼ collapses the dock to a thin strip at the window's edge
-(click the strip to open it again; hovering it names its panes). An empty dock disappears,
-and comes back as a strip to drop on while a tab is dragged. A pane's window docks it again
-with ↙ Dock or by closing it. Keys and buttons that show a pane (C, H, ⏱ Run benchmark)
-open its dock or focus its window. Fullscreen (F11) keeps the viewport fullscreen on the
-display the main window is on, with torn-off panes (and the pipeline editor's own window)
-still open. The layout is remembered across sessions (`multirenderer/docks.toml` in the
+shown pane in a window, ◀ / ▶ / ⏷ collapses the dock to a thin strip at the window's edge.
+Resting the pointer on a strip shows the dock over the view until the pointer leaves it (📌
+keeps it open); clicking the strip opens it. An empty dock disappears, and comes back as a
+strip to drop on while a tab is dragged. A pane's window docks it again with ↙ Dock or by
+closing it. The pipeline editor can also take the middle in place of the viewport (⛶ in its
+tab bar, tab menu or window; ↙ Dock or ↗ Own window there give the view back); closing its
+window closes the editor. Keys and buttons that show a pane (C, H, ⏱ Run benchmark, ✏ graph)
+open its dock or focus its window. Fullscreen (F11) keeps the viewport (or the pane in the
+middle) fullscreen on the display the main window is on, with torn-off panes still open. The
+layout and dock sizes are remembered across sessions (`multirenderer/docks.toml` in the
 user's configuration directory).
 
 ## Keys
@@ -95,8 +99,8 @@ A renderer is its pipeline graph (see [pipelines.md](pipelines.md)). The plan ed
 Metrics tab show it in compact form: the back end it runs on (derived from the graph, never
 chosen directly), then one row per node with its component and that component's knobs.
 
-**✏ graph** opens the editor in an OS window of its own (↙ / ↗ move it into the main window and
-back; the choice is remembered for the session). The graph is laid out from the world (left) to the image
+**✏ graph** opens the editor in its pane (an OS window of its own to start with; a dock or the
+middle, see [Docks](#docks)). The graph is laid out from the world (left) to the image
 (right). Edges are coloured by the kind of data they carry. An edge whose value comes from
 the previous frame is dashed, and a node shared by several readers is drawn once. Clicking a
 node shows its component, device, API, the node each input is bound to (an existing node,
@@ -109,7 +113,7 @@ releasing a dragged node). Undo and redo are available, and
 
 Every choice is tried before it is offered. If the resulting graph cannot run, the choice is
 greyed out, and hovering over it gives the reason. A choice that moves the graph to another
-back end says so (`→ gpu-discover`). When a new component needs inputs, they are filled in
+back end says so (`➡ gpu-discover`). When a new component needs inputs, they are filled in
 from a back end's default pipeline that has that component. Nodes that no longer reach the
 image are dropped, so the graph always runs. In the live session an edit applies in place
 when the back end can change that knob live, and otherwise as a hot swap. Trying the choices is cheap: every

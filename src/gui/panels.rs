@@ -1,5 +1,5 @@
 //! The toolbar, the plan editor (form and TOML), the compare and benchmark results, and the
-//! pipeline editor window.
+//! pipeline editor.
 
 use egui::{Color32, TextureOptions, Vec2};
 use glam::Vec3;
@@ -193,7 +193,7 @@ impl App {
             }
         });
         if let Some((i, sel)) = open_graph {
-            self.graph_win = Some(graph::Window::new(ui.ctx(), graph::Of::Plan(i), sel));
+            self.open_graph(ui.ctx(), graph::Of::Plan(i), sel);
         }
         if let Some(i) = restart {
             let n = self.live.as_ref().map(|l| l.shared.lock().unwrap().lanes.len()).unwrap_or(0);
@@ -347,9 +347,18 @@ impl App {
         }
     }
 
-    /// The pipeline editor window, on a plan's renderer or a live lane.
-    pub(super) fn pipeline_window(&mut self, ctx: &egui::Context) {
-        let Some(mut win) = self.graph_win.take() else { return };
+    /// Opens the pipeline editor on a plan's renderer or a live lane, and shows its pane.
+    pub(super) fn open_graph(&mut self, ctx: &egui::Context, of: graph::Of, selected: Option<String>) {
+        self.graph_win = Some(graph::Window::new(ctx, of, selected));
+        self.docks.show(ctx, dock::Pane::Pipeline);
+    }
+
+    /// The pipeline editor pane, on a plan's renderer or a live lane.
+    pub(super) fn pipeline(&mut self, ui: &mut egui::Ui) {
+        let Some(mut win) = self.graph_win.take() else {
+            ui.weak("Open a renderer's pipeline with ✏ graph (in the Form's renderers, or a lane in Metrics).");
+            return;
+        };
         let target = match win.of {
             graph::Of::Plan(i) => self.plan.renderers.get(i).map(|r| {
                 let params: &[mr_core::ParamSpec] = self.infos.iter().find(|x| x.name == r.name).map_or(&[], |x| &x.params);
@@ -362,7 +371,7 @@ impl App {
         };
         let Some((title, spec, knobs)) = target else { return };
         let marks = matches!(win.of, graph::Of::Lane(_));
-        let (edits, open) = graph::window(ctx, &mut win, &title, &spec, &knobs, marks, &mut self.trials, &self.infos, &self.plan.run);
+        let (edits, open) = graph::pane(ui, &mut win, &title, &spec, &knobs, marks, &mut self.trials, &self.infos, &self.plan.run);
         match win.of {
             graph::Of::Plan(i) => {
                 let (changed, _) = graph::apply_to_plan(&mut self.plan.renderers[i], edits);

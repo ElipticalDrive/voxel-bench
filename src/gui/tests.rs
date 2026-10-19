@@ -45,6 +45,41 @@ fn steady_scroll_survives_shrinking() {
 }
 
 /// New starts plain (one renderer, no scattered lights); every demo says what it shows.
+/// Every non-ASCII character in the GUI's source is one egui's fonts can draw (a missing one
+/// shows as a box: ⧉ and ▼ did).
+#[test]
+fn every_glyph_in_the_gui_is_in_the_fonts() {
+    let ctx = egui::Context::default();
+    ctx.run_ui(Default::default(), |_| {}).textures_delta.clear();
+    // `has_glyph` calls a glyph in the last fallback font missing; compare atlas cells instead.
+    let cell = |c: char| {
+        let g = ctx.fonts_mut(|f| f.layout_no_wrap(c.to_string(), egui::FontId::proportional(14.0), egui::Color32::WHITE));
+        g.rows[0].row.glyphs[0].uv_rect
+    };
+    let replacement = cell('\u{E000}');
+    let mut missing = std::collections::BTreeSet::new();
+    let mut dirs = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src/gui"))];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            // Comments are not drawn.
+            for line in text.lines().filter(|l| !l.trim_start().starts_with("//")) {
+                for c in line.chars().filter(|c| !c.is_ascii()) {
+                    if cell(c) == replacement {
+                        missing.insert(format!("{c} (U+{:04X}) in {}", c as u32, path.display()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(missing.is_empty(), "glyphs egui's fonts lack: {missing:#?}");
+}
+
 #[test]
 fn default_plan_and_demos() {
     let plan = Plan::parse(DEFAULT_PLAN, &[]).unwrap();
@@ -123,7 +158,7 @@ fn gui_screenshot() {
     if let Ok(v) = std::env::var("SHOT_GRAPH") {
         let (of, sel) = v.split_once(':').map_or((v.as_str(), None), |(a, b)| (a, Some(b.to_string())));
         let n: usize = of.trim_start_matches(|c: char| c.is_alphabetic()).parse().unwrap_or(0);
-        app.graph_win = Some(graph::Window::new(&ctx, if of.starts_with("plan") { graph::Of::Plan(n) } else { graph::Of::Lane(n) }, sel));
+        app.open_graph(&ctx, if of.starts_with("plan") { graph::Of::Plan(n) } else { graph::Of::Lane(n) }, sel);
     }
     // Every texture update, in order: the font atlas only arrives in the first frames.
     let mut deltas = vec![];

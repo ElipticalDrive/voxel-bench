@@ -41,7 +41,7 @@ fn tuner_demo() {
     std::thread::sleep(Duration::from_secs(secs));
     let sh = live.shared.lock().unwrap();
     let tv = sh.lanes[0].tuner.as_ref().unwrap();
-    println!("target {target} fps → now {:.0} fps; {}; best {:?} {:?}", fps(&sh), tv.status, tv.best, tv.best_diff);
+    println!("target {target} fps -> now {:.0} fps; {}; best {:?} {:?}", fps(&sh), tv.status, tv.best, tv.best_diff);
     for l in &tv.log {
         println!("  {l}");
     }

@@ -73,12 +73,6 @@ DX12 needs its shader compiler (DXC), linked in on Windows builds.
 - Other device splits: other record writers, peer copies, splitting a node by screen tiles or
   ray batches.
 
-## More docking
-
-Docking is built ([docs/gui.md](docs/gui.md#docks)). Still to come: the pipeline editor as a
-pane like any other, with its canvas able to take the middle in place of the viewport; a
-collapsed dock that opens while hovered; dock sizes remembered with the layout.
-
 ## Game controller support
 
 Flying the camera with a gamepad (sticks for move and look, triggers for speed, buttons for the
