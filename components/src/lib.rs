@@ -382,7 +382,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
 /// A renderer as an assembly of components. Slots left out (empty) take the back end's
 /// default; slots the back end doesn't have stay empty.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, from = "Stored")]
+#[serde(deny_unknown_fields)]
 pub struct Composition {
     #[serde(default = "default_backend")]
     pub backend: String,
@@ -412,52 +412,6 @@ pub struct Composition {
 
 fn default_backend() -> String {
     "gpu-compute".into()
-}
-
-/// A composition as stored (plans, observations): in older records the traversal kernel sat
-/// in `visibility` (`visibility = "refloor"`), and the rasterisers' draw choice too
-/// (`visibility = "visbuffer"`); such records load with them moved to `traversal` / `draw`.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Stored {
-    #[serde(default = "default_backend")]
-    backend: String,
-    #[serde(default)]
-    storage: String,
-    #[serde(default)]
-    geometry: String,
-    #[serde(default)]
-    prepass: String,
-    #[serde(default)]
-    visibility: String,
-    #[serde(default)]
-    holes: String,
-    #[serde(default)]
-    draw: String,
-    #[serde(default)]
-    traversal: String,
-    #[serde(default)]
-    shadow_storage: String,
-    #[serde(default)]
-    shadow_traversal: String,
-    #[serde(default)]
-    shading: String,
-    #[serde(default)]
-    meshes: String,
-}
-
-impl From<Stored> for Composition {
-    fn from(s: Stored) -> Self {
-        let mut c = Composition { backend: s.backend, storage: s.storage, geometry: s.geometry, prepass: s.prepass, visibility: s.visibility, holes: s.holes, draw: s.draw, traversal: s.traversal, shadow_storage: s.shadow_storage, shadow_traversal: s.shadow_traversal, shading: s.shading, meshes: s.meshes };
-        if c.traversal.is_empty() && component(Slot::Traversal, &c.visibility).is_some() {
-            c.traversal = std::mem::take(&mut c.visibility);
-        }
-        // In older records the rasterisers' draw choice sat in `visibility`.
-        if c.draw.is_empty() && component(Slot::Draw, &c.visibility).is_some() && backend(&c.backend).is_some_and(|b| b.has(Slot::Draw)) {
-            c.draw = std::mem::take(&mut c.visibility);
-        }
-        c
-    }
 }
 
 /// `gpu-compute: bricks + refloor + direct`.
@@ -854,8 +808,6 @@ mod tests {
         assert_eq!(raster.label(), "gpu-raster: bricks + cubes + raster");
         let vb = Composition { draw: "visbuffer".into(), ..Composition::new("gpu-raster") };
         assert_eq!(vb.label(), "gpu-raster: bricks + greedy + visbuffer", "labels as before the draw stage");
-        let old: Composition = toml::from_str("backend = \"gpu-raster\"\nvisibility = \"gbuffer\"").unwrap();
-        assert_eq!((old.visibility.as_str(), old.draw.as_str()), ("", "gbuffer"));
         assert_eq!(Composition { draw: "visbuffer".into(), ..Composition::new("gpu-discover") }.label(), "gpu-discover: bricks + quadtree + visbuffer");
         assert_eq!(Composition::new("cpu-raster").label(), "cpu-raster: greedy + raster");
         let mut moved = Composition { storage: "rows".into(), traversal: "rowrun".into(), ..Default::default() };
@@ -867,12 +819,8 @@ mod tests {
         moved.adapt_to_backend();
         assert_eq!(moved, Composition::new("gpu-rt"));
         assert_eq!(moved.label(), "gpu-rt: greedy + rayquery");
-        // Records from before the split load with the kernel moved to `traversal`.
-        let old: Composition = toml::from_str("backend = \"gpu-compute\"\nstorage = \"prefix\"\nvisibility = \"incremental\"").unwrap();
-        assert_eq!((old.visibility.as_str(), old.traversal.as_str()), ("", "incremental"));
-        let old: Composition = toml::from_str("backend = \"gpu-rt\"\nvisibility = \"rayquery\"").unwrap();
-        assert_eq!(old.traversal, "rayquery");
-        let mut filled = old.clone();
+        let sparse: Composition = toml::from_str("backend = \"gpu-rt\"\ntraversal = \"rayquery\"").unwrap();
+        let mut filled = sparse.clone();
         filled.fill_defaults();
         assert_eq!(filled, Composition::new("gpu-rt"));
         // Mesh passes: only compositions whose meshes stage draws them.

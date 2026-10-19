@@ -1680,8 +1680,7 @@ mod tests {
             [[renderer]]
             compose = { backend = "gpu-compute" }
             label = "lod"
-            view_radius = 2
-            max_lod = 2
+            sites = { client = "pick(radius=2, max_lod=2)" }
             "#,
             &[],
         )

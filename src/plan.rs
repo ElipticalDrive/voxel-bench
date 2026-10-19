@@ -76,11 +76,6 @@ pub struct RunSpec {
     /// Time every stage of every frame: each GPU stage costs a timestamp
     /// (measured: +0.1–0.6% GPU time); `false` times nothing.
     pub stage_times: bool,
-    /// In older plans, the link of every renderer without its own, e.g.
-    /// `link = { latency_ms = 80, bandwidth_mbps = 50 }`: loads as each renderer's link node
-    /// (`sites = { link = "net(latency_ms=80, bandwidth_mbps=50)" }`).
-    #[serde(skip_serializing)]
-    link: Option<mr_core::link::LinkSpec>,
     /// The rate of the simulated clock scripted runs keep: frame `n` (warm-up included) is
     /// at `n / clock_fps` seconds, the time the link's delays are measured in.
     pub clock_fps: f64,
@@ -135,7 +130,6 @@ impl Default for RunSpec {
             devices: Default::default(),
             compile: Compile::Off,
             stage_times: true,
-            link: None,
             clock_fps: 60.0,
         }
     }
@@ -196,15 +190,6 @@ pub struct RendererSpec {
     pub label: Option<String>,
     #[serde(default)]
     pub options: toml::Table,
-    /// In older plans, this renderer's own view radius, max LOD and link: they load as its
-    /// client's knobs and its link node (`sites = { client = "pick(radius=4, max_lod=2)",
-    /// link = "net(latency_ms=30)" }`), see [`Self::view_radius`].
-    #[serde(default, skip_serializing)]
-    view_radius: Option<u32>,
-    #[serde(default, skip_serializing)]
-    max_lod: Option<u8>,
-    #[serde(default, skip_serializing)]
-    link: Option<mr_core::link::LinkSpec>,
     /// Overrides `run.devices` for this renderer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub devices: Option<mr_core::DeviceConfig>,
@@ -225,7 +210,7 @@ pub struct RendererSpec {
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), compose: None, sites: BTreeMap::new(), graph: None, label: None, options: Default::default(), view_radius: None, max_lod: None, link: None, devices: None, compile: None, swept: false, compose_label: Default::default(), ran_graph: None }
+        Self { name: name.into(), compose: None, sites: BTreeMap::new(), graph: None, label: None, options: Default::default(), devices: None, compile: None, swept: false, compose_label: Default::default(), ran_graph: None }
     }
 
     /// A renderer assembled from components.
@@ -241,7 +226,6 @@ impl RendererSpec {
     pub fn resolve(&mut self) -> anyhow::Result<()> {
         self.ran_graph = None;
         self.compose_label = Default::default();
-        self.absorb_region()?;
         if let Some(g) = &self.graph {
             let (c, _) = g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
             for (k, v) in g.flat_knobs().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
@@ -263,44 +247,14 @@ impl RendererSpec {
                 }
             }
         }
-        // `name = "<back end's renderer>"` (older plans, the CLI): the back end's
-        // composition, with stages taken from the options where given.
+        // `name = "<back end's renderer>"` (the CLI, the GUI's presets): the back end's
+        // default composition.
         if self.compose.is_none() {
-            // In older plans the traversal kernel was the `visibility` option.
-            if !self.options.contains_key("traversal") {
-                if let Some(v) = self.options.get("visibility").and_then(|v| v.as_str()).filter(|v| mr_components::component(mr_components::Slot::Traversal, v).is_some()).map(String::from) {
-                    self.options.remove("visibility");
-                    self.options.insert("traversal".into(), toml::Value::String(v));
-                }
-            }
             if let Some(b) = mr_components::BACKENDS.iter().find(|b| b.renderer == Some(self.name.as_str())) {
-                let mut c = mr_components::Composition::new(b.name);
-                for slot in c.slots().collect::<Vec<_>>() {
-                    if let Some(v) = self.options.get(slot.name()).and_then(|v| v.as_str()) {
-                        c.set(slot, v);
-                    }
-                }
-                self.compose = Some(c);
-            }
-        }
-        // In older plans hole detection was gpu-discover's `incremental` knob.
-        if let Some(on) = self.options.remove("incremental").and_then(|v| v.as_bool()) {
-            if let Some(c) = self.compose.as_mut().filter(|c| c.holes.is_empty() || c.holes == "none") {
-                c.holes = if on { "coverage" } else { "none" }.into();
-            } else if on && self.compose.is_none() {
-                self.options.insert("holes".into(), "coverage".into());
+                self.compose = Some(mr_components::Composition::new(b.name));
             }
         }
         if let Some(c) = &mut self.compose {
-            // Stages that were options before (discovery's `draw`, cpu-discover's
-            // `shadow_storage`): a stage left empty takes the option of its name.
-            for slot in mr_components::Slot::ALL {
-                if c.get(slot).is_empty() {
-                    if let Some(v) = self.options.get(slot.name()).and_then(|v| v.as_str()) {
-                        c.set(slot, v);
-                    }
-                }
-            }
             let (name, opts) = c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?;
             self.name = name.to_string();
             for (k, v) in opts {
@@ -315,45 +269,6 @@ impl RendererSpec {
             bail!("a renderer needs `compose = {{ ... }}` or a `name`");
         }
         Ok(())
-    }
-
-    /// Moves older plans' fields (`view_radius`, `max_lod`, `link`) into the graph's
-    /// client and link nodes: the sites form's `client` and `link`, or the graph's nodes.
-    fn absorb_region(&mut self) -> anyhow::Result<()> {
-        use mr_components::graph::{CLIENT, LINK, link_site, parse_site_knobs, site_with_knobs};
-        let (radius, max_lod, link) = (self.view_radius.take(), self.max_lod.take(), self.link.take());
-        if radius.is_none() && max_lod.is_none() && link.is_none() {
-            return Ok(());
-        }
-        if !self.has_graph() {
-            bail!("renderer `{}` has no graph, so no client or link of its own: `view_radius`, `max_lod` and the link are the run's", self.name);
-        }
-        let mut sites = BTreeMap::new();
-        let (client, mut knobs) = parse_site_knobs(self.sites.get(CLIENT).map_or("pick", String::as_str)).map_err(anyhow::Error::msg)?;
-        for (k, v) in [("radius", radius.map(i64::from)), ("max_lod", max_lod.map(i64::from))] {
-            if let Some(v) = v {
-                if knobs.insert(k.into(), v.into()).is_some_and(|old| old.as_integer() != Some(v)) {
-                    bail!("the client's `{k}` is set in `sites` and by the renderer's own field");
-                }
-            }
-        }
-        sites.insert(CLIENT.to_string(), site_with_knobs(&client, &knobs));
-        if let Some(l) = link.filter(|l| !l.free()) {
-            if self.sites.get(LINK).is_some_and(|s| *s != link_site(&l)) {
-                bail!("the link is set in `sites` and by the renderer's own `link`");
-            }
-            sites.insert(LINK.to_string(), link_site(&l));
-        }
-        match &mut self.graph {
-            Some(g) => *g = g.with_sites(&sites).map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?,
-            None => self.sites.extend(sites),
-        }
-        Ok(())
-    }
-
-    /// Whether it runs a graph (a composition, or a back end's renderer by name).
-    fn has_graph(&self) -> bool {
-        self.graph.is_some() || self.compose.is_some() || mr_components::BACKENDS.iter().any(|b| b.renderer == Some(self.name.as_str()))
     }
 
     /// From the command line: `backend:slot+slot+...` for a composition (a bare back-end
@@ -715,15 +630,9 @@ impl Plan {
         }
         expand_sweeps(&mut table)?;
         let mut plan: Plan = table.try_into()?;
-        let link = plan.run.link.take();
         for r in &mut plan.renderers {
             if r.graph.is_some() && (r.compose.is_some() || !r.sites.is_empty()) {
                 bail!("a renderer has `graph` or `compose` (with `sites`), not both");
-            }
-            // `run.link` (older plans): the link of each renderer without its own.
-            let own = r.link.is_some() || r.sites.contains_key(mr_components::graph::LINK) || r.graph.as_ref().is_some_and(|g| g.nodes.values().any(|n| n.role == mr_components::graph::Role::Link));
-            if !own && r.has_graph() {
-                r.link = link;
             }
             r.resolve()?;
         }
@@ -796,34 +705,10 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
             out.push(e);
             continue;
         }
-        let mut compose = e.get("compose").and_then(|c| c.as_table()).cloned().unwrap_or_default();
+        let compose = e.get("compose").and_then(|c| c.as_table()).cloned().unwrap_or_default();
         let site_axes: Vec<(String, Pick)> = e.get("sites").and_then(|s| s.as_table()).map(|t| t.iter().map(|(k, v)| Ok((k.clone(), Pick::of(Some(v), &format!("sites.{k}"))?))).collect::<anyhow::Result<_>>()).transpose()?.unwrap_or_default();
         // Distinct pipelines once each (several spellings can give one graph).
         let mut keys = std::collections::HashSet::new();
-        // In older plans the traversal kernel was `visibility` (`visibility = ["refloor", "sphere"]`).
-        if !compose.contains_key("traversal") {
-            let names: Vec<&str> = match compose.get("visibility") {
-                Some(toml::Value::String(v)) => vec![v.as_str()],
-                Some(toml::Value::Array(a)) => a.iter().filter_map(|x| x.as_str()).collect(),
-                _ => vec![],
-            };
-            if !names.is_empty() && names.iter().all(|n| mr_components::component(mr_components::Slot::Traversal, n).is_some()) {
-                let v = compose.remove("visibility").unwrap();
-                compose.insert("traversal".into(), v);
-            }
-        }
-        // In older plans the rasterisers' draw choice was `visibility` too.
-        if !compose.contains_key("draw") {
-            let names: Vec<&str> = match compose.get("visibility") {
-                Some(toml::Value::String(v)) => vec![v.as_str()],
-                Some(toml::Value::Array(a)) => a.iter().filter_map(|x| x.as_str()).collect(),
-                _ => vec![],
-            };
-            if !names.is_empty() && names.iter().all(|n| mr_components::component(mr_components::Slot::Draw, n).is_some()) {
-                let v = compose.remove("visibility").unwrap();
-                compose.insert("draw".into(), v);
-            }
-        }
         if let Some(k) = compose.keys().find(|k| *k != "backend" && !mr_components::Slot::ALL.iter().any(|s| s.name() == k.as_str())) {
             bail!("compose: unknown field `{k}`");
         }
@@ -966,19 +851,13 @@ fn apply_override(table: &mut toml::Table, ov: &str) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    /// Older plans (`run.link`, a renderer's `link`, `view_radius`, `max_lod`)
-    /// load as the graphs they mean: the link node and the client's knobs.
+    /// The region and the link are the graph's client and link nodes; the run's
+    /// `view_radius` and `max_lod` are the defaults of clients without their own.
     #[test]
-    fn old_region_fields_load_as_nodes() {
+    fn region_lives_in_nodes() {
         let scene = "[scene]\ngenerator = { type = \"terrain\", seed = 1 }\ncamera = { type = \"line\", from = [0, 150, 0], to = [300, 150, 75] }\n";
         let r = "[[renderer]]\ncompose = { backend = \"gpu-compute\", storage = \"bricks\", traversal = \"refloor\" }\n";
         let home = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)";
-        let old = format!(
-            "{scene}[run]\nview_radius = 8\nlink = {{ latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01, reorder = true }}\n\
-             {r}link = {{}}\n{r}link = {{ latency_ms = 1, bandwidth_mbps = 1000 }}\n{r}\n{r}sites = {{ client = \"derive\" }}\nview_radius = 4\nmax_lod = 2\n\
-             [[renderer]]\ngraph = {{ executor = \"gpu-compute\", nodes = {{ s = {{ role = \"shading\", component = \"direct\", inputs = {{ hits = \"v\" }} }}, v = {{ role = \"visibility\", component = \"raycast\", inputs = {{ primary = \"k\" }} }}, k = {{ role = \"traversal\", component = \"refloor\", inputs = {{ storage = \"b\" }} }}, b = {{ role = \"storage\", component = \"bricks\" }} }} }}\nview_radius = 6\n\
-             [[renderer]]\nname = \"cpu-reference\"\n"
-        );
         let new = format!(
             "{scene}[run]\nview_radius = 8\n\
              {r}\n{r}sites = {{ link = \"net(latency_ms=1, bandwidth_mbps=1000)\" }}\n{r}sites = {{ link = \"{home}\" }}\n{r}sites = {{ client = \"derive(radius=4, max_lod=2)\", link = \"{home}\" }}\n\
@@ -986,11 +865,13 @@ mod tests {
              net = {{ role = \"link\", component = \"net\", knobs = {{ latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01, reorder = true }} }}, c = {{ role = \"client\", component = \"pick\", inputs = {{ changes = \"net\" }}, knobs = {{ radius = 6 }} }} }} }}\n\
              [[renderer]]\nname = \"cpu-reference\"\n"
         );
-        let (old, new) = (Plan::parse(&old, &[]).unwrap(), Plan::parse(&new, &[]).unwrap());
-        assert_eq!(old.renderers.len(), new.renderers.len());
-        let show = |p: &Plan, r: &RendererSpec| (r.label().to_string(), r.pipeline().map(|g| g.key().unwrap()), r.link(), r.view_radius(&p.run), r.max_lod(&p.run, 8), r.levels());
-        for (a, b) in old.renderers.iter().zip(&new.renderers) {
-            assert_eq!(show(&old, a), show(&new, b));
+        let new = Plan::parse(&new, &[]).unwrap();
+        assert_eq!((new.renderers[0].view_radius(&new.run), new.renderers[4].view_radius(&new.run)), (8, 6));
+        assert_eq!(new.renderers[3].max_lod(&new.run, 8), 2);
+        assert_eq!(new.renderers[2].link(), new.renderers[4].link());
+        // The fields of the region and link outside the graph are gone.
+        for old in [format!("{scene}[run]\nlink = {{ latency_ms = 30 }}\n{r}"), format!("{scene}{r}view_radius = 4\n"), format!("{scene}{r}link = {{ latency_ms = 1 }}\n")] {
+            assert!(Plan::parse(&old, &[]).is_err(), "{old}");
         }
         let free = &new.renderers[0];
         assert!(free.link().free() && free.sites.is_empty());
@@ -999,10 +880,10 @@ mod tests {
         let mut far = new.renderers[2].clone();
         far.set_client_knob("radius", Some(3)).unwrap();
         assert_eq!(far.pipeline().unwrap().key(), new.renderers[2].pipeline().unwrap().key(), "the radius is not in the key");
-        // Written back in the new form.
-        let again = Plan::parse(&toml::to_string(&old).unwrap(), &[]).unwrap();
+        // Written back as it was read.
+        let again = Plan::parse(&toml::to_string(&new).unwrap(), &[]).unwrap();
         for (a, b) in again.renderers.iter().zip(&new.renderers) {
-            assert_eq!(show(&again, a), show(&new, b));
+            assert_eq!((a.label(), a.pipeline().map(|g| g.key().unwrap()), a.link(), a.view_radius(&again.run)), (b.label(), b.pipeline().map(|g| g.key().unwrap()), b.link(), b.view_radius(&new.run)));
         }
         // The CLI: commas inside a site's knobs are its own.
         let cli = RendererSpec::from_cli(&format!("gpu-compute:bricks+refloor,link={},client=pick(radius=4)", home.replace(' ', ""))).unwrap();
@@ -1013,7 +894,6 @@ mod tests {
         assert_eq!((s.max_lod(&new.run, 8), s.sites.get("client").map(String::as_str)), (2, Some("pick(max_lod=2)")));
         s.set_client_knob("max_lod", None).unwrap();
         assert!(s.sites.is_empty());
-        assert!(Plan::parse(&format!("{scene}[[renderer]]\nname = \"cpu-reference\"\nview_radius = 3\n"), &[]).is_err(), "no graph, no client");
     }
 
     #[test]
@@ -1055,12 +935,11 @@ mod tests {
     /// validated, and save as just the `compose` table.
     #[test]
     fn compositions() {
-        let text = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n\n[[renderer]]\ncompose = { storage = \"prefix\", visibility = \"incremental\" }\noptions = { exact = false }\n";
+        let text = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n\n[[renderer]]\ncompose = { storage = \"prefix\", traversal = \"incremental\" }\noptions = { exact = false }\n";
         let p = Plan::parse(text, &[]).unwrap();
         let r = &p.renderers[0];
         assert_eq!(r.name, "gpu-compute");
         assert_eq!(r.options.get("storage").and_then(|v| v.as_str()), Some("prefix"));
-        // An older plan (the kernel as `visibility`): loads with it as `traversal`.
         assert_eq!(r.options.get("traversal").and_then(|v| v.as_str()), Some("incremental"));
         assert_eq!(r.options.get("visibility").and_then(|v| v.as_str()), Some("raycast"));
         assert_eq!(r.label(), "gpu-compute: prefix + incremental");
@@ -1074,30 +953,22 @@ mod tests {
         assert_eq!(Plan::parse(&cpu, &[]).unwrap().renderers[0].name, "cpu");
         let bad = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"rows\"");
         assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("has no cpu scalar/avx2/avx512 implementation"));
-        let raster = text.replace("storage = \"prefix\", visibility = \"incremental\"", "backend = \"gpu-raster\", geometry = \"cubes\"");
+        let raster = text.replace("storage = \"prefix\", traversal = \"incremental\"", "backend = \"gpu-raster\", geometry = \"cubes\"");
         let r = &Plan::parse(&raster, &[]).unwrap().renderers[0];
         assert_eq!((r.name.as_str(), r.label()), ("gpu-raster", "gpu-raster: bricks + cubes + raster"));
-        assert!(Plan::parse(&text.replace("visibility = \"incremental\"", "geometry = \"greedy\""), &[]).unwrap_err().to_string().contains("no geometry slot"));
+        assert!(Plan::parse(&text.replace("traversal = \"incremental\"", "geometry = \"greedy\""), &[]).unwrap_err().to_string().contains("no geometry slot"));
         let spec = RendererSpec::from_cli("gpu-raster:hier+naive+visbuffer").unwrap();
         assert_eq!(spec.options.get("geometry").and_then(|v| v.as_str()), Some("naive"));
         assert!(RendererSpec::from_cli("gpu-raster:hier+naive").is_err());
         let spec = RendererSpec::from_cli("gpu-raster:distance+greedy+raster+direct+depth+sphere").unwrap();
         assert_eq!(spec.options.get("traversal").and_then(|v| v.as_str()), Some("sphere"));
         assert_eq!(spec.label(), "gpu-raster: distance + greedy + raster + sphere");
-        // A named renderer with the kernel in the old `visibility` option.
-        let mut old = RendererSpec::new("gpu-compute");
-        old.options.insert("visibility".into(), toml::Value::String("sphere".into()));
-        old.resolve().unwrap();
-        assert_eq!(old.label(), "gpu-compute: bricks + sphere");
-        // Discovery's drawer was an option; it is now the draw stage.
-        let named = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n\n[[renderer]]\nname = \"gpu-discover\"\noptions = { draw = \"visbuffer\" }\n";
-        assert_eq!(Plan::parse(named, &[]).unwrap().renderers[0].label(), "gpu-discover: bricks + quadtree + visbuffer");
         let spec = RendererSpec::from_cli("gpu-raster:hier+naive+gbuffer").unwrap();
         assert_eq!(spec.options.get("draw").and_then(|v| v.as_str()), Some("gbuffer"));
-        // Naming a back end's renderer gives its composition, stages from the options.
-        let named = text.replace("compose = { storage = \"prefix\", visibility = \"incremental\" }", "name = \"gpu-discover\"").replace("options = { exact = false }", "options = { storage = \"prefix\" }");
+        // Naming a back end's renderer gives its default composition.
+        let named = text.replace("compose = { storage = \"prefix\", traversal = \"incremental\" }", "name = \"gpu-discover\"").replace("options = { exact = false }", "");
         let r = &Plan::parse(&named, &[]).unwrap().renderers[0];
-        assert_eq!(r.label(), "gpu-discover: prefix + quadtree");
+        assert_eq!(r.label(), "gpu-discover: bricks + quadtree");
         assert!(Plan::parse(&named, &[]).unwrap().to_toml().unwrap().contains("compose"));
         let spec = RendererSpec::from_cli("gpu-compute:tree64+refloor+direct+beam").unwrap();
         assert_eq!(spec.options.get("prepass").and_then(|v| v.as_str()), Some("beam"));
@@ -1238,7 +1109,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
     #[test]
     fn sweeps() {
         let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
-        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = \"*\", visibility = [\"refloor\", \"sphere\"] }}\noptions = {{ exact = false, merge = \"rows\" }}\n"), &[]).unwrap();
+        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = \"*\", traversal = [\"refloor\", \"sphere\"] }}\noptions = {{ exact = false, merge = \"rows\" }}\n"), &[]).unwrap();
         // gpu-compute: 8 storages x 2 walks.
         assert_eq!(p.renderers.len(), 16);
         assert!(p.renderers.iter().all(|r| r.swept && r.name == "gpu-compute" && r.options.get("exact").is_some() && r.options.get("merge").is_none()));

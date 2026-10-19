@@ -652,13 +652,14 @@ mod tests {
             }
             assert_eq!(s.contains("CPU_WORLD"), b == "cpu-discover", "{s}");
         }
-        let s = source(&bake(&spec("cpu-discover", &[("storage", "prefix".into())])).unwrap().unwrap()).unwrap();
+        let prefix = RendererSpec::composed(mr_components::Composition { storage: "prefix".into(), ..mr_components::Composition::new("cpu-discover") });
+        let s = source(&bake(&prefix).unwrap().unwrap()).unwrap();
         assert!(s.contains("CpuWorld::of::<mr_components::storage::prefix::cpu::Prefix>") && s.contains("(\"storage\", \"\\\"prefix\\\"\")"), "{s}");
         let m = manifest(repo(), Executor::Gpu);
         assert!(m.contains("backend-gpu") && m.contains("mr-gpu") && !m.contains("backend-cpu"), "{m}");
         let key = |r: &str, o: &[(&str, toml::Value)]| self::key(&bake(&spec(r, o)).unwrap().unwrap(), Compile::Native).unwrap();
         assert!(key("gpu-compute", &[]).starts_with("gpu-"));
-        assert_ne!(key("cpu-discover", &[("storage", "prefix".into())]), key("cpu-discover", &[]));
+        assert_ne!(self::key(&bake(&prefix).unwrap().unwrap(), Compile::Native).unwrap(), key("cpu-discover", &[]));
     }
 
     /// Break-in is a level of the same pipeline: its own worker under the same graph key, its training run on one thread where the executor has the knob.

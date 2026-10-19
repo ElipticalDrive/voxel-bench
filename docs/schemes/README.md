@@ -128,6 +128,7 @@ cannot be added without one.
 
 ### Post
 
+- [Antialiasing](post/antialiasing.md): untested idea, user
 - [HDR output](post/hdr-output.md) (`hdr`): built, literature
 - [Tone mapping](post/tone-mapping.md) (`clamp`, `reinhard`, `aces`): built, literature
 
@@ -135,6 +136,7 @@ cannot be added without one.
 
 - [A modelled network link](world/link.md) (`free`, `net`): measured, project
 - [Level of detail by chunk rings](world/lod.md): measured, literature
+- [Targeted loading priority](world/load-priority.md): untested idea, user
 - [The client: picked or derived LOD levels](world/client.md) (`pick`, `derive`): measured, project
 - [The served split: server, link and client](world/served-split.md): built, user
 - [World generation on the server or the client](world/generator.md) (`procedural`): measured, project
@@ -153,4 +155,5 @@ cannot be added without one.
 
 - [A graph-first pipeline editor](tools/graph-editor.md): built, user
 - [Docking panes](tools/docking.md): untested idea, user
+- [Game controller support](tools/controller.md): untested idea, user
 <!-- end index -->
