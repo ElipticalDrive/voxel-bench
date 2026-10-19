@@ -27,7 +27,9 @@ repeats (`run.repeats`) keep the spread within ±1%. Each scheme's entry in the
   AMD).
 - LOD at the same far view distance (768 blocks): 136 MB of VRAM against 1037 MB at full
   resolution, and faster. The quality loss is concentrated in pixel-scale foliage in the
-  distance.
+  distance. Against the full-resolution reference at the same reach (radius × 2^max_lod) it
+  scores 13–25 dB, 7–25% bad pixels: the coarse cells' loss, which per-pixel PSNR counts in
+  full; on `lattice` thin beams alias or vanish at coarse levels.
 - The `beam` prepass is exact but still a net loss: chunk-level skipping already makes empty
   space cheap.
 - `dispatch = "fragment"` (the walk in a fragment shader) runs at the same speed as compute.
@@ -83,8 +85,12 @@ repeats (`run.repeats`) keep the spread within ±1%. Each scheme's entry in the
 
 ## Approximate techniques
 
-- `gpu-splat`: edges fatten (PSNR ~20–27 dB).
-- `gpu-voxelspace`: no overhangs, caves or trunks (PSNR ~15–36 dB), 27 MB of GPU memory.
+- `gpu-splat`: exact wherever a block covers more than 2 px (each pixel takes the depth where
+  its ray enters the block); smaller points cover their whole pixel, so distant foliage fattens
+  (PSNR 31–33 dB on `far`, 39–79 dB elsewhere, 2026-10-19). Before, a square footprint at the
+  block centre's depth, capped at 8 px, left near surfaces full of holes (10–26 dB).
+- `gpu-voxelspace`: no overhangs, caves or trunks (PSNR ~15–36 dB on terrain-like plans; 4–21 dB
+  on the stress worlds, where little is a heightmap), 27 MB of GPU memory.
 
 ## Shading
 

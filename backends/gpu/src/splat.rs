@@ -37,7 +37,7 @@ pub(crate) fn info() -> RendererInfo {
             ParamSpec::choice("visibility", "Visibility component", &names_on(BACKEND, Slot::Visibility), "splat", false),
             ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &names_on(BACKEND, Slot::Traversal), "refloor", false),
             ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false),
-            ParamSpec::int("max_splat", "Largest splat side (px)", 1, 64, 8, true).of("visibility", &["splat"]),
+            ParamSpec::int("max_splat", "Largest splat side (px) one thread draws; larger points take a workgroup each", 1, 64, 16, true).of("visibility", &["splat"]),
             shadows_param(),
             ParamSpec::int("pool_mb", "Voxel pool limit (MiB)", 64, 6144, 2048, false),
             ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
@@ -67,18 +67,20 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { storage: "bricks".into(), geometry: "points".into(), visibility: "splat".into(), traversal: "refloor".into(), shading: "direct".into(), max_splat: 8, bounces: 1, spp: 1, accumulate: true, shadows: Shadows::All, pool_mb: 2048, frames_in_flight: 3 }
+        Self { storage: "bricks".into(), geometry: "points".into(), visibility: "splat".into(), traversal: "refloor".into(), shading: "direct".into(), max_splat: 16, bounces: 1, spp: 1, accumulate: true, shadows: Shadows::All, pool_mb: 2048, frames_in_flight: 3 }
     }
 }
 
 pub(crate) const BACKEND: &str = "gpu-splat";
 
 pub(crate) struct Splat {
-    pipes: [wgpu::ComputePipeline; 4],
+    pipes: [wgpu::ComputePipeline; 6],
     layout0: wgpu::BindGroupLayout,
     zbuf: wgpu::Buffer,
     idbuf: wgpu::Buffer,
     points_buf: wgpu::Buffer,
+    /// The large points' list (a count, then up to one id per point).
+    big_buf: wgpu::Buffer,
     bind0: wgpu::BindGroup,
     /// The geometry node's state: every chunk's points.
     points: Points,
@@ -92,6 +94,11 @@ fn pixel_buffer(gpu: &Gpu, w: u32, h: u32) -> wgpu::Buffer {
 
 fn points_buffer(gpu: &Gpu, n: u64) -> wgpu::Buffer {
     gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("points"), size: n.max(1) * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+}
+
+/// The large points' list for a points buffer of `points_bytes`: a count and one id per point.
+fn big_buffer(gpu: &Gpu, points_bytes: u64) -> wgpu::Buffer {
+    gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("big points"), size: 4 + points_bytes / 4, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
 }
 
 impl Splat {
@@ -136,14 +143,15 @@ impl Splat {
         let gpu = &core.gpu;
         let module = mr_gpu::program::compile(&gpu.device, "splat", &program, &own, &deps.iter().map(String::as_str).collect::<Vec<_>>());
         let mut entries = core.layout_entries();
-        entries.extend([storage_entry(LANE_BINDING, true, core.stages), storage_entry(LANE_BINDING + 1, false, core.stages), storage_entry(LANE_BINDING + 2, false, core.stages)]);
+        entries.extend([storage_entry(LANE_BINDING, true, core.stages), storage_entry(LANE_BINDING + 1, false, core.stages), storage_entry(LANE_BINDING + 2, false, core.stages), storage_entry(LANE_BINDING + 3, false, core.stages)]);
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("splat"), entries: &entries });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("splat"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
         let pipe = |e: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
         let pipes = splat::ENTRIES.map(pipe);
         let (points_buf, zbuf, idbuf) = (points_buffer(gpu, 1024), pixel_buffer(gpu, p.width, p.height), pixel_buffer(gpu, p.width, p.height));
-        let bind0 = bind0(&core, &layout0, &points_buf, &zbuf, &idbuf);
-        let lane = Self { pipes, layout0, zbuf, idbuf, points_buf, bind0, points: Points::default(), count: 0, max_splat: opts.max_splat.clamp(1, 64) };
+        let big_buf = big_buffer(gpu, points_buf.size());
+        let bind0 = bind0(&core, &layout0, &points_buf, &zbuf, &idbuf, &big_buf);
+        let lane = Self { pipes, layout0, zbuf, idbuf, points_buf, big_buf, bind0, points: Points::default(), count: 0, max_splat: opts.max_splat.clamp(1, 64) };
         Ok((core, lane))
     }
 
@@ -153,7 +161,8 @@ impl Splat {
         self.count = all.len() as u32;
         if (all.len() as u64) * 16 > self.points_buf.size() {
             self.points_buf = points_buffer(&core.gpu, all.len() as u64 * 3 / 2);
-            self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.idbuf);
+            self.big_buf = big_buffer(&core.gpu, self.points_buf.size());
+            self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.idbuf, &self.big_buf);
         }
         if !all.is_empty() {
             core.gpu.queue.write_buffer(&self.points_buf, 0, bytemuck::cast_slice(&all));
@@ -161,13 +170,14 @@ impl Splat {
     }
 }
 
-fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, pts: &wgpu::Buffer, z: &wgpu::Buffer, id: &wgpu::Buffer) -> wgpu::BindGroup {
+fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, pts: &wgpu::Buffer, z: &wgpu::Buffer, id: &wgpu::Buffer, big: &wgpu::Buffer) -> wgpu::BindGroup {
     let view = core.output.create_view(&Default::default());
     let mut entries = core.bind_entries(&view);
     entries.extend([
         wgpu::BindGroupEntry { binding: LANE_BINDING, resource: pts.as_entire_binding() },
         wgpu::BindGroupEntry { binding: LANE_BINDING + 1, resource: z.as_entire_binding() },
         wgpu::BindGroupEntry { binding: LANE_BINDING + 2, resource: id.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: LANE_BINDING + 3, resource: big.as_entire_binding() },
     ]);
     core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("splat"), layout, entries: &entries })
 }
@@ -204,7 +214,7 @@ impl Lane for Splat {
         let bound = core.storages.prepare(&core.gpu, &core.world);
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
         if core.build_accel(&mut enc, ticket, req) {
-            self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.idbuf);
+            self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.idbuf, &self.big_buf);
         }
         let groups = self.count.div_ceil(64);
         let (gx, gy) = (groups.min(65535), groups.div_ceil(65535));
@@ -218,10 +228,12 @@ impl Lane for Splat {
             pass.set_pipeline(&self.pipes[0]);
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
             if groups > 0 {
-                pass.set_pipeline(&self.pipes[1]);
-                pass.dispatch_workgroups(gx, gy, 1);
-                pass.set_pipeline(&self.pipes[2]);
-                pass.dispatch_workgroups(gx, gy, 1);
+                for (per_point, big) in [(1, 2), (3, 4)] {
+                    pass.set_pipeline(&self.pipes[per_point]);
+                    pass.dispatch_workgroups(gx, gy, 1);
+                    pass.set_pipeline(&self.pipes[big]);
+                    pass.dispatch_workgroups(splat::BIG_GROUPS, 1, 1);
+                }
             }
         }
         core.ring.stage(&mut enc, ticket, "shade", &core.stage_nodes[2]);
@@ -230,7 +242,7 @@ impl Lane for Splat {
             pass.set_bind_group(0, &self.bind0, &[]);
             pass.set_bind_group(1, &world_bg, &[]);
             bound.compute(&mut pass);
-            pass.set_pipeline(&self.pipes[3]);
+            pass.set_pipeline(&self.pipes[5]);
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         }
         let (accel, stages) = core.accel_stats();
@@ -247,7 +259,7 @@ impl Lane for Splat {
 
     fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         (name == "max_splat").then(|| {
-            self.max_splat = value.as_i64().unwrap_or(8).clamp(1, 64) as u32;
+            self.max_splat = value.as_i64().unwrap_or(16).clamp(1, 64) as u32;
             Ok(())
         })
     }
@@ -255,11 +267,11 @@ impl Lane for Splat {
     fn resize(&mut self, core: &Core) {
         self.zbuf = pixel_buffer(&core.gpu, core.width, core.height);
         self.idbuf = pixel_buffer(&core.gpu, core.width, core.height);
-        self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.idbuf);
+        self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.idbuf, &self.big_buf);
     }
 
     fn memory(&self, core: &Core) -> (u64, u64) {
-        (self.points.bytes(), self.points_buf.size() + core.width as u64 * core.height as u64 * 8)
+        (self.points.bytes(), self.points_buf.size() + self.big_buf.size() + core.width as u64 * core.height as u64 * 8)
     }
 }
 

@@ -1,7 +1,7 @@
 # Long view distance over terrain: full-resolution streaming versus level of detail.
 # bricks + refloor streams 24 chunks (768 blocks) at full resolution; the LOD variants (a
-# client `max_lod`) reach the same (or greater) distance with far fewer chunks, at
-# coarser resolution far away.
+# client `max_lod`) reach the same distance (radius × 2^max_lod chunks, so the reference
+# compares like with like) with far fewer chunks, at coarser resolution far away.
 name = "far"
 
 [scene]
@@ -30,8 +30,8 @@ sites = { client = "pick(radius=6, max_lod=2)" }
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
-label = "lod r4+3"
-sites = { client = "pick(radius=4, max_lod=3)" }
+label = "lod r3+3"
+sites = { client = "pick(radius=3, max_lod=3)" }
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "tree64", traversal = "refloor" }

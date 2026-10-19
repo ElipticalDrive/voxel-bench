@@ -33,6 +33,11 @@ distance.
 - At the same far view distance (768 blocks): 136 MB of VRAM against 1037 MB at full
   resolution, and faster. The quality loss is concentrated in pixel-scale foliage in the
   distance.
+- Against the full-resolution reference at the same reach (2026-10-19): 13–25 dB, 7–25% bad
+  pixels, all of it beyond the full-resolution radius (the coarse cells differ pixel by pixel;
+  `lattice`'s beams alias or vanish). A pick client's coarse rings are aligned to their own
+  grid, so the reach overshoots by up to 2^max_lod − 1 chunks in some directions. Per-pixel
+  PSNR is not the right measure of a lossy LOD.
 - `prefix` with LOD is 22% faster than `bricks` with LOD.
 
 ## Open questions

@@ -39,8 +39,8 @@ compose = { backend = "gpu-compute", storage = "distance", traversal = "sphere" 
 
 [[renderer]]
 compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
-label = "lod r6+2"
-sites = { client = "pick(radius=6, max_lod=2)" }
+label = "lod r4+2"
+sites = { client = "pick(radius=4, max_lod=2)" }
 
 [output]
 compare = { every = 100 }

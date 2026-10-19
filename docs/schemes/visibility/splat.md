@@ -17,10 +17,13 @@ by a compute shader and written with atomics instead of the hardware rasteriser.
 
 ## How it works
 
-Four passes: clear; a depth splat, in which each point `atomicMin`s its view depth over a
-square footprint sized from its projected size (capped at `max_splat` pixels); an id splat,
-in which the point whose depth won writes its id; and the resolve, the common deferred pass,
-which ray-boxes the pixel against the winning block and shades it.
+Passes: clear; a depth splat, in which each point `atomicMin`s, over the screen rectangle of
+its block's corners, the view depth where each pixel's ray enters the block (a point under
+2 px also covers the pixels it misses, at its centre's depth, so distant points do not fall
+between pixel centres); an id splat, in which the point whose depth won writes its id; and
+the resolve, the common deferred pass, which ray-boxes the pixel against the winning block
+and shades it. One thread splats a point up to `max_splat` px on a side (default 16); larger
+points go to a list, and a workgroup per point splats each of them (both splats).
 
 ## In this project
 
@@ -29,5 +32,10 @@ which ray-boxes the pixel against the winning block and shades it.
 
 ## Measured
 
-Approximate: edges fatten, because a square footprint covers more than the block's
-silhouette (PSNR ~20–27 dB).
+Exact except for points under 2 px: 39–79 dB on every plan but `far` (31–33 dB, distant
+foliage), at most 0.2% bad pixels (2026-10-19). `max_splat` 16 is the fastest or close on
+most worlds (8 costs up to 40% more on `city`, `gyroid`, `checker`; 64 more on `lattice`).
+
+The first version gave each point a square footprint at its centre's depth, capped at
+8 px: near surfaces fell apart into dots with the far side showing through (10–26 dB, 72%
+bad pixels on `city`).
