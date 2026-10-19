@@ -3,7 +3,8 @@
 Measured on a Ryzen 9 9955HX and an RTX 5060 Laptop GPU, at 1080p on the terrain flight
 unless noted. These numbers are indicative: GPU time for the same configuration has varied
 between 1.7 and 3.0 ms across separate runs (boost clocks, power state), while interleaved
-repeats (`run.repeats`) keep the spread within ±1%.
+repeats (`run.repeats`) keep the spread within ±1%. Each scheme's entry in the
+[encyclopedia](schemes/README.md) has the details.
 
 ## Storages and walks (GPU)
 

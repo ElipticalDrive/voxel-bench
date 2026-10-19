@@ -96,6 +96,8 @@ New techniques go in as components, not as new renderers:
 4. A diagnostic `view` writes its colours through `mr_core::legend` (`ramp_wgsl()` in a
    shader, `Legend::color` on the CPU) and returns the matching `Legend` in
    `FrameStats::legend`, so that the GUI can draw the scale and read values back.
+5. Add or extend its entry in the encyclopedia (`docs/schemes/`, then
+   `python3 scripts/schemes.py`); `cargo test` fails while a component has none.
 
 GPU code never opens a device: a back end's `create(params, devices, waker)` receives the
 host's devices, and `mr_gpu::gpu(devices, slot, &GpuNeeds { .. })` returns one with the

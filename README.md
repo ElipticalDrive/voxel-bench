@@ -73,4 +73,6 @@ quality at 120 fps.
   scripts.
 - [docs/architecture.md](docs/architecture.md): processes, streaming, measurement, the
   conventions renderers follow, the code layout, and how to add a component.
-- [docs/findings.md](docs/findings.md): what has been measured so far.
+- [docs/schemes/](docs/schemes/README.md): the encyclopedia of rendering schemes, one entry
+  per technique: what it is, how it works, where it is implemented, what was measured.
+- [docs/findings.md](docs/findings.md): what has been measured so far, in brief.

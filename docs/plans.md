@@ -122,6 +122,8 @@ Python, for Linux and Windows (`scripts/`):
 - `sweep.py [plans…]`: the full sweep over every scenario plan (one night's work at each
   plan's own length; `FRAMES=120` for shorter, faster camera paths), into
   `target/sweep/<time>/`, then the catalogue there.
+- `schemes.py`: checks the encyclopedia's entries and rewrites its index
+  (`docs/schemes/README.md`).
 - `suite.py`, then `summarise.py target/catalogue`: the whole catalogue of default pipelines.
 - `ab/`: A/B checks between two builds. `save-before.py` keeps the current release build as
   "before"; `perf.py` interleaves runs of both and prints median GPU ms and fps per pass
