@@ -1,0 +1,47 @@
+# Floating islands scattered through a 512-block-tall volume: mostly empty space, small
+# objects far apart, most rays hit nothing. Tests empty-space skipping, the cost of many
+# empty chunks, and small objects at a distance (the LOD variant).
+name = "islands"
+
+[scene]
+generator = { type = "islands", seed = 5 }
+camera = { type = "flythrough", points = [[48, 300, 48], [600, 340, 500], [1200, 220, -100], [1800, 300, 400]] }
+
+[run]
+frames = 300
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 16
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
+
+[[renderer]]
+compose = { backend = "cpu-raster", geometry = "greedy", draw = "raster" }
+
+[[renderer]]
+compose = { backend = "gpu-rt", geometry = "greedy", traversal = "rayquery" }
+
+[[renderer]]
+compose = { backend = "gpu-rt", geometry = "boxes", traversal = "rayquery" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "tree64", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "cpu", storage = "bricks", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "distance", traversal = "sphere" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+label = "lod r6+2"
+sites = { client = "pick(radius=6, max_lod=2)" }
+
+[output]
+compare = { every = 100 }
+save = { every = 0 }

@@ -1,0 +1,46 @@
+# 3D checkerboard filling a 96^3 cube: every solid block shows all six faces (2.6M faces,
+# none mergeable, nearly all hidden: the worst case for meshing and rasterising), yet the
+# pattern is perfectly regular (a DAG stores it in a handful of nodes). Compare random.toml:
+# similar density, no regularity.
+name = "checker"
+
+[scene]
+generator = { type = "checker", size = 96 }
+camera = { type = "orbit", center = [48, 48, 48], radius = 150, height = 60, period = 300 }
+
+[run]
+frames = 300
+resolution = [1920, 1080]
+modes = ["unlit"]
+view_radius = 6
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
+
+[[renderer]]
+compose = { backend = "cpu-raster", geometry = "greedy", draw = "raster" }
+
+[[renderer]]
+compose = { backend = "gpu-rt", geometry = "greedy", traversal = "rayquery" }
+
+[[renderer]]
+compose = { backend = "gpu-rt", geometry = "boxes", traversal = "rayquery" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "tree64", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "cpu", storage = "bricks", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "distance", traversal = "sphere" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "svo_dag", traversal = "refloor" }
+
+[output]
+compare = { every = 100 }
+save = { every = 0 }

@@ -1,0 +1,49 @@
+# Jungle gym of 1-block beams every 24 blocks along all three axes; the camera turns on the
+# spot inside it. Rays pass close to many thin beams before they hit one, so empty-space
+# skipping and distance fields gain little, while rasterisers draw few faces: ray casters
+# are 4x slower than with beams every 8 blocks and rasterisers win by 10x. At LOD the beams
+# alias or vanish (the LOD variant shows it).
+name = "lattice"
+
+[scene]
+generator = { type = "lattice" }
+camera = { type = "spin", period = 300, pitch_deg = -10 }
+
+[run]
+frames = 300
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 12
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
+
+[[renderer]]
+compose = { backend = "cpu-raster", geometry = "greedy", draw = "raster" }
+
+[[renderer]]
+compose = { backend = "gpu-rt", geometry = "greedy", traversal = "rayquery" }
+
+[[renderer]]
+compose = { backend = "gpu-rt", geometry = "boxes", traversal = "rayquery" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "tree64", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "cpu", storage = "bricks", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "distance", traversal = "sphere" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+label = "lod r6+2"
+sites = { client = "pick(radius=6, max_lod=2)" }
+
+[output]
+compare = { every = 100 }
+save = { every = 0 }

@@ -150,6 +150,11 @@ fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
         GenSpec::Room { .. } => "room",
         GenSpec::Random { .. } => "random",
         GenSpec::Showcase => "showcase",
+        GenSpec::City { .. } => "city",
+        GenSpec::Islands { .. } => "islands",
+        GenSpec::Lattice { .. } => "lattice",
+        GenSpec::Gyroid { .. } => "gyroid",
+        GenSpec::Checker { .. } => "checker",
     };
     let mut c = ui
         .horizontal(|ui| {
@@ -165,6 +170,11 @@ fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
                     ("menger", || GenSpec::Menger { level: 4 }, "Menger sponge fractal: many holes, worst case for traversal"),
                     ("room", || GenSpec::Room { size: 48 }, "A closed room: indoor lighting, everything in view is near"),
                     ("random", || GenSpec::Random { size: 128, density: 0.1, seed: 0 }, "A cube of random blocks: incoherent rays, no large empty spaces"),
+                    ("city", || GenSpec::City { seed: 0, block: 48, max_height: 240 }, "Street grid of hollow towers with windows: long rays down the streets, deep overdraw behind the facades"),
+                    ("islands", || GenSpec::Islands { seed: 0, spacing: 96, height: 512, fill: 0.35 }, "Floating islands in a tall volume: mostly empty space, most rays hit nothing"),
+                    ("lattice", || GenSpec::Lattice { period: 24, thickness: 1, height: 160 }, "Jungle gym of thin beams: every ray grazes geometry; thin features at LOD"),
+                    ("gyroid", || GenSpec::Gyroid { period: 48, thickness: 0.3, height: 192 }, "Gyroid caves: curved walls nothing can merge, two interleaved tunnel networks"),
+                    ("checker", || GenSpec::Checker { size: 96, cell: 1 }, "3D checkerboard cube: every block shows all six faces, yet perfectly regular"),
                     ("showcase", || GenSpec::Showcase, "One of every block type, for checking textures"),
                     ("empty", || GenSpec::Empty, "No blocks (sky only)"),
                 ],
@@ -186,6 +196,31 @@ fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
             c |= num(ui, "size", size, 1.0, "Edge length of the random cube in blocks");
             c |= ui.add(egui::Slider::new(density, 0.0..=1.0).text("density").update_while_editing(false)).on_hover_text("Fraction of cells that are solid").changed();
             c |= num(ui, "seed", seed, 1.0, "Random seed");
+        }
+        GenSpec::City { seed, block, max_height } => {
+            c |= num(ui, "seed", seed, 1.0, "Random seed: building heights and materials");
+            c |= num(ui, "block", block, 1.0, "Street grid period in blocks (a 10-block street, the rest one building plot)");
+            c |= num(ui, "max height", max_height, 1.0, "Tallest possible tower; most buildings are much lower");
+        }
+        GenSpec::Islands { seed, spacing, height, fill } => {
+            c |= num(ui, "seed", seed, 1.0, "Random seed");
+            c |= num(ui, "spacing", spacing, 1.0, "Cell size in blocks: at most one island per cell, up to about a third of it across");
+            c |= num(ui, "height", height, 1.0, "Height of the island volume in blocks (from y = 0)");
+            c |= ui.add(egui::Slider::new(fill, 0.0..=1.0).text("fill").update_while_editing(false)).on_hover_text("Fraction of cells holding an island").changed();
+        }
+        GenSpec::Lattice { period, thickness, height } => {
+            c |= num(ui, "period", period, 1.0, "Distance between beams in blocks");
+            c |= num(ui, "thickness", thickness, 1.0, "Beam thickness in blocks (less than the period)");
+            c |= num(ui, "height", height, 1.0, "Height of the lattice in blocks");
+        }
+        GenSpec::Gyroid { period, thickness, height } => {
+            c |= num(ui, "period", period, 1.0, "Repeat length of the gyroid in blocks");
+            c |= ui.add(egui::Slider::new(thickness, 0.05..=1.2).text("thickness").update_while_editing(false)).on_hover_text("Wall half-thickness in units of the gyroid function; above about 1 the caves close up").changed();
+            c |= num(ui, "height", height, 1.0, "Height of the cave volume in blocks");
+        }
+        GenSpec::Checker { size, cell } => {
+            c |= num(ui, "size", size, 1.0, "Edge length of the cube in blocks");
+            c |= num(ui, "cell", cell, 1.0, "Checker cell size in blocks (1 = every other block)");
         }
         GenSpec::Empty | GenSpec::Showcase => {}
     }

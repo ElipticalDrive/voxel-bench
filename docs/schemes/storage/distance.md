@@ -36,7 +36,12 @@ kernel; any other kernel works through the interface's core queries.
   `refloor`, earlier build).
 - Twice as slow under heavy edits: an edited chunk is walked cell by cell until its field has
   been recomputed.
+- Slow to stream (2026-10-19, `city` and `islands` plans): the field build costs 23–30 ms of
+  world update per frame on average (p95 80 ms) against about 1 ms for `bricks`, and the
+  initial load takes 1–2.5 s against 0.1 s; frame rate drops to 32–41 fps although the walk
+  itself takes about 1 ms. The z and y passes of `chebyshev_df` are O(32⁴) per chunk.
 
 ## Open questions
 
 - Distances that cross chunk borders (today they stop at the chunk's edge).
+- A linear-time field build (the z and y passes are quadratic per line), off the frame thread.

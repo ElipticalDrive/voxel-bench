@@ -8,7 +8,7 @@ import time
 sys.path.insert(0, __import__("os").path.dirname(__file__))
 from mr import ROOT, release
 
-for p in "showcase terrain far edits menger random room many-lights streaming".split():
+for p in "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker".split():
     print(f"=== {p} {time.strftime('%H:%M')}", flush=True)
     out = subprocess.run([str(release()), "run", f"plans/{p}.toml", "-s", 'output.dir="target/catalogue"', "-s", "output.save.every=0"], cwd=ROOT, capture_output=True, text=True, errors="replace")
     print("\n".join([l for l in (out.stdout + out.stderr).splitlines() if re.search("FAILED|ERROR|uncleanly|panicked", l)][:5]))

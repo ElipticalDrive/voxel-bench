@@ -1,0 +1,42 @@
+# City: a street grid of hollow towers (a floor every 5 blocks, window openings). The camera
+# drives down a street: rays run far along the street, facades hide deep interiors (overdraw
+# for rasterisers, many floors behind each window for rays), towers up to 240 blocks.
+name = "city"
+
+[scene]
+generator = { type = "city", seed = 3 }
+camera = { type = "line", from = [5, 14, -500], to = [5, 14, 500] }
+
+[run]
+frames = 300
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 16
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
+
+[[renderer]]
+compose = { backend = "cpu-raster", geometry = "greedy", draw = "raster" }
+
+[[renderer]]
+compose = { backend = "gpu-rt", geometry = "greedy", traversal = "rayquery" }
+
+[[renderer]]
+compose = { backend = "gpu-rt", geometry = "boxes", traversal = "rayquery" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "tree64", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "cpu", storage = "bricks", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "distance", traversal = "sphere" }
+
+[output]
+compare = { every = 100 }
+save = { every = 0 }

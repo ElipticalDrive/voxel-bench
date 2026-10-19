@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from mr import ROOT, build_release, release, run_logged
 
 out = f"target/sweep/{time.strftime('%Y%m%d-%H%M')}"
-plans = sys.argv[1:] or "showcase terrain far edits menger random room many-lights streaming meshes".split()
+plans = sys.argv[1:] or "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker meshes".split()
 sweep = 'renderer=[{compose={backend="*",storage="*",geometry="*",prepass="*",visibility="*",draw="*",traversal="*",shading="*",meshes="*"}}]'
 args = ["-s", sweep, "-s", "run.repeats=1", "-s", "run.parallel=false", "-s", "output.compare.every=50", "-s", f'output.dir="{out}"', "-u", "output.save", "-u", "output.window"]
 if os.environ.get("FRAMES"):

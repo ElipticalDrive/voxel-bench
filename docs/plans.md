@@ -9,6 +9,7 @@ name = "my-test"
 [scene]
 fov_deg = 70
 generator = { type = "terrain", seed = 7 }   # terrain | flat | menger | room | random | showcase | empty
+                                             # stress worlds: city | islands | lattice | gyroid | checker
 camera = { type = "flythrough", points = [[0,110,0],[260,140,120]] }
                                              # static | orbit | line | flythrough | spin
 environment = { no_sun = true, ambient = [0.02,0.02,0.03], sky = [0,0,0], exposure = 1.0 }
@@ -52,6 +53,26 @@ dir = "runs"
 
 The three ways of writing a renderer (`compose`, `graph`, the command line's `-r`) are in
 [pipelines.md](pipelines.md).
+
+## Worlds
+
+Every generator is deterministic and has a plan of its name in `plans/`. Each stresses
+something different:
+
+| generator | parameters | what it stresses |
+|---|---|---|
+| `terrain` | seed, caves, trees | the general case: streaming, distance, hidden caves |
+| `flat` | checker | almost nothing (a floor) |
+| `menger` | level | deep occlusion, many small faces, rays through holes |
+| `room` | size | indoor lighting, everything near |
+| `random` | size, density, seed | incoherent rays, no empty space, no regularity |
+| `city` | seed, block, max_height | long rays down streets; hollow towers behind window openings (overdraw, many floors per ray) |
+| `islands` | seed, spacing, height, fill | mostly empty 3D space: many chunks streaming in, small objects far away |
+| `lattice` | period, thickness, height | thin beams everywhere: long rays past many near misses (ray casters 4× slower, rasterisers 10× faster than them), thin features at LOD |
+| `gyroid` | period, thickness, height | curved cave walls: staircases greedy meshing cannot merge (CPU rasterising), short rays |
+| `checker` | size, cell | every block shows six faces (worst for meshing/raster), yet perfectly regular (best for a DAG) |
+| `showcase` | | one of every block, for textures |
+| `empty` | | sky only |
 
 Any key can be overridden from the command line with `-s dotted.key=value`, and removed with
 `-u dotted.key`:

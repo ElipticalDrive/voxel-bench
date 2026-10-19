@@ -1,0 +1,42 @@
+# Sheet gyroid: two interleaved cave networks separated by curved walls, infinite in x and z.
+# The camera turns on the spot inside a channel. Curved walls are staircases of single
+# blocks that greedy meshing cannot merge, and there are no large empty regions to skip.
+name = "gyroid"
+
+[scene]
+generator = { type = "gyroid" }
+camera = { type = "spin", period = 300, pitch_deg = 15 }
+
+[run]
+frames = 300
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 8
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
+
+[[renderer]]
+compose = { backend = "cpu-raster", geometry = "greedy", draw = "raster" }
+
+[[renderer]]
+compose = { backend = "gpu-rt", geometry = "greedy", traversal = "rayquery" }
+
+[[renderer]]
+compose = { backend = "gpu-rt", geometry = "boxes", traversal = "rayquery" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "tree64", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "cpu", storage = "bricks", traversal = "refloor" }
+
+[[renderer]]
+compose = { backend = "gpu-compute", storage = "distance", traversal = "sphere" }
+
+[output]
+compare = { every = 100 }
+save = { every = 0 }
