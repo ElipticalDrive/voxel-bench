@@ -41,7 +41,7 @@ bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 crossbeam-channel = "0.5"
 glam = { version = "0.34", features = ["serde", "bytemuck"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "hdr"] }
 memmap2 = "0.9"
 interprocess = "2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Memory"] }

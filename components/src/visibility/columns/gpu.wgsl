@@ -13,7 +13,11 @@ struct Camera {
 }
 
 @group(0) @binding(0) var<uniform> cam: Camera;
+#ifdef HDR
+@group(0) @binding(1) var out_tex: texture_storage_2d<rgba16float, write>;
+#else
 @group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
+#endif
 // Bindings 2 and 3: the heightmap storage (`hm`, `hm_info`; storage::heightmap); 4 and 5:
 // the shading state (`sp`, `accum`; shading::state).
 

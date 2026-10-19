@@ -143,6 +143,7 @@ struct DrawParts<'a> {
     images: &'a wgpu::BindGroupLayout,
     width: u32,
     height: u32,
+    format: wgpu::TextureFormat,
 }
 
 impl DrawParts<'_> {
@@ -167,7 +168,7 @@ impl DrawParts<'_> {
         let vis = draw_wgsl(mode, self.shading);
         let module = self.module("face drawer", &vis);
         let meshed = self.meshed.filter(|_| mode.deferred()).map(|m| Self::compile(self.gpu, "face drawer with meshes", &m.program, &m.deps, &format!("{}\n{vis}", self.draw_src)));
-        FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: self.strip, mesh_module: meshed.as_ref() }, mode, self.images, self.width, self.height)
+        FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: self.strip, mesh_module: meshed.as_ref(), format: self.format }, mode, self.images, self.width, self.height)
     }
 }
 
@@ -262,14 +263,14 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
     let mut entries = core.layout_entries_with(false);
     entries.extend([buf(crate::LANE_BINDING), buf(crate::LANE_BINDING + 1)]);
     let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("face draw"), entries: &entries });
-    let images = FaceDrawer::images_layout(dev, meshed.is_some());
+    let images = FaceDrawer::images_layout(dev, meshed.is_some(), core.output_format());
     let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("face draw"), bind_group_layouts: &core.storages.layouts(&[Some(&layout_draw), Some(core.world.layout())]), immediate_size: 0 });
     let pl_shade = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("face deferred shade"),
         bind_group_layouts: &core.storages.layouts(&[Some(&layout_draw), Some(core.world.layout()), None, Some(&images)]),
         immediate_size: 0,
     });
-    let parts = DrawParts { gpu, program: &program, deps: &deps, meshed: meshed.as_ref().filter(|_| src.draw_meshes), strip: src.strip, draw_src: &draw_src, shading: &shading, pl_draw: &pl_draw, pl_shade: &pl_shade, images: &images, width: p.width, height: p.height };
+    let parts = DrawParts { gpu, program: &program, deps: &deps, meshed: meshed.as_ref().filter(|_| src.draw_meshes), strip: src.strip, draw_src: &draw_src, shading: &shading, pl_draw: &pl_draw, pl_shade: &pl_shade, images: &images, width: p.width, height: p.height, format: core.output_format() };
     let drawer = parts.drawer(o.draw)?;
     let draw = Draw {
         drawer,
@@ -303,7 +304,7 @@ fn sky_rgba(core: &Core) -> [f32; 4] {
 impl Draw {
     fn parts<'a>(&'a self, core: &'a Core) -> DrawParts<'a> {
         let meshed = self.meshed.as_ref().filter(|_| self.draw_meshes);
-        DrawParts { gpu: &core.gpu, program: &self.program, deps: &self.deps, meshed, strip: self.strip, draw_src: &self.draw_src, shading: &self.shading, pl_draw: &self.pl_draw, pl_shade: &self.pl_shade, images: &self.images, width: core.width, height: core.height }
+        DrawParts { gpu: &core.gpu, program: &self.program, deps: &self.deps, meshed, strip: self.strip, draw_src: &self.draw_src, shading: &self.shading, pl_draw: &self.pl_draw, pl_shade: &self.pl_shade, images: &self.images, width: core.width, height: core.height, format: core.output_format() }
     }
 
     /// A module over the walks: `draw_src` plus `rest` (the GPU sampler's own raster entry

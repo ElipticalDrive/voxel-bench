@@ -11,6 +11,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 
 use mr_core::{BlockRegistry, Environment, InitParams, RendererInfo};
+use mr_core::lighting::PixelFormat;
 use mr_ipc::{FrameSlots, HostMsg, PROTOCOL_VERSION, WorkerMsg};
 
 use crate::plan::{Isolation, RendererSpec, RunSpec};
@@ -26,6 +27,8 @@ pub struct Worker {
     pub pid: u32,
     pub init_ms: f32,
     pub shm: FrameSlots,
+    /// The frames' pixel format (the pipeline's post: `hdr` is float).
+    pub format: PixelFormat,
     free_slots: Vec<u32>,
     tx: Sender<HostMsg>,
     pub rx: Receiver<WorkerEvent>,
@@ -179,7 +182,9 @@ impl Worker {
             WorkerMsg::Hello { protocol, .. } => bail!("worker speaks protocol {protocol}, host {PROTOCOL_VERSION}"),
             m => bail!("unexpected first message {m:?}"),
         };
-        let slot_bytes = (cfg.params.width * cfg.params.height * 4) as u64;
+        // A standalone renderer (no graph) writes RGBA8.
+        let format = mr_components::graph::of_init(cfg.renderer, &cfg.params).map_or(PixelFormat::Rgba8, |g| g.tone().format());
+        let slot_bytes = (cfg.params.width * cfg.params.height * format.bytes()) as u64;
         let mut shm = FrameSlots::create(&tag, cfg.slots, slot_bytes)?;
         tx.send(HostMsg::Init { renderer: cfg.renderer.to_string(), params: cfg.params, shm: shm.spec().clone() })?;
         let (info, init_ms) = match recv_timeout(&rx, Duration::from_secs(300))? {
@@ -195,6 +200,7 @@ impl Worker {
             init_ms,
             free_slots: (0..cfg.slots).rev().collect(),
             shm,
+            format,
             tx,
             rx,
             child,
@@ -210,7 +216,7 @@ impl Worker {
     /// slots returned); a fresh shared-memory region is created for the new size.
     pub fn resize(&mut self, width: u32, height: u32, slots: u32) -> anyhow::Result<()> {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut shm = FrameSlots::create(&format!("multirenderer-{}-{n}", std::process::id()), slots, (width * height * 4) as u64)?;
+        let mut shm = FrameSlots::create(&format!("multirenderer-{}-{n}", std::process::id()), slots, (width * height * self.format.bytes()) as u64)?;
         self.send(HostMsg::Resize { width, height, shm: shm.spec().clone() })?;
         // The worker maps it while handling Resize; Flushed below proves it has.
         self.send(HostMsg::Flush)?;
@@ -233,6 +239,13 @@ impl Worker {
 
     pub fn free_slot(&mut self, s: u32) {
         self.free_slots.push(s);
+    }
+
+    /// The frame of `pixels` pixels in slot `s` (freed), in [`Self::format`].
+    pub fn take_frame(&mut self, s: u32, pixels: usize) -> Vec<u8> {
+        let px = self.shm.slot(s)[..pixels * self.format.bytes() as usize].to_vec();
+        self.free_slot(s);
+        px
     }
 
     /// Blocks until the worker answers `Flushed`, handing other messages to `on_msg`.
@@ -345,4 +358,12 @@ fn forward_stderr(stderr: std::process::ChildStderr, label: String, log: Option<
             }
         }
     });
+}
+
+/// A frame of `format` as its RGBA8 form and, for `Rgba16F`, the float frame.
+pub fn rgba8(format: PixelFormat, px: Vec<u8>) -> (Vec<u8>, Option<Vec<u8>>) {
+    match format {
+        PixelFormat::Rgba8 => (px, None),
+        PixelFormat::Rgba16F => (mr_core::lighting::hdr_to_rgba8(&px), Some(px)),
+    }
 }

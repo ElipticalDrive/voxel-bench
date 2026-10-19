@@ -128,6 +128,7 @@ cannot be added without one.
 
 ### Post
 
+- [HDR output](post/hdr-output.md) (`hdr`): built, literature
 - [Tone mapping](post/tone-mapping.md) (`clamp`, `reinhard`, `aces`): built, literature
 
 ### World

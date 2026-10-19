@@ -558,6 +558,7 @@ impl GpuSampler {
             nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
         })?;
         let (gpu, dev) = (&core.gpu, &core.gpu.device);
+        let out_format = core.output_format();
         let module = |label, src: String| mr_gpu::shader(dev, label, src);
         // Discovery's pieces: the quadtree sampler and hole detection, each
         // its own root over the shared face set (a module after the walks'). The sampler
@@ -676,7 +677,7 @@ impl GpuSampler {
                 module: &ov_mod,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState { format: out_format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
             }),
             multiview_mask: None,
             cache: gpu.cache(),
@@ -684,7 +685,7 @@ impl GpuSampler {
 
         let pl_draw = &drawing.pl_draw;
         let pipeline = |label, write: bool, compare, fragment: bool| {
-            let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+            let targets = [Some(wgpu::ColorTargetState { format: out_format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
             dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(pl_draw),
@@ -713,7 +714,7 @@ impl GpuSampler {
         let pipe_paint = pipeline("painter", true, wgpu::CompareFunction::Always, true);
         let overdraw = |label, compare| {
             let targets = [Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: out_format,
                 blend: Some(wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add }, alpha: wgpu::BlendComponent::OVER }),
                 write_mask: wgpu::ColorWrites::ALL,
             })];

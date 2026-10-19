@@ -190,16 +190,22 @@ pub enum Tone {
     /// ACES filmic (Narkowicz's fit of the reference rendering transform): a toe and a
     /// shoulder, saturated highlights.
     Aces,
+    /// No mapping, no limit: high dynamic range output. The output is a float image
+    /// ([`PixelFormat::Rgba16F`]) holding the sRGB transfer of the linear colour extended
+    /// past 1 (extended sRGB), for an HDR display to show; its 8-bit form ([`hdr_to_rgba8`])
+    /// is `clamp`'s.
+    Hdr,
 }
 
 impl Tone {
-    pub const ALL: [Tone; 3] = [Tone::Clamp, Tone::Reinhard, Tone::Aces];
+    pub const ALL: [Tone; 4] = [Tone::Clamp, Tone::Reinhard, Tone::Aces, Tone::Hdr];
 
     pub fn name(self) -> &'static str {
         match self {
             Tone::Clamp => "clamp",
             Tone::Reinhard => "reinhard",
             Tone::Aces => "aces",
+            Tone::Hdr => "hdr",
         }
     }
 
@@ -211,7 +217,7 @@ impl Tone {
     #[inline(always)]
     pub fn map(self, c: Vec3) -> Vec3 {
         match self {
-            Tone::Clamp => c,
+            Tone::Clamp | Tone::Hdr => c,
             Tone::Reinhard => c / (1.0 + c.dot(LUMA)),
             Tone::Aces => {
                 let x = c.max(Vec3::ZERO);
@@ -221,10 +227,70 @@ impl Tone {
     }
 
     /// The output pixel of linear colour `c`: mapped, then sRGB-encoded (as the GPU's
-    /// `display`).
+    /// `display`; `hdr`'s 8-bit form).
     #[inline(always)]
     pub fn encode(self, c: Vec3) -> [u8; 4] {
         encode_srgb(self.map(c))
+    }
+
+    /// The output's pixel format.
+    pub fn format(self) -> PixelFormat {
+        if self == Tone::Hdr { PixelFormat::Rgba16F } else { PixelFormat::Rgba8 }
+    }
+}
+
+/// How a frame's pixels are stored (top row first, tightly packed).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PixelFormat {
+    /// RGBA8, sRGB-encoded: every tone mapper but `hdr`.
+    #[default]
+    Rgba8,
+    /// RGBA16 float (little-endian halves), extended sRGB: the sRGB transfer of linear light
+    /// continued past 1 (`hdr`); 0..1 is what RGBA8 holds, unquantised.
+    Rgba16F,
+}
+
+impl PixelFormat {
+    pub fn bytes(self) -> u32 {
+        match self {
+            PixelFormat::Rgba8 => 4,
+            PixelFormat::Rgba16F => 8,
+        }
+    }
+}
+
+/// The extended sRGB transfer (`hdr`'s encoding): sRGB's curve continued past 1.
+#[inline]
+pub fn linear_to_srgb_extended(x: f32) -> f32 {
+    let c = x.max(0.0);
+    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// Its inverse: extended sRGB to linear light.
+#[inline]
+pub fn srgb_extended_to_linear(c: f32) -> f32 {
+    let c = c.max(0.0);
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// An `Rgba16F` frame's 8-bit form: clamped and quantised, the pixels `clamp` writes (up to
+/// one step where the half's rounding crosses a quantisation boundary).
+pub fn hdr_to_rgba8(px: &[u8]) -> Vec<u8> {
+    static TABLE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let t = TABLE.get_or_init(|| (0..=u16::MAX).map(|h| (half_to_f32(h).clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect());
+    px.chunks_exact(2).map(|h| t[u16::from_le_bytes([h[0], h[1]]) as usize]).collect()
+}
+
+/// IEEE half to f32 (subnormals included; no NaN payloads).
+#[inline]
+pub fn half_to_f32(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = ((h >> 10) & 0x1f) as i32;
+    let man = (h & 0x3ff) as f32;
+    sign * match exp {
+        0 => man * 2f32.powi(-24),
+        31 => if man == 0.0 { f32::INFINITY } else { f32::NAN },
+        e => (1.0 + man / 1024.0) * 2f32.powi(e - 15),
     }
 }
 

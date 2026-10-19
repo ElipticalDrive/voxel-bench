@@ -339,9 +339,9 @@ impl Core {
             accum: ShadeState::new(&gpu, p.width, p.height, s.shading, s.bounces, s.spp, s.accumulate),
             camera_buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("camera"), size: size_of::<CameraUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
             records: s.records.then(|| records(&gpu, p.width, p.height)),
-            output: mr_gpu::output_texture(&gpu, p.width, p.height),
+            output: mr_gpu::output_texture(&gpu, p.width, p.height, s.walks.post.format()),
             stages: s.stages,
-            ring: FrameRing::new(&gpu, p.width, p.height, fif, waker.clone()).with_stages(p.stage_times),
+            ring: FrameRing::new(&gpu, p.width, p.height, s.walks.post.format(), fif, waker.clone()).with_stages(p.stage_times),
             frames_in_flight: fif,
             stage_nodes: [g.ids(&[Role::Visibility, Role::Shading]), g.ids(&[Role::Visibility]), g.ids(&[Role::Shading])],
             width: p.width,
@@ -354,6 +354,11 @@ impl Core {
             world,
             gpu,
         })
+    }
+
+    /// The output's texture format (the post's).
+    fn output_format(&self) -> wgpu::TextureFormat {
+        mr_gpu::output_format(self.tone.format())
     }
 
     /// The sky's pixel (a linear colour, through the post).
@@ -402,7 +407,7 @@ impl Core {
             e.push(wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D2 },
+                ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: self.output_format(), view_dimension: wgpu::TextureViewDimension::D2 },
                 count: None,
             });
         }
@@ -465,16 +470,16 @@ impl Core {
     fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        self.output = mr_gpu::output_texture(&self.gpu, width, height);
+        self.output = mr_gpu::output_texture(&self.gpu, width, height, self.tone.format());
         self.accum.resize(&self.gpu, width, height);
         if self.records.is_some() {
             self.records = Some(records(&self.gpu, width, height));
         }
-        self.ring = FrameRing::new(&self.gpu, width, height, self.frames_in_flight, self.waker.clone()).with_stages(self.ring.stages());
+        self.ring = FrameRing::new(&self.gpu, width, height, self.tone.format(), self.frames_in_flight, self.waker.clone()).with_stages(self.ring.stages());
     }
 
     fn memory_bytes(&self) -> u64 {
-        self.world.memory_bytes() + self.storages.memory_bytes() + self.accel.as_ref().map_or(0, |a| a.memory_bytes()) + self.accum.memory_bytes() + self.records.as_ref().map_or(0, |r| r.size()) + self.width as u64 * self.height as u64 * 4
+        self.world.memory_bytes() + self.storages.memory_bytes() + self.accel.as_ref().map_or(0, |a| a.memory_bytes()) + self.accum.memory_bytes() + self.records.as_ref().map_or(0, |r| r.size()) + self.width as u64 * self.height as u64 * self.tone.format().bytes() as u64
     }
 }
 

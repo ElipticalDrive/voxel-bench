@@ -389,9 +389,9 @@ pub const GENERATORS: &[&str] = &["procedural"];
 pub const GENERATOR: &str = "generator";
 
 /// The post's components: the tone mappers (`crate::post::Tone`), `clamp`
-/// (no tone mapping) the default. The sites form writes another as
-/// `post = "aces"`.
-pub const POSTS: &[&str] = &["clamp", "reinhard", "aces"];
+/// (no tone mapping) the default, and `hdr` (no limit: a float output for HDR displays).
+/// The sites form writes another as `post = "aces"`.
+pub const POSTS: &[&str] = &["clamp", "reinhard", "aces", "hdr"];
 
 /// The sites form's key for the post.
 pub const POST: &str = "post";
@@ -989,6 +989,8 @@ impl Graph {
                 why.push(format!("`{id}`: the client runs on the cpu (the renderer's process), not on {d}"));
             } else if n.role == Role::Link && d != Device::Cpu {
                 why.push(format!("`{id}`: the link runs on the cpu (the client's process, in front of the client), not on {d}"));
+            } else if n.role == Role::Post && n.component == "hdr" && d == Device::Cpu {
+                why.push(format!("`{id}`: `hdr` (a float output) is built on GPUs only; the CPU executors write RGBA8"));
             }
         }
         for (id, n) in &g.nodes {

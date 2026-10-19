@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::{Context, bail};
 use mr_core::{CompletedFrame, FrameSink, FrameStats, StageTime, Waker};
+use mr_core::lighting::PixelFormat;
 
 pub mod meshes;
 pub mod program;
@@ -287,6 +288,8 @@ pub struct FrameRing {
     timestamp_period: f32,
     width: u32,
     height: u32,
+    /// Bytes per pixel (the output's format).
+    bpp: u32,
     padded_row: u32,
     pixels: Vec<u8>,
     /// Signals the waiter thread that work was submitted. `None` once shutting down.
@@ -295,8 +298,10 @@ pub struct FrameRing {
 }
 
 impl FrameRing {
-    /// `waker` is called from a background thread whenever submitted work completes.
-    pub fn new(gpu: &Gpu, width: u32, height: u32, depth: usize, waker: Waker) -> Self {
+    /// `waker` is called from a background thread whenever submitted work completes;
+    /// `format` is the output's.
+    pub fn new(gpu: &Gpu, width: u32, height: u32, format: PixelFormat, depth: usize, waker: Waker) -> Self {
+        let bpp = format.bytes();
         let (submitted, rx) = std::sync::mpsc::channel::<()>();
         let device = gpu.device.clone();
         let waiter = std::thread::Builder::new()
@@ -312,7 +317,7 @@ impl FrameRing {
                 }
             })
             .expect("spawn gpu-waiter");
-        let padded_row = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let padded_row = (width * bpp).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let query_set = gpu.timestamps.then(|| {
             gpu.device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("frame timestamps"), ty: wgpu::QueryType::Timestamp, count: depth as u32 * 2 })
         });
@@ -359,8 +364,9 @@ impl FrameRing {
             timestamp_period: gpu.queue.get_timestamp_period(),
             width,
             height,
+            bpp,
             padded_row,
-            pixels: vec![0; (width * height * 4) as usize],
+            pixels: vec![0; (width * height * bpp) as usize],
             submitted: Some(submitted),
             waiter: Some(waiter),
         }
@@ -573,7 +579,7 @@ impl FrameRing {
             if p.readback {
                 {
                     let v = slot.readback.get_mapped_range(..)?;
-                    let row = (self.width * 4) as usize;
+                    let row = (self.width * self.bpp) as usize;
                     for y in 0..self.height as usize {
                         let src = y * self.padded_row as usize;
                         self.pixels[y * row..(y + 1) * row].copy_from_slice(&v[src..src + row]);
@@ -602,15 +608,23 @@ impl Drop for FrameRing {
     }
 }
 
-/// Creates the RGBA8 output texture renderers draw into (storage + render target + copy).
-pub fn output_texture(gpu: &Gpu, width: u32, height: u32) -> wgpu::Texture {
+/// The texture format of output pixels in `f`.
+pub fn output_format(f: PixelFormat) -> wgpu::TextureFormat {
+    match f {
+        PixelFormat::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
+        PixelFormat::Rgba16F => wgpu::TextureFormat::Rgba16Float,
+    }
+}
+
+/// Creates the output texture renderers draw into (storage + render target + copy).
+pub fn output_texture(gpu: &Gpu, width: u32, height: u32, format: PixelFormat) -> wgpu::Texture {
     gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("output"),
         size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format: output_format(format),
         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     })

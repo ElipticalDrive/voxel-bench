@@ -13,7 +13,11 @@ struct Camera {
 struct Point { pos: vec3<i32>, info: u32 } // info: block | face_mask << 16
 
 @group(0) @binding(0) var<uniform> cam: Camera;
+#ifdef HDR
+@group(0) @binding(1) var out_tex: texture_storage_2d<rgba16float, write>;
+#else
 @group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
+#endif
 @group(0) @binding(8) var<storage, read> points: array<Point>;
 @group(0) @binding(9) var<storage, read_write> zbuf: array<atomic<u32>>;
 @group(0) @binding(10) var<storage, read_write> idbuf: array<atomic<u32>>;

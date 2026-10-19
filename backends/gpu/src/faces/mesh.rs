@@ -276,7 +276,7 @@ impl Meshing {
         let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
         // Mesh shadows of forward drawers: their site's walk (by default the shadow rays').
-        let mesh = GpuMeshes::new(gpu, &core.world, Some(Occlusion { program: &occ, rays: &rays, layout: core.storages.layout(mesh_storage) }));
+        let mesh = GpuMeshes::new(gpu, &core.world, Some(Occlusion { program: &occ, rays: &rays, layout: core.storages.layout(mesh_storage), format: core.output_format() }));
         let s = Self {
             built: geometry,
             stale: false,

@@ -6,7 +6,11 @@
 // refetch of the face.
 
 @group(3) @binding(0) var rec_tex: texture_2d<u32>;
+#ifdef HDR
+@group(3) @binding(1) var out_tex: texture_storage_2d<rgba16float, write>;
+#else
 @group(3) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
+#endif
 
 fn record_at(px: vec2<u32>) -> vec2<u32> { return textureLoad(rec_tex, vec2<i32>(px), 0).xy; }
 

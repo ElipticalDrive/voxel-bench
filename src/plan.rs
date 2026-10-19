@@ -1289,7 +1289,10 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         // The post's tone mappers, each its own key.
         let p = Plan::parse(&format!("{base}[[renderer]]\nsites = {{ post = \"*\" }}\n"), &[]).unwrap();
         let keys: std::collections::BTreeSet<String> = p.renderers.iter().map(|r| r.pipeline().unwrap().key().unwrap()).collect();
-        assert_eq!((p.renderers.len(), keys.len()), (3, 3));
+        assert_eq!((p.renderers.len(), keys.len()), (4, 4));
+        assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces", "hdr"]);
+        // `hdr` is GPU-only: a CPU pipeline's sweep leaves it out.
+        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = \"cpu\" }}\nsites = {{ post = \"*\" }}\n"), &[]).unwrap();
         assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces"]);
     }
 

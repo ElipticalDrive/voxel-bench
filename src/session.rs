@@ -2,7 +2,7 @@
 //! keeping their worlds in sync and routing finished frames to the outputs.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -233,7 +233,7 @@ impl Outputs {
                         if let Some(d) = path.parent() {
                             let _ = std::fs::create_dir_all(d);
                         }
-                        if let Err(e) = image::save_buffer(&path, &px, w, h, image::ExtendedColorType::Rgba8) {
+                        if let Err(e) = save_image(&path, &px, w, h) {
                             tracing::error!("saving {}: {e}", path.display());
                         }
                     }
@@ -273,14 +273,20 @@ impl Outputs {
 
     /// Hands a finished frame to the window, the saver and the comparison. The comparison runs on
     /// the comparer threads; its result arrives on the returned channel.
+    /// `px` is the frame in the worker's format. The window, comparisons and PNGs take its
+    /// RGBA8 form (a float frame converted only when one of them does); the float frame of an
+    /// `hdr` post is saved as Radiance `.hdr` next to the PNG.
     fn deliver(&mut self, lane: &mut Lane, frame: u32, mode: PassMode, recorded: bool, px: Vec<u8>) -> Option<crossbeam_channel::Receiver<Quality>> {
         let (w, h) = (lane.width, lane.height);
-        if let Some(ui) = &self.ui {
-            // Throttle what goes to the window to ~60 Hz per lane.
-            if lane.last_ui.is_none_or(|t| t.elapsed() > Duration::from_millis(15)) {
-                lane.last_ui = Some(Instant::now());
-                ui.send(UiEvent::Frame { lane: lane.ui_index, width: w, height: h, pixels: Arc::new(px.to_vec()) });
-            }
+        // Throttle what goes to the window to ~60 Hz per lane.
+        let to_ui = self.ui.is_some() && lane.last_ui.is_none_or(|t| t.elapsed() > Duration::from_millis(15));
+        if !to_ui && !(recorded && (self.compare_hit(frame) || self.save_hit(frame))) {
+            return None;
+        }
+        let (px, hdr) = crate::worker::rgba8(lane.worker.format, px);
+        if let (true, Some(ui)) = (to_ui, &self.ui) {
+            lane.last_ui = Some(Instant::now());
+            ui.send(UiEvent::Frame { lane: lane.ui_index, width: w, height: h, pixels: Arc::new(px.to_vec()) });
         }
         if !recorded {
             return None;
@@ -312,11 +318,27 @@ impl Outputs {
         }
         if self.save_hit(frame) {
             if let (Some((_, dir)), Some(tx)) = (&self.save, &self.writer) {
+                if let Some(hdr) = hdr {
+                    let _ = tx.send((dir.join(format!("{tag}/{frame:06}.hdr")), w, h, hdr));
+                }
                 let _ = tx.send((dir.join(format!("{tag}/{frame:06}.png")), w, h, px));
             }
         }
         quality
     }
+}
+
+/// Saves RGBA8 `px` (a PNG), or for a `.hdr` path a float frame (`Rgba16F`) as Radiance
+/// RGBE in linear light.
+fn save_image(path: &Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
+    if path.extension().is_some_and(|e| e == "hdr") {
+        use mr_core::lighting::{half_to_f32, srgb_extended_to_linear};
+        let rgb: Vec<image::Rgb<f32>> = px.chunks_exact(8).map(|p| image::Rgb(std::array::from_fn(|c| srgb_extended_to_linear(half_to_f32(u16::from_le_bytes([p[2 * c], p[2 * c + 1]])))))).collect();
+        image::codecs::hdr::HdrEncoder::new(std::io::BufWriter::new(std::fs::File::create(path)?)).encode(&rgb, w as usize, h as usize)?;
+    } else {
+        image::save_buffer(path, px, w, h, image::ExtendedColorType::Rgba8)?;
+    }
+    Ok(())
 }
 
 pub fn sanitize(s: &str) -> String {
@@ -347,9 +369,7 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
     let latency_ms = f.sent.elapsed().as_secs_f64() * 1e3;
     let quality = match slot {
         Some(s) => {
-            let n = (lane.width * lane.height * 4) as usize;
-            let px = lane.worker.shm.slot(s)[..n].to_vec();
-            lane.worker.free_slot(s);
+            let px = lane.worker.take_frame(s, (lane.width * lane.height) as usize);
             out.deliver(lane, f.frame, f.mode, f.recorded, px)
         }
         None => None,

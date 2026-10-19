@@ -47,6 +47,8 @@ pub struct Occlusion<'a> {
     pub program: &'a crate::program::Program,
     pub rays: &'a str,
     pub layout: &'a wgpu::BindGroupLayout,
+    /// The output's format.
+    pub format: wgpu::TextureFormat,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -127,16 +129,16 @@ impl GpuMeshes {
             })
         };
         use wgpu::CompareFunction::{Equal, Greater};
-        use wgpu::TextureFormat::{R32Uint, Rg32Uint, Rgba8Unorm};
+        use wgpu::TextureFormat::{R32Uint, Rg32Uint};
         let forward = occlusion.map(|occ| {
             let mut program = occ.program.clone();
             program.define("SHADE");
             let module = crate::program::compile(dev, "meshes", &program, MESH_WGSL, &[occ.rays, LIGHTING, VOXELS, COMMON]);
             let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("meshes"), bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(occ.layout)], immediate_size: 0 });
             Forward {
-                fill: pipeline("mesh fill", &module, &pl, Some("mesh_fs"), Rgba8Unorm, true, Greater),
-                depth: pipeline("mesh depth", &module, &pl, None, Rgba8Unorm, true, Greater),
-                equal: pipeline("mesh equal", &module, &pl, Some("mesh_fs"), Rgba8Unorm, false, Equal),
+                fill: pipeline("mesh fill", &module, &pl, Some("mesh_fs"), occ.format, true, Greater),
+                depth: pipeline("mesh depth", &module, &pl, None, occ.format, true, Greater),
+                equal: pipeline("mesh equal", &module, &pl, Some("mesh_fs"), occ.format, false, Equal),
             }
         });
         let module = crate::program::compile(dev, "mesh records", &Program::world(None), MESH_WGSL, &[VOXELS, COMMON]);

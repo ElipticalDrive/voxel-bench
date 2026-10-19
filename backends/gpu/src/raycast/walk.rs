@@ -637,6 +637,12 @@ mod tests {
                                         let d = Composition { view: View::Distance, ..c.clone() };
                                         super::super::tests::validate(d.program(shading, meshed), false, View::Distance, fragment, &what);
                                     }
+                                    // The float output (`hdr`: the `HDR` def's declarations).
+                                    if prepass == "none" {
+                                        let mut h = c.clone();
+                                        h.walks.post = mr_components::post::Tone::Hdr;
+                                        super::super::tests::validate(h.program(shading, meshed), deferred, view, fragment, &format!("{what} hdr"));
+                                    }
                                 }
                                 n += 1;
                             }

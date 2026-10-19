@@ -61,6 +61,8 @@ pub struct DrawerSpec<'a> {
     /// Deferred drawers with meshes: the module with the record's mesh capability, whose
     /// shade pass runs on frames that draw meshes (the plain one on the others).
     pub mesh_module: Option<&'a wgpu::ShaderModule>,
+    /// The output's format (the post's).
+    pub format: wgpu::TextureFormat,
 }
 
 enum Pipes {
@@ -133,8 +135,9 @@ fn target(gpu: &Gpu, label: &str, w: u32, h: u32, format: wgpu::TextureFormat) -
 
 impl FaceDrawer {
     /// The deferred shade pass's images group: ids or hit records (0), output (1) and, with
-    /// `meshes`, the mesh triangles (2; `mr_gpu::meshes::surface_wgsl(3, 2)`).
-    pub fn images_layout(device: &wgpu::Device, meshes: bool) -> wgpu::BindGroupLayout {
+    /// `meshes`, the mesh triangles (2; `mr_gpu::meshes::surface_wgsl(3, 2)`); `format`: the
+    /// output's.
+    pub fn images_layout(device: &wgpu::Device, meshes: bool, format: wgpu::TextureFormat) -> wgpu::BindGroupLayout {
         let compute = wgpu::ShaderStages::COMPUTE;
         let tex = |binding, sample_type| wgpu::BindGroupLayoutEntry {
             binding,
@@ -149,7 +152,7 @@ impl FaceDrawer {
                     visibility: compute,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        format,
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
@@ -232,8 +235,8 @@ impl FaceDrawer {
             })
         };
         use wgpu::CompareFunction::{Equal, Greater};
-        use wgpu::TextureFormat::{R32Uint, Rg32Uint, Rgba8Unorm};
-        let color = [Some(wgpu::ColorTargetState { format: Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+        use wgpu::TextureFormat::{R32Uint, Rg32Uint};
+        let color = [Some(wgpu::ColorTargetState { format: spec.format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
         let pipes = match mode {
             DrawMode::Raster => Pipes::Forward {
                 fill: render("fill", &color, true, Greater, true),

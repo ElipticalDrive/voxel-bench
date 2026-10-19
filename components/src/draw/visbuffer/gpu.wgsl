@@ -6,7 +6,11 @@
 // triangle's id is `VIS_MESH | tri` (face ids stay below bit 31).
 
 @group(3) @binding(0) var vis_tex: texture_2d<u32>;
+#ifdef HDR
+@group(3) @binding(1) var out_tex: texture_storage_2d<rgba16float, write>;
+#else
 @group(3) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
+#endif
 
 @fragment
 fn fs(in: VOut) -> @location(0) u32 {

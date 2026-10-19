@@ -5,6 +5,11 @@
 //!
 //! It maps linear colours: lit radiance (after the environment's exposure) and the sky.
 //! Unlit pixels are texels, already display colours, and pass through unmapped.
+//!
+//! `hdr` maps nothing and limits nothing: the output becomes a float image holding extended
+//! sRGB (the sRGB curve continued past 1). Every other writer of the output (the sky, unlit
+//! texels, diagnostic views) writes the same display colours as before, which extended sRGB
+//! holds unchanged; only the lit colours exceed 1.
 
 pub use mr_core::lighting::Tone;
 
@@ -14,12 +19,17 @@ pub fn wgsl(t: Tone) -> &'static str {
         Tone::Clamp => mr_gpu::program::POST_WGSL,
         Tone::Reinhard => include_str!("reinhard.wgsl"),
         Tone::Aces => include_str!("aces.wgsl"),
+        Tone::Hdr => include_str!("hdr.wgsl"),
     }
 }
 
-/// Replaces the program's `mr::post` module (`Program::world` adds `clamp`'s) with `t`'s.
+/// Replaces the program's `mr::post` module (`Program::world` adds `clamp`'s) with `t`'s;
+/// `hdr` also defines `HDR` (the output is `rgba16float`).
 pub fn add_to(t: Tone, p: &mut mr_gpu::program::Program) {
     p.add(mr_gpu::program::POST, wgsl(t), &[mr_gpu::program::COMMON]);
+    if t == Tone::Hdr {
+        p.define("HDR");
+    }
 }
 
 #[cfg(test)]
@@ -38,6 +48,7 @@ mod tests {
         }
         // The curves compress: bright input stays near or below 1 (ACES's fit reaches 1.003
         // before the encode clamps) and keeps its order.
+        assert_eq!(Tone::Hdr.encode(c), encode_srgb(c), "hdr's 8-bit form is clamp's");
         for t in [Tone::Reinhard, Tone::Aces] {
             let (a, b) = (t.map(Vec3::splat(2.0)), t.map(Vec3::splat(8.0)));
             assert!(a.x < b.x && b.x <= 1.01, "{t:?}: {a} {b}");

@@ -1391,12 +1391,7 @@ impl Session {
                     }
                     let now = Instant::now();
                     let res = lane.run.res;
-                    let pixels = slot.map(|s| {
-                        let n = (res[0] * res[1] * 4) as usize;
-                        let px = Arc::new(w.shm.slot(s)[..n].to_vec());
-                        w.free_slot(s);
-                        px
-                    });
+                    let pixels = slot.map(|s| Arc::new(crate::worker::rgba8(w.format, w.take_frame(s, (res[0] * res[1]) as usize)).0));
                     match f.purpose {
                         Purpose::Live => {
                             let t = now.duration_since(start).as_secs_f64();

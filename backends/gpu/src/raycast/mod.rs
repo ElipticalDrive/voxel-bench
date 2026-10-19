@@ -219,7 +219,7 @@ impl Passes {
             // Deferred: the fragments write records, not colour (the output is attached
             // untouched).
             let write_mask = if deferred { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::ALL };
-            let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask })];
+            let targets = [Some(wgpu::ColorTargetState { format: core.output_format(), blend: None, write_mask })];
             Main::Fragment(dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("raycast fragment"),
                 layout: Some(layout),
@@ -260,7 +260,7 @@ impl Passes {
         }
         // `dispatch` is live: the stand-in's bind group when first needed.
         if cast.fragment() && self.bind0_frag.is_none() {
-            let stand_in = self.stand_in.get_or_insert_with(|| mr_gpu::output_texture(&core.gpu, 1, 1));
+            let stand_in = self.stand_in.get_or_insert_with(|| mr_gpu::output_texture(&core.gpu, 1, 1, core.tone.format()));
             self.bind0_frag = Some(make(stand_in));
         }
     }
