@@ -2,6 +2,7 @@
 """MultiRenderer installer for Linux and Windows (Python 3.9+, standard library only).
 
     python3 install.py                 a wizard: shows the state, asks what to do
+                                       (Windows: `py install.py`; not the Microsoft Store's Python)
     python3 install.py install         prerequisites, sources, build, shortcuts
     python3 install.py update          new sources, rebuild; your edited plans are kept
     python3 install.py uninstall       removes everything it put down
@@ -343,9 +344,31 @@ def remove_from_path(d):
     user_path(lambda parts: [p for p in parts if p != str(d)])
 
 
+def refuse_store_python():
+    """Stops if this is the Microsoft Store's Python. It writes everything under AppData (the
+    data directory, %TEMP%) into a private copy that only it can see, so cargo, rustup-init
+    and Windows find nothing there. Detected by where a probe directory really lands."""
+    if not WINDOWS:
+        return
+    base = DATA.parent
+    base.mkdir(parents=True, exist_ok=True)
+    probe = tempfile.mkdtemp(prefix="multirenderer-probe-", dir=base)
+    try:
+        real = os.path.realpath(probe)
+    finally:
+        os.rmdir(probe)
+    if "\\packages\\" in real.lower() and "\\localcache\\" in real.lower():
+        sys.exit(f"This Python is the Microsoft Store build ({sys.executable}).\n"
+                 f"It writes files under {base} into a private folder that other programs cannot see\n"
+                 f"(a probe went to {Path(real).parent}), so the build would fail.\n"
+                 "Install Python from python.org (for example `winget install Python.Python.3.13`),\n"
+                 "then run the installer with the launcher it brings: py install.py")
+
+
 # --- commands --------------------------------------------------------------------------------
 
 def install(args):
+    refuse_store_python()
     m = load_manifest()
     if m:
         say(f"already installed (from {m['source']}); updating instead")
@@ -372,6 +395,7 @@ def install(args):
 
 
 def update(args):
+    refuse_store_python()
     m = load_manifest()
     if not m:
         sys.exit("not installed")

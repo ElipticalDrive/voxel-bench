@@ -12,7 +12,11 @@ streamed in chunks of 32³ cells.
 
 ## Install
 
-Linux and Windows, with Python 3.9+ (Windows: `winget install Python.Python.3.13`):
+Linux and Windows, with Python 3.9+. On Windows, install Python from python.org (for example
+`winget install Python.Python.3.13`) and type `py` instead of `python3` below. `python3` on
+Windows usually starts the Microsoft Store's Python, which hides the files it writes under
+AppData from other programs (the build cannot find its sources); the installer detects this
+and stops.
 
 ```sh
 python3 install.py              # a wizard: install, update or uninstall
