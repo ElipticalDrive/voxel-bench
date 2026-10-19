@@ -614,7 +614,7 @@ impl App {
                     ui.colored_label(Color32::LIGHT_RED, e);
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut self.toml_text).code_editor().desired_width(f32::INFINITY).desired_rows(40)).on_hover_text("Edit, then Apply. Field reference: README.md, section Plans.");
+                    ui.add(egui::TextEdit::multiline(&mut self.toml_text).code_editor().desired_width(f32::INFINITY).desired_rows(40)).on_hover_text("Edit, then Apply. Field reference: docs/plans.md.");
                 });
             }
         }
