@@ -15,35 +15,52 @@ pub fn knob_tip(spec: &ParamSpec) -> String {
     t
 }
 
-/// Roughly how wide a knob's label, widget and extras are (for wrapping them as a unit).
-fn knob_width(ui: &Ui, label: &str, spec: &ParamSpec) -> f32 {
-    use mr_core::ParamKind;
-    let text = ui.painter().layout_no_wrap(label.to_string(), egui::TextStyle::Body.resolve(ui.style()), egui::Color32::WHITE).size().x;
-    let widget = match spec.kind {
-        ParamKind::Bool => 24.0,
-        ParamKind::Int { .. } => 56.0,
-        ParamKind::Float { .. } => ui.spacing().slider_width + 60.0,
-        ParamKind::Choice(_) => ui.spacing().combo_width + 24.0,
-    };
-    text + widget + 40.0
+/// Width of the value column: every knob's widget fits it, so the names line up.
+pub const VALUE_W: f32 = 180.0;
+
+/// A cell `VALUE_W` wide for a value's widget(s), left-aligned.
+pub fn value_cell<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        ui.set_min_width(VALUE_W);
+        add(ui)
+    })
+    .inner
 }
 
-/// Knobs as label + widget pairs, wrapped as units; `marks` labels restart-only knobs with ↻;
-/// `after` may add a widget after each (the tuner's lock). Returns (name, value, commit).
-pub fn knob_row(ui: &mut Ui, knobs: &[(&ParamSpec, ParamValue)], marks: bool, after: &mut dyn FnMut(&mut Ui, &ParamSpec)) -> Vec<(String, ParamValue, bool)> {
+/// Sizes the next slider (with its value box) to fill a value cell.
+pub fn fit_slider(ui: &mut Ui) {
+    ui.spacing_mut().slider_width = VALUE_W - ui.spacing().interact_size.x - 2.0 * ui.spacing().item_spacing.x;
+}
+
+/// A form row in a two-column grid: the value's widgets in a value cell, then the name.
+pub fn form_row<R>(ui: &mut Ui, name: &str, tip: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let r = value_cell(ui, add);
+    ui.add(egui::Label::new(egui::RichText::new(name).weak()).wrap_mode(egui::TextWrapMode::Extend)).on_hover_text(tip);
+    ui.end_row();
+    r
+}
+
+/// Knobs as a grid: the tuner's lock (a column only when `lock` is given), the value (a
+/// constant width) and the name; `marks` labels restart-only knobs with ↻. Returns
+/// (index into `knobs`, value, commit).
+pub fn knob_grid<'l>(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, knobs: &[(&ParamSpec, ParamValue)], marks: bool, mut lock: Option<&mut (dyn FnMut(&mut Ui, &ParamSpec) + 'l)>) -> Vec<(usize, ParamValue, bool)> {
     let mut out = vec![];
-    for (spec, value) in knobs {
-        let label = if marks && !spec.live { format!("{} ↻", spec.name) } else { spec.name.clone() };
-        if ui.available_size_before_wrap().x < knob_width(ui, &label, spec) {
+    if knobs.is_empty() {
+        return out;
+    }
+    egui::Grid::new(salt).num_columns(if lock.is_some() { 3 } else { 2 }).spacing([6.0, 2.0]).show(ui, |ui| {
+        for (i, (spec, value)) in knobs.iter().enumerate() {
+            if let Some(lock) = lock.as_deref_mut() {
+                ui.horizontal(|ui| lock(ui, spec));
+            }
+            if let Some((v, commit)) = value_cell(ui, |ui| knob_widget(ui, spec, value)) {
+                out.push((i, v, commit));
+            }
+            let label = if marks && !spec.live { format!("{} ↻", spec.name) } else { spec.name.clone() };
+            ui.add(egui::Label::new(egui::RichText::new(label).weak()).wrap_mode(egui::TextWrapMode::Extend)).on_hover_text(knob_tip(spec));
             ui.end_row();
         }
-        ui.add(egui::Label::new(egui::RichText::new(label).weak()).wrap_mode(egui::TextWrapMode::Extend)).on_hover_text(knob_tip(spec));
-        if let Some((v, commit)) = knob_widget(ui, spec, value) {
-            out.push((spec.name.clone(), v, commit));
-        }
-        after(ui, spec);
-        ui.add_space(6.0);
-    }
+    });
     out
 }
 
@@ -59,13 +76,14 @@ pub fn knob_widget(ui: &mut Ui, spec: &ParamSpec, value: &ParamValue) -> Option<
         ParamKind::Int { min, max } => {
             let mut v = value.as_i64().unwrap_or(*min);
             let speed = ((*max - *min) as f64 / 300.0).max(0.05);
-            let r = ui.add(egui::DragValue::new(&mut v).range(*min..=*max).speed(speed)).on_hover_text(format!("{}\nRange {min}–{max}. Drag or double-click to type.", spec.description));
+            let r = ui.add(egui::DragValue::new(&mut v).range(*min..=*max).speed(speed).update_while_editing(false)).on_hover_text(format!("{}\nRange {min}–{max}. Drag, or double-click to type and Enter to apply.", spec.description));
             let commit = r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus());
             (r.changed() || commit).then(|| (ParamValue::Int(v), commit))
         }
         ParamKind::Float { min, max, log } => {
             let mut v = value.as_f64().unwrap_or(*min);
-            let r = ui.add(egui::Slider::new(&mut v, *min..=*max).logarithmic(*log).max_decimals(3)).on_hover_text(&spec.description);
+            fit_slider(ui);
+            let r = ui.add(egui::Slider::new(&mut v, *min..=*max).logarithmic(*log).max_decimals(3).update_while_editing(false)).on_hover_text(&spec.description);
             let commit = r.drag_stopped() || (r.changed() && !r.dragged());
             (r.changed() || commit).then(|| (ParamValue::Float(v), commit))
         }
@@ -73,6 +91,7 @@ pub fn knob_widget(ui: &mut Ui, spec: &ParamSpec, value: &ParamValue) -> Option<
             let cur = value.as_str().unwrap_or("").to_string();
             let mut out = None;
             ComboBox::from_id_salt(&spec.name)
+                .width(VALUE_W - ui.spacing().item_spacing.x)
                 .selected_text(&cur)
                 .show_ui(ui, |ui| {
                     for o in opts {

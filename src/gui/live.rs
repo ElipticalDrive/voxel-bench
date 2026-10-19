@@ -679,10 +679,11 @@ impl Session {
 
     /// All knobs of a lane: host ones, then the renderer's.
     fn specs(&self, i: usize) -> Vec<ParamSpec> {
-        let mut v = tune::host_params(self.plan.run.view_radius);
+        let radius = self.lanes.get(i).map_or(self.plan.run.view_radius, |l| l.given.view_radius(&self.plan.run));
+        let mut v = tune::host_params(radius);
         if let Some(info) = self.lanes.get(i).and_then(|l| l.info.as_ref()) {
             if info.max_lod > 0 {
-                v.push(ParamSpec::int("host.max_lod", "LOD levels streamed beyond full resolution (restart)", 0, info.max_lod as i64, 0, false));
+                v.push(ParamSpec::int("host.max_lod", "Coarsest LOD level its client holds: rings beyond the view radius, each doubling reach at half resolution (restart)", 0, info.max_lod as i64, 0, false));
             }
             v.extend(info.params.iter().cloned());
         }

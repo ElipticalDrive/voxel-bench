@@ -87,8 +87,15 @@ when the back end can change that knob live, and otherwise as a hot swap.
 
 Each component declares its knobs: name, type, range, and whether the knob can change live.
 Each lane also has host knobs: `host.render_scale` (the render resolution relative to the
-plan's, applied as a live resize), `host.view_radius` (how many chunks are streamed around
-the camera) and `host.in_flight` (how many frames the host lets the renderer queue).
+plan's, applied as a live resize) and `host.in_flight` (how many frames the host lets the
+renderer queue). How far a renderer loads is its **client node's** knobs (the loader behind
+the link: `pick` or `derive`): `radius` (chunks held around the camera) and `max_lod`. A
+live lane shows them under its client as `host.view_radius` (applied without a restart) and
+`host.max_lod`; the plan's `run.view_radius` and `run.max_lod` are only their defaults.
+
+Wherever knobs are listed they form three columns: 🔒 (a lane's tuner lock, where the tuner
+can change that knob), the value (one width for every kind of widget) and the name. A typed
+number applies on Enter (or when the field loses focus; Escape cancels), not per keystroke.
 
 Live knobs apply between frames. Knobs marked ↻ need a restart, which is done as a **hot
 swap**: a replacement worker starts, receives the world, and renders three warm-up frames

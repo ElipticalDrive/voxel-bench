@@ -121,6 +121,34 @@ struct App {
     schemes: schemes::Browser,
 }
 
+/// A vertical scroll area that stays where the user left it when its content shrinks for a
+/// while (a restarting lane shows only "starting…"; a reloaded plan rebuilds its forms): the
+/// offset the user chose comes back once the content is tall enough again.
+pub fn steady_scroll<R>(ui: &mut egui::Ui, salt: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    steady_scroll_area(ui, salt, add).inner
+}
+
+fn steady_scroll_area<R>(ui: &mut egui::Ui, salt: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::scroll_area::ScrollAreaOutput<R> {
+    let id = ui.id().with(("steady-scroll", salt));
+    let (mut want, last) = ui.data(|d| d.get_temp::<(f32, f32)>(id)).unwrap_or_default();
+    let out = egui::ScrollArea::vertical().id_salt(salt).show(ui, add);
+    let off = out.state.offset.y;
+    let max = (out.content_size.y - out.inner_rect.height()).max(0.0);
+    // Pulled down to the bottom of shorter content: not the user's move.
+    let clamped = off >= max - 0.5 && off < last;
+    if (off - last).abs() > 0.5 && !clamped {
+        want = off;
+    } else if off < want - 0.5 && max > off + 0.5 {
+        // Taller again: back to the user's offset (from the next frame).
+        let mut st = out.state.clone();
+        st.offset.y = want.min(max);
+        st.store(ui.ctx(), out.id);
+        ui.ctx().request_repaint();
+    }
+    ui.data_mut(|d| d.insert_temp(id, (want, off)));
+    out
+}
+
 /// Knob value as a plan option value.
 pub fn param_to_toml(v: &mr_core::ParamValue) -> toml::Value {
     match v {
@@ -503,14 +531,14 @@ impl App {
                 self.playing = !self.playing;
             }
             let frames = self.plan.run.frames.max(1) as f64;
-            ui.add(egui::Slider::new(&mut self.scene_frame, 0.0..=frames).text("scene frame").step_by(1.0)).on_hover_text("Position on the scripted path. [ and ] step 10 frames (Shift: 100), R rewinds.");
+            ui.add(egui::Slider::new(&mut self.scene_frame, 0.0..=frames).text("scene frame").step_by(1.0).update_while_editing(false)).on_hover_text("Position on the scripted path. [ and ] step 10 frames (Shift: 100), R rewinds.");
             ui.checkbox(&mut self.events_on, "events").on_hover_text("Apply the plan's scripted events (block edits, lights) as the scene clock passes them");
             ui.separator();
-            ui.add(egui::DragValue::new(&mut self.speed).speed(0.5).range(0.5..=2000.0).prefix("speed ").suffix(" b/s")).on_hover_text("Free-fly speed in blocks per second (mouse wheel over the view; hold Ctrl for 5×)");
-            ui.add(egui::DragValue::new(&mut self.fps_cap).speed(1.0).range(0.0..=10000.0).prefix("fps cap ")).on_hover_text("Frame-rate limit per renderer; 0 = uncapped. Capping frees GPU time for the others.");
-            ui.add(egui::DragValue::new(&mut self.probe_interval).speed(0.1).range(0.0..=60.0).prefix("probe every ").suffix(" s"))
+            ui.add(egui::DragValue::new(&mut self.speed).speed(0.5).range(0.5..=2000.0).prefix("speed ").suffix(" b/s").update_while_editing(false)).on_hover_text("Free-fly speed in blocks per second (mouse wheel over the view; hold Ctrl for 5×)");
+            ui.add(egui::DragValue::new(&mut self.fps_cap).speed(1.0).range(0.0..=10000.0).prefix("fps cap ").update_while_editing(false)).on_hover_text("Frame-rate limit per renderer; 0 = uncapped. Capping frees GPU time for the others.");
+            ui.add(egui::DragValue::new(&mut self.probe_interval).speed(0.1).range(0.0..=60.0).prefix("probe every ").suffix(" s").update_while_editing(false))
                 .on_hover_text("Score every renderer against the reference this often (0 = only on C / when a tuner asks)");
-            ui.add(egui::DragValue::new(&mut self.display_hz).speed(1.0).range(1.0..=240.0).prefix("display ").suffix(" Hz"))
+            ui.add(egui::DragValue::new(&mut self.display_hz).speed(1.0).range(1.0..=240.0).prefix("display ").suffix(" Hz").update_while_editing(false))
                 .on_hover_text("How often frames are read back for display. Other frames render without read-back.");
             ui.separator();
             ui.toggle_value(&mut self.edit_mode, "✏ edit (E)").on_hover_text("Left click: remove block. Ctrl+left click: place block.\nEdits are sent to every renderer like scripted ones.");
@@ -531,8 +559,8 @@ impl App {
                     ui.label("colour");
                     ui.color_edit_button_rgb(&mut self.light_color).on_hover_text("Colour of the next dropped light");
                 });
-                ui.add(egui::Slider::new(&mut self.light_intensity, 1.0..=500.0).logarithmic(true).text("intensity")).on_hover_text("Brightness of the next dropped light");
-                ui.add(egui::Slider::new(&mut self.light_radius, 2.0..=100.0).text("radius")).on_hover_text("Distance in blocks at which the light's contribution reaches zero");
+                ui.add(egui::Slider::new(&mut self.light_intensity, 1.0..=500.0).logarithmic(true).text("intensity").update_while_editing(false)).on_hover_text("Brightness of the next dropped light");
+                ui.add(egui::Slider::new(&mut self.light_radius, 2.0..=100.0).text("radius").update_while_editing(false)).on_hover_text("Distance in blocks at which the light's contribution reaches zero");
                 if ui.button("Drop light at camera (G)").on_hover_text("Place a point light where the camera is (visible in Lit mode)").clicked() {
                     if let Some(c) = self.live_camera() {
                         self.send(Cmd::AddLight { position: c.position, color: Vec3::from_array(self.light_color), intensity: self.light_intensity, radius: self.light_radius });
@@ -576,7 +604,7 @@ impl App {
                 let mut restart = None;
                 let mut open_graph = None;
                 let live = self.live.is_some();
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                steady_scroll(ui, "form", |ui| {
                     let mut ectx = editor::EditorCtx {
                         infos: &self.infos,
                         block_names: &self.block_names,
@@ -833,7 +861,7 @@ impl App {
             ui.selectable_value(&mut self.right_tab, RightTab::Help, "❓ Keys").on_hover_text("Key bindings (H)");
         });
         ui.separator();
-        egui::ScrollArea::vertical().id_salt("right").show(ui, |ui| match self.right_tab {
+        steady_scroll(ui, "right", |ui| match self.right_tab {
             RightTab::Metrics => self.metrics(ui),
             RightTab::Compare => self.compare(ui),
             RightTab::Benchmark => self.benchmark(ui),
@@ -892,7 +920,7 @@ impl App {
                 }
             }
         }
-        ui.add(egui::Slider::new(&mut self.plot_window, 2.0..=120.0).text("plot window (s)")).on_hover_text("Seconds of history shown in the plots below");
+        ui.add(egui::Slider::new(&mut self.plot_window, 2.0..=120.0).text("plot window (s)").update_while_editing(false)).on_hover_text("Seconds of history shown in the plots below");
         let t_end = series.iter().filter_map(|(_, s)| s.last().map(|x| x.t)).fold(0.0, f64::max);
         for (title, f) in [
             ("frame interval (ms)", (|s: &Sample| Some(s.interval_ms)) as fn(&Sample) -> Option<f32>),
@@ -1040,7 +1068,11 @@ impl App {
         egui::CollapsingHeader::new("pipeline & knobs").id_salt(("knobs", i)).default_open(true).show(ui, |ui| {
             ui.weak("↻ = changing it hot-swaps the renderer · 🔒 = the tuner may not touch it");
             let locks = &mut self.locks;
+            let tunable: HashSet<&str> = l.params.iter().map(|(s, _)| s.name.as_str()).collect();
             let mut lock_box = |ui: &mut egui::Ui, spec: &mr_core::ParamSpec| {
+                if !tunable.contains(spec.name.as_str()) {
+                    return;
+                }
                 let key = (i, spec.name.clone());
                 let mut locked = locks.contains(&key);
                 if ui.checkbox(&mut locked, "🔒").on_hover_text("Lock: the auto-tuner may not change this knob (applies when the tuner is (re)started)").changed() {
@@ -1053,7 +1085,7 @@ impl App {
             };
             // Values being dragged are shown before they are applied.
             let knobs: Vec<(mr_core::ParamSpec, mr_core::ParamValue)> = l.params.iter().map(|(s, v)| (s.clone(), self.knob_edits.get(&(i, s.name.clone())).cloned().unwrap_or(v.clone()))).collect();
-            let edits = graph::summary(ui, &format!("{:?}", graph::Of::Lane(i)), &l.spec, &knobs, true, &mut lock_box, &mut self.trials, &self.infos, &self.plan.run);
+            let edits = graph::summary(ui, &format!("{:?}", graph::Of::Lane(i)), &l.spec, &knobs, true, Some(&mut lock_box), &mut self.trials, &self.infos, &self.plan.run);
             for e in edits {
                 match e {
                     graph::Edit::Knob { name, value, commit } => {
@@ -1086,10 +1118,10 @@ impl App {
             });
             match t.goal {
                 0 => {
-                    ui.add(egui::DragValue::new(&mut t.fps).range(1.0..=10000.0).prefix("target ").suffix(" fps")).on_hover_text("Frame rate to hold. Measured as throughput over each window; 2 % below still counts as met.");
+                    ui.add(egui::DragValue::new(&mut t.fps).range(1.0..=10000.0).prefix("target ").suffix(" fps").update_while_editing(false)).on_hover_text("Frame rate to hold. Measured as throughput over each window; 2 % below still counts as met.");
                 }
                 1 => {
-                    ui.add(egui::DragValue::new(&mut t.psnr).range(5.0..=99.0).prefix("floor ").suffix(" dB")).on_hover_text("Minimum quality vs the reference renderer, in dB of the chosen metric.\nMS-SSIM: 20 dB = 0.99, 30 dB = 0.999. PSNR: ≥40 dB is visually near-identical.");
+                    ui.add(egui::DragValue::new(&mut t.psnr).range(5.0..=99.0).prefix("floor ").suffix(" dB").update_while_editing(false)).on_hover_text("Minimum quality vs the reference renderer, in dB of the chosen metric.\nMS-SSIM: 20 dB = 0.99, 30 dB = 0.999. PSNR: ≥40 dB is visually near-identical.");
                 }
                 _ => {}
             }
@@ -1108,9 +1140,9 @@ impl App {
             });
             ui.checkbox(&mut t.allow_restart, "may change ↻ knobs (hot swaps)").on_hover_text("Knobs marked ↻ need the renderer to restart. The replacement loads while the old one keeps rendering, but each trial costs a load.");
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut t.settle).range(0.05..=10.0).speed(0.05).prefix("settle ").suffix(" s")).on_hover_text("Seconds ignored after each change (pipelines warm up, streaming settles)");
-                ui.add(egui::DragValue::new(&mut t.window).range(0.1..=30.0).speed(0.05).prefix("measure ").suffix(" s")).on_hover_text("Seconds of frames measured per trial. Longer = less noise, slower search.");
-                ui.add(egui::DragValue::new(&mut t.patience).range(0..=200).prefix("patience ")).on_hover_text("Trials without improvement before the tuner settles on the best configuration and only watches it.\nIt resumes exploring if the goal stops being met. 0 = explore forever.");
+                ui.add(egui::DragValue::new(&mut t.settle).range(0.05..=10.0).speed(0.05).prefix("settle ").suffix(" s").update_while_editing(false)).on_hover_text("Seconds ignored after each change (pipelines warm up, streaming settles)");
+                ui.add(egui::DragValue::new(&mut t.window).range(0.1..=30.0).speed(0.05).prefix("measure ").suffix(" s").update_while_editing(false)).on_hover_text("Seconds of frames measured per trial. Longer = less noise, slower search.");
+                ui.add(egui::DragValue::new(&mut t.patience).range(0..=200).prefix("patience ").update_while_editing(false)).on_hover_text("Trials without improvement before the tuner settles on the best configuration and only watches it.\nIt resumes exploring if the goal stops being met. 0 = explore forever.");
             });
             let t = t.clone();
             let locked: std::collections::BTreeSet<String> = self.locks.iter().filter(|(lane, _)| *lane == i).map(|(_, n)| n.clone()).collect();
@@ -1583,6 +1615,44 @@ fn help(ui: &mut egui::Ui) {
 mod tests {
     use super::*;
 
+    /// A pane that shrinks for a while (a lane restarting) and grows back returns to where the
+    /// user had scrolled it.
+    #[test]
+    fn steady_scroll_survives_shrinking() {
+        let ctx = egui::Context::default();
+        // A frame of content `height` in a 500 px pane; `scroll_to`: the user's scroll before it.
+        let frame = |height: f32, scroll_to: Option<f32>| {
+            let mut offset = 0.0;
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 500.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                let id = ui.make_persistent_id("probe");
+                if let (Some(y), Some(area)) = (scroll_to, ui.data(|d| d.get_temp::<egui::Id>(id))) {
+                    let mut st = egui::scroll_area::State::load(ui.ctx(), area).unwrap();
+                    st.offset.y = y;
+                    st.store(ui.ctx(), area);
+                }
+                let out = steady_scroll_area(ui, "t", |ui| ui.allocate_space(Vec2::new(100.0, height)));
+                ui.data_mut(|d| d.insert_temp(id, out.id));
+                offset = out.state.offset.y;
+            });
+            out.textures_delta.clear();
+            offset
+        };
+        frame(3000.0, None);
+        frame(3000.0, Some(900.0));
+        assert_eq!(frame(3000.0, None), 900.0);
+        for _ in 0..3 {
+            assert_eq!(frame(200.0, None), 0.0);
+        }
+        frame(3000.0, None);
+        assert_eq!(frame(3000.0, None), 900.0);
+        // Scrolling up while it is shorter is the user's choice: kept when it grows.
+        assert_eq!(frame(1000.0, None), 500.0);
+        frame(1000.0, Some(100.0));
+        frame(3000.0, None);
+        assert_eq!(frame(3000.0, None), 100.0);
+    }
+
     /// New starts plain (one renderer, no scattered lights); every demo says what it shows.
     #[test]
     fn default_plan_and_demos() {
@@ -1832,14 +1902,14 @@ mod tests {
         frame(&ctx, &mut app, &[Key::M], &mut t);
         assert_eq!(app.plan.run.resolution, [1700, 1000]);
         assert!(app.pixel_exact);
+        // Lane 1: the tuner on lane 0 may have lowered its render scale.
         let start = std::time::Instant::now();
-        while app.textures.iter().flatten().count() < 1 {
-            assert!(start.elapsed().as_secs() < 60, "no frames after resolution change");
+        while app.textures.get(1).and_then(|t| t.as_ref()).is_none_or(|t| t.tex.size() != [1700, 1000]) {
+            let size = app.textures.get(1).and_then(|t| t.as_ref()).map(|t| t.tex.size());
+            assert!(start.elapsed().as_secs() < 60, "lane 1 has no 1700×1000 frame after the resolution change: {size:?}");
             frame(&ctx, &mut app, &[], &mut t);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let tex = app.textures.iter().flatten().next().unwrap();
-        assert_eq!(tex.tex.size(), [1700, 1000]);
         frame(&ctx, &mut app, &[Key::O, Key::Z], &mut t);
         frame(&ctx, &mut app, &[Key::Escape], &mut t);
         assert!(!app.fullscreen);

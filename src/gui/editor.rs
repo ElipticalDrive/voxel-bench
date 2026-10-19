@@ -31,7 +31,7 @@ fn v3(ui: &mut Ui, v: &mut [f64; 3], speed: f64) -> Changed {
     ui.horizontal(|ui| {
         for (x, l) in v.iter_mut().zip(["x", "y", "z"]) {
             ui.label(l);
-            c |= ui.add(DragValue::new(x).speed(speed).max_decimals(2)).on_hover_text(format!("{l} in blocks (y is up). Drag or double-click to type.")).changed();
+            c |= ui.add(DragValue::new(x).speed(speed).max_decimals(2).update_while_editing(false)).on_hover_text(format!("{l} in blocks (y is up). Drag or double-click to type.")).changed();
         }
     });
     c
@@ -85,7 +85,7 @@ fn opt_color(ui: &mut Ui, label: &str, v: &mut Option<[f32; 3]>, default: [f32; 
 fn num<T: egui::emath::Numeric>(ui: &mut Ui, label: &str, v: &mut T, speed: f64, tip: &str) -> Changed {
     ui.horizontal(|ui| {
         ui.label(label).on_hover_text(tip);
-        ui.add(DragValue::new(v).speed(speed)).on_hover_text(tip).changed()
+        ui.add(DragValue::new(v).speed(speed).update_while_editing(false)).on_hover_text(tip).changed()
     })
     .inner
 }
@@ -180,17 +180,17 @@ fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
         }
         GenSpec::Flat { checker } => c |= ui.checkbox(checker, "checkerboard of all blocks").on_hover_text("Alternate every block type across the ground instead of one").changed(),
         GenSpec::Menger { level } => {
-            c |= ui.add(egui::Slider::new(level, 1..=7).text("level (3^level blocks)")).on_hover_text("Recursion depth; each level triples the size (level 5 = 243 blocks across)").changed();
+            c |= ui.add(egui::Slider::new(level, 1..=7).text("level (3^level blocks)").update_while_editing(false)).on_hover_text("Recursion depth; each level triples the size (level 5 = 243 blocks across)").changed();
         }
         GenSpec::Room { size } => c |= num(ui, "inner size", size, 1.0, "Interior width of the room in blocks"),
         GenSpec::Random { size, density, seed } => {
             c |= num(ui, "size", size, 1.0, "Edge length of the random cube in blocks");
-            c |= ui.add(egui::Slider::new(density, 0.0..=1.0).text("density")).on_hover_text("Fraction of cells that are solid").changed();
+            c |= ui.add(egui::Slider::new(density, 0.0..=1.0).text("density").update_while_editing(false)).on_hover_text("Fraction of cells that are solid").changed();
             c |= num(ui, "seed", seed, 1.0, "Random seed");
         }
         GenSpec::Empty | GenSpec::Showcase => {}
     }
-    c |= ui.add(egui::Slider::new(&mut plan.scene.fov_deg, 20.0..=140.0).text("FOV°")).on_hover_text("Vertical field of view in degrees").changed();
+    c |= ui.add(egui::Slider::new(&mut plan.scene.fov_deg, 20.0..=140.0).text("FOV°").update_while_editing(false)).on_hover_text("Vertical field of view in degrees").changed();
     c
 }
 
@@ -303,7 +303,7 @@ fn environment(ui: &mut Ui, e: &mut EnvSpec) -> Changed {
             }
             if let Some(d) = &mut e.sun_direction {
                 for x in d.iter_mut() {
-                    c |= ui.add(DragValue::new(x).speed(0.01).range(-1.0..=1.0)).on_hover_text("Direction component (x, y, z); y should be negative for daylight").changed();
+                    c |= ui.add(DragValue::new(x).speed(0.01).range(-1.0..=1.0).update_while_editing(false)).on_hover_text("Direction component (x, y, z); y should be negative for daylight").changed();
                 }
             }
         });
@@ -316,7 +316,7 @@ fn environment(ui: &mut Ui, e: &mut EnvSpec) -> Changed {
             c = true;
         }
         if let Some(x) = &mut e.exposure {
-            c |= ui.add(DragValue::new(x).speed(0.01).range(0.0..=20.0)).on_hover_text("1 = neutral; higher is brighter").changed();
+            c |= ui.add(DragValue::new(x).speed(0.01).range(0.0..=20.0).update_while_editing(false)).on_hover_text("1 = neutral; higher is brighter").changed();
         }
     });
     c
@@ -439,7 +439,7 @@ fn events(ui: &mut Ui, es: &mut Vec<EventSpec>, ctx: &EditorCtx) -> Changed {
                             ui.horizontal(|ui| {
                                 ui.label(l).on_hover_text("Box corner in block coordinates (inclusive)");
                                 for x in v.iter_mut() {
-                                    c |= ui.add(DragValue::new(x)).on_hover_text("Block coordinate").changed();
+                                    c |= ui.add(DragValue::new(x).update_while_editing(false)).on_hover_text("Block coordinate").changed();
                                 }
                             });
                         }
@@ -484,7 +484,7 @@ fn composition(ui: &mut Ui, i: usize, r: &mut RendererSpec, run: &crate::plan::R
     use super::graph::{self, Of};
     let params: &[mr_core::ParamSpec] = ctx.infos.iter().find(|x| x.name == r.name).map_or(&[], |x| &x.params);
     let knobs: Vec<_> = params.iter().map(|p| (p.clone(), super::knobs::option_value(p, &r.options))).collect();
-    let edits = graph::summary(ui, &format!("{:?}", Of::Plan(i)), r, &knobs, false, &mut |_, _| {}, ctx.trials, ctx.infos, run);
+    let edits = graph::summary(ui, &format!("{:?}", Of::Plan(i)), r, &knobs, false, None, ctx.trials, ctx.infos, run);
     let (changed, open) = graph::apply_to_plan(r, edits);
     if let Some(sel) = open {
         *ctx.open_graph = Some((i, sel));
@@ -566,71 +566,83 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
 }
 
 fn run(ui: &mut Ui, plan: &mut Plan) -> Changed {
+    use super::knobs::{fit_slider, form_row};
     let r = &mut plan.run;
     let mut c = false;
-    ui.horizontal(|ui| {
-        ui.label("resolution").on_hover_text("Render resolution in pixels (live: before host.render_scale)");
-        c |= ui.add(DragValue::new(&mut r.resolution[0]).range(16..=7680)).on_hover_text("Width").changed();
-        ui.label("×");
-        c |= ui.add(DragValue::new(&mut r.resolution[1]).range(16..=4320)).on_hover_text("Height").changed();
-        ui.menu_button("presets", |ui| {
-            for (w, h) in [(640, 360), (960, 540), (1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)] {
-                if ui.button(format!("{w}×{h}")).on_hover_text(format!("{:.1} megapixels", (w * h) as f64 / 1e6)).clicked() {
-                    r.resolution = [w, h];
-                    c = true;
+    ui.weak("A renderer's reach (load radius, LOD) is its client node's knobs.");
+    egui::Grid::new("run-settings").num_columns(2).spacing([6.0, 2.0]).show(ui, |ui| {
+        c |= form_row(ui, "resolution", "Render resolution in pixels (live: before host.render_scale)", |ui| {
+            let mut c = ui.add(DragValue::new(&mut r.resolution[0]).range(16..=7680).update_while_editing(false)).on_hover_text("Width").changed();
+            ui.label("×");
+            c |= ui.add(DragValue::new(&mut r.resolution[1]).range(16..=4320).update_while_editing(false)).on_hover_text("Height").changed();
+            ui.menu_button("presets", |ui| {
+                for (w, h) in [(640, 360), (960, 540), (1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)] {
+                    if ui.button(format!("{w}×{h}")).on_hover_text(format!("{:.1} megapixels", (w * h) as f64 / 1e6)).clicked() {
+                        r.resolution = [w, h];
+                        c = true;
+                    }
+                }
+            });
+            c
+        });
+        let tip = "Frames a renderer may have queued. More hides latency and raises throughput but adds input lag.";
+        c |= form_row(ui, "frames in flight", tip, |ui| {
+            fit_slider(ui);
+            ui.add(egui::Slider::new(&mut r.in_flight, 1..=8).update_while_editing(false)).on_hover_text(tip).changed()
+        });
+        c |= form_row(ui, "streaming", "How world chunks reach renderers", |ui| {
+            let mut c = false;
+            let mut budget = matches!(r.streaming, Streaming::Budget { .. });
+            if ui.checkbox(&mut budget, "").on_hover_text("Budgeted: send at most N chunks per frame (like a game). Off = load everything in range before each frame.").changed() {
+                r.streaming = if budget { Streaming::Budget { budget: 400 } } else { Streaming::Complete };
+                c = true;
+            }
+            match &mut r.streaming {
+                Streaming::Budget { budget } => c |= ui.add(DragValue::new(budget).range(1..=100000).suffix(" chunks/frame").update_while_editing(false)).on_hover_text("Chunk uploads per frame").changed(),
+                Streaming::Complete => {
+                    ui.weak("complete");
                 }
             }
+            c
         });
-    });
-    c |= ui.add(egui::Slider::new(&mut r.view_radius, 1..=64).text("view radius (chunks)")).on_hover_text("Chunks (32 blocks each) streamed around the camera: view distance vs memory").changed();
-    c |= ui.add(egui::Slider::new(&mut r.in_flight, 1..=8).text("frames in flight")).on_hover_text("Frames a renderer may have queued. More hides latency and raises throughput but adds input lag.").changed();
-    c |= num(ui, "max LOD", &mut r.max_lod, 1.0, "Level-of-detail rings beyond the view radius, for renderers that support LOD (each doubles reach at half resolution)");
-    ui.horizontal(|ui| {
-        ui.label("streaming").on_hover_text("How world chunks reach renderers");
-        let mut budget = matches!(r.streaming, Streaming::Budget { .. });
-        if ui.checkbox(&mut budget, "budgeted").on_hover_text("Send at most N chunks per frame (like a game). Off = load everything in range before each frame.").changed() {
-            r.streaming = if budget { Streaming::Budget { budget: 400 } } else { Streaming::Complete };
-            c = true;
-        }
-        if let Streaming::Budget { budget } = &mut r.streaming {
-            c |= ui.add(DragValue::new(budget).range(1..=100000).suffix(" chunks/frame")).on_hover_text("Chunk uploads per frame").changed();
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label("isolation").on_hover_text("Where renderers run");
-        c |= ui.selectable_value(&mut r.isolation, Isolation::Process, "process").on_hover_text("Each renderer in its own process: crashes can't take others down; memory is measured per renderer").changed();
-        c |= ui.selectable_value(&mut r.isolation, Isolation::Thread, "thread").on_hover_text("In-process threads: faster to start, easier to debug").changed();
-    });
-    ui.horizontal(|ui| {
-        ui.label("compile").on_hover_text("CPU executor pipelines (cpu, cpu-raster, cpu-voxelspace): the generic build, or a pipeline compiled for this machine");
-        c |= ui.selectable_value(&mut r.compile, Compile::Off, "generic").on_hover_text("The precompiled build: every knob live").changed();
-        let tip = "CPU executor pipelines run as pipelines compiled for this CPU with their choices baked in (seconds to build once, cached; checked against the generic build before use; process isolation). The generic build runs meanwhile, then hot-swaps.";
-        c |= ui.add_enabled_ui(r.isolation == Isolation::Process, |ui| ui.selectable_value(&mut r.compile, Compile::Native, "native").on_hover_text(tip).on_disabled_hover_text("Compiled pipelines run in their own process: choose process isolation")).inner.changed();
-        let tip = "As native, built for speed whatever it takes: native, whole-program LTO, profile-guided (trained on a short flight) and both, each timed on this machine, the fastest kept (minutes, once per pipeline and machine). The generic build runs meanwhile, then hot-swaps.";
-        c |= ui.add_enabled_ui(r.isolation == Isolation::Process, |ui| ui.selectable_value(&mut r.compile, Compile::BreakIn, "break-in").on_hover_text(tip).on_disabled_hover_text("Compiled pipelines run in their own process: choose process isolation")).inner.changed();
-    });
-    let mut launcher = r.launcher.join(" ");
-    ui.horizontal(|ui| {
-        ui.label("launcher").on_hover_text("Command prefix for renderer processes, e.g. a profiler or taskset");
-        if ui.add(egui::TextEdit::singleline(&mut launcher).hint_text("e.g. nice -n 5")).on_hover_text("Command prefix for renderer processes, e.g. a profiler or taskset").changed() {
-            r.launcher = launcher.split_whitespace().map(String::from).collect();
-            c = true;
-        }
+        c |= form_row(ui, "isolation", "Where renderers run", |ui| {
+            ui.selectable_value(&mut r.isolation, Isolation::Process, "process").on_hover_text("Each renderer in its own process: crashes can't take others down; memory is measured per renderer").changed()
+                | ui.selectable_value(&mut r.isolation, Isolation::Thread, "thread").on_hover_text("In-process threads: faster to start, easier to debug").changed()
+        });
+        c |= form_row(ui, "compile", "CPU executor pipelines (cpu, cpu-raster, cpu-voxelspace): the generic build, or a pipeline compiled for this machine", |ui| {
+            let mut c = ui.selectable_value(&mut r.compile, Compile::Off, "generic").on_hover_text("The precompiled build: every knob live").changed();
+            let tip = "CPU executor pipelines run as pipelines compiled for this CPU with their choices baked in (seconds to build once, cached; checked against the generic build before use; process isolation). The generic build runs meanwhile, then hot-swaps.";
+            c |= ui.add_enabled_ui(r.isolation == Isolation::Process, |ui| ui.selectable_value(&mut r.compile, Compile::Native, "native").on_hover_text(tip).on_disabled_hover_text("Compiled pipelines run in their own process: choose process isolation")).inner.changed();
+            let tip = "As native, built for speed whatever it takes: native, whole-program LTO, profile-guided (trained on a short flight) and both, each timed on this machine, the fastest kept (minutes, once per pipeline and machine). The generic build runs meanwhile, then hot-swaps.";
+            c |= ui.add_enabled_ui(r.isolation == Isolation::Process, |ui| ui.selectable_value(&mut r.compile, Compile::BreakIn, "break-in").on_hover_text(tip).on_disabled_hover_text("Compiled pipelines run in their own process: choose process isolation")).inner.changed();
+            c
+        });
+        let tip = "Command prefix for renderer processes, e.g. a profiler or taskset";
+        c |= form_row(ui, "launcher", tip, |ui| {
+            let mut launcher = r.launcher.join(" ");
+            let changed = ui.add(egui::TextEdit::singleline(&mut launcher).hint_text("e.g. nice -n 5").desired_width(super::knobs::VALUE_W - 8.0)).on_hover_text(tip).changed();
+            if changed {
+                r.launcher = launcher.split_whitespace().map(String::from).collect();
+            }
+            changed
+        });
     });
     ui.separator();
     ui.weak("Benchmark-only:");
-    c |= num(ui, "frames", &mut r.frames, 10.0, "Frames measured per pass (also the length of the camera path)");
-    c |= num(ui, "warm-up frames", &mut r.warmup, 1.0, "Frames rendered before measuring (shader compilation, caches)");
-    ui.horizontal(|ui| {
-        ui.label("modes").on_hover_text("Render modes benchmarked; each is a separate pass");
+    egui::Grid::new("run-bench").num_columns(2).spacing([6.0, 2.0]).show(ui, |ui| {
+        let tip = "Frames measured per pass (also the length of the camera path)";
+        c |= form_row(ui, "frames", tip, |ui| ui.add(DragValue::new(&mut r.frames).speed(10.0).update_while_editing(false)).on_hover_text(tip).changed());
+        let tip = "Frames rendered before measuring (shader compilation, caches)";
+        c |= form_row(ui, "warm-up frames", tip, |ui| ui.add(DragValue::new(&mut r.warmup).speed(1.0).update_while_editing(false)).on_hover_text(tip).changed());
         for m in [PassMode::UNLIT, PassMode::LIT, PassMode { lighting: mr_core::RenderMode::Unlit, meshes: true }, PassMode { lighting: mr_core::RenderMode::Lit, meshes: true }] {
+            let tip = match (m.lighting, m.meshes) {
+                (mr_core::RenderMode::Lit, false) => "A pass with sun, sky, point lights and shadows",
+                (mr_core::RenderMode::Unlit, false) => "A pass with textures only",
+                (mr_core::RenderMode::Lit, true) => "A lit pass with the scene's meshes (renderers with the `meshes` tag)",
+                (mr_core::RenderMode::Unlit, true) => "An unlit pass with the scene's meshes (renderers with the `meshes` tag)",
+            };
             let mut on = r.modes.contains(&m);
-            if ui.checkbox(&mut on, m.name()).on_hover_text(match (m.lighting, m.meshes) {
-                (mr_core::RenderMode::Lit, false) => "Sun, sky, point lights and shadows",
-                (mr_core::RenderMode::Unlit, false) => "Textures only",
-                (mr_core::RenderMode::Lit, true) => "Lit, with the scene's meshes (renderers with the `meshes` tag)",
-                (mr_core::RenderMode::Unlit, true) => "Unlit, with the scene's meshes (renderers with the `meshes` tag)",
-            }).changed() {
+            if form_row(ui, &format!("mode {}", m.name()), tip, |ui| ui.checkbox(&mut on, "").on_hover_text(tip).changed()) {
                 r.modes.retain(|x| *x != m);
                 if on {
                     r.modes.push(m);
@@ -639,20 +651,29 @@ fn run(ui: &mut Ui, plan: &mut Plan) -> Changed {
                 c = true;
             }
         }
+        c |= form_row(ui, "pacing", "How fast frames are requested", |ui| {
+            let mut c = false;
+            let mut paced = matches!(r.pacing, Pacing::Fps { .. });
+            if ui.checkbox(&mut paced, "").on_hover_text("Fixed fps: request frames at a fixed rate and count missed deadlines. Off = as fast as possible.").changed() {
+                r.pacing = if paced { Pacing::Fps { fps: 60.0 } } else { Pacing::Max };
+                c = true;
+            }
+            match &mut r.pacing {
+                Pacing::Fps { fps } => c |= ui.add(DragValue::new(fps).range(1.0..=10000.0).suffix(" fps").update_while_editing(false)).on_hover_text("Requested frame rate").changed(),
+                Pacing::Max => {
+                    ui.weak("as fast as possible");
+                }
+            }
+            c
+        });
+        let tip = "Run all renderers at once (they share the GPU and CPU, so numbers interfere). Off = one at a time.";
+        c |= form_row(ui, "renderers in parallel", tip, |ui| ui.checkbox(&mut r.parallel, "").on_hover_text(tip).changed());
+        let tip = "GPU clocks drift between runs; repeat passes and report medians and spread";
+        c |= form_row(ui, "repeats (round-robin, median)", tip, |ui| {
+            fit_slider(ui);
+            ui.add(egui::Slider::new(&mut r.repeats, 1..=10).update_while_editing(false)).on_hover_text(tip).changed()
+        });
     });
-    ui.horizontal(|ui| {
-        ui.label("pacing").on_hover_text("How fast frames are requested");
-        let mut paced = matches!(r.pacing, Pacing::Fps { .. });
-        if ui.checkbox(&mut paced, "fixed fps").on_hover_text("Request frames at a fixed rate and count missed deadlines. Off = as fast as possible.").changed() {
-            r.pacing = if paced { Pacing::Fps { fps: 60.0 } } else { Pacing::Max };
-            c = true;
-        }
-        if let Pacing::Fps { fps } = &mut r.pacing {
-            c |= ui.add(DragValue::new(fps).range(1.0..=10000.0)).on_hover_text("Requested frame rate").changed();
-        }
-    });
-    c |= ui.checkbox(&mut r.parallel, "run renderers in parallel").on_hover_text("Run all renderers at once (they share the GPU and CPU, so numbers interfere). Off = one at a time.").changed();
-    c |= ui.add(egui::Slider::new(&mut r.repeats, 1..=10).text("repeats (round-robin, median)")).on_hover_text("GPU clocks drift between runs; repeat passes and report medians and spread").changed();
     c
 }
 

@@ -22,8 +22,8 @@ frames = 600            # measured frames; the camera path spans these
 warmup = 30             # unmeasured frames at the first camera
 resolution = [1920, 1080]
 modes = ["unlit", "lit"]  # also "unlit+meshes", "lit+meshes"
-view_radius = 16        # chunks streamed around the camera
-max_lod = 0             # LOD levels streamed (each covers view_radius chunks at twice the cell size)
+view_radius = 16        # default reach of every client node (its `radius` knob)
+max_lod = 0             # default `max_lod` of every client node (each level covers the radius at twice the cell size)
 in_flight = 2           # frames a renderer may have outstanding
 pacing = "max"          # or { fps = 60 }
 streaming = "complete"  # or { budget = 400 } chunk loads per frame

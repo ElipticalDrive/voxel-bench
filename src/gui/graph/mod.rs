@@ -158,13 +158,20 @@ fn timing_options(n: &mr_components::graph::Node, id: &str, port: &str) -> Vec<(
         .collect()
 }
 
+/// A live lane's host knobs that are its client node's (the loader's reach): shown there,
+/// and in place of the client's own graph knobs of the same meaning, which a lane applies
+/// without a restart through these.
+const CLIENT_HOST: [(&str, &str); 2] = [("host.view_radius", "radius"), ("host.max_lod", "max_lod")];
+
 /// The executor's knobs that belong to node `id` (or, for `None`, to no node), with values.
 fn node_knobs<'a>(g: &Graph, id: Option<&str>, knobs: &'a [(ParamSpec, ParamValue)]) -> Vec<(&'a ParamSpec, ParamValue)> {
+    let client = |s: &ParamSpec| CLIENT_HOST.iter().any(|(h, _)| *h == s.name) && g.nodes.values().any(|n| n.role == Role::Client);
     knobs
         .iter()
         .filter(|(s, _)| !mr_components::Slot::ALL.iter().any(|sl| sl.name() == s.name))
         .filter(|(s, _)| match (&s.owner, id) {
-            (None, None) => true,
+            (None, None) => !client(s),
+            (None, Some(id)) => client(s) && g.nodes[id].role == Role::Client,
             (Some((slot, comps)), Some(id)) => comps.iter().any(|c| model::knob_owner(g, slot, c).as_deref() == Some(id)),
             _ => false,
         })
@@ -172,21 +179,32 @@ fn node_knobs<'a>(g: &Graph, id: Option<&str>, knobs: &'a [(ParamSpec, ParamValu
         .collect()
 }
 
-/// The client's or the link's knobs (graph knobs, run as a hot swap).
-fn world_knob_row(ui: &mut Ui, g: &Graph, id: &str, run: &RunSpec, trial: &mut Trial, infos: &[RendererInfo]) -> Option<RendererSpec> {
-    let n = &g.nodes[id];
-    let specs = model::world_knobs(n.role, &n.component, run);
-    let vals: Vec<(&ParamSpec, ParamValue)> = specs.iter().map(|s| (s, n.knobs.get(&s.name).and_then(|v| serde_json::to_value(v).ok()).and_then(|j| s.from_json(&j)).unwrap_or_else(|| s.default.clone()))).collect();
-    let mut out = None;
-    for (name, v, commit) in knobs::knob_row(ui, &vals, false, &mut |_, _| {}) {
-        if commit {
-            match trial.try_change(&Change::Knob(id.into(), name.clone(), Some(super::param_to_toml(&v))), infos) {
-                Ok((_, s)) => out = Some(s),
+/// Node `id`'s knobs as one grid: the executor's knobs it owns, then (client and link) its
+/// graph knobs, which run as a hot swap. `lock` adds the tuner's column.
+#[allow(clippy::too_many_arguments)]
+fn node_grid<'l>(ui: &mut Ui, salt: &str, g: &Graph, id: Option<&str>, knobs: &[(ParamSpec, ParamValue)], marks: bool, lock: Option<&mut (dyn FnMut(&mut Ui, &ParamSpec) + 'l)>, run: &RunSpec, trial: &mut Trial, infos: &[RendererInfo]) -> Vec<Edit> {
+    let mut vals = node_knobs(g, id, knobs);
+    let own = vals.len();
+    let world = id.map(|id| &g.nodes[id]).map_or(vec![], |n| {
+        let shadowed = |s: &ParamSpec| CLIENT_HOST.iter().any(|(h, k)| *k == s.name && knobs.iter().any(|(x, _)| x.name == *h));
+        model::world_knobs(n.role, &n.component, run).into_iter().filter(|s| n.role != Role::Client || !shadowed(s)).collect()
+    });
+    if let Some(n) = id.map(|id| &g.nodes[id]) {
+        vals.extend(world.iter().map(|s| (s, n.knobs.get(&s.name).and_then(|v| serde_json::to_value(v).ok()).and_then(|j| s.from_json(&j)).unwrap_or_else(|| s.default.clone()))));
+    }
+    let mut edits = vec![];
+    for (i, value, commit) in knobs::knob_grid(ui, (salt, id), &vals, marks, lock) {
+        let name = vals[i].0.name.clone();
+        if i < own {
+            edits.push(Edit::Knob { name, value, commit });
+        } else if commit {
+            match trial.try_change(&Change::Knob(id.unwrap().into(), name.clone(), Some(super::param_to_toml(&value))), infos) {
+                Ok((_, s)) => edits.push(Edit::Spec(s)),
                 Err(e) => tracing::warn!("{name}: {e}"),
             }
         }
     }
-    out
+    edits
 }
 
 /// Where each node runs, as the checked graph resolves it.
@@ -194,19 +212,17 @@ fn devices(g: &Graph) -> HashMap<String, Device> {
     g.check().map(|c| c.devices).unwrap_or_default()
 }
 
-/// The compact form for a side panel: the preset it runs as, then a row per node with its
-/// component and knobs. `marks` labels restart-only knobs; `after` adds a widget after each
-/// knob (the tuner's lock).
-pub fn summary(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamSpec, ParamValue)], marks: bool, after: &mut dyn FnMut(&mut Ui, &ParamSpec), trials: &mut Trials, infos: &[RendererInfo], run: &RunSpec) -> Vec<Edit> {
+/// The compact form for a side panel: the preset it runs as, then per node its component
+/// and its knobs. `marks` labels restart-only knobs; `lock` adds the tuner's lock column.
+#[allow(clippy::too_many_arguments)]
+pub fn summary<'l>(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamSpec, ParamValue)], marks: bool, mut lock: Option<&mut (dyn FnMut(&mut Ui, &ParamSpec) + 'l)>, trials: &mut Trials, infos: &[RendererInfo], run: &RunSpec) -> Vec<Edit> {
     let mut edits = vec![];
     let Some(trial) = trials.get(key, spec) else {
         // A standalone renderer: its knobs only.
         let vals: Vec<(&ParamSpec, ParamValue)> = knobs.iter().map(|(s, v)| (s, v.clone())).collect();
-        ui.horizontal_wrapped(|ui| {
-            for (name, value, commit) in knobs::knob_row(ui, &vals, marks, after) {
-                edits.push(Edit::Knob { name, value, commit });
-            }
-        });
+        for (i, value, commit) in knobs::knob_grid(ui, (key, "knobs"), &vals, marks, lock) {
+            edits.push(Edit::Knob { name: vals[i].0.name.clone(), value, commit });
+        }
         return edits;
     };
     let g = trial.graph().clone();
@@ -216,10 +232,8 @@ pub fn summary(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamSpec,
             edits.push(Edit::Open(None));
         }
         ui.label(RichText::new(format!("runs as {}", spec.name)).strong()).on_hover_text("The preset this graph's shape names (its executor): derived from the graph, not chosen");
-        for (name, value, commit) in knobs::knob_row(ui, &node_knobs(&g, None, knobs), marks, after) {
-            edits.push(Edit::Knob { name, value, commit });
-        }
     });
+    edits.extend(node_grid(ui, key, &g, None, knobs, marks, lock.as_deref_mut(), run, trial, infos));
     for id in model::order(&g) {
         let n = &g.nodes[&id];
         // The world's side when it is not the default, and the post.
@@ -245,15 +259,8 @@ pub fn summary(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamSpec,
             if !fused && !matches!(n.role, Role::Client | Role::Link) {
                 ui.weak(dev);
             }
-            if matches!(n.role, Role::Client | Role::Link) {
-                if let Some(s) = world_knob_row(ui, &g, &id, run, trial, infos) {
-                    edits.push(Edit::Spec(s));
-                }
-            }
-            for (name, value, commit) in knobs::knob_row(ui, &node_knobs(&g, Some(&id), knobs), marks, after) {
-                edits.push(Edit::Knob { name, value, commit });
-            }
         });
+        edits.extend(node_grid(ui, key, &g, Some(&id), knobs, marks, lock.as_deref_mut(), run, trial, infos));
     }
     edits
 }
@@ -391,7 +398,7 @@ fn editor(ui: &mut Ui, win: &mut Window, spec: &RendererSpec, knobs: &[(ParamSpe
     ui.separator();
     let mut made = vec![];
     egui::Panel::right("pipeline-inspector").resizable(true).default_size(310.0).show(ui, |ui| {
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        super::steady_scroll(ui, "inspector", |ui| {
             made.extend(inspector(ui, win, &g, knobs, marks, trial, infos, run));
         });
     });
@@ -424,11 +431,7 @@ fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, Para
         ui.label("Click a node to change its component, device, API, inputs and knobs. Drag from a node's output (right) onto an input (left) to rebind it: green where that runs, red where not (hover for why).");
         ui.add_space(6.0);
         ui.label(RichText::new("Executor knobs").strong()).on_hover_text("Knobs of the executor itself, not of a node");
-        ui.horizontal_wrapped(|ui| {
-            for (name, value, commit) in knobs::knob_row(ui, &node_knobs(g, None, knobs), marks, &mut |_, _| {}) {
-                edits.push(Edit::Knob { name, value, commit });
-            }
-        });
+        edits.extend(node_grid(ui, "inspector", g, None, knobs, marks, None, run, trial, infos));
         ui.add_space(6.0);
         ui.label(RichText::new("Nodes").strong());
         for k in model::order(g) {
@@ -527,16 +530,7 @@ fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, Para
     if !own.is_empty() || world {
         ui.add_space(6.0);
         ui.label(RichText::new("Knobs").strong());
-        ui.horizontal_wrapped(|ui| {
-            for (name, value, commit) in knobs::knob_row(ui, &own, marks, &mut |_, _| {}) {
-                edits.push(Edit::Knob { name, value, commit });
-            }
-            if world {
-                if let Some(s) = world_knob_row(ui, g, &id, run, trial, infos) {
-                    edits.push(Edit::Spec(s));
-                }
-            }
-        });
+        edits.extend(node_grid(ui, "inspector", g, Some(&id), knobs, marks, None, run, trial, infos));
     } else if n.role.slot().is_some() && !g.nodes.iter().any(|(k, m)| *k != id && m.role == n.role && m.component == n.component) {
         // Nothing to show.
     } else if n.role.slot().is_some() {
