@@ -1,0 +1,22 @@
+# scripts/check.py on every push: builds, clippy and tests without warnings, and the Windows
+# cross-checks. No GPU here, so not the end-to-end tests (`check.py gpu`).
+name: check
+on:
+  push:
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: x86_64-pc-windows-gnu, x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - run: python3 scripts/check.py build clippy test windows
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: target/logs/
