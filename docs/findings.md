@@ -100,4 +100,4 @@ for PSNR does the opposite.
 - Mesh shaders, GPU-driven occlusion culling (Hi-Z), and GPU meshing.
 - LOD for the rasterisers and the trees, and LOD that reflects edits.
 - Baked or flood-filled lighting against ray-traced shadows on the quality / speed curve.
-- An HDR output pipeline.
+- HDR: the view and presenter windows take no camera input; F5 closes and reopens them.
