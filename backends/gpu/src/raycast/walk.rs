@@ -27,7 +27,7 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
-use super::{Before, Cast, CastProgram, Passes, Ticket};
+use super::{Before, Cast, CastProgram, Passes, Ticket, View};
 use crate::{Core, CoreSpec, LANE_BINDING};
 
 pub(crate) const BACKEND: &str = "gpu-compute";
@@ -67,8 +67,8 @@ fn params() -> Vec<ParamSpec> {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("traversal", &["incremental"]));
     }
     p.push(ParamSpec::choice("dispatch", "How pixels are run: `compute` (one compute thread per pixel) or `fragment` (a fragment shader over a full-screen triangle; was gpu-frag-dda)", &["compute", "fragment"], "compute", true));
-    p.push(ParamSpec::choice("view", "image: the rendered scene. steps: primary-ray loop iterations per pixel on a colour scale (log; white above view_max)", &["image", "steps"], "image", true));
-    p.push(ParamSpec::int("view_max", "steps view: the top of the colour scale (iterations)", 1, 16384, 256, true));
+    p.push(ParamSpec::choice("view", "image: the rendered scene. steps: primary-ray loop iterations per pixel on a colour scale (log; white above view_max). distance: the primary hit's distance in blocks (linear; white above view_max and for the sky)", &["image", "steps", "distance"], "image", true));
+    p.push(ParamSpec::int("view_max", "steps / distance view: the top of the colour scale (iterations / blocks)", 1, 16384, 256, true));
     p.extend([
         shadows_param(),
         ParamSpec::int("max_steps", "Loop iteration limit per ray (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
@@ -154,8 +154,8 @@ struct Composition {
     prepass: String,
     /// Prepass tile size in pixels (1 = the prepass is skipped).
     tile: u32,
-    /// `view = "steps"`: write iteration counts instead of colour.
-    steps_view: bool,
+    /// A diagnostic view instead of colour.
+    view: View,
     /// LOD chunks are streamed and walked (fixed at creation).
     lod: bool,
     /// `dispatch = "fragment"`: pixels in a fragment shader over a full-screen triangle.
@@ -197,7 +197,7 @@ impl Composition {
             mesh_shadow,
             prepass: require(BACKEND, Slot::Prepass, &opts.prepass)?,
             tile: opts.tile.clamp(1, 64),
-            steps_view: parse_view(&opts.view)?,
+            view: View::parse(&opts.view)?,
             lod: false,
             fragment: parse_dispatch(&opts.dispatch)?,
             meshes: require(BACKEND, Slot::Meshes, &opts.meshes)? != "none",
@@ -252,7 +252,7 @@ impl Composition {
             primary.component,
             self.tile.max(1),
             if meshed { MESH_RECORDS_WGSL } else { "" },
-            if self.steps_view { mr_core::legend::ramp_wgsl() } else { String::new() },
+            if self.view != View::Image { mr_core::legend::ramp_wgsl() } else { String::new() },
             include_str!("walk.wgsl"),
         );
         let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string(), self.walks.kernel_path(0), self.walks.storage_path(primary_storage)];
@@ -268,7 +268,7 @@ impl Composition {
 /// (none; the beam reads level 0); `view = "steps"` a primary walk that counts its steps.
 fn feature_blocker(c: &Composition) -> Option<String> {
     let lod = c.lod.then(|| lod_blocker(c).map(|w| format!("this run streams LOD chunks: {w}"))).flatten();
-    lod.or_else(|| (c.steps_view && !caps::provides(mr_components::Kind::Gpu, Slot::Traversal, &c.primary().component, Cap::Steps)).then(|| format!("view = steps: traversal `{}` lacks steps", c.primary().component)))
+    lod.or_else(|| (c.view == View::Steps && !caps::provides(mr_components::Kind::Gpu, Slot::Traversal, &c.primary().component, Cap::Steps)).then(|| format!("view = steps: traversal `{}` lacks steps", c.primary().component)))
 }
 
 fn lod_blocker(c: &Composition) -> Option<String> {
@@ -282,14 +282,6 @@ fn parse_dispatch(s: &str) -> anyhow::Result<bool> {
         "compute" => Ok(false),
         "fragment" => Ok(true),
         _ => anyhow::bail!("dispatch must be `compute` or `fragment`, got `{s}`"),
-    }
-}
-
-fn parse_view(s: &str) -> anyhow::Result<bool> {
-    match s {
-        "image" => Ok(false),
-        "steps" => Ok(true),
-        _ => anyhow::bail!("view must be `image` or `steps`, got `{s}`"),
     }
 }
 
@@ -403,8 +395,8 @@ impl Cast for Walk {
         self.comp.fragment
     }
 
-    fn inline_only(&self) -> bool {
-        self.comp.steps_view
+    fn view(&self) -> View {
+        self.comp.view
     }
 
     fn entries(&self) -> &'static [&'static str] {
@@ -462,7 +454,12 @@ impl Cast for Walk {
             .chain(core.storages.counters())
             .chain(self.prepass.then(|| ("avg_skip_blocks".to_string(), self.beam.avg_skip)))
             .collect();
-        (counters, self.built.steps_view.then(|| Legend::ramp("loop iterations (primary ray)", self.view_max as f64, true)), Vec::new())
+        let legend = match self.built.view {
+            View::Image => None,
+            View::Steps => Some(Legend::ramp("loop iterations (primary ray)", self.view_max as f64, true)),
+            View::Distance => Some(Legend::ramp("distance to the primary hit (blocks)", self.view_max as f64, false)),
+        };
+        (counters, legend, Vec::new())
     }
 
     fn finish(&mut self, enc: &mut wgpu::CommandEncoder) {
@@ -484,7 +481,7 @@ impl Cast for Walk {
                 "tile" => c.tile = value.as_i64().unwrap_or(8).clamp(1, 64) as u32,
                 "visibility" => drop(require(BACKEND, Slot::Visibility, value.as_str().unwrap_or(""))?),
                 "traversal" => c.walks.kernels[0].component = require(BACKEND, Slot::Traversal, value.as_str().unwrap_or(""))?,
-                _ => c.steps_view = parse_view(value.as_str().unwrap_or(""))?,
+                _ => c.view = View::parse(value.as_str().unwrap_or(""))?,
             }
             match feature_blocker(c) {
                 Some(why) => anyhow::bail!(why),
@@ -634,8 +631,12 @@ mod tests {
                                 // and fragment shaders.
                                 for (deferred, meshed, fragment) in [(false, true, false), (true, true, true), (false, false, true), (true, false, false)] {
                                     let what = format!("{c:?} {shading} deferred {deferred} meshed {meshed} fragment {fragment}");
-                                    let steps = c.steps_view && !deferred;
-                                    super::super::tests::validate(c.program(shading, meshed), deferred, steps, fragment, &what);
+                                    let view = if deferred { View::Image } else { c.view };
+                                    super::super::tests::validate(c.program(shading, meshed), deferred, view, fragment, &what);
+                                    if !deferred {
+                                        let d = Composition { view: View::Distance, ..c.clone() };
+                                        super::super::tests::validate(d.program(shading, meshed), false, View::Distance, fragment, &what);
+                                    }
                                 }
                                 n += 1;
                             }

@@ -106,8 +106,10 @@ values back into the plan.
 ## Diagnostic views
 
 `view` knobs show how much work is done where, like a thermal camera. Numeric views (`steps`
-on gpu-compute and cpu, `overdraw` on gpu-discover) map each pixel's value through one shared
-colour ramp (Turbo), on a scale from 0 to `view_max` (white above it). Category views
+and `distance` on gpu-compute and cpu, `overdraw` on gpu-discover) map each pixel's value through one shared
+colour ramp (Turbo), on a scale from 0 to `view_max` (white above it). `distance` is the
+primary hit's distance in blocks (linear; the sky is white): where the far field starts, how
+deep a scene is, and with a LOD run where the coarse rings begin. Category views
 (gpu-discover `tiles` / `rays` / `churn` / `quads`, cpu-discover `clusters` / `kinds`) use
 fixed colours. The renderer sends a legend with every frame. The viewport draws the legend in
 the lane's corner and, over a numeric view, shows the value under the cursor.

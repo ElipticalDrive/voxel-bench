@@ -299,7 +299,7 @@ mod tests {
                     let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), STORAGE_GROUPS, false);
                     let mut lp = program(&walks, shadow, shadow, shading);
                     lp.program.root(format!("enable wgpu_ray_query;\n{}", crate::accel::wgsl(geometry, RayQuery::RT_FLAGS)));
-                    super::super::tests::validate(lp, deferred, false, false, &format!("{geometry} {shading} {deferred}"));
+                    super::super::tests::validate(lp, deferred, super::super::View::Image, false, &format!("{geometry} {shading} {deferred}"));
                 }
             }
         }

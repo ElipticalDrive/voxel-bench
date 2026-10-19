@@ -66,6 +66,36 @@ struct Before {
     meshed: bool,
 }
 
+/// What a caster's pixels show (`view`): the image, or a diagnostic on the shared colour
+/// scale up to `view_max`, compiled in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum View {
+    Image,
+    /// The primary walk's loop iterations (log scale).
+    Steps,
+    /// The primary hit's distance in blocks (linear; sky above the top).
+    Distance,
+}
+
+impl View {
+    pub(crate) fn parse(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "image" => Ok(View::Image),
+            "steps" => Ok(View::Steps),
+            "distance" => Ok(View::Distance),
+            _ => anyhow::bail!("view must be `image`, `steps` or `distance`, got `{s}`"),
+        }
+    }
+
+    fn define(self) -> Option<&'static str> {
+        match self {
+            View::Image => None,
+            View::Steps => Some("VIEW_STEPS"),
+            View::Distance => Some("VIEW_DISTANCE"),
+        }
+    }
+}
+
 /// How the primary rays are cast: a walk over storages or ray queries over acceleration
 /// structures, with what each keeps.
 trait Cast: Sized {
@@ -93,9 +123,9 @@ trait Cast: Sized {
     fn fragment(&self) -> bool {
         false
     }
-    /// Shading runs inline whatever the placement (the steps view shows the walk itself).
-    fn inline_only(&self) -> bool {
-        false
+    /// What the pixels show; a diagnostic view shades inline whatever the placement.
+    fn view(&self) -> View {
+        View::Image
     }
     /// The caster's own compute entry points in the module (the prepass's).
     fn entries(&self) -> &'static [&'static str] {
@@ -175,10 +205,10 @@ impl Passes {
 
     fn variant<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, meshed: bool, remote: bool) -> anyhow::Result<(Variant, Vec<wgpu::ComputePipeline>)> {
         let dev = &core.gpu.device;
-        let deferred = core.records.is_some() && !cast.inline_only();
+        let deferred = core.records.is_some() && cast.view() == View::Image;
         let mut lp = cast.program(shading, meshed);
         core.trace_root(&mut lp.program, C::RT_FLAGS);
-        let lp = shader(lp, deferred, cast.inline_only(), cast.fragment());
+        let lp = shader(lp, deferred, cast.view(), cast.fragment());
         let deps: Vec<&str> = lp.deps.iter().map(String::as_str).collect();
         let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = mr_gpu::program::compile(dev, "raycast", &lp.program, &lp.root, &deps);
@@ -242,11 +272,11 @@ impl Passes {
 }
 
 /// The whole shader of a caster's program: its root, then `view.wgsl` and `cast.wgsl`
-/// (`steps`: the steps view, `fragment`: the fragment entry points), and when shading is
+/// (`view`: a diagnostic view, `fragment`: the fragment entry points), and when shading is
 /// `deferred` `records.wgsl` and `deferred.wgsl` with the common pass.
-fn shader(mut lp: CastProgram, deferred: bool, steps: bool, fragment: bool) -> CastProgram {
-    if steps {
-        lp.program.define("VIEW_STEPS");
+fn shader(mut lp: CastProgram, deferred: bool, view: View, fragment: bool) -> CastProgram {
+    if let Some(d) = view.define() {
+        lp.program.define(d);
     }
     if fragment {
         lp.program.define("FRAGMENT");
@@ -271,7 +301,7 @@ struct Raycast<C> {
 
 impl<C: Cast> Raycast<C> {
     fn new((core, cast, shading, far): (Core, C, String, Option<Far>)) -> anyhow::Result<(Core, Self)> {
-        anyhow::ensure!(far.is_none() || !cast.inline_only(), "{}: view = steps shades inline, not on the shading's GPU", C::BACKEND);
+        anyhow::ensure!(far.is_none() || cast.view() == View::Image, "{}: a diagnostic view shades inline, not on the shading's GPU", C::BACKEND);
         let passes = Passes::new(&core, &cast, &shading, far.is_some())?;
         Ok((core, Self { passes, cast, far, built_shading: shading.clone(), shading }))
     }
@@ -426,9 +456,9 @@ impl<C: Cast> Lane for Raycast<C> {
 mod tests {
     /// A caster's program as the passes compile it (`shader`), composed and validated (no GPU
     /// needed).
-    pub(crate) fn validate(lp: super::CastProgram, deferred: bool, steps: bool, fragment: bool, what: &str) {
+    pub(crate) fn validate(lp: super::CastProgram, deferred: bool, view: super::View, fragment: bool, what: &str) {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
-        let lp = super::shader(lp, deferred, steps, fragment);
+        let lp = super::shader(lp, deferred, view, fragment);
         let deps: Vec<&str> = lp.deps.iter().map(String::as_str).collect();
         let m = lp.program.naga(&lp.root, &deps).unwrap_or_else(|e| panic!("{what}: {e}"));
         Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));

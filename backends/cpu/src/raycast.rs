@@ -94,8 +94,8 @@ fn params() -> Vec<ParamSpec> {
     p.push(ParamSpec::choice("tile_order", "schedule = tiles: order tiles are handed out in", &["morton", "hilbert", "linear"], "morton", true));
     p.push(ParamSpec::int("tile", "schedule = tiles: tile edge in pixels", 4, 256, 16, true));
     p.push(ParamSpec::bool("perf", "Hardware counters per frame (Linux: perf_event_open; cycles, instructions, cache misses per pixel)", false, true));
-    p.push(ParamSpec::choice("view", "image: the rendered scene. steps: the walk's work per pixel on a colour scale (log; white above view_max): refloor = lockstep iterations of the pixel's packet, incremental = occupancy tests of the pixel's ray", &["image", "steps"], "image", true));
-    p.push(ParamSpec::int("view_max", "steps view: the top of the colour scale", 1, 16384, 256, true));
+    p.push(ParamSpec::choice("view", "image: the rendered scene. steps: the walk's work per pixel on a colour scale (log; white above view_max): refloor = lockstep iterations of the pixel's packet, incremental = occupancy tests of the pixel's ray. distance: the primary hit's distance in blocks (linear; white above view_max and for the sky)", &["image", "steps", "distance"], "image", true));
+    p.push(ParamSpec::int("view_max", "steps / distance view: the top of the colour scale", 1, 16384, 256, true));
     p
 }
 
@@ -141,11 +141,20 @@ pub enum Traversal {
     IncrementalExact,
 }
 
-fn parse_view(s: &str) -> anyhow::Result<bool> {
+/// What the pixels show (`view`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum View {
+    Image,
+    Steps,
+    Distance,
+}
+
+fn parse_view(s: &str) -> anyhow::Result<View> {
     match s {
-        "image" => Ok(false),
-        "steps" => Ok(true),
-        _ => anyhow::bail!("view must be `image` or `steps`, got `{s}`"),
+        "image" => Ok(View::Image),
+        "steps" => Ok(View::Steps),
+        "distance" => Ok(View::Distance),
+        _ => anyhow::bail!("view must be `image`, `steps` or `distance`, got `{s}`"),
     }
 }
 
@@ -336,8 +345,8 @@ pub(crate) struct Raycast<R, S: Spec = Generic> {
     /// pass shades them (empty while inline).
     records: Vec<Record>,
     deferred: bool,
-    /// `view = steps` and the top of its scale.
-    steps_view: bool,
+    /// The view and the top of its scale.
+    view: View,
     view_max: u32,
 }
 
@@ -378,7 +387,7 @@ impl<R: Repr, S: Spec> Raycast<R, S> {
             packet: o.packet.parse().unwrap_or(1),
             isa,
             isa_choice: o.isa,
-            steps_view: parse_view(&o.view)?,
+            view: parse_view(&o.view)?,
             view_max: o.view_max.clamp(1, 16384),
             storage_nodes: g.ids(&[Role::Storage]),
             records: vec![],
@@ -433,8 +442,9 @@ struct Job<'a, R> {
     packet: usize,
     /// Packets as 2D pixel blocks (tiles) instead of runs along a row.
     two_d: bool,
-    /// `view = steps`: pixels show the walk's work on this scale instead of the image.
-    steps: Option<Legend>,
+    /// A diagnostic view: pixels show the walk's work (`View::Steps`) or the hit's
+    /// distance on this scale instead of the image.
+    steps: Option<(Legend, View)>,
     out: OutPtr,
     /// Where deferred rectangles write their records instead of pixels.
     records: RecPtr,
@@ -536,10 +546,11 @@ fn render_rect<R: Repr, S: Spec, const N: usize, const D: bool>(job: &Job<R>, r:
                 // SAFETY: pix < w * h, and each pixel belongs to exactly one rectangle.
                 unsafe { std::ptr::copy_nonoverlapping(px.as_ptr(), job.out.0.add(pix[l] as usize * 4), 4) };
             }
-            if let Some(scale) = &job.steps {
+            if let Some((scale, view)) = &job.steps {
                 for l in 0..N {
                     if pix[l] != u32::MAX {
-                        let [r, g, b] = scale.color(lane_work[l] as f64);
+                        let v = if *view == View::Steps { lane_work[l] as f64 } else { hits[l].as_ref().map_or(f64::INFINITY, |h| h.t as f64) };
+                        let [r, g, b] = scale.color(v);
                         // SAFETY: as above.
                         unsafe { std::ptr::copy_nonoverlapping([r, g, b, 255].as_ptr(), job.out.0.add(pix[l] as usize * 4), 4) };
                     }
@@ -803,16 +814,20 @@ impl<R: Repr, S: Spec> Lane for Raycast<R, S> {
         if self.rects.is_empty() {
             self.rects = rects(w, h, self.tiles, self.tile, self.tile_order);
         }
-        let legend = self.steps_view.then(|| {
-            let quantity = if self.scene.traversal == Traversal::Refloor { "lockstep loop iterations (packet)" } else { "occupancy tests (ray)" };
-            Legend::ramp(quantity, self.view_max as f64, true)
-        });
-        // `view = steps` shows the walk itself, so it runs inline whatever the placement.
+        let legend = match self.view {
+            View::Image => None,
+            View::Steps => {
+                let quantity = if self.scene.traversal == Traversal::Refloor { "lockstep loop iterations (packet)" } else { "occupancy tests (ray)" };
+                Some(Legend::ramp(quantity, self.view_max as f64, true))
+            }
+            View::Distance => Some(Legend::ramp("distance to the primary hit (blocks)", self.view_max as f64, false)),
+        };
+        // A diagnostic view shows the walk itself, so it runs inline whatever the placement.
         let deferred = self.deferred && legend.is_none();
         if deferred {
             self.records.resize((w * h) as usize, Record::SKY);
         }
-        let job = Job { scene, world, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone(), out: OutPtr(pixels.as_mut_ptr()), records: RecPtr(self.records.as_mut_ptr()) };
+        let job = Job { scene, world, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone().map(|l| (l, self.view)), out: OutPtr(pixels.as_mut_ptr()), records: RecPtr(self.records.as_mut_ptr()) };
         let rect_list = &self.rects;
         let cast = Instant::now();
         let rect: fn(Isa, &Job<R>, Rect) -> RowWork = if deferred { render_rect_isa::<R, S, true> } else { render_rect_isa::<R, S, false> };
@@ -876,7 +891,7 @@ impl<R: Repr, S: Spec> Raycast<R, S> {
     fn set(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<bool> {
         match name {
             "perf" => self.perf = perf::allowed(value.as_bool().unwrap_or(false))?,
-            "view" => self.steps_view = parse_view(value.as_str().unwrap_or(""))?,
+            "view" => self.view = parse_view(value.as_str().unwrap_or(""))?,
             "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,
             "skip2" | "skip4" | "skip8" | "skip16" => {
                 let bit = 1 << (name[4..].parse::<u32>()?.trailing_zeros());

@@ -27,8 +27,8 @@ pass (`placement = deferred`). Meshes join through the `composite` meshes node.
 
 `components/src/visibility/mod.rs` (the strategy), executed by the ray-casting lanes of
 `backends/gpu/src/raycast/` (`gpu-compute`, `gpu-rt`) and `backends/cpu/src/raycast.rs`
-(`cpu`). Any storage and kernel can be combined with it. Diagnostic view `steps` shows the
-walk's iterations per pixel.
+(`cpu`). Any storage and kernel can be combined with it. Diagnostic views (`gpu-compute`,
+`cpu`): `steps` shows the walk's iterations per pixel, `distance` the primary hit's distance.
 
 ## Measured
 
