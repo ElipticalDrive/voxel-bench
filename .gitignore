@@ -3,10 +3,6 @@
 .idea/
 /.agent/
 /CLAUDE.local.md
-PLAN.md
-IDEAS.md
+/notes/
 __pycache__/
-LOG.md
-/archive/
-TODO.md
 /plans/untitled.toml
