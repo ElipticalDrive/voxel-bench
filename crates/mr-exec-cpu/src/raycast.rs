@@ -1104,24 +1104,11 @@ mod nodes {
                 _ => continue,
             };
             let mut ins = vec![];
-            reads(g, id, &index, &mut ins);
+            exec::reads(g, id, &index, &mut ins);
             index.insert(id.to_string(), passes.len());
             passes.push(Pass { node, ins });
         }
         let world = crate::world::<P>(p, g, parts.shadows)?;
         Ok(Box::new(exec::Executor::<P>::new(p, parts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))
-    }
-
-    /// The passes node `id`'s inputs reach, in port order: a pass directly, through fused
-    /// nodes (kernels) the passes they read.
-    fn reads(g: &Checked, id: &str, index: &HashMap<String, usize>, out: &mut Vec<usize>) {
-        for from in g.node(id).inputs.values() {
-            match index.get(from) {
-                Some(&i) if !out.contains(&i) => out.push(i),
-                Some(_) => {}
-                None if g.graph.nodes.contains_key(from) => reads(g, from, index, out),
-                None => {}
-            }
-        }
     }
 }

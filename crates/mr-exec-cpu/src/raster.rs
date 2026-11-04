@@ -476,7 +476,7 @@ impl<P: Pixel> Lane for CpuRaster<P> {
     type Px = P;
 
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        for p in self.chunks.apply(updates) {
+        for p in self.chunks.apply(&updates) {
             self.dirty.insert(p);
             for f in Face::ALL {
                 let nb = p + f.normal();

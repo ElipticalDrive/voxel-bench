@@ -1,16 +1,19 @@
-//! The CPU columns lane (`cpu-voxelspace`; components): storage
-//! `heightmap`, visibility `columns`, shading `direct`. The march is the columns component's
-//! (`mr_components::visibility::columns::cpu`), rayon-parallel over screen columns. Lit
-//! mode: the shading component (`direct::cpu::shade`) with the heightmap gradient as the top
-//! faces' normal; ambient, sun and point lights, shadow rays walking the heightmap storage
-//! (`Heightmap::trace`), as gpu-voxelspace. Shading placement: inline in the
-//! march, or deferred (the march writes hit records, the common pass `shading::deferred`
-//! shades them). The heightmap is patched from the change log.
+//! The CPU columns pipeline (`cpu-voxelspace`; components) as nodes of the generic
+//! executor ([`crate::exec`]): storage `heightmap`, visibility `columns`, shading `direct`.
+//! The march is the columns component's (`mr_components::visibility::columns::cpu`),
+//! rayon-parallel over screen columns. Lit mode: the shading component (`direct::cpu::shade`)
+//! with the heightmap gradient as the top faces' normal; ambient, sun and point lights,
+//! shadow rays walking the heightmap storage (`Heightmap::trace`), as gpu-voxelspace. Shading
+//! placement: inline in the march (one fused pass), or deferred (the march writes hit
+//! records, the common pass `shading::deferred` shades them). The heightmap is patched from
+//! the change log.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
-use mr_reference::{Chunks, Pool, Shadows, World};
+use mr_reference::{Chunks, Shadows, World};
 use glam::{IVec3, Vec3};
+use mr_components::graph::{Checked, Role};
 use mr_components::shading::direct::cpu::{Ctx, Surface, shade};
 use mr_components::storage::heightmap::Heightmap;
 use mr_components::visibility::columns::cpu::{Deferred, Inline, March, Records};
@@ -18,7 +21,8 @@ use mr_components::visibility::record::Record;
 use mr_core::*;
 use rayon::prelude::*;
 
-use crate::{Core, Frame, Lane, Pixel, Spec, fixed};
+use crate::exec::{self, Cx, Node, Pass, Report, Res};
+use crate::{Pixel, Spec, fixed};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -36,18 +40,6 @@ pub(crate) fn info() -> RendererInfo {
             ParamSpec::choice("shadows", "Shadow rays in lit mode (walking the heightmap)", &["none", "sun", "all"], "all", true).of("shading", &["direct"]),
         ],
     }
-}
-
-pub(crate) struct CpuColumns<S, P> {
-    spec: std::marker::PhantomData<S>,
-    /// The heightmap storage.
-    hm: Heightmap,
-    /// `placement = deferred`: the march writes records (`recs`, column-major), the common
-    /// deferred pass shades them into `pixels`; inline, it shades into `cols`, transposed.
-    deferred: bool,
-    recs: Vec<Record>,
-    chunks: Chunks,
-    cols: Vec<P>,
 }
 
 #[derive(serde::Deserialize)]
@@ -69,111 +61,190 @@ impl Default for Options {
 
 pub(crate) const BACKEND: &str = "cpu-voxelspace";
 
-impl<S: Spec, P: Pixel> CpuColumns<S, P> {
-    pub(crate) fn new(p: &InitParams, g: &mr_components::graph::Checked) -> anyhow::Result<(Core<P>, Self)> {
-        let opts: Options = p.options()?;
-        use mr_components::{Slot, require};
-        for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
-            require(BACKEND, slot, name)?;
-        }
-        let deferred = mr_components::parse_placement(&opts.placement)?;
-        fixed("tone", S::TONE, g.tone())?;
-        let lane = Self {
-            spec: std::marker::PhantomData,
-            hm: Heightmap::new(p.view_radius_chunks),
-            deferred,
-            recs: if deferred { vec![Record::SKY; (p.width * p.height) as usize] } else { Vec::new() },
-            chunks: Chunks::default(),
-            cols: if deferred { Vec::new() } else { vec![P::zeroed(); (p.width * p.height) as usize] },
+/// The storage's output: the heightmap and the chunks it is patched from.
+struct Field {
+    hm: Heightmap,
+    chunks: Chunks,
+}
+
+fn field(r: &Res) -> &Field {
+    r.downcast_ref().expect("a heightmap")
+}
+
+impl Field {
+    /// The march of this frame's `w` x `h` image.
+    fn march<'a>(&'a self, req: &FrameRequest, w: u32, h: u32) -> March<'a> {
+        March::new(&self.hm, &req.camera, w as usize, h as usize, self.hm.march_cells() as usize)
+    }
+
+    /// The shading component for this frame, its shadow rays walking the heightmap.
+    fn shader<'a, S: Spec, P: Pixel>(&'a self, world: &'a World, req: &FrameRequest) -> impl Fn(&Surface) -> P + Sync + 'a {
+        let (hm, cam) = (&self.hm, req.camera.split_position().0);
+        let shadows = S::SHADOWS.unwrap_or(world.shadows);
+        let ctx = Ctx {
+            blocks: &world.blocks,
+            env: &world.env,
+            cam,
+            sun_shadows: shadows != Shadows::None,
+            light_shadows: shadows == Shadows::All,
+            lights_near: move |at: IVec3| world.lights_near(at),
+            occluded: move |p: Vec3, d: Vec3, dist: f32| hm.trace(cam, p, d, dist).is_some(),
+            tone: S::TONE.unwrap_or(world.tone),
         };
-        Ok((Core::new(p, g, opts.threads, opts.shadows)?, lane))
+        let mode = req.mode;
+        move |s: &Surface| shade(&ctx, s, mode)
     }
 }
 
-impl<S: Spec, P: Pixel> Lane for CpuColumns<S, P> {
-    type Px = P;
+/// The heightmap storage.
+struct Storage {
+    /// The heightmap before the first frame (taken by [`Node::output`]).
+    init: Option<Field>,
+}
 
-    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        let changed = self.chunks.apply(updates);
-        let scene = &self.chunks;
-        self.hm.apply(changed, |pos| scene.chunk(pos));
+impl Node for Storage {
+    fn output(&mut self, _: u32, _: u32) -> Res {
+        Box::new(self.init.take().expect("one output per storage"))
+    }
+    fn update(&mut self, out: &mut Res, updates: &[WorldUpdate]) -> anyhow::Result<()> {
+        let f = out.downcast_mut::<Field>().expect("a heightmap");
+        let changed = f.chunks.apply(updates);
+        let chunks = &f.chunks;
+        f.hm.apply(changed, |pos| chunks.chunk(pos));
         Ok(())
     }
+    fn run(&mut self, _: &Cx, _: &[&Res], out: &mut Res, report: &mut Report) {
+        let f = out.downcast_mut::<Field>().expect("a heightmap");
+        f.chunks.prepare();
+        report.counters.extend(f.hm.counters());
+    }
+    fn memory(&self, out: &Res) -> u64 {
+        let f = field(out);
+        f.chunks.dense_bytes() + f.hm.hm.len() as u64 * 4
+    }
+}
 
-    fn render(&mut self, frame: &mut Frame<P>, _: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
+/// The march; `fused`: shading inline, its output the image (marched column-major into
+/// `cols`, transposed), else the column-major hit records.
+struct Visibility<S, P> {
+    fused: bool,
+    cols: Vec<P>,
+    nodes: Vec<String>,
+    spec: std::marker::PhantomData<S>,
+}
+
+impl<S: Spec, P: Pixel> Node for Visibility<S, P> {
+    fn output(&mut self, w: u32, h: u32) -> Res {
+        if self.fused { exec::image::<P>(w, h) } else { Box::new(vec![Record::SKY; (w * h) as usize]) }
+    }
+    fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
         let start = Instant::now();
-        self.chunks.prepare();
-        let (w, h) = (frame.width as usize, frame.height as usize);
-        let cam = &req.camera;
-        let cam_block = cam.split_position().0;
-        let (hm, scene) = (&self.hm, world);
-        let lit = req.mode == RenderMode::Lit;
-        let sky: P = scene.sky();
-        let m = March::new(hm, cam, w, h, hm.march_cells() as usize);
-        // Shadow rays walk the heightmap.
-        let shadows = S::SHADOWS.unwrap_or(scene.shadows);
-        let ctx = Ctx {
-            blocks: &scene.blocks,
-            env: &scene.env,
-            cam: cam_block,
-            sun_shadows: shadows != Shadows::None,
-            light_shadows: shadows == Shadows::All,
-            lights_near: |world: IVec3| scene.lights_near(world),
-            occluded: |p: Vec3, d: Vec3, dist: f32| hm.trace(cam_block, p, d, dist).is_some(),
-            tone: S::TONE.unwrap_or(scene.tone),
-        };
-        let shade_s = |s: &Surface| -> P { shade(&ctx, s, req.mode) };
-        let (t_march, stages) = if self.deferred {
-            // The march writes column-major records (one contiguous column per task); the
-            // common pass reads them across and writes rows, so no transpose remains.
-            let recs = &mut self.recs;
+        let f = field(ins[0]);
+        let (w, h) = (cx.width as usize, cx.height as usize);
+        let m = f.march(cx.req, cx.width, cx.height);
+        if !self.fused {
+            // One contiguous column per task; the deferred pass reads them across and writes
+            // rows, so no transpose remains.
+            let recs = out.downcast_mut::<Vec<Record>>().expect("hit records");
             recs.par_chunks_mut(h).enumerate().for_each(|(gx, col)| m.column(gx, &mut Records { col }));
-            let t_march = start.elapsed().as_secs_f64() * 1e3;
-            let deferred = Deferred { recs, m: &m, shade: &shade_s, lit, sky };
-            mr_components::shading::deferred::shade(&deferred, w as u32, &mut frame.pixels);
-            let t_shade = start.elapsed().as_secs_f64() * 1e3 - t_march;
-            (t_march, vec![StageTime::cpu("columns", &frame.stage_nodes[1], t_march as f32), StageTime::cpu("shade", &frame.stage_nodes[2], t_shade as f32)])
-        } else {
-            // Column-major output (one contiguous column per task), transposed afterwards.
-            self.cols.par_chunks_mut(h).enumerate().for_each(|(gx, col)| m.column(gx, &mut Inline::new(col, &m, &shade_s, lit, sky)));
-            let t_march = start.elapsed().as_secs_f64() * 1e3;
-            let cols = &self.cols;
-            frame.pixels.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
-                for (x, px) in row.iter_mut().enumerate() {
-                    *px = cols[x * h + y];
-                }
-            });
-            let t_transpose = start.elapsed().as_secs_f64() * 1e3 - t_march;
-            // The transpose is the executor's (column-major to rows), no node's.
-            (t_march, vec![StageTime::cpu("columns+shade", &frame.stage_nodes[0], t_march as f32), StageTime::cpu("transpose", &[], t_transpose as f32)])
+            let t = start.elapsed().as_secs_f32() * 1e3;
+            report.stages.push(StageTime::cpu("columns", &self.nodes, t));
+            report.counters.push(("march_ms".into(), t as f64));
+            return;
+        }
+        let (lit, sky) = (cx.req.mode == RenderMode::Lit, cx.world.sky::<P>());
+        let shade_s = f.shader::<S, P>(cx.world, cx.req);
+        self.cols.resize(w * h, P::zeroed());
+        self.cols.par_chunks_mut(h).enumerate().for_each(|(gx, col)| m.column(gx, &mut Inline::new(col, &m, &shade_s, lit, sky)));
+        let t_march = start.elapsed().as_secs_f64() * 1e3;
+        let (cols, pixels) = (&self.cols, out.downcast_mut::<Vec<P>>().expect("an image"));
+        pixels.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            for (x, px) in row.iter_mut().enumerate() {
+                *px = cols[x * h + y];
+            }
+        });
+        let t_transpose = start.elapsed().as_secs_f64() * 1e3 - t_march;
+        // The transpose is the executor's (column-major to rows), no node's.
+        report.stages.extend([StageTime::cpu("columns+shade", &self.nodes, t_march as f32), StageTime::cpu("transpose", &[], t_transpose as f32)]);
+        report.counters.extend([("march_ms".into(), t_march), ("transpose_ms".into(), t_transpose)]);
+    }
+    fn resize(&mut self, out: &mut Res, w: u32, h: u32) {
+        *out = self.output(w, h);
+    }
+    fn memory(&self, out: &Res) -> u64 {
+        (std::mem::size_of_val(&self.cols[..]) + out.downcast_ref::<Vec<Record>>().map_or(0, |r| std::mem::size_of_val(&r[..]))) as u64
+    }
+}
+
+/// The common deferred pass over the hit records; shadow rays walk the heightmap.
+struct Shading<S, P> {
+    nodes: Vec<String>,
+    spec: std::marker::PhantomData<(S, P)>,
+}
+
+impl<S: Spec, P: Pixel> Node for Shading<S, P> {
+    fn output(&mut self, w: u32, h: u32) -> Res {
+        exec::image::<P>(w, h)
+    }
+    fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
+        let start = Instant::now();
+        let (recs, f) = (ins[0].downcast_ref::<Vec<Record>>().expect("hit records"), field(ins[1]));
+        let m = f.march(cx.req, cx.width, cx.height);
+        let shade_s = f.shader::<S, P>(cx.world, cx.req);
+        let deferred = Deferred { recs, m: &m, shade: &shade_s, lit: cx.req.mode == RenderMode::Lit, sky: cx.world.sky() };
+        mr_components::shading::deferred::shade(&deferred, cx.width, out.downcast_mut::<Vec<P>>().expect("an image"));
+        let t = start.elapsed().as_secs_f32() * 1e3;
+        report.stages.push(StageTime::cpu("shade", &self.nodes, t));
+        report.counters.push(("shade_ms".into(), t as f64));
+    }
+    fn resize(&mut self, out: &mut Res, w: u32, h: u32) {
+        *out = exec::image::<P>(w, h);
+    }
+}
+
+/// The executor for graph `g`: one pass per scheduled storage, visibility and shading node;
+/// `S` what a compiled pipeline baked in.
+pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    let opts: Options = p.options()?;
+    use mr_components::{Slot, require};
+    for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
+        require(BACKEND, slot, name)?;
+    }
+    let deferred = mr_components::parse_placement(&opts.placement)?;
+    fixed("tone", S::TONE, g.tone())?;
+    let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
+    let mut init = Some(Field { hm: Heightmap::new(p.view_radius_chunks), chunks: Chunks::default() });
+    let (mut passes, mut index): (Vec<Pass>, HashMap<String, usize>) = (vec![], HashMap::new());
+    let mut storage = None;
+    for pass in schedule.passes() {
+        let id = pass.node.as_str();
+        let mut ins = vec![];
+        let node: Box<dyn Node> = match g.node(id).role {
+            Role::Storage => {
+                storage = Some(passes.len());
+                Box::new(Storage { init: init.take() })
+            }
+            Role::Visibility => {
+                let nodes = if deferred { vec![id.to_string()] } else { g.ids(&[Role::Visibility, Role::Shading]) };
+                Box::new(Visibility::<S, P> { fused: !deferred, cols: vec![], nodes, spec: std::marker::PhantomData })
+            }
+            // Fused into the visibility pass.
+            Role::Shading if !deferred => continue,
+            Role::Shading => {
+                // Its shadow rays walk the heightmap, which the graph leaves implicit (no
+                // shadow input): read the storage's pass too.
+                exec::reads(g, id, &index, &mut ins);
+                ins.extend(storage);
+                Box::new(Shading::<S, P> { nodes: vec![id.to_string()], spec: std::marker::PhantomData })
+            }
+            _ => continue,
         };
-        let total = start.elapsed().as_secs_f64() * 1e3;
-        FrameStats {
-            cpu_ms: total as f32,
-            gpu_ms: None,
-            legend: None,
-            counters: self.hm.counters().into_iter().chain([
-                ("march_ms".into(), t_march),
-                (if self.deferred { "shade_ms" } else { "transpose_ms" }.into(), total - t_march),
-            ]).collect(),
-            stages,
+        if ins.is_empty() {
+            exec::reads(g, id, &index, &mut ins);
         }
+        index.insert(id.to_string(), passes.len());
+        passes.push(Pass { node, ins });
     }
-
-    fn set_param(&mut self, _: &str, _: &ParamValue) -> Option<anyhow::Result<()>> {
-        None
-    }
-
-    fn resize(&mut self, frame: &Frame<P>) {
-        let n = (frame.width * frame.height) as usize;
-        if self.deferred {
-            self.recs = vec![Record::SKY; n];
-        } else {
-            self.cols = vec![P::zeroed(); n];
-        }
-    }
-
-    fn memory(&self) -> u64 {
-        self.chunks.dense_bytes() + (std::mem::size_of_val(&self.cols[..]) + self.recs.len() * 8 + self.hm.hm.len() * 4) as u64
-    }
+    let world = crate::world::<P>(p, g, opts.shadows)?;
+    Ok(Box::new(exec::Executor::<P>::new(p, opts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))
 }

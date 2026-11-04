@@ -5,11 +5,14 @@
 //! read it). Dispatch is per pass (a few virtual calls and downcasts per frame); all
 //! per-ray and per-pixel work happens inside a node, monomorphised as before.
 //!
-//! Being migrated to: ray casting runs here; the other lanes ([`crate::Lane`]) are the old
-//! path, kept until their nodes match them in pixels and speed.
+//! Being migrated to: ray casting and columns run here; rasterisation's lane
+//! ([`crate::Lane`]) is the old path, kept until its nodes match it in pixels and speed.
 
 use std::any::Any;
 
+use std::collections::HashMap;
+
+use mr_components::graph::Checked;
 use mr_reference::{Pool, World};
 use mr_core::*;
 
@@ -173,4 +176,17 @@ impl<P: Pixel> Renderer for Executor<P> {
 /// The image resource of a `width` x `height` frame.
 pub(crate) fn image<P: Pixel>(width: u32, height: u32) -> Res {
     Box::new(vec![P::zeroed(); (width * height) as usize])
+}
+
+/// The passes node `id`'s inputs reach, in port order: a pass directly, through fused
+/// nodes (kernels) the passes they read.
+pub(crate) fn reads(g: &Checked, id: &str, index: &HashMap<String, usize>, out: &mut Vec<usize>) {
+    for from in g.node(id).inputs.values() {
+        match index.get(from) {
+            Some(&i) if !out.contains(&i) => out.push(i),
+            Some(_) => {}
+            None if g.graph.nodes.contains_key(from) => reads(g, from, index, out),
+            None => {}
+        }
+    }
 }

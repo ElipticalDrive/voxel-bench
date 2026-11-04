@@ -261,7 +261,7 @@ impl Chunks {
 
     /// Applies the chunk updates (the world's others are ignored: [`World::apply`]); returns
     /// the LOD-0 chunk positions whose contents changed.
-    pub fn apply(&mut self, updates: Vec<WorldUpdate>) -> Vec<IVec3> {
+    pub fn apply(&mut self, updates: &[WorldUpdate]) -> Vec<IVec3> {
         let mut changed = vec![];
         for u in updates {
             match u {
@@ -269,7 +269,7 @@ impl Chunks {
                     if data.is_air() {
                         self.chunks.remove(&key.pos);
                     } else {
-                        self.chunks.insert(key.pos, data);
+                        self.chunks.insert(key.pos, data.clone());
                     }
                     self.bounds_dirty = true;
                     changed.push(key.pos);
@@ -484,7 +484,7 @@ fn min_axis(t: DVec3) -> usize {
 impl Renderer for CpuReference {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let rest = self.world.apply(updates);
-        self.chunks.apply(rest);
+        self.chunks.apply(&rest);
         Ok(())
     }
 

@@ -1,16 +1,16 @@
-//! The CPU executor: every pipeline whose image is made on the CPU. Ray casting runs on the
-//! generic node executor ([`exec`]); the rest is one executor over one core with a lane per
-//! kind of visibility node (being moved to nodes):
+//! The CPU executor: every pipeline whose image is made on the CPU. Ray casting and columns
+//! run on the generic node executor ([`exec`]); rasterisation is still one executor over
+//! one core with a lane (being moved to nodes):
 //! - ray casting ([`raycast`]): one primary ray per pixel walked over a storage, monomorphised
 //!   per storage (`cpu`);
 //! - rasterisation ([`raster`]): meshed quads drawn into a visibility buffer (`cpu-raster`);
 //! - columns ([`columns`]): the Voxel Space heightmap march (`cpu-voxelspace`).
 //!
-//! Which lane runs is the graph's: rasterisation when a drawer draws faces, else by the
-//! visibility node's component. The rest is shared ([`Core`]): the thread pool every frame
+//! Which runs is the graph's: rasterisation when a drawer draws faces, else by the
+//! visibility node's component. The lane's core ([`Core`]): the thread pool every frame
 //! runs in (the `threads` knob), the world (`mr_reference::World`: blocks, environment,
-//! lights, the `shadows` knob), the output image, its size and the timed
-//! stages' nodes. The chunks are each lane's representation (its storage).
+//! lights, the `shadows` knob), the output image and its size. The chunks are each
+//! pipeline's representation (its storage).
 //!
 //! Every lane is also compiled on demand for one graph (the host's
 //! `pipelines` generates a crate naming the lane, its storage type, its pixel and a [`Spec`]):
@@ -102,9 +102,15 @@ pub fn raster_entry<S: Spec, P: Pixel>() -> RendererEntry {
     RendererEntry { info: raster::info, create: |p, _, _| compiled::<S, _>(&p, raster::info, raster::CpuRaster::<P>::new(&p, &graph::of_init(raster::BACKEND, &p)?)) }
 }
 
-/// The columns lane compiled for one graph.
+/// The columns pipeline compiled for one graph.
 pub fn columns_entry<S: Spec, P: Pixel>() -> RendererEntry {
-    RendererEntry { info: columns::info, create: |p, _, _| compiled::<S, _>(&p, columns::info, columns::CpuColumns::<S, P>::new(&p, &graph::of_init(columns::BACKEND, &p)?)) }
+    RendererEntry {
+        info: columns::info,
+        create: |p, _, _| {
+            mr_core::baked::check(S::KNOBS, &p, columns::info)?;
+            columns::executor::<S, P>(&p, &graph::of_init(columns::BACKEND, &p)?)
+        },
+    }
 }
 
 fn compiled<S: Spec, L: Lane + 'static>(p: &InitParams, info: fn() -> RendererInfo, lane: anyhow::Result<(Core<L::Px>, L)>) -> anyhow::Result<Box<dyn Renderer>> {
@@ -129,7 +135,7 @@ fn create_as<P: Pixel>(backend: &str, p: &InitParams, g: &graph::Checked) -> any
     }
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{backend}: no visibility node"))?;
     match g.node(vis).component.as_str() {
-        "columns" => run(columns::CpuColumns::<Generic, P>::new(p, g)?),
+        "columns" => columns::executor::<Generic, P>(p, g),
         _ => raycast::create::<P>(p, g),
     }
 }
@@ -146,14 +152,11 @@ pub(crate) struct Core<P> {
     frame: Frame<P>,
 }
 
-/// The output image and what frames are timed by.
+/// The output image.
 pub(crate) struct Frame<P> {
     pixels: Vec<P>,
     width: u32,
     height: u32,
-    /// The nodes of the timed stages: visibility with shading, visibility,
-    /// shading.
-    stage_nodes: [Vec<String>; 3],
 }
 
 impl<P: Pixel> Core<P> {
@@ -166,7 +169,6 @@ impl<P: Pixel> Core<P> {
                 pixels: vec![P::zeroed(); (p.width * p.height) as usize],
                 width: p.width,
                 height: p.height,
-                stage_nodes: [g.ids(&[Role::Visibility, Role::Shading]), g.ids(&[Role::Visibility]), g.ids(&[Role::Shading])],
             },
         })
     }
