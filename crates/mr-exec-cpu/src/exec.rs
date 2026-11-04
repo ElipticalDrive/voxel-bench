@@ -4,9 +4,6 @@
 //! resource the executor owns, one per producing pass (its output; any number of consumers
 //! read it). Dispatch is per pass (a few virtual calls and downcasts per frame); all
 //! per-ray and per-pixel work happens inside a node, monomorphised as before.
-//!
-//! Being migrated to: ray casting and columns run here; rasterisation's lane
-//! ([`crate::Lane`]) is the old path, kept until its nodes match it in pixels and speed.
 
 use std::any::Any;
 

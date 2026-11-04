@@ -200,7 +200,12 @@ executor walks the graph's schedule, each pass a node with an *output* resource 
 owns (dispatch per pass only); the lane runs as storage → visibility → shading nodes, the hit
 records the edge between them, `placement = inline` fusing visibility and shading. It is the
 only CPU ray-casting path, compiled pipelines included (the lane is gone); pixels were
-identical to the lane's and speed within noise.
+identical to the lane's and speed within noise. Step 3 is done for the CPU: columns run as
+storage → visibility → shading and rasterisation as geometry → visibility → draw → shading
+nodes, so every CPU pipeline runs on the generic executor and the CPU lane interface is
+gone. Two edges the graph leaves implicit are added by hand for now: columns' shading reads
+the heightmap storage (its shadow rays), rasterisation's draw and shading read the geometry
+(the quad behind an id).
 
 ## Non-goals
 
