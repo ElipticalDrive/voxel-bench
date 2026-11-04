@@ -1,7 +1,7 @@
 # Roadmap
 
-Ideas for the bench itself, none built or tried yet. Ideas about rendering techniques are
-entries of the [encyclopedia](docs/schemes/README.md); the design already built is in
+Ideas for the bench itself, none built or tried yet. Rendering techniques are covered by
+the encyclopedia [Onkographos](https://github.com/ElipticalDrive/onkographos); the design already built is in
 [docs/design.md](docs/design.md).
 
 ## A planner that learns the machine

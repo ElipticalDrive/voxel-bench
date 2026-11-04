@@ -2,7 +2,7 @@
 
 The requirements behind the bench's architecture, how each is met, and what it measured.
 How to use the pieces is in [pipelines.md](pipelines.md) and [architecture.md](architecture.md);
-the rendering techniques themselves are in the [encyclopedia](schemes/README.md); ideas for the
+the rendering techniques themselves are in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/onkographos); ideas for the
 bench not built yet are in [ROADMAP.md](../ROADMAP.md).
 
 ## Pipelines are graphs
@@ -88,9 +88,7 @@ its kernel) never crosses devices; any other edge may, through a transfer adapte
 upload). Devices are handed to components; no component opens one.
 
 Code: `components/src/impls.rs`, `backends/gpu/src/remote.rs` (the split over two GPUs);
-`plans/two-gpus.toml`. Measured: see
-[deferred shading](schemes/shading/deferred-shading.md) (ray casting on an RTX 5060, shading
-on a Radeon iGPU a frame behind).
+`plans/two-gpus.toml` (ray casting on an RTX 5060, shading on a Radeon iGPU a frame behind).
 
 ## Pipelines compiled on demand
 

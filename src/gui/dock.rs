@@ -20,14 +20,13 @@ pub(super) enum Pane {
     Metrics,
     Compare,
     Benchmark,
-    Schemes,
     Keys,
     Log,
     Pipeline,
 }
 
 impl Pane {
-    const ALL: [Pane; 9] = [Pane::Form, Pane::Toml, Pane::Metrics, Pane::Compare, Pane::Benchmark, Pane::Schemes, Pane::Keys, Pane::Log, Pane::Pipeline];
+    const ALL: [Pane; 8] = [Pane::Form, Pane::Toml, Pane::Metrics, Pane::Compare, Pane::Benchmark, Pane::Keys, Pane::Log, Pane::Pipeline];
 
     fn title(self) -> &'static str {
         match self {
@@ -36,7 +35,6 @@ impl Pane {
             Pane::Metrics => "📈 Metrics",
             Pane::Compare => "⚖ Compare",
             Pane::Benchmark => "⏱ Benchmark",
-            Pane::Schemes => "📖 Schemes",
             Pane::Keys => "❓ Keys",
             Pane::Log => "📜 Log",
             Pane::Pipeline => "✏ Pipeline",
@@ -50,7 +48,6 @@ impl Pane {
             Pane::Metrics => "Live statistics, knobs and auto-tuners per renderer",
             Pane::Compare => "Image comparison of the current view against the reference (C)",
             Pane::Benchmark => "Results of the last benchmark run",
-            Pane::Schemes => "The encyclopedia: every rendering scheme and idea (docs/schemes), with what was measured",
             Pane::Keys => "Key bindings (H)",
             Pane::Log => "The live session's log",
             Pane::Pipeline => "The pipeline editor: a renderer's graph (✏ graph on a renderer opens it)",
@@ -124,7 +121,7 @@ impl Default for Docks {
         let dock = |panes: &[Pane]| Dock { panes: panes.to_vec(), active: 0, collapsed: false, size: None };
         Self {
             left: dock(&[Pane::Form, Pane::Toml]),
-            right: dock(&[Pane::Metrics, Pane::Compare, Pane::Benchmark, Pane::Schemes, Pane::Keys]),
+            right: dock(&[Pane::Metrics, Pane::Compare, Pane::Benchmark, Pane::Keys]),
             bottom: dock(&[Pane::Log]),
             windows: vec![Torn { pane: Pane::Pipeline, back: Side::Bottom }],
             middle: None,
@@ -278,7 +275,7 @@ impl Docks {
             return Self::default();
         }
         let text = Self::file().and_then(|f| std::fs::read_to_string(f).ok());
-        let stored = text.and_then(|t| toml::from_str::<Docks>(&t).ok());
+        let stored = text.and_then(|t| toml::from_str::<toml::Table>(&t).ok()).and_then(|t| known(t).try_into::<Docks>().ok());
         stored.map(|d| Docks { saved: true, ..d.repaired() }).unwrap_or_default()
     }
 
@@ -533,7 +530,6 @@ impl App {
             Pane::Metrics => steady_scroll(ui, "metrics", |ui| self.metrics(ui)),
             Pane::Compare => steady_scroll(ui, "compare", |ui| self.compare(ui)),
             Pane::Benchmark => steady_scroll(ui, "benchmark", |ui| self.benchmark(ui)),
-            Pane::Schemes => steady_scroll(ui, "schemes", |ui| schemes::browser(ui, &mut self.schemes)),
             Pane::Keys => steady_scroll(ui, "keys", input::help),
             Pane::Pipeline => self.pipeline(ui),
             Pane::Log => {
@@ -592,6 +588,23 @@ fn drop_zone(ui: &mut egui::Ui, area: egui::Rect, side: Side) -> Option<Action> 
     r.dnd_release_payload::<Pane>().map(|p| Action::Move(*p, side))
 }
 
+/// Stored layout `t` without the panes this build no longer has (a retired pane).
+fn known(mut t: toml::Table) -> toml::Table {
+    let ok = |v: &toml::Value| v.clone().try_into::<Pane>().is_ok();
+    for side in ["left", "right", "bottom"] {
+        if let Some(toml::Value::Array(a)) = t.get_mut(side).and_then(|d| d.get_mut("panes")) {
+            a.retain(ok);
+        }
+    }
+    if let Some(toml::Value::Array(w)) = t.get_mut("windows") {
+        w.retain(|w| w.get("pane").is_some_and(ok));
+    }
+    if t.get("middle").is_some_and(|m| !m.get("pane").is_some_and(ok)) {
+        t.remove("middle");
+    }
+    t
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,9 +618,9 @@ mod tests {
     #[test]
     fn panes_move_tear_off_and_dock_back() {
         let mut d = Docks::default();
-        d.right.active = 3; // Schemes
+        d.right.active = 3; // Keys
         d.move_to(Pane::Compare, Side::Bottom);
-        assert_eq!(d.right.panes[d.right.active], Pane::Schemes, "the active tab stays when one before it leaves");
+        assert_eq!(d.right.panes[d.right.active], Pane::Keys, "the active tab stays when one before it leaves");
         assert_eq!((d.bottom.panes.clone(), d.bottom.active), (vec![Pane::Log, Pane::Compare], 1));
         d.tear(Pane::Compare);
         assert_eq!(d.windows.last(), Some(&Torn { pane: Pane::Compare, back: Side::Bottom }));
@@ -633,6 +646,9 @@ mod tests {
         assert_eq!(all(&fixed), Pane::ALL);
         assert_eq!(fixed.left.active, 1);
         assert_eq!(fixed.windows, vec![Torn { pane: Pane::Pipeline, back: Side::Bottom }], "a pane missing from an older layout goes where it starts");
+        let old: toml::Table = toml::from_str("[left]\npanes = [\"form\", \"schemes\"]\nactive = 0\ncollapsed = false\n[right]\npanes = []\nactive = 0\ncollapsed = false\n[bottom]\npanes = []\nactive = 0\ncollapsed = false\n[[windows]]\npane = \"schemes\"\nback = \"left\"\n").unwrap();
+        let old: Docks = known(old).try_into().unwrap();
+        assert_eq!((old.left.panes, old.windows), (vec![Pane::Form], vec![]), "a pane this build no longer has is dropped");
         let mut sized = Docks::default();
         sized.left.size = Some(512.0);
         let back: Docks = toml::from_str(&toml::to_string(&sized).unwrap()).unwrap();
@@ -647,8 +663,8 @@ mod tests {
         d.move_to(Pane::Pipeline, Side::Right);
         assert_eq!((d.middle(), d.right.panes.last()), (None, Some(&Pane::Pipeline)));
         d.set_middle(Pane::Pipeline);
-        d.set_middle(Pane::Schemes);
-        assert_eq!(d.middle(), Some(Pane::Schemes));
+        d.set_middle(Pane::Keys);
+        assert_eq!(d.middle(), Some(Pane::Keys));
         assert!(d.right.panes.contains(&Pane::Pipeline), "the pane in the middle before goes back to its dock");
         assert_eq!(all(&d), Pane::ALL);
     }

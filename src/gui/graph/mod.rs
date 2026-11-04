@@ -454,7 +454,6 @@ fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, Para
     });
     ui.add_space(4.0);
     ui.weak(description(n.role, &n.component));
-    super::schemes::link(ui, n.role.name(), &n.component);
     if let Some(s) = state(n.role, &n.component) {
         ui.weak(format!("Keeps: {s}"));
     }

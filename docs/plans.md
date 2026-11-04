@@ -149,8 +149,6 @@ Python, for Linux and Windows (`scripts/`):
 - `run1.py RENDERER_TOML [plan] [-s …]`: one quiet run of one renderer (default plan terrain)
   into `target/run1/`, then its summary; `report.py [dir|report.json]…` prints that summary
   (one line per pass, then its stages) for any run, by default the newest.
-- `schemes.py`: checks the encyclopedia's entries and rewrites its index
-  (`docs/schemes/README.md`).
 - `suite.py`, then `summarise.py target/catalogue`: the whole catalogue of default pipelines.
 - `ab/`: A/B checks between two builds. `save-before.py` keeps the current release build as
   "before"; `perf.py` interleaves runs of both and prints median GPU ms and fps per pass

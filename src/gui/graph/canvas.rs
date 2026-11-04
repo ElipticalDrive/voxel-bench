@@ -278,9 +278,6 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
         resp.on_hover_ui(|ui| {
             ui.label(egui::RichText::new(format!("{id}: {} {}", n.role.name(), n.component)).strong());
             ui.label(super::description(n.role, &n.component));
-            if let Some(e) = crate::gui::schemes::of(n.role.name(), &n.component) {
-                crate::gui::schemes::hover(ui, e);
-            }
             if let Some(st) = mr_components::graph::state(n.role, &n.component) {
                 ui.weak(format!("Keeps: {st}"));
             }

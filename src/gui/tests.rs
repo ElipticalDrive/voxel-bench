@@ -145,12 +145,7 @@ fn gui_screenshot() {
     app.option_text = option_texts(&app.plan);
     app.start_live(&ctx);
     app.docks.show(&ctx, dock::Pane::Metrics);
-    // `SHOT_SCHEMES=storage/bits.md` (or empty): the Schemes tab, on that entry.
-    if let Ok(v) = std::env::var("SHOT_SCHEMES") {
-        app.docks.show(&ctx, dock::Pane::Schemes);
-        app.schemes.open = (!v.is_empty()).then_some(v);
-    }
-    // `SHOT_DOCKS=schemes:bottom,log:window,left:collapsed`: panes moved, torn off, docks collapsed.
+    // `SHOT_DOCKS=keys:bottom,log:window,left:collapsed`: panes moved, torn off, docks collapsed.
     if let Ok(v) = std::env::var("SHOT_DOCKS") {
         app.docks.arrange(&v).unwrap();
     }
@@ -270,7 +265,7 @@ fn gui_headless_smoke() {
     // Panes torn off into windows of their own, moved between docks, and docked again.
     app.docks.tear(dock::Pane::Metrics);
     app.docks.tear(dock::Pane::Log);
-    app.docks.move_to(dock::Pane::Schemes, dock::Side::Bottom);
+    app.docks.move_to(dock::Pane::Keys, dock::Side::Bottom);
     frame(&ctx, &mut app, &[], &mut t);
     app.docks = dock::Docks::default();
     frame(&ctx, &mut app, &[Key::F5], &mut t);

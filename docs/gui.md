@@ -29,10 +29,6 @@ The renderers' viewport fills the middle; every other pane is a tab in one of th
   and ✖ to remove it.
 - **Compare (right).** Renders the exact current view on every renderer and on the reference,
   then shows PSNR, MAE and the percentage of bad pixels, with the images and diff images.
-- **Schemes (right).** The encyclopedia (`docs/schemes/`, built into the binary): every
-  entry by category, with a filter; an entry shows its full text and links its related
-  entries. Untested ideas are marked. Hovering a node in the pipeline editor shows its
-  component's entry, and the inspector links to it.
 - **Benchmark (right).** Runs the whole plan as a separate `multirenderer run` process,
   streams its output, and shows the report table and an fps chart. It can also load earlier
   reports from `runs/`.

@@ -12,7 +12,6 @@ mod legend;
 mod live;
 mod metrics;
 mod panels;
-mod schemes;
 mod viewport;
 
 use std::path::{Path, PathBuf};
@@ -113,7 +112,6 @@ struct App {
     /// The pipeline editor, if open (shown by the Pipeline pane).
     graph_win: Option<graph::Window>,
     trials: graph::Trials,
-    schemes: schemes::Browser,
 }
 
 /// A vertical scroll area that stays where the user left it when its content shrinks for a
@@ -210,7 +208,6 @@ impl App {
             message: String::new(),
             graph_win: None,
             trials: Default::default(),
-            schemes: Default::default(),
         };
         app.option_text = option_texts(&app.plan);
         if let Some(p) = initial {
@@ -358,10 +355,6 @@ impl App {
         let title = format!("MultiRenderer — {}{}", self.plan_path.as_ref().map(|p| p.display().to_string()).unwrap_or("(unsaved)".into()), if self.dirty { " *" } else { "" });
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 
-        if let Some(p) = schemes::take_request(&ctx) {
-            self.schemes.open = Some(p);
-            self.docks.show(&ctx, dock::Pane::Schemes);
-        }
         if !self.fullscreen {
             egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
             self.docks(ui);
