@@ -24,7 +24,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use cpu_reference::{Chunks, Pool, Shadows, VoxelScene, World};
+use mr_reference::{Chunks, Pool, Shadows, VoxelScene, World};
 use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_core::*;
 use mr_components::geometry::{Knobs, MeshFn};
@@ -73,7 +73,7 @@ impl Default for Options {
 pub(crate) const BACKEND: &str = "cpu-raster";
 
 fn params() -> Vec<ParamSpec> {
-    let mut p = cpu_reference::cpu_params();
+    let mut p = mr_reference::cpu_params();
     p.push(ParamSpec::choice("geometry", "Geometry component (quads meshed on the CPU)", &names_on(BACKEND, Slot::Geometry), "greedy", true));
     p.push(ParamSpec::choice("visibility", "Visibility strategy", &names_on(BACKEND, Slot::Visibility), "faces", false));
     p.push(ParamSpec::choice("draw", "Draw component: `raster` here is edge functions into a visibility buffer, then deferred shading", &names_on(BACKEND, Slot::Draw), "raster", false));

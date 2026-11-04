@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use cpu_reference::{Pool, Shadows, World};
+use mr_reference::{Pool, Shadows, World};
 use glam::{IVec3, Vec3};
 use mr_components::storage::bits::cpu::Bits;
 use mr_components::storage::bricks::cpu::U16;
@@ -87,7 +87,7 @@ fn of<R: Repr, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn 
 pub(crate) const BACKEND: &str = "cpu";
 
 fn params() -> Vec<ParamSpec> {
-    let mut p = cpu_reference::cpu_params();
+    let mut p = mr_reference::cpu_params();
     p.push(ParamSpec::choice("storage", "Storage component (CPU implementations)", &names_on(BACKEND, Slot::Storage), "bricks", false));
     p.push(ParamSpec::choice("visibility", "Visibility strategy", &names_on(BACKEND, Slot::Visibility), "raycast", false));
     p.push(ParamSpec::choice("traversal", "Traversal kernel. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &names_on(BACKEND, Slot::Traversal), "refloor", true));

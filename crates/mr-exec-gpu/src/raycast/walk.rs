@@ -1,7 +1,7 @@
 //! The walking lane (`gpu-compute`; the primary rays' kernel API `compute`): a renderer from
 //! components (`mr-components`): a **storage**, a **traversal** kernel walked by
 //! ray casting (the visibility strategy, `raycast`) and a **shading** component, each a WGSL
-//! module from `components/`, composed into one shader, so the compiler optimises across them
+//! module from `mr-components`, composed into one shader, so the compiler optimises across them
 //! and the split costs nothing at run time.
 //!
 //! Storages answer the interface in `mr_components::storage`; optional capabilities the

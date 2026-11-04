@@ -47,8 +47,8 @@ on the other (`plans/two-gpus.toml`).
 ## Back ends
 
 A back end (an *executor*) runs a family of graphs: `gpu-compute`, `gpu-raster`, `gpu-rt`,
-`gpu-discover`, `gpu-splat`, `gpu-voxelspace` (on the GPU executor, `backends/gpu`), and `cpu`,
-`cpu-raster`, `cpu-discover`, `cpu-voxelspace` (on the CPU executor, `backends/cpu`; the
+`gpu-discover`, `gpu-splat`, `gpu-voxelspace` (on the GPU executor, `crates/mr-exec-gpu`), and `cpu`,
+`cpu-raster`, `cpu-discover`, `cpu-voxelspace` (on the CPU executor, `crates/mr-exec-cpu`; the
 discovery back end draws on the GPU). The back end is derived from the graph and never
 chosen directly. Each back end has a default pipeline, and the GUI's "start from…" begins
 from one. `cpu-reference`, which defines the reference images, is the one renderer that
@@ -105,7 +105,7 @@ nodes that are fused into each pass and the transfers between devices.
 
 ## Capabilities and adapters
 
-An interface has a required core and optional capabilities (`components/src/caps.rs`): a
+An interface has a required core and optional capabilities (`crates/mr-components/src/caps.rs`): a
 storage always answers `s_probe` (the largest empty cube around a cell), and may also offer
 `s_dist` (a distance field) or `s_row` (row bitmasks). When a component needs a capability
 that its input lacks, an **adapter** provides it: compile-time code built from the core (for

@@ -2,9 +2,9 @@
 //! small Rust crate whose worker serves only that graph, built with `cargo` for this machine
 //! (`-C target-cpu=native`). For the CPU executor (any of its lanes: ray casting,
 //! rasterisation, columns) the lane's entry is instantiated for the graph's storage type with
-//! its choices baked in as constants (`backend_cpu::Spec`); for the GPU executor its worker's
+//! its choices baked in as constants (`mr_exec_cpu::Spec`); for the GPU executor its worker's
 //! CPU work (client, storage encoding, meshing, discovery on the CPU in the graph's storage
-//! alone) is built for this CPU (`backend_gpu::Spec`). The build runs in its own process,
+//! alone) is built for this CPU (`mr_exec_gpu::Spec`). The build runs in its own process,
 //! the result is an ordinary worker executable spoken to over the usual protocol, so a bad
 //! build only fails its worker and the host can swap it for the generic build.
 //!
@@ -51,16 +51,16 @@ impl Executor {
     /// Its crate (package name, path in the repository) and the worker's devices.
     fn parts(self) -> (&'static str, &'static str, &'static str) {
         match self {
-            Executor::Cpu => ("backend-cpu", "backends/cpu", "mr_serve::cpu_devices"),
-            Executor::Gpu => ("backend-gpu", "backends/gpu", "mr_gpu::devices"),
+            Executor::Cpu => ("mr-exec-cpu", "crates/mr-exec-cpu", "mr_serve::cpu_devices"),
+            Executor::Gpu => ("mr-exec-gpu", "crates/mr-exec-gpu", "mr_gpu::devices"),
         }
     }
 
     /// The trait the generated `Baked` implements.
     fn spec(self) -> &'static str {
         match self {
-            Executor::Cpu => "backend_cpu::Spec",
-            Executor::Gpu => "backend_gpu::Spec",
+            Executor::Cpu => "mr_exec_cpu::Spec",
+            Executor::Gpu => "mr_exec_gpu::Spec",
         }
     }
 }
@@ -79,16 +79,16 @@ pub fn bakes(backend: &str) -> &'static [&'static str] {
 /// The executor of `backend` and its knobs (`None`: no generated pipeline runs it).
 fn params_of(backend: &str) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
     let (executor, entry) = match backend {
-        "cpu" => (Executor::Cpu, backend_cpu::cpu_entry()),
-        "cpu-raster" => (Executor::Cpu, backend_cpu::cpu_raster_entry()),
-        "cpu-voxelspace" => (Executor::Cpu, backend_cpu::cpu_voxelspace_entry()),
-        "gpu-raster" => (Executor::Gpu, backend_gpu::gpu_raster_entry()),
-        "gpu-discover" => (Executor::Gpu, backend_gpu::gpu_discover_entry()),
-        "cpu-discover" => (Executor::Gpu, backend_gpu::cpu_discover_entry()),
-        "gpu-compute" => (Executor::Gpu, backend_gpu::gpu_compute_entry()),
-        "gpu-rt" => (Executor::Gpu, backend_gpu::gpu_rt_entry()),
-        "gpu-splat" => (Executor::Gpu, backend_gpu::gpu_splat_entry()),
-        "gpu-voxelspace" => (Executor::Gpu, backend_gpu::gpu_voxelspace_entry()),
+        "cpu" => (Executor::Cpu, mr_exec_cpu::cpu_entry()),
+        "cpu-raster" => (Executor::Cpu, mr_exec_cpu::cpu_raster_entry()),
+        "cpu-voxelspace" => (Executor::Cpu, mr_exec_cpu::cpu_voxelspace_entry()),
+        "gpu-raster" => (Executor::Gpu, mr_exec_gpu::gpu_raster_entry()),
+        "gpu-discover" => (Executor::Gpu, mr_exec_gpu::gpu_discover_entry()),
+        "cpu-discover" => (Executor::Gpu, mr_exec_gpu::cpu_discover_entry()),
+        "gpu-compute" => (Executor::Gpu, mr_exec_gpu::gpu_compute_entry()),
+        "gpu-rt" => (Executor::Gpu, mr_exec_gpu::gpu_rt_entry()),
+        "gpu-splat" => (Executor::Gpu, mr_exec_gpu::gpu_splat_entry()),
+        "gpu-voxelspace" => (Executor::Gpu, mr_exec_gpu::gpu_voxelspace_entry()),
         _ => return None,
     };
     Some((executor, (entry.info)().params))
@@ -127,12 +127,12 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
         // The GPU executor's CPU work, built for this CPU; discovery on the CPU in the graph's
         // storage alone (the storage its rays walk).
         consts.push(format!("const BACKEND: &'static str = {:?};", spec.name));
-        let entry = "backend_gpu::compiled_entry::<Baked>()".to_string();
+        let entry = "mr_exec_gpu::compiled_entry::<Baked>()".to_string();
         if ck.find(Role::Draw).is_some() && ck.find(Role::Visibility).is_some_and(|v| ck.devices[v] == Device::Cpu) {
             let kernel = ck.input(Role::Visibility, "rays").context("discovery casts no rays")?;
             let storage = ck.node(ck.node(kernel).inputs.get("storage").context("the discovery rays walk no storage")?).component.clone();
-            let ty = backend_cpu::storage_type(&storage).with_context(|| format!("storage `{storage}` has no CPU implementation"))?;
-            consts.push(format!("const CPU_WORLD: Option<fn() -> backend_gpu::CpuWorld> = Some(backend_gpu::CpuWorld::of::<{ty}>);"));
+            let ty = mr_exec_cpu::storage_type(&storage).with_context(|| format!("storage `{storage}` has no CPU implementation"))?;
+            consts.push(format!("const CPU_WORLD: Option<fn() -> mr_exec_gpu::CpuWorld> = Some(mr_exec_gpu::CpuWorld::of::<{ty}>);"));
             baked.insert(0, ("storage".into(), storage.as_str().into()));
         }
         let knobs = baked.iter().map(|(k, v)| Ok(format!("({k:?}, {})", rust(v)?))).collect::<anyhow::Result<Vec<_>>>()?;
@@ -140,43 +140,43 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
         consts.push("const NATIVE: bool = true;".into());
         return Ok(Some(Bake { graph, executor, entry, consts }));
     }
-    consts.push(format!("const TONE: Option<backend_cpu::Tone> = Some(backend_cpu::Tone::{:?});", ck.tone()));
+    consts.push(format!("const TONE: Option<mr_exec_cpu::Tone> = Some(mr_exec_cpu::Tone::{:?});", ck.tone()));
     if let Some((_, v)) = baked.iter().find(|(k, _)| k == "shadows") {
-        consts.push(format!("const SHADOWS: Option<backend_cpu::Shadows> = Some(backend_cpu::Shadows::{});", variant(v.as_str().context("shadows: a choice")?)));
+        consts.push(format!("const SHADOWS: Option<mr_exec_cpu::Shadows> = Some(mr_exec_cpu::Shadows::{});", variant(v.as_str().context("shadows: a choice")?)));
     }
     // The output's pixel (the post's format).
     let px = match ck.tone().format() {
         mr_core::lighting::PixelFormat::Rgba8 => "[u8; 4]",
-        mr_core::lighting::PixelFormat::Rgba16F => "backend_cpu::Half4",
+        mr_core::lighting::PixelFormat::Rgba16F => "mr_exec_cpu::Half4",
     };
     let entry = if ck.find(Role::Draw).is_some() {
         // The raster lane's shading is the reference model's (tone and shadows read at run time).
         consts.clear();
-        format!("backend_cpu::raster_entry::<Baked, {px}>()")
+        format!("mr_exec_cpu::raster_entry::<Baked, {px}>()")
     } else if ck.find(Role::Visibility).is_some_and(|v| ck.node(v).component == "columns") {
-        format!("backend_cpu::columns_entry::<Baked, {px}>()")
+        format!("mr_exec_cpu::columns_entry::<Baked, {px}>()")
     } else {
         // Ray casting: the primary walk, the strategy's kernel and its storage.
         let kernel = ck.input(Role::Visibility, "primary").context("no primary rays")?;
         let k = ck.node(kernel);
         let storage = ck.node(k.inputs.get("storage").context("the kernel walks no storage")?).component.clone();
-        let ty = backend_cpu::storage_type(&storage).with_context(|| format!("storage `{storage}` has no CPU implementation"))?;
+        let ty = mr_exec_cpu::storage_type(&storage).with_context(|| format!("storage `{storage}` has no CPU implementation"))?;
         let knob = |n: &str| k.knobs.get(n);
         let on = |n: &str| knob(n).and_then(|v| v.as_bool()).unwrap_or(true);
-        let traversal = backend_cpu::traversal(&k.component, on("exact"))?;
-        consts.push(format!("const TRAVERSAL: Option<backend_cpu::Traversal> = Some(backend_cpu::Traversal::{traversal:?});"));
+        let traversal = mr_exec_cpu::traversal(&k.component, on("exact"))?;
+        consts.push(format!("const TRAVERSAL: Option<mr_exec_cpu::Traversal> = Some(mr_exec_cpu::Traversal::{traversal:?});"));
         if let Some(p) = knob("packet") {
             let n: usize = p.as_str().and_then(|p| p.parse().ok()).context("packet: a width")?;
             consts.push(format!("const PACKET: Option<usize> = Some({n});"));
         }
-        if traversal != backend_cpu::Traversal::Refloor {
-            consts.push(format!("const LEVELS: Option<u32> = Some({:#b});", backend_cpu::level_mask(["skip2", "skip4", "skip8", "skip16"].map(on))));
+        if traversal != mr_exec_cpu::Traversal::Refloor {
+            consts.push(format!("const LEVELS: Option<u32> = Some({:#b});", mr_exec_cpu::level_mask(["skip2", "skip4", "skip8", "skip16"].map(on))));
         }
-        let shadow = backend_cpu::shadow_kernel(&ck)?.map(|(t, l)| format!("Some((backend_cpu::Traversal::{t:?}, {l:#b}))"));
-        consts.push(format!("const SHADOW: Option<Option<(backend_cpu::Traversal, u32)>> = Some({});", shadow.as_deref().unwrap_or("None")));
+        let shadow = mr_exec_cpu::shadow_kernel(&ck)?.map(|(t, l)| format!("Some((mr_exec_cpu::Traversal::{t:?}, {l:#b}))"));
+        consts.push(format!("const SHADOW: Option<Option<(mr_exec_cpu::Traversal, u32)>> = Some({});", shadow.as_deref().unwrap_or("None")));
         baked.insert(0, ("storage".into(), storage.as_str().into()));
         baked.insert(1, ("traversal".into(), k.component.as_str().into()));
-        format!("backend_cpu::raycast_entry::<{ty}, Baked, {px}>()")
+        format!("mr_exec_cpu::raycast_entry::<{ty}, Baked, {px}>()")
     };
     let knobs = baked.iter().map(|(k, v)| Ok(format!("({k:?}, {})", rust(v)?))).collect::<anyhow::Result<Vec<_>>>()?;
     consts.insert(0, format!("const KNOBS: &'static [(&'static str, &'static str)] = &[{}];", knobs.join(", ")));
@@ -217,7 +217,7 @@ fn manifest(repo: &Path, executor: Executor) -> String {
          [profile.break-in]\ninherits = \"release\"\nlto = \"fat\"\ncodegen-units = 1\n",
         dep(name, path),
         dep("mr-serve", "crates/mr-serve"),
-        dep("mr-components", "components"),
+        dep("mr-components", "crates/mr-components"),
         "anyhow = \"1\"\n",
     )
 }
@@ -233,8 +233,16 @@ fn fnv(h: u64, bytes: &[u8]) -> u64 {
 /// lock file).
 fn sources_hash(repo: &Path, executor: Executor) -> anyhow::Result<u64> {
     let mut files = vec![repo.join("Cargo.lock"), repo.join("Cargo.toml"), repo.join(".cargo/config.toml")];
-    for dir in [executor.parts().1, "components", "crates", "renderers/cpu-reference"] {
-        collect(&repo.join(dir), &mut files)?;
+    // Every crate but the other executor.
+    let other = match executor {
+        Executor::Cpu => Executor::Gpu,
+        Executor::Gpu => Executor::Cpu,
+    };
+    for e in std::fs::read_dir(repo.join("crates")).context("reading crates/")? {
+        let p = e?.path();
+        if !p.ends_with(other.parts().1) {
+            collect(&p, &mut files)?;
+        }
     }
     files.sort();
     let mut h = 0xcbf2_9ce4_8422_2325u64;
@@ -720,14 +728,14 @@ mod tests {
             for k in mr_components::names_on("cpu", mr_components::Slot::Traversal) {
                 let b = bake(&spec(&format!("cpu:{st}+{k}"), &[("packet", "4".into())])).unwrap().unwrap();
                 let s = source(&b).unwrap();
-                assert!(s.contains("NATIVE: bool = true") && s.contains(&format!("raycast_entry::<{}, Baked, [u8; 4]>", backend_cpu::storage_type(st).unwrap())), "{s}");
+                assert!(s.contains("NATIVE: bool = true") && s.contains(&format!("raycast_entry::<{}, Baked, [u8; 4]>", mr_exec_cpu::storage_type(st).unwrap())), "{s}");
                 assert_eq!(s.contains("PACKET: Option<usize> = Some(4)"), k == "refloor", "{s}");
                 assert_eq!(s.contains("LEVELS"), k != "refloor", "{s}");
                 assert!(s.contains(&format!("(\"storage\", \"\\\"{st}\\\"\")")), "{s}");
             }
         }
         let s = source(&bake(&spec("cpu:prefix+incremental,shadow=refloor,post=aces", &[("shadows", "sun".into()), ("skip4", false.into())])).unwrap().unwrap()).unwrap();
-        for want in ["SHADOW: Option<Option<(backend_cpu::Traversal, u32)>> = Some(Some((backend_cpu::Traversal::Refloor, 0b111111)))", "LEVELS: Option<u32> = Some(0b111011)", "Tone::Aces", "Shadows::Sun", "(\"skip4\", \"false\")"] {
+        for want in ["SHADOW: Option<Option<(mr_exec_cpu::Traversal, u32)>> = Some(Some((mr_exec_cpu::Traversal::Refloor, 0b111111)))", "LEVELS: Option<u32> = Some(0b111011)", "Tone::Aces", "Shadows::Sun", "(\"skip4\", \"false\")"] {
             assert!(s.contains(want), "{want} in {s}");
         }
         let s = source(&bake(&spec("cpu-voxelspace", &[])).unwrap().unwrap()).unwrap();
@@ -735,7 +743,7 @@ mod tests {
         let s = source(&bake(&spec("cpu-raster:naive+raster", &[])).unwrap().unwrap()).unwrap();
         assert!(s.contains("raster_entry::<Baked, [u8; 4]>") && s.contains("KNOBS: &'static [(&'static str, &'static str)] = &[];") && !s.contains("TONE"), "{s}");
         // `hdr`: every lane writes float pixels.
-        for (r, entry) in [("cpu,post=hdr", "raycast_entry::<mr_components::storage::bricks::cpu::U16, Baked, backend_cpu::Half4>"), ("cpu-voxelspace,post=hdr", "columns_entry::<Baked, backend_cpu::Half4>"), ("cpu-raster,post=hdr", "raster_entry::<Baked, backend_cpu::Half4>")] {
+        for (r, entry) in [("cpu,post=hdr", "raycast_entry::<mr_components::storage::bricks::cpu::U16, Baked, mr_exec_cpu::Half4>"), ("cpu-voxelspace,post=hdr", "columns_entry::<Baked, mr_exec_cpu::Half4>"), ("cpu-raster,post=hdr", "raster_entry::<Baked, mr_exec_cpu::Half4>")] {
             let s = source(&bake(&spec(r, &[])).unwrap().unwrap()).unwrap();
             assert!(s.contains(entry), "{entry} in {s}");
         }
@@ -756,7 +764,7 @@ mod tests {
             let bk = bake(&spec(b, &[])).unwrap().unwrap();
             assert_eq!(bk.executor, Executor::Gpu, "{b}");
             let s = source(&bk).unwrap();
-            for want in ["impl backend_gpu::Spec for Baked", &format!("BACKEND: &'static str = {b:?}"), "backend_gpu::compiled_entry::<Baked>()", "mr_gpu::devices", "NATIVE: bool = true"] {
+            for want in ["impl mr_exec_gpu::Spec for Baked", &format!("BACKEND: &'static str = {b:?}"), "mr_exec_gpu::compiled_entry::<Baked>()", "mr_gpu::devices", "NATIVE: bool = true"] {
                 assert!(s.contains(want), "{b}: {want} in {s}");
             }
             assert_eq!(s.contains("CPU_WORLD"), b == "cpu-discover", "{s}");
@@ -765,7 +773,7 @@ mod tests {
         let s = source(&bake(&prefix).unwrap().unwrap()).unwrap();
         assert!(s.contains("CpuWorld::of::<mr_components::storage::prefix::cpu::Prefix>") && s.contains("(\"storage\", \"\\\"prefix\\\"\")"), "{s}");
         let m = manifest(repo(), Executor::Gpu);
-        assert!(m.contains("backend-gpu") && m.contains("mr-gpu") && !m.contains("backend-cpu"), "{m}");
+        assert!(m.contains("mr-exec-gpu") && m.contains("mr-gpu") && !m.contains("mr-exec-cpu"), "{m}");
         let key = |r: &str, o: &[(&str, toml::Value)]| self::key(&bake(&spec(r, o)).unwrap().unwrap(), Compile::Native).unwrap();
         assert!(key("gpu-compute", &[]).starts_with("gpu-"));
         assert_ne!(self::key(&bake(&prefix).unwrap().unwrap(), Compile::Native).unwrap(), key("cpu-discover", &[]));

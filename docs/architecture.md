@@ -72,10 +72,10 @@ every face, so UV and orientation mistakes are obvious.
 | `crates/mr-serve`, `mr-worker` | the worker side: one renderer driven over the protocol; the worker with every back end |
 | `crates/mr-gpu` | wgpu plumbing: adapter choice, the frame ring (readback, timestamps), shader programs composed from modules, meshes |
 | `crates/mr-mesh` | the greedy mesher and quad encoding |
-| `components/` | the registry (`lib.rs`: back ends, components, their implementations), the graph (`graph/`: model, checks, canonical form and key, accept, sites form, schedule), capabilities and adapters (`caps.rs`), and one directory per component: `storage/prefix/{gpu.wgsl,cpu.rs}`, `traversal/sphere/...`, ... |
-| `backends/gpu` | the GPU executor: one core and a lane per kind of visibility (ray casting, faces, discovery, splats, columns) |
-| `backends/cpu` | the CPU executor: ray casting, the software rasteriser, columns; `exec.rs` the generic node executor being migrated to ([target architecture](target-architecture.md)) |
-| `renderers/cpu-reference` | the reference renderer (f64, exact), standing alone on purpose |
+| `crates/mr-components` | the registry (`lib.rs`: back ends, components, their implementations), the graph (`graph/`: model, checks, canonical form and key, accept, sites form, schedule), capabilities and adapters (`caps.rs`), and one directory per component: `storage/prefix/{gpu.wgsl,cpu.rs}`, `traversal/sphere/...`, ... |
+| `crates/mr-exec-gpu` | the GPU executor: one core and a lane per kind of visibility (ray casting, faces, discovery, splats, columns) |
+| `crates/mr-exec-cpu` | the CPU executor: ray casting, the software rasteriser, columns; `exec.rs` the generic node executor being migrated to ([target architecture](target-architecture.md)) |
+| `crates/mr-reference` | the reference renderer (f64, exact), standing alone on purpose |
 | `tests/architecture.rs` | the architecture guard (below) |
 | `plans/` | example plans |
 | `baselines/` | a full sweep of 2026-10-11 (observations), for comparing later sweeps with `scripts/ab/sweepcmp.py` |
@@ -85,9 +85,9 @@ every face, so UV and orientation mistakes are obvious.
 
 New techniques go in as components, not as new renderers:
 
-1. Add a directory `components/src/<slot>/<name>/` with an implementation for each kind of
+1. Add a directory `crates/mr-components/src/<slot>/<name>/` with an implementation for each kind of
    device it supports (`gpu.wgsl` for the GPU executor, `cpu.rs` for the CPU executor).
-2. Register it in `COMPONENTS` (`components/src/lib.rs`): its slot, its implementations per
+2. Register it in `COMPONENTS` (`crates/mr-components/src/lib.rs`): its slot, its implementations per
    device kind and API, what it provides and what it needs from other stages. The
    `registry_is_consistent` test checks that the registry and the implementations agree.
 3. Declare its knobs (`ParamSpec::int/float/bool/choice`, owned by the component with

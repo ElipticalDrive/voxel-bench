@@ -17,10 +17,10 @@ members = [
     "crates/mr-serve",
     "crates/mr-gpu",
     "crates/mr-mesh",
-    "renderers/cpu-reference",
-    "components",
-    "backends/gpu",
-    "backends/cpu",
+    "crates/mr-reference",
+    "crates/mr-components",
+    "crates/mr-exec-gpu",
+    "crates/mr-exec-cpu",
 ]
 
 [workspace.package]
@@ -41,10 +41,10 @@ mr-worker = { path = "crates/mr-worker" }
 mr-serve = { path = "crates/mr-serve" }
 mr-gpu = { path = "crates/mr-gpu" }
 mr-mesh = { path = "crates/mr-mesh" }
-cpu-reference = { path = "renderers/cpu-reference" }
-backend-cpu = { path = "backends/cpu" }
-mr-components = { path = "components" }
-backend-gpu = { path = "backends/gpu" }
+mr-reference = { path = "crates/mr-reference" }
+mr-exec-cpu = { path = "crates/mr-exec-cpu" }
+mr-components = { path = "crates/mr-components" }
+mr-exec-gpu = { path = "crates/mr-exec-gpu" }
 
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
@@ -77,8 +77,8 @@ mr-world.workspace = true
 mr-ipc.workspace = true
 mr-worker.workspace = true
 mr-gpu.workspace = true
-backend-cpu.workspace = true
-backend-gpu.workspace = true
+mr-exec-cpu.workspace = true
+mr-exec-gpu.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 crossbeam-channel.workspace = true

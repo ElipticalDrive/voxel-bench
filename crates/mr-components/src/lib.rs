@@ -20,7 +20,7 @@
 //! This crate is the single source of truth for what exists and what combines: component
 //! metadata, compatibility (used by the GUI to forbid unsupported combinations, by plan
 //! loading and by the back ends), and the component implementations themselves, one
-//! directory per piece (`storage/prefix/gpu.wgsl`, ...). Back ends (`backends/`) assemble a
+//! directory per piece (`storage/prefix/gpu.wgsl`, ...). The executors (`crates/mr-exec-*`) assemble a
 //! working renderer from a [`Composition`].
 //!
 //! Compatibility rule: a component combines with a back end if the back end has its slot and

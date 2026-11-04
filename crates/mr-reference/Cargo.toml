@@ -1,5 +1,5 @@
 [package]
-name = "backend-gpu"
+name = "mr-reference"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,13 +13,4 @@ anyhow.workspace = true
 glam.workspace = true
 serde.workspace = true
 tracing.workspace = true
-bytemuck.workspace = true
 rayon.workspace = true
-wgpu.workspace = true
-pollster.workspace = true
-mr-gpu.workspace = true
-mr-components.workspace = true
-mr-mesh.workspace = true
-
-[dev-dependencies]
-toml.workspace = true

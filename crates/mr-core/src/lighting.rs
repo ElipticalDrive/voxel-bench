@@ -179,7 +179,7 @@ pub fn encode_srgb(c: Vec3) -> [u8; 4] {
 }
 
 /// Tone mapping: the post node's components (`mr_components::post`), linear
-/// colour into display range before [`encode_srgb`]. GPU twins: `components/src/post`.
+/// colour into display range before [`encode_srgb`]. GPU twins: `crates/mr-components/src/post`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum Tone {
     /// Clamp to 0..1 (no tone mapper).

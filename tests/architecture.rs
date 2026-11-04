@@ -1,6 +1,6 @@
 //! Architecture guard: catches code of redundant purpose creeping back.
 //!
-//! 1. No WGSL function is defined by more than one back end (`backends/*`), except the
+//! 1. No WGSL function is defined by more than one back end (`crates/mr-exec-*`), except the
 //!    functions a component interface asks every implementer for (`INTERFACE`) and entry
 //!    points.
 //! 2. No back end defines a WGSL function that shared code (`components`, `crates`)
@@ -46,19 +46,19 @@ const LIGHTING_RUST: &[&str] = &["point_light(", "light_at(", "env.ambient", "en
 
 /// Places allowed to use the lighting internals, with the reason.
 const LIGHTING_ALLOWED: &[(&str, &str)] = &[
-    ("components/src/shading/", "the shading components"),
+    ("crates/mr-components/src/shading/", "the shading components"),
     ("crates/mr-gpu/src/lighting.wgsl", "the lighting model itself"),
     ("crates/mr-gpu/src/voxels.rs", "uploads the environment for the lighting model"),
     ("crates/mr-gpu/src/mesh.wgsl", "forward drawers shade vertex-coloured mesh fragments, not a voxel Surface (until meshes feed the shading component)"),
     ("crates/mr-gpu/src/mesh_surface.wgsl", "mesh records are shaded as vertex-coloured mesh surfaces, not a voxel Surface (until meshes feed the shading component)"),
     ("crates/mr-world/", "scene description (sun direction, ambient), not lighting"),
     ("crates/mr-core/", "the lighting model's shared math and the environment type"),
-    ("renderers/cpu-reference/", "the reference renderer's f64 model"),
+    ("crates/mr-reference/", "the reference renderer's f64 model"),
     ("crates/mr-gpu/src/program.rs", "the module system's test links a root to the lighting module"),
 ];
 
 /// Each executor lane's shading entry point (a string its sources must contain), by its path
-/// under `backends/` (the GPU and the CPU executor, a lane per visibility).
+/// under `crates/mr-exec-*` (the GPU and the CPU executor, a lane per visibility).
 const SHADING_USE: &[(&str, &str)] = &[
     // `shaders::shading`: the shading component's module (`shading::gpu_wgsl`).
     // The ray-casting lane (gpu-compute and gpu-rt): each caster.
@@ -102,10 +102,10 @@ fn rel(p: &Path) -> String {
     p.strip_prefix(root()).unwrap().to_string_lossy().replace('\\', "/")
 }
 
-/// Owner of a source file: the executor's lane (`gpu/faces`: `backends/gpu/src/faces...`),
+/// Owner of a source file: the executor's lane (`gpu/faces`: `crates/mr-exec-gpu/src/faces...`),
 /// the executor for its own files, or "shared".
 fn owner(rel: &str) -> String {
-    let Some(r) = rel.strip_prefix("backends/") else { return "shared".into() };
+    let Some(r) = rel.strip_prefix("crates/mr-exec-") else { return "shared".into() };
     match r.split('/').collect::<Vec<_>>().as_slice() {
         [ex, "src", lane, ..] if *lane != "lib.rs" => format!("{ex}/{}", lane.trim_end_matches(".rs")),
         [ex, ..] => ex.to_string(),
@@ -209,10 +209,8 @@ struct Def {
 
 fn definitions() -> BTreeMap<String, Vec<Def>> {
     let mut paths = vec![];
-    for d in ["backends", "components", "crates"] {
-        files(&root().join(d), "wgsl", &mut paths);
-        files(&root().join(d), "rs", &mut paths);
-    }
+    files(&root().join("crates"), "wgsl", &mut paths);
+    files(&root().join("crates"), "rs", &mut paths);
     let mut defs: BTreeMap<String, Vec<Def>> = BTreeMap::new();
     for p in paths {
         let file = rel(&p);
@@ -265,10 +263,8 @@ fn no_wgsl_body_is_copied_under_another_name() {
 #[test]
 fn lighting_goes_through_the_shading_component() {
     let mut paths = vec![];
-    for d in ["backends", "components", "crates", "renderers"] {
-        files(&root().join(d), "wgsl", &mut paths);
-        files(&root().join(d), "rs", &mut paths);
-    }
+    files(&root().join("crates"), "wgsl", &mut paths);
+    files(&root().join("crates"), "rs", &mut paths);
     let mut problems = vec![];
     for p in &paths {
         let file = rel(p);
@@ -292,14 +288,14 @@ fn lighting_goes_through_the_shading_component() {
     }
     for &(backend, needle) in SHADING_USE {
         let mut srcs = vec![];
-        files(&root().join("backends").join(backend), "rs", &mut srcs);
+        files(&root().join(format!("crates/mr-exec-{backend}")), "rs", &mut srcs);
         if !srcs.iter().any(|p| fs::read_to_string(p).unwrap().contains(needle)) {
             problems.push(format!("back end `{backend}` does not shade through `{needle}`"));
         }
     }
     let mut backends = vec![];
-    if let Ok(rd) = fs::read_dir(root().join("backends")) {
-        backends = rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    if let Ok(rd) = fs::read_dir(root().join("crates")) {
+        backends = rd.flatten().filter_map(|e| e.file_name().to_string_lossy().strip_prefix("mr-exec-").map(str::to_owned)).collect();
     }
     for b in backends {
         if !SHADING_USE.iter().any(|&(n, _)| n.starts_with(&format!("{b}/"))) {

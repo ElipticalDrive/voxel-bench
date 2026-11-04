@@ -11,7 +11,7 @@
 
 use std::any::Any;
 
-use cpu_reference::{Pool, World};
+use mr_reference::{Pool, World};
 use mr_core::*;
 
 use crate::Pixel;
@@ -125,7 +125,7 @@ impl<P: Pixel> Renderer for Executor<P> {
         }
         match name {
             "shadows" => {
-                self.world.shadows = cpu_reference::parse_shadows(value)?;
+                self.world.shadows = mr_reference::parse_shadows(value)?;
                 Ok(())
             }
             "threads" => {

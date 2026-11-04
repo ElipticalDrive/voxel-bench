@@ -1,4 +1,4 @@
-// Post: none, unlimited (components/src/post, `Tone::Hdr`): extended sRGB into the float
+// Post: none, unlimited (crates/mr-components/src/post, `Tone::Hdr`): extended sRGB into the float
 // output (`#ifdef HDR`), sRGB's curve continued past 1, unquantised.
 fn display(c: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(srgb_extended(c.x), srgb_extended(c.y), srgb_extended(c.z), 1.0);

@@ -7,7 +7,7 @@
 //!
 //! Which lane runs is the graph's: rasterisation when a drawer draws faces, else by the
 //! visibility node's component. The rest is shared ([`Core`]): the thread pool every frame
-//! runs in (the `threads` knob), the world (`cpu_reference::World`: blocks, environment,
+//! runs in (the `threads` knob), the world (`mr_reference::World`: blocks, environment,
 //! lights, the `shadows` knob), the output image, its size and the timed
 //! stages' nodes. The chunks are each lane's representation (its storage).
 //!
@@ -19,7 +19,7 @@
 //! ([`Half4`]) for the `hdr` post. The precompiled build holds both and picks by the post.
 
 use bytemuck::Zeroable;
-use cpu_reference::{Pool, World};
+use mr_reference::{Pool, World};
 use mr_components::graph::{self, Role};
 use mr_core::*;
 
@@ -29,7 +29,7 @@ mod perf;
 mod raster;
 mod raycast;
 
-pub use cpu_reference::Shadows;
+pub use mr_reference::Shadows;
 pub use mr_core::lighting::{Half4, Pixel, Tone};
 use mr_core::lighting::PixelFormat;
 pub use raycast::{Traversal, level_mask, shadow_kernel, storage_type, traversal};
@@ -226,7 +226,7 @@ impl<L: Lane> Renderer for Executor<L> {
         }
         match name {
             "shadows" => {
-                self.core.world.shadows = cpu_reference::parse_shadows(value)?;
+                self.core.world.shadows = mr_reference::parse_shadows(value)?;
                 Ok(())
             }
             "threads" => {

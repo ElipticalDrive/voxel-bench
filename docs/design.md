@@ -31,8 +31,8 @@ settled before optimisation, so that it sets no limits for later.
 - Not every combination can be checked, and that is fine: correctness rests on per-port
   contracts and the exact reference; graphs are sampled, not enumerated.
 
-Code: `components/src/graph/` (model, checks with reasons, canonical form and cache key,
-schedule); the executors in `backends/`. Measured: every pipeline rebuilt as a graph kept its
+Code: `crates/mr-components/src/graph/` (model, checks with reasons, canonical form and cache key,
+schedule); the executors in `crates/mr-exec-cpu` and `crates/mr-exec-gpu`. Measured: every pipeline rebuilt as a graph kept its
 images at equal or better speed, except `tree64` (−5%) and the CPU layout storages (−3–4%).
 
 ## Composition at no cost, without redundant code
@@ -64,7 +64,7 @@ the same algorithm once per device, API or mechanism is necessary, not redundant
 - "No cost" is testable: a composed pipeline is as fast as a hand-written one of the same
   pieces on the same devices; existing pipelines keep their pixels and speed (`scripts/ab/`).
 
-Code: `components/` (registry; capabilities and adapters in `caps.rs`),
+Code: `crates/mr-components/` (registry; capabilities and adapters in `caps.rs`),
 `crates/mr-gpu/src/program.rs` (shader modules). Measured:
 - `bricks` + `refloor` composed ran 7–9% faster than the hand-written renderer it replaced
   (which carried LOD code); `distance` + `sphere` 0.60 against 0.64 ms; `rows` + `rowrun`
@@ -87,7 +87,7 @@ slots to adapters, so components hold no hardware opinion) and `api` how it runs
 its kernel) never crosses devices; any other edge may, through a transfer adapter (readback,
 upload). Devices are handed to components; no component opens one.
 
-Code: `components/src/impls.rs`, `backends/gpu/src/remote.rs` (the split over two GPUs);
+Code: `crates/mr-components/src/impls.rs`, `crates/mr-exec-gpu/src/remote.rs` (the split over two GPUs);
 `plans/two-gpus.toml` (ray casting on an RTX 5060, shading on a Radeon iGPU a frame behind).
 
 ## Pipelines compiled on demand

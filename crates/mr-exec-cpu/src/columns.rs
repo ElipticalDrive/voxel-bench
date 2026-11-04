@@ -9,7 +9,7 @@
 
 use std::time::Instant;
 
-use cpu_reference::{Chunks, Pool, Shadows, World};
+use mr_reference::{Chunks, Pool, Shadows, World};
 use glam::{IVec3, Vec3};
 use mr_components::shading::direct::cpu::{Ctx, Surface, shade};
 use mr_components::storage::heightmap::Heightmap;

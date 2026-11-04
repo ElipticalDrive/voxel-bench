@@ -5,7 +5,7 @@
 use mr_core::{RendererEntry, RendererInfo};
 
 pub fn registry() -> Vec<RendererEntry> {
-    vec![cpu_reference::entry(), backend_cpu::cpu_raster_entry(), backend_gpu::cpu_discover_entry(), backend_gpu::gpu_discover_entry(), backend_cpu::cpu_entry(), backend_cpu::cpu_voxelspace_entry(), backend_gpu::gpu_splat_entry(), backend_gpu::gpu_voxelspace_entry(), backend_gpu::gpu_compute_entry(), backend_gpu::gpu_raster_entry(), backend_gpu::gpu_rt_entry()]
+    vec![mr_reference::entry(), mr_exec_cpu::cpu_raster_entry(), mr_exec_gpu::cpu_discover_entry(), mr_exec_gpu::gpu_discover_entry(), mr_exec_cpu::cpu_entry(), mr_exec_cpu::cpu_voxelspace_entry(), mr_exec_gpu::gpu_splat_entry(), mr_exec_gpu::gpu_voxelspace_entry(), mr_exec_gpu::gpu_compute_entry(), mr_exec_gpu::gpu_raster_entry(), mr_exec_gpu::gpu_rt_entry()]
 }
 
 pub fn infos() -> Vec<RendererInfo> {

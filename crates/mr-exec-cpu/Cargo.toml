@@ -1,5 +1,5 @@
 [package]
-name = "backend-cpu"
+name = "mr-exec-cpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ workspace = true
 mr-components.workspace = true
 mr-core.workspace = true
 mr-mesh.workspace = true
-cpu-reference.workspace = true
+mr-reference.workspace = true
 anyhow.workspace = true
 glam.workspace = true
 rayon.workspace = true
