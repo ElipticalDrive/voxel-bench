@@ -81,3 +81,9 @@ keyboard and mouse. A gamepad library (e.g. `gilrs`, cross-platform) polled once
 into the same camera control the keys drive, with a dead zone and a response curve; the
 bindings shown in the keys pane. Analog input makes recorded flights smoother, so a recorded
 controller path could also serve as a camera path for benchmarks.
+
+## A concise text form for graphs
+
+A small scripting language that writes the same graph as the canvas editor, for users who
+prefer conciseness: same graph, same diagnostics, convertible both ways. The sites form and
+compose form in plans are partial versions today; this one would express any graph.
