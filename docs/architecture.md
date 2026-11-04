@@ -74,7 +74,7 @@ every face, so UV and orientation mistakes are obvious.
 | `crates/mr-mesh` | the greedy mesher and quad encoding |
 | `components/` | the registry (`lib.rs`: back ends, components, their implementations), the graph (`graph/`: model, checks, canonical form and key, accept, sites form, schedule), capabilities and adapters (`caps.rs`), and one directory per component: `storage/prefix/{gpu.wgsl,cpu.rs}`, `traversal/sphere/...`, ... |
 | `backends/gpu` | the GPU executor: one core and a lane per kind of visibility (ray casting, faces, discovery, splats, columns) |
-| `backends/cpu` | the CPU executor: ray casting, the software rasteriser, columns |
+| `backends/cpu` | the CPU executor: ray casting, the software rasteriser, columns; `exec.rs` the generic node executor being migrated to ([target architecture](target-architecture.md)) |
 | `renderers/cpu-reference` | the reference renderer (f64, exact), standing alone on purpose |
 | `tests/architecture.rs` | the architecture guard (below) |
 | `plans/` | example plans |

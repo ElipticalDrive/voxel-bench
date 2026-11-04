@@ -59,20 +59,29 @@ pub(crate) fn info() -> RendererInfo {
 }
 
 /// The lane for graph `g`, monomorphised for its storage.
+/// With `MR_CPU_EXECUTOR=graph`, its nodes on the generic executor ([`crate::exec`]).
 pub(crate) fn create<P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let opts: Options = p.options()?;
     let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
     match storage.as_str() {
-        "bricks" => crate::run(Raycast::<U16, Generic, P>::new(p, g)?),
-        "u8" => crate::run(Raycast::<U8, Generic, P>::new(p, g)?),
-        "bits" => crate::run(Raycast::<Bits, Generic, P>::new(p, g)?),
-        "hier" => crate::run(Raycast::<Hier, Generic, P>::new(p, g)?),
-        "prefix" => crate::run(Raycast::<Prefix, Generic, P>::new(p, g)?),
-        "palette" => crate::run(Raycast::<Palette, Generic, P>::new(p, g)?),
-        "brickmajor" => crate::run(Raycast::<mr_components::storage::brickmajor::Cpu, Generic, P>::new(p, g)?),
-        "morton" => crate::run(Raycast::<mr_components::storage::morton::Cpu, Generic, P>::new(p, g)?),
+        "bricks" => of::<U16, P>(p, g),
+        "u8" => of::<U8, P>(p, g),
+        "bits" => of::<Bits, P>(p, g),
+        "hier" => of::<Hier, P>(p, g),
+        "prefix" => of::<Prefix, P>(p, g),
+        "palette" => of::<Palette, P>(p, g),
+        "brickmajor" => of::<mr_components::storage::brickmajor::Cpu, P>(p, g),
+        "morton" => of::<mr_components::storage::morton::Cpu, P>(p, g),
         s => anyhow::bail!("storage `{s}` has no CPU implementation"),
     }
+}
+
+fn of<R: Repr, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    if std::env::var("MR_CPU_EXECUTOR").is_ok_and(|v| v == "graph") {
+        tracing::info!("cpu: the lane's nodes on the generic executor");
+        return nodes::executor::<R, Generic, P>(p, g);
+    }
+    crate::run(Raycast::<R, Generic, P>::new(p, g)?)
 }
 
 pub(crate) const BACKEND: &str = "cpu";
@@ -248,6 +257,66 @@ pub fn level_mask(skips: [bool; 4]) -> u32 {
 }
 
 impl<R: Repr> Scene<R> {
+    /// Applies the chunk updates (the world applied its own).
+    fn apply(&mut self, updates: &[WorldUpdate]) {
+        let s = self;
+        for u in updates {
+            match u {
+                WorldUpdate::ChunkLoad { key, data } if key.lod == 0 => {
+                    match data {
+                        &ChunkData::Uniform(b) if b.is_air() => {
+                            s.chunks.remove(&key.pos);
+                        }
+                        &ChunkData::Uniform(b) => {
+                            s.chunks.insert(key.pos, Entry::Uniform(b.0));
+                        }
+                        ChunkData::Dense(d) => {
+                            s.chunks.insert(key.pos, Entry::Dense(R::build(d)));
+                        }
+                    }
+                    s.grid_dirty = true;
+                }
+                WorldUpdate::ChunkUnload { key } if key.lod == 0 => {
+                    s.chunks.remove(&key.pos);
+                    s.grid_dirty = true;
+                }
+                WorldUpdate::ChunkLoad { .. } | WorldUpdate::ChunkUnload { .. } => {}
+                WorldUpdate::SetBlocks(edits) => {
+                    // Apply all edits first, then rebuild each touched chunk's bricks once.
+                    let mut touched: HashMap<IVec3, ChunkData> = HashMap::new();
+                    for e in edits {
+                        let pos = ChunkKey::of_block(e.pos).pos;
+                        let data = match touched.get_mut(&pos) {
+                            Some(d) => d,
+                            None => {
+                                let Some(entry) = s.chunks.get(&pos) else { continue };
+                                let d = match entry {
+                                    Entry::Uniform(b) => ChunkData::Uniform(BlockId(*b)),
+                                    Entry::Dense(r) => ChunkData::Dense(Arc::new(dense_of(r))),
+                                };
+                                touched.entry(pos).or_insert(d)
+                            }
+                        };
+                        data.set(local_of_block(e.pos), e.block);
+                    }
+                    for (pos, data) in touched {
+                        let entry = match data.compact() {
+                            ChunkData::Uniform(b) if b.is_air() => {
+                                s.chunks.remove(&pos);
+                                continue;
+                            }
+                            ChunkData::Uniform(b) => Entry::Uniform(b.0),
+                            ChunkData::Dense(d) => Entry::Dense(R::build(&d)),
+                        };
+                        s.chunks.insert(pos, entry);
+                    }
+                    s.grid_dirty = true;
+                }
+                WorldUpdate::LightUpsert(_) | WorldUpdate::LightRemove(_) | WorldUpdate::SetEnvironment(_) => {}
+            }
+        }
+    }
+
     fn rebuild_grid(&mut self) {
         let mut it = self.chunks.keys();
         let Some(&first) = it.next() else {
@@ -321,24 +390,73 @@ impl<R: Repr> Scene<R> {
 
 // ------------------------------------------------------------------------- the lane
 
-pub(crate) struct Raycast<R, S: Spec, P> {
+/// The kernel's knobs (`traversal`, `exact`, `skip*`), set on the scene its rays walk.
+struct Kernel {
+    kernel: String,
+    exact: bool,
+}
+
+impl Kernel {
+    /// Sets knob `name` on `scene`; `false` if it is not one of the kernel's.
+    fn set<R>(&mut self, scene: &mut Scene<R>, name: &str, value: &ParamValue) -> anyhow::Result<bool> {
+        match name {
+            "skip2" | "skip4" | "skip8" | "skip16" => {
+                let bit = 1 << (name[4..].parse::<u32>()?.trailing_zeros());
+                if value.as_bool().unwrap_or(true) {
+                    scene.levels |= bit;
+                } else {
+                    scene.levels &= !bit;
+                }
+            }
+            "traversal" | "exact" => {
+                let (kernel, exact) = match name {
+                    "traversal" => (value.as_str().unwrap_or("refloor").to_string(), self.exact),
+                    _ => (self.kernel.clone(), value.as_bool().unwrap_or(true)),
+                };
+                let t = traversal(&kernel, exact)?;
+                (self.kernel, self.exact, scene.traversal) = (kernel, exact, t);
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
+
+/// The primary rays' cast: how the frame's rays are scheduled and walked, and the views.
+struct Cast<S, P> {
     /// The baked choices and the output's pixel.
     spec: std::marker::PhantomData<(S, P)>,
-    scene: Scene<R>,
     perf: bool,
     counters: Option<perf::Counters>,
     packet: usize,
     isa: Isa,
     isa_choice: String,
-    /// `traversal` and `exact` knobs (folded into `scene.traversal`).
-    kernel: String,
-    exact: bool,
     /// `schedule = tiles` and its tile order and size; `rects` is the work list (rebuilt
     /// lazily when any of them or the size changes).
     tiles: bool,
     tile_order: TileOrder,
     tile: u32,
     rects: Vec<Rect>,
+    /// The view and the top of its scale.
+    view: View,
+    view_max: u32,
+}
+
+/// What a cast did.
+struct Casted {
+    work: RowWork,
+    legend: Option<Legend>,
+    /// Hardware counters, with the `perf` knob.
+    hw: Option<Vec<f64>>,
+    /// Wrote hit records (else pixels).
+    deferred: bool,
+    ms: f32,
+}
+
+pub(crate) struct Raycast<R, S: Spec, P> {
+    scene: Scene<R>,
+    kernel: Kernel,
+    cast: Cast<S, P>,
     /// The nodes of the storage's timed rebuild (the rays' and shading's are
     /// the core's).
     storage_nodes: Vec<String>,
@@ -346,13 +464,20 @@ pub(crate) struct Raycast<R, S: Spec, P> {
     /// pass shades them (empty while inline).
     records: Vec<Record>,
     deferred: bool,
-    /// The view and the top of its scale.
-    view: View,
-    view_max: u32,
 }
 
-impl<R: Repr, S: Spec, P: Pixel> Raycast<R, S, P> {
-    pub(crate) fn new(p: &InitParams, g: &Checked) -> anyhow::Result<(Core<P>, Self)> {
+/// The lane's parts, from its knobs.
+struct Parts<R, S, P> {
+    scene: Scene<R>,
+    kernel: Kernel,
+    cast: Cast<S, P>,
+    deferred: bool,
+    threads: usize,
+    shadows: Shadows,
+}
+
+impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
+    fn new(p: &InitParams, g: &Checked) -> anyhow::Result<Self> {
         let o: Options = p.options()?;
         if o.storage == "u8" && p.blocks.blocks.len() > 256 {
             anyhow::bail!("storage u8 needs <= 256 block types, registry has {}", p.blocks.blocks.len());
@@ -368,15 +493,21 @@ impl<R: Repr, S: Spec, P: Pixel> Raycast<R, S, P> {
         fixed("shadow rays", S::SHADOW, shadow)?;
         fixed("tone", S::TONE, g.tone())?;
         let b = Self {
-            spec: std::marker::PhantomData,
-            kernel: o.traversal.clone(),
-            exact: o.exact,
-            tiles: parse_schedule(&o.schedule)?,
-            tile_order: parse_order(&o.tile_order)?,
-            tile: o.tile.clamp(4, 256),
-            rects: vec![],
-            perf: perf::allowed(o.perf)?,
-            counters: None,
+            kernel: Kernel { kernel: o.traversal.clone(), exact: o.exact },
+            cast: Cast {
+                spec: std::marker::PhantomData,
+                tiles: parse_schedule(&o.schedule)?,
+                tile_order: parse_order(&o.tile_order)?,
+                tile: o.tile.clamp(4, 256),
+                rects: vec![],
+                perf: perf::allowed(o.perf)?,
+                counters: None,
+                packet: o.packet.parse().unwrap_or(1),
+                isa,
+                isa_choice: o.isa,
+                view: parse_view(&o.view)?,
+                view_max: o.view_max.clamp(1, 16384),
+            },
             scene: Scene {
                 chunks: HashMap::new(),
                 grid: Grid::default(),
@@ -385,18 +516,21 @@ impl<R: Repr, S: Spec, P: Pixel> Raycast<R, S, P> {
                 levels: level_mask([o.skip2, o.skip4, o.skip8, o.skip16]),
                 shadow,
             },
-            packet: o.packet.parse().unwrap_or(1),
-            isa,
-            isa_choice: o.isa,
-            view: parse_view(&o.view)?,
-            view_max: o.view_max.clamp(1, 16384),
-            storage_nodes: g.ids(&[Role::Storage]),
-            records: vec![],
             deferred: parse_placement(&o.placement)?,
+            threads: o.threads,
+            shadows: o.shadows,
         };
-        fixed("packets of", S::PACKET, b.packet)?;
+        fixed("packets of", S::PACKET, b.cast.packet)?;
         fixed("levels", S::LEVELS, b.scene.levels)?;
-        Ok((Core::new(p, g, o.threads, o.shadows)?, b))
+        Ok(b)
+    }
+}
+
+impl<R: Repr, S: Spec, P: Pixel> Raycast<R, S, P> {
+    pub(crate) fn new(p: &InitParams, g: &Checked) -> anyhow::Result<(Core<P>, Self)> {
+        let Parts { scene, kernel, cast, deferred, threads, shadows } = Parts::<R, S, P>::new(p, g)?;
+        let b = Self { scene, kernel, cast, storage_nodes: g.ids(&[Role::Storage]), records: vec![], deferred };
+        Ok((Core::new(p, g, threads, shadows)?, b))
     }
 }
 
@@ -716,13 +850,32 @@ fn rects(w: u32, h: u32, tiles: bool, tile: u32, order: TileOrder) -> Vec<Rect> 
     v.into_iter().map(|e| e.1).collect()
 }
 
-impl<R: Repr, S: Spec, P: Pixel> Raycast<R, S, P> {
+impl<R: Repr> Scene<R> {
     /// (bytes read by traversal, bytes kept alive) over all dense chunks.
     fn world_bytes(&self) -> (u64, u64) {
-        self.scene.chunks.values().fold((0, 0), |(t, a), e| match e {
+        self.chunks.values().fold((0, 0), |(t, a), e| match e {
             Entry::Dense(r) => (t + r.traversal_bytes() as u64, a + r.total_bytes() as u64),
             Entry::Uniform(_) => (t, a),
         })
+    }
+
+    /// Rebuilds the grid if chunks changed, timed as the storage's stage.
+    fn prepare(&mut self, nodes: &[String], stages: &mut Vec<StageTime>) {
+        if self.grid_dirty {
+            let start = Instant::now();
+            self.rebuild_grid();
+            stages.push(StageTime::cpu("storage", nodes, start.elapsed().as_secs_f32() * 1e3));
+        }
+    }
+
+    /// Its counters for the frame.
+    fn counters(&self) -> [(String, f64); 3] {
+        let (trav, total) = self.world_bytes();
+        [("chunks".into(), self.chunks.len() as f64), ("world_traversal_mb".into(), trav as f64 / 1048576.0), ("world_total_mb".into(), total as f64 / 1048576.0)]
+    }
+
+    fn memory(&self) -> u64 {
+        self.world_bytes().1 + self.grid.cells.len() as u64 * 4
     }
 }
 
@@ -731,85 +884,16 @@ fn dense_of<R: Repr>(r: &R) -> DenseChunk {
     r.to_dense()
 }
 
-impl<R: Repr, S: Spec, P: Pixel> Lane for Raycast<R, S, P> {
-    type Px = P;
-
-    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        let s = &mut self.scene;
-        for u in updates {
-            match u {
-                WorldUpdate::ChunkLoad { key, data } if key.lod == 0 => {
-                    match data {
-                        ChunkData::Uniform(b) if b.is_air() => {
-                            s.chunks.remove(&key.pos);
-                        }
-                        ChunkData::Uniform(b) => {
-                            s.chunks.insert(key.pos, Entry::Uniform(b.0));
-                        }
-                        ChunkData::Dense(d) => {
-                            s.chunks.insert(key.pos, Entry::Dense(R::build(&d)));
-                        }
-                    }
-                    s.grid_dirty = true;
-                }
-                WorldUpdate::ChunkUnload { key } if key.lod == 0 => {
-                    s.chunks.remove(&key.pos);
-                    s.grid_dirty = true;
-                }
-                WorldUpdate::ChunkLoad { .. } | WorldUpdate::ChunkUnload { .. } => {}
-                WorldUpdate::SetBlocks(edits) => {
-                    // Apply all edits first, then rebuild each touched chunk's bricks once.
-                    let mut touched: HashMap<IVec3, ChunkData> = HashMap::new();
-                    for e in edits {
-                        let pos = ChunkKey::of_block(e.pos).pos;
-                        let data = match touched.get_mut(&pos) {
-                            Some(d) => d,
-                            None => {
-                                let Some(entry) = s.chunks.get(&pos) else { continue };
-                                let d = match entry {
-                                    Entry::Uniform(b) => ChunkData::Uniform(BlockId(*b)),
-                                    Entry::Dense(r) => ChunkData::Dense(Arc::new(dense_of(r))),
-                                };
-                                touched.entry(pos).or_insert(d)
-                            }
-                        };
-                        data.set(local_of_block(e.pos), e.block);
-                    }
-                    for (pos, data) in touched {
-                        let entry = match data.compact() {
-                            ChunkData::Uniform(b) if b.is_air() => {
-                                s.chunks.remove(&pos);
-                                continue;
-                            }
-                            ChunkData::Uniform(b) => Entry::Uniform(b.0),
-                            ChunkData::Dense(d) => Entry::Dense(R::build(&d)),
-                        };
-                        s.chunks.insert(pos, entry);
-                    }
-                    s.grid_dirty = true;
-                }
-                WorldUpdate::LightUpsert(_) | WorldUpdate::LightRemove(_) | WorldUpdate::SetEnvironment(_) => {}
-            }
-        }
-        Ok(())
-    }
-
-    fn render(&mut self, frame: &mut Frame<P>, pool: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
-        let start = Instant::now();
-        let mut stages = Vec::new();
-        if self.scene.grid_dirty {
-            self.scene.rebuild_grid();
-            stages.push(StageTime::cpu("storage", &self.storage_nodes, start.elapsed().as_secs_f32() * 1e3));
-        }
-        let (w, h) = (frame.width, frame.height);
-        let (scene, isa, packet) = (&self.scene, self.isa, self.packet);
-        let cam = req.camera;
-        let mode = req.mode;
+impl<S: Spec, P: Pixel> Cast<S, P> {
+    /// Casts the frame's primary rays through `scene`: shaded pixels into `pixels`, or with
+    /// `records` (deferred, unless a diagnostic view shows the walk) one hit record per pixel.
+    fn run<R: Repr>(&mut self, scene: &Scene<R>, pool: &Pool, world: &World, req: &FrameRequest, w: u32, h: u32, pixels: &mut [P], records: Option<&mut Vec<Record>>) -> Casted {
+        let (isa, packet) = (self.isa, self.packet);
+        let (cam, mode) = (req.camera, req.mode);
         if self.perf && self.counters.is_none() {
             self.counters = perf::Counters::open_on(pool.rayon());
         }
         let counters = if self.perf { self.counters.as_ref() } else { None };
-        let pixels = &mut frame.pixels;
         if let Some(c) = counters {
             c.start();
         }
@@ -819,99 +903,32 @@ impl<R: Repr, S: Spec, P: Pixel> Lane for Raycast<R, S, P> {
         let legend = match self.view {
             View::Image => None,
             View::Steps => {
-                let quantity = if self.scene.traversal == Traversal::Refloor { "lockstep loop iterations (packet)" } else { "occupancy tests (ray)" };
+                let quantity = if scene.traversal == Traversal::Refloor { "lockstep loop iterations (packet)" } else { "occupancy tests (ray)" };
                 Some(Legend::ramp(quantity, self.view_max as f64, true))
             }
             View::Distance => Some(Legend::ramp("distance to the primary hit (blocks)", self.view_max as f64, false)),
         };
         // A diagnostic view shows the walk itself, so it runs inline whatever the placement.
-        let deferred = self.deferred && legend.is_none();
-        if deferred {
-            self.records.resize((w * h) as usize, Record::SKY);
-        }
-        let job = Job { scene, world, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone().map(|l| (l, self.view)), out: OutPtr(pixels.as_mut_ptr()), records: RecPtr(self.records.as_mut_ptr()) };
-        let rect_list = &self.rects;
+        let records = records.filter(|_| legend.is_none()).map(|r| {
+            r.resize((w * h) as usize, Record::SKY);
+            RecPtr(r.as_mut_ptr())
+        });
+        let deferred = records.is_some();
+        let job = Job { scene, world, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone().map(|l| (l, self.view)), out: OutPtr(pixels.as_mut_ptr()), records: records.unwrap_or(RecPtr(std::ptr::null_mut())) };
         let cast = Instant::now();
         let rect: fn(Isa, &Job<R, P>, Rect) -> RowWork = if deferred { render_rect_isa::<R, S, P, true> } else { render_rect_isa::<R, S, P, false> };
-        let work: RowWork = rect_list.par_iter().map(|&r| rect(isa, &job, r)).reduce(RowWork::default, |a, b| a + b);
-        drop(job);
-        if deferred {
-            stages.push(StageTime::cpu("cast", &frame.stage_nodes[1], cast.elapsed().as_secs_f32() * 1e3));
-            let shade = Instant::now();
-            let records = &self.records;
-            let deferred = Deferred::<R, S, P>::new(scene, world, records, &cam, w, h, mode);
-            mr_components::shading::deferred::shade(&deferred, w, pixels);
-            stages.push(StageTime::cpu("shade", &frame.stage_nodes[2], shade.elapsed().as_secs_f32() * 1e3));
-        } else {
-            stages.push(StageTime::cpu("cast+shade", &frame.stage_nodes[0], cast.elapsed().as_secs_f32() * 1e3));
-        }
-        let hw = counters.map(|c| c.stop());
-        let px = (w * h) as f64;
-        let (trav, total) = self.world_bytes();
-        let mut counters = vec![
-            ("chunks".into(), self.scene.chunks.len() as f64),
-            // Lockstep iterations x packet width (work including idle lanes); with
-            // incremental traversals, occupancy tests per ray.
-            ("lane_steps_per_pixel".into(), work.lane_steps as f64 / px),
-            ("world_traversal_mb".into(), trav as f64 / 1048576.0),
-            ("world_total_mb".into(), total as f64 / 1048576.0),
-        ];
-        if self.scene.traversal != Traversal::Refloor {
-            counters.push(("dda_steps_per_pixel".into(), work.steps as f64 / px));
-            counters.push(("ascent_tests_per_pixel".into(), work.up as f64 / px));
-            counters.push(("descents_per_pixel".into(), work.down as f64 / px));
-        }
-        if let Some(hw) = hw {
-            for (&(name, _, _), v) in perf::EVENTS.iter().zip(&hw) {
-                if v.is_finite() {
-                    counters.push((format!("{name}_per_px"), v / px));
-                }
-            }
-            if hw[0].is_finite() && hw[1].is_finite() {
-                counters.push(("ipc".into(), hw[1] / hw[0]));
-            }
-        }
-        FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages }
+        let work: RowWork = self.rects.par_iter().map(|&r| rect(isa, &job, r)).reduce(RowWork::default, |a, b| a + b);
+        let ms = cast.elapsed().as_secs_f32() * 1e3;
+        Casted { work, legend, hw: counters.map(|c| c.stop()), deferred, ms }
     }
 
-    fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        self.set(name, value).map(|known| known.then_some(())).transpose()
-    }
-
-    fn resize(&mut self, _: &Frame<P>) {
-        self.rects.clear();
-    }
-
-    fn memory(&self) -> u64 {
-        let (_, total) = self.world_bytes();
-        total + self.scene.grid.cells.len() as u64 * 4
-    }
-}
-
-impl<R: Repr, S: Spec, P: Pixel> Raycast<R, S, P> {
-    /// Sets knob `name`; `false` if it is not one of the lane's.
+    /// Sets knob `name`; `false` if it is not one of the cast's.
     fn set(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<bool> {
         match name {
             "perf" => self.perf = perf::allowed(value.as_bool().unwrap_or(false))?,
             "view" => self.view = parse_view(value.as_str().unwrap_or(""))?,
             "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,
-            "skip2" | "skip4" | "skip8" | "skip16" => {
-                let bit = 1 << (name[4..].parse::<u32>()?.trailing_zeros());
-                if value.as_bool().unwrap_or(true) {
-                    self.scene.levels |= bit;
-                } else {
-                    self.scene.levels &= !bit;
-                }
-            }
             "visibility" => drop(require(BACKEND, Slot::Visibility, value.as_str().unwrap_or(""))?),
-            "traversal" | "exact" => {
-                let (kernel, exact) = match name {
-                    "traversal" => (value.as_str().unwrap_or("refloor").to_string(), self.exact),
-                    _ => (self.kernel.clone(), value.as_bool().unwrap_or(true)),
-                };
-                let t = traversal(&kernel, exact)?;
-                (self.kernel, self.exact, self.scene.traversal) = (kernel, exact, t);
-            }
             "shading" => {
                 require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?;
             }
@@ -931,3 +948,244 @@ impl<R: Repr, S: Spec, P: Pixel> Raycast<R, S, P> {
     }
 }
 
+impl Casted {
+    /// The walk's counters for a `px`-pixel frame through `traversal`.
+    fn counters(&self, traversal: Traversal, px: f64) -> Vec<(String, f64)> {
+        let work = &self.work;
+        // Lockstep iterations x packet width (work including idle lanes); with
+        // incremental traversals, occupancy tests per ray.
+        let mut counters = vec![("lane_steps_per_pixel".into(), work.lane_steps as f64 / px)];
+        if traversal != Traversal::Refloor {
+            counters.push(("dda_steps_per_pixel".into(), work.steps as f64 / px));
+            counters.push(("ascent_tests_per_pixel".into(), work.up as f64 / px));
+            counters.push(("descents_per_pixel".into(), work.down as f64 / px));
+        }
+        if let Some(hw) = &self.hw {
+            for (&(name, _, _), v) in perf::EVENTS.iter().zip(hw) {
+                if v.is_finite() {
+                    counters.push((format!("{name}_per_px"), v / px));
+                }
+            }
+            if hw[0].is_finite() && hw[1].is_finite() {
+                counters.push(("ipc".into(), hw[1] / hw[0]));
+            }
+        }
+        counters
+    }
+}
+
+/// Shades `records` (the common deferred pass) into `pixels`.
+fn shade_records<R: Repr, S: Spec, P: Pixel>(scene: &Scene<R>, world: &World, records: &[Record], req: &FrameRequest, w: u32, h: u32, pixels: &mut [P]) {
+    let deferred = Deferred::<R, S, P>::new(scene, world, records, &req.camera, w, h, req.mode);
+    mr_components::shading::deferred::shade(&deferred, w, pixels);
+}
+
+impl<R: Repr, S: Spec, P: Pixel> Lane for Raycast<R, S, P> {
+    type Px = P;
+
+    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        self.scene.apply(&updates);
+        Ok(())
+    }
+
+    fn render(&mut self, frame: &mut Frame<P>, pool: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
+        let start = Instant::now();
+        let mut stages = Vec::new();
+        self.scene.prepare(&self.storage_nodes, &mut stages);
+        let (w, h) = (frame.width, frame.height);
+        let cast = self.cast.run(&self.scene, pool, world, req, w, h, &mut frame.pixels, self.deferred.then_some(&mut self.records));
+        if cast.deferred {
+            stages.push(StageTime::cpu("cast", &frame.stage_nodes[1], cast.ms));
+            let shade = Instant::now();
+            shade_records::<R, S, P>(&self.scene, world, &self.records, req, w, h, &mut frame.pixels);
+            stages.push(StageTime::cpu("shade", &frame.stage_nodes[2], shade.elapsed().as_secs_f32() * 1e3));
+        } else {
+            stages.push(StageTime::cpu("cast+shade", &frame.stage_nodes[0], cast.ms));
+        }
+        let mut counters = self.scene.counters().to_vec();
+        counters.extend(cast.counters(self.scene.traversal, (w * h) as f64));
+        FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend: cast.legend, stages }
+    }
+
+    fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        let known = self.kernel.set(&mut self.scene, name, value).and_then(|k| Ok(k || self.cast.set(name, value)?));
+        known.map(|known| known.then_some(())).transpose()
+    }
+
+    fn resize(&mut self, _: &Frame<P>) {
+        self.cast.rects.clear();
+    }
+
+    fn memory(&self) -> u64 {
+        self.scene.memory()
+    }
+}
+
+// ------------------------------------------------------------------------- the nodes
+
+/// The lane as nodes of the generic executor: the storage (its output: the scene the rays
+/// walk, the storage-and-rays port), the visibility (the primary rays' cast; its output: the
+/// hit records) and the shading (the common deferred pass; its output: the image). With
+/// `placement = inline` visibility and shading are one fused pass writing the image.
+mod nodes {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::exec::{self, Cx, Node, Pass, Report, Res};
+
+    struct Storage<R> {
+        /// The scene before the first frame (taken by [`Node::output`]).
+        init: Option<Scene<R>>,
+        kernel: Kernel,
+        nodes: Vec<String>,
+    }
+
+    fn scene<R: 'static>(r: &Res) -> &Scene<R> {
+        r.downcast_ref().expect("a scene")
+    }
+
+    impl<R: Repr> Node for Storage<R> {
+        fn output(&mut self, _: u32, _: u32) -> Res {
+            Box::new(self.init.take().expect("one output per storage"))
+        }
+        fn update(&mut self, out: &mut Res, updates: &[WorldUpdate]) -> anyhow::Result<()> {
+            out.downcast_mut::<Scene<R>>().expect("a scene").apply(updates);
+            Ok(())
+        }
+        fn run(&mut self, _: &Cx, _: &[&Res], out: &mut Res, report: &mut Report) {
+            let s = out.downcast_mut::<Scene<R>>().expect("a scene");
+            s.prepare(&self.nodes, &mut report.stages);
+            report.counters.extend(s.counters());
+        }
+        fn set_param(&mut self, out: &mut Res, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+            self.kernel.set(out.downcast_mut::<Scene<R>>().expect("a scene"), name, value).map(|k| k.then_some(())).transpose()
+        }
+        fn memory(&self, out: &Res) -> u64 {
+            scene::<R>(out).memory()
+        }
+    }
+
+    /// The hit records, or with a diagnostic view the pixels showing the walk.
+    struct Hits<P> {
+        records: Vec<Record>,
+        shown: Option<Vec<P>>,
+    }
+
+    /// The primary rays' cast; `fused`: shading inline, its output the image.
+    struct Visibility<R, S, P> {
+        cast: Cast<S, P>,
+        fused: bool,
+        nodes: Vec<String>,
+        storage: std::marker::PhantomData<R>,
+    }
+
+    impl<R: Repr, S: Spec, P: Pixel> Node for Visibility<R, S, P> {
+        fn output(&mut self, w: u32, h: u32) -> Res {
+            if self.fused { exec::image::<P>(w, h) } else { Box::new(Hits::<P> { records: vec![], shown: None }) }
+        }
+        fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
+            let scene = scene::<R>(ins[0]);
+            let (w, h) = (cx.width, cx.height);
+            let cast = if self.fused {
+                let pixels = out.downcast_mut::<Vec<P>>().expect("an image");
+                self.cast.run(scene, cx.pool, cx.world, cx.req, w, h, pixels, None)
+            } else {
+                let hits = out.downcast_mut::<Hits<P>>().expect("hit records");
+                let mut shown = hits.shown.take().unwrap_or_default();
+                shown.resize((w * h) as usize, P::zeroed());
+                let cast = self.cast.run(scene, cx.pool, cx.world, cx.req, w, h, &mut shown, Some(&mut hits.records));
+                hits.shown = (!cast.deferred).then_some(shown);
+                cast
+            };
+            report.stages.push(StageTime::cpu(if self.fused { "cast+shade" } else { "cast" }, &self.nodes, cast.ms));
+            report.counters.extend(cast.counters(scene.traversal, (w * h) as f64));
+            report.legend = cast.legend;
+        }
+        fn set_param(&mut self, _: &mut Res, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+            self.cast.set(name, value).map(|k| k.then_some(())).transpose()
+        }
+        fn resize(&mut self, out: &mut Res, w: u32, h: u32) {
+            self.cast.rects.clear();
+            if self.fused {
+                *out = exec::image::<P>(w, h);
+            }
+        }
+        fn memory(&self, out: &Res) -> u64 {
+            out.downcast_ref::<Hits<P>>().map_or(0, |h| std::mem::size_of_val(&h.records[..]) as u64)
+        }
+    }
+
+    /// The common deferred pass over the hit records; shadow rays walk the scene.
+    struct Shading<R, S, P> {
+        nodes: Vec<String>,
+        spec: std::marker::PhantomData<(R, S, P)>,
+    }
+
+    impl<R: Repr, S: Spec, P: Pixel> Node for Shading<R, S, P> {
+        fn output(&mut self, w: u32, h: u32) -> Res {
+            exec::image::<P>(w, h)
+        }
+        fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
+            let (hits, scene) = (ins[0].downcast_ref::<Hits<P>>().expect("hit records"), scene::<R>(ins[1]));
+            let pixels = out.downcast_mut::<Vec<P>>().expect("an image");
+            if let Some(shown) = &hits.shown {
+                pixels.copy_from_slice(shown);
+                return;
+            }
+            let start = Instant::now();
+            shade_records::<R, S, P>(scene, cx.world, &hits.records, cx.req, cx.width, cx.height, pixels);
+            report.stages.push(StageTime::cpu("shade", &self.nodes, start.elapsed().as_secs_f32() * 1e3));
+        }
+        fn resize(&mut self, out: &mut Res, w: u32, h: u32) {
+            *out = exec::image::<P>(w, h);
+        }
+    }
+
+    /// The executor for graph `g`: one pass per scheduled storage, visibility and shading
+    /// node, each reading the passes its inputs reach (through fused nodes).
+    pub(super) fn executor<R: Repr, S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
+        let parts = Parts::<R, S, P>::new(p, g)?;
+        let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
+        let mut cast = Some(parts.cast);
+        let mut storage = Some((parts.scene, parts.kernel));
+        let mut passes: Vec<Pass> = vec![];
+        let mut index: HashMap<String, usize> = HashMap::new();
+        for pass in schedule.passes() {
+            let id = pass.node.as_str();
+            let node: Box<dyn Node> = match g.node(id).role {
+                Role::Storage => {
+                    let (scene, kernel) = storage.take().expect("one storage node");
+                    Box::new(Storage::<R> { init: Some(scene), kernel, nodes: vec![id.to_string()] })
+                }
+                Role::Visibility => {
+                    let fused = !parts.deferred;
+                    let nodes = if fused { g.ids(&[Role::Visibility, Role::Shading]) } else { vec![id.to_string()] };
+                    Box::new(Visibility::<R, S, P> { cast: cast.take().expect("one visibility node"), fused, nodes, storage: std::marker::PhantomData })
+                }
+                // Fused into the visibility pass.
+                Role::Shading if !parts.deferred => continue,
+                Role::Shading => Box::new(Shading::<R, S, P> { nodes: vec![id.to_string()], spec: std::marker::PhantomData }),
+                _ => continue,
+            };
+            let mut ins = vec![];
+            reads(g, id, &index, &mut ins);
+            index.insert(id.to_string(), passes.len());
+            passes.push(Pass { node, ins });
+        }
+        let world = crate::world::<P>(p, g, parts.shadows)?;
+        Ok(Box::new(exec::Executor::<P>::new(p, parts.threads, world, passes)?))
+    }
+
+    /// The passes node `id`'s inputs reach, in port order: a pass directly, through fused
+    /// nodes (kernels) the passes they read.
+    fn reads(g: &Checked, id: &str, index: &HashMap<String, usize>, out: &mut Vec<usize>) {
+        for from in g.node(id).inputs.values() {
+            match index.get(from) {
+                Some(&i) if !out.contains(&i) => out.push(i),
+                Some(_) => {}
+                None if g.graph.nodes.contains_key(from) => reads(g, from, index, out),
+                None => {}
+            }
+        }
+    }
+}

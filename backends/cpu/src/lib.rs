@@ -24,6 +24,7 @@ use mr_components::graph::{self, Role};
 use mr_core::*;
 
 mod columns;
+mod exec;
 mod perf;
 mod raster;
 mod raycast;
@@ -151,14 +152,9 @@ pub(crate) struct Frame<P> {
 impl<P: Pixel> Core<P> {
     /// `threads`: the knob's value (0 = every core the run grants); `shadows` the world's.
     fn new(p: &InitParams, g: &graph::Checked, threads: usize, shadows: Shadows) -> anyhow::Result<Self> {
-        let format = g.tone().format();
-        anyhow::ensure!(P::FORMAT == format, "this lane writes {:?} pixels, the post `{}` {format:?}", P::FORMAT, g.tone().name());
-        let mut world = World::new(p);
-        world.shadows = shadows;
-        world.tone = g.tone();
         Ok(Self {
             pool: Pool::new(p.devices.cpu_threads(threads))?,
-            world,
+            world: world::<P>(p, g, shadows)?,
             frame: Frame {
                 pixels: vec![P::zeroed(); (p.width * p.height) as usize],
                 width: p.width,
@@ -167,6 +163,16 @@ impl<P: Pixel> Core<P> {
             },
         })
     }
+}
+
+/// The world for graph `g` with the `shadows` knob, its pixels `P` the post's.
+fn world<P: Pixel>(p: &InitParams, g: &graph::Checked, shadows: Shadows) -> anyhow::Result<World> {
+    let format = g.tone().format();
+    anyhow::ensure!(P::FORMAT == format, "this pipeline writes {:?} pixels, the post `{}` {format:?}", P::FORMAT, g.tone().name());
+    let mut world = World::new(p);
+    world.shadows = shadows;
+    world.tone = g.tone();
+    Ok(world)
 }
 
 /// A lane: the visibility node's implementation, its chunks and what it keeps.

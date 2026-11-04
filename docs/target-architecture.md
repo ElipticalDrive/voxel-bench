@@ -195,6 +195,12 @@ Not a rewrite: one lane at a time, the old path kept until its replacement match
    and open the editor to any edge.
 5. Retire the lanes and the ten named back ends; "back end" means device + API.
 
+Progress: step 1 is done for the CPU, and step 2 for its ray-casting lane: a generic CPU
+executor walks the graph's schedule, each pass a node with an *output* resource the executor
+owns (dispatch per pass only); the lane runs as storage → visibility → shading nodes, the hit
+records the edge between them, `placement = inline` fusing visibility and shading. For now it
+runs when `MR_CPU_EXECUTOR=graph` is set; pixels are identical to the lane.
+
 ## Non-goals
 
 - A compiler or JIT of our own.
