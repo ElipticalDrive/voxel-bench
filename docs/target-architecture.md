@@ -39,6 +39,11 @@ speed bounds how the composition is done, not what may be composed.
 - **Nodes are typed by their ports.** Port types are the data products: world changes, chunks,
   storages, ray services, faces, starts, hits (the common hit record), tiles, images. The
   typing is the single source of truth for what may connect to what.
+  **Port types are added as needed**: as many as the techniques require, including ones only a
+  single technique uses. The set is open and is not kept small for its own sake.
+  Where a port carries several kinds of data at once (today's storage-and-rays port, for
+  example), splitting it into separate ports can let other components share the pieces and
+  removes duplicated code; that is done where it pays and is not always applicable.
 - **Edges are free.** Any output of type *T* may be bound to any input accepting *T*. The editor
   lets the user add a node and wire it however they like. Nothing is dropped, rewritten or
   re-filled behind their back.
