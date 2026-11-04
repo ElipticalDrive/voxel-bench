@@ -1,5 +1,5 @@
-//! The CPU ray-casting lane (`cpu`): a renderer from
-//! components (`mr-components`): a
+//! CPU ray casting (`cpu`): a renderer from components (`mr-components`), run as nodes of
+//! the generic executor ([`crate::exec`]): a
 //! **storage** (`Repr`, one generic instantiation per storage: monomorphised, so the split
 //! costs nothing), a **traversal** kernel cast per pixel (`refloor` with SIMD-friendly ray
 //! packets, or `incremental`; the visibility strategy is `raycast`) and the **shading** component (`direct`), multi-threaded with rayon.
@@ -30,7 +30,8 @@ use mr_core::*;
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use crate::{Core, Frame, Generic, Lane, Pixel, Spec, fixed, perf};
+use crate::{Generic, Pixel, Spec, fixed, perf};
+pub(crate) use nodes::executor;
 
 /// The Rust type of each CPU storage, for generated code.
 pub fn storage_type(name: &str) -> Option<&'static str> {
@@ -58,8 +59,7 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-/// The lane for graph `g`, monomorphised for its storage.
-/// With `MR_CPU_EXECUTOR=graph`, its nodes on the generic executor ([`crate::exec`]).
+/// The executor for graph `g`, its nodes monomorphised for its storage.
 pub(crate) fn create<P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let opts: Options = p.options()?;
     let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
@@ -77,11 +77,7 @@ pub(crate) fn create<P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Bo
 }
 
 fn of<R: Repr, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    if std::env::var("MR_CPU_EXECUTOR").is_ok_and(|v| v == "graph") {
-        tracing::info!("cpu: the lane's nodes on the generic executor");
-        return nodes::executor::<R, Generic, P>(p, g);
-    }
-    crate::run(Raycast::<R, Generic, P>::new(p, g)?)
+    executor::<R, Generic, P>(p, g)
 }
 
 pub(crate) const BACKEND: &str = "cpu";
@@ -388,7 +384,7 @@ impl<R: Repr> Scene<R> {
     }
 }
 
-// ------------------------------------------------------------------------- the lane
+// ------------------------------------------------------------------------- the parts
 
 /// The kernel's knobs (`traversal`, `exact`, `skip*`), set on the scene its rays walk.
 struct Kernel {
@@ -453,20 +449,7 @@ struct Casted {
     ms: f32,
 }
 
-pub(crate) struct Raycast<R, S: Spec, P> {
-    scene: Scene<R>,
-    kernel: Kernel,
-    cast: Cast<S, P>,
-    /// The nodes of the storage's timed rebuild (the rays' and shading's are
-    /// the core's).
-    storage_nodes: Vec<String>,
-    /// `placement = deferred`: the walk writes one hit record per pixel here, then a second
-    /// pass shades them (empty while inline).
-    records: Vec<Record>,
-    deferred: bool,
-}
-
-/// The lane's parts, from its knobs.
+/// The nodes' parts, from their knobs.
 struct Parts<R, S, P> {
     scene: Scene<R>,
     kernel: Kernel,
@@ -523,14 +506,6 @@ impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
         fixed("packets of", S::PACKET, b.cast.packet)?;
         fixed("levels", S::LEVELS, b.scene.levels)?;
         Ok(b)
-    }
-}
-
-impl<R: Repr, S: Spec, P: Pixel> Raycast<R, S, P> {
-    pub(crate) fn new(p: &InitParams, g: &Checked) -> anyhow::Result<(Core<P>, Self)> {
-        let Parts { scene, kernel, cast, deferred, threads, shadows } = Parts::<R, S, P>::new(p, g)?;
-        let b = Self { scene, kernel, cast, storage_nodes: g.ids(&[Role::Storage]), records: vec![], deferred };
-        Ok((Core::new(p, g, threads, shadows)?, b))
     }
 }
 
@@ -980,50 +955,9 @@ fn shade_records<R: Repr, S: Spec, P: Pixel>(scene: &Scene<R>, world: &World, re
     mr_components::shading::deferred::shade(&deferred, w, pixels);
 }
 
-impl<R: Repr, S: Spec, P: Pixel> Lane for Raycast<R, S, P> {
-    type Px = P;
-
-    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        self.scene.apply(&updates);
-        Ok(())
-    }
-
-    fn render(&mut self, frame: &mut Frame<P>, pool: &Pool, world: &World, req: &FrameRequest) -> FrameStats {
-        let start = Instant::now();
-        let mut stages = Vec::new();
-        self.scene.prepare(&self.storage_nodes, &mut stages);
-        let (w, h) = (frame.width, frame.height);
-        let cast = self.cast.run(&self.scene, pool, world, req, w, h, &mut frame.pixels, self.deferred.then_some(&mut self.records));
-        if cast.deferred {
-            stages.push(StageTime::cpu("cast", &frame.stage_nodes[1], cast.ms));
-            let shade = Instant::now();
-            shade_records::<R, S, P>(&self.scene, world, &self.records, req, w, h, &mut frame.pixels);
-            stages.push(StageTime::cpu("shade", &frame.stage_nodes[2], shade.elapsed().as_secs_f32() * 1e3));
-        } else {
-            stages.push(StageTime::cpu("cast+shade", &frame.stage_nodes[0], cast.ms));
-        }
-        let mut counters = self.scene.counters().to_vec();
-        counters.extend(cast.counters(self.scene.traversal, (w * h) as f64));
-        FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend: cast.legend, stages }
-    }
-
-    fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        let known = self.kernel.set(&mut self.scene, name, value).and_then(|k| Ok(k || self.cast.set(name, value)?));
-        known.map(|known| known.then_some(())).transpose()
-    }
-
-    fn resize(&mut self, _: &Frame<P>) {
-        self.cast.rects.clear();
-    }
-
-    fn memory(&self) -> u64 {
-        self.scene.memory()
-    }
-}
-
 // ------------------------------------------------------------------------- the nodes
 
-/// The lane as nodes of the generic executor: the storage (its output: the scene the rays
+/// The nodes of the generic executor: the storage (its output: the scene the rays
 /// walk, the storage-and-rays port), the visibility (the primary rays' cast; its output: the
 /// hit records) and the shading (the common deferred pass; its output: the image). With
 /// `placement = inline` visibility and shading are one fused pass writing the image.
@@ -1065,10 +999,12 @@ mod nodes {
         }
     }
 
-    /// The hit records, or with a diagnostic view the pixels showing the walk.
+    /// The hit records, or with a diagnostic view (`shown`) the pixels showing the walk
+    /// (the buffer kept across frames).
     struct Hits<P> {
         records: Vec<Record>,
-        shown: Option<Vec<P>>,
+        pixels: Vec<P>,
+        shown: bool,
     }
 
     /// The primary rays' cast; `fused`: shading inline, its output the image.
@@ -1081,7 +1017,7 @@ mod nodes {
 
     impl<R: Repr, S: Spec, P: Pixel> Node for Visibility<R, S, P> {
         fn output(&mut self, w: u32, h: u32) -> Res {
-            if self.fused { exec::image::<P>(w, h) } else { Box::new(Hits::<P> { records: vec![], shown: None }) }
+            if self.fused { exec::image::<P>(w, h) } else { Box::new(Hits::<P> { records: vec![], pixels: vec![], shown: false }) }
         }
         fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
             let scene = scene::<R>(ins[0]);
@@ -1091,10 +1027,9 @@ mod nodes {
                 self.cast.run(scene, cx.pool, cx.world, cx.req, w, h, pixels, None)
             } else {
                 let hits = out.downcast_mut::<Hits<P>>().expect("hit records");
-                let mut shown = hits.shown.take().unwrap_or_default();
-                shown.resize((w * h) as usize, P::zeroed());
-                let cast = self.cast.run(scene, cx.pool, cx.world, cx.req, w, h, &mut shown, Some(&mut hits.records));
-                hits.shown = (!cast.deferred).then_some(shown);
+                hits.pixels.resize((w * h) as usize, P::zeroed());
+                let cast = self.cast.run(scene, cx.pool, cx.world, cx.req, w, h, &mut hits.pixels, Some(&mut hits.records));
+                hits.shown = !cast.deferred;
                 cast
             };
             report.stages.push(StageTime::cpu(if self.fused { "cast+shade" } else { "cast" }, &self.nodes, cast.ms));
@@ -1111,7 +1046,7 @@ mod nodes {
             }
         }
         fn memory(&self, out: &Res) -> u64 {
-            out.downcast_ref::<Hits<P>>().map_or(0, |h| std::mem::size_of_val(&h.records[..]) as u64)
+            out.downcast_ref::<Hits<P>>().map_or(0, |h| (std::mem::size_of_val(&h.records[..]) + std::mem::size_of_val(&h.pixels[..])) as u64)
         }
     }
 
@@ -1128,8 +1063,8 @@ mod nodes {
         fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
             let (hits, scene) = (ins[0].downcast_ref::<Hits<P>>().expect("hit records"), scene::<R>(ins[1]));
             let pixels = out.downcast_mut::<Vec<P>>().expect("an image");
-            if let Some(shown) = &hits.shown {
-                pixels.copy_from_slice(shown);
+            if hits.shown {
+                pixels.copy_from_slice(&hits.pixels);
                 return;
             }
             let start = Instant::now();
@@ -1142,8 +1077,9 @@ mod nodes {
     }
 
     /// The executor for graph `g`: one pass per scheduled storage, visibility and shading
-    /// node, each reading the passes its inputs reach (through fused nodes).
-    pub(super) fn executor<R: Repr, S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    /// node, each reading the passes its inputs reach (through fused nodes); `S` what a
+    /// compiled pipeline baked in.
+    pub(crate) fn executor<R: Repr, S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
         let parts = Parts::<R, S, P>::new(p, g)?;
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
         let mut cast = Some(parts.cast);
@@ -1173,7 +1109,7 @@ mod nodes {
             passes.push(Pass { node, ins });
         }
         let world = crate::world::<P>(p, g, parts.shadows)?;
-        Ok(Box::new(exec::Executor::<P>::new(p, parts.threads, world, passes)?))
+        Ok(Box::new(exec::Executor::<P>::new(p, parts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))
     }
 
     /// The passes node `id`'s inputs reach, in port order: a pass directly, through fused

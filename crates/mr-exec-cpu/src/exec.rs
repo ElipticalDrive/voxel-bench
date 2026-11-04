@@ -5,9 +5,8 @@
 //! read it). Dispatch is per pass (a few virtual calls and downcasts per frame); all
 //! per-ray and per-pixel work happens inside a node, monomorphised as before.
 //!
-//! Being migrated to: the lanes ([`crate::Lane`]) are the old path, kept until their nodes
-//! match them in pixels and speed. Today the ray-casting lane runs here when
-//! `MR_CPU_EXECUTOR=graph`.
+//! Being migrated to: ray casting runs here; the other lanes ([`crate::Lane`]) are the old
+//! path, kept until their nodes match them in pixels and speed.
 
 use std::any::Any;
 
@@ -74,6 +73,10 @@ pub(crate) struct Executor<P> {
     height: u32,
     passes: Vec<Pass>,
     outs: Vec<Res>,
+    /// The knob values a compiled pipeline baked in ([`crate::Spec::KNOBS`]).
+    baked: mr_core::baked::Knobs,
+    /// Compiled for this machine ([`crate::Spec::NATIVE`]).
+    native: bool,
     _px: std::marker::PhantomData<P>,
 }
 
@@ -81,7 +84,12 @@ impl<P: Pixel> Executor<P> {
     pub fn new(p: &InitParams, threads: usize, world: World, mut passes: Vec<Pass>) -> anyhow::Result<Self> {
         anyhow::ensure!(passes.iter().enumerate().all(|(i, s)| s.ins.iter().all(|&j| j < i)), "a pass reads a later pass's output");
         let outs = passes.iter_mut().map(|s| s.node.output(p.width, p.height)).collect();
-        Ok(Self { pool: Pool::new(p.devices.cpu_threads(threads))?, world, width: p.width, height: p.height, passes, outs, _px: std::marker::PhantomData })
+        Ok(Self { pool: Pool::new(p.devices.cpu_threads(threads))?, world, width: p.width, height: p.height, passes, outs, baked: &[], native: false, _px: std::marker::PhantomData })
+    }
+
+    /// A compiled pipeline's: refuses its `baked` knobs, says when it is `native`.
+    pub fn baked(self, baked: mr_core::baked::Knobs, native: bool) -> Self {
+        Self { baked, native, ..self }
     }
 
     fn image(&self) -> &[P] {
@@ -112,12 +120,17 @@ impl<P: Pixel> Renderer for Executor<P> {
                 pass.node.run(&cx, &ins, &mut rest[0], &mut report);
             }
         });
+        if self.native {
+            // A pipeline compiled for this machine (observations tell it from the generic build).
+            report.counters.push(("compiled_native".into(), 1.0));
+        }
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: report.counters, legend: report.legend, stages: report.stages };
         sink.complete(CompletedFrame { frame_id: req.frame_id, stats, pixels: Some(bytemuck::cast_slice(self.image())) });
         Ok(())
     }
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
+        mr_core::baked::refuse(self.baked, name, &value.to_json())?;
         for (s, out) in self.passes.iter_mut().zip(&mut self.outs) {
             if let Some(r) = s.node.set_param(out, name, value) {
                 return r;

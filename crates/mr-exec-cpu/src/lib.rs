@@ -1,5 +1,6 @@
-//! The CPU executor: every pipeline whose image is made on the CPU, one
-//! executor over one core with a lane per kind of visibility node:
+//! The CPU executor: every pipeline whose image is made on the CPU. Ray casting runs on the
+//! generic node executor ([`exec`]); the rest is one executor over one core with a lane per
+//! kind of visibility node (being moved to nodes):
 //! - ray casting ([`raycast`]): one primary ray per pixel walked over a storage, monomorphised
 //!   per storage (`cpu`);
 //! - rasterisation ([`raster`]): meshed quads drawn into a visibility buffer (`cpu-raster`);
@@ -84,10 +85,16 @@ pub fn cpu_voxelspace_entry() -> RendererEntry {
     RendererEntry { info: columns::info, create: |p, _, _| create(columns::BACKEND, p) }
 }
 
-/// The ray-casting lane compiled for one graph (`S`, storage `R`, pixel `P`); the generated
-/// crate's worker serves only this.
+/// Ray casting compiled for one graph (`S`, storage `R`, pixel `P`); the generated crate's
+/// worker serves only this.
 pub fn raycast_entry<R: mr_components::storage::cpu::Repr, S: Spec, P: Pixel>() -> RendererEntry {
-    RendererEntry { info: raycast::info, create: |p, _, _| compiled::<S, _>(&p, raycast::info, raycast::Raycast::<R, S, P>::new(&p, &graph::of_init(raycast::BACKEND, &p)?)) }
+    RendererEntry {
+        info: raycast::info,
+        create: |p, _, _| {
+            mr_core::baked::check(S::KNOBS, &p, raycast::info)?;
+            raycast::executor::<R, S, P>(&p, &graph::of_init(raycast::BACKEND, &p)?)
+        },
+    }
 }
 
 /// The rasterisation lane compiled for one graph.
