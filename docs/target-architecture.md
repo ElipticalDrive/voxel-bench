@@ -47,11 +47,15 @@ speed bounds how the composition is done, not what may be composed.
   2. cycles pass only through `prev` or `iterate` edges;
   3. every node has an implementation for its device and API;
   4. cross-device edges have a transfer (inserted automatically; its cost is known);
-  5. the fused regions it asks for can be composed (below).
 
   A graph failing any of these is still a graph: it is shown with the reason attached to the
   node or edge responsible, and does not run. Nothing in validity refers to which back end,
   lane or preset the graph resembles.
+- **Fusion is attempted, not pre-judged.** Whether the fused regions a graph asks for can be
+  composed is not a validity rule: running the graph tries it, and a failure is reported to
+  the user with its reason (a compile error, a missing capability). A fusion that succeeds but
+  gives a wrong image is the user's pipeline to debug; the exact reference and the debug views
+  are the tools for that.
 - **Ray-casting sites are inputs like any other.** Every place rays are cast (primary,
   discovery, shadow, bounce, mesh shadows) is an input port taking a ray service, bound to
   whichever traversal-and-storage the user wants there.
@@ -72,6 +76,12 @@ A component declares, in data:
 
 The registry is the only place that knows what components exist. Neither the executor nor the
 editor names a component.
+
+**New techniques work with the rest of the graph.** A technique is implemented so that it
+accepts the ports and data the other components produce. Where that can only be done in part,
+that is acceptable: the unsupported combinations are declared by the component and make those
+edges invalid, with the reason. Full support can be front-loaded when it would take too long
+at first, and widened later without changing any graph that already works.
 
 ## Execution
 
@@ -116,7 +126,9 @@ The cost of a boundary is therefore the cost the hand-written pipeline pays.
 **Where generic dispatch is allowed.** Only at pass level: tens of dispatches per frame on a
 GPU, whole tile-passes on a CPU. Never per ray, per step or per pixel.
 
-**The graph-to-program generator.** The one new tool the target requires. From a graph it:
+**The graph-to-program generator.** The new tool the target probably requires (CPU pipelines
+are already generated per graph; the glue for the rest is unproven until the first spike). From
+a graph it:
 1. decides the fused regions and their boundaries;
 2. emits the glue: the shader composition for GPU regions, the Rust crate instantiating the
    generic components for CPU regions, and the executor's schedule;
@@ -138,11 +150,14 @@ compared against anything; their slowness is their own.
 
 - The graph is the document. Adding a node, rewiring, removing: always allowed, one level of
   undo per action.
-- Ports show their types; a drag proposes only type-compatible targets but does not forbid
-  others from being tried (the diagnostic says why not).
+- Ports show their types; a connection that does not type-check is refused with the reason
+  (the diagnostic names the port and the types).
 - Diagnostics live on the node or edge at fault, with the reason, live as the graph changes.
 - Knobs, device and API are on the node. A choice that has no implementation says so there.
 - Live edits apply in place where the knob is live, otherwise as a hot swap of the pipeline.
+- A concise text form (a small scripting language) is a second way to write the same graph,
+  for users who prefer it to the canvas: same graph, same diagnostics, convertible both ways.
+  Not designed yet.
 - "Start from…" loads an example graph, as any saved graph can be loaded. Presets are
   examples, not the legal shapes.
 
@@ -169,7 +184,7 @@ Not a rewrite: one lane at a time, the old path kept until its replacement match
 2. Split one lane into nodes (the ray-casting lane: prepass, trace, shade, with the hit
    record as the edge) and run it through the generic executor. Pixels identical, speed
    within noise of the lane. This is the spike that tests the native-speed claim, the CPU
-   side in particular.
+   side in particular. If the glue turns out to need no generator, the generator is not built.
 3. Move the other lanes the same way (faces, splat, columns, discovery).
 4. Replace `accept`/skeleton by the validity rules above, make the generator graph-driven,
    and open the editor to any edge.
