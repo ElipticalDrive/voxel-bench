@@ -27,7 +27,7 @@ use mr_core::*;
 use mr_gpu::voxels::Shadows;
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
 
-use crate::{Core, CoreSpec, Lane};
+use crate::{Core, CoreSpec, Lane, State};
 
 pub(crate) mod cpu;
 pub(crate) mod gpu;
@@ -404,7 +404,7 @@ struct Faces<S> {
     source: S,
 }
 
-impl<S: FaceSource> Lane for Faces<S> {
+impl<S: FaceSource> State for Faces<S> {
     fn updating(&mut self, updates: &[WorldUpdate]) {
         self.source.updating(updates);
     }
@@ -416,10 +416,6 @@ impl<S: FaceSource> Lane for Faces<S> {
 
     fn update_meshes(&mut self, update: MeshUpdate) {
         self.source.update_meshes(update);
-    }
-
-    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.source.render(core, &mut self.draw, req, sink)
     }
 
     fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
@@ -434,6 +430,12 @@ impl<S: FaceSource> Lane for Faces<S> {
     fn memory(&self, core: &Core) -> (u64, u64) {
         let (cpu, gpu) = self.source.memory(core);
         (cpu, gpu + self.draw.memory_bytes(core))
+    }
+}
+
+impl<S: FaceSource> Lane for Faces<S> {
+    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        self.source.render(core, &mut self.draw, req, sink)
     }
 }
 

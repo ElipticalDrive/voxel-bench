@@ -1,6 +1,6 @@
-//! The ray-casting lane: every pipeline whose image is one primary
+//! Ray casting: every pipeline whose image is one primary
 //! ray per pixel, shaded inline or (`placement = deferred`) through hit records and the common
-//! shading pass. One lane for the two ways the visibility node's primary rays are cast, its
+//! shading pass. One region for the two ways the visibility node's primary rays are cast, its
 //! kernel's API:
 //! - `gpu-compute` (`compute`, [`walk`]): a walk, the traversal kernel over a storage component
 //!   (any storage, any kernel, missing capabilities from adapters), with an optional prepass,
@@ -9,13 +9,12 @@
 //! - `gpu-rt` (`rayquery`, [`rayquery`]): hardware ray queries over acceleration structures
 //!   built from the geometry component (triangles or brick boxes).
 //!
-//! Which caster runs is the graph's: the primary rays' kernel node's API. The rest is the
-//! lane's ([`Raycast`], [`Passes`]) over the executor's core: the shader (the caster's root
-//! and modules, then `view.wgsl` and `cast.wgsl`, and when deferred `records.wgsl` and
-//! `deferred.wgsl` with the common pass), the rays' pass and the deferred shading pass, or
-//! (the shading on another GPU) the records sent to it ([`crate::remote`]).
-
-use std::time::Instant;
+//! Which caster runs is the graph's: the primary rays' kernel node's API. The nodes run on the
+//! node executor ([`crate::exec`]); what they share is the region's ([`Raycast`], [`Passes`])
+//! over the executor's core: the shader (the caster's root and modules, then `view.wgsl` and
+//! `cast.wgsl`, and when deferred `records.wgsl` and `deferred.wgsl` with the common pass),
+//! the rays' pass and the deferred shading pass, or (the shading on another GPU) the records
+//! sent to it ([`crate::remote`]).
 
 use glam::IVec3;
 use mr_components::Api;
@@ -24,13 +23,13 @@ use mr_core::*;
 use mr_gpu::{Ticket, wgpu};
 
 use crate::remote::Far;
-use crate::{Core, Lane};
+use crate::{Core, State};
 
 pub(crate) mod rayquery;
 pub(crate) mod walk;
 
-/// The lane for graph `g`: the caster by the API of the primary rays' kernel (ray queries,
-/// else a walk).
+/// The ray-casting nodes of graph `g` on the node executor: the caster by the API of the
+/// primary rays' kernel (ray queries, else a walk).
 pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let kernel = g.input(Role::Visibility, "primary").ok_or_else(|| anyhow::anyhow!("{backend}: the primary rays are not bound"))?;
     match g.api(kernel) {
@@ -40,15 +39,10 @@ pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Wa
     }
 }
 
-/// The lane, or with `MR_GPU_EXECUTOR=graph` (and the shading on this GPU) its nodes on the
-/// node executor.
-fn run<C: Cast + 'static>((core, lane): (Core, Raycast<C>), g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    if lane.far.is_none() && std::env::var("MR_GPU_EXECUTOR").is_ok_and(|v| v == "graph") {
-        let passes = nodes::of::<C>(g)?;
-        tracing::info!("{}: on the node executor, {} passes", C::BACKEND, passes.len());
-        return crate::run((core, crate::exec::Nodes::new(lane, passes)));
-    }
-    crate::run((core, lane))
+fn run<C: Cast + 'static>((core, region): (Core, Raycast<C>), g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    let passes = nodes::of::<C>(g)?;
+    tracing::debug!("{}: {} passes", C::BACKEND, passes.len());
+    crate::run((core, crate::exec::Nodes::new(region, passes)))
 }
 
 /// The site `port` of the shading's rays, unless the shading runs on another GPU (then its
@@ -122,7 +116,7 @@ trait Cast: Sized {
     const RT_FLAGS: &'static str = "0u";
     /// Group 0's entries from `LANE_BINDING`.
     fn layout_entries(&self, stages: wgpu::ShaderStages) -> Vec<wgpu::BindGroupLayoutEntry>;
-    /// Their resources (stale after the lane's group 0 is dropped: see `Passes::unbind`).
+    /// Their resources (stale after the region's group 0 is dropped: see `Passes::unbind`).
     fn bind_entries(&self) -> Vec<wgpu::BindGroupEntry<'_>>;
     /// The bind group layouts after group 0 and the world's (group 1).
     fn layouts<'a>(&'a self, core: &'a Core, base: [&'a wgpu::BindGroupLayout; 2]) -> Vec<Option<&'a wgpu::BindGroupLayout>>;
@@ -311,9 +305,9 @@ fn shader(mut lp: CastProgram, deferred: bool, view: View, fragment: bool) -> Ca
     lp
 }
 
-/// The lane: the caster, its passes and the shading they were compiled with; the shading's
-/// GPU when it is another. Without one it is also the region the node executor's ray-casting
-/// nodes share ([`nodes`]): one program, group 0 and the frame's state.
+/// The region the ray-casting nodes share ([`nodes`]): the caster, its passes (one program,
+/// group 0) and the shading they were compiled with, the frame's state; the shading's GPU
+/// when it is another.
 struct Raycast<C> {
     passes: Passes,
     cast: C,
@@ -473,12 +467,33 @@ impl<C: Cast> crate::exec::Region for Raycast<C> {
         self.cast.finish(enc);
     }
 
-    fn submitted(&mut self) {
-        self.cast.submitted();
+    /// With the shading on another GPU, this GPU's frames are the first half of one (their
+    /// stats go with the records).
+    fn begin(&mut self, core: &mut Core, sink: &mut dyn FrameSink) -> anyhow::Result<Ticket> {
+        match &mut self.far {
+            Some(f) => core.ring.begin(&core.gpu, f.near_sink()),
+            None => core.ring.begin(&core.gpu, sink),
+        }
+    }
+
+    /// The records go to the shading's GPU, which shades them and completes the frame.
+    fn submit(&mut self, core: &mut Core, enc: wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, stats: FrameStats, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        match &mut self.far {
+            Some(f) => {
+                f.send(core, enc, ticket, req, stats);
+                self.cast.submitted();
+                f.render(core, req, &self.shading, sink)
+            }
+            None => {
+                core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
+                self.cast.submitted();
+                core.ring.poll(&core.gpu, sink, false)
+            }
+        }
     }
 }
 
-impl<C: Cast> Lane for Raycast<C> {
+impl<C: Cast> State for Raycast<C> {
     fn updating(&mut self, updates: &[WorldUpdate]) {
         if let Some(f) = &mut self.far
             && let Err(e) = f.update(updates) {
@@ -492,33 +507,6 @@ impl<C: Cast> Lane for Raycast<C> {
 
     fn update_meshes(&mut self, update: MeshUpdate) {
         self.cast.update_meshes(update);
-    }
-
-    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        use crate::exec::Region;
-        self.compile(core)?;
-        // With the shading on another GPU, this GPU's frames are the first half of one (their
-        // stats go with the records).
-        let ticket = match &mut self.far {
-            Some(f) => core.ring.begin(&core.gpu, f.near_sink())?,
-            None => core.ring.begin(&core.gpu, sink)?,
-        };
-        let start = Instant::now();
-        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
-        self.setup(core, req);
-        self.rays(core, &mut enc, ticket, req);
-        self.shade(core, &mut enc, ticket);
-        let (counters, legend, stages) = self.stats(core, req);
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
-        self.finish(&mut enc);
-        if let Some(f) = &mut self.far {
-            f.send(core, enc, ticket, req, stats);
-            self.cast.submitted();
-            return f.render(core, req, &self.shading, sink);
-        }
-        core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
-        self.submitted();
-        core.ring.poll(&core.gpu, sink, false)
     }
 
     fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
@@ -553,7 +541,8 @@ impl<C: Cast> Lane for Raycast<C> {
 }
 
 /// The ray-casting nodes on the node executor ([`crate::exec`]), one per pass of the graph's
-/// schedule on the GPU; they share the lane as their region.
+/// schedule on a GPU (the shading's on another GPU: its pass here records nothing, the
+/// region's submission sends the records there); they share [`Raycast`] as their region.
 mod nodes {
     use mr_components::graph::{self, Role};
 

@@ -484,14 +484,13 @@ impl Core {
     }
 }
 
-/// A lane: the visibility node's implementation and what it keeps.
-trait Lane {
+/// What a lane (or the node executor's region) keeps across frames.
+trait State {
     /// World changes before the GPU world applies them.
     fn updating(&mut self, _updates: &[WorldUpdate]) {}
     /// Chunks the GPU world (and the storages) changed.
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()>;
     fn update_meshes(&mut self, _update: MeshUpdate) {}
-    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()>;
     /// Its knobs; `None` if `name` is not one.
     fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>>;
     /// After the core's resize.
@@ -502,6 +501,11 @@ trait Lane {
     fn poll(&mut self, core: &mut Core, sink: &mut dyn FrameSink, wait: bool) -> anyhow::Result<()> {
         core.ring.poll(&core.gpu, sink, wait)
     }
+}
+
+/// A lane: the visibility node's implementation, its frames and what it keeps.
+trait Lane: State {
+    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()>;
 }
 
 /// The core and one lane (static dispatch).

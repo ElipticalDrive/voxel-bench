@@ -22,7 +22,7 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
-use crate::{Core, CoreSpec, LANE_BINDING, Lane, storage_entry};
+use crate::{Core, CoreSpec, LANE_BINDING, Lane, State, storage_entry};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -194,13 +194,32 @@ fn program(g: &graph::Checked, shading: &str) -> anyhow::Result<(Walks, mr_gpu::
     Ok((walks, program, own, deps))
 }
 
-impl Lane for Splat {
+impl State for Splat {
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
         let world = &core.world;
         self.points.update(changed.to_vec(), |c| world.chunk(c));
         Ok(())
     }
 
+    fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        (name == "max_splat").then(|| {
+            self.max_splat = value.as_i64().unwrap_or(16).clamp(1, 64) as u32;
+            Ok(())
+        })
+    }
+
+    fn resize(&mut self, core: &Core) {
+        self.zbuf = pixel_buffer(&core.gpu, core.width, core.height);
+        self.idbuf = pixel_buffer(&core.gpu, core.width, core.height);
+        self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.idbuf, &self.big_buf);
+    }
+
+    fn memory(&self, core: &Core) -> (u64, u64) {
+        (self.points.bytes(), self.points_buf.size() + self.big_buf.size() + core.width as u64 * core.height as u64 * 8)
+    }
+}
+
+impl Lane for Splat {
     fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         if let Some(all) = self.points.changed() {
             self.upload(core, all);
@@ -255,23 +274,6 @@ impl Lane for Splat {
         };
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
         core.ring.poll(&core.gpu, sink, false)
-    }
-
-    fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        (name == "max_splat").then(|| {
-            self.max_splat = value.as_i64().unwrap_or(16).clamp(1, 64) as u32;
-            Ok(())
-        })
-    }
-
-    fn resize(&mut self, core: &Core) {
-        self.zbuf = pixel_buffer(&core.gpu, core.width, core.height);
-        self.idbuf = pixel_buffer(&core.gpu, core.width, core.height);
-        self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.idbuf, &self.big_buf);
-    }
-
-    fn memory(&self, core: &Core) -> (u64, u64) {
-        (self.points.bytes(), self.points_buf.size() + self.big_buf.size() + core.width as u64 * core.height as u64 * 8)
     }
 }
 

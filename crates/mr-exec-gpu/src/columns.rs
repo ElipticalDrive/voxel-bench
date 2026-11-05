@@ -19,7 +19,7 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GpuNeeds, wgpu};
 use serde::Deserialize;
 
-use crate::{Core, CoreSpec, LANE_BINDING, Lane, storage_entry};
+use crate::{Core, CoreSpec, LANE_BINDING, Lane, State, storage_entry};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -141,7 +141,7 @@ fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, hm: &wgpu::Buffer, hm_info
     core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxelspace"), layout, entries: &entries })
 }
 
-impl Lane for Columns {
+impl State for Columns {
     /// The heightmap's patch from the change log and its transfer to the GPU: its changed
     /// rows.
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
@@ -156,6 +156,21 @@ impl Lane for Columns {
         Ok(())
     }
 
+    fn set_param(&mut self, _core: &mut Core, _name: &str, _value: &ParamValue) -> Option<anyhow::Result<()>> {
+        None
+    }
+
+    fn resize(&mut self, core: &Core) {
+        self.bind0 = bind0(core, &self.layout0, &self.hm_buf, &self.hm_info);
+    }
+
+    fn memory(&self, _core: &Core) -> (u64, u64) {
+        let hm = self.hm.hm.len() as u64 * 4;
+        (hm, hm)
+    }
+}
+
+impl Lane for Columns {
     fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         let (width, height) = (core.width, core.height);
         let ticket = core.ring.begin(&core.gpu, sink)?;
@@ -195,19 +210,6 @@ impl Lane for Columns {
         };
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
         core.ring.poll(&core.gpu, sink, false)
-    }
-
-    fn set_param(&mut self, _core: &mut Core, _name: &str, _value: &ParamValue) -> Option<anyhow::Result<()>> {
-        None
-    }
-
-    fn resize(&mut self, core: &Core) {
-        self.bind0 = bind0(core, &self.layout0, &self.hm_buf, &self.hm_info);
-    }
-
-    fn memory(&self, _core: &Core) -> (u64, u64) {
-        let hm = self.hm.hm.len() as u64 * 4;
-        (hm, hm)
     }
 }
 
