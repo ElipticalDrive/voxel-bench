@@ -13,7 +13,8 @@ use std::time::Instant;
 
 use mr_reference::{Chunks, Shadows, World};
 use glam::{IVec3, Vec3};
-use mr_components::graph::{Checked, Role};
+use mr_components::Kind;
+use mr_components::graph::{Build, Builds, Checked, Role};
 use mr_components::shading::direct::cpu::{Ctx, Surface, shade};
 use mr_components::storage::heightmap::Heightmap;
 use mr_components::visibility::columns::cpu::{Deferred, Inline, March, Records};
@@ -60,6 +61,16 @@ impl Default for Options {
 }
 
 pub(crate) const BACKEND: &str = "cpu-voxelspace";
+
+/// The nodes it builds: the heightmap, the column march and the shading.
+pub(crate) const BUILDS: Builds = Builds {
+    nodes: &[
+        Build::one(Role::Storage, &["heightmap"], Kind::Cpu),
+        Build::one(Role::Visibility, &["columns"], Kind::Cpu),
+        Build::one(Role::Shading, &["direct"], Kind::Cpu),
+    ],
+    same: &[],
+};
 
 /// The storage's output: the heightmap and the chunks it is patched from.
 struct Field {
@@ -205,6 +216,7 @@ impl<S: Spec, P: Pixel> Node for Shading<S, P> {
 /// The executor for graph `g`: one pass per scheduled storage, visibility and shading node;
 /// `S` what a compiled pipeline baked in.
 pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    g.built_by(BACKEND, BUILDS).map_err(anyhow::Error::msg)?;
     let opts: Options = p.options()?;
     use mr_components::{Slot, require};
     for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {

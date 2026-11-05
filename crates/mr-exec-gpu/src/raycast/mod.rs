@@ -32,6 +32,9 @@ pub(crate) mod walk;
 /// primary rays' kernel (ray queries, else a walk).
 pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let kernel = g.input(Role::Visibility, "primary").ok_or_else(|| anyhow::anyhow!("{backend}: the primary rays are not bound"))?;
+    let rayquery = g.api(kernel) == Some(Api::RayQuery);
+    let (name, builds) = if rayquery { (rayquery::BACKEND, rayquery::BUILDS) } else { (walk::BACKEND, walk::BUILDS) };
+    g.built_by(name, builds).map_err(anyhow::Error::msg)?;
     match g.api(kernel) {
         Some(Api::RayQuery) => run(Raycast::new(rayquery::RayQuery::new(p, devices, waker, g)?)?, g),
         // A walk: compute threads or a fragment shader (`dispatch`), the kernel compiled in.
@@ -617,6 +620,38 @@ mod nodes {
 
 #[cfg(test)]
 mod tests {
+    use mr_components::graph;
+
+    /// What each caster declares, by back end.
+    fn builds(e: &str) -> graph::Builds {
+        match e {
+            super::walk::BACKEND => super::walk::BUILDS,
+            super::rayquery::BACKEND => super::rayquery::BUILDS,
+            other => unreachable!("{other}"),
+        }
+    }
+
+    /// The valid graphs one or two edits from ray casting's own: every graph `accept` takes
+    /// is built, but for a visibility node feeding a ray-query kernel's geometry (which
+    /// `accept` takes and no caster builds); what the casters have no code for is refused with
+    /// the reason (a draw node, meshes drawn into the depth buffer, a second geometry, a
+    /// prepass over another storage than the primary rays').
+    #[test]
+    fn casters_build_what_they_declare() {
+        let (mut built, mut refused) = (0, 0);
+        for ck in graph::near(&[super::walk::BACKEND, super::rayquery::BACKEND]) {
+            let e = ck.graph.executor.clone();
+            let Err(why) = ck.built_by(&e, builds(&e)) else {
+                built += 1;
+                continue;
+            };
+            refused += 1;
+            let faces_as_geometry = ck.graph.nodes.values().any(|n| n.inputs.get("geometry").is_some_and(|g| ck.graph.nodes[g].role == graph::Role::Visibility));
+            assert!(faces_as_geometry || ck.graph.accept().is_err(), "`{e}` refuses a graph `accept` takes ({why}): {}", ck.graph.canonical().unwrap());
+        }
+        assert!(built > 0 && refused > 0, "{built} built, {refused} refused");
+    }
+
     /// A caster's program as the passes compile it (`shader`), composed and validated (no GPU
     /// needed).
     pub(crate) fn validate(lp: super::CastProgram, deferred: bool, view: super::View, fragment: bool, what: &str) {

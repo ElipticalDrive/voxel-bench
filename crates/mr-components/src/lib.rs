@@ -140,7 +140,8 @@ pub struct BackendInfo {
     pub at: &'static [(Slot, Place)],
     /// Slots whose components this hand-written back end's own code limits, with the ones it
     /// hosts (its strategy, the geometry its drawer reads, its mesh drawing). Executors
-    /// have no such list: there a component's implementations and ports decide.
+    /// have no such list here: there a component's implementations and ports decide, and
+    /// the node executors declare the nodes they build (`graph::Builds`).
     pub hosts: &'static [(Slot, &'static [&'static str])],
     /// Capabilities its own code reads from a slot whatever the other components (the storage
     /// interface: voxel queries for walks, exposure tests and prepasses, columns for the

@@ -14,11 +14,11 @@
 //! gpu-rtx-bricks.
 
 use glam::IVec3;
-use mr_components::graph::{self, Role};
+use mr_components::graph::{self, Build, Builds, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
 use mr_components::storage::gpu_data::Bound;
-use mr_components::{Slot, components, names_on, placement_param, require, traversal};
+use mr_components::{Kind, Slot, components, names_on, placement_param, require, traversal};
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GpuNeeds, wgpu};
@@ -29,6 +29,20 @@ use crate::accel::AccelSpec;
 use crate::{Core, CoreSpec};
 
 pub(crate) const BACKEND: &str = "gpu-rt";
+
+/// The nodes it builds: the geometry of its acceleration structures (on the CPU), the
+/// primary ray queries, storages and kernels for walked shadow and bounce rays, the
+/// visibility and the shading (on this GPU or another). No meshes and no prepass.
+pub(crate) const BUILDS: Builds = Builds {
+    nodes: &[
+        Build::one(Role::Geometry, &["greedy", "naive", "boxes"], Kind::Cpu),
+        Build::one(Role::Storage, &["bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap"], Kind::Gpu).count(0, 2),
+        Build::one(Role::Traversal, &["refloor", "incremental", "sphere", "rowrun", "rayquery"], Kind::Gpu).count(1, 3),
+        Build::one(Role::Visibility, &["raycast"], Kind::Gpu),
+        Build::one(Role::Shading, &["direct", "pathtrace"], Kind::Gpu),
+    ],
+    same: &[],
+};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {

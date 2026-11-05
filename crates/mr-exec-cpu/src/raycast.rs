@@ -19,12 +19,12 @@ use mr_components::storage::hier::cpu::Hier;
 use mr_components::storage::palette::cpu::Palette;
 use mr_components::storage::prefix::cpu::Prefix;
 use mr_components::storage::u8::cpu::U8;
-use mr_components::graph::{Checked, Role};
+use mr_components::graph::{Build, Builds, Checked, Role};
 use mr_components::traversal::cpu::Hit;
 use mr_components::traversal::incremental::cpu::trace_incremental;
 use mr_components::traversal::refloor::cpu::{NOWHERE, trace_packet};
 use mr_components::visibility::record::Record;
-use mr_components::{names_on, parse_placement, placement_param, require, Slot};
+use mr_components::{Kind, names_on, parse_placement, placement_param, require, Slot};
 use mr_core::chunk::local_of_block;
 use mr_core::*;
 use rayon::prelude::*;
@@ -81,6 +81,18 @@ fn of<R: Repr, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn 
 }
 
 pub(crate) const BACKEND: &str = "cpu";
+
+/// The nodes it builds: one storage (one monomorphised instance; the shadow rays walk it
+/// too), its primary and shadow kernels, the ray caster and the shading.
+pub(crate) const BUILDS: Builds = Builds {
+    nodes: &[
+        Build::one(Role::Storage, &["bricks", "u8", "bits", "hier", "prefix", "palette", "brickmajor", "morton"], Kind::Cpu),
+        Build::one(Role::Traversal, &["refloor", "incremental"], Kind::Cpu).count(1, 2),
+        Build::one(Role::Visibility, &["raycast"], Kind::Cpu),
+        Build::one(Role::Shading, &["direct"], Kind::Cpu),
+    ],
+    same: &[],
+};
 
 fn params() -> Vec<ParamSpec> {
     let mut p = mr_reference::cpu_params();
@@ -1080,6 +1092,7 @@ mod nodes {
     /// node, each reading the passes its inputs reach (through fused nodes); `S` what a
     /// compiled pipeline baked in.
     pub(crate) fn executor<R: Repr, S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
+        g.built_by(super::BACKEND, super::BUILDS).map_err(anyhow::Error::msg)?;
         let parts = Parts::<R, S, P>::new(p, g)?;
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
         let mut cast = Some(parts.cast);

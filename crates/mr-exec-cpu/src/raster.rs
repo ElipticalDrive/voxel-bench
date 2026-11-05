@@ -28,8 +28,8 @@ use mr_reference::{Chunks, Shadows, VoxelScene};
 use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_core::*;
 use mr_components::geometry::{Knobs, MeshFn};
-use mr_components::graph::{Checked, Role};
-use mr_components::{names_on, require, Slot};
+use mr_components::graph::{Build, Builds, Checked, Role};
+use mr_components::{Kind, names_on, require, Slot};
 use mr_mesh::{FACE_AXES, Mesh, Quad};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -73,6 +73,17 @@ impl Default for Options {
 }
 
 pub(crate) const BACKEND: &str = "cpu-raster";
+
+/// The nodes it builds: the geometry's quads, their culling, the rasteriser and the shading.
+pub(crate) const BUILDS: Builds = Builds {
+    nodes: &[
+        Build::one(Role::Geometry, &["greedy", "naive"], Kind::Cpu),
+        Build::one(Role::Visibility, &["faces"], Kind::Cpu),
+        Build::one(Role::Draw, &["raster"], Kind::Cpu),
+        Build::one(Role::Shading, &["direct"], Kind::Cpu),
+    ],
+    same: &[],
+};
 
 fn params() -> Vec<ParamSpec> {
     let mut p = mr_reference::cpu_params();
@@ -387,6 +398,7 @@ impl<P: Pixel> Node for Shading<P> {
 /// The executor for graph `g`: one pass per scheduled geometry, visibility, draw and shading
 /// node; `S` what a compiled pipeline baked in.
 pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    g.built_by(BACKEND, BUILDS).map_err(anyhow::Error::msg)?;
     let opts: Options = p.options()?;
     require(BACKEND, Slot::Visibility, &opts.visibility)?;
     require(BACKEND, Slot::Draw, &opts.draw)?;

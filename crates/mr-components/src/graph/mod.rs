@@ -26,6 +26,7 @@
 //! it is exactly the graph.
 
 mod accept;
+mod builds;
 mod canonical;
 mod check;
 mod compose;
@@ -34,6 +35,7 @@ mod schedule;
 mod sites;
 
 pub use accept::*;
+pub use builds::*;
 pub use check::*;
 pub use model::*;
 pub use schedule::*;

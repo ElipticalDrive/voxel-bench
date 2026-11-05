@@ -16,11 +16,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use glam::IVec3;
-use mr_components::graph::{self, Role};
+use mr_components::graph::{self, Build, Builds, Role, Same};
 use mr_components::shaders::{KernelInst, Walks};
 use mr_components::shading::state as shade_state;
 use mr_components::storage::gpu_data::Bound;
-use mr_components::{Cap, Slot, caps, components, names_on, placement_param, require};
+use mr_components::{Cap, Kind, Slot, caps, components, names_on, placement_param, require};
 use mr_core::*;
 use mr_gpu::meshes::{MESH_RECORDS_WGSL, MeshRecords};
 use mr_gpu::voxels::{Shadows, shadows_param};
@@ -31,6 +31,23 @@ use super::{Cast, CastProgram, Passes, Ticket, View};
 use crate::{Core, CoreSpec, LANE_BINDING};
 
 pub(crate) const BACKEND: &str = "gpu-compute";
+
+/// The nodes it builds: a storage and kernel per walk (primary, shadow, bounce and mesh-shadow
+/// rays), a ray-query kernel's geometry (built on the CPU), the mesh records, the beam
+/// prepass (over the primary rays' storage, which its shader reads), the walk and the shading
+/// (on this GPU or another).
+pub(crate) const BUILDS: Builds = Builds {
+    nodes: &[
+        Build::one(Role::Storage, &["bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap"], Kind::Gpu).count(0, 4),
+        Build::one(Role::Traversal, &["refloor", "incremental", "sphere", "rowrun", "rayquery"], Kind::Gpu).count(1, 4),
+        Build::one(Role::Geometry, &["greedy", "naive", "boxes"], Kind::Cpu).count(0, 1),
+        Build::one(Role::Meshes, &["composite"], Kind::Gpu).count(0, 1),
+        Build::one(Role::Prepass, &["beam"], Kind::Gpu).count(0, 1),
+        Build::one(Role::Visibility, &["raycast"], Kind::Gpu),
+        Build::one(Role::Shading, &["direct", "pathtrace"], Kind::Gpu),
+    ],
+    same: &[Same { a: (Role::Prepass, &["storage"]), b: (Role::Visibility, &["primary", "storage"]) }],
+};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
