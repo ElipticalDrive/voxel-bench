@@ -317,6 +317,13 @@ impl Graph {
                 }
             }
         }
+        // Every component node has an implementation on its device's kind (its API is checked
+        // below when set).
+        for (id, n) in &g.nodes {
+            if let Some(c) = n.role.slot().and_then(|sl| component(sl, &n.component)).filter(|c| !c.impls.iter().any(|i| i.kind == devices[id].kind())) {
+                why.push(format!("`{id}`: {} `{}` has no {} implementation (has: {})", n.role.name(), c.name, devices[id].kind().name(), c.impls_label()));
+            }
+        }
         // APIs: a node's own, else (fused) its callers', else the executor's choice.
         let mut apis: HashMap<String, Api> = HashMap::new();
         for &id in order.iter().rev() {

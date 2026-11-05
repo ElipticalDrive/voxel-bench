@@ -865,4 +865,16 @@ mod tests {
             }
         }
     }
+
+    /// Every node needs an implementation on its device's kind, whatever its API.
+    #[test]
+    fn nodes_need_an_implementation_on_their_device() {
+        let mut c = Composition::new("cpu");
+        c.fill_defaults();
+        let mut g = Graph::from_composition(&c).unwrap();
+        let k = g.nodes.iter().find(|(_, n)| n.role == Role::Traversal).map(|(id, _)| id.clone()).unwrap();
+        g.nodes.get_mut(&k).unwrap().component = "rowrun".into();
+        let why = g.check().unwrap_err();
+        assert!(why.contains("`rowrun` has no cpu implementation"), "{why}");
+    }
 }
