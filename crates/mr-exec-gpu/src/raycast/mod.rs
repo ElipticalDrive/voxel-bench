@@ -34,10 +34,21 @@ pub(crate) mod walk;
 pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let kernel = g.input(Role::Visibility, "primary").ok_or_else(|| anyhow::anyhow!("{backend}: the primary rays are not bound"))?;
     match g.api(kernel) {
-        Some(Api::RayQuery) => crate::run(Raycast::new(rayquery::RayQuery::new(p, devices, waker, g)?)?),
+        Some(Api::RayQuery) => run(Raycast::new(rayquery::RayQuery::new(p, devices, waker, g)?)?, g),
         // A walk: compute threads or a fragment shader (`dispatch`), the kernel compiled in.
-        _ => crate::run(Raycast::new(walk::Walk::new(p, devices, waker, g)?)?),
+        _ => run(Raycast::new(walk::Walk::new(p, devices, waker, g)?)?, g),
     }
+}
+
+/// The lane, or with `MR_GPU_EXECUTOR=graph` (and the shading on this GPU) its nodes on the
+/// node executor.
+fn run<C: Cast + 'static>((core, lane): (Core, Raycast<C>), g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    if lane.far.is_none() && std::env::var("MR_GPU_EXECUTOR").is_ok_and(|v| v == "graph") {
+        let passes = nodes::of::<C>(g)?;
+        tracing::info!("{}: on the node executor, {} passes", C::BACKEND, passes.len());
+        return crate::run((core, crate::exec::Nodes::new(lane, passes)));
+    }
+    crate::run((core, lane))
 }
 
 /// The site `port` of the shading's rays, unless the shading runs on another GPU (then its
@@ -58,12 +69,17 @@ struct CastProgram {
     deps: Vec<String>,
 }
 
-/// What the caster's work before the rays left for the rays' pass.
-struct Before {
-    /// The rays' pass starts the frame's clock (no earlier pass or encoder timestamp did).
-    first: bool,
-    /// This frame has mesh records (the meshed passes run).
-    meshed: bool,
+/// What of a frame's work before the rays has run: each part once, in this order (accel,
+/// storages, meshes, prepass), from its node's pass or, when the graph has no pass for it (a
+/// live knob added it), from the rays'.
+#[derive(Default)]
+struct Steps {
+    accel: bool,
+    stored: bool,
+    meshed: Option<bool>,
+    prepassed: bool,
+    /// A pass began the frame's clock.
+    started: bool,
 }
 
 /// What a caster's pixels show (`view`): the image, or a diagnostic on the shared colour
@@ -136,11 +152,18 @@ trait Cast: Sized {
     /// World changes the GPU world applied (`changed`: its chunks).
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()>;
     fn update_meshes(&mut self, _update: MeshUpdate) {}
-    /// Work before the camera is written (acceleration structures); may drop group 0's
-    /// bind group (`passes.unbind()`).
-    fn prepare(&mut self, core: &mut Core, passes: &mut Passes, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest);
-    /// Passes before the rays (meshes, the prepass), with group 0 and the world bound.
-    fn before(&mut self, core: &mut Core, passes: &Passes, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, world: &wgpu::BindGroup) -> Before;
+    /// This frame's storage bind groups (before any pass that walks them).
+    fn storages(&mut self, core: &mut Core);
+    /// Rasterises the meshes' records (mesh mode) into `enc`, the frame's first pass if
+    /// `first`; whether they ran (frames with them run the meshed variant).
+    fn encode_meshes(&mut self, _core: &mut Core, _enc: &mut wgpu::CommandEncoder, _ticket: Ticket, _req: &FrameRequest, _first: bool) -> bool {
+        false
+    }
+    /// The prepass, with group 0 and the world bound; the frame's first pass if `first`.
+    /// Whether it ran.
+    fn prepass(&mut self, _core: &mut Core, _passes: &Passes, _enc: &mut wgpu::CommandEncoder, _ticket: Ticket, _world: &wgpu::BindGroup, _first: bool) -> bool {
+        false
+    }
     /// The caster's bind groups after group 1.
     fn groups(&self) -> impl Iterator<Item = (u32, &wgpu::BindGroup)>;
     /// The frame's counters before the shading state's, its legend and CPU stage times.
@@ -289,7 +312,8 @@ fn shader(mut lp: CastProgram, deferred: bool, view: View, fragment: bool) -> Ca
 }
 
 /// The lane: the caster, its passes and the shading they were compiled with; the shading's
-/// GPU when it is another.
+/// GPU when it is another. Without one it is also the region the node executor's ray-casting
+/// nodes share ([`nodes`]): one program, group 0 and the frame's state.
 struct Raycast<C> {
     passes: Passes,
     cast: C,
@@ -297,13 +321,160 @@ struct Raycast<C> {
     shading: String,
     /// Shading the passes were compiled with (recompiled at the next frame on a change).
     built_shading: String,
+    steps: Steps,
+    /// This frame's world bind group.
+    world: Option<wgpu::BindGroup>,
 }
 
 impl<C: Cast> Raycast<C> {
     fn new((core, cast, shading, far): (Core, C, String, Option<Far>)) -> anyhow::Result<(Core, Self)> {
         anyhow::ensure!(far.is_none() || cast.view() == View::Image, "{}: a diagnostic view shades inline, not on the shading's GPU", C::BACKEND);
         let passes = Passes::new(&core, &cast, &shading, far.is_some())?;
-        Ok((core, Self { passes, cast, far, built_shading: shading.clone(), shading }))
+        Ok((core, Self { passes, cast, far, built_shading: shading.clone(), shading, steps: Steps::default(), world: None }))
+    }
+
+    /// The variant this frame runs: the meshed one when the meshes' records ran.
+    fn variant(&self) -> &Variant {
+        match (self.steps.meshed, &self.passes.meshed) {
+            (Some(true), Some(m)) => m,
+            _ => &self.passes.plain,
+        }
+    }
+
+    /// The frame's acceleration structures (group 0 is bound anew if they changed it).
+    fn accel(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest) {
+        if !std::mem::replace(&mut self.steps.accel, true) && core.build_accel(enc, ticket, req) {
+            self.passes.unbind();
+        }
+    }
+
+    /// The storages' bind groups.
+    fn store(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest) {
+        self.accel(core, enc, ticket, req);
+        if !std::mem::replace(&mut self.steps.stored, true) {
+            self.cast.storages(core);
+        }
+    }
+
+    /// The meshes' records.
+    fn mesh(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest) {
+        self.store(core, enc, ticket, req);
+        if self.steps.meshed.is_none() {
+            let ran = self.cast.encode_meshes(core, enc, ticket, req, !self.steps.started);
+            self.steps.started |= ran;
+            self.steps.meshed = Some(ran);
+        }
+    }
+
+    fn prepass(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest) {
+        self.mesh(core, enc, ticket, req);
+        if !std::mem::replace(&mut self.steps.prepassed, true) {
+            self.passes.bind(core, &self.cast);
+            let ran = self.cast.prepass(core, &self.passes, enc, ticket, self.world.as_ref().expect("set up"), !self.steps.started);
+            self.steps.started |= ran;
+        }
+    }
+
+    /// The rays' pass (after the work before it, if its nodes had no pass).
+    fn rays(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest) {
+        self.prepass(core, enc, ticket, req);
+        let (passes, cast, world) = (&self.passes, &self.cast, self.world.as_ref().expect("set up"));
+        let variant = self.variant();
+        let first = !self.steps.started;
+        // The rays' pass ends the frame unless the deferred shading pass follows.
+        let last = variant.shade.is_none();
+        if last && !passes.remote {
+            core.ring.stage(enc, ticket, "cast+shade", &core.stage_nodes[0]);
+        } else {
+            core.ring.stage(enc, ticket, "cast", &core.stage_nodes[1]);
+        }
+        let (w, h) = (core.width, core.height);
+        match &variant.main {
+            Main::Compute(pipeline) => {
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("raycast"), timestamp_writes: core.ring.compute_timestamps(ticket, first, last) });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, passes.bind0(), &[]);
+                pass.set_bind_group(1, world, &[]);
+                for (i, b) in cast.groups() {
+                    pass.set_bind_group(i, b, &[]);
+                }
+                pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+            }
+            Main::Fragment(pipeline) => {
+                let view = core.output.create_view(&Default::default());
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("raycast fragment"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: core.ring.render_timestamps(ticket, first, last),
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(pipeline);
+                // The output is the colour attachment here, so group 0 binds a stand-in for
+                // the storage-texture output.
+                pass.set_bind_group(0, passes.bind0_frag.as_ref().expect("bound"), &[]);
+                pass.set_bind_group(1, world, &[]);
+                for (i, b) in cast.groups() {
+                    pass.set_bind_group(i, b, &[]);
+                }
+                pass.draw(0..3, 0..1);
+            }
+        }
+        self.steps.started = true;
+    }
+
+    /// The deferred shading pass, if this frame's variant has one.
+    fn shade(&self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket) {
+        let Some(shade) = &self.variant().shade else { return };
+        core.ring.stage(enc, ticket, "shade", &core.stage_nodes[2]);
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: core.ring.compute_timestamps(ticket, false, true) });
+        pass.set_pipeline(shade);
+        pass.set_bind_group(0, self.passes.bind0(), &[]);
+        pass.set_bind_group(1, self.world.as_ref().expect("set up"), &[]);
+        for (i, b) in self.cast.groups() {
+            pass.set_bind_group(i, b, &[]);
+        }
+        pass.dispatch_workgroups(core.width.div_ceil(8), core.height.div_ceil(8), 1);
+    }
+}
+
+impl<C: Cast> crate::exec::Region for Raycast<C> {
+    fn compile(&mut self, core: &mut Core) -> anyhow::Result<()> {
+        let (passes, cast) = (&mut self.passes, &mut self.cast);
+        if cast.stale() || self.shading != self.built_shading {
+            (passes.plain, passes.meshed, passes.extra) = Passes::compile(core, &passes.pipeline_layout, cast, &self.shading, passes.remote)?;
+            if core.accum.set_shading(&core.gpu, &self.shading) {
+                passes.unbind();
+            }
+            self.built_shading = self.shading.clone();
+            cast.compiled();
+        }
+        Ok(())
+    }
+
+    fn setup(&mut self, core: &mut Core, req: &FrameRequest) {
+        self.steps = Steps::default();
+        core.accum.begin(&core.gpu, &req.camera, req.mode);
+        core.write_camera(&req.camera, req.mode, self.cast.camera());
+        self.world = Some(core.world.prepare(&core.gpu, &req.camera).clone());
+    }
+
+    fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
+        let (mut counters, legend, mut stages) = self.cast.stats(core);
+        let (accel, accel_stages) = core.accel_stats();
+        counters.extend(accel);
+        stages.extend(accel_stages);
+        counters.extend(core.accum.counter(req.mode));
+        (counters, legend, stages)
+    }
+
+    fn finish(&mut self, enc: &mut wgpu::CommandEncoder) {
+        self.cast.finish(enc);
+    }
+
+    fn submitted(&mut self) {
+        self.cast.submitted();
     }
 }
 
@@ -324,15 +495,8 @@ impl<C: Cast> Lane for Raycast<C> {
     }
 
     fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        let (passes, cast) = (&mut self.passes, &mut self.cast);
-        if cast.stale() || self.shading != self.built_shading {
-            (passes.plain, passes.meshed, passes.extra) = Passes::compile(core, &passes.pipeline_layout, cast, &self.shading, passes.remote)?;
-            if core.accum.set_shading(&core.gpu, &self.shading) {
-                passes.unbind();
-            }
-            self.built_shading = self.shading.clone();
-            cast.compiled();
-        }
+        use crate::exec::Region;
+        self.compile(core)?;
         // With the shading on another GPU, this GPU's frames are the first half of one (their
         // stats go with the records).
         let ticket = match &mut self.far {
@@ -340,83 +504,20 @@ impl<C: Cast> Lane for Raycast<C> {
             None => core.ring.begin(&core.gpu, sink)?,
         };
         let start = Instant::now();
-        let c = &req.camera;
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
-        if core.build_accel(&mut enc, ticket, req) {
-            passes.unbind();
-        }
-        cast.prepare(core, passes, &mut enc, ticket, req);
-        core.accum.begin(&core.gpu, c, req.mode);
-        core.write_camera(c, req.mode, cast.camera());
-        let world_bg = core.world.prepare(&core.gpu, c).clone();
-        passes.bind(core, cast);
-        let before = cast.before(core, passes, &mut enc, ticket, req, &world_bg);
-        let variant = if before.meshed { passes.meshed.as_ref().unwrap_or(&passes.plain) } else { &passes.plain };
-        // The rays' pass ends the frame unless the deferred shading pass follows.
-        let last = variant.shade.is_none();
-        if last && !passes.remote {
-            core.ring.stage(&mut enc, ticket, "cast+shade", &core.stage_nodes[0]);
-        } else {
-            core.ring.stage(&mut enc, ticket, "cast", &core.stage_nodes[1]);
-        }
-        let (w, h) = (core.width, core.height);
-        match &variant.main {
-            Main::Compute(pipeline) => {
-                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("raycast"), timestamp_writes: core.ring.compute_timestamps(ticket, before.first, last) });
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, passes.bind0(), &[]);
-                pass.set_bind_group(1, &world_bg, &[]);
-                for (i, b) in cast.groups() {
-                    pass.set_bind_group(i, b, &[]);
-                }
-                pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
-            }
-            Main::Fragment(pipeline) => {
-                let view = core.output.create_view(&Default::default());
-                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("raycast fragment"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: core.ring.render_timestamps(ticket, before.first, last),
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(pipeline);
-                // The output is the colour attachment here, so group 0 binds a stand-in for
-                // the storage-texture output.
-                pass.set_bind_group(0, passes.bind0_frag.as_ref().expect("bound"), &[]);
-                pass.set_bind_group(1, &world_bg, &[]);
-                for (i, b) in cast.groups() {
-                    pass.set_bind_group(i, b, &[]);
-                }
-                pass.draw(0..3, 0..1);
-            }
-        }
-        if let Some(shade) = &variant.shade {
-            core.ring.stage(&mut enc, ticket, "shade", &core.stage_nodes[2]);
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: core.ring.compute_timestamps(ticket, false, true) });
-            pass.set_pipeline(shade);
-            pass.set_bind_group(0, passes.bind0(), &[]);
-            pass.set_bind_group(1, &world_bg, &[]);
-            for (i, b) in cast.groups() {
-                pass.set_bind_group(i, b, &[]);
-            }
-            pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
-        }
-        let (mut counters, legend, mut stages) = cast.stats(core);
-        let (accel, accel_stages) = core.accel_stats();
-        counters.extend(accel);
-        stages.extend(accel_stages);
-        counters.extend(core.accum.counter(req.mode));
+        self.setup(core, req);
+        self.rays(core, &mut enc, ticket, req);
+        self.shade(core, &mut enc, ticket);
+        let (counters, legend, stages) = self.stats(core, req);
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
-        cast.finish(&mut enc);
+        self.finish(&mut enc);
         if let Some(f) = &mut self.far {
             f.send(core, enc, ticket, req, stats);
-            cast.submitted();
+            self.cast.submitted();
             return f.render(core, req, &self.shading, sink);
         }
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
-        cast.submitted();
+        self.submitted();
         core.ring.poll(&core.gpu, sink, false)
     }
 
@@ -448,6 +549,80 @@ impl<C: Cast> Lane for Raycast<C> {
             Some(f) => f.poll(core, sink, wait),
             None => core.ring.poll(&core.gpu, sink, wait),
         }
+    }
+}
+
+/// The ray-casting nodes on the node executor ([`crate::exec`]), one per pass of the graph's
+/// schedule on the GPU; they share the lane as their region.
+mod nodes {
+    use mr_components::graph::{self, Role};
+
+    use super::{Cast, Raycast};
+    use crate::exec::{Cx, Node};
+
+    /// A ray-query kernel: the acceleration structures, built from its geometry.
+    struct Accel;
+    struct Storage;
+    struct Meshes;
+    struct Prepass;
+    struct Visibility;
+    /// The deferred shading pass (with `placement = inline` fused into the rays').
+    struct Shading;
+
+    impl<C: Cast> Node<Raycast<C>> for Accel {
+        fn run(&mut self, cx: &mut Cx<Raycast<C>>) {
+            cx.region.accel(cx.core, cx.enc, cx.ticket, cx.req);
+        }
+    }
+
+    impl<C: Cast> Node<Raycast<C>> for Storage {
+        fn run(&mut self, cx: &mut Cx<Raycast<C>>) {
+            cx.region.store(cx.core, cx.enc, cx.ticket, cx.req);
+        }
+    }
+
+    impl<C: Cast> Node<Raycast<C>> for Meshes {
+        fn run(&mut self, cx: &mut Cx<Raycast<C>>) {
+            cx.region.mesh(cx.core, cx.enc, cx.ticket, cx.req);
+        }
+    }
+
+    impl<C: Cast> Node<Raycast<C>> for Prepass {
+        fn run(&mut self, cx: &mut Cx<Raycast<C>>) {
+            cx.region.prepass(cx.core, cx.enc, cx.ticket, cx.req);
+        }
+    }
+
+    impl<C: Cast> Node<Raycast<C>> for Visibility {
+        fn run(&mut self, cx: &mut Cx<Raycast<C>>) {
+            cx.region.rays(cx.core, cx.enc, cx.ticket, cx.req);
+        }
+    }
+
+    impl<C: Cast> Node<Raycast<C>> for Shading {
+        fn run(&mut self, cx: &mut Cx<Raycast<C>>) {
+            cx.region.shade(cx.core, cx.enc, cx.ticket);
+        }
+    }
+
+    /// The nodes of `g`'s passes on the GPU, in frame order.
+    pub(super) fn of<C: Cast + 'static>(g: &graph::Checked) -> anyhow::Result<Vec<Box<dyn Node<Raycast<C>>>>> {
+        let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
+        Ok(schedule
+            .passes()
+            .filter(|p| matches!(p.device, graph::Device::Gpu(_)))
+            .filter_map(|p| -> Option<Box<dyn Node<Raycast<C>>>> {
+                Some(match g.node(&p.node).role {
+                    Role::Traversal => Box::new(Accel),
+                    Role::Storage => Box::new(Storage),
+                    Role::Meshes => Box::new(Meshes),
+                    Role::Prepass => Box::new(Prepass),
+                    Role::Visibility => Box::new(Visibility),
+                    Role::Shading => Box::new(Shading),
+                    _ => return None,
+                })
+            })
+            .collect())
     }
 }
 

@@ -206,6 +206,13 @@ nodes, so every CPU pipeline runs on the generic executor and the CPU lane inter
 gone. Two edges the graph leaves implicit are added by hand for now: columns' shading reads
 the heightmap storage (its shadow rays), rasterisation's draw and shading read the geometry
 (the quad behind an id).
+On the GPU, step 1 is done and step 2 runs behind a switch (`MR_GPU_EXECUTOR=graph`): a
+generic executor walks the schedule's GPU passes, each a node recording into the frame's
+command encoder; nodes compiled into one program share a *region* (its pipelines, group 0,
+the frame's state), which answers the region-boundary question for now: one region per
+program. Ray casting runs as (acceleration structures | storage) → meshes → prepass →
+visibility → shading nodes, pixels identical to the lane's. The hit records are still a
+binding of the region's group 0, not a node output the executor owns.
 
 ## Non-goals
 

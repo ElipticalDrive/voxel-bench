@@ -24,7 +24,7 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GpuNeeds, wgpu};
 use serde::Deserialize;
 
-use super::{Before, Cast, CastProgram, Passes, Ticket};
+use super::{Cast, CastProgram};
 use crate::accel::AccelSpec;
 use crate::{Core, CoreSpec};
 
@@ -225,11 +225,8 @@ impl Cast for RayQuery {
         Ok(())
     }
 
-    fn prepare(&mut self, _core: &mut Core, _passes: &mut Passes, _enc: &mut wgpu::CommandEncoder, _ticket: Ticket, _req: &FrameRequest) {}
-
-    fn before(&mut self, core: &mut Core, _passes: &Passes, _enc: &mut wgpu::CommandEncoder, _ticket: Ticket, _req: &FrameRequest, _world: &wgpu::BindGroup) -> Before {
+    fn storages(&mut self, core: &mut Core) {
         self.bound = core.storages.prepare(&core.gpu, &core.world);
-        Before { first: true, meshed: false }
     }
 
     fn groups(&self) -> impl Iterator<Item = (u32, &wgpu::BindGroup)> {

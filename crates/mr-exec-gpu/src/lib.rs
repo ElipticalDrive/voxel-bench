@@ -33,6 +33,7 @@ use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 
 mod accel;
 mod columns;
+mod exec;
 mod faces;
 mod raycast;
 mod remote;

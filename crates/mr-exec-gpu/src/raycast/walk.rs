@@ -27,7 +27,7 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
-use super::{Before, Cast, CastProgram, Passes, Ticket, View};
+use super::{Cast, CastProgram, Passes, Ticket, View};
 use crate::{Core, CoreSpec, LANE_BINDING};
 
 pub(crate) const BACKEND: &str = "gpu-compute";
@@ -415,25 +415,29 @@ impl Cast for Walk {
         self.meshes.meshes.apply(update);
     }
 
-    fn prepare(&mut self, _core: &mut Core, _passes: &mut Passes, _enc: &mut wgpu::CommandEncoder, _ticket: Ticket, _req: &FrameRequest) {}
-
-    fn before(&mut self, core: &mut Core, passes: &Passes, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, world: &wgpu::BindGroup) -> Before {
+    fn storages(&mut self, core: &mut Core) {
         self.bound = core.storages.prepare(&core.gpu, &core.world);
-        // The first pass carries the frame's begin timestamp: meshes, else the prepass.
+    }
+
+    fn encode_meshes(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, first: bool) -> bool {
         let want_meshes = req.meshes && self.built.meshes;
         let meshes_on = self.meshes.active(want_meshes);
-        let ts = if meshes_on { core.ring.render_timestamps(ticket, true, false) } else { None };
+        let ts = if meshes_on { core.ring.render_timestamps(ticket, first, false) } else { None };
         if meshes_on {
             core.ring.stage(enc, ticket, "meshes", &self.stage_nodes[0]);
         }
         self.meshes.encode(&core.gpu, enc, &req.camera, core.width as f32 / core.height as f32, req.mode, want_meshes, ts);
+        meshes_on
+    }
+
+    fn prepass(&mut self, core: &mut Core, passes: &Passes, enc: &mut wgpu::CommandEncoder, ticket: Ticket, world: &wgpu::BindGroup, first: bool) -> bool {
         let pre = passes.extra.first();
         self.prepass = pre.is_some();
         self.copy_stats = self.beam.begin(enc, self.prepass);
         if let Some(pre) = pre {
             core.ring.stage(enc, ticket, "prepass", &self.stage_nodes[1]);
             let tile = self.built.tile.max(1);
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("prepass"), timestamp_writes: if meshes_on { None } else { core.ring.compute_timestamps(ticket, true, false) } });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("prepass"), timestamp_writes: core.ring.compute_timestamps(ticket, first, false) });
             pass.set_pipeline(pre);
             pass.set_bind_group(0, passes.bind0(), &[]);
             pass.set_bind_group(1, world, &[]);
@@ -441,7 +445,7 @@ impl Cast for Walk {
             self.bound.compute(&mut pass);
             pass.dispatch_workgroups(core.width.div_ceil(tile).div_ceil(8), core.height.div_ceil(tile).div_ceil(8), 1);
         }
-        Before { first: !meshes_on && !self.prepass, meshed: meshes_on }
+        self.prepass
     }
 
     fn groups(&self) -> impl Iterator<Item = (u32, &wgpu::BindGroup)> {
