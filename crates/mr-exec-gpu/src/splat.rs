@@ -227,7 +227,7 @@ impl State for Splat {
 
 impl Region for Splat {
     /// The points' transfer when the world changed them.
-    fn compile(&mut self, core: &mut Core) -> anyhow::Result<()> {
+    fn compile(&mut self, core: &mut Core, _req: &FrameRequest) -> anyhow::Result<()> {
         if let Some(all) = self.points.changed() {
             self.upload(core, all);
         }

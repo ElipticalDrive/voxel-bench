@@ -281,6 +281,20 @@ impl FaceDrawer {
         extra: Option<&dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass)>,
         main: Option<&wgpu::RenderPipeline>,
     ) {
+        self.encode_draw(enc, f, draw, extra, main);
+        self.encode_shade(gpu, enc, f, extra.is_some());
+    }
+
+    /// The draw node's passes of [`encode`](Self::encode): forward, drawing and shading the
+    /// faces (shading fused into the fragments); deferred, their ids or records.
+    pub fn encode_draw(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        f: &DrawFrame,
+        draw: &dyn Fn(&mut wgpu::RenderPass<'_>),
+        extra: Option<&dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass)>,
+        main: Option<&wgpu::RenderPipeline>,
+    ) {
         let depth_attachment = |load, store| Some(wgpu::RenderPassDepthStencilAttachment { view: f.depth, depth_ops: Some(wgpu::Operations { load, store }), stencil_ops: None });
         let keep = |keep: bool| if keep { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard };
         let run = |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline| {
@@ -332,8 +346,7 @@ impl FaceDrawer {
                     extra(&mut pass, if prepass { MeshPass::Equal } else { MeshPass::Fill });
                 }
             }
-            Pipes::Deferred { ids, shade, mesh_shade } => {
-                let shade = if extra.is_some() { mesh_shade.as_ref().expect("deferred meshes need DrawerSpec::mesh_module") } else { shade };
+            Pipes::Deferred { ids, .. } => {
                 let n = f.nodes;
                 let nodes: Vec<String> = n.draw.iter().chain(extra.map_or(&[][..], |_| &n.extra[..])).cloned().collect();
                 f.ring.stage(enc, f.ticket, "draw", &nodes);
@@ -354,6 +367,17 @@ impl FaceDrawer {
                         extra(&mut pass, if self.mode == DrawMode::Gbuffer { MeshPass::Records } else { MeshPass::Ids });
                     }
                 }
+            }
+        }
+    }
+
+    /// The shading node's pass of [`encode`](Self::encode): deferred, shading the ids or
+    /// records (`meshes`: with the meshes drawn into them); nothing when forward.
+    pub fn encode_shade(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, f: &DrawFrame, meshes: bool) {
+        match &self.pipes {
+            Pipes::Forward { .. } => {}
+            Pipes::Deferred { shade, mesh_shade, .. } => {
+                let shade = if meshes { mesh_shade.as_ref().expect("deferred meshes need DrawerSpec::mesh_module") } else { shade };
                 let mut entries = vec![
                     wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.ids) },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(f.out) },

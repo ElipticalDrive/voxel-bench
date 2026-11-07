@@ -24,6 +24,7 @@ use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_components::draw::drawer::{DrawFrame, DrawNodes};
 use mr_components::geometry::{GpuGeometry, Knobs, Merge};
 use mr_components::graph::{Checked, Role};
+use mr_components::storage::gpu_data::Bound;
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
 use mr_components::{names_on, require, Slot, components};
@@ -34,8 +35,9 @@ use mr_gpu::{GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use super::{CoreOpts, Draw, FaceSource, SourceSpec};
-use crate::Core;
+use super::{CoreOpts, Draw, SourceSpec};
+use crate::exec::{self, Cx, Node, Region};
+use crate::{Core, State};
 
 pub(crate) const BACKEND: &str = "gpu-raster";
 
@@ -189,8 +191,11 @@ impl ChunkMesh {
     }
 }
 
+/// The region the faces' nodes share: the drawing, the meshed faces and their buffers, the
+/// frame's culled draws, world and storages.
 pub(crate) struct Meshing {
     opts: Options,
+    drawing: Draw,
     /// Geometry the faces were meshed with; `stale`: a compile-time knob (geometry, shading,
     /// meshes) changed, the drawer is rebuilt at the next frame (one rebuild for several).
     built: String,
@@ -212,10 +217,36 @@ pub(crate) struct Meshing {
     alloc: RangeAlloc,
     free_slots: Vec<u16>,
     overflowed: bool,
+    /// This frame's state: what its nodes did so far, its counters and its groups.
+    frame: Frame,
+}
+
+/// What a frame's nodes share.
+#[derive(Default)]
+struct Frame {
+    culled: bool,
+    stored: bool,
+    meshed: bool,
+    drawn: bool,
+    /// Meshes drawn this frame (the meshes stage draws them, `depth`, or not, `none`).
+    want_meshes: bool,
+    view_proj: Mat4,
+    /// The camera's block and its fraction.
+    camera: (IVec3, Vec3),
+    world: Option<wgpu::BindGroup>,
+    bound: Option<Bound>,
+    out: Option<wgpu::TextureView>,
+    /// Indirect draws; instances drawn and in all; chunks remeshed.
+    draws: u32,
+    drawn_instances: u64,
+    total: u64,
+    remeshed: usize,
+    mesh_ms: f64,
+    cull_ms: f32,
 }
 
 impl Meshing {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Draw, Self)> {
+    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
         require(BACKEND, Slot::Meshes, &opts.meshes)?;
         parse_merge(&opts.merge)?;
@@ -293,9 +324,11 @@ impl Meshing {
             alloc: RangeAlloc::new(((1 << 20) / QUAD_BYTES) as u32),
             free_slots: (0..MAX_SLOTS as u32).rev().map(|s| s as u16).collect(),
             overflowed: false,
+            frame: Frame::default(),
             opts,
+            drawing,
         };
-        Ok((core, drawing, s))
+        Ok((core, s))
     }
 
     fn knobs(&self) -> Knobs {
@@ -402,58 +435,15 @@ fn aabb_visible(planes: &[Vec4; 5], min: Vec3, max: Vec3) -> bool {
     })
 }
 
-impl FaceSource for Meshing {
-    fn updating(&mut self, _: &[WorldUpdate]) {}
-
-    fn updated(&mut self, core: &Core, changed: &[IVec3]) {
-        for &pos in changed {
-            self.dirty.insert(pos);
-            for f in Face::ALL {
-                let nb = pos + f.normal();
-                if self.meshes.contains_key(&nb) || core.world.chunk(nb).is_some() {
-                    self.dirty.insert(nb);
-                }
-            }
+impl Meshing {
+    /// Visibility `faces`: culls chunks and face directions on the CPU into the indirect draws.
+    fn cull(&mut self, core: &Core) {
+        if std::mem::replace(&mut self.frame.culled, true) {
+            return;
         }
-    }
-
-    fn update_meshes(&mut self, update: MeshUpdate) {
-        self.mesh.apply(update);
-    }
-
-    fn render(&mut self, core: &mut Core, drawing: &mut Draw, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        // The meshes stage draws meshes (`depth`), or not (`none`).
-        let want_meshes = req.meshes && self.opts.meshes != "none";
-        if self.stale {
-            let o = &self.opts;
-            if drawing.rebuild(core, source_wgsl(&o.geometry), geometry(&o.geometry).strip, &o.shading, o.meshes != "none")? {
-                self.bind0 = None;
-            }
-            if o.geometry != self.built {
-                self.built = o.geometry.clone();
-                self.remesh_all();
-            }
-            self.stale = false;
-        }
-        drawing.check_state(req.mode, None)?;
-        let ticket = core.ring.begin(&core.gpu, sink)?;
-        let start = Instant::now();
-        let remeshed = self.remesh(core, req.camera.split_position().0 >> 5);
-        let mesh_ms = start.elapsed().as_secs_f64() * 1e3;
         let cull_start = Instant::now();
-        let c = &req.camera;
-        let (cam_block, frac) = c.split_position();
-        let view_proj = c.projection(core.width as f32 / core.height as f32) * c.view_rotation();
-        drawing.write_frame(core, c, req.mode, 0, IVec3::ZERO);
-        core.accum.begin(&core.gpu, c, req.mode);
-        let world_bg = core.world.prepare(&core.gpu, c).clone();
-        if want_meshes {
-            // The images group is built each frame, so a new vertex buffer needs nothing more.
-            self.mesh.prepare(&core.gpu, c, view_proj, req.mode);
-        }
-
-        // Cull chunks and face directions; build indirect draws.
-        let planes = frustum_planes(view_proj);
+        let (cam_block, frac) = self.frame.camera;
+        let planes = frustum_planes(self.frame.view_proj);
         let geo = geometry(&self.built);
         let mut draws: Vec<DrawArgs> = Vec::with_capacity(self.meshes.len() * 3);
         let (mut drawn, mut total) = (0u64, 0u64);
@@ -497,29 +487,51 @@ impl FaceSource for Meshing {
         if !draws.is_empty() {
             core.gpu.queue.write_buffer(&self.indirect, 0, bytemuck::cast_slice(&draws));
         }
-        let cull_ms = cull_start.elapsed().as_secs_f32() * 1e3;
+        let f = &mut self.frame;
+        (f.draws, f.drawn_instances, f.total) = (draws.len() as u32, drawn, total);
+        f.cull_ms = cull_start.elapsed().as_secs_f32() * 1e3;
+    }
 
+    /// The storages' groups for the shadow rays (and the meshes' occlusion), after the
+    /// acceleration structures.
+    fn store(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        if std::mem::replace(&mut self.frame.stored, true) {
+            return;
+        }
         if self.bind0.is_none() {
-            self.bind0 = Some(drawing.bind(core, self.quad_buf.buffer(), &self.chunk_buf));
+            self.bind0 = Some(self.drawing.bind(core, self.quad_buf.buffer(), &self.chunk_buf));
         }
         let bound = core.storages.prepare(&core.gpu, &core.world);
         self.mesh.set_occlusion_bind_group(bound.get(self.mesh_storage));
-        let (bind2, more) = bound.split();
-        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
-        if core.build_accel(&mut enc, ticket, req) {
-            self.bind0 = Some(drawing.bind(core, self.quad_buf.buffer(), &self.chunk_buf));
+        self.frame.bound = Some(bound);
+        if core.build_accel(enc, ticket, req) {
+            self.bind0 = Some(self.drawing.bind(core, self.quad_buf.buffer(), &self.chunk_buf));
         }
-        let bind0 = self.bind0.clone().unwrap();
-        let binds: Vec<&wgpu::BindGroup> = [Some(&bind0), Some(&world_bg), bind2].into_iter().flatten().collect();
+    }
+
+    /// The meshes' frame (mesh mode), drawn into the faces' depth.
+    fn prepare_meshes(&mut self, core: &Core, req: &FrameRequest) {
+        if std::mem::replace(&mut self.frame.meshed, true) {
+            return;
+        }
+        if self.frame.want_meshes {
+            // The images group is built each frame, so a new vertex buffer needs nothing more.
+            self.mesh.prepare(&core.gpu, &req.camera, self.frame.view_proj, req.mode);
+        }
+    }
+
+    /// The drawer's passes over the frame's groups.
+    fn encode(&self, core: &Core, ticket: mr_gpu::Ticket, req: &FrameRequest, pass: impl FnOnce(&DrawFrame)) {
+        let f = &self.frame;
+        let bound = f.bound.as_ref().expect("stored");
+        let (bind2, more) = bound.split();
+        let binds: Vec<&wgpu::BindGroup> = [self.bind0.as_ref(), f.world.as_ref(), bind2].into_iter().flatten().collect();
         let sky = super::sky_rgba(core);
-        let clear = wgpu::Color { r: sky[0] as f64, g: sky[1] as f64, b: sky[2] as f64, a: 1.0 };
-        let out_view = core.output.create_view(&Default::default());
-        let n = draws.len() as u32;
         let frame = DrawFrame {
-            out: &out_view,
-            depth: &drawing.depth,
-            clear,
-            prepass: drawing.depth_prepass && req.mode == RenderMode::Lit,
+            out: f.out.as_ref().expect("set up"),
+            depth: &self.drawing.depth,
+            clear: wgpu::Color { r: sky[0] as f64, g: sky[1] as f64, b: sky[2] as f64, a: 1.0 },
+            prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
             binds: &binds,
             more: &more,
@@ -527,42 +539,80 @@ impl FaceSource for Meshing {
             ring: &core.ring,
             ticket,
             ts: (true, true),
-            nodes: &drawing.draw_nodes,
+            nodes: &self.drawing.draw_nodes,
         };
+        pass(&frame);
+    }
+
+    /// Meshes go into the faces' forward passes, and into their ids or records when deferred.
+    fn draws_meshes(&self) -> bool {
+        self.frame.want_meshes && (!self.drawing.drawer.mode().deferred() || self.mesh.triangles() > 0)
+    }
+
+    /// The draw node: the faces with one multi-draw-indirect (and the meshes), shaded in the
+    /// fragments when forward.
+    fn draw(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        self.cull(core);
+        self.store(core, enc, ticket, req);
+        self.prepare_meshes(core, req);
+        if std::mem::replace(&mut self.frame.drawn, true) {
+            return;
+        }
+        let n = self.frame.draws;
         let draw = |pass: &mut wgpu::RenderPass<'_>| {
             if n > 0 {
                 pass.multi_draw_indirect(&self.indirect, 0, n);
             }
         };
-        // Meshes: in the faces' forward passes; into their ids or records when deferred.
-        let meshes = want_meshes && (!drawing.drawer.mode().deferred() || self.mesh.triangles() > 0);
-        let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp, Some(&world_bg));
-        drawing.drawer.encode(&core.gpu, &mut enc, &frame, &draw, meshes.then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass)), None);
-        let (accel, accel_stages) = core.accel_stats();
-        let stats = FrameStats {
-            cpu_ms: start.elapsed().as_secs_f32() * 1e3,
-            gpu_ms: None,
-            legend: None,
-            counters: vec![
-                ("instances".into(), drawn as f64),
-                ("instances_total".into(), total as f64),
-                ("draws".into(), n as f64),
-                ("remeshed".into(), remeshed as f64),
-                ("mesh_ms".into(), mesh_ms),
-                ("mesh_triangles".into(), if want_meshes { self.mesh.triangles() as f64 } else { 0.0 }),
-            ]
-            .into_iter()
-            .chain(core.storages.counters())
-            .chain(accel)
-            .chain(core.accum.counter(req.mode))
-            .collect(),
-            stages: [StageTime::cpu("geometry", &self.geometry_nodes, mesh_ms as f32), StageTime::cpu("cull", &self.cull_nodes, cull_ms)].into_iter().chain(accel_stages).collect(),
-        };
-        core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
-        core.ring.poll(&core.gpu, sink, false)
+        let world = self.frame.world.as_ref();
+        let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp, world);
+        let meshes = self.draws_meshes().then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass));
+        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_draw(enc, f, &draw, meshes, None));
     }
 
-    fn set_param(&mut self, _: &mut Core, _: &mut Draw, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+    /// The shading node: the deferred drawers' pass over the ids or records.
+    fn shade(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        self.draw(core, enc, ticket, req);
+        let meshes = self.draws_meshes();
+        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_shade(&core.gpu, enc, f, meshes));
+    }
+}
+
+impl State for Meshing {
+    fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
+        for &pos in changed {
+            self.dirty.insert(pos);
+            for f in Face::ALL {
+                let nb = pos + f.normal();
+                if self.meshes.contains_key(&nb) || core.world.chunk(nb).is_some() {
+                    self.dirty.insert(nb);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn update_meshes(&mut self, update: MeshUpdate) {
+        self.mesh.apply(update);
+    }
+
+    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        self.set_knob(name, value).or_else(|| self.drawing.set_param(core, name, value))
+    }
+
+    fn resize(&mut self, core: &Core) {
+        self.drawing.resize(core);
+        self.bind0 = None;
+    }
+
+    fn memory(&self, core: &Core) -> (u64, u64) {
+        (0, self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size() + self.drawing.memory_bytes(core))
+    }
+}
+
+impl Meshing {
+    /// Its own knobs; `None` if `name` is not one.
+    fn set_knob(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         let s = value.as_str().unwrap_or("").to_string();
         let r = |slot| require(BACKEND, slot, &s);
         let stale = &mut self.stale;
@@ -598,14 +648,125 @@ impl FaceSource for Meshing {
             _ => return None,
         })
     }
+}
 
-    fn resize(&mut self, _: &Core, _: &Draw) {
-        self.bind0 = None;
+impl Region for Meshing {
+    /// The drawer when a compile-time knob changed it (and the faces when the geometry did).
+    fn compile(&mut self, core: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
+        if self.stale {
+            let o = &self.opts;
+            if self.drawing.rebuild(core, source_wgsl(&o.geometry), geometry(&o.geometry).strip, &o.shading, o.meshes != "none")? {
+                self.bind0 = None;
+            }
+            if o.geometry != self.built {
+                self.built = o.geometry.clone();
+                self.remesh_all();
+            }
+            self.stale = false;
+        }
+        self.drawing.check_state(req.mode, None)
     }
 
-    fn memory(&self, _: &Core) -> (u64, u64) {
-        (0, self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size())
+    /// The geometry on the CPU (the dirty chunks remeshed and uploaded: the faces' transfer),
+    /// then the frame's camera and world.
+    fn setup(&mut self, core: &mut Core, req: &FrameRequest) {
+        let start = Instant::now();
+        let remeshed = self.remesh(core, req.camera.split_position().0 >> 5);
+        let mesh_ms = start.elapsed().as_secs_f64() * 1e3;
+        let c = &req.camera;
+        self.drawing.write_frame(core, c, req.mode, 0, IVec3::ZERO);
+        core.accum.begin(&core.gpu, c, req.mode);
+        self.frame = Frame {
+            want_meshes: req.meshes && self.opts.meshes != "none",
+            view_proj: c.projection(core.width as f32 / core.height as f32) * c.view_rotation(),
+            camera: c.split_position(),
+            world: Some(core.world.prepare(&core.gpu, c).clone()),
+            out: Some(core.output.create_view(&Default::default())),
+            remeshed,
+            mesh_ms,
+            ..Frame::default()
+        };
     }
+
+    fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
+        let f = &self.frame;
+        let (accel, accel_stages) = core.accel_stats();
+        let counters = vec![
+            ("instances".into(), f.drawn_instances as f64),
+            ("instances_total".into(), f.total as f64),
+            ("draws".into(), f.draws as f64),
+            ("remeshed".into(), f.remeshed as f64),
+            ("mesh_ms".into(), f.mesh_ms),
+            ("mesh_triangles".into(), if f.want_meshes { self.mesh.triangles() as f64 } else { 0.0 }),
+        ]
+        .into_iter()
+        .chain(core.storages.counters())
+        .chain(accel)
+        .chain(core.accum.counter(req.mode))
+        .collect();
+        let stages = [StageTime::cpu("geometry", &self.geometry_nodes, f.mesh_ms as f32), StageTime::cpu("cull", &self.cull_nodes, f.cull_ms)].into_iter().chain(accel_stages).collect();
+        (counters, None, stages)
+    }
+
+    fn finish(&mut self, _enc: &mut wgpu::CommandEncoder) {}
+}
+
+/// Visibility `faces`: the CPU culling into the indirect draws.
+struct Visibility;
+/// The storages the shadow rays walk (after the acceleration structures).
+struct Storage;
+/// The meshes' frame (mesh mode).
+struct Meshes;
+/// The face drawer's draw passes.
+struct DrawFaces;
+/// The deferred drawers' shading pass.
+struct Shading;
+
+impl Node<Meshing> for Visibility {
+    fn run(&mut self, cx: &mut Cx<Meshing>) {
+        cx.region.cull(cx.core);
+    }
+}
+
+impl Node<Meshing> for Storage {
+    fn run(&mut self, cx: &mut Cx<Meshing>) {
+        cx.region.store(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+impl Node<Meshing> for Meshes {
+    fn run(&mut self, cx: &mut Cx<Meshing>) {
+        cx.region.prepare_meshes(cx.core, cx.req);
+    }
+}
+
+impl Node<Meshing> for DrawFaces {
+    fn run(&mut self, cx: &mut Cx<Meshing>) {
+        cx.region.draw(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+impl Node<Meshing> for Shading {
+    fn run(&mut self, cx: &mut Cx<Meshing>) {
+        cx.region.shade(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+/// The meshing executor for `g`: culling, storages, meshes, drawing and shading as nodes (the
+/// geometry is meshed on the CPU and uploaded before them: the geometry node and its transfer).
+pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    let passes = exec::passes(g, |role| -> Option<Box<dyn Node<Meshing>>> {
+        Some(match role {
+            Role::Visibility => Box::new(Visibility),
+            Role::Storage => Box::new(Storage),
+            Role::Meshes => Box::new(Meshes),
+            Role::Draw => Box::new(DrawFaces),
+            Role::Shading => Box::new(Shading),
+            _ => return None,
+        })
+    })?;
+    let (core, region) = Meshing::new(p, devices, waker, g)?;
+    crate::run((core, exec::Nodes::new(region, passes)))
 }
 
 #[cfg(test)]

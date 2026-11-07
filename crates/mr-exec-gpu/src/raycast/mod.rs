@@ -434,7 +434,7 @@ impl<C: Cast> Raycast<C> {
 }
 
 impl<C: Cast> crate::exec::Region for Raycast<C> {
-    fn compile(&mut self, core: &mut Core) -> anyhow::Result<()> {
+    fn compile(&mut self, core: &mut Core, _req: &FrameRequest) -> anyhow::Result<()> {
         let (passes, cast) = (&mut self.passes, &mut self.cast);
         if cast.stale() || self.shading != self.built_shading {
             (passes.plain, passes.meshed, passes.extra) = Passes::compile(core, &passes.pipeline_layout, cast, &self.shading, passes.remote)?;

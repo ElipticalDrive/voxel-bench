@@ -219,7 +219,10 @@ region's remote part, not a node of an executor of its own.
 Step 3 has begun on the GPU: columns run as visibility → shading nodes sharing a region (the
 heightmap storage has no pass of its own: it is patched and uploaded with the world's changes),
 and so does point splatting (the points are built on the CPU and uploaded before the frame; the
-splat passes and the resolve are the visibility and shading nodes).
+splat passes and the resolve are the visibility and shading nodes), and so does meshing's face
+drawing (the faces are meshed on the CPU and uploaded before the frame; culling, the storages,
+the meshes, the drawer's draw passes and the deferred shading pass are nodes; a forward drawer
+shades in its draw pass). The discovery sources still run as the faces lane.
 Step 4 has begun: for the node executors, `accept` is the validity rules plus the nodes each
 executor declares it builds, and the editor edits their graphs exactly, drafts included; the
 skeleton (and the editor's filling in and pruning) remains for the other back ends.

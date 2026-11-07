@@ -1,10 +1,10 @@
-//! The faces lane: every pipeline whose image is the
-//! shared face drawer's (`draw`: raster, visbuffer or gbuffer) over a set of block faces, one
-//! lane for the three face sources that can feed the drawer's `faces`:
-//! - `gpu-raster`: meshing ([`mesh`]): the geometry component meshes changed chunks on the
-//!   CPU (view-independent: every exposed face), uploaded per chunk (the schedule's transfer
-//!   of the faces from the CPU to the GPU), culled per chunk and face direction, drawn with
-//!   multi-draw-indirect; with meshes (mesh mode) in the same depth buffer;
+//! Every pipeline whose image is the shared face drawer's (`draw`: raster, visbuffer or
+//! gbuffer) over a set of block faces, for the three face sources that can feed the drawer's
+//! `faces`:
+//! - `gpu-raster`: meshing ([`mesh`], on the node executor): the geometry component meshes
+//!   changed chunks on the CPU (view-independent: every exposed face), uploaded per chunk (the
+//!   schedule's transfer of the faces from the CPU to the GPU), culled per chunk and face
+//!   direction, drawn with multi-draw-indirect; with meshes (mesh mode) in the same depth buffer;
 //! - `gpu-discover`: discovery on the GPU ([`gpu`]): the sampler (`visibility` quadtree, with
 //!   hole detection `holes = coverage`) finds the faces the camera sees and keeps them in a
 //!   GPU hash set;
@@ -13,10 +13,11 @@
 //!   arrive `prev`.
 //!
 //! Which source runs is the graph's: meshing when the drawer's faces come from the `faces`
-//! visibility (every meshed face), else discovery on the visibility node's device. The rest is
-//! the lane's ([`Draw`]) over the executor's core: the face drawer compiled over the shared
-//! frame (the core's group 0: its camera uniform, shading state, acceleration structures; the
-//! source's two buffers at the lane's bindings) and the source's WGSL, the depth buffer.
+//! visibility (every meshed face), else discovery on the visibility node's device (the faces
+//! lane, [`Faces`]). The drawing ([`Draw`]) is every source's, over the executor's core: the
+//! face drawer compiled over the shared frame (the core's group 0: its camera uniform, shading
+//! state, acceleration structures; the source's two buffers at the lane's bindings) and the
+//! source's WGSL, the depth buffer.
 
 use glam::IVec3;
 use mr_components::draw::{self, drawer::{DrawMode, DrawNodes, DrawerSpec, FaceDrawer}};
@@ -39,7 +40,7 @@ pub(crate) mod mesh;
 pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, cpu_world: Option<fn() -> mr_components::visibility::discover::grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
     let faces = g.input(Role::Draw, "faces").ok_or_else(|| anyhow::anyhow!("{backend}: the drawer's faces are not bound"))?;
     if g.node(faces).component == "faces" {
-        return run(mesh::Meshing::new(p, devices, waker, g)?);
+        return mesh::create(p, devices, waker, g);
     }
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{backend}: no visibility node"))?;
     match g.devices[vis] {
@@ -99,7 +100,7 @@ struct Meshed {
     deps: Vec<String>,
 }
 
-/// The lane's drawing, every face source's: the face drawer and what it is compiled from,
+/// The drawing, every face source's: the face drawer and what it is compiled from,
 /// group 0's layout, the depth buffer.
 pub(crate) struct Draw {
     shading: String,
@@ -382,7 +383,7 @@ impl Draw {
     }
 }
 
-/// A face source: what feeds the drawer's faces, on its device (meshing, or a sampler).
+/// A discovery face source: what feeds the drawer's faces, on its device (a sampler).
 trait FaceSource {
     /// World changes before the GPU world applies them (the CPU world, event areas).
     fn updating(&mut self, updates: &[WorldUpdate]);

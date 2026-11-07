@@ -174,7 +174,7 @@ impl State for Columns {
 }
 
 impl Region for Columns {
-    fn compile(&mut self, _core: &mut Core) -> anyhow::Result<()> {
+    fn compile(&mut self, _core: &mut Core, _req: &FrameRequest) -> anyhow::Result<()> {
         Ok(())
     }
 

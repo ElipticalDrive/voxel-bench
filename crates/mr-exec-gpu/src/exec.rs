@@ -31,8 +31,9 @@ pub(crate) trait Node<R> {
 /// passes: its start and submission, and what its nodes' passes share. Its world changes,
 /// knobs, resizes, memory and completed frames are a lane's.
 pub(crate) trait Region: State {
-    /// Before the frame: recompiles what its knobs changed.
-    fn compile(&mut self, core: &mut Core) -> anyhow::Result<()>;
+    /// Before the frame: recompiles what its knobs changed (and refuses `req` if it cannot
+    /// draw it).
+    fn compile(&mut self, core: &mut Core, req: &FrameRequest) -> anyhow::Result<()>;
     /// The frame's state before its passes (camera, shading state, world).
     fn setup(&mut self, core: &mut Core, req: &FrameRequest);
     /// The frame's counters, legend and CPU stage times.
@@ -101,7 +102,7 @@ impl<R: Region> State for Nodes<R> {
 
 impl<R: Region> Lane for Nodes<R> {
     fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.region.compile(core)?;
+        self.region.compile(core, req)?;
         let ticket = self.region.begin(core, sink)?;
         let start = std::time::Instant::now();
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
