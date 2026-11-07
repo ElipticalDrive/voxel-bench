@@ -1,16 +1,15 @@
-//! The columns lane (`gpu-voxelspace`; components): storage
+//! Columns on the node executor (`gpu-voxelspace`; components): storage
 //! `heightmap`, visibility `columns`, shading `direct` or `pathtrace` (heightmap-gradient
 //! normals on column tops; shadow and bounce rays walk the heightmap, `hm_trace`). The march
 //! is the columns component's root (`mr_components::visibility::columns::GPU_WGSL`) in one
 //! compute pass; shading inline in the march or deferred (`placement`: the
 //! march writes hit records, the common pass `shading/deferred.wgsl` shades them). The
 //! heightmap is kept on the CPU, patched from the change log, its changed rows uploaded (the
-//! change log's transfer to the GPU).
-
-use std::time::Instant;
+//! change log's transfer to the GPU). The march and the deferred shading are nodes sharing
+//! the [`Columns`] region.
 
 use glam::IVec3;
-use mr_components::graph;
+use mr_components::graph::{self, Role};
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::heightmap::{self, Heightmap};
 use mr_components::visibility::columns;
@@ -19,7 +18,8 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GpuNeeds, wgpu};
 use serde::Deserialize;
 
-use crate::{Core, CoreSpec, LANE_BINDING, Lane, State, storage_entry};
+use crate::exec::{self, Cx, Node, Region};
+use crate::{Core, CoreSpec, LANE_BINDING, State, storage_entry};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -64,6 +64,7 @@ impl Default for Options {
     }
 }
 
+/// The region the columns' nodes share: the heightmap, the program, group 0, the frame's world.
 pub(crate) struct Columns {
     /// The heightmap storage (on the CPU) and its GPU copy; `hm_info` = mask, columns a walk
     /// may cross.
@@ -75,10 +76,12 @@ pub(crate) struct Columns {
     shade: Option<wgpu::ComputePipeline>,
     layout0: wgpu::BindGroupLayout,
     bind0: wgpu::BindGroup,
+    /// This frame's world bind group.
+    world: Option<wgpu::BindGroup>,
 }
 
 impl Columns {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self)> {
+    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
         use mr_components::{Slot, require};
         for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
@@ -130,7 +133,7 @@ impl Columns {
         let pipe = |e: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
         let (pipeline, shade) = (pipe("main"), deferred.then(|| pipe("shade")));
         let bind0 = bind0(&core, &layout0, &hm_buf, &hm_info);
-        Ok((core, Self { hm, hm_buf, hm_info, pipeline, shade, layout0, bind0 }))
+        Ok((core, Self { hm, hm_buf, hm_info, pipeline, shade, layout0, bind0, world: None }))
     }
 }
 
@@ -170,47 +173,72 @@ impl State for Columns {
     }
 }
 
-impl Lane for Columns {
-    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        let (width, height) = (core.width, core.height);
-        let ticket = core.ring.begin(&core.gpu, sink)?;
-        let start = Instant::now();
+impl Region for Columns {
+    fn compile(&mut self, _core: &mut Core) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn setup(&mut self, core: &mut Core, req: &FrameRequest) {
         let c = &req.camera;
         core.write_camera(c, req.mode, [0, self.hm.march_cells()]);
         core.accum.begin(&core.gpu, c, req.mode);
-        let world_bg = core.world.prepare(&core.gpu, c).clone();
-        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
-        let deferred = self.shade.is_some();
-        if deferred {
-            core.ring.stage(&mut enc, ticket, "columns", &core.stage_nodes[1]);
-        } else {
-            core.ring.stage(&mut enc, ticket, "columns+shade", &core.stage_nodes[0]);
-        }
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxelspace"), timestamp_writes: core.ring.compute_timestamps(ticket, true, !deferred) });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind0, &[]);
-            pass.set_bind_group(1, &world_bg, &[]);
-            pass.dispatch_workgroups(width.div_ceil(64), 1, 1);
-        }
-        if let Some(shade) = &self.shade {
-            core.ring.stage(&mut enc, ticket, "shade", &core.stage_nodes[2]);
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: core.ring.compute_timestamps(ticket, false, true) });
-            pass.set_pipeline(shade);
-            pass.set_bind_group(0, &self.bind0, &[]);
-            pass.set_bind_group(1, &world_bg, &[]);
-            pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
-        }
-        let stats = FrameStats {
-            cpu_ms: start.elapsed().as_secs_f32() * 1e3,
-            gpu_ms: None,
-            legend: None,
-            counters: self.hm.counters().into_iter().chain(core.accum.counter(req.mode)).collect(),
-            stages: Vec::new(),
-        };
-        core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
-        core.ring.poll(&core.gpu, sink, false)
+        self.world = Some(core.world.prepare(&core.gpu, c).clone());
     }
+
+    fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
+        (self.hm.counters().into_iter().chain(core.accum.counter(req.mode)).collect(), None, Vec::new())
+    }
+
+    fn finish(&mut self, _enc: &mut wgpu::CommandEncoder) {}
+}
+
+/// The march (with `placement = inline` the shading fused into it).
+struct Visibility;
+/// The deferred shading pass.
+struct Shading;
+
+impl Node<Columns> for Visibility {
+    fn run(&mut self, cx: &mut Cx<Columns>) {
+        let (core, r, enc, ticket) = (&mut *cx.core, &*cx.region, &mut *cx.enc, cx.ticket);
+        let deferred = r.shade.is_some();
+        if deferred {
+            core.ring.stage(enc, ticket, "columns", &core.stage_nodes[1]);
+        } else {
+            core.ring.stage(enc, ticket, "columns+shade", &core.stage_nodes[0]);
+        }
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxelspace"), timestamp_writes: core.ring.compute_timestamps(ticket, true, !deferred) });
+        pass.set_pipeline(&r.pipeline);
+        pass.set_bind_group(0, &r.bind0, &[]);
+        pass.set_bind_group(1, r.world.as_ref().expect("set up"), &[]);
+        pass.dispatch_workgroups(core.width.div_ceil(64), 1, 1);
+    }
+}
+
+impl Node<Columns> for Shading {
+    fn run(&mut self, cx: &mut Cx<Columns>) {
+        let (core, r, enc, ticket) = (&mut *cx.core, &*cx.region, &mut *cx.enc, cx.ticket);
+        let Some(shade) = &r.shade else { return };
+        core.ring.stage(enc, ticket, "shade", &core.stage_nodes[2]);
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: core.ring.compute_timestamps(ticket, false, true) });
+        pass.set_pipeline(shade);
+        pass.set_bind_group(0, &r.bind0, &[]);
+        pass.set_bind_group(1, r.world.as_ref().expect("set up"), &[]);
+        pass.dispatch_workgroups(core.width.div_ceil(8), core.height.div_ceil(8), 1);
+    }
+}
+
+/// The columns executor for `g`: the march and the deferred shading as nodes (the storage
+/// has no pass: the heightmap is patched and uploaded with the world's changes).
+pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    let passes = exec::passes(g, |role| -> Option<Box<dyn Node<Columns>>> {
+        match role {
+            Role::Visibility => Some(Box::new(Visibility)),
+            Role::Shading => Some(Box::new(Shading)),
+            _ => None,
+        }
+    })?;
+    let (core, region) = Columns::new(p, devices, waker, g)?;
+    crate::run((core, exec::Nodes::new(region, passes)))
 }
 
 /// The shader: the heightmap storage (group 2) is its own kernel (`ctrace`; storage and walk

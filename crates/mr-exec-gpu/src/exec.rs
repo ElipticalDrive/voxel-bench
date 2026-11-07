@@ -5,6 +5,7 @@
 //! module). Dispatch is per pass (a virtual call per node per frame); every per-pixel cost
 //! stays in the shaders.
 
+use mr_components::graph::{self, Role};
 use mr_core::*;
 use mr_gpu::{Ticket, wgpu};
 
@@ -47,6 +48,13 @@ pub(crate) trait Region: State {
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
         core.ring.poll(&core.gpu, sink, false)
     }
+}
+
+/// The nodes of `g`'s passes on the GPU in frame order, each by its node's role (`node`; a
+/// role without one has no pass of its own here).
+pub(crate) fn passes<R>(g: &graph::Checked, node: impl Fn(Role) -> Option<Box<dyn Node<R>>>) -> anyhow::Result<Vec<Box<dyn Node<R>>>> {
+    let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
+    Ok(schedule.passes().filter(|p| matches!(p.device, graph::Device::Gpu(_))).filter_map(|p| node(g.node(&p.node).role)).collect())
 }
 
 /// A region and its nodes' passes in frame order, run as the executor's lane.

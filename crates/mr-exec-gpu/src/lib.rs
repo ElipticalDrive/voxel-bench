@@ -177,7 +177,7 @@ fn create_with(backend: &str, p: InitParams, devices: &Devices, waker: Waker, cp
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{backend}: no visibility node"))?;
     match g.node(vis).component.as_str() {
         "splat" => run(splat::Splat::new(&p, devices, waker, &g)?),
-        "columns" => run(columns::Columns::new(&p, devices, waker, &g)?),
+        "columns" => columns::create(&p, devices, waker, &g),
         _ => raycast::create(backend, &p, devices, waker, &g),
     }
 }

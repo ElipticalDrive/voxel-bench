@@ -596,22 +596,17 @@ mod nodes {
 
     /// The nodes of `g`'s passes on the GPU, in frame order.
     pub(super) fn of<C: Cast + 'static>(g: &graph::Checked) -> anyhow::Result<Vec<Box<dyn Node<Raycast<C>>>>> {
-        let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
-        Ok(schedule
-            .passes()
-            .filter(|p| matches!(p.device, graph::Device::Gpu(_)))
-            .filter_map(|p| -> Option<Box<dyn Node<Raycast<C>>>> {
-                Some(match g.node(&p.node).role {
-                    Role::Traversal => Box::new(Accel),
-                    Role::Storage => Box::new(Storage),
-                    Role::Meshes => Box::new(Meshes),
-                    Role::Prepass => Box::new(Prepass),
-                    Role::Visibility => Box::new(Visibility),
-                    Role::Shading => Box::new(Shading),
-                    _ => return None,
-                })
+        crate::exec::passes(g, |role| -> Option<Box<dyn Node<Raycast<C>>>> {
+            Some(match role {
+                Role::Traversal => Box::new(Accel),
+                Role::Storage => Box::new(Storage),
+                Role::Meshes => Box::new(Meshes),
+                Role::Prepass => Box::new(Prepass),
+                Role::Visibility => Box::new(Visibility),
+                Role::Shading => Box::new(Shading),
+                _ => return None,
             })
-            .collect())
+        })
     }
 }
 

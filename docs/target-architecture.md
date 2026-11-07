@@ -216,6 +216,8 @@ GPU the region submits through the transfer (records read back, written to the o
 shaded there) and that GPU completes the frame. The hit records are still a binding of the
 region's group 0, not a node output the executor owns, and the second GPU's shading is the
 region's remote part, not a node of an executor of its own.
+Step 3 has begun on the GPU: columns run as visibility → shading nodes sharing a region (the
+heightmap storage has no pass of its own: it is patched and uploaded with the world's changes).
 Step 4 has begun: for the node executors, `accept` is the validity rules plus the nodes each
 executor declares it builds, and the editor edits their graphs exactly, drafts included; the
 skeleton (and the editor's filling in and pruning) remains for the other back ends.
