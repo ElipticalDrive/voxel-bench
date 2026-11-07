@@ -363,7 +363,7 @@ impl Graph {
         sites
     }
 
-    /// The graph in its sites form: the composition the back end runs it as and the sites
+    /// The graph in its sites form: the composition the preset runs it as and the sites
     /// bound otherwise (`None` if it cannot be written so: nodes on free sites have knobs,
     /// or a shape the form has no words for).
     pub fn sites_form(&self) -> Result<Option<(Composition, BTreeMap<String, String>)>, String> {
@@ -395,7 +395,7 @@ impl Graph {
         // The composition's secondary-ray stages, where the sites say it all (a shadow walk
         // with a storage of its own, which the stages cannot say), back at their defaults.
         let mut c = c;
-        let defaults = crate::backend(&c.backend).map(|b| c.slots().filter(|s| s.secondary()).filter_map(|s| Some((s, b.default_for(s)?))).collect::<Vec<_>>()).unwrap_or_default();
+        let defaults = crate::preset_info(&c.preset).map(|b| c.slots().filter(|s| s.secondary()).filter_map(|s| Some((s, b.default_for(s)?))).collect::<Vec<_>>()).unwrap_or_default();
         for &(slot, d) in defaults.iter().rev() {
             let mut fewer = c.clone();
             fewer.set(slot, d);
@@ -427,7 +427,7 @@ impl Graph {
     }
 
     /// The values site `name` could take on its own (for sweeps' `"*"` and the GUI; not
-    /// checked against the back end): the other sites it could share, a kernel over the
+    /// checked against the preset): the other sites it could share, a kernel over the
     /// lead's storage, and each storage with each kernel (exposure tests: each storage).
     pub fn site_choices(&self, name: &str) -> Vec<String> {
         if name == CLIENT {

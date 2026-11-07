@@ -86,9 +86,9 @@ pub fn infos() -> Vec<RendererInfo> {
 /// The knobs of pipeline `preset`.
 pub fn info(preset: &str) -> RendererInfo {
     match preset {
-        raycast::BACKEND => raycast::info(),
-        raster::BACKEND => raster::info(),
-        columns::BACKEND => columns::info(),
+        raycast::PRESET => raycast::info(),
+        raster::PRESET => raster::info(),
+        columns::PRESET => columns::info(),
         other => panic!("`{other}` is not run by the CPU executor"),
     }
 }
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn executors_build_what_they_declare() {
         let (mut built, mut refused) = (0, 0);
-        for ck in graph::near(&[raycast::BACKEND, raster::BACKEND, columns::BACKEND]) {
+        for ck in graph::near(&[raycast::PRESET, raster::PRESET, columns::PRESET]) {
             let e = ck.preset.unwrap();
             let key = ck.graph.canonical().unwrap();
             if let Err(why) = ck.built() {

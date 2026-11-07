@@ -28,16 +28,16 @@ use crate::{Core, CoreSpec, REGION_BINDING, storage_entry};
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
         name: "splat-gpu".into(),
-        description: "GPU-splat back end (storage for shadow rays, points geometry, splat visibility, shading). Compute point splatting: one point per exposed block, atomicMin depth + id buffer, ray-box resolve".into(),
+        description: "splat-gpu preset (storage for shadow rays, points geometry, splat visibility, shading). Compute point splatting: one point per exposed block, atomicMin depth + id buffer, ray-box resolve".into(),
         tags: vec!["gpu".into(), "compute".into(), "points".into(), "splat".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
-        params: mr_components::lighting_knobs(BACKEND, vec![
-            ParamSpec::choice("storage", "Storage component the lit-mode shadow rays walk (with the traversal kernel)", &names_on(BACKEND, Slot::Storage), "bricks", false),
-            ParamSpec::choice("geometry", "Geometry component", &names_on(BACKEND, Slot::Geometry), "points", false),
-            ParamSpec::choice("visibility", "Visibility component", &names_on(BACKEND, Slot::Visibility), "splat", false),
-            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &names_on(BACKEND, Slot::Traversal), "refloor", false),
-            ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false),
+        params: mr_components::lighting_knobs(PRESET, vec![
+            ParamSpec::choice("storage", "Storage component the lit-mode shadow rays walk (with the traversal kernel)", &names_on(PRESET, Slot::Storage), "bricks", false),
+            ParamSpec::choice("geometry", "Geometry component", &names_on(PRESET, Slot::Geometry), "points", false),
+            ParamSpec::choice("visibility", "Visibility component", &names_on(PRESET, Slot::Visibility), "splat", false),
+            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &names_on(PRESET, Slot::Traversal), "refloor", false),
+            ParamSpec::choice("shading", "Shading component", &names_on(PRESET, Slot::Shading), "direct", false),
             ParamSpec::int("max_splat", "Largest splat side (px) one thread draws; larger points take a workgroup each", 1, 64, 16, true).of("visibility", &["splat"]),
             shadows_param(),
             ParamSpec::int("pool_mb", "Voxel pool limit (MiB)", 64, 6144, 2048, false),
@@ -72,7 +72,7 @@ impl Default for Options {
     }
 }
 
-pub(crate) const BACKEND: &str = "splat-gpu";
+pub(crate) const PRESET: &str = "splat-gpu";
 
 /// The region the splat's nodes share: the points and their buffers, the program, group 0,
 /// the frame's world and storages.
@@ -111,13 +111,13 @@ impl Splat {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
         for (slot, name) in [(Slot::Geometry, &opts.geometry), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
-            require(BACKEND, slot, name)?;
+            require(PRESET, slot, name)?;
         }
         // The points cross from the CPU (geometry) to the GPU (visibility): the schedule's
         // transfer, its adapter `upload`.
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
         if !schedule.transfers.iter().any(|e| e.port == "points" && g.node(&e.to).role == Role::Visibility) {
-            anyhow::bail!("{BACKEND}: the points do not cross from the CPU to the GPU");
+            anyhow::bail!("{PRESET}: the points do not cross from the CPU to the GPU");
         }
         // The sites' walks: shadow rays (the storage and traversal stages),
         // bounces their own or the same.
@@ -319,10 +319,10 @@ mod tests {
     fn programs_compose() {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         let mut n = 0;
-        for st in names_on(BACKEND, Slot::Storage) {
-            for k in names_on(BACKEND, Slot::Traversal) {
-                for shading in names_on(BACKEND, Slot::Shading) {
-                    let flat = mr_components::Composition { storage: st.into(), traversal: k.into(), shading: shading.into(), ..mr_components::Composition::new(BACKEND) };
+        for st in names_on(PRESET, Slot::Storage) {
+            for k in names_on(PRESET, Slot::Traversal) {
+                for shading in names_on(PRESET, Slot::Shading) {
+                    let flat = mr_components::Composition { storage: st.into(), traversal: k.into(), shading: shading.into(), ..mr_components::Composition::new(PRESET) };
                     let Ok(gr) = mr_components::graph::Graph::from_composition(&flat) else { continue };
                     if gr.validate().is_err() {
                         continue;

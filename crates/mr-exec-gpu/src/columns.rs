@@ -28,11 +28,11 @@ pub(crate) fn info() -> RendererInfo {
         tags: vec!["gpu".into(), "compute".into(), "heightmap".into(), "2.5d".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
-        params: mr_components::lighting_knobs(BACKEND, vec![
-            ParamSpec::choice("storage", "Storage component", &mr_components::names_on(BACKEND, mr_components::Slot::Storage), "heightmap", false),
-            ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(BACKEND, mr_components::Slot::Visibility), "columns", false),
-            ParamSpec::choice("shading", "Shading component", &mr_components::names_on(BACKEND, mr_components::Slot::Shading), "direct", false),
-            mr_components::placement_param(BACKEND, "inline"),
+        params: mr_components::lighting_knobs(PRESET, vec![
+            ParamSpec::choice("storage", "Storage component", &mr_components::names_on(PRESET, mr_components::Slot::Storage), "heightmap", false),
+            ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(PRESET, mr_components::Slot::Visibility), "columns", false),
+            ParamSpec::choice("shading", "Shading component", &mr_components::names_on(PRESET, mr_components::Slot::Shading), "direct", false),
+            mr_components::placement_param(PRESET, "inline"),
             shadows_param(),
             ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
         ]
@@ -56,7 +56,7 @@ struct Options {
     frames_in_flight: usize,
 }
 
-pub(crate) const BACKEND: &str = "columns-gpu";
+pub(crate) const PRESET: &str = "columns-gpu";
 
 impl Default for Options {
     fn default() -> Self {
@@ -85,7 +85,7 @@ impl Columns {
         let opts: Options = p.options()?;
         use mr_components::{Slot, require};
         for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
-            require(BACKEND, slot, name)?;
+            require(PRESET, slot, name)?;
         }
         let deferred = mr_components::parse_placement(&opts.placement)?;
         // The voxel world holds the chunks, the texture atlas and the lighting parameters only.

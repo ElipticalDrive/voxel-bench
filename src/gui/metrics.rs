@@ -266,7 +266,7 @@ impl App {
                             self.knob_edits.insert(key, value);
                         }
                     }
-                    // A component the running back end switches live, else a hot swap.
+                    // A component the running preset switches live, else a hot swap.
                     graph::Edit::Spec(spec) => match graph::live_switch(&l.spec, &spec, &l.params) {
                         Some((slot, c)) => actions.push(LaneAction::Set(i, slot, mr_core::ParamValue::Choice(c))),
                         None => actions.push(LaneAction::Swap(i, spec)),
@@ -409,7 +409,7 @@ impl App {
 enum LaneAction {
     Focus(usize),
     Restart(usize),
-    /// Hot-swap a lane to a new spec (e.g. another back end).
+    /// Hot-swap a lane to a new spec (e.g. another preset).
     Swap(usize, crate::plan::RendererSpec),
     Remove(usize),
     SaveToPlan(usize, crate::plan::RendererSpec),

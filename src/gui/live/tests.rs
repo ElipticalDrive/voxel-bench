@@ -49,7 +49,7 @@ fn live_session_end_to_end() {
     let live = LiveHandle::start(plan.clone(), vec![], control, || {});
     wait(&live.shared, "frames from all lanes", 60, |s| s.lanes.len() == 3 && s.lanes.iter().all(|l| l.frame.is_some() && l.samples.len() > 20));
     assert!(live.shared.lock().unwrap().lanes[0].params.iter().any(|(p, _)| p.name == "max_steps"));
-    // Stage times: GPU stages from timestamps, CPU stages timed by the back end.
+    // Stage times: GPU stages from timestamps, CPU stages timed by the preset.
     {
         let sh = live.shared.lock().unwrap();
         let has = |lane: usize, name: &str, nodes: &[&str], gpu: bool| sh.lanes[lane].stages.iter().any(|s| s.name == name && s.nodes == nodes && if gpu { s.gpu_ms.is_some_and(|x| x > 0.0) } else { s.cpu_ms.is_some() });
@@ -167,7 +167,7 @@ fn restarts_keep_knobs() {
     let kept = keep_knobs(&given, &now, new);
     assert_eq!((value(&kept, "max_steps"), value(&kept, "accumulate")), (Some(toml::Value::Integer(500)), Some(toml::Value::Boolean(false))));
     assert_eq!(kept.options.get("storage").and_then(|v| v.as_str()), Some("prefix"));
-    // Another back end: its own knobs only.
+    // Another preset: its own knobs only.
     let kept = keep_knobs(&given, &now, RendererSpec::from_cli("raster-gpu").unwrap());
     assert_eq!(value(&kept, "max_steps"), None);
     // The LOD depth (a client knob).

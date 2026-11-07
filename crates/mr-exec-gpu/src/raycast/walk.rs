@@ -30,18 +30,18 @@ use serde::Deserialize;
 use super::{Cast, CastProgram, Passes, Ticket, View};
 use crate::{Core, CoreSpec, REGION_BINDING};
 
-pub(crate) const BACKEND: &str = "raycast-gpu";
+pub(crate) const PRESET: &str = "raycast-gpu";
 
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: BACKEND.into(),
-        description: "GPU-compute back end: renders a composition of components (storage, traversal, shading) fused into one compute shader".into(),
+        name: PRESET.into(),
+        description: "raycast-gpu preset: renders a composition of components (storage, traversal, shading) fused into one compute shader".into(),
         tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "modular".into(), "wgpu".into(), "meshes".into(), "lod".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         // LOD with pool storages and refloor (cells 2x coarser per level; was gpu-dda-lod).
         max_lod: 6,
-        params: mr_components::lighting_knobs(BACKEND, params()),
+        params: mr_components::lighting_knobs(PRESET, params()),
     }
 }
 
@@ -51,18 +51,18 @@ fn describe(slot: Slot) -> String {
 
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
-        ParamSpec::choice("storage", &format!("Storage component. {}", describe(Slot::Storage)), &names_on(BACKEND, Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "raycast", false),
-        ParamSpec::choice("traversal", &format!("Traversal kernel (any storage works with any; missing fast paths come from adapters). {}", describe(Slot::Traversal)), &names_on(BACKEND, Slot::Traversal), "refloor", true),
-        ParamSpec::choice("shadow_storage", "What shadow and bounce rays walk: `same` (the primary storage) or another storage (its data is kept as well)", &names_on(BACKEND, Slot::ShadowStorage), "same", false),
-        ParamSpec::choice("shadow_traversal", "The kernel of shadow and bounce rays: `same` (the primary kernel) or another", &names_on(BACKEND, Slot::ShadowTraversal), "same", false),
-        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
-        ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &names_on(BACKEND, Slot::Prepass), "none", true),
-        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(BACKEND, Slot::Meshes), "composite", true),
+        ParamSpec::choice("storage", &format!("Storage component. {}", describe(Slot::Storage)), &names_on(PRESET, Slot::Storage), "bricks", false),
+        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &names_on(PRESET, Slot::Visibility), "raycast", false),
+        ParamSpec::choice("traversal", &format!("Traversal kernel (any storage works with any; missing fast paths come from adapters). {}", describe(Slot::Traversal)), &names_on(PRESET, Slot::Traversal), "refloor", true),
+        ParamSpec::choice("shadow_storage", "What shadow and bounce rays walk: `same` (the primary storage) or another storage (its data is kept as well)", &names_on(PRESET, Slot::ShadowStorage), "same", false),
+        ParamSpec::choice("shadow_traversal", "The kernel of shadow and bounce rays: `same` (the primary kernel) or another", &names_on(PRESET, Slot::ShadowTraversal), "same", false),
+        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(PRESET, Slot::Shading), "direct", true),
+        ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &names_on(PRESET, Slot::Prepass), "none", true),
+        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(PRESET, Slot::Meshes), "composite", true),
         ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
     ];
     p.extend(shade_state::params());
-    p.push(placement_param(BACKEND, "inline"));
+    p.push(placement_param(PRESET, "inline"));
     p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("traversal", &["incremental"]));
@@ -145,7 +145,7 @@ impl Default for Options {
 #[derive(Clone, PartialEq, Debug)]
 struct Composition {
     /// The ray-casting sites' storages and kernels: kernel 0 is the primary
-    /// rays' (its constants from this back end's knobs); the other sites' kernels are their
+    /// rays' (its constants from this preset's knobs); the other sites' kernels are their
     /// own nodes, or the primary's when the graph binds them to it.
     walks: Walks,
     /// Kernel of the shadow, bounce (pathtrace; else the shadow rays') and mesh-shadow rays.
@@ -171,15 +171,15 @@ struct Composition {
 const STORAGE_GROUPS: &[u32] = &[2, 4, 5, 6];
 
 impl Composition {
-    /// The composition of graph `g` with this back end's knobs `opts` (LOD if `max_lod`
+    /// The composition of graph `g` with this preset's knobs `opts` (LOD if `max_lod`
     /// levels are streamed and every walk handles them).
     fn of(g: &graph::Checked, opts: &Options, max_lod: u8) -> anyhow::Result<Self> {
-        require(BACKEND, Slot::Visibility, &opts.visibility)?;
-        // Every site's walk; the primary kernel's constants are this back end's knobs.
+        require(PRESET, Slot::Visibility, &opts.visibility)?;
+        // Every site's walk; the primary kernel's constants are this preset's knobs.
         let mut walks = Walks::of(g);
         let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("raycast-gpu: {} `{port}` rays are not bound", role.name()));
         let primary = walks.site(g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
-        walks.kernels[primary].component = require(BACKEND, Slot::Traversal, &opts.traversal)?;
+        walks.kernels[primary].component = require(PRESET, Slot::Traversal, &opts.traversal)?;
         walks.kernels[primary].consts = mr_components::shaders::KernelConsts { lod: false, exact: opts.exact, levels: [opts.skip2, opts.skip4, opts.skip8, opts.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)), max_steps: opts.max_steps };
         walks.set_max_steps(opts.max_steps);
         let shadow = match super::shading_site(g, "shadow") {
@@ -196,12 +196,12 @@ impl Composition {
             shadow,
             bounce,
             mesh_shadow,
-            prepass: require(BACKEND, Slot::Prepass, &opts.prepass)?,
+            prepass: require(PRESET, Slot::Prepass, &opts.prepass)?,
             tile: opts.tile.clamp(1, 64),
             view: View::parse(&opts.view)?,
             lod: false,
             fragment: parse_dispatch(&opts.dispatch)?,
-            meshes: require(BACKEND, Slot::Meshes, &opts.meshes)? != "none",
+            meshes: require(PRESET, Slot::Meshes, &opts.meshes)? != "none",
         };
         if max_lod > 0 {
             comp.set_lod(true);
@@ -314,7 +314,7 @@ impl Walk {
         if let Some(why) = feature_blocker(&comp) {
             anyhow::bail!(why);
         }
-        let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
+        let shading = require(PRESET, Slot::Shading, &opts.shading)?;
         // Fragment too: `dispatch = "fragment"` runs the pixels (and walks the storages) in a
         // fragment shader.
         let stages = wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT;
@@ -356,7 +356,7 @@ impl Walk {
 }
 
 impl Cast for Walk {
-    const BACKEND: &'static str = BACKEND;
+    const PRESET: &'static str = PRESET;
 
     fn layout_entries(&self, stages: wgpu::ShaderStages) -> Vec<wgpu::BindGroupLayoutEntry> {
         let rw = |binding| wgpu::BindGroupLayoutEntry {
@@ -482,10 +482,10 @@ impl Cast for Walk {
     fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         let set = |c: &mut Composition| -> anyhow::Result<()> {
             match name {
-                "prepass" => c.prepass = require(BACKEND, Slot::Prepass, value.as_str().unwrap_or(""))?,
+                "prepass" => c.prepass = require(PRESET, Slot::Prepass, value.as_str().unwrap_or(""))?,
                 "tile" => c.tile = value.as_i64().unwrap_or(8).clamp(1, 64) as u32,
-                "visibility" => drop(require(BACKEND, Slot::Visibility, value.as_str().unwrap_or(""))?),
-                "traversal" => c.walks.kernels[0].component = require(BACKEND, Slot::Traversal, value.as_str().unwrap_or(""))?,
+                "visibility" => drop(require(PRESET, Slot::Visibility, value.as_str().unwrap_or(""))?),
+                "traversal" => c.walks.kernels[0].component = require(PRESET, Slot::Traversal, value.as_str().unwrap_or(""))?,
                 _ => c.view = View::parse(value.as_str().unwrap_or(""))?,
             }
             match feature_blocker(c) {
@@ -498,7 +498,7 @@ impl Cast for Walk {
                 let mut c = self.comp.clone();
                 set(&mut c).map(|_| self.comp = c)
             }
-            "meshes" => require(BACKEND, Slot::Meshes, value.as_str().unwrap_or("")).map(|m| self.comp.meshes = m != "none"),
+            "meshes" => require(PRESET, Slot::Meshes, value.as_str().unwrap_or("")).map(|m| self.comp.meshes = m != "none"),
             "view_max" => {
                 self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32;
                 Ok(())
@@ -596,13 +596,13 @@ mod tests {
     #[test]
     fn programs_compose() {
         use mr_components::graph::{Graph, Node};
-        let storages = names_on(BACKEND, Slot::Storage);
-        let kernels = names_on(BACKEND, Slot::Traversal);
+        let storages = names_on(PRESET, Slot::Storage);
+        let kernels = names_on(PRESET, Slot::Traversal);
         let mut n = 0;
         for st in &storages {
             for k in &kernels {
                 for (ss, sk) in [("same", "same"), ("tree64", "same"), ("same", "sphere"), ("distance", "incremental")] {
-                    for shading in names_on(BACKEND, Slot::Shading) {
+                    for shading in names_on(PRESET, Slot::Shading) {
                         for (prepass, tile) in [("none", 1), ("beam", 8)] {
                             let c = mr_components::Composition { storage: st.to_string(), traversal: k.to_string(), shadow_storage: ss.into(), shadow_traversal: sk.into(), shading: shading.to_string(), prepass: prepass.into(), ..Default::default() };
                             let mut graphs = vec![Graph::from_composition(&c).unwrap()];

@@ -210,12 +210,12 @@ const MESHES: &[Port] = &[port("changes", Data::Changes, true, "the world's chan
 const FACES: &[Port] = &[port("faces", Data::Faces, true, "the faces to draw")];
 const SPLAT: &[Port] = &[port("points", Data::Faces, true, "the points to splat")];
 const DRAW: &[Port] = &[port("faces", Data::Faces, true, "the faces to draw"), port("meshes", Data::Surfaces, false, "meshes in the same depth buffer (mesh mode)")];
-const DIRECT: &[Port] = &[port("hits", Data::Hits, true, "the visible surface per pixel"), port("shadow", Data::Rays, false, "shadow rays (unbound: the back end's own)")];
+const DIRECT: &[Port] = &[port("hits", Data::Hits, true, "the visible surface per pixel"), port("shadow", Data::Rays, false, "shadow rays (unbound: the region's own)")];
 const POSTED: &[Port] = &[port("image", Data::Image, true, "the shading's linear colour (compiled into its output)")];
 const PATHTRACE: &[Port] = &[
     port("hits", Data::Hits, true, "the visible surface per pixel"),
-    port("shadow", Data::Rays, false, "shadow rays (unbound: the back end's own)"),
-    port("bounce", Data::Rays, false, "bounce rays (unbound: the back end's own)"),
+    port("shadow", Data::Rays, false, "shadow rays (unbound: the region's own)"),
+    port("bounce", Data::Rays, false, "bounce rays (unbound: the region's own)"),
 ];
 
 /// The inputs of `role` component `name`.
@@ -309,7 +309,7 @@ impl When {
     }
 }
 
-/// When a discovery back end's drawer gets its faces: discover-cpu discovers one frame
+/// When a discovery preset's drawer gets its faces: discover-cpu discovers one frame
 /// ahead (`prev`; its `pipelined` knob, see [`Graph::with_options`]); with hole detection
 /// the faces iterate twice within the frame.
 pub(super) fn faces_timing(executor: &str, holes: bool) -> Option<When> {
@@ -320,7 +320,7 @@ pub(super) fn faces_timing(executor: &str, holes: bool) -> Option<When> {
     }
 }
 
-/// Edge timings a back end lets a graph choose, with the values it runs (the rest are its
+/// Edge timings a preset lets a graph choose, with the values it runs (the rest are its
 /// composition's): discover-cpu's faces now or a frame late; ray casting's shading on a
 /// second GPU shading this frame's hit records or the last frame's (the GPUs
 /// then overlap; `device_blocker` says why not on one GPU).
@@ -335,7 +335,7 @@ pub(super) const FREE_TIMINGS: &[(&str, Role, &str, &[When])] = &[
 ];
 
 /// Knobs that spell an edge timing (the graph says it; the knob is how plans, the CLI and
-/// the GUI write it): back end, knob, the edge's role and port, the timing when the knob
+/// the GUI write it): preset, knob, the edge's role and port, the timing when the knob
 /// is true, when false.
 pub(super) const TIMING_KNOBS: &[(&str, &str, Role, &str, When, When)] = &[("discover-cpu", "pipelined", Role::Draw, "faces", When::Prev, When::Now)];
 
@@ -420,12 +420,12 @@ pub(super) fn default_device(executor: &str, role: Role, component: &str) -> Dev
     }
 }
 
-/// Where back end `backend`'s composition runs a node (its [`crate::Place`] for the role,
+/// Where `preset`'s composition runs a node (its [`crate::Place`] for the role,
 /// GPU slot 0; for a stage it has not, where the component runs if on one kind of device only):
 /// what [`Graph::from_composition`] pins where the executor's default differs.
-pub(super) fn placed_on(backend: &str, role: Role, component: &str) -> Device {
+pub(super) fn placed_on(preset: &str, role: Role, component: &str) -> Device {
     let only = || role.slot().and_then(|s| crate::component(s, component)).and_then(|c| c.impls.iter().all(|i| i.kind == Kind::Cpu).then_some(Device::Cpu));
-    match (crate::backend(backend), role.slot()) {
+    match (crate::preset_info(preset), role.slot()) {
         (Some(b), Some(slot)) if b.has(slot.source()) && b.place(slot).kind == Kind::Gpu => Device::Gpu(0),
         (Some(b), Some(slot)) if b.has(slot.source()) => Device::Cpu,
         (_, Some(_)) => only().unwrap_or(Device::Gpu(0)),
@@ -433,10 +433,10 @@ pub(super) fn placed_on(backend: &str, role: Role, component: &str) -> Device {
     }
 }
 
-/// The executor (device kind: `cpu`, `gpu`) that runs back end `backend`'s pipelines: where its
+/// The executor (device kind: `cpu`, `gpu`) that runs `preset`'s pipelines: where its
 /// image is made, its shading's device.
-pub fn executor_of(backend: &str) -> &'static str {
-    match crate::backend(backend).map(|b| b.place(Slot::Shading).kind) {
+pub fn executor_of(preset: &str) -> &'static str {
+    match crate::preset_info(preset).map(|b| b.place(Slot::Shading).kind) {
         Some(Kind::Cpu) => "cpu",
         _ => "gpu",
     }
@@ -449,7 +449,7 @@ pub struct Node {
     pub role: Role,
     pub component: String,
     /// Where it runs (default: with its callers for storages and kernels, else where the
-    /// back end runs the role).
+    /// preset runs the role).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<Device>,
     /// How it runs there (default: with its callers for storages and kernels, else as the

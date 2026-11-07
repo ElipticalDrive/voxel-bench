@@ -66,10 +66,10 @@ pub struct RendererSummary {
     pub failed: Vec<String>,
 }
 
-/// The effect of a component choice for one stage of one back end.
+/// The effect of a component choice for one stage of one preset.
 #[derive(Clone, Debug)]
 pub struct ComponentEffect {
-    pub backend: String,
+    pub preset: String,
     pub slot: &'static str,
     /// (component, geomean of fps / best fps among otherwise equal compositions, wins,
     /// comparisons)
@@ -192,14 +192,14 @@ impl Catalogue {
 
         // Per component: compare compositions that differ only in that stage.
         let mut components = vec![];
-        let backends: BTreeSet<String> = scenarios.iter().flat_map(|s| s.entries.iter().filter_map(|e| e.composition.as_ref().map(|c| c.backend.clone()))).collect();
-        for b in backends {
+        let presets: BTreeSet<String> = scenarios.iter().flat_map(|s| s.entries.iter().filter_map(|e| e.composition.as_ref().map(|c| c.preset.clone()))).collect();
+        for b in presets {
             for slot in Slot::ALL {
                 let mut ratios: BTreeMap<String, (Vec<f64>, usize)> = BTreeMap::new();
                 for s in &scenarios {
                     let mut by_rest: BTreeMap<String, Vec<(&str, f64)>> = BTreeMap::new();
                     for e in s.entries.iter().filter(|e| e.valid) {
-                        let Some(c) = e.composition.as_ref().filter(|c| c.backend == b && !c.get(slot).is_empty()) else { continue };
+                        let Some(c) = e.composition.as_ref().filter(|c| c.preset == b && !c.get(slot).is_empty()) else { continue };
                         let mut rest = c.clone();
                         rest.set(slot, "");
                         by_rest.entry(format!("{rest:?} {}", e.options)).or_default().push((c.get(slot), e.fps));
@@ -218,7 +218,7 @@ impl Catalogue {
                 if ratios.len() > 1 {
                     let mut rows: Vec<(String, f64, usize, usize)> = ratios.into_iter().map(|(n, (v, w))| (n, geomean(&v), w, v.len())).collect();
                     rows.sort_by(|a, b| b.1.total_cmp(&a.1));
-                    components.push(ComponentEffect { backend: b.clone(), slot: slot.name(), rows });
+                    components.push(ComponentEffect { preset: b.clone(), slot: slot.name(), rows });
                 }
             }
         }
@@ -279,7 +279,7 @@ impl Catalogue {
         if !self.components.is_empty() {
             let _ = writeln!(s, "## Components\n\nThe effect of a stage's component, other stages and knobs equal: the geometric mean of fps relative to the best of each such group, wins, and the number of comparisons.\n");
             for c in &self.components {
-                let _ = writeln!(s, "**{} · {}**\n\n| component | geomean rel | wins | comparisons |\n|---|---:|---:|---:|", c.backend, c.slot);
+                let _ = writeln!(s, "**{} · {}**\n\n| component | geomean rel | wins | comparisons |\n|---|---:|---:|---:|", c.preset, c.slot);
                 for (n, g, w, k) in &c.rows {
                     let _ = writeln!(s, "| {n} | {g:.2} | {w} | {k} |");
                 }
@@ -319,7 +319,7 @@ impl Catalogue {
 
     /// One row per (scenario, renderer), for spreadsheets and scripts.
     pub fn csv(&self) -> String {
-        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,backend,storage,geometry,prepass,visibility,shading,meshes,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,bad_pct,gpu_mb,rss_mb,samples,error\n");
+        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,preset,storage,geometry,prepass,visibility,shading,meshes,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,bad_pct,gpu_mb,rss_mb,samples,error\n");
         let q = |x: &str| format!("\"{}\"", x.replace('"', "\"\""));
         for sc in &self.scenarios {
             // The scenario's columns, including its measured features (empty if unknown).
@@ -332,12 +332,12 @@ impl Catalogue {
             };
             let scenario = format!("{},{},{},{},{},{feats}", q(&sc.machine), q(&sc.plan), sc.mode, sc.resolution[0], sc.resolution[1]);
             for e in &sc.entries {
-                let c = e.composition.clone().unwrap_or_else(|| Composition { backend: String::new(), ..Composition::new("") });
+                let c = e.composition.clone().unwrap_or_else(|| Composition { preset: String::new(), ..Composition::new("") });
                 let _ = writeln!(
                     s,
                     "{scenario},{},{},{},{},{},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{}",
                     q(&e.label),
-                    c.backend,
+                    c.preset,
                     c.storage,
                     c.geometry,
                     c.prepass,
@@ -383,7 +383,7 @@ mod tests {
             streaming: "complete".into(),
             mode: "unlit".into(),
             label: comp.label(),
-            renderer: comp.backend.clone(),
+            renderer: comp.preset.clone(),
             composition: Some(comp),
             sites: Default::default(),
             graph: None,

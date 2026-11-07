@@ -51,18 +51,18 @@ pub fn storage_type(name: &str) -> Option<&'static str> {
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
         name: "raycast-cpu".into(),
-        description: "CPU back end: renders a composition of components (storage, traversal, shading), multi-threaded".into(),
+        description: "raycast-cpu preset: renders a composition of components (storage, traversal, shading), multi-threaded".into(),
         tags: vec!["cpu".into(), "raycast".into(), "simd".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
-        params: mr_components::lighting_knobs(BACKEND, params()),
+        params: mr_components::lighting_knobs(PRESET, params()),
     }
 }
 
 /// The executor for graph `g`, its nodes monomorphised for its storage.
 pub(crate) fn create<P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let opts: Options = p.options()?;
-    let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
+    let storage = require(PRESET, Slot::Storage, &opts.storage)?;
     match storage.as_str() {
         "bricks" => of::<U16, P>(p, g),
         "u8" => of::<U8, P>(p, g),
@@ -80,16 +80,16 @@ fn of<R: Repr, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn 
     executor::<R, Generic, P>(p, g)
 }
 
-pub(crate) const BACKEND: &str = "raycast-cpu";
+pub(crate) const PRESET: &str = "raycast-cpu";
 
 
 fn params() -> Vec<ParamSpec> {
     let mut p = mr_reference::cpu_params();
-    p.push(ParamSpec::choice("storage", "Storage component (CPU implementations)", &names_on(BACKEND, Slot::Storage), "bricks", false));
-    p.push(ParamSpec::choice("visibility", "Visibility strategy", &names_on(BACKEND, Slot::Visibility), "raycast", false));
-    p.push(ParamSpec::choice("traversal", "Traversal kernel. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &names_on(BACKEND, Slot::Traversal), "refloor", true));
-    p.push(ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", true));
-    p.push(placement_param(BACKEND, "inline"));
+    p.push(ParamSpec::choice("storage", "Storage component (CPU implementations)", &names_on(PRESET, Slot::Storage), "bricks", false));
+    p.push(ParamSpec::choice("visibility", "Visibility strategy", &names_on(PRESET, Slot::Visibility), "raycast", false));
+    p.push(ParamSpec::choice("traversal", "Traversal kernel. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &names_on(PRESET, Slot::Traversal), "refloor", true));
+    p.push(ParamSpec::choice("shading", "Shading component", &names_on(PRESET, Slot::Shading), "direct", true));
+    p.push(placement_param(PRESET, "inline"));
     p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
     p.push(ParamSpec::choice("packet", "Rays traced together in lockstep (refloor; measured: no gain on Zen 5)", &["1", "4", "8", "16"], "1", true).of("traversal", &["refloor"]));
     p.push(ParamSpec::choice("isa", "Instruction set for the hot loop", &["auto", "scalar", "avx2", "avx512"], "auto", true));
@@ -174,7 +174,7 @@ fn parse_schedule(s: &str) -> anyhow::Result<bool> {
 
 /// The traversal kernel for the `traversal` and `exact` knobs (also for generated code).
 pub fn traversal(kernel: &str, exact: bool) -> anyhow::Result<Traversal> {
-    Ok(match require(BACKEND, Slot::Traversal, kernel)?.as_str() {
+    Ok(match require(PRESET, Slot::Traversal, kernel)?.as_str() {
         "refloor" => Traversal::Refloor,
         "incremental" if exact => Traversal::IncrementalExact,
         "incremental" => Traversal::Incremental,
@@ -468,8 +468,8 @@ impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
         }
         let isa = detect(&o.isa);
         tracing::info!("cpu: storage {}, traversal {}, {:?} hot loop, packets of {}", o.storage, o.traversal, isa, o.packet);
-        require(BACKEND, Slot::Visibility, &o.visibility)?;
-        require(BACKEND, Slot::Shading, &o.shading)?;
+        require(PRESET, Slot::Visibility, &o.visibility)?;
+        require(PRESET, Slot::Shading, &o.shading)?;
         let shadow = shadow_kernel(g)?;
         if let Some((t, _)) = shadow {
             tracing::info!("cpu: shadow rays through their own kernel ({t:?})");
@@ -904,9 +904,9 @@ impl<S: Spec, P: Pixel> Cast<S, P> {
             "perf" => self.perf = perf::allowed(value.as_bool().unwrap_or(false))?,
             "view" => self.view = parse_view(value.as_str().unwrap_or(""))?,
             "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,
-            "visibility" => drop(require(BACKEND, Slot::Visibility, value.as_str().unwrap_or(""))?),
+            "visibility" => drop(require(PRESET, Slot::Visibility, value.as_str().unwrap_or(""))?),
             "shading" => {
-                require(BACKEND, Slot::Shading, value.as_str().unwrap_or(""))?;
+                require(PRESET, Slot::Shading, value.as_str().unwrap_or(""))?;
             }
             "packet" => {
                 self.packet = value.as_str().and_then(|s| s.parse().ok()).unwrap_or(8);

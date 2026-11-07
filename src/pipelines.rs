@@ -65,22 +65,22 @@ impl Executor {
     }
 }
 
-/// The knobs a generated pipeline of CPU executor `backend` bakes in (each declared
+/// The knobs a generated pipeline of CPU executor `preset` bakes in (each declared
 /// specialisable and belonging to a node, a test checks): those its lane folds into code; the
 /// others stay run-time values in it.
-pub fn bakes(backend: &str) -> &'static [&'static str] {
-    match backend {
+pub fn bakes(preset: &str) -> &'static [&'static str] {
+    match preset {
         "raycast-cpu" => &["exact", "packet", "skip2", "skip4", "skip8", "skip16", "shadows"],
         "columns-cpu" => &["shadows"],
         _ => &[],
     }
 }
 
-/// The executor of `backend` and its knobs (`None`: no generated pipeline runs it).
-fn params_of(backend: &str) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
-    Some(match backend {
-        "raycast-cpu" | "raster-cpu" | "columns-cpu" => (Executor::Cpu, mr_exec_cpu::info(backend).params),
-        "raster-gpu" | "discover-gpu" | "discover-cpu" | "raycast-gpu" | "rayquery-gpu" | "splat-gpu" | "columns-gpu" => (Executor::Gpu, mr_exec_gpu::info(backend).params),
+/// The executor of `preset` and its knobs (`None`: no generated pipeline runs it).
+fn params_of(preset: &str) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
+    Some(match preset {
+        "raycast-cpu" | "raster-cpu" | "columns-cpu" => (Executor::Cpu, mr_exec_cpu::info(preset).params),
+        "raster-gpu" | "discover-gpu" | "discover-cpu" | "raycast-gpu" | "rayquery-gpu" | "splat-gpu" | "columns-gpu" => (Executor::Gpu, mr_exec_gpu::info(preset).params),
         _ => return None,
     })
 }
@@ -99,7 +99,7 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
     use mr_components::graph::{Device, Role};
     let Some((executor, params)) = params_of(&spec.name) else { return Ok(None) };
     let graph = spec.pipeline().context("the renderer has no graph")?;
-    // A knob's value: the renderer's, else the back end's default.
+    // A knob's value: the renderer's, else the preset's default.
     let value = |k: &str| -> anyhow::Result<(&mr_core::ParamSpec, toml::Value)> {
         let p = params.iter().find(|p| p.name == k).with_context(|| format!("`{}` has no knob `{k}`", spec.name))?;
         Ok((p, spec.options.get(k).cloned().map_or_else(|| toml::Value::try_from(p.default.to_json()), Ok)?))

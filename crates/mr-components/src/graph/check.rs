@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{Api, backend, caps, component};
+use crate::{Api, preset_info, caps, component};
 
 use super::*;
 
@@ -152,7 +152,7 @@ impl Graph {
         Ok(order)
     }
 
-    /// Checks the graph is well formed (not yet whether its back end runs it: see
+    /// Checks the graph is well formed (not yet whether its preset runs it: see
     /// [`Self::validate`]), with the reasons when it isn't.
     pub fn check(&self) -> Result<Checked, String> {
         if !matches!(self.executor.as_str(), "" | "cpu" | "gpu") {
@@ -357,14 +357,14 @@ impl Graph {
         if !why.is_empty() {
             return Err(why.join("; "));
         }
-        if let Some(b) = preset.and_then(backend).filter(|b| b.renderer.is_none()) {
+        if let Some(b) = preset.and_then(preset_info).filter(|b| b.renderer.is_none()) {
             return Err(format!("`{}` is not available yet", b.name));
         }
         Ok(Checked { graph: g, devices, apis, output: out, preset })
     }
 }
 
-/// The ray-casting sites of a checked graph, for the back ends that run it.
+/// The ray-casting sites of a checked graph, for the presets that run it.
 impl Checked {
     pub fn node(&self, id: &str) -> &Node {
         &self.graph.nodes[id]

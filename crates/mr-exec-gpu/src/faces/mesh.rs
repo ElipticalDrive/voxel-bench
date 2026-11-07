@@ -39,33 +39,33 @@ use super::{CoreOpts, Draw, SourceSpec};
 use crate::exec::{self, Cx, Node, Region, State};
 use crate::Core;
 
-pub(crate) const BACKEND: &str = "raster-gpu";
+pub(crate) const PRESET: &str = "raster-gpu";
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: BACKEND.into(),
-        description: "GPU-raster back end: renders a composition (storage and traversal kernel for shadow rays, geometry, draw, shading); faces meshed on the CPU, vertex pulling, multi-draw-indirect, chunk + face culling".into(),
+        name: PRESET.into(),
+        description: "raster-gpu preset: renders a composition (storage and traversal kernel for shadow rays, geometry, draw, shading); faces meshed on the CPU, vertex pulling, multi-draw-indirect, chunk + face culling".into(),
         tags: vec!["gpu".into(), "raster".into(), "hybrid".into(), "modular".into(), "wgpu".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
-        params: mr_components::lighting_knobs(BACKEND, params()),
+        params: mr_components::lighting_knobs(PRESET, params()),
     }
 }
 
 
 fn describe(slot: Slot) -> String {
-    components(slot).filter(|c| mr_components::unavailable(BACKEND, slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
+    components(slot).filter(|c| mr_components::unavailable(PRESET, slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
 }
 
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
-        ParamSpec::choice("storage", &format!("Storage component the lit-mode shadow rays walk (with the traversal kernel). {}", describe(Slot::Storage)), &names_on(BACKEND, Slot::Storage), "bricks", false),
-        ParamSpec::choice("geometry", &format!("Geometry component. {}", describe(Slot::Geometry)), &names_on(BACKEND, Slot::Geometry), "greedy", true),
-        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &names_on(BACKEND, Slot::Visibility), "faces", false),
-        ParamSpec::choice("draw", &format!("Draw component. {}", describe(Slot::Draw)), &names_on(BACKEND, Slot::Draw), "raster", true),
-        ParamSpec::choice("traversal", &format!("Traversal kernel of the lit-mode shadow rays. {}", describe(Slot::Traversal)), &names_on(BACKEND, Slot::Traversal), "refloor", false),
-        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(BACKEND, Slot::Shading), "direct", true),
-        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(BACKEND, Slot::Meshes), "depth", true),
+        ParamSpec::choice("storage", &format!("Storage component the lit-mode shadow rays walk (with the traversal kernel). {}", describe(Slot::Storage)), &names_on(PRESET, Slot::Storage), "bricks", false),
+        ParamSpec::choice("geometry", &format!("Geometry component. {}", describe(Slot::Geometry)), &names_on(PRESET, Slot::Geometry), "greedy", true),
+        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &names_on(PRESET, Slot::Visibility), "faces", false),
+        ParamSpec::choice("draw", &format!("Draw component. {}", describe(Slot::Draw)), &names_on(PRESET, Slot::Draw), "raster", true),
+        ParamSpec::choice("traversal", &format!("Traversal kernel of the lit-mode shadow rays. {}", describe(Slot::Traversal)), &names_on(PRESET, Slot::Traversal), "refloor", false),
+        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(PRESET, Slot::Shading), "direct", true),
+        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &names_on(PRESET, Slot::Meshes), "depth", true),
         ParamSpec::choice("merge", "greedy: merge faces of the same block only (`block`), or any exposed coplanar faces with a per-pixel block lookup (`exposure`)", &["block", "exposure"], "block", true).of("geometry", &["greedy"]),
         ParamSpec::bool("cull", "naive / cubes: skip faces (blocks) hidden by solid neighbours (false = every face of every solid block)", true, true).of("geometry", &["naive", "cubes"]),
         ParamSpec::bool("depth_prepass", "raster, lit mode: depth pre-pass so lighting runs once per pixel", true, true).of("draw", &["raster"]),
@@ -151,7 +151,7 @@ const STORAGE_GROUPS: &[u32] = &[2, 4, 5];
 /// the indices of (shadow, bounce, mesh shadow).
 fn walks(g: &Checked) -> anyhow::Result<(Walks, usize, usize, usize)> {
     let mut walks = Walks::of(g);
-    let shadow = g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("{BACKEND}: shadow rays are not bound"))?;
+    let shadow = g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("{PRESET}: shadow rays are not bound"))?;
     let shadow = walks.site(g, shadow, STORAGE_GROUPS, false);
     let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
     let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
@@ -248,23 +248,23 @@ struct Frame {
 impl Meshing {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
-        require(BACKEND, Slot::Meshes, &opts.meshes)?;
+        require(PRESET, Slot::Meshes, &opts.meshes)?;
         parse_merge(&opts.merge)?;
-        require(BACKEND, Slot::Storage, &opts.storage)?;
-        require(BACKEND, Slot::Traversal, &opts.traversal)?;
-        require(BACKEND, Slot::Visibility, &opts.visibility)?;
-        let geometry = require(BACKEND, Slot::Geometry, &opts.geometry)?;
-        let draw = require(BACKEND, Slot::Draw, &opts.draw)?;
-        let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
+        require(PRESET, Slot::Storage, &opts.storage)?;
+        require(PRESET, Slot::Traversal, &opts.traversal)?;
+        require(PRESET, Slot::Visibility, &opts.visibility)?;
+        let geometry = require(PRESET, Slot::Geometry, &opts.geometry)?;
+        let draw = require(PRESET, Slot::Draw, &opts.draw)?;
+        let shading = require(PRESET, Slot::Shading, &opts.shading)?;
         // The faces cross from the CPU (meshing) to the GPU (the drawer): the schedule's
         // transfer; its adapter is the per-chunk upload.
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
         if !schedule.transfers.iter().any(|e| e.port == "faces" && g.node(&e.to).role == Role::Visibility) {
-            anyhow::bail!("{BACKEND}: the faces do not cross from the CPU to the GPU");
+            anyhow::bail!("{PRESET}: the faces do not cross from the CPU to the GPU");
         }
         let (mut walks, shadow, bounce, mesh_shadow) = walks(g)?;
         walks.set_max_steps(opts.max_steps);
-        let mesh_storage = walks.kernels[mesh_shadow].storage.ok_or_else(|| anyhow::anyhow!("{BACKEND}: mesh shadows walk a storage (not ray queries)"))?;
+        let mesh_storage = walks.kernels[mesh_shadow].storage.ok_or_else(|| anyhow::anyhow!("{PRESET}: mesh shadows walk a storage (not ray queries)"))?;
         let (occ, rays) = walks.shadow_program(mesh_shadow);
         tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
@@ -614,7 +614,7 @@ impl Meshing {
     /// Its own knobs; `None` if `name` is not one.
     fn set_knob(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         let s = value.as_str().unwrap_or("").to_string();
-        let r = |slot| require(BACKEND, slot, &s);
+        let r = |slot| require(PRESET, slot, &s);
         let stale = &mut self.stale;
         let mut compiled = |slot, field: &mut String| {
             r(slot).map(|v| {
@@ -778,11 +778,11 @@ mod tests {
     fn programs_compose() {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         let mut n = 0;
-        for st in names_on(BACKEND, Slot::Storage) {
-            for k in names_on(BACKEND, Slot::Traversal) {
-                for g in names_on(BACKEND, Slot::Geometry) {
-                    for shading in names_on(BACKEND, Slot::Shading) {
-                        let flat = mr_components::Composition { storage: st.into(), geometry: g.into(), traversal: k.into(), shading: shading.into(), ..mr_components::Composition::new(BACKEND) };
+        for st in names_on(PRESET, Slot::Storage) {
+            for k in names_on(PRESET, Slot::Traversal) {
+                for g in names_on(PRESET, Slot::Geometry) {
+                    for shading in names_on(PRESET, Slot::Shading) {
+                        let flat = mr_components::Composition { storage: st.into(), geometry: g.into(), traversal: k.into(), shading: shading.into(), ..mr_components::Composition::new(PRESET) };
                         let mut graphs = vec![mr_components::graph::Graph::from_composition(&flat).unwrap()];
                         // Bounces and mesh shadows through walks of their own.
                         if shading == "pathtrace" && g == "greedy" {
@@ -807,7 +807,7 @@ mod tests {
                             // The drawer (with mesh records for deferred drawers, and without).
                             let (program, deps, meshed) = crate::faces::programs(&walks, None, [shadow, bounce], Some(mesh_shadow));
                             let draw_src = crate::faces::draw_src(&source_wgsl(g), shading, false);
-                            crate::faces::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, BACKEND);
+                            crate::faces::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, PRESET);
                             // Forward mesh shading through the mesh-shadow site.
                             let (mut p, rays) = walks.shadow_program(mesh_shadow);
                             p.define("SHADE");

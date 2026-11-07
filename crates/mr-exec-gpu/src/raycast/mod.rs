@@ -31,8 +31,8 @@ pub(crate) mod walk;
 
 /// The ray-casting nodes of graph `g` on the node executor: the caster by the API of the
 /// primary rays' kernel (ray queries, else a walk).
-pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    let kernel = g.input(Role::Visibility, "primary").ok_or_else(|| anyhow::anyhow!("{backend}: the primary rays are not bound"))?;
+pub(crate) fn create(preset: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    let kernel = g.input(Role::Visibility, "primary").ok_or_else(|| anyhow::anyhow!("{preset}: the primary rays are not bound"))?;
     match g.api(kernel) {
         Some(Api::RayQuery) => run(Raycast::new(rayquery::RayQuery::new(p, devices, waker, g)?)?, g),
         // A walk: compute threads or a fragment shader (`dispatch`), the kernel compiled in.
@@ -42,7 +42,7 @@ pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Wa
 
 fn run<C: Cast + 'static>((core, region): (Core, Raycast<C>), g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let passes = nodes::of::<C>(g)?;
-    tracing::debug!("{}: {} passes", C::BACKEND, passes.len());
+    tracing::debug!("{}: {} passes", C::PRESET, passes.len());
     crate::exec::run(core, region, passes)
 }
 
@@ -111,7 +111,7 @@ impl View {
 /// structures, with what each keeps.
 trait Cast: Sized {
     /// The registry's name of this configuration.
-    const BACKEND: &'static str;
+    const PRESET: &'static str;
     /// The ray flags of ray queries that are not shadow rays (a WGSL expression; see
     /// `Core::trace_root`).
     const RT_FLAGS: &'static str = "0u";
@@ -323,7 +323,7 @@ struct Raycast<C> {
 
 impl<C: Cast> Raycast<C> {
     fn new((core, cast, shading, far): (Core, C, String, Option<Far>)) -> anyhow::Result<(Core, Self)> {
-        anyhow::ensure!(far.is_none() || cast.view() == View::Image, "{}: a diagnostic view shades inline, not on the shading's GPU", C::BACKEND);
+        anyhow::ensure!(far.is_none() || cast.view() == View::Image, "{}: a diagnostic view shades inline, not on the shading's GPU", C::PRESET);
         let passes = Passes::new(&core, &cast, &shading, far.is_some())?;
         Ok((core, Self { passes, cast, far, built_shading: shading.clone(), shading, steps: Steps::default(), world: None }))
     }
@@ -512,7 +512,7 @@ impl<C: Cast> State for Raycast<C> {
 
     fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         if name == "shading" {
-            return Some(mr_components::require(C::BACKEND, mr_components::Slot::Shading, value.as_str().unwrap_or("")).map(|s| self.shading = s));
+            return Some(mr_components::require(C::PRESET, mr_components::Slot::Shading, value.as_str().unwrap_or("")).map(|s| self.shading = s));
         }
         // The core's knobs (shadows, the shading state's) reach both GPUs' cores.
         if let Some(Err(e)) = self.far.as_mut().and_then(|f| f.set_param(name, value)) {
@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn casters_build_what_they_declare() {
         let (mut built, mut refused) = (0, 0);
-        for ck in graph::near(&[super::walk::BACKEND, super::rayquery::BACKEND]) {
+        for ck in graph::near(&[super::walk::PRESET, super::rayquery::PRESET]) {
             let e = ck.preset.unwrap();
             let key = ck.graph.canonical().unwrap();
             match (ck.built(), ck.graph.accept()) {

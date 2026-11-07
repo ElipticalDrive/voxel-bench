@@ -1,12 +1,12 @@
 //! Renderer components: instead of choosing a monolithic renderer, a renderer is
-//! assembled from one component per slot and run on a back end:
+//! assembled from one component per slot and run on a preset:
 //!
-//! `backend` × `storage` × `geometry` × `prepass` × `visibility` × `draw` × `traversal` × `shading` × `meshes`
+//! `preset` × `storage` × `geometry` × `prepass` × `visibility` × `draw` × `traversal` × `shading` × `meshes`
 //!
-//! Not every slot applies to every back end: `geometry` (storage turned into drawable faces)
-//! exists only on rasterising back ends, `prepass` (a stage before the walk, e.g. beams)
+//! Not every slot applies to every preset: `geometry` (storage turned into drawable faces)
+//! exists only on rasterising presets, `prepass` (a stage before the walk, e.g. beams)
 //! only on raycast-gpu, `meshes` (how polygon meshes join the voxel image) only where a
-//! back end can draw them; slots a back end lacks are left empty. `visibility` is the
+//! preset can draw them; slots a preset lacks are left empty. `visibility` is the
 //! strategy that organises primary visibility (ray casting, raster, discovery, splat,
 //! columns); `draw` turns the faces a strategy hands on into the image (raster, visibility
 //! buffer, G-buffer); `traversal` is the kernel that answers ray queries against the storage
@@ -19,14 +19,14 @@
 //!
 //! This crate is the single source of truth for what exists and what combines: component
 //! metadata, compatibility (used by the GUI to forbid unsupported combinations, by plan
-//! loading and by the back ends), and the component implementations themselves, one
+//! loading and by the presets), and the component implementations themselves, one
 //! directory per piece (`storage/prefix/gpu.wgsl`, ...). The executors (`crates/mr-exec-*`) assemble a
 //! working renderer from a [`Composition`].
 //!
-//! Compatibility rule: a component combines with a back end if the back end has its slot and
+//! Compatibility rule: a component combines with a preset if the preset has its slot and
 //! the component has an implementation for it, and with the other components if each of its
 //! needs is met, natively or through an adapter ([`caps`]). Today every need has an adapter,
-//! so within a back end every component pairs with every other.
+//! so within a preset every component pairs with every other.
 
 use serde::{Deserialize, Serialize};
 
@@ -89,7 +89,7 @@ impl Slot {
         }
     }
 
-    /// Slots that usually keep their default (`direct` shading, no prepass, the back end's
+    /// Slots that usually keep their default (`direct` shading, no prepass, the preset's
     /// mesh drawing): left out of labels while at the default, and last (optional) in the
     /// CLI form.
     pub fn optional(self) -> bool {
@@ -121,12 +121,12 @@ impl Slot {
     }
 }
 
-pub struct BackendInfo {
+pub struct PresetInfo {
     pub name: &'static str,
     pub description: &'static str,
-    /// Renderer entry the worker runs for this back end (`None`: not available yet).
+    /// Renderer entry the worker runs for this preset (`None`: not available yet).
     pub renderer: Option<&'static str>,
-    /// The slots this back end has, each with its default component.
+    /// The slots this preset has, each with its default component.
     pub slots: &'static [(Slot, &'static str)],
     /// Slots that only matter in lit mode (e.g. the storage of a rasteriser, which only
     /// its shadow rays walk). Sweeps run one of each such variant in unlit passes.
@@ -138,7 +138,7 @@ pub struct BackendInfo {
     /// secondary-ray stages run where `at` says, else with the storage and kernel.
     pub runs: Place,
     pub at: &'static [(Slot, Place)],
-    /// Slots whose components this hand-written back end's own code limits, with the ones it
+    /// Slots whose components this hand-written preset's own code limits, with the ones it
     /// hosts (its strategy, the geometry its drawer reads, its mesh drawing). Executors
     /// have no such list here: there a component's implementations and ports decide, and
     /// the node executors declare the nodes they build (`graph::Builds`).
@@ -152,7 +152,7 @@ pub struct BackendInfo {
     pub api_choice: Option<ApiChoice>,
 }
 
-impl BackendInfo {
+impl PresetInfo {
     pub fn has(&self, slot: Slot) -> bool {
         self.slots.iter().any(|&(s, _)| s == slot)
     }
@@ -205,24 +205,24 @@ const COMPUTE_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Prepa
 /// kernels of its shadow rays) in the fragment shader or a deferred compute pass.
 const DRAWN: &[(Slot, Place)] = &[(Slot::Draw, impls::GPU_RASTER), (Slot::Storage, impls::GPU_DRAWN), (Slot::Traversal, impls::GPU_DRAWN), (Slot::Shading, impls::GPU_DRAWN), (Slot::Meshes, impls::GPU_RASTER)];
 const NONE: &[(Slot, Place)] = &[];
-/// Back ends whose rays walk the storage (and their shadow rays the shadow storage).
+/// Presets whose rays walk the storage (and their shadow rays the shadow storage).
 const READS: &[(Slot, Cap)] = &[(Slot::Storage, Cap::Voxels)];
 
-/// Every back end, including planned ones (shown disabled, with the reason).
-pub const BACKENDS: &[BackendInfo] = &[
-    BackendInfo {
+/// Every preset, including planned ones (shown disabled, with the reason).
+pub const PRESETS: &[PresetInfo] = &[
+    PresetInfo {
         name: "raycast-gpu", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("raycast-gpu"),
         slots: COMPUTE_SLOTS, lit_only: &[Slot::ShadowStorage, Slot::ShadowTraversal], quiet: &[Slot::Visibility, Slot::ShadowStorage, Slot::ShadowTraversal],
         runs: impls::GPU_DISPATCH, at: &[(Slot::Prepass, impls::GPU_COMPUTE), (Slot::Meshes, impls::GPU_RASTER)], hosts: &[(Slot::Visibility, &["raycast"]), (Slot::Meshes, &["none", "composite"])], reads: READS,
         api_choice: Some(ApiChoice { knob: "dispatch", slots: &[Slot::Storage, Slot::Visibility, Slot::Traversal, Slot::Shading], values: &[(Api::Compute, "compute"), (Api::Raster, "fragment")], default: Some(Api::Compute) }),
     },
-    BackendInfo {
+    PresetInfo {
         name: "raycast-cpu", description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops", renderer: Some("raycast-cpu"),
         slots: RAY_SLOTS, lit_only: &[], quiet: &[Slot::Visibility],
         runs: impls::CPU_ISAS, at: NONE, hosts: &[(Slot::Visibility, &["raycast"])], reads: READS,
         api_choice: Some(ApiChoice { knob: "isa", slots: &[Slot::Storage, Slot::Visibility, Slot::Traversal, Slot::Shading], values: &[(Api::Scalar, "scalar"), (Api::Avx2, "avx2"), (Api::Avx512, "avx512")], default: None }),
     },
-    BackendInfo {
+    PresetInfo {
         name: "raster-gpu",
         description: "GPU rasterisation (wgpu): the geometry component turns chunks into faces on the CPU, drawn with vertex pulling and multi-draw-indirect after chunk and face-direction culling. Storage here is what lit-mode shadow rays walk (refloor)",
         renderer: Some("raster-gpu"),
@@ -235,7 +235,7 @@ pub const BACKENDS: &[BackendInfo] = &[
         reads: READS,
         api_choice: None,
     },
-    BackendInfo {
+    PresetInfo {
         name: "rayquery-gpu",
         description: "GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component, a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries",
         renderer: Some("rayquery-gpu"),
@@ -245,14 +245,14 @@ pub const BACKENDS: &[BackendInfo] = &[
         reads: &[],
         api_choice: None,
     },
-    BackendInfo {
+    PresetInfo {
         name: "discover-gpu",
         description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
         renderer: Some("discover-gpu"),
         slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Holes, "none"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Draw, Slot::Traversal],
         runs: impls::GPU_COMPUTE, at: DRAWN, hosts: &[(Slot::Visibility, &["quadtree"])], reads: READS, api_choice: None,
     },
-    BackendInfo {
+    PresetInfo {
         name: "discover-cpu",
         description: "CPU discovery + GPU raster (the user's idea): CPU rays discover the visible face set (one frame ahead, pipelined), the GPU rasterises only it. Storage: the CPU representation discovery rays walk",
         renderer: Some("discover-cpu"),
@@ -265,7 +265,7 @@ pub const BACKENDS: &[BackendInfo] = &[
         reads: READS,
         api_choice: None,
     },
-    BackendInfo {
+    PresetInfo {
         name: "splat-gpu",
         description: "GPU point splatting: one point per exposed block, atomicMin depth + id buffers, ray-box resolve; lit-mode shadow rays walk the composed storage",
         renderer: Some("splat-gpu"),
@@ -274,21 +274,21 @@ pub const BACKENDS: &[BackendInfo] = &[
         quiet: &[Slot::Traversal],
         runs: impls::GPU_COMPUTE, at: &[(Slot::Geometry, impls::CPU_SCALAR)], hosts: &[(Slot::Visibility, &["splat"]), (Slot::Geometry, &["points"])], reads: READS, api_choice: None,
     },
-    BackendInfo {
+    PresetInfo {
         name: "columns-gpu",
         description: "Comanche-style Voxel Space (2.5D, no overhangs) in a compute shader: one thread per screen column marches a heightmap front to back with a y-buffer",
         renderer: Some("columns-gpu"),
         slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
         runs: impls::GPU_COMPUTE, at: NONE, hosts: &[(Slot::Visibility, &["columns"])], reads: &[(Slot::Storage, Cap::Heights)], api_choice: None,
     },
-    BackendInfo {
+    PresetInfo {
         name: "columns-cpu",
         description: "Comanche-style Voxel Space (2.5D) on the CPU, rayon-parallel over screen columns",
         renderer: Some("columns-cpu"),
         slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
         runs: impls::CPU_SCALAR, at: NONE, hosts: &[(Slot::Visibility, &["columns"])], reads: &[(Slot::Storage, Cap::Heights)], api_choice: None,
     },
-    BackendInfo {
+    PresetInfo {
         name: "raster-cpu",
         description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
         renderer: Some("raster-cpu"),
@@ -380,13 +380,13 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Meshes, name: "depth", description: "Meshes drawn into the same depth buffer as the voxel faces: shaded forward with `raster`, written into the ids or records with `visibility` / `gbuffer` and shaded by the deferred pass (voxels shadow meshes). Exact (mr_gpu::meshes::GpuMeshes).", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[] }], needs: &[] },
 ];
 
-/// A renderer as an assembly of components. Slots left out (empty) take the back end's
-/// default; slots the back end doesn't have stay empty.
+/// A renderer as an assembly of components. Slots left out (empty) take the preset's
+/// default; slots the preset doesn't have stay empty.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Composition {
-    #[serde(default = "default_backend", rename = "preset")]
-    pub backend: String,
+    #[serde(default = "default_preset")]
+    pub preset: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub storage: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -411,7 +411,7 @@ pub struct Composition {
     pub meshes: String,
 }
 
-fn default_backend() -> String {
+fn default_preset() -> String {
     "raycast-gpu".into()
 }
 
@@ -423,9 +423,9 @@ impl Default for Composition {
 }
 
 impl Composition {
-    /// The back end's default composition (empty slots if the back end is unknown).
-    pub fn new(backend: &str) -> Self {
-        let mut c = Self { backend: backend.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), holes: String::new(), draw: String::new(), traversal: String::new(), shadow_storage: String::new(), shadow_traversal: String::new(), shading: String::new(), meshes: String::new() };
+    /// The preset's default composition (empty slots if the preset is unknown).
+    pub fn new(preset: &str) -> Self {
+        let mut c = Self { preset: preset.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), holes: String::new(), draw: String::new(), traversal: String::new(), shadow_storage: String::new(), shadow_traversal: String::new(), shading: String::new(), meshes: String::new() };
         c.fill_defaults();
         c
     }
@@ -472,15 +472,15 @@ impl Composition {
         *v = name.to_string();
     }
 
-    /// The slots of this composition's back end (none if it is unknown).
+    /// The slots of this composition's preset (none if it is unknown).
     pub fn slots(&self) -> impl Iterator<Item = Slot> + use<> {
-        let b = backend(&self.backend);
+        let b = preset_info(&self.preset);
         Slot::ALL.into_iter().filter(move |&s| b.is_some_and(|b| b.has(s)))
     }
 
-    /// Fills empty slots the back end has with its defaults.
+    /// Fills empty slots the preset has with its defaults.
     pub fn fill_defaults(&mut self) {
-        let Some(b) = backend(&self.backend) else { return };
+        let Some(b) = preset_info(&self.preset) else { return };
         for &(slot, d) in b.slots {
             if self.get(slot).is_empty() {
                 self.set(slot, d);
@@ -488,23 +488,23 @@ impl Composition {
         }
     }
 
-    /// After a back-end change: keeps the components that exist there, defaults the other
+    /// After a preset change: keeps the components that exist there, defaults the other
     /// slots it has and clears the slots it lacks.
-    pub fn adapt_to_backend(&mut self) {
-        let Some(b) = backend(&self.backend) else { return };
+    pub fn adapt_to_preset(&mut self) {
+        let Some(b) = preset_info(&self.preset) else { return };
         for slot in Slot::ALL {
             if !b.has(slot) {
                 self.set(slot, "");
-            } else if unavailable(&self.backend, slot, self.get(slot)).is_some() {
+            } else if unavailable(&self.preset, slot, self.get(slot)).is_some() {
                 self.set(slot, b.default_for(slot).unwrap());
             }
         }
     }
 
-    /// Short label: the back end's slots in order, optional slots at their default left
+    /// Short label: the preset's slots in order, optional slots at their default left
     /// out, e.g. `raycast-gpu: prefix + incremental` or `raster-gpu: bricks + greedy + raster`.
     pub fn label(&self) -> String {
-        let b = backend(&self.backend);
+        let b = preset_info(&self.preset);
         let parts: Vec<String> = self
             .slots()
             .filter(|&s| !(b.is_some_and(|b| b.is_quiet(s)) && b.and_then(|b| b.default_for(s)) == Some(self.get(s))))
@@ -514,7 +514,7 @@ impl Composition {
                 s => self.get(s).to_string(),
             })
             .collect();
-        format!("{}: {}", self.backend, parts.join(" + "))
+        format!("{}: {}", self.preset, parts.join(" + "))
     }
 
     /// The renderer entry to run and the options that select the components (fills
@@ -522,7 +522,7 @@ impl Composition {
     pub fn resolve(&mut self) -> Result<(&'static str, Vec<(&'static str, String)>), String> {
         self.fill_defaults();
         self.validate()?;
-        let b = backend(&self.backend).unwrap();
+        let b = preset_info(&self.preset).unwrap();
         Ok((b.renderer.unwrap(), self.slots().map(|s| (s.name(), self.get(s).to_string())).collect()))
     }
 
@@ -533,12 +533,12 @@ impl Composition {
     }
 
     /// The composition as far as a pass of mode `m` can tell: stages that cannot affect
-    /// it are reset to the back end's default (shading in unlit mode: every shading
-    /// component shows the texel; meshes without meshes; the back end's `lit_only`
+    /// it are reset to the preset's default (shading in unlit mode: every shading
+    /// component shows the texel; meshes without meshes; the preset's `lit_only`
     /// slots in unlit mode). Sweeps run one composition per distinct result.
     pub fn effective(&self, m: mr_core::PassMode) -> Composition {
         let mut c = self.clone();
-        let Some(b) = backend(&self.backend) else { return c };
+        let Some(b) = preset_info(&self.preset) else { return c };
         let unlit = m.lighting == mr_core::RenderMode::Unlit;
         for &(slot, default) in b.slots {
             let moot = match slot {
@@ -555,16 +555,16 @@ impl Composition {
 
     /// Why this composition cannot run, if it can't.
     pub fn validate(&self) -> Result<(), String> {
-        let b = backend(&self.backend).ok_or_else(|| format!("unknown back end `{}` (have: {})", self.backend, BACKENDS.iter().map(|b| b.name).collect::<Vec<_>>().join(", ")))?;
+        let b = preset_info(&self.preset).ok_or_else(|| format!("unknown preset `{}` (have: {})", self.preset, PRESETS.iter().map(|b| b.name).collect::<Vec<_>>().join(", ")))?;
         if b.renderer.is_none() {
-            return Err(format!("back end `{}` is not available yet", self.backend));
+            return Err(format!("preset `{}` is not available yet", self.preset));
         }
         for slot in Slot::ALL {
             if !b.has(slot) {
                 if !self.get(slot).is_empty() {
-                    return Err(format!("back end `{}` has no {} slot (`{}` does not apply)", self.backend, slot.name(), self.get(slot)));
+                    return Err(format!("preset `{}` has no {} slot (`{}` does not apply)", self.preset, slot.name(), self.get(slot)));
                 }
-            } else if let Some(why) = unavailable(&self.backend, slot, self.get(slot)) {
+            } else if let Some(why) = unavailable(&self.preset, slot, self.get(slot)) {
                 return Err(why);
             }
         }
@@ -577,12 +577,12 @@ impl Composition {
     }
 }
 
-pub fn backend(name: &str) -> Option<&'static BackendInfo> {
-    BACKENDS.iter().find(|b| b.name == name)
+pub fn preset_info(name: &str) -> Option<&'static PresetInfo> {
+    PRESETS.iter().find(|b| b.name == name)
 }
 
 /// `same` in the secondary-ray stages: walk what the primary rays walk (a binding, not code:
-/// no implementations of its own; it exists where the back end has the stage).
+/// no implementations of its own; it exists where the preset has the stage).
 const SAME: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::ShadowStorage, name: "same", description: "Shadow and bounce rays walk the primary storage.", impls: &[], needs: &[] },
     ComponentInfo { slot: Slot::ShadowTraversal, name: "same", description: "Shadow and bounce rays use the primary traversal kernel.", impls: &[], needs: &[] },
@@ -597,15 +597,15 @@ pub fn components(slot: Slot) -> impl Iterator<Item = &'static ComponentInfo> {
     SAME.iter().filter(move |c| c.slot == slot).chain(COMPONENTS.iter().filter(move |c| c.slot == slot.source()))
 }
 
-/// Why component `name` cannot fill `slot` on `backend` (`None` = it can): the back end
+/// Why component `name` cannot fill `slot` on `preset` (`None` = it can): the preset
 /// lacks the slot, its own code does not host the component, or the component has no
-/// implementation where the back end runs the slot.
-pub fn unavailable(backend_name: &str, slot: Slot, name: &str) -> Option<String> {
-    let Some(b) = backend(backend_name) else {
-        return Some(format!("unknown back end `{backend_name}`"));
+/// implementation where the preset runs the slot.
+pub fn unavailable(preset: &str, slot: Slot, name: &str) -> Option<String> {
+    let Some(b) = preset_info(preset) else {
+        return Some(format!("unknown preset `{preset}`"));
     };
     if !b.has(slot) {
-        return Some(format!("`{backend_name}` has no {} slot", slot.name()));
+        return Some(format!("`{preset}` has no {} slot", slot.name()));
     }
     let Some(c) = component(slot, name) else {
         return Some(format!("unknown {} component `{name}` (have: {})", slot.name(), components(slot).map(|c| c.name).collect::<Vec<_>>().join(", ")));
@@ -614,12 +614,12 @@ pub fn unavailable(backend_name: &str, slot: Slot, name: &str) -> Option<String>
         return None; // `same`
     }
     if let Some(h) = b.hosted(slot).filter(|h| !h.contains(&name)) {
-        return Some(format!("`{backend_name}` hosts only {} in its {} slot (its own code; executors lift this)", h.join(", "), slot.name()));
+        return Some(format!("`{preset}` hosts only {} in its {} slot (its own code; executors lift this)", h.join(", "), slot.name()));
     }
     let place = b.place(slot);
     unimplemented_at(&place, slot, name).or_else(|| {
         let lacks: Vec<&str> = b.reads.iter().filter(|(s, cap)| *s == slot.source() && !caps::provides(place.kind, *s, name, *cap)).map(|(_, cap)| cap.name()).collect();
-        (!lacks.is_empty()).then(|| format!("`{name}` lacks {} (`{backend_name}` reads its {} through it)", lacks.join(", "), slot.name()))
+        (!lacks.is_empty()).then(|| format!("`{name}` lacks {} (`{preset}` reads its {} through it)", lacks.join(", "), slot.name()))
     })
 }
 
@@ -629,36 +629,36 @@ pub fn unimplemented_at(p: &Place, slot: Slot, name: &str) -> Option<String> {
     c.at(p).is_none().then(|| format!("`{name}` has no {} implementation yet (has: {})", p.label(), if c.impls.is_empty() { "none".into() } else { c.impls_label() }))
 }
 
-/// For back ends checking their options: `name` if it is a `slot` component of `backend`,
+/// For presets checking their options: `name` if it is a `slot` component of `preset`,
 /// else why not.
-pub fn require(backend: &str, slot: Slot, name: &str) -> anyhow::Result<String> {
-    match unavailable(backend, slot, name) {
+pub fn require(preset: &str, slot: Slot, name: &str) -> anyhow::Result<String> {
+    match unavailable(preset, slot, name) {
         None => Ok(name.to_string()),
         Some(why) => anyhow::bail!(why),
     }
 }
 
-/// The `slot` components `backend` implements (for its parameter choices).
-pub fn names_on(backend: &str, slot: Slot) -> Vec<&'static str> {
-    components(slot).filter(|c| unavailable(backend, slot, c.name).is_none()).map(|c| c.name).collect()
+/// The `slot` components `preset` implements (for its parameter choices).
+pub fn names_on(preset: &str, slot: Slot) -> Vec<&'static str> {
+    components(slot).filter(|c| unavailable(preset, slot, c.name).is_none()).map(|c| c.name).collect()
 }
 
 /// Lighting knobs belong to the shading stage (lit mode is the shading component's job):
-/// marks `shadows` as owned by `backend`'s shading components, so UIs show it there.
-pub fn lighting_knobs(backend: &str, mut params: Vec<mr_core::ParamSpec>) -> Vec<mr_core::ParamSpec> {
-    let shading = names_on(backend, Slot::Shading);
+/// marks `shadows` as owned by `preset`'s shading components, so UIs show it there.
+pub fn lighting_knobs(preset: &str, mut params: Vec<mr_core::ParamSpec>) -> Vec<mr_core::ParamSpec> {
+    let shading = names_on(preset, Slot::Shading);
     for p in params.iter_mut().filter(|p| p.name == "shadows" && p.owner.is_none()) {
         *p = p.clone().of(Slot::Shading.name(), &shading);
     }
     params
 }
 
-/// The shading node's placement knob for back ends that offer it: `inline`
+/// The shading node's placement knob for presets that offer it: `inline`
 /// shades where the strategy finds the hit, in the same pass; `deferred` has the strategy
 /// write hit records and one common pass shade each pixel. Fixed at creation: inline
 /// pipelines carry nothing of the deferred one (no record buffer, binding or pass).
-/// `default`: the back end's original placement (raster-cpu was deferred).
-pub fn placement_param(backend: &str, default: &str) -> mr_core::ParamSpec {
+/// `default`: the preset's original placement (raster-cpu was deferred).
+pub fn placement_param(preset: &str, default: &str) -> mr_core::ParamSpec {
     mr_core::ParamSpec::choice(
         "placement",
         "Shading placement: inline = shaded where the surface is found, in the same pass (with rasterisers: every fragment that passes the depth test); deferred = the strategy writes a hit record per pixel, then one common pass shades each pixel",
@@ -666,7 +666,7 @@ pub fn placement_param(backend: &str, default: &str) -> mr_core::ParamSpec {
         default,
         false,
     )
-    .of(Slot::Shading.name(), &names_on(backend, Slot::Shading))
+    .of(Slot::Shading.name(), &names_on(preset, Slot::Shading))
 }
 
 /// Parses a placement value: `true` for deferred.
@@ -678,10 +678,10 @@ pub fn parse_placement(s: &str) -> anyhow::Result<bool> {
     }
 }
 
-/// Why `name` cannot fill `slot` in `c` (the rest of `c` kept), if it can't: the back end
+/// Why `name` cannot fill `slot` in `c` (the rest of `c` kept), if it can't: the preset
 /// lacks it, or a need between it and the other components is unmet.
 pub fn conflict(c: &Composition, slot: Slot, name: &str) -> Option<String> {
-    unavailable(&c.backend, slot, name).or_else(|| {
+    unavailable(&c.preset, slot, name).or_else(|| {
         let mut c = c.clone();
         c.set(slot, name);
         caps::unmet(&c)
@@ -694,7 +694,7 @@ mod tests {
 
     /// Metadata and implementations agree: every component listed for raycast-gpu has GPU
     /// code, every storage's `provides` matches its implementation, and every pairing on a
-    /// back end validates.
+    /// preset validates.
     #[test]
     fn registry_is_consistent() {
         for c in COMPONENTS.iter().filter(|c| unavailable("raycast-gpu", c.slot, c.name).is_none()) {
@@ -722,16 +722,16 @@ mod tests {
             };
             assert!(ok, "raster-gpu {} `{}`", c.slot.name(), c.name);
         }
-        // Every component runs on some back end, and declares implementations (`same` aside).
+        // Every component runs on some preset, and declares implementations (`same` aside).
         for c in COMPONENTS {
-            assert!(!c.impls.is_empty() && BACKENDS.iter().any(|b| unavailable(b.name, c.slot, c.name).is_none()), "{}", c.name);
+            assert!(!c.impls.is_empty() && PRESETS.iter().any(|b| unavailable(b.name, c.slot, c.name).is_none()), "{}", c.name);
         }
         // CPU implementations' capabilities are their associated consts.
         assert_eq!(component(Slot::Storage, "prefix").unwrap().on(Kind::Cpu).unwrap().provides, <storage::prefix::cpu::Prefix as Repr>::CAPS);
         assert_eq!(component(Slot::Traversal, "refloor").unwrap().on(Kind::Cpu).unwrap().provides, &[Cap::Steps]);
         assert!(!caps::provides(Kind::Cpu, Slot::Storage, "bricks", Cap::Lod) && caps::provides(Kind::Gpu, Slot::Storage, "bricks", Cap::Lod), "LOD is the GPU implementation's");
-        // Within a back end, every component pairs with every other.
-        for b in BACKENDS.iter().filter(|b| b.renderer.is_some()) {
+        // Within a preset, every component pairs with every other.
+        for b in PRESETS.iter().filter(|b| b.renderer.is_some()) {
             let mut combos = vec![Composition::new(b.name)];
             assert!(combos[0].validate().is_ok(), "{}", b.name);
             for slot in Slot::ALL.into_iter().filter(|&s| b.has(s)) {
@@ -755,10 +755,10 @@ mod tests {
                 }
             }
         }
-        assert!(Composition { backend: "raycast-cpu".into(), storage: "distance".into(), ..Default::default() }.validate().is_err());
+        assert!(Composition { preset: "raycast-cpu".into(), storage: "distance".into(), ..Default::default() }.validate().is_err());
         assert!(Composition { geometry: "greedy".into(), ..Default::default() }.validate().is_err());
         assert!(Composition { visibility: "raster".into(), ..Default::default() }.validate().is_err());
-        assert!(Composition { backend: "rayquery-gpu".into(), ..Default::default() }.validate().is_err(), "storage does not apply on rayquery-gpu");
+        assert!(Composition { preset: "rayquery-gpu".into(), ..Default::default() }.validate().is_err(), "storage does not apply on rayquery-gpu");
         for c in COMPONENTS.iter().filter(|c| unavailable("discover-cpu", c.slot, c.name).is_none()) {
             let ok = match c.slot {
                 Slot::Storage => true, // every CPU storage (checked by `grid::CpuWorld::new`)
@@ -812,12 +812,12 @@ mod tests {
         assert_eq!(Composition { draw: "visbuffer".into(), ..Composition::new("discover-gpu") }.label(), "discover-gpu: bricks + quadtree + visbuffer");
         assert_eq!(Composition::new("raster-cpu").label(), "raster-cpu: greedy + raster");
         let mut moved = Composition { storage: "rows".into(), traversal: "rowrun".into(), ..Default::default() };
-        moved.backend = "raster-gpu".into();
-        moved.adapt_to_backend();
+        moved.preset = "raster-gpu".into();
+        moved.adapt_to_preset();
         assert_eq!(moved, Composition { storage: "rows".into(), traversal: "rowrun".into(), ..Composition::new("raster-gpu") });
         assert_eq!(moved.label(), "raster-gpu: rows + greedy + raster + rowrun", "a quiet slot shows once off its default");
-        moved.backend = "rayquery-gpu".into();
-        moved.adapt_to_backend();
+        moved.preset = "rayquery-gpu".into();
+        moved.adapt_to_preset();
         assert_eq!(moved, Composition::new("rayquery-gpu"));
         assert_eq!(moved.label(), "rayquery-gpu: greedy + rayquery");
         let sparse: Composition = toml::from_str("preset = \"rayquery-gpu\"\ntraversal = \"rayquery\"").unwrap();

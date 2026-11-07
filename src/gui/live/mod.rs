@@ -309,7 +309,7 @@ impl Carry {
 /// The spec a lane restarts with when the plan gives it `new` (it was given `given` last
 /// and runs `now`): `new` with the knob values changed since (where `now` differs from
 /// `given`) that `new` leaves as `given` had them. The components are `new`'s; renderer
-/// knobs carry over on the same back end only.
+/// knobs carry over on the same preset only.
 pub fn keep_knobs(given: &RendererSpec, now: &RendererSpec, new: RendererSpec) -> RendererSpec {
     let mut kept = new.clone();
     if new.name == now.name {

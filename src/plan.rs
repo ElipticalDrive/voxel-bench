@@ -2,12 +2,12 @@
 //! See `plans/` for examples. Any value can be overridden from the command line with
 //! `-s dotted.path=value` (value parsed as TOML, falling back to a string).
 //!
-//! **Sweeps:** a `compose` field may be `"*"` (every component the back end has for that
+//! **Sweeps:** a `compose` field may be `"*"` (every component the preset has for that
 //! stage; for `preset`, every preset) or a list; the renderer then expands into one
 //! renderer per valid combination (`RendererSpec::swept`). Stages left out keep their
-//! defaults, `"*"` on a stage a back end lacks is ignored (a named component there skips
-//! that back end), and the entry's `options` go to each
-//! combination whose back end declares them. In each pass, swept combinations that the
+//! defaults, `"*"` on a stage a preset lacks is ignored (a named component there skips
+//! that preset), and the entry's `options` go to each
+//! combination whose preset declares them. In each pass, swept combinations that the
 //! pass mode cannot tell apart run once (`Composition::effective`).
 
 use std::collections::BTreeMap;
@@ -169,7 +169,7 @@ pub enum Isolation {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RendererSpec {
-    /// Renderer entry to run. For compositions this is derived (the back end's renderer).
+    /// Renderer entry to run. For compositions this is derived (the preset's renderer).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     /// The components this renderer is assembled from.
@@ -221,7 +221,7 @@ impl RendererSpec {
         s
     }
 
-    /// For compositions: checks them and sets `name` (the back end's renderer) and the
+    /// For compositions: checks them and sets `name` (the preset's renderer) and the
     /// options that select the components.
     pub fn resolve(&mut self) -> anyhow::Result<()> {
         self.ran_graph = None;
@@ -247,10 +247,10 @@ impl RendererSpec {
                 }
             }
         }
-        // `name = "<back end's renderer>"` (the CLI, the GUI's presets): the back end's
+        // `name = "<preset's renderer>"` (the CLI, the GUI's presets): the preset's
         // default composition.
         if self.compose.is_none()
-            && let Some(b) = mr_components::BACKENDS.iter().find(|b| b.renderer == Some(self.name.as_str())) {
+            && let Some(b) = mr_components::PRESETS.iter().find(|b| b.renderer == Some(self.name.as_str())) {
             self.compose = Some(mr_components::Composition::new(b.name));
         }
         if let Some(c) = &mut self.compose {
@@ -271,11 +271,11 @@ impl RendererSpec {
     }
 
     /// From the command line: `preset:slot+slot+...` for a composition (a bare preset
-    /// name gives its default composition): the back end's
+    /// name gives its default composition): the preset's
     /// required slots in order, then optionally shading, prepass, meshes and its quiet slots
-    /// (`BackendInfo::quiet`, e.g. `raster-gpu:bricks+greedy+raster+direct+depth+sphere`)
+    /// (`PresetInfo::quiet`, e.g. `raster-gpu:bricks+greedy+raster+direct+depth+sphere`)
     /// (`raycast-gpu:prefix+incremental`, `raycast-gpu:tree64+refloor+direct+beam`,
-    /// `raster-gpu:bricks+greedy+visbuffer`); otherwise a renderer name (a back end's, giving its default composition, or a
+    /// `raster-gpu:bricks+greedy+visbuffer`); otherwise a renderer name (a preset's, giving its default composition, or a
     /// standalone one). A label as the renderer prints it reads back as the same renderer
     /// (`raycast-gpu: prefix + beam + incremental, bounce = tree64/sphere`).
     ///
@@ -294,7 +294,7 @@ impl RendererSpec {
             let (k, v) = p.split_once('=').with_context(|| format!("`{p}`: sites are written `site=value` (e.g. `bounce=tree64/sphere`)"))?;
             sites.insert(k.trim().to_string(), v.trim().to_string());
         }
-        let Some((backend, rest)) = s.split_once(':') else {
+        let Some((preset, rest)) = s.split_once(':') else {
             let mut spec = Self::new(s);
             if !sites.is_empty() {
                 spec.sites = sites;
@@ -302,15 +302,15 @@ impl RendererSpec {
             }
             return Ok(spec);
         };
-        let backend = backend.trim();
-        if mr_components::backend(backend).is_none() {
-            bail!("composition `{s}`: no preset `{backend}` (`multirenderer list` shows them)");
+        let preset = preset.trim();
+        if mr_components::preset_info(preset).is_none() {
+            bail!("composition `{s}`: no preset `{preset}` (`multirenderer list` shows them)");
         }
         let parts: Vec<&str> = rest.split('+').map(str::trim).collect();
-        let c = match Self::cli_composition(s, backend, &parts) {
+        let c = match Self::cli_composition(s, preset, &parts) {
             Ok(c) => c,
             // A label as printed (`discover-gpu: bricks + quadtree + coverage`) reads back too.
-            Err(e) => Self::label_composition(backend, &parts).ok_or(e)?,
+            Err(e) => Self::label_composition(preset, &parts).ok_or(e)?,
         };
         let mut spec = Self::new("");
         spec.sites = sites;
@@ -318,13 +318,13 @@ impl RendererSpec {
         Ok(spec)
     }
 
-    /// The command-line order: the back end's required slots, then the optional ones in
+    /// The command-line order: the preset's required slots, then the optional ones in
     /// the order shading, prepass, meshes, quiet slots.
-    fn cli_composition(s: &str, backend: &str, parts: &[&str]) -> anyhow::Result<mr_components::Composition> {
+    fn cli_composition(s: &str, preset: &str, parts: &[&str]) -> anyhow::Result<mr_components::Composition> {
         use mr_components::Slot;
-        let mut c = mr_components::Composition::new(backend);
+        let mut c = mr_components::Composition::new(preset);
         let all: Vec<Slot> = c.slots().collect();
-        let b = mr_components::backend(backend).unwrap();
+        let b = mr_components::preset_info(preset).unwrap();
         let mut order: Vec<Slot> = all.iter().copied().filter(|&s| !b.is_quiet(s)).collect();
         let required = order.len();
         order.extend([Slot::Shading, Slot::Prepass, Slot::Meshes].into_iter().filter(|s| all.contains(s)));
@@ -332,7 +332,7 @@ impl RendererSpec {
         order.extend(quiet);
         if all.is_empty() || !(required..=order.len()).contains(&parts.len()) {
             let names = |sl: &[Slot]| sl.iter().map(|s| s.name()).collect::<Vec<_>>().join("+");
-            bail!("composition `{s}` should be {backend}:{}[+{}]", names(&order[..required]), names(&order[required..]));
+            bail!("composition `{s}` should be {preset}:{}[+{}]", names(&order[..required]), names(&order[required..]));
         }
         for (&slot, name) in order[..required].iter().zip(parts) {
             c.set(slot, name);
@@ -350,16 +350,16 @@ impl RendererSpec {
         Ok(c)
     }
 
-    /// The label order ([`mr_components::Composition::label`]): the back end's slots in
+    /// The label order ([`mr_components::Composition::label`]): the preset's slots in
     /// composition order, quiet ones at their default left out, `shadow <x>` for the
     /// secondary-ray stages and `no meshes`. The composition whose label this is, if any.
-    fn label_composition(backend: &str, parts: &[&str]) -> Option<mr_components::Composition> {
+    fn label_composition(preset: &str, parts: &[&str]) -> Option<mr_components::Composition> {
         use mr_components::{Composition, Slot};
         fn fit(c: &Composition, slots: &[Slot], parts: &[&str], target: &str) -> Option<Composition> {
             let Some((part, rest)) = parts.split_first() else {
                 return (c.validate().is_ok() && c.label() == target).then(|| c.clone());
             };
-            let b = mr_components::backend(&c.backend)?;
+            let b = mr_components::preset_info(&c.preset)?;
             for (i, &slot) in slots.iter().enumerate() {
                 let name = match (slot, part.strip_prefix("shadow ")) {
                     (s, Some(n)) if s.secondary() => Some(n),
@@ -380,9 +380,9 @@ impl RendererSpec {
             }
             None
         }
-        let c = Composition::new(backend);
+        let c = Composition::new(preset);
         let slots: Vec<Slot> = c.slots().collect();
-        fit(&c, &slots, parts, &format!("{backend}: {}", parts.join(" + ")))
+        fit(&c, &slots, parts, &format!("{preset}: {}", parts.join(" + ")))
     }
 
     /// Replaces the composition (a graph given becomes this composition; sites stay) and
@@ -424,7 +424,7 @@ impl RendererSpec {
         Ok(e)
     }
 
-    /// The graph the back end runs: the one given, else the composition's (`None` for
+    /// The graph the preset runs: the one given, else the composition's (`None` for
     /// standalone renderers).
     pub fn pipeline(&self) -> Option<mr_components::graph::Graph> {
         // Knobs that spell timings (discover-cpu `pipelined`) set them on the composition's graph.
@@ -668,7 +668,7 @@ impl Plan {
 
 /// How a sweep picks one `compose` field.
 enum Pick {
-    /// Not given: the back end's default.
+    /// Not given: the preset's default.
     Default,
     /// `"*"`: everything available.
     All,
@@ -711,19 +711,19 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
         if let Some(k) = compose.keys().find(|k| *k != "preset" && !mr_components::Slot::ALL.iter().any(|s| s.name() == k.as_str())) {
             bail!("compose: unknown field `{k}`");
         }
-        let backends: Vec<&mr_components::BackendInfo> = match Pick::of(compose.get("preset"), "preset")? {
-            Pick::Default => vec![mr_components::backend("raycast-gpu").unwrap()],
-            Pick::All => mr_components::BACKENDS.iter().filter(|b| b.renderer.is_some()).collect(),
-            Pick::Some(names) => names.iter().map(|n| mr_components::backend(n).with_context(|| format!("compose.preset: unknown preset `{n}`"))).collect::<anyhow::Result<_>>()?,
+        let presets: Vec<&mr_components::PresetInfo> = match Pick::of(compose.get("preset"), "preset")? {
+            Pick::Default => vec![mr_components::preset_info("raycast-gpu").unwrap()],
+            Pick::All => mr_components::PRESETS.iter().filter(|b| b.renderer.is_some()).collect(),
+            Pick::Some(names) => names.iter().map(|n| mr_components::preset_info(n).with_context(|| format!("compose.preset: unknown preset `{n}`"))).collect::<anyhow::Result<_>>()?,
         };
         let before = out.len();
-        for b in backends {
-            // Named components for a stage the back end lacks: not this back end ("*" there
+        for b in presets {
+            // Named components for a stage the preset lacks: not this preset ("*" there
             // is ignored).
             if mr_components::Slot::ALL.iter().any(|&s| !b.has(s) && matches!(Pick::of(compose.get(s.name()), s.name()), Ok(Pick::Some(_)))) {
                 continue;
             }
-            // Per slot, the components to combine (an empty list: the back end is skipped).
+            // Per slot, the components to combine (an empty list: the preset is skipped).
             let mut axes: Vec<(mr_components::Slot, Vec<String>)> = vec![];
             for &(slot, default) in b.slots {
                 let names = match Pick::of(compose.get(slot.name()), slot.name())? {
@@ -741,7 +741,7 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
                     c
                 })).collect();
             }
-            // Options the back end declares.
+            // Options the preset declares.
             let known: Vec<String> = infos.iter().find(|i| Some(i.name.as_str()) == b.renderer).map(|i| i.params.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
             let options: toml::Table = e.get("options").and_then(|o| o.as_table()).map(|t| t.iter().filter(|(k, _)| known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
             // Combinations whose components' needs cannot be met do not exist.
@@ -781,7 +781,7 @@ const MAX_SITE_COMBOS: usize = 100_000;
 
 /// The site bindings of composition `c` a sweep's `sites` picks: every combination that
 /// runs, in its sites form (composition and sites). `"*"` on a site the pipeline lacks is
-/// ignored; a named value there gives nothing (as `compose` names a stage the back end
+/// ignored; a named value there gives nothing (as `compose` names a stage the preset
 /// lacks).
 fn expand_sites(c: &mr_components::Composition, axes: &[(String, Pick)]) -> anyhow::Result<Vec<(mr_components::Composition, BTreeMap<String, String>)>> {
     if axes.is_empty() {
@@ -930,7 +930,7 @@ mod tests {
         }
     }
 
-    /// Compositions resolve to their back end's renderer and component options, are
+    /// Compositions resolve to their preset's renderer and component options, are
     /// validated, and save as just the `compose` table.
     #[test]
     fn compositions() {
@@ -964,7 +964,7 @@ mod tests {
         assert_eq!(spec.label(), "raster-gpu: distance + greedy + raster + sphere");
         let spec = RendererSpec::from_cli("raster-gpu:hier+naive+gbuffer").unwrap();
         assert_eq!(spec.options.get("draw").and_then(|v| v.as_str()), Some("gbuffer"));
-        // Naming a back end's renderer gives its default composition.
+        // Naming a preset's renderer gives its default composition.
         let named = text.replace("compose = { storage = \"prefix\", traversal = \"incremental\" }", "name = \"discover-gpu\"").replace("options = { exact = false }", "");
         let r = &Plan::parse(&named, &[]).unwrap().renderers[0];
         assert_eq!(r.label(), "discover-gpu: bricks + quadtree");
@@ -1047,7 +1047,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
             assert_eq!(key(&back), key(r), "{l} read back as {}", back.label());
         };
         let mut n = 0;
-        for b in mr_components::BACKENDS.iter().filter(|b| b.renderer.is_some()) {
+        for b in mr_components::PRESETS.iter().filter(|b| b.renderer.is_some()) {
             let mut r = RendererSpec::new(b.name);
             r.resolve().unwrap();
             check(&r);
@@ -1116,7 +1116,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert_eq!(p.renderers.len(), 16);
         assert!(p.renderers.iter().all(|r| r.swept && r.name == "raycast-gpu" && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
         let all = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ preset = \"*\", storage = \"*\", geometry = \"*\", prepass = \"*\", visibility = \"*\", draw = \"*\", traversal = \"*\", shading = \"*\", meshes = \"*\" }}\n"), &[]).unwrap();
-        let n = |b: &str| all.renderers.iter().filter(|r| r.compose.as_ref().unwrap().backend == b).count();
+        let n = |b: &str| all.renderers.iter().filter(|r| r.compose.as_ref().unwrap().preset == b).count();
         assert_eq!(n("raycast-gpu"), 8 * 2 * 4 * 2 * 2);
         assert_eq!(n("rayquery-gpu"), 3 * 2);
         // The rasteriser's shadow rays: 8 storages x 4 kernels x 3 geometries x 3 draws x 2 shadings x 2 meshes.
@@ -1131,10 +1131,10 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
             v.len()
         };
         assert!(distinct(PassMode::UNLIT) < distinct(PassMode::LIT) && distinct(PassMode::LIT) < all.renderers.len());
-        // A name the back end lacks skips it; nothing valid is an error.
+        // A name the preset lacks skips it; nothing valid is an error.
         let only = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ preset = \"*\", storage = \"palette\" }}\n"), &[]).unwrap();
         let names: Vec<&str> = only.renderers.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["raycast-cpu", "discover-cpu"], "named components: only back ends that have them");
+        assert_eq!(names, ["raycast-cpu", "discover-cpu"], "named components: only presets that have them");
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = [\"palette\"] }}\n"), &[]).is_err());
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = \"*\", nope = \"x\" }}\n"), &[]).is_err());
         // Sweeps over sites, once per distinct graph.

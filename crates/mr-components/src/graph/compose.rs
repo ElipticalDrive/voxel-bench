@@ -2,18 +2,18 @@
 
 use std::collections::BTreeMap;
 
-use crate::{Composition, Kind, Slot, backend};
+use crate::{Composition, Kind, Slot, preset_info};
 
 use super::*;
 
 impl Graph {
-    /// The graph of a flat composition (its back end's defaults filled in). Primary and
+    /// The graph of a flat composition (its preset's defaults filled in). Primary and
     /// secondary rays share kernel and storage nodes where the composition says `same`;
     /// secondary rays on another device than the primary ones get their own nodes.
     pub fn from_composition(c: &Composition) -> Result<Graph, String> {
         let mut c = c.clone();
         c.fill_defaults();
-        let b = backend(&c.backend).ok_or_else(|| format!("unknown back end `{}`", c.backend))?;
+        let b = preset_info(&c.preset).ok_or_else(|| format!("unknown preset `{}`", c.preset))?;
         let has = |s: Slot| b.has(s) && !c.get(s).is_empty();
         let mut nodes = BTreeMap::new();
         let mut add = |id: &str, role: Role, name: &str, inputs: &[(&str, &str)]| {
@@ -90,19 +90,19 @@ impl Graph {
         if holes {
             nodes.get_mut("holes").unwrap().timing.insert("sky".into(), When::Prev);
         }
-        if let (true, Some(w)) = (drawn, faces_timing(&c.backend, holes)) {
+        if let (true, Some(w)) = (drawn, faces_timing(&c.preset, holes)) {
             nodes.get_mut("draw").unwrap().timing.insert("faces".into(), w);
         }
         // Mesh shadows are the shading's shadow rays.
         if let (true, Some(k)) = (meshes, shadow) {
             nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), k.into());
         }
-        // Run by the back end's executor; nodes it would place elsewhere than the back end
+        // Run by the preset's executor; nodes it would place elsewhere than the preset
         // does get their device written (fused ones follow their callers, the rest of the
         // world's side and the post have their own rules).
-        let executor = executor_of(&c.backend);
+        let executor = executor_of(&c.preset);
         for n in nodes.values_mut().filter(|n| n.role.slot().is_some() && known(n.role, &n.component) && !output(n.role, &n.component).fused()) {
-            let at = placed_on(&c.backend, n.role, &n.component);
+            let at = placed_on(&c.preset, n.role, &n.component);
             if at != default_device(executor, n.role, &n.component) {
                 n.device = Some(at);
             }
@@ -111,7 +111,7 @@ impl Graph {
     }
 
     /// The preset this graph's shape and devices name (the region of its executor that
-    /// builds it, and the tables keyed by the former back ends' names): the face drawer's
+    /// builds it, and the tables keyed by the presets' names): the face drawer's
     /// source (meshing: `raster-gpu` / `raster-cpu` by the drawer's device; discovery:
     /// `discover-gpu` / `discover-cpu` by the sampler's), else the visibility node's
     /// component and device (ray casting: `raycast-cpu`, `rayquery-gpu` when its primary rays are ray
@@ -174,21 +174,21 @@ impl Graph {
         v
     }
 
-    /// The knobs of the skeleton's nodes as the back end's flat options (the nodes on free
-    /// sites keep theirs: back ends read them per instance). Two skeleton nodes with
+    /// The knobs of the skeleton's nodes as the preset's flat options (the nodes on free
+    /// sites keep theirs: presets read them per instance). Two skeleton nodes with
     /// different values of one knob cannot be expressed yet.
     pub fn flat_knobs(&self) -> Result<toml::Table, String> {
         let skel = self.normalised()?.skeleton();
         let preset = self.preset().unwrap_or_default();
         let mut t = toml::Table::new();
-        if let Some((b, ch)) = backend(preset).and_then(|b| b.api_choice.map(|ch| (b, ch)))
+        if let Some((b, ch)) = preset_info(preset).and_then(|b| b.api_choice.map(|ch| (b, ch)))
             && let Some(v) = self.nodes.values().filter(|n| n.role.slot().is_some_and(|sl| b.chooses(sl))).find_map(|n| n.api).and_then(|a| ch.value(a)) {
             t.insert(ch.knob.into(), v.into());
         }
         for (k, v) in self.normalised()?.timing_options() {
             t.insert(k.into(), v.into());
         }
-        // (The link's and the client's knobs are theirs: the worker's, not the back end's.)
+        // (The link's and the client's knobs are theirs: the worker's, not the preset's.)
         for (id, n) in self.nodes.iter().filter(|(id, n)| skel.nodes.contains_key(*id) && n.role.slot().is_some()) {
             for (k, v) in &n.knobs {
                 if let Some(old) = t.insert(k.clone(), v.clone()).filter(|old| old != v) {
@@ -203,15 +203,15 @@ impl Graph {
 impl Graph {
     /// The graph with flat knob values placed on the nodes they belong to (what a
     /// compiled build bakes in, for its cache key): each `(spec, value)` goes to the
-    /// skeleton's nodes its `owner` names (the back end's stages; nodes on free sites keep
+    /// skeleton's nodes its `owner` names (the preset's stages; nodes on free sites keep
     /// their own knobs). A knob whose owner is not in the graph is moot here and left out;
-    /// a knob without an owner (the back end's own) has no node and is an error.
+    /// a knob without an owner (the preset's own) has no node and is an error.
     pub fn with_knobs(&self, knobs: &[(&mr_core::ParamSpec, toml::Value)]) -> Result<Graph, String> {
         let mut g = self.normalised()?;
         let skel = g.skeleton();
         for (spec, v) in knobs {
             let Some((slot, comps)) = &spec.owner else {
-                return Err(format!("knob `{}` belongs to the back end, not to a node", spec.name));
+                return Err(format!("knob `{}` belongs to the preset, not to a node", spec.name));
             };
             for (_, n) in g.nodes.iter_mut().filter(|(id, _)| skel.nodes.contains_key(*id)) {
                 if n.role.name() == slot && comps.contains(&n.component) {

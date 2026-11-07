@@ -9,7 +9,7 @@
 //!
 //! So far the storage interface on the GPU (`storage/adapters.wgsl`) and the hit record's
 //! optional fields (`Lod`, `Steps`; `crates/mr-gpu/src/voxels.wgsl`). Capabilities are
-//! declared per implementation ([`crate::Impl`]), not per back end: `bricks` has
+//! declared per implementation ([`crate::Impl`]), not per preset: `bricks` has
 //! `Lod` on the GPU, not on the CPU (CPU walks have no LOD). CPU implementations declare
 //! theirs as associated consts (`Repr::CAPS`, `Kernel::CAPS`), which the registry reads.
 //!
@@ -17,7 +17,7 @@
 //! the walks', exposure tests' and prepasses' core) and `Heights` (a heightmap's columns,
 //! the column march's). No adapter turns one into the other yet.
 
-use crate::{Composition, Kind, Slot, backend, component, components};
+use crate::{Composition, Kind, Slot, preset_info, component, components};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Cap {
@@ -115,9 +115,9 @@ pub fn provides(kind: Kind, slot: Slot, name: &str, cap: Cap) -> bool {
     component(slot, name).and_then(|c| c.on(kind)).is_some_and(|i| i.provides.contains(&cap))
 }
 
-/// The device kind `c`'s back end runs `slot` on (GPU if the back end is unknown).
+/// The device kind `c`'s preset runs `slot` on (GPU if the preset is unknown).
 fn kind_of(c: &Composition, slot: Slot) -> Kind {
-    backend(&c.backend).map_or(Kind::Gpu, |b| b.place(slot).kind)
+    preset_info(&c.preset).map_or(Kind::Gpu, |b| b.place(slot).kind)
 }
 
 /// How a composition meets one need.
@@ -126,7 +126,7 @@ pub enum Met {
     Native,
     /// Through an adapter (correct, slower than a native implementation).
     Adapter(&'static Adapter),
-    /// The back end has no such stage, so nothing there lacks it.
+    /// The preset has no such stage, so nothing there lacks it.
     NoStage,
 }
 

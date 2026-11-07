@@ -17,7 +17,7 @@
 //!
 //! The model, validation with reasons, a canonical form (hashable: the cache key),
 //! and the conversion from today's flat [`Composition`](crate::Composition)s (so every stored record loads as a
-//! graph). Back ends consume graphs ([`of_init`], [`Checked::site`]). Each executor declares
+//! graph). Presets consume graphs ([`of_init`], [`Checked::site`]). Each executor declares
 //! the nodes it builds ([`Builds`]); [`Graph::accept`] takes a valid graph whose nodes its
 //! executor declares and returns the nearest flat composition (its *skeleton's*: the graph
 //! with the sites a composition casts through its lead kernel rebound there) and whether that
@@ -44,12 +44,12 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     use super::*;
-    use crate::{Api, BACKENDS, Composition, Slot, backend, names_on};
+    use crate::{Api, PRESETS, Composition, Slot, preset_info, names_on};
 
-    /// Every composition of every back end (each slot through all its components).
+    /// Every composition of every preset (each slot through all its components).
     fn every_composition() -> Vec<Composition> {
         let mut all = Vec::new();
-        for b in BACKENDS.iter().filter(|b| b.renderer.is_some()) {
+        for b in PRESETS.iter().filter(|b| b.renderer.is_some()) {
             let mut combos = vec![Composition::new(b.name)];
             for slot in Slot::ALL.into_iter().filter(|&s| b.has(s)) {
                 combos = combos
@@ -77,7 +77,7 @@ mod tests {
         let mut keys = HashMap::new();
         for c in &all {
             let g = Graph::from_composition(c).unwrap();
-            assert_eq!(g.preset(), Some(c.backend.as_str()), "{}", c.label());
+            assert_eq!(g.preset(), Some(c.preset.as_str()), "{}", c.label());
             let back = g.to_composition().unwrap_or_else(|e| panic!("{}: {e}\n{g:#?}", c.label()));
             assert_eq!(Graph::from_composition(&back).unwrap().canonical(), g.canonical(), "{}", c.label());
             // Exactly, except `same` and an explicit name meaning one graph.
@@ -103,7 +103,7 @@ mod tests {
     }
 
     fn b_has(c: &Composition, s: Slot) -> bool {
-        backend(&c.backend).is_some_and(|b| b.has(s))
+        preset_info(&c.preset).is_some_and(|b| b.has(s))
     }
 
     #[test]
@@ -211,7 +211,7 @@ mod tests {
         assert!(e.contains("two devices"), "{e}");
     }
 
-    /// Sites off the lead bind their own kernel and storage where the back end
+    /// Sites off the lead bind their own kernel and storage where the preset
     /// runs them so; elsewhere they are rejected with the reason.
     /// A node's `api`, checked against its device, its component's implementations
     /// and the executor; written into the canonical form only where it is a choice.
@@ -235,9 +235,9 @@ mod tests {
         // A node without an API of its own or its callers' runs its component's only one on
         // its device (what the ray-casting region picks its caster by).
         // A walk's kernel has two (compute, raster: `dispatch`), so it has none.
-        for (backend, api) in [("rayquery-gpu", Some(Api::RayQuery)), ("raycast-gpu", None)] {
-            let ck = Graph::from_composition(&Composition::new(backend)).unwrap().check().unwrap();
-            assert_eq!(ck.api(ck.input(Role::Visibility, "primary").unwrap()), api, "{backend}");
+        for (preset, api) in [("rayquery-gpu", Some(Api::RayQuery)), ("raycast-gpu", None)] {
+            let ck = Graph::from_composition(&Composition::new(preset)).unwrap().check().unwrap();
+            assert_eq!(ck.api(ck.input(Role::Visibility, "primary").unwrap()), api, "{preset}");
         }
         assert!(g.canonical().unwrap().contains(":avx2") && g.key().unwrap() != Graph::from_composition(&cpu).unwrap().key().unwrap());
         let e = set(&cpu, &[("visibility", Api::Avx2), ("shading", Api::Avx512)]).validate().unwrap_err();
@@ -246,7 +246,7 @@ mod tests {
         assert!(e.contains("`kernel` (api scalar) is compiled into callers running avx2"), "{e}");
         let e = set(&cpu, &[("shading", Api::Compute)]).validate().unwrap_err();
         assert!(e.contains("runs on a gpu"), "{e}");
-        // GPU back ends: the API they run the stage with, and only that.
+        // GPU presets: the API they run the stage with, and only that.
         let gc = Composition::default();
         assert!(set(&gc, &[("visibility", Api::Compute)]).validate().is_ok());
         assert_eq!(set(&gc, &[("visibility", Api::Compute)]).key(), Graph::from_composition(&gc).unwrap().key(), "the default: not in the key");
@@ -278,7 +278,7 @@ mod tests {
         let mut g = Graph::from_composition(&Composition::new("raycast-cpu")).unwrap();
         g.nodes.get_mut("shading").unwrap().component = "pathtrace".into();
         assert!(g.validate().is_err());
-        // Devices follow where the back end runs a role: rasterisers build faces on the CPU.
+        // Devices follow where the preset runs a role: rasterisers build faces on the CPU.
         let ck = Graph::from_composition(&r).unwrap().check().unwrap();
         assert_eq!((ck.devices["geometry"], ck.devices["draw"], ck.devices["kernel"]), (Device::Cpu, Device::Gpu(0), Device::Gpu(0)));
         // Plans and records: `api` round-trips through TOML.
@@ -365,12 +365,12 @@ mod tests {
         assert_eq!(g.flat_knobs().unwrap().get("exact"), Some(&toml::Value::Boolean(true)));
     }
 
-    /// Every graph one or two site bindings away from a back end's compositions
+    /// Every graph one or two site bindings away from a preset's compositions
     /// has a sites form, and that form gives the graph back.
     #[test]
     fn sites_form_round_trips() {
         let mut bases = Vec::new();
-        for b in BACKENDS.iter().filter(|b| b.renderer.is_some()) {
+        for b in PRESETS.iter().filter(|b| b.renderer.is_some()) {
             let mut c = Composition::new(b.name);
             c.fill_defaults();
             bases.push(c.clone());
@@ -405,7 +405,7 @@ mod tests {
                 }
             }
             // Pairs: shadow and bounce rays on raycast-gpu, a sample of values.
-            if c.backend == "raycast-gpu" && c.shading == "pathtrace" {
+            if c.preset == "raycast-gpu" && c.shading == "pathtrace" {
                 for a in ["primary", "sphere", "rows/rowrun", "tree64/refloor"] {
                     for b in ["shadow", "incremental", "distance/sphere", "shadow/sphere", "primary"] {
                         graphs += check(c, &BTreeMap::from([("shadow".into(), a.into()), ("bounce".into(), b.into())]), &mut keys) as usize;
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(g.key().unwrap(), of("discover-cpu").with_options(&now).key().unwrap());
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
         assert_eq!(g.key().unwrap(), key(Composition::new("discover-cpu")));
-        assert_eq!(g.to_composition().unwrap().backend, "discover-cpu");
+        assert_eq!(g.to_composition().unwrap().preset, "discover-cpu");
         // The drawer's face source a choice: discovery in place of meshing.
         let mut g = Graph::from_composition(&Composition { meshes: "none".into(), ..Composition::new("raster-gpu") }).unwrap();
         g.nodes.retain(|k, _| k != "geometry");
@@ -503,7 +503,7 @@ mod tests {
 
     /// The link as a node: `link = "net(..)"` in the sites form; the free
     /// link and the client's region leave the key alone, each network has its own; the
-    /// back end runs the graph as its composition.
+    /// preset runs the graph as its composition.
     #[test]
     fn link_and_client_knobs() {
         let pick = Graph::from_composition(&Composition::new("raycast-gpu")).unwrap();
@@ -548,19 +548,19 @@ mod tests {
     /// The post after the shading, its tone mapper a choice; `clamp` keeps the key.
     #[test]
     fn post_node() {
-        for backend in ["raycast-gpu", "raycast-cpu", "raster-gpu", "discover-cpu", "columns-gpu"] {
-            let g = Graph::from_composition(&Composition::new(backend)).unwrap();
+        for preset in ["raycast-gpu", "raycast-cpu", "raster-gpu", "discover-cpu", "columns-gpu"] {
+            let g = Graph::from_composition(&Composition::new(preset)).unwrap();
             let with = |v: &str| g.with_sites(&[(POST.to_string(), v.to_string())].into());
             let key = |g: &Graph| g.key().unwrap();
             let ck = g.check().unwrap();
-            assert_eq!((ck.graph.nodes[&ck.output].role, ck.shading(), ck.tone()), (Role::Post, "shading", crate::post::Tone::Clamp), "{backend}");
-            assert_eq!(ck.devices[&ck.output], ck.devices["shading"], "{backend}: with the shading");
-            assert!(!g.canonical().unwrap().contains("post"), "{backend}: clamp is left out");
+            assert_eq!((ck.graph.nodes[&ck.output].role, ck.shading(), ck.tone()), (Role::Post, "shading", crate::post::Tone::Clamp), "{preset}");
+            assert_eq!(ck.devices[&ck.output], ck.devices["shading"], "{preset}: with the shading");
+            assert!(!g.canonical().unwrap().contains("post"), "{preset}: clamp is left out");
             assert_eq!(key(&with("clamp").unwrap()), key(&g));
             let aces = with("aces").unwrap();
             assert_ne!(key(&aces), key(&g));
             assert_eq!(aces.tone(), crate::post::Tone::Aces);
-            assert_eq!(aces.accept().unwrap(), g.accept().unwrap(), "{backend}: every executor compiles any tone in");
+            assert_eq!(aces.accept().unwrap(), g.accept().unwrap(), "{preset}: every executor compiles any tone in");
             assert_eq!(aces.sites_value(POST), "aces");
             assert_eq!(aces.sites_form().unwrap().unwrap().1[POST], "aces");
             assert!(with("filmic").unwrap_err().contains("reinhard"));
@@ -799,7 +799,7 @@ mod tests {
         g.nodes.get_mut("visibility").unwrap().timing.insert("where".into(), When::Prev);
         let e = g.check().unwrap_err();
         assert!(e.contains("not a bound input"), "{e}");
-        // A free timing outside what the back end runs.
+        // A free timing outside what the preset runs.
         let mut g = Graph::from_composition(&Composition::new("discover-cpu")).unwrap();
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Iterate(2));
         g.nodes.get_mut("visibility").unwrap().inputs.insert("where".into(), "draw".into());
@@ -856,7 +856,7 @@ mod tests {
             // Kept values and loops only where discovery's timings are.
             let looped = s.steps.iter().any(|x| matches!(x, Step::Loop { .. }));
             assert_eq!(looped, c.holes == "coverage", "{}\n{s}", c.label());
-            assert_eq!(s.kept.is_empty(), c.holes != "coverage" && c.backend != "discover-cpu", "{}\n{s}", c.label());
+            assert_eq!(s.kept.is_empty(), c.holes != "coverage" && c.preset != "discover-cpu", "{}\n{s}", c.label());
             for (id, n) in &ck.graph.nodes {
                 let is_pass = passes.iter().any(|p| p.node == *id);
                 // Ray queries build their acceleration structures from faces: a pass too.

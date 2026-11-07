@@ -32,10 +32,10 @@ pub(crate) fn info() -> RendererInfo {
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         params: vec![
-            ParamSpec::choice("storage", "Storage component", &mr_components::names_on(BACKEND, mr_components::Slot::Storage), "heightmap", false),
-            ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(BACKEND, mr_components::Slot::Visibility), "columns", false),
-            ParamSpec::choice("shading", "Shading component", &mr_components::names_on(BACKEND, mr_components::Slot::Shading), "direct", false),
-            mr_components::placement_param(BACKEND, "inline"),
+            ParamSpec::choice("storage", "Storage component", &mr_components::names_on(PRESET, mr_components::Slot::Storage), "heightmap", false),
+            ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(PRESET, mr_components::Slot::Visibility), "columns", false),
+            ParamSpec::choice("shading", "Shading component", &mr_components::names_on(PRESET, mr_components::Slot::Shading), "direct", false),
+            mr_components::placement_param(PRESET, "inline"),
             ParamSpec::int("threads", "Worker threads (0 = all cores)", 0, 256, 0, true),
             ParamSpec::choice("shadows", "Shadow rays in lit mode (walking the heightmap)", &["none", "sun", "all"], "all", true).of("shading", &["direct"]),
         ],
@@ -59,7 +59,7 @@ impl Default for Options {
     }
 }
 
-pub(crate) const BACKEND: &str = "columns-cpu";
+pub(crate) const PRESET: &str = "columns-cpu";
 
 
 /// The storage's output: the heightmap and the chunks it is patched from.
@@ -209,7 +209,7 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
     let opts: Options = p.options()?;
     use mr_components::{Slot, require};
     for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
-        require(BACKEND, slot, name)?;
+        require(PRESET, slot, name)?;
     }
     let deferred = mr_components::parse_placement(&opts.placement)?;
     fixed("tone", S::TONE, g.tone())?;

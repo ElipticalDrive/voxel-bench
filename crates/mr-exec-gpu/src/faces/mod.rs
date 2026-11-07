@@ -37,12 +37,12 @@ pub(crate) mod mesh;
 /// The region for graph `g`: meshing when the drawer's faces are every meshed face (the `faces`
 /// visibility), else discovery on the visibility node's device (on the CPU in `cpu_world`'s
 /// storage when a compiled pipeline names one).
-pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, cpu_world: Option<fn() -> mr_components::visibility::discover::grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
-    let faces = g.input(Role::Draw, "faces").ok_or_else(|| anyhow::anyhow!("{backend}: the drawer's faces are not bound"))?;
+pub(crate) fn create(preset: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, cpu_world: Option<fn() -> mr_components::visibility::discover::grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
+    let faces = g.input(Role::Draw, "faces").ok_or_else(|| anyhow::anyhow!("{preset}: the drawer's faces are not bound"))?;
     if g.node(faces).component == "faces" {
         return mesh::create(p, devices, waker, g);
     }
-    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{backend}: no visibility node"))?;
+    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{preset}: no visibility node"))?;
     match g.devices[vis] {
         Device::Cpu => cpu::create(p, devices, waker, g, cpu_world),
         Device::Gpu(_) => gpu::create(p, devices, waker, g),
@@ -384,22 +384,22 @@ mod tests {
     use mr_components::draw::drawer::DrawMode;
     use mr_components::{Slot, names_on};
 
-    /// A face source's drawing region (`draw_src`) with every drawer `backend` offers (the
+    /// A face source's drawing region (`draw_src`) with every drawer `preset` offers (the
     /// raster's fragment stage with the sampler's own entry points) composes and validates
     /// over `program`, and over the mesh capability's variant where deferred drawers have it.
-    pub(crate) fn drawers(program: &mr_gpu::program::Program, deps: &[String], meshed: Option<&super::Meshed>, draw_src: &str, shading: &str, what: &str, backend: &str) {
+    pub(crate) fn drawers(program: &mr_gpu::program::Program, deps: &[String], meshed: Option<&super::Meshed>, draw_src: &str, shading: &str, what: &str, preset: &str) {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         let check = |program: &mr_gpu::program::Program, deps: &[String], root: &str, what: &str| {
             let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
             let m = program.naga(root, &deps).unwrap_or_else(|e| panic!("{what}: {e}"));
             Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));
         };
-        for d in names_on(backend, Slot::Draw) {
+        for d in names_on(preset, Slot::Draw) {
             let mode = DrawMode::parse(d).unwrap();
             let root = format!("{draw_src}\n{}", super::draw_wgsl(mode, shading));
-            check(program, deps, &root, &format!("{backend} drawer {what} {d}"));
+            check(program, deps, &root, &format!("{preset} drawer {what} {d}"));
             if let Some(m) = meshed.filter(|_| mode.deferred()) {
-                check(&m.program, &m.deps, &root, &format!("{backend} drawer with meshes {what} {d}"));
+                check(&m.program, &m.deps, &root, &format!("{preset} drawer with meshes {what} {d}"));
             }
         }
     }
@@ -410,17 +410,17 @@ mod tests {
     fn cpu_programs_compose() {
         use mr_components::graph::{Graph, Role};
         use mr_components::shaders::Walks;
-        let backend = super::cpu::BACKEND;
-        for st in names_on(backend, Slot::ShadowStorage).into_iter().filter(|s| *s != "same") {
+        let preset = super::cpu::PRESET;
+        for st in names_on(preset, Slot::ShadowStorage).into_iter().filter(|s| *s != "same") {
             for shading in ["direct", "pathtrace"] {
-                let c = mr_components::Composition { shadow_storage: st.into(), shading: shading.into(), ..mr_components::Composition::new(backend) };
+                let c = mr_components::Composition { shadow_storage: st.into(), shading: shading.into(), ..mr_components::Composition::new(preset) };
                 let ck = Graph::from_composition(&c).unwrap().check().unwrap();
                 let mut walks = Walks::of(&ck);
                 let groups = &[2, 4];
                 let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), groups, false);
                 let bounce = ck.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&ck, s, groups, false));
                 let (program, deps) = mr_components::shaders::sites_program(&walks, None, shadow, bounce);
-                drawers(&program, &deps, None, &super::draw_src(include_str!("records.wgsl"), shading, true), shading, &format!("{st} {shading}"), backend);
+                drawers(&program, &deps, None, &super::draw_src(include_str!("records.wgsl"), shading, true), shading, &format!("{st} {shading}"), preset);
             }
         }
     }

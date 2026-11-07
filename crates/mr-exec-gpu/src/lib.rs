@@ -78,19 +78,19 @@ fn region(p: &InitParams) -> anyhow::Result<&'static str> {
 
 /// The knobs of every region, by preset.
 pub fn infos() -> Vec<RendererInfo> {
-    [faces::cpu::BACKEND, faces::gpu::BACKEND, splat::BACKEND, columns::BACKEND, raycast::walk::BACKEND, faces::mesh::BACKEND, raycast::rayquery::BACKEND].map(info).into()
+    [faces::cpu::PRESET, faces::gpu::PRESET, splat::PRESET, columns::PRESET, raycast::walk::PRESET, faces::mesh::PRESET, raycast::rayquery::PRESET].map(info).into()
 }
 
 /// The knobs of region `preset`.
 pub fn info(preset: &str) -> RendererInfo {
     match preset {
-        faces::mesh::BACKEND => faces::mesh::info(),
-        faces::gpu::BACKEND => faces::gpu::info(),
-        faces::cpu::BACKEND => faces::cpu::info(),
-        raycast::walk::BACKEND => raycast::walk::info(),
-        raycast::rayquery::BACKEND => raycast::rayquery::info(),
-        splat::BACKEND => splat::info(),
-        columns::BACKEND => columns::info(),
+        faces::mesh::PRESET => faces::mesh::info(),
+        faces::gpu::PRESET => faces::gpu::info(),
+        faces::cpu::PRESET => faces::cpu::info(),
+        raycast::walk::PRESET => raycast::walk::info(),
+        raycast::rayquery::PRESET => raycast::rayquery::info(),
+        splat::PRESET => splat::info(),
+        columns::PRESET => columns::info(),
         other => panic!("`{other}` is not run by the GPU executor"),
     }
 }
@@ -153,15 +153,15 @@ impl Renderer for Compiled {
 /// pipeline names one.
 fn create_with(p: InitParams, devices: &Devices, waker: Waker, cpu_world: Option<fn() -> CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
     let g = graph::of_init("gpu", &p)?;
-    let backend = g.preset.expect("of_init: a preset");
+    let preset = g.preset.expect("of_init: a preset");
     if g.find(Role::Draw).is_some() {
-        return faces::create(backend, &p, devices, waker, &g, cpu_world);
+        return faces::create(preset, &p, devices, waker, &g, cpu_world);
     }
-    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{backend}: no visibility node"))?;
+    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{preset}: no visibility node"))?;
     match g.node(vis).component.as_str() {
         "splat" => splat::create(&p, devices, waker, &g),
         "columns" => columns::create(&p, devices, waker, &g),
-        _ => raycast::create(backend, &p, devices, waker, &g),
+        _ => raycast::create(preset, &p, devices, waker, &g),
     }
 }
 

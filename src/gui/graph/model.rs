@@ -271,7 +271,7 @@ pub fn order(g: &Graph) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mr_components::BACKENDS;
+    use mr_components::PRESETS;
 
     fn spec(c: &str) -> RendererSpec {
         let mut s = RendererSpec::from_cli(c).unwrap();
@@ -282,7 +282,7 @@ mod tests {
     /// Every preset's graph, written back as a graph, loads as the same pipeline.
     #[test]
     fn presets_load_as_their_graphs() {
-        for b in BACKENDS.iter().filter(|b| b.renderer.is_some()) {
+        for b in PRESETS.iter().filter(|b| b.renderer.is_some()) {
             let s = spec(b.name);
             let g = graph_of(&s).unwrap_or_else(|| panic!("{}: no graph", b.name));
             let l = load(&s, &g, &[]).unwrap_or_else(|e| panic!("{}: {e}", b.name));

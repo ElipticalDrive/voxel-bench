@@ -504,9 +504,9 @@ fn events(ui: &mut Ui, es: &mut Vec<EventSpec>, ctx: &EditorCtx) -> Changed {
     c
 }
 
-/// Whether `name` is a back end's renderer (edited as a pipeline graph).
-fn is_backend_renderer(name: &str) -> bool {
-    mr_components::BACKENDS.iter().any(|b| b.renderer == Some(name))
+/// Whether `name` is a preset's renderer (edited as a pipeline graph).
+fn is_preset_renderer(name: &str) -> bool {
+    mr_components::PRESETS.iter().any(|b| b.renderer == Some(name))
 }
 
 /// A composed renderer's summary (`graph::summary`): edits go into it. Returns whether
@@ -584,7 +584,7 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
             ctx.option_text.push(String::new());
             c = true;
         }
-        for info in ctx.infos.iter().filter(|x| !is_backend_renderer(&x.name)) {
+        for info in ctx.infos.iter().filter(|x| !is_preset_renderer(&x.name)) {
             if ui.button(format!("+ {}", info.name)).on_hover_text(format!("Add the standalone renderer: {}", info.description)).clicked() {
                 plan.renderers.push(RendererSpec::new(info.name.clone()));
                 ctx.option_text.push(String::new());

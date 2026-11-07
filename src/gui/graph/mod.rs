@@ -3,7 +3,7 @@
 //! editor window draws it (`canvas`) with an inspector for the selected node. Every choice
 //! is listed; one whose graph cannot run is greyed and says why (`model::Trial`), or, on a
 //! graph a node executor runs, can still be made: a draft, shown with why it does not run
-//! while the renderer keeps its last graph. The back end is not chosen: it is the preset the
+//! while the renderer keeps its last graph. No preset is chosen: it is the one the
 //! graph's shape names, shown as a label.
 
 mod canvas;
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use egui::{ComboBox, RichText, Ui};
 use mr_components::graph::{Data, Device, Graph, Role, When, inputs, output, role_components, state};
-use mr_components::{Api, BACKENDS, Kind};
+use mr_components::{Api, PRESETS, Kind};
 use mr_core::{ParamSpec, ParamValue, RendererInfo};
 
 use super::knobs;
@@ -364,7 +364,7 @@ fn editor(ui: &mut Ui, win: &mut Window, title: &str, spec: &RendererSpec, knobs
         }
         ui.menu_button("start from…", |ui| {
             ui.weak("A preset's default pipeline (then change anything)");
-            for b in BACKENDS.iter().filter(|b| b.renderer.is_some()) {
+            for b in PRESETS.iter().filter(|b| b.renderer.is_some()) {
                 if ui.button(b.name).on_hover_text(b.description).clicked() {
                     let mut s = RendererSpec::new(b.name);
                     s.label = spec.label.clone();
@@ -607,7 +607,7 @@ mod tests {
         let run = crate::plan::Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/terrain.toml")), &[]).unwrap().run;
         let (mut ok, mut no) = (0, 0);
         let start = std::time::Instant::now();
-        for b in BACKENDS.iter().filter(|b| b.renderer.is_some()) {
+        for b in PRESETS.iter().filter(|b| b.renderer.is_some()) {
             let mut s = RendererSpec::new(b.name);
             s.resolve().unwrap();
             let g = model::graph_of(&s).unwrap();

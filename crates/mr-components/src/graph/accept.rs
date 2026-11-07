@@ -1,7 +1,7 @@
 //! Acceptance by the executors (validity, timings, declarations, device and API blockers)
 //! and the nearest flat composition (the skeleton).
 
-use crate::{Api, Composition, Slot, backend};
+use crate::{Api, Composition, Slot, preset_info};
 
 use super::*;
 
@@ -58,7 +58,7 @@ impl Graph {
 
     /// Whether the graph's executor builds it (`Graph::check`, its timings, the nodes it
     /// declares: [`Checked::builder`], its GPUs and APIs), with the nearest flat composition
-    /// (its skeleton's, else the back end's default; for labels and the flat options) and
+    /// (its skeleton's, else the preset's default; for labels and the flat options) and
     /// whether that composition is exactly the graph. Fails with the reason.
     pub fn accept(&self) -> Result<(Composition, bool), String> {
         let ck = self.check()?;
@@ -90,7 +90,7 @@ impl Graph {
                 n.knobs.clear();
                 n.api = None;
                 // The worker runs the link, the client and a generator on the client, whichever
-                // they are; the back end sees the client's messages.
+                // they are; the preset sees the client's messages.
                 match n.role {
                     Role::Client => n.component = "pick".into(),
                     Role::Link => n.component = "free".into(),
@@ -110,7 +110,7 @@ impl Graph {
             g.canonical()
         };
         // The secondary-ray stages where the composition has them.
-        let b = backend(preset).unwrap();
+        let b = preset_info(preset).unwrap();
         let g = &ck.graph;
         let shading = ck.shading();
         if let (true, Some(s), Some(k)) = (b.has(Slot::ShadowTraversal), g.nodes[shading].inputs.get("shadow"), g.lead().and_then(|(c, p)| g.nodes[&c].inputs.get(p).cloned())) {
@@ -134,7 +134,7 @@ impl Graph {
         Ok((c, exact))
     }
 
-    /// The composition the back end runs the graph as (see [`Self::accept`]).
+    /// The composition the preset runs the graph as (see [`Self::accept`]).
     pub fn to_composition(&self) -> Result<Composition, String> {
         self.accept().map(|(c, _)| c)
     }
@@ -146,8 +146,8 @@ impl Graph {
         let n = |id: &str| &g.nodes[id];
         let input = |id: &str, p: &str| n(id).inputs.get(p).map(String::as_str);
         let preset = ck.preset.ok_or("no preset has this shape")?;
-        let mut c = Composition { backend: preset.into(), ..Composition::new("") };
-        let b = backend(preset).unwrap();
+        let mut c = Composition { preset: preset.into(), ..Composition::new("") };
+        let b = preset_info(preset).unwrap();
         let shading = ck.shading();
         c.shading = n(shading).component.clone();
         let hits = input(shading, "hits").unwrap();
@@ -158,7 +158,7 @@ impl Graph {
             hits
         };
         if n(vis).role != Role::Visibility {
-            return Err(format!("`{}` draws faces straight from `{vis}`: this back end needs a visibility stage between them", preset));
+            return Err(format!("`{}` draws faces straight from `{vis}`: this preset needs a visibility stage between them", preset));
         }
         c.visibility = n(vis).component.clone();
         let take = |c: &mut Composition, id: &str| {
@@ -178,7 +178,7 @@ impl Graph {
                 take(&mut c, st);
             }
         }
-        // Stages a back end has but the graph leaves out are at their "off" component.
+        // Stages a preset has but the graph leaves out are at their "off" component.
         for (slot, off) in [(Slot::Prepass, "none"), (Slot::Meshes, "none")] {
             if b.has(slot) && c.get(slot).is_empty() {
                 c.set(slot, off);
@@ -189,7 +189,7 @@ impl Graph {
         Ok(c)
     }
 
-    /// Checks the graph and that its back end runs it.
+    /// Checks the graph and that its preset runs it.
     pub fn validate(&self) -> Result<(), String> {
         self.accept().map(|_| ())
     }
@@ -239,10 +239,10 @@ fn device_blocker(ck: &Checked) -> Option<String> {
     (!why.is_empty()).then(|| why.join("; "))
 }
 
-/// Why the APIs set in `ck` cannot run on back end `b` running composition `c`, if they
-/// can't: a non-fused node's API must be the one the back end runs its stage with, or one
+/// Why the APIs set in `ck` cannot run on preset `b` running composition `c`, if they
+/// can't: a non-fused node's API must be the one the preset runs its stage with, or one
 /// of its choices; the stages its `api_choice` sets run with one API.
-fn api_blocker(b: &crate::BackendInfo, ck: &Checked, c: &Composition) -> Option<String> {
+fn api_blocker(b: &crate::PresetInfo, ck: &Checked, c: &Composition) -> Option<String> {
     let g = &ck.graph;
     let mut why = Vec::new();
     for (id, &a) in ck.apis.iter().filter(|(id, _)| g.nodes[*id].api.is_some()) {
@@ -287,7 +287,7 @@ pub fn of_init(kind: &str, p: &mr_core::InitParams) -> anyhow::Result<Checked> {
     g.check().map_err(anyhow::Error::msg)
 }
 
-/// Whether back end `executor`'s composition casts the `port` site of its `role` node
+/// Whether preset `executor`'s composition casts the `port` site of its `role` node
 /// through its lead kernel (or for exposure tests, reads the lead kernel's storage), so the
 /// skeleton rebinds it there; the other sites are the graph's own.
 fn follows_lead(executor: &str, role: Role, port: &str) -> bool {

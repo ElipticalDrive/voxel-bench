@@ -162,7 +162,7 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::List => {
             println!("Renderers are assembled from components (plan: compose = {{ preset, storage, geometry, prepass, visibility, shading, meshes }};\nCLI: -r preset:<its required slots in order>[+shading[+prepass[+meshes]]], e.g. raycast-gpu:prefix+incremental, raycast-gpu:bricks+refloor+direct+beam).\nSites bound otherwise (shadow, bounce, exposure, meshes-shadow; plan: sites = {{ ... }}; CLI: after commas):\n  raycast-gpu:bricks+refloor+pathtrace,bounce=tree64/sphere — a site's value is another site (shared), <kernel> (over the lead's storage),\n  <storage>/<kernel> or <site>/<kernel>; `multirenderer graph <renderer>` shows the graph.\nThe world's side: link = free | net(latency_ms=30,jitter_ms=10,bandwidth_mbps=200,loss=0.01,reorder=true,seed=1),\n  client = pick | derive, with its region as knobs: client=derive(radius=4,max_lod=2) (unset: run.view_radius, run.max_lod).\n\nPresets (technique-device: starting points; the pipeline is the graph, which may take any valid shape):");
-            for b in mr_components::BACKENDS {
+            for b in mr_components::PRESETS {
                 let slots: Vec<String> = b.slots.iter().map(|(s, d)| format!("{}={d}", s.name())).collect();
                 let mut at: Vec<String> = vec![format!("{} (default)", b.runs.label())];
                 at.extend(b.at.iter().filter(|(s, _)| b.has(*s)).map(|(s, p)| format!("{} {}", s.name(), p.label())));
@@ -171,12 +171,12 @@ fn main() -> anyhow::Result<()> {
             for slot in mr_components::Slot::ALL {
                 println!("\n{}:", slot.name());
                 for c in mr_components::components(slot) {
-                    let on: Vec<&str> = mr_components::BACKENDS.iter().filter(|b| mr_components::unavailable(b.name, slot, c.name).is_none()).map(|b| b.name).collect();
+                    let on: Vec<&str> = mr_components::PRESETS.iter().filter(|b| mr_components::unavailable(b.name, slot, c.name).is_none()).map(|b| b.name).collect();
                     println!("  {:<12} [{}] (on {}) {}", c.name, c.impls_label(), on.join(","), c.description);
                 }
             }
             println!("\nStandalone renderers (-r name; cpu-reference defines the reference images):");
-            for i in mr_worker::infos().into_iter().filter(|i| !mr_components::BACKENDS.iter().any(|b| b.renderer == Some(i.name.as_str()))) {
+            for i in mr_worker::infos().into_iter().filter(|i| !mr_components::PRESETS.iter().any(|b| b.renderer == Some(i.name.as_str()))) {
                 let modes: Vec<_> = i.modes.iter().map(|m| m.name()).collect();
                 println!("  {:<16} [{}] modes={} max_lod={}\n      {}", i.name, i.tags.join(","), modes.join(","), i.max_lod, i.description);
             }

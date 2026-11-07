@@ -40,11 +40,11 @@ use crate::{Pixel, Spec};
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
         name: "raster-cpu".into(),
-        description: "CPU-raster back end: geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading".into(),
+        description: "raster-cpu preset: geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading".into(),
         tags: vec!["cpu".into(), "raster".into(), "software".into(), "visibility-buffer".into(), "modular".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
-        params: mr_components::lighting_knobs(BACKEND, params()),
+        params: mr_components::lighting_knobs(PRESET, params()),
     }
 }
 
@@ -72,16 +72,16 @@ impl Default for Options {
     }
 }
 
-pub(crate) const BACKEND: &str = "raster-cpu";
+pub(crate) const PRESET: &str = "raster-cpu";
 
 
 fn params() -> Vec<ParamSpec> {
     let mut p = mr_reference::cpu_params();
-    p.push(ParamSpec::choice("geometry", "Geometry component (quads meshed on the CPU)", &names_on(BACKEND, Slot::Geometry), "greedy", true));
-    p.push(ParamSpec::choice("visibility", "Visibility strategy", &names_on(BACKEND, Slot::Visibility), "faces", false));
-    p.push(ParamSpec::choice("draw", "Draw component: `raster` here is edge functions into a visibility buffer, then deferred shading", &names_on(BACKEND, Slot::Draw), "raster", false));
-    p.push(ParamSpec::choice("shading", "Shading component", &names_on(BACKEND, Slot::Shading), "direct", false));
-    p.push(mr_components::placement_param(BACKEND, "deferred"));
+    p.push(ParamSpec::choice("geometry", "Geometry component (quads meshed on the CPU)", &names_on(PRESET, Slot::Geometry), "greedy", true));
+    p.push(ParamSpec::choice("visibility", "Visibility strategy", &names_on(PRESET, Slot::Visibility), "faces", false));
+    p.push(ParamSpec::choice("draw", "Draw component: `raster` here is edge functions into a visibility buffer, then deferred shading", &names_on(PRESET, Slot::Draw), "raster", false));
+    p.push(ParamSpec::choice("shading", "Shading component", &names_on(PRESET, Slot::Shading), "direct", false));
+    p.push(mr_components::placement_param(PRESET, "deferred"));
     p.push(ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours", true, true).of("geometry", &["naive"]));
     p.push(ParamSpec::int("tile_width", "Raster tile width (pixels)", 8, 1024, 64, true).of("draw", &["raster"]));
     p.push(ParamSpec::int("band_height", "Raster band height (pixels); bands are the unit of parallelism", 1, 512, 16, true).of("draw", &["raster"]));
@@ -175,7 +175,7 @@ impl Node for Geometry {
     }
     fn set_param(&mut self, out: &mut Res, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         match name {
-            "geometry" => match require(BACKEND, Slot::Geometry, value.as_str().unwrap_or("")) {
+            "geometry" => match require(PRESET, Slot::Geometry, value.as_str().unwrap_or("")) {
                 Ok(g) => self.mesh = mesh_fn(&g),
                 Err(e) => return Some(Err(e)),
             },
@@ -389,11 +389,11 @@ impl<P: Pixel> Node for Shading<P> {
 /// node; `S` what a compiled pipeline baked in.
 pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let opts: Options = p.options()?;
-    require(BACKEND, Slot::Visibility, &opts.visibility)?;
-    require(BACKEND, Slot::Draw, &opts.draw)?;
-    require(BACKEND, Slot::Shading, &opts.shading)?;
+    require(PRESET, Slot::Visibility, &opts.visibility)?;
+    require(PRESET, Slot::Draw, &opts.draw)?;
+    require(PRESET, Slot::Shading, &opts.shading)?;
     anyhow::ensure!(opts.merge == "block", "merge = `{}`: raster-cpu has no per-pixel block lookup (only `block`)", opts.merge);
-    let mesh = mesh_fn(&require(BACKEND, Slot::Geometry, &opts.geometry)?);
+    let mesh = mesh_fn(&require(PRESET, Slot::Geometry, &opts.geometry)?);
     let deferred = mr_components::parse_placement(&opts.placement)?;
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
     let (mut passes, mut index): (Vec<Pass>, HashMap<String, usize>) = (vec![], HashMap::new());
