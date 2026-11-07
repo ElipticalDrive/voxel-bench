@@ -36,6 +36,7 @@ use mr_components::draw::drawer::{DrawFrame, DrawNodes};
 use mr_components::graph::{Checked, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
+use mr_components::storage::gpu_data::Bound;
 use mr_components::visibility::discover::{Output, Settings, State, grid};
 use mr_components::{names_on, require, Slot};
 use mr_core::*;
@@ -43,8 +44,9 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GrowableBuffer, wgpu};
 use serde::Deserialize;
 
-use super::{CoreOpts, Draw, FaceSource, SourceSpec};
-use crate::Core;
+use super::{CoreOpts, Draw, SourceSpec};
+use crate::exec::{self, Cx, Node, Region};
+use crate::{Core, State as LaneState};
 
 pub(crate) const BACKEND: &str = "cpu-discover";
 
@@ -208,6 +210,26 @@ pub(crate) struct CpuSampler {
     /// The nodes of the timed stage: discovery on the CPU.
     vis_nodes: Vec<String>,
     overflowed: bool,
+    drawing: Draw,
+    /// This frame's state: what its nodes did so far, its counters and its groups.
+    frame: Frame,
+}
+
+/// What a frame's nodes share.
+#[derive(Default)]
+struct Frame {
+    stored: bool,
+    drawn: bool,
+    /// Records drawn.
+    n: u32,
+    world: Option<wgpu::BindGroup>,
+    bound: Option<Bound>,
+    out: Option<wgpu::TextureView>,
+    /// Discovery's counters and view legend; its own time (pipelined: overlapping the
+    /// previous frame's drawing).
+    counters: Vec<(String, f64)>,
+    legend: Option<Legend>,
+    discovery_ms: f32,
 }
 
 /// Wraps an angle difference into (-pi, pi].
@@ -231,7 +253,7 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
 
 impl CpuSampler {
     /// `world`: the CPU world of a pipeline compiled for one storage (else the `storage` knob's).
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<(Core, Draw, Self)> {
+    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<(Core, Self)> {
         let mut opts: Options = p.options()?;
         let storage = require(BACKEND, Slot::Storage, &opts.storage)?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
@@ -281,8 +303,10 @@ impl CpuSampler {
             bind0: None,
             vis_nodes: g.ids(&[Role::Visibility]),
             overflowed: false,
+            drawing,
+            frame: Frame::default(),
         };
-        Ok((core, drawing, s))
+        Ok((core, s))
     }
 
     /// Takes back the state from an in-flight job (discarding its result).
@@ -333,16 +357,134 @@ impl CpuSampler {
     }
 }
 
-impl FaceSource for CpuSampler {
+impl CpuSampler {
+    /// Its own knobs; `None` if `name` is not one.
+    fn set_knob(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
+        match name {
+            "tile" => self.opts.tile = int(32),
+            "algorithm" | "visibility" => match require(BACKEND, Slot::Visibility, value.as_str().unwrap_or("quadtree")) {
+                Ok(v) => self.opts.visibility = v,
+                Err(e) => return Some(Err(e)),
+            },
+            "seed_step" => self.opts.seed_step = int(16),
+            "sky" => self.opts.sky = value.as_str().unwrap_or("corners").to_string(),
+            "view" => self.opts.view = value.as_str().unwrap_or("image").to_string(),
+            "criterion" => self.opts.criterion = value.as_str().unwrap_or("plane").to_string(),
+            "sky_tile" => self.opts.sky_tile = Some(int(8)),
+            "keep_frames" => self.opts.keep_frames = int(8),
+            "max_footprint" => self.opts.max_footprint = int(4096),
+            "dilate" => self.opts.dilate = int(0),
+            "dilate_below" => self.opts.dilate_below = int(2),
+            "predict" => self.opts.predict = value.as_bool().unwrap_or(true),
+            "margin" => self.opts.margin = value.as_f64().unwrap_or(0.0) as f32,
+            "pipelined" => {
+                self.opts.pipelined = value.as_bool().unwrap_or(true);
+                if !self.opts.pipelined {
+                    self.cancel_pending();
+                }
+            }
+            "audit" => self.opts.audit = value.as_bool().unwrap_or(false),
+            _ => return None,
+        }
+        Some(Ok(()))
+    }
+
+    /// The storages' groups for the shadow rays, after the acceleration structures.
+    fn store(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        if std::mem::replace(&mut self.frame.stored, true) {
+            return;
+        }
+        self.frame.bound = Some(core.storages.prepare(&core.gpu, &core.world));
+        if self.bind0.is_none() {
+            self.bind0 = Some(self.drawing.bind(core, self.rec_buf.buffer(), self.tag_buf.buffer()));
+        }
+        if core.build_accel(enc, ticket, req) {
+            self.bind0 = Some(self.drawing.bind(core, self.rec_buf.buffer(), self.tag_buf.buffer()));
+        }
+    }
+
+    /// The drawer's passes over the frame's groups.
+    fn encode(&self, core: &Core, ticket: mr_gpu::Ticket, req: &FrameRequest, pass: impl FnOnce(&DrawFrame)) {
+        let f = &self.frame;
+        let bound = f.bound.as_ref().expect("stored");
+        let (storage_bg, more) = bound.split();
+        let binds: Vec<&wgpu::BindGroup> = [self.bind0.as_ref(), f.world.as_ref(), storage_bg].into_iter().flatten().collect();
+        let sky = super::sky_rgba(core);
+        let frame = DrawFrame {
+            out: f.out.as_ref().expect("set up"),
+            depth: &self.drawing.depth,
+            clear: wgpu::Color { r: sky[0] as f64, g: sky[1] as f64, b: sky[2] as f64, a: 1.0 },
+            prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit,
+            keep_depth: false,
+            binds: &binds,
+            more: &more,
+            mesh_verts: None,
+            ring: &core.ring,
+            ticket,
+            ts: (true, true),
+            nodes: &self.drawing.draw_nodes,
+        };
+        pass(&frame);
+    }
+
+    /// The draw node: one instanced quad per uploaded record, shaded in the fragments when
+    /// forward.
+    fn draw(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        self.store(core, enc, ticket, req);
+        if std::mem::replace(&mut self.frame.drawn, true) {
+            return;
+        }
+        let n = self.frame.n;
+        let draw = |pass: &mut wgpu::RenderPass<'_>| {
+            if n > 0 {
+                pass.draw(0..4, 0..n);
+            }
+        };
+        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_draw(enc, f, &draw, None, None));
+    }
+
+    /// The shading node: the deferred drawers' pass over the ids or records.
+    fn shade(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        self.draw(core, enc, ticket, req);
+        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_shade(&core.gpu, enc, f, false));
+    }
+}
+
+impl LaneState for CpuSampler {
     fn updating(&mut self, updates: &[WorldUpdate]) {
         self.cpu.apply(updates);
     }
 
-    fn updated(&mut self, _: &Core, _: &[IVec3]) {}
+    fn updated(&mut self, _: &Core, _: &[IVec3]) -> anyhow::Result<()> {
+        Ok(())
+    }
 
-    fn render(&mut self, core: &mut Core, drawing: &mut Draw, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        drawing.check_state(req.mode, None)?;
-        let ticket = core.ring.begin(&core.gpu, sink)?;
+    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        self.set_knob(name, value).or_else(|| self.drawing.set_param(core, name, value))
+    }
+
+    fn resize(&mut self, core: &Core) {
+        self.drawing.resize(core);
+        self.cancel_pending();
+        self.bind0 = None;
+    }
+
+    fn memory(&self, core: &Core) -> (u64, u64) {
+        let s = self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16);
+        (self.cpu.memory() + s + (core.width as u64 + 1) * (core.height as u64 + 1) * 36, self.rec_buf.size() + self.drawing.memory_bytes(core))
+    }
+}
+
+impl Region for CpuSampler {
+    fn compile(&mut self, _: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
+        self.drawing.check_state(req.mode, None)
+    }
+
+    /// Discovery on the CPU: this frame's face set (from the job launched last frame, or
+    /// discovered now), its upload (the faces' transfer), the audit and the next frame's job;
+    /// then the frame's camera and world.
+    fn setup(&mut self, core: &mut Core, req: &FrameRequest) {
         let start = Instant::now();
         let (w, h) = (core.width, core.height);
         let grid = self.cpu.snapshot();
@@ -351,9 +493,10 @@ impl FaceSource for CpuSampler {
 
         // 1. The face set for this frame: from the job launched last frame, or (first
         //    frame / not pipelined) discovered now for this exact camera.
-        let out = match self.pending.take() {
-            Some(rx) => rx.recv()?,
-            None => {
+        let out = match self.pending.take().map(|rx| rx.recv()) {
+            Some(Ok(out)) => out,
+            // The job's thread died: discover now.
+            _ => {
                 let st = self.state.take().unwrap_or_default();
                 self.pool.install(|| grid.discover(st, &c, w, h, &settings))
             }
@@ -390,7 +533,7 @@ impl FaceSource for CpuSampler {
             self.pending = Some(rx);
         }
 
-        // 5. Rasterise S.
+        // 5. The frame's camera (the views' tint) and world for drawing S.
         let view = if self.tags_valid {
             match self.opts.view.as_str() {
                 "clusters" => 1,
@@ -400,43 +543,9 @@ impl FaceSource for CpuSampler {
         } else {
             0
         };
-        drawing.write_frame(core, &c, req.mode, view, out.anchor);
-        let world_bg = core.world.prepare(&core.gpu, &c).clone();
-        let bound = core.storages.prepare(&core.gpu, &core.world);
-        let (storage_bg, more) = bound.split();
+        self.drawing.write_frame(core, &c, req.mode, view, out.anchor);
+        let world = core.world.prepare(&core.gpu, &c).clone();
         core.accum.begin(&core.gpu, &c, req.mode);
-        if self.bind0.is_none() {
-            self.bind0 = Some(drawing.bind(core, self.rec_buf.buffer(), self.tag_buf.buffer()));
-        }
-        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
-        if core.build_accel(&mut enc, ticket, req) {
-            self.bind0 = Some(drawing.bind(core, self.rec_buf.buffer(), self.tag_buf.buffer()));
-        }
-        let bind0 = self.bind0.clone().unwrap();
-        let binds: Vec<&wgpu::BindGroup> = [Some(&bind0), Some(&world_bg), storage_bg].into_iter().flatten().collect();
-        let sky = core.sky();
-        let clear = wgpu::Color { r: sky[0] as f64 / 255.0, g: sky[1] as f64 / 255.0, b: sky[2] as f64 / 255.0, a: 1.0 };
-        let out_view = core.output.create_view(&Default::default());
-        let frame = DrawFrame {
-            out: &out_view,
-            depth: &drawing.depth,
-            clear,
-            prepass: drawing.depth_prepass && req.mode == RenderMode::Lit,
-            keep_depth: false,
-            binds: &binds,
-            more: &more,
-            mesh_verts: None,
-            ring: &core.ring,
-            ticket,
-            ts: (true, true),
-            nodes: &drawing.draw_nodes,
-        };
-        let draw = |pass: &mut wgpu::RenderPass<'_>| {
-            if n > 0 {
-                pass.draw(0..4, 0..n);
-            }
-        };
-        drawing.drawer.encode(&core.gpu, &mut enc, &frame, &draw, None, None);
         let pixels = (w as f64) * (h as f64);
         let mut counters = vec![
             ("rays".into(), out.rays as f64),
@@ -472,55 +581,56 @@ impl FaceSource for CpuSampler {
             ])),
             _ => None,
         };
-        counters.extend(core.accum.counter(req.mode));
-        counters.extend(core.storages.counters());
-        // Discovery's own time (pipelined: overlapping the previous frame's drawing).
+        self.frame = Frame { n, world: Some(world), out: Some(core.output.create_view(&Default::default())), counters, legend, discovery_ms: out.ms, ..Frame::default() };
+    }
+
+    fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
+        let f = &self.frame;
         let (accel, accel_stages) = core.accel_stats();
-        counters.extend(accel);
-        let stages = [StageTime::cpu("discover", &self.vis_nodes, out.ms)].into_iter().chain(accel_stages).collect();
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
-        core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
-        core.ring.poll(&core.gpu, sink, false)
+        let counters = f.counters.iter().cloned().chain(core.accum.counter(req.mode)).chain(core.storages.counters()).chain(accel).collect();
+        let stages = [StageTime::cpu("discover", &self.vis_nodes, f.discovery_ms)].into_iter().chain(accel_stages).collect();
+        (counters, f.legend.clone(), stages)
     }
 
-    fn set_param(&mut self, _: &mut Core, _: &mut Draw, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
-        match name {
-            "tile" => self.opts.tile = int(32),
-            "algorithm" | "visibility" => match require(BACKEND, Slot::Visibility, value.as_str().unwrap_or("quadtree")) {
-                Ok(v) => self.opts.visibility = v,
-                Err(e) => return Some(Err(e)),
-            },
-            "seed_step" => self.opts.seed_step = int(16),
-            "sky" => self.opts.sky = value.as_str().unwrap_or("corners").to_string(),
-            "view" => self.opts.view = value.as_str().unwrap_or("image").to_string(),
-            "criterion" => self.opts.criterion = value.as_str().unwrap_or("plane").to_string(),
-            "sky_tile" => self.opts.sky_tile = Some(int(8)),
-            "keep_frames" => self.opts.keep_frames = int(8),
-            "max_footprint" => self.opts.max_footprint = int(4096),
-            "dilate" => self.opts.dilate = int(0),
-            "dilate_below" => self.opts.dilate_below = int(2),
-            "predict" => self.opts.predict = value.as_bool().unwrap_or(true),
-            "margin" => self.opts.margin = value.as_f64().unwrap_or(0.0) as f32,
-            "pipelined" => {
-                self.opts.pipelined = value.as_bool().unwrap_or(true);
-                if !self.opts.pipelined {
-                    self.cancel_pending();
-                }
-            }
-            "audit" => self.opts.audit = value.as_bool().unwrap_or(false),
+    fn finish(&mut self, _enc: &mut wgpu::CommandEncoder) {}
+}
+
+/// The storages the shadow rays walk (after the acceleration structures).
+struct Storage;
+/// The face drawer's draw passes.
+struct DrawFaces;
+/// The deferred drawers' shading pass.
+struct Shading;
+
+impl Node<CpuSampler> for Storage {
+    fn run(&mut self, cx: &mut Cx<CpuSampler>) {
+        cx.region.store(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+impl Node<CpuSampler> for DrawFaces {
+    fn run(&mut self, cx: &mut Cx<CpuSampler>) {
+        cx.region.draw(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+impl Node<CpuSampler> for Shading {
+    fn run(&mut self, cx: &mut Cx<CpuSampler>) {
+        cx.region.shade(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+/// The CPU discovery executor for `g`: storages, drawing and shading as nodes (discovery on
+/// the CPU and the records' upload run before them: the visibility node and its transfer).
+pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
+    let passes = exec::passes(g, |role| -> Option<Box<dyn Node<CpuSampler>>> {
+        Some(match role {
+            Role::Storage => Box::new(Storage),
+            Role::Draw => Box::new(DrawFaces),
+            Role::Shading => Box::new(Shading),
             _ => return None,
-        }
-        Some(Ok(()))
-    }
-
-    fn resize(&mut self, _: &Core, _: &Draw) {
-        self.cancel_pending();
-        self.bind0 = None;
-    }
-
-    fn memory(&self, core: &Core) -> (u64, u64) {
-        let s = self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16);
-        (self.cpu.memory() + s + (core.width as u64 + 1) * (core.height as u64 + 1) * 36, self.rec_buf.size())
-    }
+        })
+    })?;
+    let (core, region) = CpuSampler::new(p, devices, waker, g, world)?;
+    crate::run((core, exec::Nodes::new(region, passes)))
 }

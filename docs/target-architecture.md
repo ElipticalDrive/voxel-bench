@@ -222,7 +222,9 @@ and so does point splatting (the points are built on the CPU and uploaded before
 splat passes and the resolve are the visibility and shading nodes), and so does meshing's face
 drawing (the faces are meshed on the CPU and uploaded before the frame; culling, the storages,
 the meshes, the drawer's draw passes and the deferred shading pass are nodes; a forward drawer
-shades in its draw pass). The discovery sources still run as the faces lane.
+shades in its draw pass), and so does CPU discovery's (the discovery on the CPU and the records'
+upload run before the frame; the storages, the draw passes and the deferred shading pass are
+nodes). GPU discovery still runs as the faces lane.
 Step 4 has begun: for the node executors, `accept` is the validity rules plus the nodes each
 executor declares it builds, and the editor edits their graphs exactly, drafts included; the
 skeleton (and the editor's filling in and pruning) remains for the other back ends.

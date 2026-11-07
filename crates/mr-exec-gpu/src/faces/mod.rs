@@ -8,13 +8,13 @@
 //! - `gpu-discover`: discovery on the GPU ([`gpu`]): the sampler (`visibility` quadtree, with
 //!   hole detection `holes = coverage`) finds the faces the camera sees and keeps them in a
 //!   GPU hash set;
-//! - `cpu-discover`: discovery on the CPU ([`cpu`]): the sampler (quadtree or cluster) over a
+//! - `cpu-discover`: discovery on the CPU ([`cpu`], on the node executor): the sampler (quadtree or cluster) over a
 //!   CPU storage, its face records uploaded to the GPU, a frame ahead when the drawer's faces
 //!   arrive `prev`.
 //!
 //! Which source runs is the graph's: meshing when the drawer's faces come from the `faces`
-//! visibility (every meshed face), else discovery on the visibility node's device (the faces
-//! lane, [`Faces`]). The drawing ([`Draw`]) is every source's, over the executor's core: the
+//! visibility (every meshed face), else discovery on the visibility node's device (on the GPU
+//! the faces lane, [`Faces`]; on the CPU a region). The drawing ([`Draw`]) is every source's, over the executor's core: the
 //! face drawer compiled over the shared frame (the core's group 0: its camera uniform, shading
 //! state, acceleration structures; the source's two buffers at the lane's bindings) and the
 //! source's WGSL, the depth buffer.
@@ -44,7 +44,7 @@ pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Wa
     }
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{backend}: no visibility node"))?;
     match g.devices[vis] {
-        Device::Cpu => run(cpu::CpuSampler::new(p, devices, waker, g, cpu_world)?),
+        Device::Cpu => cpu::create(p, devices, waker, g, cpu_world),
         Device::Gpu(_) => run(gpu::GpuSampler::new(p, devices, waker, g)?),
         Device::Server => unreachable!("checked graphs run only the world on the server"),
     }
@@ -383,7 +383,7 @@ impl Draw {
     }
 }
 
-/// A discovery face source: what feeds the drawer's faces, on its device (a sampler).
+/// A discovery face source on the faces lane: what feeds the drawer's faces (the GPU sampler).
 trait FaceSource {
     /// World changes before the GPU world applies them (the CPU world, event areas).
     fn updating(&mut self, updates: &[WorldUpdate]);
