@@ -151,18 +151,6 @@ impl Graph {
         g
     }
 
-    /// The graph without the devices that only repeat where its executor runs a node, so
-    /// another preset its shape names places them.
-    pub fn unpinned(&self) -> Graph {
-        let mut g = self.clone();
-        for n in g.nodes.values_mut() {
-            if n.device == Some(default_device(&self.executor, n.role, &n.component)) {
-                n.device = None;
-            }
-        }
-        g
-    }
-
     /// The graph with the edge timings its knobs spell set (`TIMING_KNOBS`: cpu-discover's
     /// `pipelined = false` makes the drawer's faces arrive `now`). Knobs not given keep the
     /// graph's timing.

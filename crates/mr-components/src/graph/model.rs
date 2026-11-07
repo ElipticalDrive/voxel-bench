@@ -326,6 +326,10 @@ pub(super) fn faces_timing(executor: &str, holes: bool) -> Option<When> {
 /// then overlap; `device_blocker` says why not on one GPU).
 pub(super) const FREE_TIMINGS: &[(&str, Role, &str, &[When])] = &[
     ("cpu-discover", Role::Draw, "faces", &[When::Now, When::Prev]),
+    // Hole detection closes a cycle through the drawer, which draws twice a frame, and reads
+    // the last frame's sky mask.
+    ("gpu-discover", Role::Draw, "faces", &[When::Now, When::Iterate(2)]),
+    ("gpu-discover", Role::Holes, "sky", &[When::Prev]),
     ("gpu-compute", Role::Shading, "hits", &[When::Now, When::Prev]),
     ("gpu-rt", Role::Shading, "hits", &[When::Now, When::Prev]),
 ];

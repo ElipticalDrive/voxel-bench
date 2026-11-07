@@ -1,6 +1,7 @@
-//! Acceptance by back ends: the skeleton, site bindings, device and API blockers.
+//! Acceptance by the executors (validity, timings, declarations, device and API blockers)
+//! and the nearest flat composition (the skeleton).
 
-use crate::{Api, Composition, Kind, Slot, backend, component};
+use crate::{Api, Composition, Slot, backend};
 
 use super::*;
 
@@ -41,7 +42,7 @@ impl Graph {
         let lead = g.lead();
         let lead_storage = lead.as_ref().and_then(|(c, p)| g.nodes[c].inputs.get(*p)).and_then(|k| g.walked(k)).map(String::from);
         for (caster, port, _) in g.sites() {
-            if lead.as_ref().is_some_and(|(c, p)| *c == caster && *p == port) || site_binding(&g.executor, g.nodes[&caster].role, port) == Bind::Lead {
+            if lead.as_ref().is_some_and(|(c, p)| *c == caster && *p == port) || follows_lead(&g.executor, g.nodes[&caster].role, port) {
                 continue;
             }
             let n = g.nodes.get_mut(&caster).unwrap();
@@ -54,139 +55,38 @@ impl Graph {
         g.pruned()
     }
 
-    /// Why a site bound away from the lead cannot run on this back end, if it can't.
-    fn site_blocker(&self, ck: &Checked) -> Option<String> {
-        let g = &ck.graph;
-        let b = backend(&g.executor)?;
-        let lead = g.lead();
-        let lead_kernel = lead.as_ref().and_then(|(c, p)| g.nodes[c].inputs.get(*p)).cloned();
-        let lead_storage = lead_kernel.as_deref().and_then(|k| g.walked(k)).map(String::from);
-        let mut why = Vec::new();
-        for (caster, port, src) in g.sites() {
-            if lead.as_ref().is_some_and(|(c, p)| *c == caster && *p == port) {
-                continue;
-            }
-            let role = g.nodes[&caster].role;
-            let at = format!("`{caster}`.{port}");
-            match site_binding(&g.executor, role, port) {
-                Bind::Lead if port == "exposure" => {
-                    if Some(&src) != lead_storage.as_ref() {
-                        why.push(format!("{at}: `{}` reads exposure from the storage its rays walk (`{}`)", g.executor, lead_storage.as_deref().unwrap_or("-")));
-                    }
-                }
-                Bind::Lead => {
-                    if Some(&src) != lead_kernel.as_ref() {
-                        why.push(format!("{at}: `{}` casts these rays through its {} kernel (`{}`)", g.executor, lead.as_ref().map_or("own", |l| l.1), lead_kernel.as_deref().unwrap_or("-")));
-                    }
-                }
-                bind => {
-                    // On the GPU, any GPU implementation (the GPU executor compiles walks into
-                    // any of its regions and builds ray queries' acceleration structures). Else
-                    // secondary rays run where the back end runs its shadow stages, the others
-                    // with its storage and kernel.
-                    let secondary = matches!(role, Role::Shading | Role::Meshes);
-                    let need = |slot: Slot, id: &str| {
-                        let comp = &g.nodes[id].component;
-                        if ck.devices[id].kind() == Kind::Gpu && slot != Slot::Geometry {
-                            let c = component(slot, comp)?;
-                            return (!c.impls.iter().any(|i| i.kind == Kind::Gpu)).then(|| format!("{at} → `{id}`: `{comp}` has no GPU implementation (has: {})", c.impls_label()));
-                        }
-                        let at_slot = match slot {
-                            Slot::Storage if secondary => Slot::ShadowStorage,
-                            Slot::Traversal if secondary => Slot::ShadowTraversal,
-                            s => s,
-                        };
-                        crate::unimplemented_at(&b.place(at_slot), slot, comp).map(|w| format!("{at} → `{id}`: {w}"))
-                    };
-                    if port == "exposure" {
-                        why.extend(need(Slot::Storage, &src));
-                        continue;
-                    }
-                    why.extend(need(Slot::Traversal, &src));
-                    // Ray queries trace acceleration structures the GPU executor builds on the
-                    // CPU from a geometry node (one per pipeline), not in the face drawer's
-                    // mesh pipelines.
-                    let query = g.walked(&src).filter(|w| g.nodes[*w].role == Role::Geometry);
-                    if let Some(geo) = query {
-                        let name = &g.nodes[geo].component;
-                        if crate::geometry::rt(name).is_none() {
-                            why.push(format!("{at} → `{geo}`: geometry `{name}` builds no acceleration structure for ray queries (have: greedy, naive, boxes)"));
-                        }
-                        if ck.devices[geo] != Device::Cpu {
-                            why.push(format!("{at} → `{geo}`: acceleration structures are built from geometry meshed on the CPU (here: {})", ck.devices[geo]));
-                        }
-                        if role == Role::Meshes && b.has(Slot::Draw) {
-                            why.push(format!("{at}: `{}` lights meshes through walks (its mesh pipelines have no ray queries)", g.executor));
-                        }
-                        let other = g.sites().into_iter().find_map(|(_, _, k)| g.walked(&k).filter(|w| g.nodes[*w].role == Role::Geometry && *w != geo).map(String::from));
-                        if let Some(o) = other {
-                            why.push(format!("{at}: ray queries over two geometry nodes (`{geo}`, `{o}`): one acceleration structure per pipeline"));
-                        }
-                        continue;
-                    }
-                    if let Some(st) = g.walked(&src) {
-                        if let Some(slot) = g.nodes[st].role.slot() {
-                            why.extend(need(slot, st));
-                        }
-                        if bind == Bind::SameStorage && Some(st) != lead_storage.as_deref() {
-                            why.push(format!("{at}: `{}` walks these rays over the storage of its {} rays (`{}`; another storage needs a pipeline compiled for it)", g.executor, lead.as_ref().map_or("own", |l| l.1), lead_storage.as_deref().unwrap_or("-")));
-                        }
-                    }
-                }
-            }
-        }
-        // Back ends that cast shadow rays through a kernel need one bound.
-        if b.has(Slot::Traversal)
-            && let Some(n) = g.nodes.values().find(|n| n.role == Role::Shading)
-            && !n.inputs.contains_key("shadow") {
-            why.push(format!("shading `{}`: input `shadow` (shadow rays) is not bound, and `{}` has no rays of its own on the shading's device", n.component, g.executor));
-        }
-        (!why.is_empty()).then(|| why.join("; "))
-    }
-
-    /// The flat composition of the graph's skeleton (everything but its free sites), and
-    /// whether it is exactly the graph (else the graph is run as such: the composition is
-    /// the nearest, for labels and the flat options). Fails with the reasons if the back end
-    /// cannot run the graph. A node executor runs any valid graph whose nodes it declares
-    /// ([`Checked::builder`]); a back end with its own frame loop runs the graphs of its
-    /// compositions (the skeleton must be one).
+    /// Whether the graph's executor builds it (`Graph::check`, its timings, the nodes it
+    /// declares: [`Checked::builder`], its GPUs and APIs), with the nearest flat composition
+    /// (its skeleton's, else the back end's default; for labels and the flat options) and
+    /// whether that composition is exactly the graph. Fails with the reason.
     pub fn accept(&self) -> Result<(Composition, bool), String> {
         let placed = self.placed();
         if placed.executor != self.executor {
             return placed.accept();
         }
         let ck = self.check()?;
-        let nodes = ck.builder().is_some();
-        // Timings a back end lets the graph choose; the others must be its composition's (a
-        // node executor's: every edge now).
+        // Timings an executor lets the graph choose; every other edge runs now.
         let free = |n: &Node, p: &str| FREE_TIMINGS.iter().find(|(e, r, port, _)| *e == self.executor && *r == n.role && *port == p).map(|f| f.3);
         for (id, n) in &ck.graph.nodes {
-            for (p, w) in &n.timing {
-                if let Some(ok) = free(n, p).or(nodes.then_some(&[When::Now])).filter(|ok| !ok.contains(w)) {
+            for p in n.inputs.keys() {
+                let w = &n.when(p);
+                if let Some(ok) = free(n, p).or(Some(&[When::Now])).filter(|ok| !ok.contains(w)) {
                     return Err(format!("`{id}`.{p}: `{}` runs this edge {}, not {}", self.executor, ok.iter().map(|w| w.label()).collect::<Vec<_>>().join(" or "), w.label()));
                 }
             }
         }
         ck.built()?;
-        let sites = if nodes { None } else { self.site_blocker(&ck) };
-        if let Some(why) = sites.or_else(|| device_blocker(&ck)) {
+        if let Some(why) = device_blocker(&ck) {
             return Err(why);
         }
-        let skel = ck.graph.skeleton();
-        let mut c = match skel.skeleton_composition() {
-            Ok(c) => c,
-            // The nearest of a shape no composition has: the back end's default.
-            Err(_) if nodes => {
-                let mut c = Composition::new(&self.executor);
-                c.fill_defaults();
-                c
-            }
-            Err(e) => return Err(e),
-        };
+        let mut c = ck.graph.skeleton().skeleton_composition().unwrap_or_else(|_| {
+            let mut c = Composition::new(&self.executor);
+            c.fill_defaults();
+            c
+        });
         // Without knobs and APIs (the composition has neither; `cpu` reads its API as `isa`)
-        // and free timings (its knobs: see `TIMING_KNOBS`); `all` makes every timed edge
-        // `prev` (the graphs' shapes compared, whatever their timings).
-        let strip_with = |g: &Graph, all: bool| {
+        // and with free timings as `prev` (their knobs: see `TIMING_KNOBS`).
+        let strip = |g: &Graph| {
             let mut g = g.clone();
             g.nodes.values_mut().for_each(|n| {
                 n.knobs.clear();
@@ -202,31 +102,15 @@ impl Graph {
                     _ => {}
                 }
                 let role = n.role;
-                n.timing.retain(|p, _| all || !FREE_TIMINGS.iter().any(|(e, r, port, _)| *e == self.executor && *r == role && port == p));
-                if all {
-                    n.timing.values_mut().for_each(|w| *w = When::Prev);
+                // A free timing compares as `prev` (whichever it is; a cycle stays closed).
+                for (_, _, port, _) in FREE_TIMINGS.iter().filter(|(e, r, _, _)| *e == self.executor && *r == role) {
+                    if n.inputs.contains_key(*port) {
+                        n.timing.insert(port.to_string(), When::Prev);
+                    }
                 }
             });
             g.canonical()
         };
-        let strip = |g: &Graph| strip_with(g, false);
-        // The shape on one GPU: which GPU each node runs on is `device_blocker`'s.
-        let one_gpu = |g: &Graph| {
-            let mut g = g.clone();
-            g.nodes.values_mut().filter(|n| matches!(n.device, Some(Device::Gpu(_)))).for_each(|n| n.device = Some(Device::Gpu(0)));
-            g
-        };
-        let expected = Graph::from_composition(&c)?;
-        if !nodes && strip(&expected.skeleton())? != strip(&one_gpu(&skel))? {
-            if strip_with(&expected.skeleton(), true)? == strip_with(&one_gpu(&skel), true)? {
-                let timed = |g: &Graph| {
-                    let v: Vec<String> = g.nodes.iter().flat_map(|(id, n)| n.timing.iter().map(move |(p, w)| format!("`{id}`.{p} {}", w.label()))).collect();
-                    if v.is_empty() { "every edge now".to_string() } else { v.join(", ") }
-                };
-                return Err(format!("`{}` runs `{}` with {} (here: {})", self.executor, c.label(), timed(&expected), timed(&ck.graph)));
-            }
-            return Err(format!("`{}` cannot run this graph; the nearest it runs is `{}`", self.executor, c.label()));
-        }
         // The secondary-ray stages where the composition has them.
         let b = backend(&self.executor).unwrap();
         let g = &ck.graph;
@@ -416,25 +300,18 @@ pub fn of_init(backend: &str, p: &mr_core::InitParams) -> anyhow::Result<Checked
     g.check().map_err(anyhow::Error::msg)
 }
 
-/// How a back end binds a site that is not its lead.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-enum Bind {
-    /// Any kernel and storage implemented where the rays run.
-    Free,
-    /// Its own kernel over the lead's storage (the `cpu` back end's precompiled build: one
-    /// storage type per instance).
-    SameStorage,
-    /// The lead's kernel (or for exposure tests, the lead kernel's storage).
-    Lead,
-}
-
-/// How back end `executor` binds the `port` site of its `role` node.
-fn site_binding(executor: &str, role: Role, port: &str) -> Bind {
-    match (executor, role, port) {
-        ("gpu-compute", Role::Shading | Role::Meshes, _) | ("gpu-rt", Role::Shading, _) => Bind::Free,
-        ("gpu-raster" | "gpu-splat", Role::Shading, "bounce") | ("gpu-raster", Role::Meshes, "shadow") => Bind::Free,
-        ("gpu-discover", Role::Visibility, "exposure") | ("gpu-discover" | "cpu-discover", Role::Shading, _) => Bind::Free,
-        ("cpu", Role::Shading, "shadow") => Bind::SameStorage,
-        _ => Bind::Lead,
-    }
+/// Whether back end `executor`'s composition casts the `port` site of its `role` node
+/// through its lead kernel (or for exposure tests, reads the lead kernel's storage), so the
+/// skeleton rebinds it there; the other sites are the graph's own.
+fn follows_lead(executor: &str, role: Role, port: &str) -> bool {
+    !matches!(
+        (executor, role, port),
+        ("gpu-compute", Role::Shading | Role::Meshes, _)
+            | ("gpu-rt", Role::Shading, _)
+            | ("gpu-raster" | "gpu-splat", Role::Shading, "bounce")
+            | ("gpu-raster", Role::Meshes, "shadow")
+            | ("gpu-discover", Role::Visibility, "exposure")
+            | ("gpu-discover" | "cpu-discover", Role::Shading, _)
+            | ("cpu", Role::Shading, "shadow")
+    )
 }

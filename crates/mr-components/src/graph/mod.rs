@@ -17,13 +17,11 @@
 //!
 //! The model, validation with reasons, a canonical form (hashable: the cache key),
 //! and the conversion from today's flat [`Composition`](crate::Composition)s (so every stored record loads as a
-//! graph). Back ends consume graphs ([`of_init`], [`Checked::site`]). Each back end
-//! has a *lead* site (its strategy's own rays, or a rasteriser's shadow rays: the storage
-//! and traversal stages of its compositions) and binds its other sites freely, over the
-//! lead's storage only, or only to the lead ([`site_binding`]). [`Graph::accept`] checks
-//! the free sites' components are implemented where their rays run and that the rest (the
-//! skeleton) is one of the back end's compositions; it returns that composition and whether
-//! it is exactly the graph.
+//! graph). Back ends consume graphs ([`of_init`], [`Checked::site`]). Each executor declares
+//! the nodes it builds ([`Builds`]); [`Graph::accept`] takes a valid graph whose nodes its
+//! executor declares and returns the nearest flat composition (its *skeleton's*: the graph
+//! with the sites a composition casts through its lead kernel rebound there) and whether that
+//! composition is exactly the graph.
 
 mod accept;
 mod builds;
@@ -342,7 +340,7 @@ mod tests {
         })
         .validate()
         .unwrap_err();
-        assert!(e.contains("reads exposure from the storage its rays walk"), "{e}");
+        assert!(e.contains("`cpu-discover` builds 1 storage node on cpu (here: `storage`, `x`)"), "{e}");
         assert!(with(Composition { shading: "pathtrace".into(), ..cd }, &|g| own(g, "b", "rows", "rowrun", &[("shading", "bounce")])).validate().is_ok());
         // cpu: the shadow kernel of its own over the primary storage, not another storage.
         let cpu = Composition::new("cpu");
@@ -723,7 +721,8 @@ mod tests {
         let mut g = of("gpu-raster");
         rq(&mut g, "geo2", "rq");
         g.nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), "rq".into());
-        assert!(g.validate().unwrap_err().contains("its mesh pipelines have no ray queries"));
+        let e = g.validate().unwrap_err();
+        assert!(e.contains("`meshes`.shadow → `rq`: `gpu-raster` reads `refloor`, `incremental`, `sphere`, `rowrun` here, not `rayquery`"), "{e}");
         let mut g = of("gpu-compute");
         g.nodes.insert("st".into(), Node::new(Role::Storage, "palette"));
         g.nodes.insert("wk".into(), Node::new(Role::Traversal, "refloor").with(&[("storage", "st")]));
@@ -739,7 +738,7 @@ mod tests {
         g.nodes.get_mut("shading").unwrap().inputs.remove("shadow");
         g.nodes.retain(|k, _| !k.starts_with("shadow."));
         let e = g.validate().unwrap_err();
-        assert!(e.contains("input `shadow`"), "{e}");
+        assert!(e.contains("builds at least 1 traversal node on gpu (here: none)"), "{e}");
     }
 
     /// Edge timings. Hole detection is a loop through the drawer (it draws last
@@ -779,10 +778,10 @@ mod tests {
         g.nodes.get_mut("draw").unwrap().timing.clear();
         let e = g.check().unwrap_err();
         assert!(e.contains("cycle through") && e.contains("`prev`"), "{e}");
-        // Faces a frame late instead of the loop: a valid graph gpu-discover does not run.
+        // Faces a frame late instead of the loop: a valid graph gpu-discover does not build.
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
         let e = g.validate().unwrap_err();
-        assert!(e.contains("runs `gpu-discover: bricks + quadtree + coverage` with") && e.contains("iterate 2"), "{e}");
+        assert!(e.contains("`draw`.faces: `gpu-discover` runs this edge now or iterate 2, not prev"), "{e}");
         let mut g = base.clone();
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Iterate(2));
         let e = g.check().unwrap_err();

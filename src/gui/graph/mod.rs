@@ -76,13 +76,10 @@ fn choices(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, selected: &s
                             pick = Some(spec);
                         }
                     }
-                    Err(why) if trial.free() => {
+                    Err(why) => {
                         if ui.add(egui::Button::selectable(false, RichText::new(format!("{text}  ✱")).color(DRAFT))).on_hover_text(format!("{hover}\n\nDoes not run: {why}\nPick it anyway to keep editing (a draft; the renderer keeps its last graph)")).clicked() {
                             trial.make_draft(&change, infos);
                         }
-                    }
-                    Err(why) => {
-                        ui.add_enabled(false, egui::Button::selectable(false, &text)).on_disabled_hover_text(format!("{hover}\n\nCannot run: {why}"));
                     }
                 }
             }
@@ -222,8 +219,7 @@ fn node_grid<'l>(ui: &mut Ui, salt: &str, g: &Graph, id: Option<&str>, knobs: &[
                     trial.drop_draft();
                     edits.push(Edit::Spec(s));
                 }
-                Err(_) if trial.free() => trial.make_draft(&change, infos),
-                Err(e) => tracing::warn!("{name}: {e}"),
+                Err(_) => trial.make_draft(&change, infos),
             }
         }
     }
@@ -461,20 +457,17 @@ fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, Para
         if !model::world_side(n.role) && n.role != Role::Post {
             let change = Change::Remove(id.clone());
             let (b, tip) = match trial.try_change(&change, infos) {
-                Ok((_, s)) => (Some(Ok(s)), "Remove this node; the inputs reading it are unbound".to_string()),
-                Err(why) if trial.free() => (Some(Err(())), format!("Remove this node; the inputs reading it are unbound.\nDoes not run then: {why}\nRemove it anyway (a draft; the renderer keeps its last graph)")),
-                Err(why) => (None, format!("Cannot run without it: {why}")),
+                Ok((_, s)) => (Some(s), "Remove this node; the inputs reading it are unbound".to_string()),
+                Err(why) => (None, format!("Remove this node; the inputs reading it are unbound.\nDoes not run then: {why}\nRemove it anyway (a draft; the renderer keeps its last graph)")),
             };
-            let text = if matches!(b, Some(Err(_))) { RichText::new("🗑 remove ✱").color(DRAFT) } else { RichText::new("🗑 remove") };
-            let r = ui.add_enabled(b.is_some(), egui::Button::new(text).small());
-            if r.on_hover_text(&tip).on_disabled_hover_text(&tip).clicked() {
+            let text = if b.is_none() { RichText::new("🗑 remove ✱").color(DRAFT) } else { RichText::new("🗑 remove") };
+            if ui.add(egui::Button::new(text).small()).on_hover_text(&tip).clicked() {
                 match b {
-                    Some(Ok(s)) => {
+                    Some(s) => {
                         trial.drop_draft();
                         edits.push(Edit::Spec(s));
                     }
-                    Some(Err(())) => trial.make_draft(&change, infos),
-                    None => {}
+                    None => trial.make_draft(&change, infos),
                 }
                 win.selected = None;
             }

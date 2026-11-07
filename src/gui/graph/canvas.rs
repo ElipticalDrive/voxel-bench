@@ -322,13 +322,10 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
                 } else if n.inputs.get(&port) == Some(&src) {
                     Err("already bound there".into())
                 } else {
-                    // Dropping it where it does not run makes a draft on a graph edited freely.
+                    // Dropping it where it does not run makes a draft.
                     let change = Change::Bind(id.clone(), port.clone(), Target::Node(src.clone()));
-                    match trial.try_change(&change, infos) {
-                        Ok((_, spec)) => Ok((change, Ok(spec))),
-                        Err(e) if trial.free() => Ok((change, Err(e))),
-                        Err(e) => Err(e),
-                    }
+                    let r = trial.try_change(&change, infos).map(|(_, spec)| spec);
+                    Ok((change, r))
                 });
             }
             let color = match &verdict {

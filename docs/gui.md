@@ -107,14 +107,13 @@ and a double click on the background fits it again (with **auto-frame** on, so d
 releasing a dragged node). Undo and redo are available, and
 "start from…" loads a back end's default pipeline.
 
-Every choice is tried before it is offered. If the resulting graph cannot run, the choice is
-greyed out, and hovering over it gives the reason. A choice that moves the graph to another
-back end says so (`➡ gpu-discover`). When a new component needs inputs, they are filled in
-from a back end's default pipeline that has that component. Nodes that no longer reach the
-image are dropped, so the graph always runs. In the live session an edit applies in place
+Every choice is tried before it is offered. A change is made exactly as picked: a new node comes
+unbound, nothing is filled in and nothing is dropped. If the resulting graph cannot run, the
+choice is orange with ✱ and hovering over it gives the reason; picking it anyway makes a draft
+(shown with the reason, while the renderer keeps its last graph) to edit on from. A choice that
+moves the graph to another back end says so (`➡ gpu-discover`). In the live session an edit applies in place
 when the back end can change that knob live, and otherwise as a hot swap. Trying the choices is cheap: every
-choice the editor lists on every preset (1,100) is answered in 0.26 ms each (930 run, 170
-refused with genuine reasons).
+choice the editor lists on every preset (1,110) is answered in 0.07 ms each.
 
 ## Knobs and hot swaps
 

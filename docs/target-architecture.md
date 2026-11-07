@@ -172,7 +172,7 @@ compared against anything; their slowness is their own.
 |---|---|
 | Back end = device + API | Back ends are ten named executors, each a family of graph shapes (`gpu-compute`, `gpu-raster`, `gpu-rt`, `gpu-discover`, `gpu-splat`, `gpu-voxelspace`, `cpu`, `cpu-raster`, `cpu-discover`, `cpu-voxelspace`) derived from the graph. |
 | One generic executor per device walking the schedule | Two executor crates (GPU, CPU) pick a hard-coded *lane* from the visibility component: raycast, faces, splat, columns, discovery. Each lane fixes its own pass order, buffers and bind groups. |
-| Validity = types, cycles, implementations, composable regions | `Graph::check` applies rules 1–3 (types, cycles, an implementation on each node's device kind and API). The node executors (`cpu`, `cpu-raster`, `cpu-voxelspace`, `gpu-compute`, `gpu-rt`) declare the nodes they build (`graph::Builds`: per role the components, the device kind and how many; inputs read as one node), and `Graph::accept` takes their graphs exactly when they are valid and declared (plus the edge timings and the two-GPU split they run); the flat `Composition` is then only the nearest one, for labels and flat options. For the other back ends `accept` still reduces the graph to a flat `Composition` skeleton and checks it against what their lane runs. |
+| Validity = types, cycles, implementations, composable regions | `Graph::check` applies rules 1–3 (types, cycles, an implementation on each node's device kind and API). Every executor declares the nodes it builds (`graph::Builds`: per role and device kind the components and how many; inputs read as one node; what it reads from some inputs), and `Graph::accept` takes a graph exactly when it is valid and declared (plus the edge timings and the two-GPU split it runs); the flat `Composition` is only the nearest one, for labels and flat options. |
 | Editor allows any edge | On a graph a node executor runs, the editor makes every change exactly (a new node comes unbound, a node can be removed, nothing is filled in or pruned); a graph that does not run is kept as a draft, shown with the reason, while the renderer keeps its last graph. On the other back ends it offers only choices whose resulting graph a lane accepts, fills inputs from presets, and drops nodes that no longer reach the image. |
 | Graph-driven program generator | `src/pipelines.rs` generates specialised crates, per lane. |
 
@@ -231,9 +231,9 @@ sky mask, the diagnostic overlay, the audit and the counters' readback follow th
 Step 3 is done on the GPU too: every GPU pipeline runs as a region and its nodes on the
 generic executor, which owns the renderer interface itself (world changes, knobs, resizes,
 memory, frames); the GPU lane interface is gone.
-Step 4 has begun: for the node executors, `accept` is the validity rules plus the nodes each
-executor declares it builds, and the editor edits their graphs exactly, drafts included; the
-skeleton (and the editor's filling in and pruning) remains for the other back ends.
+Step 4 has begun: `accept` is the validity rules plus the nodes each executor declares it
+builds, for every back end, and the editor edits graphs exactly, drafts included (no filling in
+or pruning). The ten back-end names remain (as executors and in compositions) until retired.
 
 ## Non-goals
 

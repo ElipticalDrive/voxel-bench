@@ -37,23 +37,52 @@ pub struct Same {
     pub b: (Role, &'static [&'static str]),
 }
 
-/// What an executor builds: its nodes, and the inputs that must be one node.
+/// What an executor reads from an input: on every node of `role` (of one of `of`, or any), the
+/// node bound to `port` is one of `components`; `bound`: it must be bound (the executor has no
+/// default for it).
+#[derive(Copy, Clone, Debug)]
+pub struct Only {
+    pub role: Role,
+    pub of: &'static [&'static str],
+    pub port: &'static str,
+    pub components: &'static [&'static str],
+    pub bound: bool,
+}
+
+/// What an executor builds: its nodes, the inputs that must be one node and what it reads
+/// from some inputs.
 #[derive(Copy, Clone, Debug)]
 pub struct Builds {
     pub nodes: &'static [Build],
     pub same: &'static [Same],
+    pub only: &'static [Only],
 }
+
+/// The GPU storages and walking kernels, the geometries ray queries trace, the face drawers.
+const GPU_STORAGES: &[&str] = &["bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap"];
+const GPU_WALKS: &[&str] = &["refloor", "incremental", "sphere", "rowrun"];
+const GPU_KERNELS: &[&str] = &["refloor", "incremental", "sphere", "rowrun", "rayquery"];
+const RT_GEOMETRY: &[&str] = &["greedy", "naive", "boxes"];
+const DRAWERS: &[&str] = &["raster", "visbuffer", "gbuffer"];
+const CPU_STORAGES: &[&str] = &["bricks", "u8", "bits", "hier", "prefix", "palette", "brickmajor", "morton"];
+
+/// Ray queries trace an acceleration structure built from one of `RT_GEOMETRY`.
+const RT: Only = Only { role: Role::Traversal, of: &["rayquery"], port: "geometry", components: RT_GEOMETRY, bound: false };
+/// The shading's shadow rays, walked (`bound`: the executor casts no rays of its own there).
+const SHADOW_WALKED: Only = Only { role: Role::Shading, of: &[], port: "shadow", components: GPU_WALKS, bound: true };
+const SHADOW_BOUND: Only = Only { role: Role::Shading, of: &[], port: "shadow", components: GPU_KERNELS, bound: true };
 
 /// `cpu` ray casting: one storage (one monomorphised instance; the shadow rays walk it too),
 /// its primary and shadow kernels, the ray caster and the shading.
 pub const CPU_RAYCAST: Builds = Builds {
     nodes: &[
-        Build::one(Role::Storage, &["bricks", "u8", "bits", "hier", "prefix", "palette", "brickmajor", "morton"], Kind::Cpu),
+        Build::one(Role::Storage, CPU_STORAGES, Kind::Cpu),
         Build::one(Role::Traversal, &["refloor", "incremental"], Kind::Cpu).count(1, 2),
         Build::one(Role::Visibility, &["raycast"], Kind::Cpu),
         Build::one(Role::Shading, &["direct"], Kind::Cpu),
     ],
     same: &[],
+    only: &[],
 };
 
 /// `cpu-raster`: the geometry's quads, their culling, the rasteriser and the shading.
@@ -65,6 +94,7 @@ pub const CPU_RASTER: Builds = Builds {
         Build::one(Role::Shading, &["direct"], Kind::Cpu),
     ],
     same: &[],
+    only: &[],
 };
 
 /// `cpu-voxelspace`: the heightmap, the column march and the shading.
@@ -75,6 +105,7 @@ pub const CPU_COLUMNS: Builds = Builds {
         Build::one(Role::Shading, &["direct"], Kind::Cpu),
     ],
     same: &[],
+    only: &[],
 };
 
 /// The GPU walk (`gpu-compute`): a storage and kernel per walk (primary, shadow, bounce and
@@ -83,15 +114,16 @@ pub const CPU_COLUMNS: Builds = Builds {
 /// shading (on this GPU or another).
 pub const GPU_WALK: Builds = Builds {
     nodes: &[
-        Build::one(Role::Storage, &["bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap"], Kind::Gpu).count(0, 4),
-        Build::one(Role::Traversal, &["refloor", "incremental", "sphere", "rowrun", "rayquery"], Kind::Gpu).count(1, 4),
-        Build::one(Role::Geometry, &["greedy", "naive", "boxes"], Kind::Cpu).count(0, 1),
+        Build::one(Role::Storage, GPU_STORAGES, Kind::Gpu).count(0, 4),
+        Build::one(Role::Traversal, GPU_KERNELS, Kind::Gpu).count(1, 4),
+        Build::one(Role::Geometry, RT_GEOMETRY, Kind::Cpu).count(0, 1),
         Build::one(Role::Meshes, &["composite"], Kind::Gpu).count(0, 1),
         Build::one(Role::Prepass, &["beam"], Kind::Gpu).count(0, 1),
         Build::one(Role::Visibility, &["raycast"], Kind::Gpu),
         Build::one(Role::Shading, &["direct", "pathtrace"], Kind::Gpu),
     ],
     same: &[Same { a: (Role::Prepass, &["storage"]), b: (Role::Visibility, &["primary", "storage"]) }],
+    only: &[],
 };
 
 /// GPU ray queries (`gpu-rt`): the geometry of the acceleration structures (on the CPU), the
@@ -99,13 +131,102 @@ pub const GPU_WALK: Builds = Builds {
 /// and the shading (on this GPU or another). No meshes and no prepass.
 pub const GPU_RAYQUERY: Builds = Builds {
     nodes: &[
-        Build::one(Role::Geometry, &["greedy", "naive", "boxes"], Kind::Cpu),
-        Build::one(Role::Storage, &["bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap"], Kind::Gpu).count(0, 2),
-        Build::one(Role::Traversal, &["refloor", "incremental", "sphere", "rowrun", "rayquery"], Kind::Gpu).count(1, 3),
+        Build::one(Role::Geometry, RT_GEOMETRY, Kind::Cpu),
+        Build::one(Role::Storage, GPU_STORAGES, Kind::Gpu).count(0, 2),
+        Build::one(Role::Traversal, GPU_KERNELS, Kind::Gpu).count(1, 3),
         Build::one(Role::Visibility, &["raycast"], Kind::Gpu),
         Build::one(Role::Shading, &["direct", "pathtrace"], Kind::Gpu),
     ],
     same: &[],
+    only: &[],
+};
+
+/// Faces with the meshing source (`gpu-raster`): the geometry the drawer draws (and one for
+/// ray-queried bounce rays), its culling, the drawer, meshes into the depth buffer lit through
+/// walks, and the shading, whose shadow rays (and the meshes') are walks.
+pub const GPU_MESHING: Builds = Builds {
+    nodes: &[
+        Build::one(Role::Geometry, &["greedy", "naive", "cubes", "boxes"], Kind::Cpu).count(1, 2),
+        Build::one(Role::Visibility, &["faces"], Kind::Gpu),
+        Build::one(Role::Draw, DRAWERS, Kind::Gpu),
+        Build::one(Role::Meshes, &["depth"], Kind::Gpu).count(0, 1),
+        Build::one(Role::Storage, GPU_STORAGES, Kind::Gpu).count(1, 3),
+        Build::one(Role::Traversal, GPU_KERNELS, Kind::Gpu).count(1, 3),
+        Build::one(Role::Shading, &["direct", "pathtrace"], Kind::Gpu),
+    ],
+    same: &[],
+    only: &[
+        Only { role: Role::Visibility, of: &[], port: "faces", components: &["greedy", "naive", "cubes"], bound: true },
+        Only { role: Role::Draw, of: &[], port: "faces", components: &["faces"], bound: true },
+        Only { role: Role::Meshes, of: &[], port: "shadow", components: GPU_WALKS, bound: false },
+        SHADOW_WALKED,
+        RT,
+    ],
+};
+
+/// GPU discovery (`gpu-discover`): the sampler (its rays and exposure tests over any GPU
+/// storage), its hole detection, the drawer of the face set, the shading (any rays, a
+/// ray-query geometry on the CPU).
+pub const GPU_SAMPLER: Builds = Builds {
+    nodes: &[
+        Build::one(Role::Storage, GPU_STORAGES, Kind::Gpu).count(1, 4),
+        Build::one(Role::Traversal, GPU_KERNELS, Kind::Gpu).count(1, 3),
+        Build::one(Role::Geometry, RT_GEOMETRY, Kind::Cpu).count(0, 1),
+        Build::one(Role::Visibility, &["quadtree"], Kind::Gpu),
+        Build::one(Role::Holes, &["coverage"], Kind::Gpu).count(0, 1),
+        Build::one(Role::Draw, DRAWERS, Kind::Gpu),
+        Build::one(Role::Shading, &["direct", "pathtrace"], Kind::Gpu),
+    ],
+    same: &[],
+    only: &[
+        Only { role: Role::Draw, of: &[], port: "faces", components: &["quadtree"], bound: true },
+        Only { role: Role::Visibility, of: &[], port: "rays", components: GPU_WALKS, bound: true },
+        SHADOW_BOUND,
+        RT,
+    ],
+};
+
+/// CPU discovery (`cpu-discover`): the sampler over a CPU storage (exposure tests over the one
+/// its rays walk), the face set drawn on the GPU, the shading there (any GPU rays, a ray-query
+/// geometry on the CPU).
+pub const CPU_SAMPLER: Builds = Builds {
+    nodes: &[
+        Build::one(Role::Storage, CPU_STORAGES, Kind::Cpu),
+        Build::one(Role::Traversal, &["refloor"], Kind::Cpu),
+        Build::one(Role::Visibility, &["quadtree", "cluster"], Kind::Cpu),
+        Build::one(Role::Draw, DRAWERS, Kind::Gpu),
+        Build::one(Role::Storage, GPU_STORAGES, Kind::Gpu).count(0, 2),
+        Build::one(Role::Traversal, GPU_KERNELS, Kind::Gpu).count(1, 2),
+        Build::one(Role::Geometry, RT_GEOMETRY, Kind::Cpu).count(0, 1),
+        Build::one(Role::Shading, &["direct", "pathtrace"], Kind::Gpu),
+    ],
+    same: &[Same { a: (Role::Visibility, &["exposure"]), b: (Role::Visibility, &["rays", "storage"]) }],
+    only: &[Only { role: Role::Draw, of: &[], port: "faces", components: &["quadtree", "cluster"], bound: true }, SHADOW_BOUND, RT],
+};
+
+/// Point splatting (`gpu-splat`): the points (and a geometry for ray-queried bounce rays), the
+/// splat passes, the shading (its shadow rays walked).
+pub const GPU_SPLAT: Builds = Builds {
+    nodes: &[
+        Build::one(Role::Geometry, &["points", "greedy", "naive", "boxes"], Kind::Cpu).count(1, 2),
+        Build::one(Role::Visibility, &["splat"], Kind::Gpu),
+        Build::one(Role::Storage, GPU_STORAGES, Kind::Gpu).count(1, 2),
+        Build::one(Role::Traversal, GPU_KERNELS, Kind::Gpu).count(1, 2),
+        Build::one(Role::Shading, &["direct", "pathtrace"], Kind::Gpu),
+    ],
+    same: &[],
+    only: &[Only { role: Role::Visibility, of: &[], port: "points", components: &["points"], bound: true }, SHADOW_WALKED, RT],
+};
+
+/// Voxel Space on the GPU (`gpu-voxelspace`): the heightmap, the column march, the shading.
+pub const GPU_COLUMNS: Builds = Builds {
+    nodes: &[
+        Build::one(Role::Storage, &["heightmap"], Kind::Gpu),
+        Build::one(Role::Visibility, &["columns"], Kind::Gpu),
+        Build::one(Role::Shading, &["direct", "pathtrace"], Kind::Gpu),
+    ],
+    same: &[],
+    only: &[],
 };
 
 /// The roles the worker runs in front of every executor (the world's side), and the post every
@@ -113,8 +234,8 @@ pub const GPU_RAYQUERY: Builds = Builds {
 const AROUND: &[Role] = &[Role::World, Role::Generator, Role::Link, Role::Client, Role::Post];
 
 impl Checked {
-    /// The node executor that builds this graph and what it declares (`None`: a back end with
-    /// its own frame loop). GPU ray casting runs on the ray-query caster when the primary rays'
+    /// The node executor that builds this graph and what it declares (`None`: no executor of
+    /// that name). GPU ray casting runs on the ray-query caster when the primary rays'
     /// kernel is a ray query, else on the walk.
     pub fn builder(&self) -> Option<(&'static str, Builds)> {
         // The primary rays' kernel, whichever visibility node casts them.
@@ -125,39 +246,61 @@ impl Checked {
             "cpu-voxelspace" => ("cpu-voxelspace", CPU_COLUMNS),
             "gpu-compute" | "gpu-rt" if primary.and_then(|k| self.api(k)) == Some(Api::RayQuery) => ("gpu-rt", GPU_RAYQUERY),
             "gpu-compute" | "gpu-rt" => ("gpu-compute", GPU_WALK),
+            "gpu-raster" => ("gpu-raster", GPU_MESHING),
+            "gpu-discover" => ("gpu-discover", GPU_SAMPLER),
+            "cpu-discover" => ("cpu-discover", CPU_SAMPLER),
+            "gpu-splat" => ("gpu-splat", GPU_SPLAT),
+            "gpu-voxelspace" => ("gpu-voxelspace", GPU_COLUMNS),
             _ => return None,
         })
     }
 
     /// Whether the node executor running this graph builds it (see [`Self::built_by`]).
     pub fn built(&self) -> Result<(), String> {
-        self.builder().map_or(Ok(()), |(e, b)| self.built_by(e, b))
+        let (e, b) = self.builder().ok_or_else(|| format!("no executor builds `{}` graphs", self.graph.executor))?;
+        self.built_by(e, b)
     }
 
     /// Whether `executor`, building `builds`, builds this graph; else the first node (or role)
     /// it cannot, with the reason.
     pub fn built_by(&self, executor: &str, builds: Builds) -> Result<(), String> {
-        let Builds { nodes: builds, same } = builds;
+        let Builds { nodes: builds, same, only } = builds;
         let list = |v: &[&str]| v.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ");
         for (id, n) in self.graph.nodes.iter().filter(|(_, n)| !AROUND.contains(&n.role)) {
-            let Some(b) = builds.iter().find(|b| b.role == n.role) else {
-                let roles: Vec<&str> = builds.iter().map(|b| b.role.name()).collect();
+            let of_role: Vec<&Build> = builds.iter().filter(|b| b.role == n.role).collect();
+            if of_role.is_empty() {
+                let mut roles: Vec<&str> = builds.iter().map(|b| b.role.name()).collect();
+                roles.dedup();
                 return Err(format!("`{id}`: `{executor}` builds no {} node (only {})", n.role.name(), roles.join(", ")));
-            };
-            if !b.components.contains(&n.component.as_str()) {
-                return Err(format!("`{id}`: `{executor}` builds {} {}, not `{}`", n.role.name(), list(b.components), n.component));
             }
             let kind = self.devices[id.as_str()].kind();
-            if kind != b.kind {
-                return Err(format!("`{id}`: `{executor}` builds {} on {}, not on {}", n.role.name(), b.kind.name(), kind.name()));
+            let Some(b) = of_role.iter().find(|b| b.kind == kind) else {
+                let kinds: Vec<&str> = of_role.iter().map(|b| b.kind.name()).collect();
+                return Err(format!("`{id}`: `{executor}` builds {} on {}, not on {}", n.role.name(), kinds.join(" and "), kind.name()));
+            };
+            if !b.components.contains(&n.component.as_str()) {
+                return Err(format!("`{id}`: `{executor}` builds {} {}{}, not `{}`", n.role.name(), list(b.components), if of_role.len() > 1 { format!(" on {}", kind.name()) } else { String::new() }, n.component));
             }
         }
         for b in builds {
-            let ids: Vec<&str> = self.graph.nodes.iter().filter(|(_, n)| n.role == b.role).map(|(id, _)| id.as_str()).collect();
+            let ids: Vec<&str> = self.graph.nodes.iter().filter(|(id, n)| n.role == b.role && self.devices[id.as_str()].kind() == b.kind).map(|(id, _)| id.as_str()).collect();
             if ids.len() < b.least || ids.len() > b.most {
                 let want = if b.least == b.most { format!("{}", b.least) } else if ids.len() < b.least { format!("at least {}", b.least) } else { format!("at most {}", b.most) };
                 let here = if ids.is_empty() { "none".into() } else { list(&ids) };
-                return Err(format!("`{executor}` builds {want} {} node{} (here: {here})", b.role.name(), if want == "1" { "" } else { "s" }));
+                let on = if builds.iter().filter(|o| o.role == b.role).count() > 1 { format!(" on {}", b.kind.name()) } else { String::new() };
+                let plural = if ids.len() < b.least { b.least } else { b.most } != 1;
+                return Err(format!("`{executor}` builds {want} {} node{}{on} (here: {here})", b.role.name(), if plural { "s" } else { "" }));
+            }
+        }
+        for o in only {
+            for (id, n) in self.graph.nodes.iter().filter(|(_, n)| n.role == o.role && (o.of.is_empty() || o.of.contains(&n.component.as_str()))) {
+                match n.inputs.get(o.port) {
+                    None if o.bound => return Err(format!("`{id}`.{}: not bound, and `{executor}` has nothing of its own to read there", o.port)),
+                    Some(src) if !o.components.contains(&self.graph.nodes[src].component.as_str()) => {
+                        return Err(format!("`{id}`.{} → `{src}`: `{executor}` reads {} here, not `{}`", o.port, list(o.components), self.graph.nodes[src].component));
+                    }
+                    _ => {}
+                }
             }
         }
         let path = |s: (Role, &[&str])| -> Option<&str> { s.1.iter().try_fold(self.find(s.0)?, |id, p| self.graph.nodes[id].inputs.get(*p).map(String::as_str)) };
