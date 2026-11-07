@@ -123,7 +123,7 @@ impl Graph {
                 let (ss, ps) = (g.walked(s).unwrap_or(""), g.walked(&k).unwrap_or(""));
                 e.shadow_storage = if ss == ps { "same".into() } else { g.nodes.get(ss).map_or(String::new(), |n| n.component.clone()) };
             }
-            if e.validate().is_ok() {
+            if e.check_slots().is_ok() {
                 c = e;
             }
         }
@@ -185,7 +185,7 @@ impl Graph {
             }
         }
         c.fill_defaults();
-        c.validate()?;
+        c.check_slots()?;
         Ok(c)
     }
 

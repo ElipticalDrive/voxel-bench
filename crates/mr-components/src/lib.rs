@@ -138,15 +138,6 @@ pub struct PresetInfo {
     /// secondary-ray stages run where `at` says, else with the storage and kernel.
     pub runs: Place,
     pub at: &'static [(Slot, Place)],
-    /// Slots whose components this hand-written preset's own code limits, with the ones it
-    /// hosts (its strategy, the geometry its drawer reads, its mesh drawing). Executors
-    /// have no such list here: there a component's implementations and ports decide, and
-    /// the node executors declare the nodes they build (`graph::Builds`).
-    pub hosts: &'static [(Slot, &'static [&'static str])],
-    /// Capabilities its own code reads from a slot whatever the other components (the storage
-    /// interface: voxel queries for walks, exposure tests and prepasses, columns for the
-    /// column march): a component lacking one natively does not fill the slot here.
-    pub reads: &'static [(Slot, Cap)],
     /// The choice of API it offers, if any (`raycast-cpu`: `isa`, its one hot loop; raycast-gpu:
     /// `dispatch`, its walk in a compute or fragment shader).
     pub api_choice: Option<ApiChoice>,
@@ -178,11 +169,6 @@ impl PresetInfo {
         self.api_choice.is_some_and(|ch| ch.slots.contains(&slot.source()))
     }
 
-    /// The components its own code limits `slot` to, if it does.
-    pub fn hosted(&self, slot: Slot) -> Option<&'static [&'static str]> {
-        self.hosts.iter().find(|(s, _)| *s == slot).map(|&(_, h)| h)
-    }
-
     /// The API it runs non-fused `slot` with in `c`, if that is fixed (`None`: a choice, its
     /// `api_choice`). A face drawer's shading runs in the fragment shader for `raster`, else
     /// in a deferred compute pass.
@@ -205,21 +191,19 @@ const COMPUTE_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Prepa
 /// kernels of its shadow rays) in the fragment shader or a deferred compute pass.
 const DRAWN: &[(Slot, Place)] = &[(Slot::Draw, impls::GPU_RASTER), (Slot::Storage, impls::GPU_DRAWN), (Slot::Traversal, impls::GPU_DRAWN), (Slot::Shading, impls::GPU_DRAWN), (Slot::Meshes, impls::GPU_RASTER)];
 const NONE: &[(Slot, Place)] = &[];
-/// Presets whose rays walk the storage (and their shadow rays the shadow storage).
-const READS: &[(Slot, Cap)] = &[(Slot::Storage, Cap::Voxels)];
 
 /// Every preset, including planned ones (shown disabled, with the reason).
 pub const PRESETS: &[PresetInfo] = &[
     PresetInfo {
         name: "raycast-gpu", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("raycast-gpu"),
         slots: COMPUTE_SLOTS, lit_only: &[Slot::ShadowStorage, Slot::ShadowTraversal], quiet: &[Slot::Visibility, Slot::ShadowStorage, Slot::ShadowTraversal],
-        runs: impls::GPU_DISPATCH, at: &[(Slot::Prepass, impls::GPU_COMPUTE), (Slot::Meshes, impls::GPU_RASTER)], hosts: &[(Slot::Visibility, &["raycast"]), (Slot::Meshes, &["none", "composite"])], reads: READS,
+        runs: impls::GPU_DISPATCH, at: &[(Slot::Prepass, impls::GPU_COMPUTE), (Slot::Meshes, impls::GPU_RASTER)],
         api_choice: Some(ApiChoice { knob: "dispatch", slots: &[Slot::Storage, Slot::Visibility, Slot::Traversal, Slot::Shading], values: &[(Api::Compute, "compute"), (Api::Raster, "fragment")], default: Some(Api::Compute) }),
     },
     PresetInfo {
         name: "raycast-cpu", description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops", renderer: Some("raycast-cpu"),
         slots: RAY_SLOTS, lit_only: &[], quiet: &[Slot::Visibility],
-        runs: impls::CPU_ISAS, at: NONE, hosts: &[(Slot::Visibility, &["raycast"])], reads: READS,
+        runs: impls::CPU_ISAS, at: NONE,
         api_choice: Some(ApiChoice { knob: "isa", slots: &[Slot::Storage, Slot::Visibility, Slot::Traversal, Slot::Shading], values: &[(Api::Scalar, "scalar"), (Api::Avx2, "avx2"), (Api::Avx512, "avx512")], default: None }),
     },
     PresetInfo {
@@ -231,8 +215,6 @@ pub const PRESETS: &[PresetInfo] = &[
         quiet: &[Slot::Visibility, Slot::Traversal],
         runs: impls::GPU_RASTER,
         at: &[(Slot::Geometry, impls::CPU_SCALAR), (Slot::Storage, impls::GPU_DRAWN), (Slot::Traversal, impls::GPU_DRAWN), (Slot::Shading, impls::GPU_DRAWN)],
-        hosts: &[(Slot::Visibility, &["faces"]), (Slot::Geometry, &["greedy", "naive", "cubes"]), (Slot::Meshes, &["none", "depth"])],
-        reads: READS,
         api_choice: None,
     },
     PresetInfo {
@@ -241,8 +223,6 @@ pub const PRESETS: &[PresetInfo] = &[
         renderer: Some("rayquery-gpu"),
         slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raycast"), (Slot::Traversal, "rayquery"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Visibility],
         runs: impls::GPU_RAYQUERY, at: &[(Slot::Geometry, impls::CPU_SCALAR)],
-        hosts: &[(Slot::Visibility, &["raycast"]), (Slot::Geometry, &["greedy", "naive", "boxes"]), (Slot::Traversal, &["rayquery"])],
-        reads: &[],
         api_choice: None,
     },
     PresetInfo {
@@ -250,7 +230,7 @@ pub const PRESETS: &[PresetInfo] = &[
         description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
         renderer: Some("discover-gpu"),
         slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Holes, "none"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Draw, Slot::Traversal],
-        runs: impls::GPU_COMPUTE, at: DRAWN, hosts: &[(Slot::Visibility, &["quadtree"])], reads: READS, api_choice: None,
+        runs: impls::GPU_COMPUTE, at: DRAWN, api_choice: None,
     },
     PresetInfo {
         name: "discover-cpu",
@@ -261,8 +241,6 @@ pub const PRESETS: &[PresetInfo] = &[
         quiet: &[Slot::Draw, Slot::Traversal, Slot::ShadowStorage, Slot::ShadowTraversal],
         runs: impls::CPU_SCALAR,
         at: &[(Slot::Draw, impls::GPU_RASTER), (Slot::Shading, impls::GPU_DRAWN), (Slot::ShadowStorage, impls::GPU_DRAWN), (Slot::ShadowTraversal, impls::GPU_DRAWN)],
-        hosts: &[(Slot::Visibility, &["quadtree", "cluster"]), (Slot::Traversal, &["refloor"])],
-        reads: READS,
         api_choice: None,
     },
     PresetInfo {
@@ -272,28 +250,28 @@ pub const PRESETS: &[PresetInfo] = &[
         slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "points"), (Slot::Visibility, "splat"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")],
         lit_only: &[Slot::Storage, Slot::Traversal],
         quiet: &[Slot::Traversal],
-        runs: impls::GPU_COMPUTE, at: &[(Slot::Geometry, impls::CPU_SCALAR)], hosts: &[(Slot::Visibility, &["splat"]), (Slot::Geometry, &["points"])], reads: READS, api_choice: None,
+        runs: impls::GPU_COMPUTE, at: &[(Slot::Geometry, impls::CPU_SCALAR)], api_choice: None,
     },
     PresetInfo {
         name: "columns-gpu",
         description: "Comanche-style Voxel Space (2.5D, no overhangs) in a compute shader: one thread per screen column marches a heightmap front to back with a y-buffer",
         renderer: Some("columns-gpu"),
         slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
-        runs: impls::GPU_COMPUTE, at: NONE, hosts: &[(Slot::Visibility, &["columns"])], reads: &[(Slot::Storage, Cap::Heights)], api_choice: None,
+        runs: impls::GPU_COMPUTE, at: NONE, api_choice: None,
     },
     PresetInfo {
         name: "columns-cpu",
         description: "Comanche-style Voxel Space (2.5D) on the CPU, rayon-parallel over screen columns",
         renderer: Some("columns-cpu"),
         slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
-        runs: impls::CPU_SCALAR, at: NONE, hosts: &[(Slot::Visibility, &["columns"])], reads: &[(Slot::Storage, Cap::Heights)], api_choice: None,
+        runs: impls::CPU_SCALAR, at: NONE, api_choice: None,
     },
     PresetInfo {
         name: "raster-cpu",
         description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
         renderer: Some("raster-cpu"),
         slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "faces"), (Slot::Draw, "raster"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Visibility],
-        runs: impls::CPU_SCALAR, at: NONE, hosts: &[(Slot::Visibility, &["faces"]), (Slot::Geometry, &["greedy", "naive"])], reads: &[], api_choice: None,
+        runs: impls::CPU_SCALAR, at: NONE, api_choice: None,
     },
 ];
 
@@ -553,8 +531,21 @@ impl Composition {
         c
     }
 
-    /// Why this composition cannot run, if it can't.
+    /// Why this composition cannot run, if it can't: [`Self::check_slots`], then the graph
+    /// it stands for, which its preset's executor must build (and as this preset).
     pub fn validate(&self) -> Result<(), String> {
+        self.check_slots()?;
+        let g = graph::Graph::from_composition(self)?;
+        g.accept()?;
+        match g.preset() {
+            Some(p) if p == self.preset => Ok(()),
+            p => Err(format!("its graph is a {} pipeline, not `{}`", p.unwrap_or("no preset's"), self.preset)),
+        }
+    }
+
+    /// Its slots and components alone: the preset has each slot it sets, each component
+    /// is implemented where the preset runs its slot, and their needs are met.
+    pub fn check_slots(&self) -> Result<(), String> {
         let b = preset_info(&self.preset).ok_or_else(|| format!("unknown preset `{}` (have: {})", self.preset, PRESETS.iter().map(|b| b.name).collect::<Vec<_>>().join(", ")))?;
         if b.renderer.is_none() {
             return Err(format!("preset `{}` is not available yet", self.preset));
@@ -564,7 +555,7 @@ impl Composition {
                 if !self.get(slot).is_empty() {
                     return Err(format!("preset `{}` has no {} slot (`{}` does not apply)", self.preset, slot.name(), self.get(slot)));
                 }
-            } else if let Some(why) = unavailable(&self.preset, slot, self.get(slot)) {
+            } else if let Some(why) = unimplemented(&self.preset, slot, self.get(slot)) {
                 return Err(why);
             }
         }
@@ -598,9 +589,26 @@ pub fn components(slot: Slot) -> impl Iterator<Item = &'static ComponentInfo> {
 }
 
 /// Why component `name` cannot fill `slot` on `preset` (`None` = it can): the preset
-/// lacks the slot, its own code does not host the component, or the component has no
-/// implementation where the preset runs the slot.
+/// lacks the slot, the component has no implementation where the preset runs the slot,
+/// or the preset's default composition with it in `slot` is a graph its executor does not
+/// build. (Answers depend on the tables only: remembered.)
 pub fn unavailable(preset: &str, slot: Slot, name: &str) -> Option<String> {
+    static SEEN: std::sync::Mutex<std::collections::BTreeMap<(String, &str, String), Option<String>>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let key = (preset.to_string(), slot.name(), name.to_string());
+    if let Some(why) = SEEN.lock().unwrap().get(&key) {
+        return why.clone();
+    }
+    let why = unimplemented(preset, slot, name).or_else(|| {
+        let mut c = Composition::new(preset);
+        c.set(slot, name);
+        c.validate().err()
+    });
+    SEEN.lock().unwrap().insert(key, why.clone());
+    why
+}
+
+/// [`unavailable`] without the graph: the slot, the component and where it runs.
+fn unimplemented(preset: &str, slot: Slot, name: &str) -> Option<String> {
     let Some(b) = preset_info(preset) else {
         return Some(format!("unknown preset `{preset}`"));
     };
@@ -613,14 +621,7 @@ pub fn unavailable(preset: &str, slot: Slot, name: &str) -> Option<String> {
     if c.slot == slot && slot.secondary() {
         return None; // `same`
     }
-    if let Some(h) = b.hosted(slot).filter(|h| !h.contains(&name)) {
-        return Some(format!("`{preset}` hosts only {} in its {} slot (its own code; executors lift this)", h.join(", "), slot.name()));
-    }
-    let place = b.place(slot);
-    unimplemented_at(&place, slot, name).or_else(|| {
-        let lacks: Vec<&str> = b.reads.iter().filter(|(s, cap)| *s == slot.source() && !caps::provides(place.kind, *s, name, *cap)).map(|(_, cap)| cap.name()).collect();
-        (!lacks.is_empty()).then(|| format!("`{name}` lacks {} (`{preset}` reads its {} through it)", lacks.join(", "), slot.name()))
-    })
+    unimplemented_at(&b.place(slot), slot, name)
 }
 
 /// Why `slot` component `name` has no implementation that runs at `p`, if it has none.
