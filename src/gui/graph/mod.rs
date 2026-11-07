@@ -1,8 +1,10 @@
 //! The graph-first pipeline editor. A renderer is its graph: the side
 //! panels show it compactly (`summary`: a row per node, its component and knobs), the
 //! editor window draws it (`canvas`) with an inspector for the selected node. Every choice
-//! is listed; one whose graph cannot run is greyed and says why (`model::Trial`). The back
-//! end is not chosen: it is the preset the graph's shape names, shown as a label.
+//! is listed; one whose graph cannot run is greyed and says why (`model::Trial`), or, on a
+//! graph a node executor runs, can still be made: a draft, shown with why it does not run
+//! while the renderer keeps its last graph. The back end is not chosen: it is the preset the
+//! graph's shape names, shown as a label.
 
 mod canvas;
 pub mod model;
@@ -42,10 +44,20 @@ impl Trials {
         }
         e.1.as_mut()
     }
+
+    /// The trial shown for `key`, if one was made (screenshots make drafts with it).
+    #[cfg(test)]
+    pub fn shown(&mut self, key: &str) -> Option<&mut Trial> {
+        self.0.get_mut(key).and_then(|e| e.1.as_mut())
+    }
 }
 
+/// The colour of a choice that gives a draft (a graph that does not run yet).
+const DRAFT: egui::Color32 = egui::Color32::from_rgb(230, 160, 60);
+
 /// A list of choices, each a change of the graph: greyed with the reason where the result
-/// cannot run. Returns the renderer picked.
+/// cannot run (on a graph edited freely: marked, and picking it makes a draft). Returns the
+/// renderer picked.
 fn choices(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, selected: &str, tip: &str, options: Vec<(String, Change, bool, String)>, trial: &mut Trial, infos: &[RendererInfo]) -> Option<RendererSpec> {
     let mut pick = None;
     ComboBox::from_id_salt(id)
@@ -60,7 +72,13 @@ fn choices(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, selected: &s
                     Ok((_, spec)) => {
                         let label = if spec.name != trial.base().name { format!("{text}  ➡ {}", spec.name) } else { text };
                         if ui.add(egui::Button::selectable(false, label)).on_hover_text(format!("{hover}\n\nRuns as `{}`: {}", spec.name, spec.label())).clicked() {
+                            trial.drop_draft();
                             pick = Some(spec);
+                        }
+                    }
+                    Err(why) if trial.free() => {
+                        if ui.add(egui::Button::selectable(false, RichText::new(format!("{text}  ✱")).color(DRAFT))).on_hover_text(format!("{hover}\n\nDoes not run: {why}\nPick it anyway to keep editing (a draft; the renderer keeps its last graph)")).clicked() {
+                            trial.make_draft(&change, infos);
                         }
                     }
                     Err(why) => {
@@ -198,8 +216,13 @@ fn node_grid<'l>(ui: &mut Ui, salt: &str, g: &Graph, id: Option<&str>, knobs: &[
         if i < own {
             edits.push(Edit::Knob { name, value, commit });
         } else if commit {
-            match trial.try_change(&Change::Knob(id.unwrap().into(), name.clone(), Some(super::param_to_toml(&value))), infos) {
-                Ok((_, s)) => edits.push(Edit::Spec(s)),
+            let change = Change::Knob(id.unwrap().into(), name.clone(), Some(super::param_to_toml(&value)));
+            match trial.try_change(&change, infos) {
+                Ok((_, s)) => {
+                    trial.drop_draft();
+                    edits.push(Edit::Spec(s));
+                }
+                Err(_) if trial.free() => trial.make_draft(&change, infos),
                 Err(e) => tracing::warn!("{name}: {e}"),
             }
         }
@@ -231,6 +254,9 @@ pub fn summary<'l>(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamS
             edits.push(Edit::Open(None));
         }
         ui.label(RichText::new(format!("runs as {}", spec.name)).strong()).on_hover_text("The preset this graph's shape names (its executor): derived from the graph, not chosen");
+        if let Some(why) = trial.draft() {
+            ui.label(RichText::new("✱ draft").color(DRAFT)).on_hover_text(format!("The graph shown does not run: {why}\nThe renderer keeps running its last graph"));
+        }
     });
     edits.extend(node_grid(ui, key, &g, None, knobs, marks, lock.as_deref_mut(), run, trial, infos));
     for id in model::order(&g) {
@@ -365,6 +391,16 @@ fn editor(ui: &mut Ui, win: &mut Window, title: &str, spec: &RendererSpec, knobs
             *open = false;
         }
     });
+    if let Some(why) = trial.draft().map(str::to_string) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("✱ Draft: does not run").color(DRAFT).strong());
+            ui.label(RichText::new(why).color(DRAFT));
+            ui.weak("(the renderer keeps running its last graph)");
+            if ui.button("drop draft").on_hover_text("Back to the graph running").clicked() {
+                trial.drop_draft();
+            }
+        });
+    }
     ui.separator();
     let mut made = vec![];
     egui::Panel::right("pipeline-inspector").resizable(true).default_size(310.0).show(ui, |ui| {
@@ -421,6 +457,27 @@ fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, Para
         }
         if ui.small_button("✖").on_hover_text("Deselect").clicked() {
             win.selected = None;
+        }
+        if !model::world_side(n.role) && n.role != Role::Post {
+            let change = Change::Remove(id.clone());
+            let (b, tip) = match trial.try_change(&change, infos) {
+                Ok((_, s)) => (Some(Ok(s)), "Remove this node; the inputs reading it are unbound".to_string()),
+                Err(why) if trial.free() => (Some(Err(())), format!("Remove this node; the inputs reading it are unbound.\nDoes not run then: {why}\nRemove it anyway (a draft; the renderer keeps its last graph)")),
+                Err(why) => (None, format!("Cannot run without it: {why}")),
+            };
+            let text = if matches!(b, Some(Err(_))) { RichText::new("🗑 remove ✱").color(DRAFT) } else { RichText::new("🗑 remove") };
+            let r = ui.add_enabled(b.is_some(), egui::Button::new(text).small());
+            if r.on_hover_text(&tip).on_disabled_hover_text(&tip).clicked() {
+                match b {
+                    Some(Ok(s)) => {
+                        trial.drop_draft();
+                        edits.push(Edit::Spec(s));
+                    }
+                    Some(Err(())) => trial.make_draft(&change, infos),
+                    None => {}
+                }
+                win.selected = None;
+            }
         }
     });
     let mut pick = |s: Option<RendererSpec>| {

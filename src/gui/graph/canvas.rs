@@ -322,18 +322,26 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
                 } else if n.inputs.get(&port) == Some(&src) {
                     Err("already bound there".into())
                 } else {
-                    trial.try_change(&Change::Bind(id.clone(), port.clone(), Target::Node(src.clone())), infos).map(|(_, spec)| (id, port, spec))
+                    // Dropping it where it does not run makes a draft on a graph edited freely.
+                    let change = Change::Bind(id.clone(), port.clone(), Target::Node(src.clone()));
+                    match trial.try_change(&change, infos) {
+                        Ok((_, spec)) => Ok((change, Ok(spec))),
+                        Err(e) if trial.free() => Ok((change, Err(e))),
+                        Err(e) => Err(e),
+                    }
                 });
             }
             let color = match &verdict {
-                Some(Ok(_)) => Color32::from_rgb(90, 210, 110),
+                Some(Ok((_, Ok(_)))) => Color32::from_rgb(90, 210, 110),
+                Some(Ok((_, Err(_)))) => super::DRAFT,
                 Some(Err(_)) => Color32::from_rgb(230, 80, 80),
                 None => data_color(d),
             };
             painter.add(Shape::line(bezier(out_pos(&src), end, s), Stroke::new(2.5, color)));
             if let Some(v) = &verdict {
                 let text = match v {
-                    Ok((_, _, spec)) => format!("runs as {}: {}", spec.name, spec.label()),
+                    Ok((_, Ok(spec))) => format!("runs as {}: {}", spec.name, spec.label()),
+                    Ok((_, Err(e))) => format!("does not run: {e}\n(drop it to keep editing: a draft)"),
                     Err(e) => format!("cannot run: {e}"),
                 };
                 let galley = painter.layout(text, FontId::proportional(12.0), color, 420.0);
@@ -342,8 +350,13 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
                 painter.galley(at, galley, color);
             }
             if ui.input(|i| i.pointer.any_released()) {
-                if let Some(Ok((_, _, spec))) = verdict {
-                    out.spec = Some(spec);
+                match verdict {
+                    Some(Ok((_, Ok(spec)))) => {
+                        trial.drop_draft();
+                        out.spec = Some(spec);
+                    }
+                    Some(Ok((change, Err(_)))) => trial.make_draft(&change, infos),
+                    _ => {}
                 }
                 view.wire = None;
             }

@@ -164,6 +164,10 @@ fn gui_screenshot() {
     while frames < 30 || start.elapsed().as_secs_f32() < 4.0 {
         t += 1.0 / 60.0;
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(w as f32, h as f32))), time: Some(t), ..Default::default() };
+        // `SHOT_DRAFT=storage` (with `SHOT_GRAPH`): that node removed in the editor, as a draft.
+        if frames == 10 && let (Ok(node), Some(t)) = (std::env::var("SHOT_DRAFT"), app.trials.shown("Lane(0)")) {
+            t.make_draft(&graph::model::Change::Remove(node), &[]);
+        }
         let mut out = ctx.run_ui(input, |ui| app.draw(ui));
         deltas.extend(std::mem::take(&mut out.textures_delta.set));
         last = Some(out);

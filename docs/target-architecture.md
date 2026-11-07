@@ -173,7 +173,7 @@ compared against anything; their slowness is their own.
 | Back end = device + API | Back ends are ten named executors, each a family of graph shapes (`gpu-compute`, `gpu-raster`, `gpu-rt`, `gpu-discover`, `gpu-splat`, `gpu-voxelspace`, `cpu`, `cpu-raster`, `cpu-discover`, `cpu-voxelspace`) derived from the graph. |
 | One generic executor per device walking the schedule | Two executor crates (GPU, CPU) pick a hard-coded *lane* from the visibility component: raycast, faces, splat, columns, discovery. Each lane fixes its own pass order, buffers and bind groups. |
 | Validity = types, cycles, implementations, composable regions | `Graph::check` applies rules 1–3 (types, cycles, an implementation on each node's device kind and API). The node executors (`cpu`, `cpu-raster`, `cpu-voxelspace`, `gpu-compute`, `gpu-rt`) declare the nodes they build (`graph::Builds`: per role the components, the device kind and how many; inputs read as one node), and `Graph::accept` takes their graphs exactly when they are valid and declared (plus the edge timings and the two-GPU split they run); the flat `Composition` is then only the nearest one, for labels and flat options. For the other back ends `accept` still reduces the graph to a flat `Composition` skeleton and checks it against what their lane runs. |
-| Editor allows any edge | The editor offers only choices whose resulting graph a lane accepts, fills inputs from presets, and drops nodes that no longer reach the image. |
+| Editor allows any edge | On a graph a node executor runs, the editor makes every change exactly (a new node comes unbound, a node can be removed, nothing is filled in or pruned); a graph that does not run is kept as a draft, shown with the reason, while the renderer keeps its last graph. On the other back ends it offers only choices whose resulting graph a lane accepts, fills inputs from presets, and drops nodes that no longer reach the image. |
 | Graph-driven program generator | `src/pipelines.rs` generates specialised crates, per lane. |
 
 What already matches: typed ports, per-node device and API, `prev`/`iterate` timings, the
@@ -217,8 +217,8 @@ shaded there) and that GPU completes the frame. The hit records are still a bind
 region's group 0, not a node output the executor owns, and the second GPU's shading is the
 region's remote part, not a node of an executor of its own.
 Step 4 has begun: for the node executors, `accept` is the validity rules plus the nodes each
-executor declares it builds; the skeleton remains for the other back ends, and the editor
-still re-fills or drops edges.
+executor declares it builds, and the editor edits their graphs exactly, drafts included; the
+skeleton (and the editor's filling in and pruning) remains for the other back ends.
 
 ## Non-goals
 
