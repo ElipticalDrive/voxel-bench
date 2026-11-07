@@ -42,20 +42,24 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
+/// The preset's own knobs (the nodes' are read from the graph).
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
 struct Options {
-    storage: String,
-    visibility: String,
-    shading: String,
-    placement: String,
     threads: usize,
+}
+
+/// The shading node's knobs.
+#[derive(serde::Deserialize)]
+#[serde(default)]
+struct ShadingKnobs {
+    placement: String,
     shadows: Shadows,
 }
 
-impl Default for Options {
+impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self { storage: "heightmap".into(), visibility: "columns".into(), shading: "direct".into(), placement: "inline".into(), threads: 0, shadows: Shadows::All }
+        Self { placement: "inline".into(), shadows: Shadows::All }
     }
 }
 
@@ -207,11 +211,8 @@ impl<S: Spec, P: Pixel> Node for Shading<S, P> {
 /// `S` what a compiled pipeline baked in.
 pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let opts: Options = p.options()?;
-    use mr_components::{Slot, require};
-    for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
-        require(PRESET, slot, name)?;
-    }
-    let deferred = mr_components::parse_placement(&opts.placement)?;
+    let shading: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
+    let deferred = mr_components::parse_placement(&shading.placement)?;
     fixed("tone", S::TONE, g.tone())?;
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
     let mut init = Some(Field { hm: Heightmap::new(p.view_radius_chunks), chunks: Chunks::default() });
@@ -246,6 +247,6 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
         index.insert(id.to_string(), passes.len());
         passes.push(Pass { node, ins });
     }
-    let world = crate::world::<P>(p, g, opts.shadows)?;
+    let world = crate::world::<P>(p, g, shading.shadows)?;
     Ok(Box::new(exec::Executor::<P>::new(p, opts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))
 }

@@ -201,10 +201,11 @@ impl Graph {
 }
 
 impl Graph {
-    /// The graph with flat knob values placed on the nodes they belong to (what a
-    /// compiled build bakes in, for its cache key): each `(spec, value)` goes to the
-    /// skeleton's nodes its `owner` names (the preset's stages; nodes on free sites keep
-    /// their own knobs). A knob whose owner is not in the graph is moot here and left out;
+    /// The graph with flat knob values placed on the nodes they belong to (what the
+    /// executors read, and what a compiled build bakes in, for its cache key): each
+    /// `(spec, value)` replaces the knob on the skeleton's nodes its `owner` names (the
+    /// preset's stages; nodes on free sites keep their own knobs). A knob whose owner is not
+    /// in the graph is moot here and left out;
     /// a knob without an owner (the preset's own) has no node and is an error.
     pub fn with_knobs(&self, knobs: &[(&mr_core::ParamSpec, toml::Value)]) -> Result<Graph, String> {
         let mut g = self.normalised()?;
@@ -215,7 +216,7 @@ impl Graph {
             };
             for (_, n) in g.nodes.iter_mut().filter(|(id, _)| skel.nodes.contains_key(*id)) {
                 if n.role.name() == slot && comps.contains(&n.component) {
-                    n.knobs.entry(spec.name.clone()).or_insert_with(|| v.clone());
+                    n.knobs.insert(spec.name.clone(), v.clone());
                 }
             }
         }

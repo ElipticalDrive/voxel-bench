@@ -76,7 +76,7 @@ pub fn spawn_renderer(
         }
         _ => None,
     };
-    let graph = spec.pipeline();
+    let graph = spec.worker_graph()?;
     let params = InitParams {
         width,
         height,

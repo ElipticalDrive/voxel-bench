@@ -370,6 +370,11 @@ impl Checked {
         &self.graph.nodes[id]
     }
 
+    /// Node `id`'s knobs as `T` (the knobs it does not set take `T::default()`'s values).
+    pub fn knobs<T: serde::de::DeserializeOwned>(&self, id: &str) -> Result<T, String> {
+        toml::Value::Table(self.node(id).knobs.clone()).try_into().map_err(|e| format!("`{id}`'s knobs: {e}"))
+    }
+
     /// The node making the image the post maps (the output, without a post).
     pub fn shading(&self) -> &str {
         let out = &self.graph.nodes[&self.output];

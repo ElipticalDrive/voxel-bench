@@ -77,7 +77,7 @@ pub fn bakes(preset: &str) -> &'static [&'static str] {
 }
 
 /// The executor of `preset` and its knobs (`None`: no generated pipeline runs it).
-fn params_of(preset: &str) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
+pub(crate) fn params_of(preset: &str) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
     Some(match preset {
         "raycast-cpu" | "raster-cpu" | "columns-cpu" => (Executor::Cpu, mr_exec_cpu::info(preset).params),
         "raster-gpu" | "discover-gpu" | "discover-cpu" | "raycast-gpu" | "rayquery-gpu" | "splat-gpu" | "columns-gpu" => (Executor::Gpu, mr_exec_gpu::info(preset).params),

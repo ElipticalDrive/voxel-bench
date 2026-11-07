@@ -431,6 +431,16 @@ impl RendererSpec {
         self.ran_graph.clone().or_else(|| self.compose.as_ref().and_then(|c| mr_components::graph::Graph::from_composition(c).ok())).map(|g| g.with_options(&self.options))
     }
 
+    /// The graph the worker runs: `pipeline()` with the options that are node knobs (a
+    /// knob with an `owner`) placed on their nodes, where the executors read them; the
+    /// preset's own knobs (`threads`, ...) stay options.
+    pub fn worker_graph(&self) -> anyhow::Result<Option<mr_components::graph::Graph>> {
+        let Some(g) = self.pipeline() else { return Ok(None) };
+        let Some((_, params)) = crate::pipelines::params_of(&self.name) else { return Ok(Some(g)) };
+        let knobs: Vec<_> = self.options.iter().filter_map(|(k, v)| params.iter().find(|p| p.name == *k && p.owner.is_some()).map(|p| (p, v.clone()))).collect();
+        g.with_knobs(&knobs).map(Some).map_err(|e| anyhow::anyhow!("{}: {e}", self.label()))
+    }
+
     /// Options as the user sees them: without the keys a composition derives.
     pub fn extra_options(&self) -> toml::Table {
         let mut t = self.options.clone();
@@ -852,6 +862,20 @@ mod tests {
 
     /// The region and the link are the graph's client and link nodes; the run's
     /// `view_radius` and `max_lod` are the defaults of clients without their own.
+    /// Options that are node knobs reach the worker on their nodes, where the executors
+    /// read them; the preset's own (`threads`) stay options.
+    #[test]
+    fn node_knobs_reach_the_worker_graph() {
+        let mut r = RendererSpec::new("columns-cpu");
+        r.options.insert("shadows".into(), "sun".into());
+        r.options.insert("threads".into(), 2.into());
+        r.resolve().unwrap();
+        let ck = r.worker_graph().unwrap().unwrap().check().unwrap();
+        assert_eq!(ck.node(ck.shading()).knobs.get("shadows").and_then(|v| v.as_str()), Some("sun"));
+        assert!(ck.graph.nodes.values().all(|n| !n.knobs.contains_key("threads")));
+        assert_eq!(r.options.get("threads").and_then(|v| v.as_integer()), Some(2));
+    }
+
     #[test]
     fn region_lives_in_nodes() {
         let scene = "[scene]\ngenerator = { type = \"terrain\", seed = 1 }\ncamera = { type = \"line\", from = [0, 150, 0], to = [300, 150, 75] }\n";
