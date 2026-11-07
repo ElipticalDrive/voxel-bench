@@ -366,7 +366,7 @@ mod tests {
 
     /// The split graph: the walk on `gpu`, the shading (deferred) with its own walk on `gpu1`.
     pub(crate) fn split(storage: &str, kernel: &str, shading: &str) -> Graph {
-        let mut g = Graph { executor: "gpu-compute".into(), nodes: Default::default() };
+        let mut g = Graph { executor: "gpu".into(), nodes: Default::default() };
         let mut add = |id: &str, mut n: Node, inputs: &[(&str, &str)]| {
             n.inputs.extend(inputs.iter().map(|&(p, s)| (p.to_string(), s.to_string())));
             g.nodes.insert(id.into(), n);

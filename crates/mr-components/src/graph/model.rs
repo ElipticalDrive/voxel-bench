@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Api, Kind, Slot, backend, component};
+use crate::{Api, Kind, Slot, component};
 
 
 /// What a node does: the roles of the pipeline's pieces that exist so far.
@@ -402,22 +402,43 @@ pub(super) fn known(role: Role, name: &str) -> bool {
     }
 }
 
-/// Where a node runs unless the graph says otherwise: fused nodes run with their callers;
-/// the rest where the back end runs that role (its [`crate::Place`]; GPU slot 0), or for a
-/// stage it has not (a free site's geometry) where the component runs, if on one kind of
-/// device only.
+/// Where a node runs unless the graph says otherwise (`executor`: the graph's, `cpu` or
+/// `gpu`, none = `gpu`): the world and its generator on the server, the link and the client on
+/// the CPU; a component on the executor's device if it has an implementation there (GPU slot
+/// 0), else on the one kind of device it has. Fused nodes follow their callers ([`Graph::check`]).
 pub(super) fn default_device(executor: &str, role: Role, component: &str) -> Device {
     match role {
         Role::World | Role::Generator => return Device::Server,
         Role::Link | Role::Client => return Device::Cpu,
         _ => {}
     }
+    let want = if executor == "cpu" { Kind::Cpu } else { Kind::Gpu };
+    let on = |k: Kind| if k == Kind::Cpu { Device::Cpu } else { Device::Gpu(0) };
+    match role.slot().and_then(|s| crate::component(s, component)) {
+        Some(c) if !c.impls.iter().any(|i| i.kind == want) => c.impls.first().map_or(on(want), |i| on(i.kind)),
+        _ => on(want),
+    }
+}
+
+/// Where back end `backend`'s composition runs a node (its [`crate::Place`] for the role,
+/// GPU slot 0; for a stage it has not, where the component runs if on one kind of device only):
+/// what [`Graph::from_composition`] pins where the executor's default differs.
+pub(super) fn placed_on(backend: &str, role: Role, component: &str) -> Device {
     let only = || role.slot().and_then(|s| crate::component(s, component)).and_then(|c| c.impls.iter().all(|i| i.kind == Kind::Cpu).then_some(Device::Cpu));
-    match (backend(executor), role.slot()) {
+    match (crate::backend(backend), role.slot()) {
         (Some(b), Some(slot)) if b.has(slot.source()) && b.place(slot).kind == Kind::Gpu => Device::Gpu(0),
         (Some(b), Some(slot)) if b.has(slot.source()) => Device::Cpu,
         (_, Some(_)) => only().unwrap_or(Device::Gpu(0)),
         (_, None) => Device::Cpu,
+    }
+}
+
+/// The executor (device kind: `cpu`, `gpu`) that runs back end `backend`'s pipelines: where its
+/// image is made, its shading's device.
+pub fn executor_of(backend: &str) -> &'static str {
+    match crate::backend(backend).map(|b| b.place(Slot::Shading).kind) {
+        Some(Kind::Cpu) => "cpu",
+        _ => "gpu",
     }
 }
 
@@ -461,15 +482,22 @@ impl Node {
     }
 }
 
-/// A pipeline: nodes by id, run by `executor`: the preset its shape and devices name
-/// ([`Graph::preset`]), so a graph may leave it out or name another (its
-/// nodes without a device run where that one runs their role).
+/// A pipeline: nodes by id, run by the executor of a device kind (`cpu`, `gpu`; none = `gpu`),
+/// where its nodes without a device run if they can ([`default_device`]). Which of the
+/// executor's regions builds it is the graph's shape ([`Graph::preset`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Graph {
     #[serde(default)]
     pub executor: String,
     pub nodes: BTreeMap<String, Node>,
+}
+
+impl Graph {
+    /// The executor that runs it: `cpu` or `gpu` (also when none is written).
+    pub fn runs_on(&self) -> &str {
+        if self.executor.is_empty() { "gpu" } else { &self.executor }
+    }
 }
 
 /// A checked graph: the world added, every node's device, the output node.
@@ -481,4 +509,6 @@ pub struct Checked {
     /// the others run as the executor chooses.
     pub apis: HashMap<String, Api>,
     pub output: String,
+    /// The preset its shape names ([`Graph::preset`]): the region that builds it.
+    pub preset: Option<&'static str>,
 }

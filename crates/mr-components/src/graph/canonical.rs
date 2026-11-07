@@ -55,8 +55,8 @@ impl Graph {
         // APIs only where the executor offers a choice (elsewhere a set API is checked to be
         // the one it runs, so it says nothing more).
         // (and not the choice's default: an API set to it is the same pipeline as one unset).
-        let chosen = |n: &Node, a: &Api| backend(&g.executor).is_some_and(|b| n.role.slot().is_some_and(|sl| b.chooses(sl)) && b.api_choice.is_some_and(|ch| ch.default != Some(*a)));
-        let mut s = format!("{}|", g.executor);
+        let chosen = |n: &Node, a: &Api| c.preset.and_then(backend).is_some_and(|b| n.role.slot().is_some_and(|sl| b.chooses(sl)) && b.api_choice.is_some_and(|ch| ch.default != Some(*a)));
+        let mut s = format!("{}|", g.runs_on());
         for id in &order {
             let n = &g.nodes[id];
             let when = |p: &str| match n.when(p) {

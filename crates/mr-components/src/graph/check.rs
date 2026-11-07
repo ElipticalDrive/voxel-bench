@@ -12,7 +12,7 @@ impl Graph {
     /// world or the link) the client: the world's change log reaches a renderer only over
     /// its link, through its client.
     pub(super) fn normalised(&self) -> Result<Graph, String> {
-        let mut g = self.placed();
+        let mut g = self.clone();
         let one = |g: &mut Graph, role: Role, component: &str| -> Result<String, String> {
             let ids: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == role).map(|(k, _)| k.clone()).collect();
             match ids.as_slice() {
@@ -155,11 +155,10 @@ impl Graph {
     /// Checks the graph is well formed (not yet whether its back end runs it: see
     /// [`Self::validate`]), with the reasons when it isn't.
     pub fn check(&self) -> Result<Checked, String> {
-        let placed = self.placed();
-        if placed.executor != self.executor {
-            return placed.check();
+        if !matches!(self.executor.as_str(), "" | "cpu" | "gpu") {
+            return Err(format!("unknown executor `{}` (`cpu` or `gpu`)", self.executor));
         }
-        let b = backend(&self.executor).ok_or_else(|| format!("unknown back end `{}`", self.executor))?;
+        let preset = self.preset();
         let g = self.normalised()?;
         let mut why = Vec::new();
         for (id, n) in &g.nodes {
@@ -358,10 +357,10 @@ impl Graph {
         if !why.is_empty() {
             return Err(why.join("; "));
         }
-        if b.renderer.is_none() {
-            return Err(format!("back end `{}` is not available yet", b.name));
+        if let Some(b) = preset.and_then(backend).filter(|b| b.renderer.is_none()) {
+            return Err(format!("`{}` is not available yet", b.name));
         }
-        Ok(Checked { graph: g, devices, apis, output: out })
+        Ok(Checked { graph: g, devices, apis, output: out, preset })
     }
 }
 

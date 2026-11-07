@@ -127,7 +127,7 @@ mod tests {
     fn written_graph() {
         let g: Graph = toml::from_str(
             r#"
-            executor = "gpu-compute"
+            executor = "gpu"
             [nodes.s]
             role = "storage"
             component = "prefix"
@@ -430,8 +430,8 @@ mod tests {
         assert!(e.contains("cycle"), "{e}");
     }
 
-    /// The back ends' names are presets, named by a graph's shape and devices,
-    /// whatever executor it is written for (or none).
+    /// The presets are named by a graph's shape and devices; the executor (a device kind)
+    /// is where its nodes without a device run.
     #[test]
     fn presets() {
         let key = |c: Composition| Graph::from_composition(&c).unwrap().key().unwrap();
@@ -444,7 +444,7 @@ mod tests {
             g.nodes.insert(id.into(), Node { device: Some(Device::Gpu(0)), ..n });
         }
         g.nodes.get_mut("shading").unwrap().inputs.insert("shadow".into(), "shadow.kernel".into());
-        assert_eq!(g.placed().executor, "cpu-discover");
+        assert_eq!((g.preset(), g.executor.as_str()), (Some("cpu-discover"), "gpu"));
         let now: toml::Table = toml::from_str("pipelined = false").unwrap();
         assert_eq!(g.key().unwrap(), of("cpu-discover").with_options(&now).key().unwrap());
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
@@ -455,25 +455,26 @@ mod tests {
         g.nodes.retain(|k, _| k != "geometry");
         g.nodes.insert("visibility".into(), Node::new(Role::Visibility, "quadtree").with(&[("rays", "kernel"), ("exposure", "storage")]));
         assert_eq!(g.key().unwrap(), key(Composition::new("gpu-discover")));
-        // Ray queries for the primary rays, written for gpu-compute or for no executor.
-        let mut g = of("gpu-rt");
-        g.executor = "gpu-compute".into();
-        assert_eq!(g.key().unwrap(), of("gpu-rt").key().unwrap());
-        for b in ["gpu-compute", "gpu-splat", "gpu-voxelspace", "gpu-raster", "gpu-discover"] {
+        // The GPU's presets: the same graph with or without the executor written.
+        for b in ["gpu-compute", "gpu-rt", "gpu-splat", "gpu-voxelspace", "gpu-raster", "gpu-discover", "cpu-discover"] {
             let mut g = of(b);
+            assert_eq!(g.executor, "gpu", "{b}");
             g.executor.clear();
             assert_eq!(g.key().unwrap(), of(b).key().unwrap(), "{b}");
         }
-        // Without an executor, nodes run on the GPU unless they say otherwise.
+        // The executor says where nodes without a device run: CPU ray casting's graph on the
+        // GPU executor is GPU ray casting, which the CPU executor does not build.
         let mut g = of("cpu");
-        g.executor.clear();
-        assert_eq!(g.placed().executor, "gpu-compute");
-        g.nodes.values_mut().filter(|n| matches!(n.role, Role::Visibility | Role::Shading)).for_each(|n| n.device = Some(Device::Cpu));
-        assert_eq!(g.key().unwrap(), of("cpu").key().unwrap());
+        g.executor = "gpu".into();
+        assert_eq!(g.preset(), Some("gpu-compute"));
+        g.executor = "cpu".into();
+        g.nodes.values_mut().filter(|n| matches!(n.role, Role::Visibility | Role::Shading)).for_each(|n| n.device = Some(Device::Gpu(0)));
+        assert_eq!(g.preset(), Some("gpu-compute"));
+        assert!(g.check().unwrap().built().unwrap_err().contains("the cpu executor builds no `gpu-compute` pipeline"));
         // A shape no preset has keeps its reasons.
         let mut g = of("cpu-raster");
         g.nodes.get_mut("draw").unwrap().device = Some(Device::Gpu(0));
-        assert_eq!(g.placed().executor, "gpu-raster");
+        assert_eq!(g.preset(), Some("gpu-raster"));
         assert!(g.validate().is_err());
     }
     /// A pipeline on one GPU runs on any slot; over two it is split at the hit records (ray

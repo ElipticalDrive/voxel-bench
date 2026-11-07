@@ -23,7 +23,7 @@ devices = { gpus = ["", "amd"] }
 [[renderer]]
 label = "split over two GPUs"
 [renderer.graph]
-executor = "gpu-compute"
+executor = "gpu"
 nodes.world = { role = "world", component = "world" }
 nodes.storage = { role = "storage", component = "bricks", inputs = { changes = "world" } }
 nodes.kernel = { role = "traversal", component = "refloor", inputs = { storage = "storage" } }
@@ -35,7 +35,7 @@ nodes.shading = { role = "shading", component = "direct", device = "gpu1", knobs
 [[renderer]]
 label = "split, shading a frame behind"
 [renderer.graph]
-executor = "gpu-compute"
+executor = "gpu"
 nodes.world = { role = "world", component = "world" }
 nodes.storage = { role = "storage", component = "bricks", inputs = { changes = "world" } }
 nodes.kernel = { role = "traversal", component = "refloor", inputs = { storage = "storage" } }
@@ -47,7 +47,7 @@ nodes.shading = { role = "shading", component = "direct", device = "gpu1", knobs
 [[renderer]]
 label = "on one GPU"
 [renderer.graph]
-executor = "gpu-compute"
+executor = "gpu"
 nodes.world = { role = "world", component = "world" }
 nodes.storage = { role = "storage", component = "bricks", inputs = { changes = "world" } }
 nodes.kernel = { role = "traversal", component = "refloor", inputs = { storage = "storage" } }

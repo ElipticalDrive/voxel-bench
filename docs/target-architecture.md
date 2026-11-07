@@ -233,7 +233,10 @@ generic executor, which owns the renderer interface itself (world changes, knobs
 memory, frames); the GPU lane interface is gone.
 Step 4 has begun: `accept` is the validity rules plus the nodes each executor declares it
 builds, for every back end, and the editor edits graphs exactly, drafts included (no filling in
-or pruning). The ten back-end names remain (as executors and in compositions) until retired.
+or pruning). A graph names its executor by device kind (`executor = "cpu"` or `"gpu"`, none =
+`gpu`), where its nodes without a device run; which of the executor's regions builds it, and its
+declarations, follow from its shape (the preset it names). The ten names remain as those presets'
+names, the worker's renderer entries and in compositions until retired.
 
 ## Non-goals
 

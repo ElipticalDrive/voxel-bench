@@ -168,7 +168,7 @@ mod tests {
     fn executors_build_what_they_declare() {
         let (mut built, mut refused) = (0, 0);
         for ck in graph::near(&[raycast::BACKEND, raster::BACKEND, columns::BACKEND]) {
-            let e = ck.graph.executor.clone();
+            let e = ck.preset.unwrap();
             let key = ck.graph.canonical().unwrap();
             if let Err(why) = ck.built() {
                 assert!(ck.graph.accept().is_err(), "`{e}` refuses a graph `accept` takes ({why}): {key}");
@@ -192,7 +192,7 @@ mod tests {
                 client: Default::default(),
                 link: Default::default(),
             };
-            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| create(&e, p).map(drop)));
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| create(e, p).map(drop)));
             match made {
                 Ok(Ok(())) => {}
                 Ok(Err(why)) => panic!("`{e}` fails building {key}: {why}"),

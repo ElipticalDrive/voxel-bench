@@ -39,10 +39,11 @@ impl Graph {
     /// the nodes only they reached dropped.
     pub(super) fn skeleton(&self) -> Graph {
         let mut g = self.clone();
+        let preset = g.preset().unwrap_or_default();
         let lead = g.lead();
         let lead_storage = lead.as_ref().and_then(|(c, p)| g.nodes[c].inputs.get(*p)).and_then(|k| g.walked(k)).map(String::from);
         for (caster, port, _) in g.sites() {
-            if lead.as_ref().is_some_and(|(c, p)| *c == caster && *p == port) || follows_lead(&g.executor, g.nodes[&caster].role, port) {
+            if lead.as_ref().is_some_and(|(c, p)| *c == caster && *p == port) || follows_lead(preset, g.nodes[&caster].role, port) {
                 continue;
             }
             let n = g.nodes.get_mut(&caster).unwrap();
@@ -60,18 +61,15 @@ impl Graph {
     /// (its skeleton's, else the back end's default; for labels and the flat options) and
     /// whether that composition is exactly the graph. Fails with the reason.
     pub fn accept(&self) -> Result<(Composition, bool), String> {
-        let placed = self.placed();
-        if placed.executor != self.executor {
-            return placed.accept();
-        }
         let ck = self.check()?;
+        let preset = ck.preset.ok_or_else(|| ck.built().err().unwrap_or_else(|| "no preset has this shape".into()))?;
         // Timings an executor lets the graph choose; every other edge runs now.
-        let free = |n: &Node, p: &str| FREE_TIMINGS.iter().find(|(e, r, port, _)| *e == self.executor && *r == n.role && *port == p).map(|f| f.3);
+        let free = |n: &Node, p: &str| FREE_TIMINGS.iter().find(|(e, r, port, _)| *e == preset && *r == n.role && *port == p).map(|f| f.3);
         for (id, n) in &ck.graph.nodes {
             for p in n.inputs.keys() {
                 let w = &n.when(p);
                 if let Some(ok) = free(n, p).or(Some(&[When::Now])).filter(|ok| !ok.contains(w)) {
-                    return Err(format!("`{id}`.{p}: `{}` runs this edge {}, not {}", self.executor, ok.iter().map(|w| w.label()).collect::<Vec<_>>().join(" or "), w.label()));
+                    return Err(format!("`{id}`.{p}: `{preset}` runs this edge {}, not {}", ok.iter().map(|w| w.label()).collect::<Vec<_>>().join(" or "), w.label()));
                 }
             }
         }
@@ -80,7 +78,7 @@ impl Graph {
             return Err(why);
         }
         let mut c = ck.graph.skeleton().skeleton_composition().unwrap_or_else(|_| {
-            let mut c = Composition::new(&self.executor);
+            let mut c = Composition::new(preset);
             c.fill_defaults();
             c
         });
@@ -103,7 +101,7 @@ impl Graph {
                 }
                 let role = n.role;
                 // A free timing compares as `prev` (whichever it is; a cycle stays closed).
-                for (_, _, port, _) in FREE_TIMINGS.iter().filter(|(e, r, _, _)| *e == self.executor && *r == role) {
+                for (_, _, port, _) in FREE_TIMINGS.iter().filter(|(e, r, _, _)| *e == preset && *r == role) {
                     if n.inputs.contains_key(*port) {
                         n.timing.insert(port.to_string(), When::Prev);
                     }
@@ -112,7 +110,7 @@ impl Graph {
             g.canonical()
         };
         // The secondary-ray stages where the composition has them.
-        let b = backend(&self.executor).unwrap();
+        let b = backend(preset).unwrap();
         let g = &ck.graph;
         let shading = ck.shading();
         if let (true, Some(s), Some(k)) = (b.has(Slot::ShadowTraversal), g.nodes[shading].inputs.get("shadow"), g.lead().and_then(|(c, p)| g.nodes[&c].inputs.get(p).cloned())) {
@@ -147,8 +145,9 @@ impl Graph {
         let g = &ck.graph;
         let n = |id: &str| &g.nodes[id];
         let input = |id: &str, p: &str| n(id).inputs.get(p).map(String::as_str);
-        let mut c = Composition { backend: g.executor.clone(), ..Composition::new("") };
-        let b = backend(&g.executor).unwrap();
+        let preset = ck.preset.ok_or("no preset has this shape")?;
+        let mut c = Composition { backend: preset.into(), ..Composition::new("") };
+        let b = backend(preset).unwrap();
         let shading = ck.shading();
         c.shading = n(shading).component.clone();
         let hits = input(shading, "hits").unwrap();
@@ -159,7 +158,7 @@ impl Graph {
             hits
         };
         if n(vis).role != Role::Visibility {
-            return Err(format!("`{}` draws faces straight from `{vis}`: this back end needs a visibility stage between them", g.executor));
+            return Err(format!("`{}` draws faces straight from `{vis}`: this back end needs a visibility stage between them", preset));
         }
         c.visibility = n(vis).component.clone();
         let take = |c: &mut Composition, id: &str| {
@@ -217,8 +216,8 @@ fn device_blocker(ck: &Checked) -> Option<String> {
         v.iter().map(|id| format!("`{id}`")).collect::<Vec<_>>().join(", ")
     };
     let used = slots.iter().map(|&i| format!("{} ({})", Device::Gpu(i), on(Device::Gpu(i)))).collect::<Vec<_>>().join("; ");
-    if !matches!(g.executor.as_str(), "gpu-compute" | "gpu-rt") {
-        return Some(format!("`{}` runs on one GPU (here: {used}); a pipeline over two GPUs is split at the hit records, ray casting's deferred shading on the second", g.executor));
+    if !matches!(ck.preset, Some("gpu-compute" | "gpu-rt")) {
+        return Some(format!("`{}` runs on one GPU (here: {used}); a pipeline over two GPUs is split at the hit records, ray casting's deferred shading on the second", ck.preset.unwrap_or("this pipeline")));
     }
     let (Some(vis), Some(shading)) = (g.nodes.iter().find(|(_, n)| n.role == Role::Visibility), g.nodes.iter().find(|(_, n)| n.role == Role::Shading)) else {
         return Some(format!("a pipeline over two GPUs is split between its visibility and shading nodes (here: {used})"));
@@ -294,8 +293,8 @@ pub fn of_init(backend: &str, p: &mr_core::InitParams) -> anyhow::Result<Checked
     } else {
         serde_json::from_str(&p.graph_json)?
     };
-    let g = g.placed();
-    anyhow::ensure!(g.executor == backend, "a `{}` graph handed to `{backend}`", g.executor);
+    let preset = g.preset();
+    anyhow::ensure!(preset == Some(backend), "a `{}` graph handed to `{backend}`", preset.unwrap_or("shapeless"));
     g.validate().map_err(anyhow::Error::msg)?;
     g.check().map_err(anyhow::Error::msg)
 }

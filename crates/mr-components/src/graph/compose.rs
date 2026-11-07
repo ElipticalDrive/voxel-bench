@@ -97,16 +97,26 @@ impl Graph {
         if let (true, Some(k)) = (meshes, shadow) {
             nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), k.into());
         }
-        Ok(Graph { executor: c.backend, nodes })
+        // Run by the back end's executor; nodes it would place elsewhere than the back end
+        // does get their device written (fused ones follow their callers, the rest of the
+        // world's side and the post have their own rules).
+        let executor = executor_of(&c.backend);
+        for n in nodes.values_mut().filter(|n| n.role.slot().is_some() && known(n.role, &n.component) && !output(n.role, &n.component).fused()) {
+            let at = placed_on(&c.backend, n.role, &n.component);
+            if at != default_device(executor, n.role, &n.component) {
+                n.device = Some(at);
+            }
+        }
+        Ok(Graph { executor: executor.into(), nodes })
     }
 
-    /// The preset this graph's shape and devices name (the back ends'
-    /// names are presets of graphs, not what a graph is written for): the face drawer's
+    /// The preset this graph's shape and devices name (the region of its executor that
+    /// builds it, and the tables keyed by the former back ends' names): the face drawer's
     /// source (meshing: `gpu-raster` / `cpu-raster` by the drawer's device; discovery:
     /// `gpu-discover` / `cpu-discover` by the sampler's), else the visibility node's
     /// component and device (ray casting: `cpu`, `gpu-rt` when its primary rays are ray
-    /// queries, else `gpu-compute`; `columns`; `splat`). Nodes without a device run where
-    /// the written executor runs their role. `None` for a shape no preset has.
+    /// queries (the kernel's component or API), else `gpu-compute`; `columns`; `splat`). `None` for a
+    /// shape no preset has.
     pub fn preset(&self) -> Option<&'static str> {
         let dev = |n: &Node| n.device.unwrap_or_else(|| default_device(&self.executor, n.role, &n.component)).kind();
         let shading = self.nodes.values().find(|n| n.role == Role::Shading)?;
@@ -128,35 +138,20 @@ impl Graph {
             ("splat", true) => Some("gpu-splat"),
             ("raycast", false) => Some("cpu"),
             ("raycast", true) => {
-                let rq = hits.inputs.get("primary").and_then(|k| self.nodes.get(k)).is_some_and(|k| k.component == "rayquery");
+                let rq = hits.inputs.get("primary").and_then(|k| self.nodes.get(k)).is_some_and(|k| k.component == "rayquery" || k.api == Some(crate::Api::RayQuery));
                 Some(if rq { "gpu-rt" } else { "gpu-compute" })
             }
             _ => None,
         }
     }
 
-    /// The graph run by the preset its shape names ([`Self::preset`]; unchanged if it names
-    /// none or the written one). Where the preset changes, nodes in stages the written back
-    /// end has keep the device it runs them on (fused nodes still follow their callers), so
-    /// the graph means what it was written as; the others run where the preset runs them.
-    pub fn placed(&self) -> Graph {
-        let Some(p) = self.preset().filter(|p| *p != self.executor) else { return self.clone() };
-        let mut g = self.clone();
-        if let Some(b) = backend(&self.executor) {
-            for n in g.nodes.values_mut().filter(|n| n.role.slot().is_some_and(|s| b.has(s)) && known(n.role, &n.component) && !output(n.role, &n.component).fused()) {
-                n.device.get_or_insert_with(|| default_device(&self.executor, n.role, &n.component));
-            }
-        }
-        g.executor = p.into();
-        g
-    }
-
     /// The graph with the edge timings its knobs spell set (`TIMING_KNOBS`: cpu-discover's
     /// `pipelined = false` makes the drawer's faces arrive `now`). Knobs not given keep the
     /// graph's timing.
     pub fn with_options(self, options: &toml::Table) -> Graph {
-        let mut g = self.placed();
-        for &(_, knob, role, port, on, off) in TIMING_KNOBS.iter().filter(|k| k.0 == g.executor) {
+        let mut g = self;
+        let preset = g.preset();
+        for &(_, knob, role, port, on, off) in TIMING_KNOBS.iter().filter(|k| Some(k.0) == preset) {
             let Some(v) = options.get(knob).and_then(|v| v.as_bool()) else { continue };
             for n in g.nodes.values_mut().filter(|n| n.role == role && n.inputs.contains_key(port)) {
                 n.timing.insert(port.into(), if v { on } else { off });
@@ -168,9 +163,10 @@ impl Graph {
 
     /// The knobs spelling this graph's timings, as `with_options` reads them.
     pub fn timing_options(&self) -> Vec<(&'static str, bool)> {
-        let g = self.placed();
+        let g = self;
+        let preset = g.preset();
         let mut v = Vec::new();
-        for &(_, knob, role, port, on, _) in TIMING_KNOBS.iter().filter(|k| k.0 == g.executor) {
+        for &(_, knob, role, port, on, _) in TIMING_KNOBS.iter().filter(|k| Some(k.0) == preset) {
             if let Some(n) = g.nodes.values().find(|n| n.role == role && n.inputs.contains_key(port)) {
                 v.push((knob, n.when(port) == on));
             }
@@ -182,13 +178,10 @@ impl Graph {
     /// sites keep theirs: back ends read them per instance). Two skeleton nodes with
     /// different values of one knob cannot be expressed yet.
     pub fn flat_knobs(&self) -> Result<toml::Table, String> {
-        let placed = self.placed();
-        if placed.executor != self.executor {
-            return placed.flat_knobs();
-        }
         let skel = self.normalised()?.skeleton();
+        let preset = self.preset().unwrap_or_default();
         let mut t = toml::Table::new();
-        if let Some((b, ch)) = backend(&self.executor).and_then(|b| b.api_choice.map(|ch| (b, ch)))
+        if let Some((b, ch)) = backend(preset).and_then(|b| b.api_choice.map(|ch| (b, ch)))
             && let Some(v) = self.nodes.values().filter(|n| n.role.slot().is_some_and(|sl| b.chooses(sl))).find_map(|n| n.api).and_then(|a| ch.value(a)) {
             t.insert(ch.knob.into(), v.into());
         }
@@ -199,7 +192,7 @@ impl Graph {
         for (id, n) in self.nodes.iter().filter(|(id, n)| skel.nodes.contains_key(*id) && n.role.slot().is_some()) {
             for (k, v) in &n.knobs {
                 if let Some(old) = t.insert(k.clone(), v.clone()).filter(|old| old != v) {
-                    return Err(format!("knob `{k}` set to {old} and {v} (`{id}`): `{}` has one `{k}` for its stages", self.executor));
+                    return Err(format!("knob `{k}` set to {old} and {v} (`{id}`): `{preset}` has one `{k}` for its stages"));
                 }
             }
         }

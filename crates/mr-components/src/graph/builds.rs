@@ -3,8 +3,8 @@
 //! (`Graph::check`) on a node executor exactly when it has no other node, else refuses it with
 //! the reason; it is never built half-way.
 
-use super::{Checked, Graph, Node, Role, inputs, output, role_components};
-use crate::{Api, Kind};
+use super::{Checked, Graph, Node, Role, executor_of, inputs, output, role_components};
+use crate::Kind;
 
 /// Nodes of one role an executor builds.
 #[derive(Copy, Clone, Debug)]
@@ -234,18 +234,21 @@ pub const GPU_COLUMNS: Builds = Builds {
 const AROUND: &[Role] = &[Role::World, Role::Generator, Role::Link, Role::Client, Role::Post];
 
 impl Checked {
-    /// The node executor that builds this graph and what it declares (`None`: no executor of
-    /// that name). GPU ray casting runs on the ray-query caster when the primary rays'
-    /// kernel is a ray query, else on the walk.
+    /// The region of the graph's executor that builds this graph (named by its preset, which
+    /// the graph's shape names: [`Graph::preset`]) and what it declares; `None`: a shape no
+    /// region has, or one another device's executor runs. GPU ray casting runs on the
+    /// ray-query caster when the primary rays' kernel is a ray query, else on the walk.
     pub fn builder(&self) -> Option<(&'static str, Builds)> {
-        // The primary rays' kernel, whichever visibility node casts them.
-        let primary = self.graph.nodes.values().filter(|n| n.role == Role::Visibility).find_map(|n| n.inputs.get("primary"));
-        Some(match self.graph.executor.as_str() {
+        let preset = self.preset?;
+        if executor_of(preset) != self.graph.runs_on() {
+            return None;
+        }
+        Some(match preset {
             "cpu" => ("cpu", CPU_RAYCAST),
             "cpu-raster" => ("cpu-raster", CPU_RASTER),
             "cpu-voxelspace" => ("cpu-voxelspace", CPU_COLUMNS),
-            "gpu-compute" | "gpu-rt" if primary.and_then(|k| self.api(k)) == Some(Api::RayQuery) => ("gpu-rt", GPU_RAYQUERY),
-            "gpu-compute" | "gpu-rt" => ("gpu-compute", GPU_WALK),
+            "gpu-rt" => ("gpu-rt", GPU_RAYQUERY),
+            "gpu-compute" => ("gpu-compute", GPU_WALK),
             "gpu-raster" => ("gpu-raster", GPU_MESHING),
             "gpu-discover" => ("gpu-discover", GPU_SAMPLER),
             "cpu-discover" => ("cpu-discover", CPU_SAMPLER),
@@ -257,7 +260,10 @@ impl Checked {
 
     /// Whether the node executor running this graph builds it (see [`Self::built_by`]).
     pub fn built(&self) -> Result<(), String> {
-        let (e, b) = self.builder().ok_or_else(|| format!("no executor builds `{}` graphs", self.graph.executor))?;
+        let (e, b) = self.builder().ok_or_else(|| match self.preset {
+            Some(p) => format!("the {} executor builds no `{p}` pipeline (the {} executor's)", self.graph.runs_on(), executor_of(p)),
+            None => format!("no region of the {} executor builds this shape (an image from a shading over hits from a visibility node or a drawer)", self.graph.runs_on()),
+        })?;
         self.built_by(e, b)
     }
 
@@ -364,7 +370,7 @@ pub fn edits(g: &Graph) -> Vec<Graph> {
 }
 
 /// The valid graphs one or two [`edits`] from the default graphs of `executors` (and their
-/// path-tracing ones), placed, with the executor each lands on; each once.
+/// path-tracing ones), checked, with the preset each lands on among them; each once.
 pub fn near(executors: &[&str]) -> Vec<Checked> {
     let mut bases = vec![];
     for &e in executors {
@@ -383,8 +389,8 @@ pub fn near(executors: &[&str]) -> Vec<Checked> {
         for h in edits(&g).into_iter().map(Graph::pruned) {
             let two: Vec<Graph> = edits(&h).into_iter().map(Graph::pruned).collect();
             for x in std::iter::once(h).chain(two) {
-                let Ok(ck) = x.placed().check() else { continue };
-                if executors.contains(&ck.graph.executor.as_str()) && seen.insert(ck.graph.canonical().unwrap_or_default()) {
+                let Ok(ck) = x.check() else { continue };
+                if ck.preset.is_some_and(|p| executors.contains(&p)) && seen.insert(ck.graph.canonical().unwrap_or_default()) {
                     v.push(ck);
                 }
             }

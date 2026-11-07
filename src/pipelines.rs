@@ -345,7 +345,7 @@ fn profdata() -> anyhow::Result<PathBuf> {
 /// bricks + refloor, 960x540: 71 ms a frame on one thread, 547 on four, 850 on all 32).
 fn train_options(b: &Bake) -> toml::Table {
     let mut options = toml::Table::new();
-    if params_of(&b.graph.executor).is_some_and(|(_, ps)| ps.iter().any(|p| p.name == "threads")) {
+    if b.graph.preset().and_then(params_of).is_some_and(|(_, ps)| ps.iter().any(|p| p.name == "threads")) {
         options.insert("threads".into(), 1.into());
     }
     options

@@ -242,7 +242,7 @@ impl RendererSpec {
                     self.sites = sites;
                 }
                 None => {
-                    self.ran_graph = Some(g.placed());
+                    self.ran_graph = Some(g.clone());
                     self.compose = Some(c);
                 }
             }
@@ -860,7 +860,7 @@ mod tests {
         let new = format!(
             "{scene}[run]\nview_radius = 8\n\
              {r}\n{r}sites = {{ link = \"net(latency_ms=1, bandwidth_mbps=1000)\" }}\n{r}sites = {{ link = \"{home}\" }}\n{r}sites = {{ client = \"derive(radius=4, max_lod=2)\", link = \"{home}\" }}\n\
-             [[renderer]]\ngraph = {{ executor = \"gpu-compute\", nodes = {{ s = {{ role = \"shading\", component = \"direct\", inputs = {{ hits = \"v\" }} }}, v = {{ role = \"visibility\", component = \"raycast\", inputs = {{ primary = \"k\" }} }}, k = {{ role = \"traversal\", component = \"refloor\", inputs = {{ storage = \"b\" }} }}, b = {{ role = \"storage\", component = \"bricks\" }}, \
+             [[renderer]]\ngraph = {{ executor = \"gpu\", nodes = {{ s = {{ role = \"shading\", component = \"direct\", inputs = {{ hits = \"v\" }} }}, v = {{ role = \"visibility\", component = \"raycast\", inputs = {{ primary = \"k\" }} }}, k = {{ role = \"traversal\", component = \"refloor\", inputs = {{ storage = \"b\" }} }}, b = {{ role = \"storage\", component = \"bricks\" }}, \
              net = {{ role = \"link\", component = \"net\", knobs = {{ latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01, reorder = true }} }}, c = {{ role = \"client\", component = \"pick\", inputs = {{ changes = \"net\" }}, knobs = {{ radius = 6 }} }} }} }}\n\
              [[renderer]]\nname = \"cpu-reference\"\n"
         );
@@ -992,7 +992,7 @@ mod tests {
         let graph = r#"
 [[renderer]]
 [renderer.graph]
-executor = "gpu-compute"
+executor = "gpu"
 nodes.s = { role = "storage", component = "prefix" }
 nodes.k = { role = "traversal", component = "incremental", inputs = { storage = "s" }, knobs = { exact = false } }
 nodes.v = { role = "visibility", component = "raycast", inputs = { primary = "k" } }

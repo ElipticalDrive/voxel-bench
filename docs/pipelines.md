@@ -46,10 +46,12 @@ on the other (`plans/two-gpus.toml`).
 
 ## Back ends
 
-A back end (an *executor*) runs a family of graphs: `gpu-compute`, `gpu-raster`, `gpu-rt`,
-`gpu-discover`, `gpu-splat`, `gpu-voxelspace` (on the GPU executor, `crates/mr-exec-gpu`), and `cpu`,
-`cpu-raster`, `cpu-discover`, `cpu-voxelspace` (on the CPU executor, `crates/mr-exec-cpu`; the
-discovery back end draws on the GPU). The back end is derived from the graph and never
+A graph runs on the executor of one device kind: `executor = "gpu"` (the default,
+`crates/mr-exec-gpu`) or `"cpu"` (`crates/mr-exec-cpu`), where the image is made; nodes without a
+`device` run there when their component can. The graph's shape names a preset, the region of
+that executor that builds it: `gpu-compute`, `gpu-raster`, `gpu-rt`, `gpu-discover`,
+`cpu-discover` (discovery on the CPU, drawn on the GPU), `gpu-splat`, `gpu-voxelspace` on the GPU,
+`cpu`, `cpu-raster`, `cpu-voxelspace` on the CPU. The preset is derived from the graph and never
 chosen directly. Each back end has a default pipeline, and the GUI's "start from…" begins
 from one. `cpu-reference`, which defines the reference images, is the one renderer that
 stands alone, on purpose.
@@ -86,7 +88,7 @@ A site's value is another site (shared), a kernel (over the lead storage),
 [[renderer]]
 label = "split over two GPUs"
 [renderer.graph]
-executor = "gpu-compute"
+executor = "gpu"
 nodes.world = { role = "world", component = "world" }
 nodes.storage = { role = "storage", component = "bricks", inputs = { changes = "world" } }
 nodes.kernel = { role = "traversal", component = "refloor", inputs = { storage = "storage" } }
