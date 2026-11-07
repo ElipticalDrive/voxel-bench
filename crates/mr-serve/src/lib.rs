@@ -68,7 +68,7 @@ impl FrameSink for Sink<'_> {
 /// opens the process's devices for the configuration the host sends.
 pub fn run(socket: &str, entries: Vec<RendererEntry>, devices: fn(&mr_core::DeviceConfig) -> mr_core::Devices) -> anyhow::Result<()> {
     let (mut input, mut out) = mr_ipc::split::<HostMsg, WorkerMsg>(mr_ipc::connect(socket)?);
-    out.send(&WorkerMsg::Hello { pid: std::process::id(), protocol: PROTOCOL_VERSION, renderers: entries.iter().map(|e| (e.info)()).collect() })?;
+    out.send(&WorkerMsg::Hello { pid: std::process::id(), protocol: PROTOCOL_VERSION, renderers: entries.iter().map(|e| e.name.to_string()).collect() })?;
 
     // Drain the socket on a separate thread so the host never blocks on a busy renderer.
     // The renderer's waker feeds the same queue, so completions are handled promptly.
@@ -119,8 +119,8 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let Ok(Input::Host(HostMsg::Init { renderer: name, params, shm })) = rx.recv() else {
         bail!("expected Init as first message");
     };
-    let entry = entries.into_iter().find(|e| (e.info)().name == name).with_context(|| format!("unknown renderer `{name}`"))?;
-    let info = (entry.info)();
+    let entry = entries.into_iter().find(|e| e.name == name).with_context(|| format!("unknown renderer `{name}`"))?;
+    let info = (entry.info)(&params)?;
     tracing::info!("initialising {name} at {}x{}", params.width, params.height);
     let t = Instant::now();
     // The process's devices, handed to the renderer.

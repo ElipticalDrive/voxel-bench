@@ -37,6 +37,8 @@ pub struct Worker {
 }
 
 pub struct SpawnConfig<'a> {
+    /// The worker's entry: the executor (`cpu`, `gpu`) a graph runs on, or a standalone
+    /// renderer.
     pub renderer: &'a str,
     pub label: &'a str,
     pub params: InitParams,
@@ -74,6 +76,7 @@ pub fn spawn_renderer(
         }
         _ => None,
     };
+    let graph = spec.pipeline();
     let params = InitParams {
         width,
         height,
@@ -83,14 +86,14 @@ pub fn spawn_renderer(
         view_radius_chunks: spec.view_radius(run),
         max_lod: spec.max_lod(run, u8::MAX),
         options_json: serde_json::to_string(&spec.options)?,
-        graph_json: spec.pipeline().map(|g| serde_json::to_string(&g)).transpose()?.unwrap_or_default(),
+        graph_json: graph.as_ref().map(serde_json::to_string).transpose()?.unwrap_or_default(),
         devices: spec.devices(run),
         stage_times: run.stage_times,
         client: spec.levels(),
         link: spec.link(),
     };
     let w = Worker::spawn(SpawnConfig {
-        renderer: &spec.name,
+        renderer: graph.as_ref().map_or(spec.name.as_str(), |g| g.runs_on()),
         label: spec.label(),
         params,
         isolation: run.isolation,

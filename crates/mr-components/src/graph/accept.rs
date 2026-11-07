@@ -276,25 +276,13 @@ fn api_blocker(b: &crate::BackendInfo, ck: &Checked, c: &Composition) -> Option<
     (!why.is_empty()).then(|| why.join("; "))
 }
 
-/// The graph back end `backend` runs: the host's
-/// ([`mr_core::InitParams::graph_json`]), else the graph of the flat composition in its
-/// options (its slots by name), checked and accepted.
-pub fn of_init(backend: &str, p: &mr_core::InitParams) -> anyhow::Result<Checked> {
-    let g: Graph = if p.graph_json.trim().is_empty() {
-        let opts: serde_json::Map<String, serde_json::Value> = if p.options_json.trim().is_empty() { Default::default() } else { serde_json::from_str(&p.options_json)? };
-        let mut c = Composition::new(backend);
-        for s in c.slots().collect::<Vec<_>>() {
-            if let Some(v) = opts.get(s.name()).and_then(|v| v.as_str()) {
-                c.set(s, v);
-            }
-        }
-        let knobs: toml::Table = serde_json::from_value(serde_json::Value::Object(opts)).unwrap_or_default();
-        Graph::from_composition(&c).map_err(anyhow::Error::msg)?.with_options(&knobs)
-    } else {
-        serde_json::from_str(&p.graph_json)?
-    };
-    let preset = g.preset();
-    anyhow::ensure!(preset == Some(backend), "a `{}` graph handed to `{backend}`", preset.unwrap_or("shapeless"));
+/// The graph the `kind` executor (`cpu`, `gpu`) runs: the host's
+/// ([`mr_core::InitParams::graph_json`]), checked; its preset is the region that runs it.
+pub fn of_init(kind: &str, p: &mr_core::InitParams) -> anyhow::Result<Checked> {
+    anyhow::ensure!(!p.graph_json.trim().is_empty(), "the {kind} executor runs a graph; none was given");
+    let g: Graph = serde_json::from_str(&p.graph_json)?;
+    anyhow::ensure!(g.runs_on() == kind, "a graph for the {} executor handed to the {kind} executor", g.runs_on());
+    anyhow::ensure!(g.preset().is_some(), "the {kind} executor builds no pipeline of this shape");
     g.validate().map_err(anyhow::Error::msg)?;
     g.check().map_err(anyhow::Error::msg)
 }

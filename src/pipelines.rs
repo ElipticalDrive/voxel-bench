@@ -78,20 +78,11 @@ pub fn bakes(backend: &str) -> &'static [&'static str] {
 
 /// The executor of `backend` and its knobs (`None`: no generated pipeline runs it).
 fn params_of(backend: &str) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
-    let (executor, entry) = match backend {
-        "cpu" => (Executor::Cpu, mr_exec_cpu::cpu_entry()),
-        "cpu-raster" => (Executor::Cpu, mr_exec_cpu::cpu_raster_entry()),
-        "cpu-voxelspace" => (Executor::Cpu, mr_exec_cpu::cpu_voxelspace_entry()),
-        "gpu-raster" => (Executor::Gpu, mr_exec_gpu::gpu_raster_entry()),
-        "gpu-discover" => (Executor::Gpu, mr_exec_gpu::gpu_discover_entry()),
-        "cpu-discover" => (Executor::Gpu, mr_exec_gpu::cpu_discover_entry()),
-        "gpu-compute" => (Executor::Gpu, mr_exec_gpu::gpu_compute_entry()),
-        "gpu-rt" => (Executor::Gpu, mr_exec_gpu::gpu_rt_entry()),
-        "gpu-splat" => (Executor::Gpu, mr_exec_gpu::gpu_splat_entry()),
-        "gpu-voxelspace" => (Executor::Gpu, mr_exec_gpu::gpu_voxelspace_entry()),
+    Some(match backend {
+        "cpu" | "cpu-raster" | "cpu-voxelspace" => (Executor::Cpu, mr_exec_cpu::info(backend).params),
+        "gpu-raster" | "gpu-discover" | "cpu-discover" | "gpu-compute" | "gpu-rt" | "gpu-splat" | "gpu-voxelspace" => (Executor::Gpu, mr_exec_gpu::info(backend).params),
         _ => return None,
-    };
-    Some((executor, (entry.info)().params))
+    })
 }
 
 /// A built pipeline worker.
@@ -126,7 +117,6 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
     if executor == Executor::Gpu {
         // The GPU executor's CPU work, built for this CPU; discovery on the CPU in the graph's
         // storage alone (the storage its rays walk).
-        consts.push(format!("const BACKEND: &'static str = {:?};", spec.name));
         let entry = "mr_exec_gpu::compiled_entry::<Baked>()".to_string();
         if ck.find(Role::Draw).is_some() && ck.find(Role::Visibility).is_some_and(|v| ck.devices[v] == Device::Cpu) {
             let kernel = ck.input(Role::Visibility, "rays").context("discovery casts no rays")?;
@@ -764,7 +754,7 @@ mod tests {
             let bk = bake(&spec(b, &[])).unwrap().unwrap();
             assert_eq!(bk.executor, Executor::Gpu, "{b}");
             let s = source(&bk).unwrap();
-            for want in ["impl mr_exec_gpu::Spec for Baked", &format!("BACKEND: &'static str = {b:?}"), "mr_exec_gpu::compiled_entry::<Baked>()", "mr_gpu::devices", "NATIVE: bool = true"] {
+            for want in ["impl mr_exec_gpu::Spec for Baked", "mr_exec_gpu::compiled_entry::<Baked>()", "mr_gpu::devices", "NATIVE: bool = true"] {
                 assert!(s.contains(want), "{b}: {want} in {s}");
             }
             assert_eq!(s.contains("CPU_WORLD"), b == "cpu-discover", "{s}");

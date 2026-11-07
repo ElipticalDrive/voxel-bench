@@ -2,7 +2,7 @@
 //! values it baked in (name, value as JSON) cannot change, at creation or live; another value
 //! needs another build. The executors' `Spec`s list them; the generic builds bake none.
 
-use crate::{InitParams, RendererInfo};
+use crate::{InitParams, ParamSpec};
 
 /// The knob values a compiled pipeline baked in (name, value as JSON).
 pub type Knobs = &'static [(&'static str, &'static str)];
@@ -18,13 +18,12 @@ pub fn refuse(baked: &[(&str, &str)], name: &str, value: &serde_json::Value) -> 
 }
 
 /// Checks the creation options against what `baked` compiled in: each baked knob's value,
-/// given or `info`'s default.
-pub fn check(baked: &[(&str, &str)], p: &InitParams, info: fn() -> RendererInfo) -> anyhow::Result<()> {
+/// given or its default in `params`.
+pub fn check(baked: &[(&str, &str)], p: &InitParams, params: &[ParamSpec]) -> anyhow::Result<()> {
     if baked.is_empty() {
         return Ok(());
     }
     let options: serde_json::Map<String, serde_json::Value> = if p.options_json.trim().is_empty() { Default::default() } else { serde_json::from_str(&p.options_json)? };
-    let params = info().params;
     for (name, _) in baked {
         let value = options.get(*name).cloned().or_else(|| params.iter().find(|q| q.name == *name).map(|q| q.default.to_json()));
         refuse(baked, name, &value.ok_or_else(|| anyhow::anyhow!("baked knob `{name}` is not one of the executor's"))?)?;

@@ -73,26 +73,35 @@ fn fixed<T: PartialEq + std::fmt::Debug>(what: &str, baked: Option<T>, actual: T
     }
 }
 
-pub fn cpu_entry() -> RendererEntry {
-    RendererEntry { info: raycast::info, create: |p, _, _| create(raycast::BACKEND, p) }
+/// The CPU executor: the pipeline its graph picks.
+pub fn entry() -> RendererEntry {
+    RendererEntry { name: "cpu", info: |p| Ok(info(graph::of_init("cpu", p)?.preset.expect("of_init: a preset"))), create: |p, _, _| create(p) }
 }
 
-pub fn cpu_raster_entry() -> RendererEntry {
-    RendererEntry { info: raster::info, create: |p, _, _| create(raster::BACKEND, p) }
+/// The knobs of every pipeline, by preset.
+pub fn infos() -> Vec<RendererInfo> {
+    vec![raster::info(), raycast::info(), columns::info()]
 }
 
-pub fn cpu_voxelspace_entry() -> RendererEntry {
-    RendererEntry { info: columns::info, create: |p, _, _| create(columns::BACKEND, p) }
+/// The knobs of pipeline `preset`.
+pub fn info(preset: &str) -> RendererInfo {
+    match preset {
+        raycast::BACKEND => raycast::info(),
+        raster::BACKEND => raster::info(),
+        columns::BACKEND => columns::info(),
+        other => panic!("`{other}` is not run by the CPU executor"),
+    }
 }
 
 /// Ray casting compiled for one graph (`S`, storage `R`, pixel `P`); the generated crate's
 /// worker serves only this.
 pub fn raycast_entry<R: mr_components::storage::cpu::Repr, S: Spec, P: Pixel>() -> RendererEntry {
     RendererEntry {
-        info: raycast::info,
+        name: "cpu",
+        info: |_| Ok(raycast::info()),
         create: |p, _, _| {
-            mr_core::baked::check(S::KNOBS, &p, raycast::info)?;
-            raycast::executor::<R, S, P>(&p, &graph::of_init(raycast::BACKEND, &p)?)
+            mr_core::baked::check(S::KNOBS, &p, &raycast::info().params)?;
+            raycast::executor::<R, S, P>(&p, &graph::of_init("cpu", &p)?)
         },
     }
 }
@@ -100,10 +109,11 @@ pub fn raycast_entry<R: mr_components::storage::cpu::Repr, S: Spec, P: Pixel>() 
 /// The rasterisation pipeline compiled for one graph.
 pub fn raster_entry<S: Spec, P: Pixel>() -> RendererEntry {
     RendererEntry {
-        info: raster::info,
+        name: "cpu",
+        info: |_| Ok(raster::info()),
         create: |p, _, _| {
-            mr_core::baked::check(S::KNOBS, &p, raster::info)?;
-            raster::executor::<S, P>(&p, &graph::of_init(raster::BACKEND, &p)?)
+            mr_core::baked::check(S::KNOBS, &p, &raster::info().params)?;
+            raster::executor::<S, P>(&p, &graph::of_init("cpu", &p)?)
         },
     }
 }
@@ -111,29 +121,30 @@ pub fn raster_entry<S: Spec, P: Pixel>() -> RendererEntry {
 /// The columns pipeline compiled for one graph.
 pub fn columns_entry<S: Spec, P: Pixel>() -> RendererEntry {
     RendererEntry {
-        info: columns::info,
+        name: "cpu",
+        info: |_| Ok(columns::info()),
         create: |p, _, _| {
-            mr_core::baked::check(S::KNOBS, &p, columns::info)?;
-            columns::executor::<S, P>(&p, &graph::of_init(columns::BACKEND, &p)?)
+            mr_core::baked::check(S::KNOBS, &p, &columns::info().params)?;
+            columns::executor::<S, P>(&p, &graph::of_init("cpu", &p)?)
         },
     }
 }
 
-/// The executor for `backend`'s graph, writing the post's pixel format.
-fn create(backend: &str, p: InitParams) -> anyhow::Result<Box<dyn Renderer>> {
-    let g = graph::of_init(backend, &p)?;
+/// The executor for `p`'s graph, writing the post's pixel format.
+fn create(p: InitParams) -> anyhow::Result<Box<dyn Renderer>> {
+    let g = graph::of_init("cpu", &p)?;
     match g.tone().format() {
-        PixelFormat::Rgba8 => create_as::<[u8; 4]>(backend, &p, &g),
-        PixelFormat::Rgba16F => create_as::<Half4>(backend, &p, &g),
+        PixelFormat::Rgba8 => create_as::<[u8; 4]>(&p, &g),
+        PixelFormat::Rgba16F => create_as::<Half4>(&p, &g),
     }
 }
 
 /// Rasterisation when a drawer draws faces, else by the visibility node's component.
-fn create_as<P: Pixel>(backend: &str, p: &InitParams, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
+fn create_as<P: Pixel>(p: &InitParams, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
     if g.find(Role::Draw).is_some() {
         return raster::executor::<Generic, P>(p, g);
     }
-    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{backend}: no visibility node"))?;
+    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
     match g.node(vis).component.as_str() {
         "columns" => columns::executor::<Generic, P>(p, g),
         _ => raycast::create::<P>(p, g),
@@ -192,7 +203,7 @@ mod tests {
                 client: Default::default(),
                 link: Default::default(),
             };
-            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| create(e, p).map(drop)));
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| create(p).map(drop)));
             match made {
                 Ok(Ok(())) => {}
                 Ok(Err(why)) => panic!("`{e}` fails building {key}: {why}"),

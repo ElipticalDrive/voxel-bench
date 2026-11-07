@@ -5,7 +5,7 @@
 ```
 multirenderer (host: the server)            worker process (one per renderer: a client)
 ├─ plan.rs      plans, -s overrides          ├─ mr-serve: IPC loop; link, client, generator
-├─ session.rs   frame loop, pacing, outputs  │    └─ the back end running the pipeline graph
+├─ session.rs   frame loop, pacing, outputs  │    └─ an executor (cpu, gpu) running the graph
 ├─ worker.rs    spawn, handshake, logs       │
 ├─ (mr-world)   world store, one stream ─────┼─▶ local socket: Init / Stream / Render / ...
 ├─ compare.rs   PSNR, MAE, bad pixels        │◀─ Hello / Ready / FrameDone / Error
@@ -69,11 +69,11 @@ every face, so UV and orientation mistakes are obvious.
 | `crates/mr-core` | shared vocabulary: camera, chunks, faces and UVs, lighting, knobs, the `Renderer` trait, the client and the link |
 | `crates/mr-world` | generators, textures, the authoritative world store, the stream, scripted scenes (renderers never depend on it) |
 | `crates/mr-ipc` | the protocol: messages, framing (Unix socket or Windows named pipe), shared-memory frame slots |
-| `crates/mr-serve`, `mr-worker` | the worker side: one renderer driven over the protocol; the worker with every back end |
+| `crates/mr-serve`, `mr-worker` | the worker side: one renderer driven over the protocol; the worker with its three entries: the `cpu` and `gpu` executors (each runs the region its graph picks) and the reference |
 | `crates/mr-gpu` | wgpu plumbing: adapter choice, the frame ring (readback, timestamps), shader programs composed from modules, meshes |
 | `crates/mr-mesh` | the greedy mesher and quad encoding |
 | `crates/mr-components` | the registry (`lib.rs`: back ends, components, their implementations), the graph (`graph/`: model, checks, canonical form and key, accept, sites form, schedule), capabilities and adapters (`caps.rs`), and one directory per component: `storage/prefix/{gpu.wgsl,cpu.rs}`, `traversal/sphere/...`, ... |
-| `crates/mr-exec-gpu` | the GPU executor: one core and a lane per kind of visibility (ray casting, faces, discovery, splats, columns) |
+| `crates/mr-exec-gpu` | the GPU executor: one core and a region per kind of visibility (ray casting, faces, discovery, splats, columns) |
 | `crates/mr-exec-cpu` | the CPU executor: ray casting, the software rasteriser, columns; `exec.rs` the generic node executor being migrated to ([target architecture](target-architecture.md)) |
 | `crates/mr-reference` | the reference renderer (f64, exact), standing alone on purpose |
 | `tests/architecture.rs` | the architecture guard (below) |
@@ -97,7 +97,7 @@ New techniques go in as components, not as new renderers:
    shader, `Legend::color` on the CPU) and returns the matching `Legend` in
    `FrameStats::legend`, so that the GUI can draw the scale and read values back.
 
-GPU code never opens a device: a back end's `create(params, devices, waker)` receives the
+GPU code never opens a device: an executor's `create(params, devices, waker)` receives the
 host's devices, and `mr_gpu::gpu(devices, slot, &GpuNeeds { .. })` returns one with the
 features asked for. Asynchronous renderers call the `Waker` when work may have finished;
 `mr_gpu::FrameRing` does this for you.

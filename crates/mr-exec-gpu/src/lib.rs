@@ -45,8 +45,6 @@ pub use mr_components::visibility::discover::grid::CpuWorld;
 /// implements this with the graph's values. The GPU work stays the generic build's (the
 /// driver specialises it, through the pipeline cache).
 pub trait Spec: 'static {
-    /// The back end whose graph and knobs the worker takes.
-    const BACKEND: &'static str;
     /// The knob values compiled in (name, value as JSON); another value needs another build.
     const KNOBS: mr_core::baked::Knobs = &[];
     /// Discovery on the CPU: its world, the graph's storage alone (`None`: by the knob).
@@ -58,18 +56,34 @@ pub trait Spec: 'static {
 /// The executor compiled for one graph (`S`); the generated crate's worker serves only this.
 pub fn compiled_entry<S: Spec>() -> RendererEntry {
     RendererEntry {
-        info: || info(S::BACKEND),
+        name: "gpu",
+        info: |p| Ok(info(region(p)?)),
         create: |p, d, w| {
-            mr_core::baked::check(S::KNOBS, &p, || info(S::BACKEND))?;
-            let inner = create_with(S::BACKEND, p, d, w, S::CPU_WORLD)?;
+            mr_core::baked::check(S::KNOBS, &p, &info(region(&p)?).params)?;
+            let inner = create_with(p, d, w, S::CPU_WORLD)?;
             Ok(Box::new(Compiled { inner, baked: S::KNOBS, native: S::NATIVE }))
         },
     }
 }
 
-/// The knobs of `backend` (a GPU executor's).
-fn info(backend: &str) -> RendererInfo {
-    match backend {
+/// The GPU executor: the region its graph picks.
+pub fn entry() -> RendererEntry {
+    RendererEntry { name: "gpu", info: |p| Ok(info(region(p)?)), create: |p, d, w| create_with(p, d, w, None) }
+}
+
+/// The region (the graph's preset) that runs `p`'s graph.
+fn region(p: &InitParams) -> anyhow::Result<&'static str> {
+    Ok(graph::of_init("gpu", p)?.preset.expect("of_init: a preset"))
+}
+
+/// The knobs of every region, by preset.
+pub fn infos() -> Vec<RendererInfo> {
+    [faces::cpu::BACKEND, faces::gpu::BACKEND, splat::BACKEND, columns::BACKEND, raycast::walk::BACKEND, faces::mesh::BACKEND, raycast::rayquery::BACKEND].map(info).into()
+}
+
+/// The knobs of region `preset`.
+pub fn info(preset: &str) -> RendererInfo {
+    match preset {
         faces::mesh::BACKEND => faces::mesh::info(),
         faces::gpu::BACKEND => faces::gpu::info(),
         faces::cpu::BACKEND => faces::cpu::info(),
@@ -134,43 +148,12 @@ impl Renderer for Compiled {
     }
 }
 
-pub fn gpu_raster_entry() -> RendererEntry {
-    RendererEntry { info: faces::mesh::info, create: |p, d, w| create(faces::mesh::BACKEND, p, d, w) }
-}
-
-pub fn gpu_discover_entry() -> RendererEntry {
-    RendererEntry { info: faces::gpu::info, create: |p, d, w| create(faces::gpu::BACKEND, p, d, w) }
-}
-
-pub fn cpu_discover_entry() -> RendererEntry {
-    RendererEntry { info: faces::cpu::info, create: |p, d, w| create(faces::cpu::BACKEND, p, d, w) }
-}
-
-pub fn gpu_compute_entry() -> RendererEntry {
-    RendererEntry { info: raycast::walk::info, create: |p, d, w| create(raycast::walk::BACKEND, p, d, w) }
-}
-
-pub fn gpu_rt_entry() -> RendererEntry {
-    RendererEntry { info: raycast::rayquery::info, create: |p, d, w| create(raycast::rayquery::BACKEND, p, d, w) }
-}
-
-pub fn gpu_splat_entry() -> RendererEntry {
-    RendererEntry { info: splat::info, create: |p, d, w| create(splat::BACKEND, p, d, w) }
-}
-
-pub fn gpu_voxelspace_entry() -> RendererEntry {
-    RendererEntry { info: columns::info, create: |p, d, w| create(columns::BACKEND, p, d, w) }
-}
-
-/// The executor for `backend`'s graph: the faces' regions when a drawer draws them, else the
-/// region of the visibility node's component.
-fn create(backend: &str, p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Box<dyn Renderer>> {
-    create_with(backend, p, devices, waker, None)
-}
-
-/// [`create`], CPU discovery in `cpu_world`'s storage when a compiled pipeline names one.
-fn create_with(backend: &str, p: InitParams, devices: &Devices, waker: Waker, cpu_world: Option<fn() -> CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
-    let g = graph::of_init(backend, &p)?;
+/// The executor for `p`'s graph: the faces' regions when a drawer draws them, else the region of
+/// the visibility node's component; CPU discovery in `cpu_world`'s storage when a compiled
+/// pipeline names one.
+fn create_with(p: InitParams, devices: &Devices, waker: Waker, cpu_world: Option<fn() -> CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
+    let g = graph::of_init("gpu", &p)?;
+    let backend = g.preset.expect("of_init: a preset");
     if g.find(Role::Draw).is_some() {
         return faces::create(backend, &p, devices, waker, &g, cpu_world);
     }

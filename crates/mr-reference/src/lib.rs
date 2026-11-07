@@ -102,10 +102,10 @@ struct Options {
 }
 
 pub fn entry() -> RendererEntry {
-    RendererEntry { info, create: |p, _, _| Ok(Box::new(CpuReference::new(p)?)) }
+    RendererEntry { name: "cpu-reference", info: |_| Ok(info()), create: |p, _, _| Ok(Box::new(CpuReference::new(p)?)) }
 }
 
-fn info() -> RendererInfo {
+pub fn info() -> RendererInfo {
     RendererInfo {
         name: "cpu-reference".into(),
         description: "Multi-threaded f64 two-level DDA ray caster; defines the reference images".into(),

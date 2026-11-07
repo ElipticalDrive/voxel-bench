@@ -259,6 +259,10 @@ pub trait Renderer {
 
 /// How the worker discovers and constructs a renderer.
 pub struct RendererEntry {
-    pub info: fn() -> RendererInfo,
+    /// The name the host asks for: an executor's device kind (`cpu`, `gpu`) or a standalone
+    /// renderer's.
+    pub name: &'static str,
+    /// What it runs for these params: an executor's, the region its graph picks.
+    pub info: fn(&InitParams) -> anyhow::Result<RendererInfo>,
     pub create: fn(InitParams, &Devices, Waker) -> anyhow::Result<Box<dyn Renderer>>,
 }
