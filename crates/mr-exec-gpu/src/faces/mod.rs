@@ -34,7 +34,7 @@ pub(crate) mod cpu;
 pub(crate) mod gpu;
 pub(crate) mod mesh;
 
-/// The lane for graph `g`: meshing when the drawer's faces are every meshed face (the `faces`
+/// The region for graph `g`: meshing when the drawer's faces are every meshed face (the `faces`
 /// visibility), else discovery on the visibility node's device (on the CPU in `cpu_world`'s
 /// storage when a compiled pipeline names one).
 pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, cpu_world: Option<fn() -> mr_components::visibility::discover::grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
@@ -188,7 +188,7 @@ fn programs(walks: &Walks, lead: Option<(usize, usize)>, [shadow, bounce]: [usiz
     (program, deps, meshed)
 }
 
-/// The drawing lane's WGSL before the draw component: the frame, the face source, the
+/// The drawing region's WGSL before the draw component: the frame, the face source, the
 /// shading state and component, the face drawer's vertex stage.
 fn draw_src(source: &str, shading: &str, varyings: bool) -> String {
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
@@ -257,7 +257,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
     // The core's group 0 (the camera, the shading state, the acceleration structures; the
     // output is the drawer's render attachment, not bound) and the face source's two buffers.
     let mut entries = core.layout_entries_with(false);
-    entries.extend([buf(crate::LANE_BINDING), buf(crate::LANE_BINDING + 1)]);
+    entries.extend([buf(crate::REGION_BINDING), buf(crate::REGION_BINDING + 1)]);
     let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("face draw"), entries: &entries });
     let images = FaceDrawer::images_layout(dev, meshed.is_some(), core.output_format());
     let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("face draw"), bind_group_layouts: &core.storages.layouts(&[Some(&layout_draw), Some(core.world.layout())]), immediate_size: 0 });
@@ -330,11 +330,11 @@ impl Draw {
     /// A draw bind group: the core's group 0 and the face source's two buffers.
     fn bind(&self, core: &Core, a: &wgpu::Buffer, b: &wgpu::Buffer) -> wgpu::BindGroup {
         let mut entries = core.bind_entries_with(None);
-        entries.extend([wgpu::BindGroupEntry { binding: crate::LANE_BINDING, resource: a.as_entire_binding() }, wgpu::BindGroupEntry { binding: crate::LANE_BINDING + 1, resource: b.as_entire_binding() }]);
+        entries.extend([wgpu::BindGroupEntry { binding: crate::REGION_BINDING, resource: a.as_entire_binding() }, wgpu::BindGroupEntry { binding: crate::REGION_BINDING + 1, resource: b.as_entire_binding() }]);
         core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("face draw"), layout: &self.layout_draw, entries: &entries })
     }
 
-    /// Writes the core's camera uniform for `c` (`view`: the face source's tint, the lane's
+    /// Writes the core's camera uniform for `c` (`view`: the face source's tint, the region's
     /// first word; `anchor`: the CPU records' origin).
     fn write_frame(&self, core: &Core, c: &Camera, mode: RenderMode, view: u32, anchor: IVec3) {
         core.write_camera_at(c, mode, [view, 0], anchor);
@@ -384,7 +384,7 @@ mod tests {
     use mr_components::draw::drawer::DrawMode;
     use mr_components::{Slot, names_on};
 
-    /// A face source's drawing lane (`draw_src`) with every drawer `backend` offers (the
+    /// A face source's drawing region (`draw_src`) with every drawer `backend` offers (the
     /// raster's fragment stage with the sampler's own entry points) composes and validates
     /// over `program`, and over the mesh capability's variant where deferred drawers have it.
     pub(crate) fn drawers(program: &mr_gpu::program::Program, deps: &[String], meshed: Option<&super::Meshed>, draw_src: &str, shading: &str, what: &str, backend: &str) {
@@ -404,7 +404,7 @@ mod tests {
         }
     }
 
-    /// The CPU sampler's drawing lane: the records' face source and every drawer, for every
+    /// The CPU sampler's drawing region: the records' face source and every drawer, for every
     /// GPU storage and kernel of the shadow rays and every shading (no GPU needed).
     #[test]
     fn cpu_programs_compose() {

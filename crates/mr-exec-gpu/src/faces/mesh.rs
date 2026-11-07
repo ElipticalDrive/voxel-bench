@@ -36,8 +36,8 @@ use rayon::prelude::*;
 use serde::Deserialize;
 
 use super::{CoreOpts, Draw, SourceSpec};
-use crate::exec::{self, Cx, Node, Region};
-use crate::{Core, State};
+use crate::exec::{self, Cx, Node, Region, State};
+use crate::Core;
 
 pub(crate) const BACKEND: &str = "gpu-raster";
 
@@ -766,7 +766,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checke
         })
     })?;
     let (core, region) = Meshing::new(p, devices, waker, g)?;
-    crate::run((core, exec::Nodes::new(region, passes)))
+    exec::run(core, region, passes)
 }
 
 #[cfg(test)]

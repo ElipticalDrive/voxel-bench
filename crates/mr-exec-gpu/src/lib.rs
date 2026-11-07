@@ -1,5 +1,5 @@
 //! The GPU executor: every pipeline whose image is made on the GPU, one
-//! executor over one core with a lane per kind of visibility node:
+//! node executor ([`exec`]) over one core, with a region per kind of visibility node:
 //! - faces ([`faces`]): the shared face drawer over a set of block faces from meshing
 //!   (`gpu-raster`) or discovery on the GPU or the CPU (`gpu-discover`, `cpu-discover`);
 //! - ray casting ([`raycast`]): one primary ray per pixel, walked over storages
@@ -7,11 +7,11 @@
 //! - splatting ([`splat`]): one point per exposed block (`gpu-splat`);
 //! - columns ([`columns`]): the Voxel Space heightmap march (`gpu-voxelspace`).
 //!
-//! Which lane runs is the graph's: faces when a drawer draws them, else by the visibility
+//! Which region runs is the graph's: faces when a drawer draws them, else by the visibility
 //! node's component. The rest is shared ([`Core`]): the GPU device, the voxel world, the
 //! storages the GPU's rays walk, the acceleration structures its ray queries trace
 //! ([`accel`]), the shading state, the camera uniform and group 0 (camera, output, shading
-//! state, hit records, acceleration structures, then the lane's), the output, the frame ring
+//! state, hit records, acceleration structures, then the region's), the output, the frame ring
 //! and the timed stages' nodes.
 //!
 //! The executor is also compiled on demand for one graph (the host's
@@ -162,8 +162,8 @@ pub fn gpu_voxelspace_entry() -> RendererEntry {
     RendererEntry { info: columns::info, create: |p, d, w| create(columns::BACKEND, p, d, w) }
 }
 
-/// The executor for `backend`'s graph: the faces lane when a drawer draws them, else the lane
-/// of the visibility node's component.
+/// The executor for `backend`'s graph: the faces' regions when a drawer draws them, else the
+/// region of the visibility node's component.
 fn create(backend: &str, p: InitParams, devices: &Devices, waker: Waker) -> anyhow::Result<Box<dyn Renderer>> {
     create_with(backend, p, devices, waker, None)
 }
@@ -182,15 +182,10 @@ fn create_with(backend: &str, p: InitParams, devices: &Devices, waker: Waker, cp
     }
 }
 
-fn run<L: Lane + 'static>((core, lane): (Core, L)) -> anyhow::Result<Box<dyn Renderer>> {
-    core.gpu.save_cache();
-    Ok(Box::new(Executor { core, lane }))
-}
-
-/// The camera uniform every lane's root reads (group 0, binding 0); `lane` holds the lane's
-/// two words. The rasterising lanes also read the view-projection and the anchor (the faces
-/// lane: the CPU sampler's face records are relative to it), which the
-/// others' shaders leave undeclared.
+/// The camera uniform every region's root reads (group 0, binding 0); `region` holds the
+/// region's two words. The rasterising regions also read the view-projection and the anchor
+/// (the faces': the CPU sampler's face records are relative to it), which the others' shaders
+/// leave undeclared.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct CameraUniform {
@@ -204,19 +199,19 @@ struct CameraUniform {
     sky: u32,
     width: u32,
     height: u32,
-    lane: [u32; 2],
+    region: [u32; 2],
     view_proj: [[f32; 4]; 4],
     anchor: [i32; 4],
 }
 
 /// Group 0: the camera (0), the output (1), the shading state (2-3), the hit records (4,
 /// `placement = deferred`), the acceleration structures (5-7, `accel::ACCEL_BINDING`), the
-/// lane's bindings from `LANE_BINDING`.
+/// region's bindings from `REGION_BINDING`.
 const STATE_BINDING: u32 = 2;
 const RECORDS_BINDING: u32 = 4;
-const LANE_BINDING: u32 = 8;
+const REGION_BINDING: u32 = 8;
 
-/// What a lane needs of the core.
+/// What a region needs of the core.
 #[derive(Clone)]
 struct CoreSpec<'a> {
     gpu: GpuNeeds,
@@ -228,7 +223,7 @@ struct CoreSpec<'a> {
     stages: wgpu::ShaderStages,
     /// LOD levels streamed and walked.
     max_lod: u8,
-    /// The lane reads the voxel pool itself (beyond its storages' needs).
+    /// The region reads the voxel pool itself (beyond its storages' needs).
     voxels: bool,
     /// One hit record per pixel (`placement = deferred`; fixed at creation).
     records: bool,
@@ -237,13 +232,13 @@ struct CoreSpec<'a> {
     spp: u32,
     accumulate: bool,
     shadows: Shadows,
-    /// The walks' step limit (the lane sets it on its `Walks`; the second GPU's from here).
+    /// The walks' step limit (the region sets it on its `Walks`; the second GPU's from here).
     max_steps: u32,
     pool_mb: u32,
     frames_in_flight: usize,
 }
 
-/// Everything but the lane.
+/// Everything but the region.
 pub(crate) struct Core {
     gpu: Arc<Gpu>,
     world: VoxelWorld,
@@ -375,7 +370,7 @@ impl Core {
         }
     }
 
-    /// This frame's acceleration structures, built into `enc` before the lane's passes (its
+    /// This frame's acceleration structures, built into `enc` before the region's passes (its
     /// clock starts first, so the frame's GPU time holds the builds; a timed stage of the
     /// geometry node). Returns whether group 0's bindings changed.
     fn build_accel(&mut self, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) -> bool {
@@ -390,13 +385,13 @@ impl Core {
         self.accel.as_ref().map_or_else(Default::default, |a| (a.counters(), vec![StageTime::cpu("geometry", &self.accel_nodes, a.build_ms as f32)]))
     }
 
-    /// Group 0's entries before the lane's.
+    /// Group 0's entries before the region's.
     fn layout_entries(&self) -> Vec<wgpu::BindGroupLayoutEntry> {
         self.layout_entries_with(true)
     }
 
-    /// Group 0's entries before the lane's; without the output where the lane's output is a
-    /// render attachment (the faces lane).
+    /// Group 0's entries before the region's; without the output where the region's output is
+    /// a render attachment (the faces').
     fn layout_entries_with(&self, output: bool) -> Vec<wgpu::BindGroupLayoutEntry> {
         let mut e = vec![wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -412,7 +407,7 @@ impl Core {
                 count: None,
             });
         }
-        // Writable buffers are not visible to vertex shaders (the faces lane's).
+        // Writable buffers are not visible to vertex shaders (the faces').
         let writable = self.stages - wgpu::ShaderStages::VERTEX;
         e.extend(ShadeState::layout_entries(STATE_BINDING, writable));
         e.extend(self.records.as_ref().map(|_| storage_entry(RECORDS_BINDING, false, writable)));
@@ -434,13 +429,13 @@ impl Core {
         e
     }
 
-    /// Writes the camera uniform for `c` (`lane`: the lane's two words).
-    fn write_camera(&self, c: &Camera, mode: RenderMode, lane: [u32; 2]) {
-        self.write_camera_at(c, mode, lane, IVec3::ZERO);
+    /// Writes the camera uniform for `c` (`region`: the region's two words).
+    fn write_camera(&self, c: &Camera, mode: RenderMode, region: [u32; 2]) {
+        self.write_camera_at(c, mode, region, IVec3::ZERO);
     }
 
-    /// The same with `anchor` (the faces lane's CPU records' origin).
-    fn write_camera_at(&self, c: &Camera, mode: RenderMode, lane: [u32; 2], anchor: IVec3) {
+    /// The same with `anchor` (the faces' CPU records' origin).
+    fn write_camera_at(&self, c: &Camera, mode: RenderMode, region: [u32; 2], anchor: IVec3) {
         let aspect = self.width as f32 / self.height as f32;
         let cam = CameraUniform {
             forward: c.forward().to_array(),
@@ -453,14 +448,14 @@ impl Core {
             sky: u32::from_le_bytes(self.sky()),
             width: self.width,
             height: self.height,
-            lane,
+            region,
             view_proj: (c.projection(aspect) * c.view_rotation()).to_cols_array_2d(),
             anchor: [anchor.x, anchor.y, anchor.z, 0],
         };
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
     }
 
-    /// The knobs every lane shares; `None` if `name` is not one.
+    /// The knobs every region shares; `None` if `name` is not one.
     fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         Some(match name {
             "shadows" => self.world.cfg.shadows.set(value).map(|_| ()),
@@ -481,89 +476,5 @@ impl Core {
 
     fn memory_bytes(&self) -> u64 {
         self.world.memory_bytes() + self.storages.memory_bytes() + self.accel.as_ref().map_or(0, |a| a.memory_bytes()) + self.accum.memory_bytes() + self.records.as_ref().map_or(0, |r| r.size()) + self.width as u64 * self.height as u64 * self.tone.format().bytes() as u64
-    }
-}
-
-/// What a lane (or the node executor's region) keeps across frames.
-trait State {
-    /// World changes before the GPU world applies them.
-    fn updating(&mut self, _updates: &[WorldUpdate]) {}
-    /// Chunks the GPU world (and the storages) changed.
-    fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()>;
-    fn update_meshes(&mut self, _update: MeshUpdate) {}
-    /// Its knobs; `None` if `name` is not one.
-    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>>;
-    /// After the core's resize.
-    fn resize(&mut self, core: &Core);
-    /// (CPU, GPU) bytes beyond the core's.
-    fn memory(&self, core: &Core) -> (u64, u64);
-    /// Completes finished frames (`wait`: all of them).
-    fn poll(&mut self, core: &mut Core, sink: &mut dyn FrameSink, wait: bool) -> anyhow::Result<()> {
-        core.ring.poll(&core.gpu, sink, wait)
-    }
-}
-
-/// A lane: the visibility node's implementation, its frames and what it keeps.
-trait Lane: State {
-    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()>;
-}
-
-/// The core and one lane (static dispatch).
-struct Executor<L> {
-    core: Core,
-    lane: L,
-}
-
-impl<L: Lane> Renderer for Executor<L> {
-    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        if !updates.is_empty() {
-            self.core.accum.invalidate();
-        }
-        self.lane.updating(&updates);
-        let c = &mut self.core;
-        let changed = c.world.apply(&c.gpu, updates);
-        c.storages.update(&c.gpu, &c.world, &changed)?;
-        if let Some(a) = &mut c.accel {
-            a.updated(&c.world, &changed);
-        }
-        self.lane.updated(&self.core, &changed)
-    }
-
-    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
-        self.lane.update_meshes(update);
-        Ok(())
-    }
-
-    fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.lane.render(&mut self.core, req, sink)
-    }
-
-    fn poll(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.lane.poll(&mut self.core, sink, false)
-    }
-
-    fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
-        if let Some(r) = self.lane.set_param(&mut self.core, name, value) {
-            // A lane rebuilds its pipelines lazily, at its next frame; they reach the file
-            // with the next change or at exit.
-            self.core.gpu.save_cache();
-            return r;
-        }
-        self.core.set_param(name, value).unwrap_or_else(|| anyhow::bail!("`{name}` cannot change while running"))
-    }
-
-    fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.lane.poll(&mut self.core, sink, true)
-    }
-
-    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
-        self.core.resize(width, height);
-        self.lane.resize(&self.core);
-        Ok(())
-    }
-
-    fn memory(&self) -> MemoryReport {
-        let (cpu, gpu) = self.lane.memory(&self.core);
-        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu }
     }
 }

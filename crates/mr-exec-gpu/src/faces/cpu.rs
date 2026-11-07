@@ -1,5 +1,5 @@
 //! The CPU sampler (`cpu-discover`): self-directed (non screen-space) visibility ray
-//! casting on the CPU, drawn by the executor's GPU lane. The CPU **storage** discovery rays
+//! casting on the CPU, drawn by the executor's face drawer on the GPU. The CPU **storage** discovery rays
 //! walk (any CPU representation, refloor walk, monomorphised:
 //! `mr_components::visibility::discover::grid`), the **visibility** component (`quadtree`,
 //! or `cluster`, the user's face-cluster design);
@@ -46,7 +46,7 @@ use serde::Deserialize;
 
 use super::{CoreOpts, Draw, SourceSpec};
 use crate::exec::{self, Cx, Node, Region};
-use crate::{Core, State as LaneState};
+use crate::Core;
 
 pub(crate) const BACKEND: &str = "cpu-discover";
 
@@ -451,7 +451,7 @@ impl CpuSampler {
     }
 }
 
-impl LaneState for CpuSampler {
+impl exec::State for CpuSampler {
     fn updating(&mut self, updates: &[WorldUpdate]) {
         self.cpu.apply(updates);
     }
@@ -632,5 +632,5 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checke
         })
     })?;
     let (core, region) = CpuSampler::new(p, devices, waker, g, world)?;
-    crate::run((core, exec::Nodes::new(region, passes)))
+    exec::run(core, region, passes)
 }

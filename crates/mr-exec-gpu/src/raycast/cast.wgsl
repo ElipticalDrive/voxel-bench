@@ -1,5 +1,5 @@
 // The ray-casting executor's root, after `view.wgsl`: one thread per pixel
-// casts the primary ray (`pixel_hit`, the lane's: a walk over a storage, or a hardware ray
+// casts the primary ray (`pixel_hit`, the caster's: a walk over a storage, or a hardware ray
 // query) and colours the hit with the shading component (`shade_surface`), in a compute
 // thread or (`FRAGMENT`) a fragment shader over a full-screen triangle.
 

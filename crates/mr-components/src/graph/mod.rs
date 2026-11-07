@@ -235,7 +235,7 @@ mod tests {
         let ck = g.check().unwrap();
         assert_eq!(ck.apis.get("kernel"), Some(&Api::Avx2), "the kernel runs with its caller");
         // A node without an API of its own or its callers' runs its component's only one on
-        // its device (what the ray-casting executor picks its lane by).
+        // its device (what the ray-casting region picks its caster by).
         // A walk's kernel has two (compute, raster: `dispatch`), so it has none.
         for (backend, api) in [("gpu-rt", Some(Api::RayQuery)), ("gpu-compute", None)] {
             let ck = Graph::from_composition(&Composition::new(backend)).unwrap().check().unwrap();

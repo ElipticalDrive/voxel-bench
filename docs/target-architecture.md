@@ -228,6 +228,9 @@ nodes), and so does GPU discovery (the frame's discovery settings are the region
 frame; the storages, hole detection, the quadtree's passes, the draw passes and the deferred
 shading pass are nodes, the drawer's faces iterating through hole detection and discovery; the
 sky mask, the diagnostic overlay, the audit and the counters' readback follow the passes).
+Step 3 is done on the GPU too: every GPU pipeline runs as a region and its nodes on the
+generic executor, which owns the renderer interface itself (world changes, knobs, resizes,
+memory, frames); the GPU lane interface is gone.
 Step 4 has begun: for the node executors, `accept` is the validity rules plus the nodes each
 executor declares it builds, and the editor edits their graphs exactly, drafts included; the
 skeleton (and the editor's filling in and pruning) remains for the other back ends.

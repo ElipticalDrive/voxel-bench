@@ -1,4 +1,4 @@
-//! The ray-query lane (`gpu-rt`; the primary rays' kernel API `rayquery`): hardware ray
+//! The ray-query caster (`gpu-rt`; the primary rays' kernel API `rayquery`): hardware ray
 //! tracing (RT cores) through wgpu ray queries, assembled from components (`mr-components`):
 //!
 //! * **geometry** decides what goes into each chunk's BLAS: `greedy` / `naive` quads as
@@ -126,7 +126,7 @@ impl Default for Options {
 }
 
 
-/// The ray-query lane's own part: its sites (the primary rays a ray query, the shading's
+/// The ray-query caster's own part: its sites (the primary rays a ray query, the shading's
 /// rays ray queries or walks), the primary rays' facing culled. The acceleration structures
 /// are the core's.
 pub(crate) struct RayQuery {

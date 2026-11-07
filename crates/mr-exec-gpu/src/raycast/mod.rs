@@ -23,7 +23,8 @@ use mr_core::*;
 use mr_gpu::{Ticket, wgpu};
 
 use crate::remote::Far;
-use crate::{Core, State};
+use crate::Core;
+use crate::exec::State;
 
 pub(crate) mod rayquery;
 pub(crate) mod walk;
@@ -42,7 +43,7 @@ pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Wa
 fn run<C: Cast + 'static>((core, region): (Core, Raycast<C>), g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let passes = nodes::of::<C>(g)?;
     tracing::debug!("{}: {} passes", C::BACKEND, passes.len());
-    crate::run((core, crate::exec::Nodes::new(region, passes)))
+    crate::exec::run(core, region, passes)
 }
 
 /// The site `port` of the shading's rays, unless the shading runs on another GPU (then its
@@ -55,7 +56,7 @@ fn shading_site<'a>(g: &'a graph::Checked, port: &str) -> Option<Option<graph::S
     }
 }
 
-/// A caster's shader: its modules, its root (bindings from `LANE_BINDING`, `pixel_hit` and
+/// A caster's shader: its modules, its root (bindings from `REGION_BINDING`, `pixel_hit` and
 /// what it needs) and the root's dependencies.
 struct CastProgram {
     program: mr_gpu::program::Program,
@@ -114,7 +115,7 @@ trait Cast: Sized {
     /// The ray flags of ray queries that are not shadow rays (a WGSL expression; see
     /// `Core::trace_root`).
     const RT_FLAGS: &'static str = "0u";
-    /// Group 0's entries from `LANE_BINDING`.
+    /// Group 0's entries from `REGION_BINDING`.
     fn layout_entries(&self, stages: wgpu::ShaderStages) -> Vec<wgpu::BindGroupLayoutEntry>;
     /// Their resources (stale after the region's group 0 is dropped: see `Passes::unbind`).
     fn bind_entries(&self) -> Vec<wgpu::BindGroupEntry<'_>>;
@@ -141,7 +142,7 @@ trait Cast: Sized {
     fn entries(&self) -> &'static [&'static str] {
         &[]
     }
-    /// The camera's lane words: `view_max` and `ray_flags`.
+    /// The camera's region words: `view_max` and `ray_flags`.
     fn camera(&self) -> [u32; 2];
     /// World changes the GPU world applied (`changed`: its chunks).
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()>;

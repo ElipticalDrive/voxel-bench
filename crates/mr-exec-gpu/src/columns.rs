@@ -18,8 +18,8 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GpuNeeds, wgpu};
 use serde::Deserialize;
 
-use crate::exec::{self, Cx, Node, Region};
-use crate::{Core, CoreSpec, LANE_BINDING, State, storage_entry};
+use crate::exec::{self, Cx, Node, Region, State};
+use crate::{Core, CoreSpec, REGION_BINDING, storage_entry};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -121,9 +121,9 @@ impl Columns {
         let (program, root, deps) = program(&opts.shading, deferred, g.tone());
         let module = mr_gpu::program::compile(&gpu.device, "voxelspace", &program, &root, &deps);
         let mut entries = core.layout_entries();
-        entries.push(storage_entry(LANE_BINDING, true, core.stages));
+        entries.push(storage_entry(REGION_BINDING, true, core.stages));
         entries.push(wgpu::BindGroupLayoutEntry {
-            binding: LANE_BINDING + 1,
+            binding: REGION_BINDING + 1,
             visibility: core.stages,
             ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
             count: None,
@@ -140,7 +140,7 @@ impl Columns {
 fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, hm: &wgpu::Buffer, hm_info: &wgpu::Buffer) -> wgpu::BindGroup {
     let view = core.output.create_view(&Default::default());
     let mut entries = core.bind_entries(&view);
-    entries.extend([wgpu::BindGroupEntry { binding: LANE_BINDING, resource: hm.as_entire_binding() }, wgpu::BindGroupEntry { binding: LANE_BINDING + 1, resource: hm_info.as_entire_binding() }]);
+    entries.extend([wgpu::BindGroupEntry { binding: REGION_BINDING, resource: hm.as_entire_binding() }, wgpu::BindGroupEntry { binding: REGION_BINDING + 1, resource: hm_info.as_entire_binding() }]);
     core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxelspace"), layout, entries: &entries })
 }
 
@@ -238,7 +238,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
         }
     })?;
     let (core, region) = Columns::new(p, devices, waker, g)?;
-    crate::run((core, exec::Nodes::new(region, passes)))
+    exec::run(core, region, passes)
 }
 
 /// The shader: the heightmap storage (group 2) is its own kernel (`ctrace`; storage and walk
@@ -249,7 +249,7 @@ fn program(shading: &str, deferred: bool, tone: mr_components::post::Tone) -> (m
     use mr_gpu::program::{COMMON, LIGHTING, Program, VOXELS};
     let mut p = Program::world(Some("heightmap::rays"));
     mr_components::post::add_to(tone, &mut p);
-    p.add("heightmap", heightmap::gpu_wgsl(0, LANE_BINDING), &[VOXELS]);
+    p.add("heightmap", heightmap::gpu_wgsl(0, REGION_BINDING), &[VOXELS]);
     mr_components::shaders::rays(&mut p, "heightmap::rays", "heightmap");
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
     let place = if deferred { format!("{}\n{}", columns::DEFERRED_WGSL, mr_components::shading::DEFERRED_PACKED_WGSL) } else { String::new() };

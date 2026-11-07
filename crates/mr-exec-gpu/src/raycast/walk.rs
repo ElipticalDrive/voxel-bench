@@ -1,4 +1,4 @@
-//! The walking lane (`gpu-compute`; the primary rays' kernel API `compute`): a renderer from
+//! The walking caster (`gpu-compute`; the primary rays' kernel API `compute`): a renderer from
 //! components (`mr-components`): a **storage**, a **traversal** kernel walked by
 //! ray casting (the visibility strategy, `raycast`) and a **shading** component, each a WGSL
 //! module from `mr-components`, composed into one shader, so the compiler optimises across them
@@ -28,7 +28,7 @@ use mr_gpu::{Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
 use super::{Cast, CastProgram, Passes, Ticket, View};
-use crate::{Core, CoreSpec, LANE_BINDING};
+use crate::{Core, CoreSpec, REGION_BINDING};
 
 pub(crate) const BACKEND: &str = "gpu-compute";
 
@@ -230,7 +230,7 @@ impl Composition {
 
     /// The shader as modules: every storage and kernel node its own
     /// module (`Walks`), the shadow and bounce rays' services through their kernels, the
-    /// shading component, and the lane's root, which casts the primary rays through kernel 0
+    /// shading component, and the caster's root, which casts the primary rays through kernel 0
     /// and reads its storage (the prepass); `meshed`: with the mesh capability (`MESHES`) and
     /// the mesh records at group 3.
     fn program(&self, shading: &str, meshed: bool) -> CastProgram {
@@ -303,7 +303,7 @@ pub(crate) struct Walk {
     copy_stats: bool,
     /// `view = steps`: the top of the colour scale.
     view_max: u32,
-    /// The nodes of the lane's timed stages: meshes and prepass.
+    /// The nodes of the caster's timed stages: meshes and prepass.
     stage_nodes: [Vec<String>; 2],
 }
 
@@ -340,7 +340,7 @@ impl Walk {
         let far = crate::remote::Far::of(p, devices, waker, g, &core, &spec)?;
         let walk = |k: usize| comp.walks.label(k);
         tracing::info!("gpu-compute: primary {}, shadow {}, bounce {}, shading {shading}", walk(0), walk(comp.shadow), walk(comp.bounce));
-        let lane = Self {
+        let walk = Self {
             meshes: MeshRecords::new(&core.gpu, &core.world, p.width, p.height),
             built: comp.clone(),
             comp,
@@ -351,7 +351,7 @@ impl Walk {
             view_max: opts.view_max.clamp(1, 16384),
             stage_nodes: [g.ids(&[Role::Meshes]), g.ids(&[Role::Prepass])],
         };
-        Ok((core, lane, shading, far))
+        Ok((core, walk, shading, far))
     }
 }
 
@@ -365,11 +365,11 @@ impl Cast for Walk {
             ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None },
             count: None,
         };
-        vec![rw(LANE_BINDING), rw(LANE_BINDING + 1)]
+        vec![rw(REGION_BINDING), rw(REGION_BINDING + 1)]
     }
 
     fn bind_entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
-        vec![wgpu::BindGroupEntry { binding: LANE_BINDING, resource: self.beam.tiles.as_entire_binding() }, wgpu::BindGroupEntry { binding: LANE_BINDING + 1, resource: self.beam.stats.as_entire_binding() }]
+        vec![wgpu::BindGroupEntry { binding: REGION_BINDING, resource: self.beam.tiles.as_entire_binding() }, wgpu::BindGroupEntry { binding: REGION_BINDING + 1, resource: self.beam.stats.as_entire_binding() }]
     }
 
     fn layouts<'a>(&'a self, core: &'a Core, [layout0, world]: [&'a wgpu::BindGroupLayout; 2]) -> Vec<Option<&'a wgpu::BindGroupLayout>> {

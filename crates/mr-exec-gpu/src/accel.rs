@@ -3,7 +3,7 @@
 //! `boxes`, one AABB per occupied 4^3 brick with a software DDA inside), and a TLAS of the
 //! chunks translated relative to the camera's block, rebuilt every frame (precision never
 //! degrades far from the origin). The core keeps them when any ray-casting site of the graph
-//! is a ray query (the primary rays of `gpu-rt`, or another lane's shadow and bounce rays),
+//! is a ray query (the primary rays of `gpu-rt`, or another region's shadow and bounce rays),
 //! bound in group 0 from [`ACCEL_BINDING`]; the trace (`g_rt_trace`, from the geometry
 //! component) sits in the root, as naga cannot write ray queries back into a module.
 
@@ -21,7 +21,7 @@ use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
 /// Group 0's bindings of the acceleration structures: the TLAS, the geometry hits are decoded
-/// from, the chunk info per instance slot (between the hit records and the lane's).
+/// from, the chunk info per instance slot (between the hit records and the region's).
 pub(crate) const ACCEL_BINDING: u32 = 5;
 
 /// How the acceleration structures are built (the geometry node's knobs and the build's).

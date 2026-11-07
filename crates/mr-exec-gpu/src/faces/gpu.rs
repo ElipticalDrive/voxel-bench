@@ -1,5 +1,5 @@
 //! The GPU sampler (`gpu-discover`): self-directed visibility discovery, entirely on the
-//! GPU, drawn by the executor's raster lane. Assembled from components: the **storage**
+//! GPU, drawn by the executor's face drawer. Assembled from components: the **storage**
 //! (discovery rays, exposure tests and lit-mode shadow rays all read the composed storage,
 //! group 2, and rays walk it with `refloor`), the **visibility** component `quadtree`
 //! (the discovery below) and the **shading** component (`direct`, via `shade_surface`). Was the
@@ -70,7 +70,6 @@ use serde::Deserialize;
 
 use super::{CoreOpts, Draw, SourceSpec};
 use crate::exec::{self, Cx, Node, Region};
-use crate::State as LaneState;
 use crate::Core;
 
 pub(crate) fn info() -> RendererInfo {
@@ -1515,7 +1514,7 @@ impl GpuSampler {
     }
 }
 
-impl LaneState for GpuSampler {
+impl exec::State for GpuSampler {
     fn updating(&mut self, updates: &[WorldUpdate]) {
         if self.opts.incremental {
             // Event areas for the next frame: edited blocks exactly, chunk loads whole.
@@ -1858,7 +1857,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checke
         })
     })?;
     let (core, region) = GpuSampler::new(p, devices, waker, g)?;
-    crate::run((core, exec::Nodes::new(region, passes)))
+    exec::run(core, region, passes)
 }
 
 /// Screen rectangle, in level-0 tiles, of the world box `[min, min + size)`: `Some(None)`

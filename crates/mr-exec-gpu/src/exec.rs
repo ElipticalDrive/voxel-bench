@@ -5,11 +5,12 @@
 //! module). Dispatch is per pass (a virtual call per node per frame); every per-pixel cost
 //! stays in the shaders.
 
+use glam::IVec3;
 use mr_components::graph::{self, Role};
 use mr_core::*;
 use mr_gpu::{Ticket, wgpu};
 
-use crate::{Core, Lane, State};
+use crate::Core;
 
 /// What every pass of a frame shares.
 pub(crate) struct Cx<'a, R> {
@@ -27,9 +28,28 @@ pub(crate) trait Node<R> {
     fn run(&mut self, cx: &mut Cx<R>);
 }
 
+/// What a region keeps across frames: its world changes, knobs, resizes, memory and completed
+/// frames.
+pub(crate) trait State {
+    /// World changes before the GPU world applies them.
+    fn updating(&mut self, _updates: &[WorldUpdate]) {}
+    /// Chunks the GPU world (and the storages) changed.
+    fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()>;
+    fn update_meshes(&mut self, _update: MeshUpdate) {}
+    /// Its knobs; `None` if `name` is not one.
+    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>>;
+    /// After the core's resize.
+    fn resize(&mut self, core: &Core);
+    /// (CPU, GPU) bytes beyond the core's.
+    fn memory(&self, core: &Core) -> (u64, u64);
+    /// Completes finished frames (`wait`: all of them).
+    fn poll(&mut self, core: &mut Core, sink: &mut dyn FrameSink, wait: bool) -> anyhow::Result<()> {
+        core.ring.poll(&core.gpu, sink, wait)
+    }
+}
+
 /// The state a region's nodes share, and what of the frame is its own beyond its nodes'
-/// passes: its start and submission, and what its nodes' passes share. Its world changes,
-/// knobs, resizes, memory and completed frames are a lane's.
+/// passes: its start and submission, and what its nodes' passes share.
 pub(crate) trait Region: State {
     /// Before the frame: recompiles what its knobs changed (and refuses `req` if it cannot
     /// draw it).
@@ -58,62 +78,82 @@ pub(crate) fn passes<R>(g: &graph::Checked, node: impl Fn(Role) -> Option<Box<dy
     Ok(schedule.passes().filter(|p| matches!(p.device, graph::Device::Gpu(_))).filter_map(|p| node(g.node(&p.node).role)).collect())
 }
 
-/// A region and its nodes' passes in frame order, run as the executor's lane.
-pub(crate) struct Nodes<R> {
+/// The core, a region and its nodes' passes in frame order (static dispatch over the region).
+struct Executor<R> {
+    core: Core,
     region: R,
     passes: Vec<Box<dyn Node<R>>>,
 }
 
-impl<R> Nodes<R> {
-    pub fn new(region: R, passes: Vec<Box<dyn Node<R>>>) -> Self {
-        Self { region, passes }
-    }
+/// The renderer running `region`'s `passes` over `core`.
+pub(crate) fn run<R: Region + 'static>(core: Core, region: R, passes: Vec<Box<dyn Node<R>>>) -> anyhow::Result<Box<dyn Renderer>> {
+    core.gpu.save_cache();
+    Ok(Box::new(Executor { core, region, passes }))
 }
 
-impl<R: Region> State for Nodes<R> {
-    fn updating(&mut self, updates: &[WorldUpdate]) {
-        self.region.updating(updates);
+impl<R: Region> Renderer for Executor<R> {
+    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        if !updates.is_empty() {
+            self.core.accum.invalidate();
+        }
+        self.region.updating(&updates);
+        let c = &mut self.core;
+        let changed = c.world.apply(&c.gpu, updates);
+        c.storages.update(&c.gpu, &c.world, &changed)?;
+        if let Some(a) = &mut c.accel {
+            a.updated(&c.world, &changed);
+        }
+        self.region.updated(&self.core, &changed)
     }
 
-    fn updated(&mut self, core: &Core, changed: &[glam::IVec3]) -> anyhow::Result<()> {
-        self.region.updated(core, changed)
-    }
-
-    fn update_meshes(&mut self, update: MeshUpdate) {
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
         self.region.update_meshes(update);
+        Ok(())
     }
 
-    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        self.region.set_param(core, name, value)
-    }
-
-    fn resize(&mut self, core: &Core) {
-        self.region.resize(core);
-    }
-
-    fn memory(&self, core: &Core) -> (u64, u64) {
-        self.region.memory(core)
-    }
-
-    fn poll(&mut self, core: &mut Core, sink: &mut dyn FrameSink, wait: bool) -> anyhow::Result<()> {
-        self.region.poll(core, sink, wait)
-    }
-}
-
-impl<R: Region> Lane for Nodes<R> {
-    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.region.compile(core, req)?;
-        let ticket = self.region.begin(core, sink)?;
+    fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        let (core, region) = (&mut self.core, &mut self.region);
+        region.compile(core, req)?;
+        let ticket = region.begin(core, sink)?;
         let start = std::time::Instant::now();
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
-        self.region.setup(core, req);
-        let mut cx = Cx { core, region: &mut self.region, enc: &mut enc, ticket, req };
+        region.setup(core, req);
+        let mut cx = Cx { core, region, enc: &mut enc, ticket, req };
         for pass in &mut self.passes {
             pass.run(&mut cx);
         }
-        let (counters, legend, stages) = self.region.stats(core, req);
+        let (counters, legend, stages) = region.stats(core, req);
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
-        self.region.finish(core, &mut enc, ticket);
-        self.region.submit(core, enc, ticket, req, stats, sink)
+        region.finish(core, &mut enc, ticket);
+        region.submit(core, enc, ticket, req, stats, sink)
+    }
+
+    fn poll(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        self.region.poll(&mut self.core, sink, false)
+    }
+
+    fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
+        if let Some(r) = self.region.set_param(&mut self.core, name, value) {
+            // A region rebuilds its pipelines lazily, at its next frame; they reach the file
+            // with the next change or at exit.
+            self.core.gpu.save_cache();
+            return r;
+        }
+        self.core.set_param(name, value).unwrap_or_else(|| anyhow::bail!("`{name}` cannot change while running"))
+    }
+
+    fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        self.region.poll(&mut self.core, sink, true)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
+        self.core.resize(width, height);
+        self.region.resize(&self.core);
+        Ok(())
+    }
+
+    fn memory(&self) -> MemoryReport {
+        let (cpu, gpu) = self.region.memory(&self.core);
+        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu }
     }
 }

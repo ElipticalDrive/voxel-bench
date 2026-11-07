@@ -8,7 +8,7 @@ struct Frame {
     up: vec3<f32>, mode: u32,         // 0 unlit, 1 lit
     cam_frac: vec3<f32>, sky: u32,    // camera position within vp.cam_block; packed sRGB sky (deferred drawing: uncovered pixels)
     width: u32, height: u32,
-    view: u32, _lane: u32,            // the face source's diagnostic tint (0 = the image)
+    view: u32, _pad: u32,             // the face source's diagnostic tint (0 = the image)
     view_proj: mat4x4<f32>,
     anchor: vec4<i32>,                // CPU records: the absolute block they are relative to
 }

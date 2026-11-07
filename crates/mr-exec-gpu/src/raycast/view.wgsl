@@ -19,7 +19,7 @@ struct Camera {
 @group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
 #endif
 // Bindings 2 and 3: the shading state (`sp`, `accum`; shading::state); 4: the hit records
-// (`placement = deferred`); from 8: the lane's.
+// (`placement = deferred`); from 8: the region's.
 
 // The unit primary ray through pixel `px` (also the deferred pass's view).
 fn view_ray(px: vec2<u32>) -> vec3<f32> {

@@ -81,7 +81,7 @@ impl Graph {
                 }
                 bind => {
                     // On the GPU, any GPU implementation (the GPU executor compiles walks into
-                    // any of its lanes and builds ray queries' acceleration structures). Else
+                    // any of its regions and builds ray queries' acceleration structures). Else
                     // secondary rays run where the back end runs its shadow stages, the others
                     // with its storage and kernel.
                     let secondary = matches!(role, Role::Shading | Role::Meshes);

@@ -22,8 +22,8 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
-use crate::exec::{self, Cx, Node, Region};
-use crate::{Core, CoreSpec, LANE_BINDING, State, storage_entry};
+use crate::exec::{self, Cx, Node, Region, State};
+use crate::{Core, CoreSpec, REGION_BINDING, storage_entry};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -149,7 +149,7 @@ impl Splat {
         let gpu = &core.gpu;
         let module = mr_gpu::program::compile(&gpu.device, "splat", &program, &own, &deps.iter().map(String::as_str).collect::<Vec<_>>());
         let mut entries = core.layout_entries();
-        entries.extend([storage_entry(LANE_BINDING, true, core.stages), storage_entry(LANE_BINDING + 1, false, core.stages), storage_entry(LANE_BINDING + 2, false, core.stages), storage_entry(LANE_BINDING + 3, false, core.stages)]);
+        entries.extend([storage_entry(REGION_BINDING, true, core.stages), storage_entry(REGION_BINDING + 1, false, core.stages), storage_entry(REGION_BINDING + 2, false, core.stages), storage_entry(REGION_BINDING + 3, false, core.stages)]);
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("splat"), entries: &entries });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("splat"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
         let pipe = |e: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
@@ -157,8 +157,8 @@ impl Splat {
         let (points_buf, zbuf, idbuf) = (points_buffer(gpu, 1024), pixel_buffer(gpu, p.width, p.height), pixel_buffer(gpu, p.width, p.height));
         let big_buf = big_buffer(gpu, points_buf.size());
         let bind0 = bind0(&core, &layout0, &points_buf, &zbuf, &idbuf, &big_buf);
-        let lane = Self { pipes, layout0, zbuf, idbuf, points_buf, big_buf, bind0, points: Points::default(), count: 0, max_splat: opts.max_splat.clamp(1, 64), world: None, bound: Bound(Vec::new()) };
-        Ok((core, lane))
+        let splat = Self { pipes, layout0, zbuf, idbuf, points_buf, big_buf, bind0, points: Points::default(), count: 0, max_splat: opts.max_splat.clamp(1, 64), world: None, bound: Bound(Vec::new()) };
+        Ok((core, splat))
     }
 
     /// The points' transfer: every chunk's points into one GPU buffer (rebuilt after any
@@ -180,10 +180,10 @@ fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, pts: &wgpu::Buffer, z: &wg
     let view = core.output.create_view(&Default::default());
     let mut entries = core.bind_entries(&view);
     entries.extend([
-        wgpu::BindGroupEntry { binding: LANE_BINDING, resource: pts.as_entire_binding() },
-        wgpu::BindGroupEntry { binding: LANE_BINDING + 1, resource: z.as_entire_binding() },
-        wgpu::BindGroupEntry { binding: LANE_BINDING + 2, resource: id.as_entire_binding() },
-        wgpu::BindGroupEntry { binding: LANE_BINDING + 3, resource: big.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: REGION_BINDING, resource: pts.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: REGION_BINDING + 1, resource: z.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: REGION_BINDING + 2, resource: id.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: REGION_BINDING + 3, resource: big.as_entire_binding() },
     ]);
     core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("splat"), layout, entries: &entries })
 }
@@ -307,7 +307,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
         }
     })?;
     let (core, region) = Splat::new(p, devices, waker, g)?;
-    crate::run((core, exec::Nodes::new(region, passes)))
+    exec::run(core, region, passes)
 }
 
 #[cfg(test)]
