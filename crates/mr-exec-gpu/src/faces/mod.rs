@@ -1,14 +1,14 @@
 //! Every pipeline whose image is the shared face drawer's (`draw`: raster, visbuffer or
 //! gbuffer) over a set of block faces, for the three face sources that can feed the drawer's
 //! `faces`:
-//! - `gpu-raster`: meshing ([`mesh`], on the node executor): the geometry component meshes
+//! - `raster-gpu`: meshing ([`mesh`], on the node executor): the geometry component meshes
 //!   changed chunks on the CPU (view-independent: every exposed face), uploaded per chunk (the
 //!   schedule's transfer of the faces from the CPU to the GPU), culled per chunk and face
 //!   direction, drawn with multi-draw-indirect; with meshes (mesh mode) in the same depth buffer;
-//! - `gpu-discover`: discovery on the GPU ([`gpu`], on the node executor): the sampler (`visibility` quadtree, with
+//! - `discover-gpu`: discovery on the GPU ([`gpu`], on the node executor): the sampler (`visibility` quadtree, with
 //!   hole detection `holes = coverage`) finds the faces the camera sees and keeps them in a
 //!   GPU hash set;
-//! - `cpu-discover`: discovery on the CPU ([`cpu`], on the node executor): the sampler (quadtree or cluster) over a
+//! - `discover-cpu`: discovery on the CPU ([`cpu`], on the node executor): the sampler (quadtree or cluster) over a
 //!   CPU storage, its face records uploaded to the GPU, a frame ahead when the drawer's faces
 //!   arrive `prev`.
 //!

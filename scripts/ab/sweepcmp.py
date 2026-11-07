@@ -6,10 +6,10 @@ import sys, json, glob, gzip, os, subprocess, statistics as st, collections
 KERNELS = {'refloor', 'incremental', 'sphere', 'rowrun', 'rayquery'}
 DRAWS = {'raster', 'visbuffer', 'gbuffer'}
 # Slots added by the architecture refactor and their defaults per back end.
-ADDED = {'gpu-compute': {'visibility': 'raycast'}, 'cpu': {'visibility': 'raycast'}, 'gpu-rt': {'visibility': 'raycast'},
-         'gpu-raster': {'visibility': 'faces', 'draw': 'raster', 'traversal': 'refloor'}, 'cpu-raster': {'visibility': 'faces', 'draw': 'raster'},
-         'gpu-discover': {'draw': 'raster', 'traversal': 'refloor'}, 'cpu-discover': {'draw': 'raster', 'traversal': 'refloor'},
-         'gpu-splat': {'traversal': 'refloor'}}
+ADDED = {'raycast-gpu': {'visibility': 'raycast'}, 'cpu': {'visibility': 'raycast'}, 'rayquery-gpu': {'visibility': 'raycast'},
+         'raster-gpu': {'visibility': 'faces', 'draw': 'raster', 'traversal': 'refloor'}, 'raster-cpu': {'visibility': 'faces', 'draw': 'raster'},
+         'discover-gpu': {'draw': 'raster', 'traversal': 'refloor'}, 'discover-cpu': {'draw': 'raster', 'traversal': 'refloor'},
+         'splat-gpu': {'traversal': 'refloor'}}
 def canonical(comp, opts):
     """One form for records from before and after the slots were split: kernels in `traversal`, the
     rasterisers' and discovery's drawer in `draw`, added slots at their defaults."""
@@ -17,7 +17,7 @@ def canonical(comp, opts):
     if 'traversal' not in c and c.get('visibility') in KERNELS: c['traversal'] = c.pop('visibility')
     if 'draw' not in c and c.get('visibility') in DRAWS: c['draw'] = c.pop('visibility')
     if 'draw' in opts and 'draw' not in c: c['draw'] = opts.pop('draw')
-    for k, v in ADDED.get(c.get('backend', 'gpu-compute'), {}).items():
+    for k, v in ADDED.get(c.get('preset', 'raycast-gpu'), {}).items():
         if not c.get(k): c[k] = v
     return c, opts
 def graph_keys(records):
@@ -82,5 +82,5 @@ print('new failures:', len(fails))
 for k, e in fails[:10]: print('  ', k[0], k[1], json.loads(shown[k]), e)
 # per back end medians
 byb = collections.defaultdict(list)
-for r, _, k, a, b in worst: byb[json.loads(shown[k])['backend']].append(r)
+for r, _, k, a, b in worst: byb[json.loads(shown[k])['preset']].append(r)
 print('GPU ms median ratio by back end:', {b: round(st.median(v), 4) for b, v in sorted(byb.items())})

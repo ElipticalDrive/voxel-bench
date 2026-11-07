@@ -1,5 +1,5 @@
 //! Self-directed visibility discovery on the CPU (discovery's pieces as
-//! components; was cpu-discover's `discover.rs`): the state, face keys, rays and the merge
+//! components; was discover-cpu's `discover.rs`): the state, face keys, rays and the merge
 //! into the face set shared by the samplers, [`crate::visibility::quadtree::cpu`] (an
 //! adaptive screen-space quadtree of CPU rays that tries to find every block face visible
 //! from a camera with as few rays as possible) and [`crate::visibility::cluster::cpu`]; and

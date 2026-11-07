@@ -3,7 +3,7 @@
 A renderer is a **pipeline graph**: nodes, each one a component in a role, connected from
 the world to the image. No fixed list of stages exists. Any valid path from input to output
 is a pipeline, and pipelines need not use the same kinds of component. `multirenderer list`
-prints every back end and every component (with the devices and APIs it is implemented for),
+prints every preset and every component (with the devices and APIs it is implemented for),
 and `multirenderer graph <renderer>` prints a renderer as its graph.
 
 ## Nodes
@@ -44,15 +44,15 @@ Any other edge may cross devices through a transfer, whose cost is known in adva
 frame can be split over two GPUs, for example with ray casting on one and deferred shading
 on the other (`plans/two-gpus.toml`).
 
-## Back ends
+## Executors and presets
 
 A graph runs on the executor of one device kind: `executor = "gpu"` (the default,
 `crates/mr-exec-gpu`) or `"cpu"` (`crates/mr-exec-cpu`), where the image is made; nodes without a
 `device` run there when their component can. The graph's shape names a preset, the region of
-that executor that builds it: `gpu-compute`, `gpu-raster`, `gpu-rt`, `gpu-discover`,
-`cpu-discover` (discovery on the CPU, drawn on the GPU), `gpu-splat`, `gpu-voxelspace` on the GPU,
-`cpu`, `cpu-raster`, `cpu-voxelspace` on the CPU. The preset is derived from the graph and never
-chosen directly. Each back end has a default pipeline, and the GUI's "start from…" begins
+that executor that builds it: `raycast-gpu`, `raster-gpu`, `rayquery-gpu`, `discover-gpu`,
+`discover-cpu` (discovery on the CPU, drawn on the GPU), `splat-gpu`, `columns-gpu` on the GPU,
+`raycast-cpu`, `raster-cpu`, `columns-cpu` on the CPU. A preset is named by technique and device. It is derived from the graph and never
+chosen directly, except as a starting point: each has a default pipeline, and the GUI's "start from…" begins
 from one. `cpu-reference`, which defines the reference images, is the one renderer that
 stands alone, on purpose.
 
@@ -60,21 +60,21 @@ stands alone, on purpose.
 
 Three equivalent forms, from shortest to most general:
 
-**Command line:** the back end's required slots in order, then optionally shading,
+**Command line:** a preset and its required slots in order, then optionally shading,
 prepass and meshes; other sites after commas:
 
 ```sh
--r gpu-compute:prefix+incremental
--r gpu-raster:bricks+greedy+visbuffer
--r gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere
--r gpu-compute:bricks+refloor,link=net(latency_ms=30,loss=0.01),client=derive(radius=4,max_lod=2)
+-r raycast-gpu:prefix+incremental
+-r raster-gpu:bricks+greedy+visbuffer
+-r raycast-gpu:bricks+refloor+pathtrace,bounce=tree64/sphere
+-r raycast-gpu:bricks+refloor,link=net(latency_ms=30,loss=0.01),client=derive(radius=4,max_lod=2)
 ```
 
-**Compose form** in a plan, one field per slot; slots left out take the back end's default:
+**Compose form** in a plan, one field per slot; `preset` is the starting point, slots left out take its default:
 
 ```toml
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "prefix", traversal = "incremental", shading = "direct" }
+compose = { preset = "raycast-gpu", storage = "prefix", traversal = "incremental", shading = "direct" }
 sites = { shadow = "distance/sphere", link = "net(latency_ms=30, bandwidth_mbps=200)" }
 options = { shadows = "sun" }
 ```
@@ -158,7 +158,7 @@ and `lit+meshes`, and the GUI has **Lit** and **Meshes** toggles.
 
 Meshes and voxels occlude each other, and lit meshes are shadowed by voxels. Meshes do not
 cast shadows yet. Pipelines with a `meshes` node draw them: `depth` on the rasterisers (the
-same depth buffer) and `composite` on gpu-compute (meshes are rasterised first, and rays stop
+same depth buffer) and `composite` on raycast-gpu (meshes are rasterised first, and rays stop
 at them). Pipelines without one are skipped in `+meshes` benchmark passes, and the GUI labels
 them "(no meshes)".
 
@@ -169,5 +169,5 @@ GPU pipelines pick the discrete GPU on hybrid laptops. `run.devices = { gpus = [
 `cpu_threads` sets the CPU's threads. With both slots on one adapter, two devices of it are
 opened. `WGPU_BACKEND` chooses the graphics API. `MR_GPU_DEBUG=1` turns on wgpu debug labels
 and validation (off by default: Vulkan's debug-utils path crashes intermittently when several
-renderers share one process). Any wgpu validation error fails the renderer. `gpu-rt` needs
+renderers share one process). Any wgpu validation error fails the renderer. `rayquery-gpu` needs
 ray-query support (Vulkan `VK_KHR_ray_query`).

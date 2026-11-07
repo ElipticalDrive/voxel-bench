@@ -390,7 +390,7 @@ mod tests {
     fn program_composes() {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         for (st, k) in [("bricks", "refloor"), ("tree64", "sphere"), ("distance", "incremental")] {
-            for shading in mr_components::names_on("gpu-compute", mr_components::Slot::Shading) {
+            for shading in mr_components::names_on("raycast-gpu", mr_components::Slot::Shading) {
                 let g = split(st, k, shading);
                 let ck = g.check().unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));
                 g.accept().unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));

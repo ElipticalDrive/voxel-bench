@@ -133,10 +133,10 @@ fn gui_screenshot() {
             view_radius = 3
             isolation = "thread"
             [[renderer]]
-            compose = { backend = "gpu-compute", storage = "prefix", traversal = "incremental", shading = "pathtrace" }
+            compose = { preset = "raycast-gpu", storage = "prefix", traversal = "incremental", shading = "pathtrace" }
             sites = { bounce = "tree64/sphere" }
             [[renderer]]
-            compose = { backend = "gpu-raster", geometry = "naive", draw = "visbuffer" }
+            compose = { preset = "raster-gpu", geometry = "naive", draw = "visbuffer" }
             "#,
             &[],
         )
@@ -253,9 +253,9 @@ fn gui_headless_smoke() {
         view_radius = 3
         isolation = "thread"
         [[renderer]]
-        compose = { backend = "gpu-compute" }
+        compose = { preset = "raycast-gpu" }
         [[renderer]]
-        compose = { backend = "gpu-raster" }
+        compose = { preset = "raster-gpu" }
         "#,
         &[],
     )

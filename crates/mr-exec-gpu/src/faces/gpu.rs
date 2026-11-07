@@ -1,9 +1,9 @@
-//! The GPU sampler (`gpu-discover`): self-directed visibility discovery, entirely on the
+//! The GPU sampler (`discover-gpu`): self-directed visibility discovery, entirely on the
 //! GPU, drawn by the executor's face drawer. Assembled from components: the **storage**
 //! (discovery rays, exposure tests and lit-mode shadow rays all read the composed storage,
 //! group 2, and rays walk it with `refloor`), the **visibility** component `quadtree`
 //! (the discovery below) and the **shading** component (`direct`, via `shade_surface`). Was the
-//! gpu-discover renderer, which read the voxel pool only.
+//! discover-gpu renderer, which read the voxel pool only.
 //!
 //! Instead of one ray per pixel, an adaptive screen-space quadtree decides where to cast
 //! rays: rays at the corners of `tile`-pixel tiles (corners shared, deduplicated); a tile
@@ -88,7 +88,7 @@ const MAX_LEVELS: usize = 7;
 const MAX_SLOTS: usize = 1 << 14;
 const CHUNK_TABLE: usize = MAX_SLOTS * 4;
 
-pub(crate) const BACKEND: &str = "gpu-discover";
+pub(crate) const BACKEND: &str = "discover-gpu";
 
 
 
@@ -956,7 +956,7 @@ impl GpuSampler {
                     }
                     None => {
                         if self.slot_overflow == 0 {
-                            tracing::error!("gpu-discover: more than {MAX_SLOTS} non-air chunks; faces of extra chunks are lost");
+                            tracing::error!("discover-gpu: more than {MAX_SLOTS} non-air chunks; faces of extra chunks are lost");
                         }
                         self.slot_overflow += 1;
                     }

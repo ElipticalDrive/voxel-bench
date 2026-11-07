@@ -1,5 +1,5 @@
 // The face drawer: what every rasteriser of block faces shares
-// (gpu-raster, gpu-discover, cpu-discover): the vertex stage, the pixel's ray and the
+// (raster-gpu, discover-gpu, discover-cpu): the vertex stage, the pixel's ray and the
 // analytic surface point. The fragment and compute entry points come from the raster
 // visibility components (`raster`, `visbuffer`, `gbuffer`), built on `face_hit`.
 //
@@ -13,7 +13,7 @@
 //   (merged quads), and then `src_lookup(ii, face, h, d) -> u32`: the block at hit `h` of ray `d`;
 // * `src_view(ii, color) -> vec4<f32>`: the source's diagnostic views (or `color`).
 // Compute passes read the records (`face_hit`). Fragment shaders (`fragment_hit`) either
-// read them too (`faces_records.wgsl`: gpu-raster, whose cubes pay 8-15% for extra
+// read them too (`faces_records.wgsl`: raster-gpu, whose cubes pay 8-15% for extra
 // vertex outputs) or take the plane and the block from flat varyings and read a record
 // only for merged quads (`faces_varyings.wgsl`: the discovery back ends, whose unlit
 // fragments are too cheap for a record read); `visibility::faces_wgsl` picks one.
@@ -28,7 +28,7 @@ struct FaceVertex { rel: vec3<f32>, face: u32, block: u32 }
 // The fragment's surface point from its depth (`pos.w` = 1 / view depth): the `near`
 // point of `face_plane_hit` in fragment shaders, used where the pixel's ray runs along the face
 // plane (rows at the horizon) and the analytic hit is ill-conditioned. Free, unlike an
-// interpolated position (a varying cost gpu-raster's cubes 8-16%).
+// interpolated position (a varying cost raster-gpu's cubes 8-16%).
 fn fragment_point(pos: vec4<f32>, d: vec3<f32>) -> vec3<f32> {
     return fr.cam_frac + d * (1.0 / (pos.w * dot(d, fr.forward)));
 }

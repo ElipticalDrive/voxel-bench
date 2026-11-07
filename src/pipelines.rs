@@ -70,8 +70,8 @@ impl Executor {
 /// others stay run-time values in it.
 pub fn bakes(backend: &str) -> &'static [&'static str] {
     match backend {
-        "cpu" => &["exact", "packet", "skip2", "skip4", "skip8", "skip16", "shadows"],
-        "cpu-voxelspace" => &["shadows"],
+        "raycast-cpu" => &["exact", "packet", "skip2", "skip4", "skip8", "skip16", "shadows"],
+        "columns-cpu" => &["shadows"],
         _ => &[],
     }
 }
@@ -79,8 +79,8 @@ pub fn bakes(backend: &str) -> &'static [&'static str] {
 /// The executor of `backend` and its knobs (`None`: no generated pipeline runs it).
 fn params_of(backend: &str) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
     Some(match backend {
-        "cpu" | "cpu-raster" | "cpu-voxelspace" => (Executor::Cpu, mr_exec_cpu::info(backend).params),
-        "gpu-raster" | "gpu-discover" | "cpu-discover" | "gpu-compute" | "gpu-rt" | "gpu-splat" | "gpu-voxelspace" => (Executor::Gpu, mr_exec_gpu::info(backend).params),
+        "raycast-cpu" | "raster-cpu" | "columns-cpu" => (Executor::Cpu, mr_exec_cpu::info(backend).params),
+        "raster-gpu" | "discover-gpu" | "discover-cpu" | "raycast-gpu" | "rayquery-gpu" | "splat-gpu" | "columns-gpu" => (Executor::Gpu, mr_exec_gpu::info(backend).params),
         _ => return None,
     })
 }
@@ -370,7 +370,7 @@ fn fly(b: &Bake, dir: &Path, exe: &Path, options: toml::Table, frames: u32, env:
 /// The break-in builds of the crate in `src`, each timed here, the fastest kept: the native
 /// build, whole-program LTO (one codegen unit), profile-guided (an instrumented build flies a
 /// training run, `llvm-profdata` merges the profile), and both. Which wins depends on the
-/// pipeline (measured: LTO alone +4-8 % for raster and host-bound gpu-compute, where the
+/// pipeline (measured: LTO alone +4-8 % for raster and host-bound raycast-gpu, where the
 /// profile costs 4 %; the profile alone +8-10 % for prefix + incremental, where LTO costs
 /// 2-4 %; both together lost to the better one alone in each).
 fn break_in(b: &Bake, key: &str, src: &Path, root: &Path) -> anyhow::Result<PathBuf> {
@@ -710,13 +710,13 @@ mod tests {
         s
     }
 
-    /// Every CPU storage and kernel of the `cpu` back end and every other lane of the CPU
+    /// Every CPU storage and kernel of the `raycast-cpu` preset and every other lane of the CPU
     /// executor has generated code; the knobs it bakes are declared specialisable.
     #[test]
     fn every_cpu_graph_has_a_source() {
         for st in mr_components::names_on("cpu", mr_components::Slot::Storage) {
             for k in mr_components::names_on("cpu", mr_components::Slot::Traversal) {
-                let b = bake(&spec(&format!("cpu:{st}+{k}"), &[("packet", "4".into())])).unwrap().unwrap();
+                let b = bake(&spec(&format!("raycast-cpu:{st}+{k}"), &[("packet", "4".into())])).unwrap().unwrap();
                 let s = source(&b).unwrap();
                 assert!(s.contains("NATIVE: bool = true") && s.contains(&format!("raycast_entry::<{}, Baked, [u8; 4]>", mr_exec_cpu::storage_type(st).unwrap())), "{s}");
                 assert_eq!(s.contains("PACKET: Option<usize> = Some(4)"), k == "refloor", "{s}");
@@ -724,20 +724,20 @@ mod tests {
                 assert!(s.contains(&format!("(\"storage\", \"\\\"{st}\\\"\")")), "{s}");
             }
         }
-        let s = source(&bake(&spec("cpu:prefix+incremental,shadow=refloor,post=aces", &[("shadows", "sun".into()), ("skip4", false.into())])).unwrap().unwrap()).unwrap();
+        let s = source(&bake(&spec("raycast-cpu:prefix+incremental,shadow=refloor,post=aces", &[("shadows", "sun".into()), ("skip4", false.into())])).unwrap().unwrap()).unwrap();
         for want in ["SHADOW: Option<Option<(mr_exec_cpu::Traversal, u32)>> = Some(Some((mr_exec_cpu::Traversal::Refloor, 0b111111)))", "LEVELS: Option<u32> = Some(0b111011)", "Tone::Aces", "Shadows::Sun", "(\"skip4\", \"false\")"] {
             assert!(s.contains(want), "{want} in {s}");
         }
-        let s = source(&bake(&spec("cpu-voxelspace", &[])).unwrap().unwrap()).unwrap();
+        let s = source(&bake(&spec("columns-cpu", &[])).unwrap().unwrap()).unwrap();
         assert!(s.contains("columns_entry::<Baked, [u8; 4]>") && s.contains("Shadows::All") && s.contains("Tone::Clamp"), "{s}");
-        let s = source(&bake(&spec("cpu-raster:naive+raster", &[])).unwrap().unwrap()).unwrap();
+        let s = source(&bake(&spec("raster-cpu:naive+raster", &[])).unwrap().unwrap()).unwrap();
         assert!(s.contains("raster_entry::<Baked, [u8; 4]>") && s.contains("KNOBS: &'static [(&'static str, &'static str)] = &[];") && !s.contains("TONE"), "{s}");
         // `hdr`: every lane writes float pixels.
-        for (r, entry) in [("cpu,post=hdr", "raycast_entry::<mr_components::storage::bricks::cpu::U16, Baked, mr_exec_cpu::Half4>"), ("cpu-voxelspace,post=hdr", "columns_entry::<Baked, mr_exec_cpu::Half4>"), ("cpu-raster,post=hdr", "raster_entry::<Baked, mr_exec_cpu::Half4>")] {
+        for (r, entry) in [("raycast-cpu,post=hdr", "raycast_entry::<mr_components::storage::bricks::cpu::U16, Baked, mr_exec_cpu::Half4>"), ("columns-cpu,post=hdr", "columns_entry::<Baked, mr_exec_cpu::Half4>"), ("raster-cpu,post=hdr", "raster_entry::<Baked, mr_exec_cpu::Half4>")] {
             let s = source(&bake(&spec(r, &[])).unwrap().unwrap()).unwrap();
             assert!(s.contains(entry), "{entry} in {s}");
         }
-        for b in ["cpu", "cpu-raster", "cpu-voxelspace"] {
+        for b in ["raycast-cpu", "raster-cpu", "columns-cpu"] {
             let (_, params) = params_of(b).unwrap();
             for k in bakes(b) {
                 assert!(params.iter().any(|p| p.name == *k && p.baked && p.owner.is_some()), "{b}: `{k}` is declared specialisable and belongs to a node");
@@ -750,39 +750,39 @@ mod tests {
     /// CPU walks the graph's storage alone, baked (refused otherwise).
     #[test]
     fn every_gpu_graph_has_a_source() {
-        for b in ["gpu-raster", "gpu-discover", "cpu-discover", "gpu-compute", "gpu-rt", "gpu-splat", "gpu-voxelspace"] {
+        for b in ["raster-gpu", "discover-gpu", "discover-cpu", "raycast-gpu", "rayquery-gpu", "splat-gpu", "columns-gpu"] {
             let bk = bake(&spec(b, &[])).unwrap().unwrap();
             assert_eq!(bk.executor, Executor::Gpu, "{b}");
             let s = source(&bk).unwrap();
             for want in ["impl mr_exec_gpu::Spec for Baked", "mr_exec_gpu::compiled_entry::<Baked>()", "mr_gpu::devices", "NATIVE: bool = true"] {
                 assert!(s.contains(want), "{b}: {want} in {s}");
             }
-            assert_eq!(s.contains("CPU_WORLD"), b == "cpu-discover", "{s}");
+            assert_eq!(s.contains("CPU_WORLD"), b == "discover-cpu", "{s}");
         }
-        let prefix = RendererSpec::composed(mr_components::Composition { storage: "prefix".into(), ..mr_components::Composition::new("cpu-discover") });
+        let prefix = RendererSpec::composed(mr_components::Composition { storage: "prefix".into(), ..mr_components::Composition::new("discover-cpu") });
         let s = source(&bake(&prefix).unwrap().unwrap()).unwrap();
         assert!(s.contains("CpuWorld::of::<mr_components::storage::prefix::cpu::Prefix>") && s.contains("(\"storage\", \"\\\"prefix\\\"\")"), "{s}");
         let m = manifest(repo(), Executor::Gpu);
         assert!(m.contains("mr-exec-gpu") && m.contains("mr-gpu") && !m.contains("mr-exec-cpu"), "{m}");
         let key = |r: &str, o: &[(&str, toml::Value)]| self::key(&bake(&spec(r, o)).unwrap().unwrap(), Compile::Native).unwrap();
-        assert!(key("gpu-compute", &[]).starts_with("gpu-"));
-        assert_ne!(self::key(&bake(&prefix).unwrap().unwrap(), Compile::Native).unwrap(), key("cpu-discover", &[]));
+        assert!(key("raycast-gpu", &[]).starts_with("gpu-"));
+        assert_ne!(self::key(&bake(&prefix).unwrap().unwrap(), Compile::Native).unwrap(), key("discover-cpu", &[]));
     }
 
     /// Break-in is a level of the same pipeline: its own worker under the same graph key, its training run on one thread where the executor has the knob.
     #[test]
     fn break_in_is_its_own_build() {
-        let b = bake(&spec("cpu", &[])).unwrap().unwrap();
+        let b = bake(&spec("raycast-cpu", &[])).unwrap().unwrap();
         let (native, broken) = (key(&b, Compile::Native).unwrap(), key(&b, Compile::BreakIn).unwrap());
         assert!(broken.ends_with("-break-in") && broken != format!("{native}-break-in"), "its recipe in the hash: {broken}");
         assert_eq!(broken.split('-').nth(1), native.split('-').nth(1), "the same graph");
         let m = manifest(repo(), Executor::Cpu);
         assert!(m.contains("[profile.break-in]\ninherits = \"release\"\nlto = \"fat\"\ncodegen-units = 1"), "{m}");
-        let p: crate::plan::Plan = crate::plan::Plan::parse("[scene]\ngenerator = { type = \"terrain\" }\ncamera = { type = \"line\", from = [0, 1, 0], to = [1, 1, 0] }\n[run]\ncompile = \"break-in\"\n[[renderer]]\ncompose = { backend = \"cpu\" }\n", &[]).unwrap();
+        let p: crate::plan::Plan = crate::plan::Plan::parse("[scene]\ngenerator = { type = \"terrain\" }\ncamera = { type = \"line\", from = [0, 1, 0], to = [1, 1, 0] }\n[run]\ncompile = \"break-in\"\n[[renderer]]\ncompose = { preset = \"raycast-cpu\" }\n", &[]).unwrap();
         assert_eq!(p.renderers[0].compiled(&p.run), Some(Compile::BreakIn));
         let plan = check_plan(&b, Path::new("/x"), &["off"], train_options(&b), 90, [960, 540], false).unwrap();
         assert!(plan.contains("threads = 1") && !plan.contains("save"), "{plan}");
-        assert!(train_options(&bake(&spec("gpu-compute", &[])).unwrap().unwrap()).is_empty(), "no threads knob");
+        assert!(train_options(&bake(&spec("raycast-gpu", &[])).unwrap().unwrap()).is_empty(), "no threads knob");
     }
 
     /// The cache key is the pipeline's graph with its baked values: knobs it does not use
@@ -790,21 +790,21 @@ mod tests {
     #[test]
     fn the_graph_is_the_key() {
         let key = |r: &str, o: &[(&str, toml::Value)]| bake(&spec(r, o)).unwrap().unwrap().graph.key().unwrap();
-        assert_ne!(key("cpu:prefix+refloor", &[("packet", "4".into())]), key("cpu:prefix+refloor", &[("packet", "8".into())]));
-        assert_eq!(key("cpu:prefix+incremental", &[("packet", "4".into())]), key("cpu:prefix+incremental", &[("packet", "8".into())]), "packet is moot for incremental");
-        assert_ne!(key("cpu:prefix+incremental", &[("exact", false.into())]), key("cpu:prefix+incremental", &[]));
-        assert_eq!(key("cpu:prefix+refloor", &[("exact", false.into())]), key("cpu:prefix+refloor", &[]), "exact is moot for refloor");
-        assert_eq!(key("cpu:prefix+refloor", &[("view", "steps".into())]), key("cpu:prefix+refloor", &[]), "not baked by the generated code");
-        assert_ne!(key("cpu:prefix+refloor", &[]), key("cpu:bricks+refloor", &[]));
-        assert_ne!(key("cpu:prefix+refloor", &[]), key("cpu:prefix+refloor,shadow=incremental", &[]), "the shadow rays' own kernel");
-        assert_ne!(key("cpu:prefix+incremental", &[("skip8", false.into())]), key("cpu:prefix+incremental", &[]));
-        assert_eq!(key("cpu:prefix+refloor", &[("skip8", false.into())]), key("cpu:prefix+refloor", &[]), "levels are moot for refloor");
-        assert_ne!(key("cpu:prefix+refloor", &[("shadows", "sun".into())]), key("cpu:prefix+refloor", &[]));
-        assert_ne!(key("cpu-voxelspace", &[("shadows", "none".into())]), key("cpu-voxelspace", &[]));
+        assert_ne!(key("raycast-cpu:prefix+refloor", &[("packet", "4".into())]), key("raycast-cpu:prefix+refloor", &[("packet", "8".into())]));
+        assert_eq!(key("raycast-cpu:prefix+incremental", &[("packet", "4".into())]), key("raycast-cpu:prefix+incremental", &[("packet", "8".into())]), "packet is moot for incremental");
+        assert_ne!(key("raycast-cpu:prefix+incremental", &[("exact", false.into())]), key("raycast-cpu:prefix+incremental", &[]));
+        assert_eq!(key("raycast-cpu:prefix+refloor", &[("exact", false.into())]), key("raycast-cpu:prefix+refloor", &[]), "exact is moot for refloor");
+        assert_eq!(key("raycast-cpu:prefix+refloor", &[("view", "steps".into())]), key("raycast-cpu:prefix+refloor", &[]), "not baked by the generated code");
+        assert_ne!(key("raycast-cpu:prefix+refloor", &[]), key("raycast-cpu:bricks+refloor", &[]));
+        assert_ne!(key("raycast-cpu:prefix+refloor", &[]), key("raycast-cpu:prefix+refloor,shadow=incremental", &[]), "the shadow rays' own kernel");
+        assert_ne!(key("raycast-cpu:prefix+incremental", &[("skip8", false.into())]), key("raycast-cpu:prefix+incremental", &[]));
+        assert_eq!(key("raycast-cpu:prefix+refloor", &[("skip8", false.into())]), key("raycast-cpu:prefix+refloor", &[]), "levels are moot for refloor");
+        assert_ne!(key("raycast-cpu:prefix+refloor", &[("shadows", "sun".into())]), key("raycast-cpu:prefix+refloor", &[]));
+        assert_ne!(key("columns-cpu", &[("shadows", "none".into())]), key("columns-cpu", &[]));
         // The check run's lanes: the bake's graph in a plan bakes the same pipeline.
-        for (r, o) in [("cpu:hier+incremental", vec![("exact", toml::Value::from(false))]), ("cpu:bits+refloor,shadow=incremental", vec![("packet", "8".into())])] {
+        for (r, o) in [("raycast-cpu:hier+incremental", vec![("exact", toml::Value::from(false))]), ("raycast-cpu:bits+refloor,shadow=incremental", vec![("packet", "8".into())])] {
             let b = bake(&spec(r, &o)).unwrap().unwrap();
-            let mut s = RendererSpec::new("cpu");
+            let mut s = RendererSpec::new("raycast-cpu");
             s.graph = Some(b.graph.clone());
             s.resolve().unwrap();
             assert_eq!(bake(&s).unwrap().unwrap(), b, "{r}");

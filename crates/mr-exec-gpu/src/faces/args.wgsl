@@ -1,4 +1,4 @@
-// gpu-discover: single-thread passes turning GPU counters into indirect dispatch/draw args.
+// discover-gpu: single-thread passes turning GPU counters into indirect dispatch/draw args.
 
 struct Level { level: u32, size: u32, in_off: u32, out_off: u32, parity: u32, cap: u32, list_cap: u32, _p: u32 }
 

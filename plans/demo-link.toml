@@ -12,15 +12,15 @@ resolution = [1280, 720]
 view_radius = 8
 
 [[renderer]]
-compose = { backend = "gpu-compute" }
+compose = { preset = "raycast-gpu" }
 label = "free"
 
 [[renderer]]
-compose = { backend = "gpu-compute" }
+compose = { preset = "raycast-gpu" }
 label = "home"
 sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "gpu-compute" }
+compose = { preset = "raycast-gpu" }
 label = "bad"
 sites = { link = "net(latency_ms=150, jitter_ms=80, bandwidth_mbps=50, loss=0.05, reorder=true)" }

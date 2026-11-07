@@ -38,7 +38,7 @@ stage_times = true      # time every stage (GPU: +0.1–0.6%)
 clock_fps = 60          # the simulated clock of scripted runs
 
 [[renderer]]
-compose = { backend = "gpu-raster", geometry = "greedy", draw = "raster" }  # or graph, or name = "cpu-reference"
+compose = { preset = "raster-gpu", geometry = "greedy", draw = "raster" }  # or graph, or name = "cpu-reference"
 label = "raster-sunshadow"    # optional; lets one pipeline run with several option sets
 options = { shadows = "sun" } # the components' knobs
 sites = { shadow = "distance/sphere", client = "pick(radius=8, max_lod=2)" }
@@ -79,7 +79,7 @@ Any key can be overridden from the command line with `-s dotted.key=value`, and 
 
 ```sh
 multirenderer run plans/terrain.toml -s run.resolution=[3840,2160] \
-  -s 'renderer=[{compose={backend="gpu-compute",storage="prefix"}}]' -u output.save
+  -s 'renderer=[{compose={preset="raycast-gpu",storage="prefix"}}]' -u output.save
 ```
 
 ## Run output
@@ -90,18 +90,18 @@ Each run writes `runs/<timestamp>-<name>/`: `plan.toml` (with the overrides appl
 
 ## Sweeps
 
-A `compose` field may be `"*"` (every component the back end has for that slot; for
-`backend`, every back end) or a list. The renderer then expands into one renderer per valid
+A `compose` field may be `"*"` (every component the preset has for that slot; for
+`preset`, every preset) or a list. The renderer then expands into one renderer per valid
 combination:
 
 ```toml
 [[renderer]]
-compose = { backend = "*", storage = "*", geometry = "*", visibility = "*", draw = "*", traversal = "*", shading = "*" }
+compose = { preset = "*", storage = "*", geometry = "*", visibility = "*", draw = "*", traversal = "*", shading = "*" }
 ```
 
-- Slots left out keep their default. `"*"` on a slot that a back end lacks is ignored. A
-  *named* component on such a slot skips that back end: `backend = "*", storage = "palette"`
-  runs only the back ends that have a `palette` storage.
+- Slots left out keep their default. `"*"` on a slot that a preset lacks is ignored. A
+  *named* component on such a slot skips that preset: `preset = "*", storage = "palette"`
+  runs only the presets that have a `palette` storage.
 - `sites` values may be swept the same way (`link`, `client`, `generator`, ...).
 - The entry's `options` go to every combination whose components declare them.
 - In each pass, combinations that the pass mode cannot tell apart run only once: shading in
@@ -133,7 +133,7 @@ incorrect: they are ranked, but never best. For each renderer it lists:
   speed);
 - where it is weak (below 0.25 of the best), incorrect, or failed.
 
-For each back end and slot, it also shows the paired effect of each component: its fps
+For each preset and slot, it also shows the paired effect of each component: its fps
 against the best of otherwise identical pipelines.
 
 ## Scripts

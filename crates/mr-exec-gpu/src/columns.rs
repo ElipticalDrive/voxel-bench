@@ -1,4 +1,4 @@
-//! Columns on the node executor (`gpu-voxelspace`; components): storage
+//! Columns on the node executor (`columns-gpu`; components): storage
 //! `heightmap`, visibility `columns`, shading `direct` or `pathtrace` (heightmap-gradient
 //! normals on column tops; shadow and bounce rays walk the heightmap, `hm_trace`). The march
 //! is the columns component's root (`mr_components::visibility::columns::GPU_WGSL`) in one
@@ -23,7 +23,7 @@ use crate::{Core, CoreSpec, REGION_BINDING, storage_entry};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: "gpu-voxelspace".into(),
+        name: "columns-gpu".into(),
         description: "Comanche-style Voxel Space: per-column front-to-back heightmap march with a y-buffer (2.5D, no overhangs)".into(),
         tags: vec!["gpu".into(), "compute".into(), "heightmap".into(), "2.5d".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
@@ -56,7 +56,7 @@ struct Options {
     frames_in_flight: usize,
 }
 
-pub(crate) const BACKEND: &str = "gpu-voxelspace";
+pub(crate) const BACKEND: &str = "columns-gpu";
 
 impl Default for Options {
     fn default() -> Self {
@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn programs_compose() {
         use mr_gpu::wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
-        for shading in mr_components::names_on("gpu-voxelspace", mr_components::Slot::Shading) {
+        for shading in mr_components::names_on("columns-gpu", mr_components::Slot::Shading) {
             for deferred in [false, true] {
                 let (p, root, deps) = super::program(shading, deferred, mr_components::post::Tone::Aces);
                 let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{shading} {deferred}: {e}"));

@@ -1,4 +1,4 @@
-//! Prepass components (gpu-compute): a stage before the visibility walk. It may run its own
+//! Prepass components (raycast-gpu): a stage before the visibility walk. It may run its own
 //! compute entry point `prepass` (one thread per tile, `PREPASS_TILE` pixels square) and
 //! provides `start_t(pixel) -> f32`, the distance each primary ray may skip. The back end
 //! binds `beam` (one f32 per tile) and `beam_stats` (skipped-distance sum, tile count) in

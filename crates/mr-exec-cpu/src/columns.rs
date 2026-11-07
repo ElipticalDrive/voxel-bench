@@ -1,9 +1,9 @@
-//! The CPU columns pipeline (`cpu-voxelspace`; components) as nodes of the generic
+//! The CPU columns pipeline (`columns-cpu`; components) as nodes of the generic
 //! executor ([`crate::exec`]): storage `heightmap`, visibility `columns`, shading `direct`.
 //! The march is the columns component's (`mr_components::visibility::columns::cpu`),
 //! rayon-parallel over screen columns. Lit mode: the shading component (`direct::cpu::shade`)
 //! with the heightmap gradient as the top faces' normal; ambient, sun and point lights,
-//! shadow rays walking the heightmap storage (`Heightmap::trace`), as gpu-voxelspace. Shading
+//! shadow rays walking the heightmap storage (`Heightmap::trace`), as columns-gpu. Shading
 //! placement: inline in the march (one fused pass), or deferred (the march writes hit
 //! records, the common pass `shading::deferred` shades them). The heightmap is patched from
 //! the change log.
@@ -26,7 +26,7 @@ use crate::{Pixel, Spec, fixed};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: "cpu-voxelspace".into(),
+        name: "columns-cpu".into(),
         description: "Comanche-style Voxel Space on the CPU: per-column front-to-back heightmap march with a y-buffer, rayon-parallel over columns (2.5D, no overhangs)".into(),
         tags: vec!["cpu".into(), "heightmap".into(), "2.5d".into(), "software".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
@@ -59,7 +59,7 @@ impl Default for Options {
     }
 }
 
-pub(crate) const BACKEND: &str = "cpu-voxelspace";
+pub(crate) const BACKEND: &str = "columns-cpu";
 
 
 /// The storage's output: the heightmap and the chunks it is patched from.

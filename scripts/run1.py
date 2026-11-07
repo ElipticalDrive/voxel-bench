@@ -3,7 +3,7 @@
 prints the summary of `report.py`; the log is target/logs/run1.log.
 
   scripts/run1.py RENDERER_TOML [PLAN] [-s overrides...]
-  scripts/run1.py '[{compose={backend="gpu-compute",storage="prefix"}}]'
+  scripts/run1.py '[{compose={preset="raycast-gpu",storage="prefix"}}]'
   scripts/run1.py '[{name="cpu-reference"}]' terrain -s run.frames=60"""
 import os
 import subprocess

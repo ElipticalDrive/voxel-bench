@@ -1,11 +1,11 @@
 //! The GPU executor: every pipeline whose image is made on the GPU, one
 //! node executor ([`exec`]) over one core, with a region per kind of visibility node:
 //! - faces ([`faces`]): the shared face drawer over a set of block faces from meshing
-//!   (`gpu-raster`) or discovery on the GPU or the CPU (`gpu-discover`, `cpu-discover`);
+//!   (`raster-gpu`) or discovery on the GPU or the CPU (`discover-gpu`, `discover-cpu`);
 //! - ray casting ([`raycast`]): one primary ray per pixel, walked over storages
-//!   (`gpu-compute`) or cast as ray queries (`gpu-rt`);
-//! - splatting ([`splat`]): one point per exposed block (`gpu-splat`);
-//! - columns ([`columns`]): the Voxel Space heightmap march (`gpu-voxelspace`).
+//!   (`raycast-gpu`) or cast as ray queries (`rayquery-gpu`);
+//! - splatting ([`splat`]): one point per exposed block (`splat-gpu`);
+//! - columns ([`columns`]): the Voxel Space heightmap march (`columns-gpu`).
 //!
 //! Which region runs is the graph's: faces when a drawer draws them, else by the visibility
 //! node's component. The rest is shared ([`Core`]): the GPU device, the voxel world, the

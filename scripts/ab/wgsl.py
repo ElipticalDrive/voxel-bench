@@ -22,7 +22,7 @@ t = fresh(ROOT / "target" / "ab" / "wgsl")
 # A copy, so rebuilding during the (long) run does not pull the binary from under it.
 after = t / ("multirenderer-after" + release().suffix)
 shutil.copy2(release(), after)
-sweep = os.environ.get("SWEEP") or 'renderer=[{compose={backend="*",storage="*",geometry="*",prepass="*",visibility="*",draw="*",traversal="*",shading="*",meshes="*"}}]'
+sweep = os.environ.get("SWEEP") or 'renderer=[{compose={preset="*",storage="*",geometry="*",prepass="*",visibility="*",draw="*",traversal="*",shading="*",meshes="*"}}]'
 for side, exe, s in (("before", before(), os.environ.get("SWEEP_BEFORE") or sweep), ("after", after, sweep)):
     for p in plans:
         args = [exe, "run", f"plans/{p}.toml", "-s", s, "-s", "run.frames=3", "-s", "run.warmup=1", "-s", "run.repeats=1", "-s", "run.parallel=false",

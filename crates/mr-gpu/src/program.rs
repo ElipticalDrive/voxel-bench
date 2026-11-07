@@ -10,7 +10,7 @@
 //! breadth first). So the primary rays' `ctrace` and the shadow rays' `ctrace` never meet:
 //! each caller reaches only the kernel it is bound to. Per-instance constants (bind group,
 //! LOD, kernel knobs) go in the instance's own source. Choices compiled into one body (a
-//! variant of the root without a call boundary, e.g. gpu-voxelspace's shading placement)
+//! variant of the root without a call boundary, e.g. columns-gpu's shading placement)
 //! are the module system's shader defs (`#ifdef NAME`, [`Program::define`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};

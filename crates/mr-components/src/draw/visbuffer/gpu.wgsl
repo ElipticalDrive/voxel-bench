@@ -1,4 +1,4 @@
-// Visibility `visbuffer` (gpu-raster; a drawer choice of gpu-discover and cpu-discover): the raster pass writes only an id
+// Visibility `visbuffer` (raster-gpu; a drawer choice of discover-gpu and discover-cpu): the raster pass writes only an id
 // (instance << 3 | face, plus one; 0 = sky) and depth: an encoding of the hit record (4 bytes
 // per pixel against the packed record's 8) that the face source decodes (`face_hit`) in the
 // common deferred pass (`shading/deferred.wgsl`), which shades once per pixel, independent

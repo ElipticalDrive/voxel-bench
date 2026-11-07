@@ -8,10 +8,10 @@
 //!
 //! Every strategy's product is one hit record per pixel: [`record`] on the
 //! CPU, `pack_hit` / `record_surface` (`mr::voxels`) on the GPU, with the same layout; or an
-//! id its source decodes (`visbuffer`'s face ids, `splat`'s point ids, cpu-raster's quad
+//! id its source decodes (`visbuffer`'s face ids, `splat`'s point ids, raster-cpu's quad
 //! ids). The common deferred pass (`crate::shading`) shades either; placement (inline or
 //! deferred) is a choice wherever a strategy can do both: ray casting and columns
-//! (`placement`), the face drawers (`raster` or `visbuffer` / `gbuffer`), cpu-raster
+//! (`placement`), the face drawers (`raster` or `visbuffer` / `gbuffer`), raster-cpu
 //! (`placement`, forward or deferred); splatting settles visibility only after every point,
 //! so it is deferred by construction.
 

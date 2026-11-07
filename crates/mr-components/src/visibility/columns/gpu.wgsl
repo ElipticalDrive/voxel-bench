@@ -1,4 +1,4 @@
-// Visibility `columns` on the GPU (the root of gpu-voxelspace's program): Comanche-style
+// Visibility `columns` on the GPU (the root of columns-gpu's program): Comanche-style
 // column march. One invocation per screen column marches front-to-back over the heightmap
 // storage, drawing spans with a y-buffer; shadow and bounce rays walk the same heightmap
 // (`hm_trace`). Shading placement: inline in the march, or deferred (the

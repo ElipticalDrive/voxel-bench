@@ -1,4 +1,4 @@
-//! The walking caster (`gpu-compute`; the primary rays' kernel API `compute`): a renderer from
+//! The walking caster (`raycast-gpu`; the primary rays' kernel API `compute`): a renderer from
 //! components (`mr-components`): a **storage**, a **traversal** kernel walked by
 //! ray casting (the visibility strategy, `raycast`) and a **shading** component, each a WGSL
 //! module from `mr-components`, composed into one shader, so the compiler optimises across them
@@ -30,7 +30,7 @@ use serde::Deserialize;
 use super::{Cast, CastProgram, Passes, Ticket, View};
 use crate::{Core, CoreSpec, REGION_BINDING};
 
-pub(crate) const BACKEND: &str = "gpu-compute";
+pub(crate) const BACKEND: &str = "raycast-gpu";
 
 
 pub(crate) fn info() -> RendererInfo {
@@ -46,7 +46,7 @@ pub(crate) fn info() -> RendererInfo {
 }
 
 fn describe(slot: Slot) -> String {
-    components(slot).filter(|c| mr_components::unavailable("gpu-compute", slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
+    components(slot).filter(|c| mr_components::unavailable("raycast-gpu", slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
 }
 
 fn params() -> Vec<ParamSpec> {
@@ -177,7 +177,7 @@ impl Composition {
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         // Every site's walk; the primary kernel's constants are this back end's knobs.
         let mut walks = Walks::of(g);
-        let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("gpu-compute: {} `{port}` rays are not bound", role.name()));
+        let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("raycast-gpu: {} `{port}` rays are not bound", role.name()));
         let primary = walks.site(g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
         walks.kernels[primary].component = require(BACKEND, Slot::Traversal, &opts.traversal)?;
         walks.kernels[primary].consts = mr_components::shaders::KernelConsts { lod: false, exact: opts.exact, levels: [opts.skip2, opts.skip4, opts.skip8, opts.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)), max_steps: opts.max_steps };
@@ -207,7 +207,7 @@ impl Composition {
             comp.set_lod(true);
             if let Some(why) = lod_blocker(&comp) {
                 comp.set_lod(false);
-                tracing::warn!("gpu-compute: running without LOD (max_lod = {max_lod}): {why}");
+                tracing::warn!("raycast-gpu: running without LOD (max_lod = {max_lod}): {why}");
             }
         }
         Ok(comp)
@@ -339,7 +339,7 @@ impl Walk {
         let core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
         let far = crate::remote::Far::of(p, devices, waker, g, &core, &spec)?;
         let walk = |k: usize| comp.walks.label(k);
-        tracing::info!("gpu-compute: primary {}, shadow {}, bounce {}, shading {shading}", walk(0), walk(comp.shadow), walk(comp.bounce));
+        tracing::info!("raycast-gpu: primary {}, shadow {}, bounce {}, shading {shading}", walk(0), walk(comp.shadow), walk(comp.bounce));
         let walk = Self {
             meshes: MeshRecords::new(&core.gpu, &core.world, p.width, p.height),
             built: comp.clone(),

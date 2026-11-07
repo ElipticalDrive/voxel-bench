@@ -1,4 +1,4 @@
-// The walking caster (gpu-compute): the primary ray is a walk (`ctrace` from the traversal
+// The walking caster (raycast-gpu): the primary ray is a walk (`ctrace` from the traversal
 // kernel over the storage component), starting where the prepass lets it.
 
 // Prepass output (one start distance per tile) and statistics; see `prepass` components.

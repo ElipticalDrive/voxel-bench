@@ -22,79 +22,79 @@ modes = ["unlit"]
 view_radius = 8
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 label = "free"
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 label = "lan"
 sites = { link = "net(latency_ms=1, bandwidth_mbps=1000)" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 label = "home"
 sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 label = "home, in order"
 sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01)" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 label = "bad"
 sites = { link = "net(latency_ms=150, jitter_ms=80, bandwidth_mbps=50, loss=0.05, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
+compose = { preset = "raster-gpu", storage = "bricks", geometry = "greedy", draw = "raster" }
 # Every back end behind the home connection.
 sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "gpu-discover" }
+compose = { preset = "discover-gpu" }
 sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "cpu-discover" }
+compose = { preset = "discover-cpu" }
 sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "gpu-rt", geometry = "greedy", traversal = "rayquery" }
+compose = { preset = "rayquery-gpu", geometry = "greedy", traversal = "rayquery" }
 sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "gpu-voxelspace" }
+compose = { preset = "columns-gpu" }
 sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "gpu-splat" }
+compose = { preset = "splat-gpu" }
 sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "cpu", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-cpu", storage = "bricks", traversal = "refloor" }
 sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "cpu-raster", geometry = "greedy", draw = "raster" }
+compose = { preset = "raster-cpu", geometry = "greedy", draw = "raster" }
 sites = { link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 label = "home, derive r4+2"
 sites = { client = "derive(radius=4, max_lod=2)", link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 label = "home, generated"
 sites = { generator = "cpu", link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 label = "bad, generated"
 sites = { generator = "cpu", link = "net(latency_ms=150, jitter_ms=80, bandwidth_mbps=50, loss=0.05, reorder=true)" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 label = "home, derive r4+2, generated"
 sites = { generator = "cpu", client = "derive(radius=4, max_lod=2)", link = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)" }
 

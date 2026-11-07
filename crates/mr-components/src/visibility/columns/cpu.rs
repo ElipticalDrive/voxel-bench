@@ -1,4 +1,4 @@
-//! Visibility `columns` on the CPU (was cpu-voxelspace's): [`March`] walks one screen column
+//! Visibility `columns` on the CPU (was columns-cpu's): [`March`] walks one screen column
 //! front to back over the [`Heightmap`], handing every row it covers to an [`Out`]: shaded
 //! inline ([`Inline`]) or written as hit records ([`Records`]), which the common deferred
 //! pass shades through [`Deferred`]. The executor parallelises over columns.

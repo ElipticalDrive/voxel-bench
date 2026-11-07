@@ -1,4 +1,4 @@
-//! The ray-query caster (`gpu-rt`; the primary rays' kernel API `rayquery`): hardware ray
+//! The ray-query caster (`rayquery-gpu`; the primary rays' kernel API `rayquery`): hardware ray
 //! tracing (RT cores) through wgpu ray queries, assembled from components (`mr-components`):
 //!
 //! * **geometry** decides what goes into each chunk's BLAS: `greedy` / `naive` quads as
@@ -28,7 +28,7 @@ use super::{Cast, CastProgram};
 use crate::accel::AccelSpec;
 use crate::{Core, CoreSpec};
 
-pub(crate) const BACKEND: &str = "gpu-rt";
+pub(crate) const BACKEND: &str = "rayquery-gpu";
 
 
 pub(crate) fn info() -> RendererInfo {
@@ -148,7 +148,7 @@ impl RayQuery {
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         require(BACKEND, Slot::Traversal, &opts.traversal)?;
         let shading = require(BACKEND, Slot::Shading, &opts.shading)?;
-        anyhow::ensure!(opts.merge == "block", "merge = `{}`: gpu-rt has no per-pixel block lookup (only `block`)", opts.merge);
+        anyhow::ensure!(opts.merge == "block", "merge = `{}`: rayquery-gpu has no per-pixel block lookup (only `block`)", opts.merge);
         let mut walks = Walks::of(g);
         let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{BACKEND}: {} `{port}` rays are not bound", role.name()));
         let primary = walks.site(g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
@@ -182,7 +182,7 @@ impl RayQuery {
         };
         let core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
         let far = crate::remote::Far::of(p, devices, waker, g, &core, &spec)?;
-        tracing::info!("gpu-rt: primary {}, shadow {}, bounce {}, shading {shading}", walks.label(0), walks.label(shadow), walks.label(bounce));
+        tracing::info!("rayquery-gpu: primary {}, shadow {}, bounce {}, shading {shading}", walks.label(0), walks.label(shadow), walks.label(bounce));
         Ok((core, Self { walks, shadow, bounce, opts, bound: Bound(Vec::new()) }, shading, far))
     }
 }

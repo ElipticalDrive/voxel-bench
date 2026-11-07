@@ -1,4 +1,4 @@
-// Visibility `gbuffer` (gpu-raster, a drawer choice of the discovery back ends; was gpu-hybrid;
+// Visibility `gbuffer` (raster-gpu, a drawer choice of the discovery back ends; was gpu-hybrid;
 // keeps no instance, so the face source's diagnostic views do not apply): the raster pass writes
 // the common hit record (`pack_hit`: distance, block, face and cell parity, 8 bytes per pixel) instead of an
 // id; the deferred shading pass (`shading::deferred_wgsl`) rebuilds the surface from it and shades

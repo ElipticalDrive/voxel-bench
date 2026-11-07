@@ -1,8 +1,8 @@
-//! The CPU rasterisation pipeline (`cpu-raster`) as nodes of the generic executor
+//! The CPU rasterisation pipeline (`raster-cpu`) as nodes of the generic executor
 //! ([`crate::exec`]): a software rasteriser on the CPU, assembled from components
 //! (`mr-components`): **geometry** (`greedy` or `naive` quads, meshed on the
 //! CPU), **visibility** `faces` with **draw** `raster` (below), **shading** `direct` (here the reference
-//! scene's f64 model, with CPU ray-traced shadows). Was the cpu-raster renderer.
+//! scene's f64 model, with CPU ray-traced shadows). Was the raster-cpu renderer.
 //!
 //! Shading stays on the reference's f64 model on purpose, not the f32 CPU shading
 //! component (`direct::cpu::shade`): the same algorithm at a different precision. Measured
@@ -39,7 +39,7 @@ use crate::{Pixel, Spec};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: "cpu-raster".into(),
+        name: "raster-cpu".into(),
         description: "CPU-raster back end: geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading".into(),
         tags: vec!["cpu".into(), "raster".into(), "software".into(), "visibility-buffer".into(), "modular".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
@@ -72,7 +72,7 @@ impl Default for Options {
     }
 }
 
-pub(crate) const BACKEND: &str = "cpu-raster";
+pub(crate) const BACKEND: &str = "raster-cpu";
 
 
 fn params() -> Vec<ParamSpec> {
@@ -392,7 +392,7 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
     require(BACKEND, Slot::Visibility, &opts.visibility)?;
     require(BACKEND, Slot::Draw, &opts.draw)?;
     require(BACKEND, Slot::Shading, &opts.shading)?;
-    anyhow::ensure!(opts.merge == "block", "merge = `{}`: cpu-raster has no per-pixel block lookup (only `block`)", opts.merge);
+    anyhow::ensure!(opts.merge == "block", "merge = `{}`: raster-cpu has no per-pixel block lookup (only `block`)", opts.merge);
     let mesh = mesh_fn(&require(BACKEND, Slot::Geometry, &opts.geometry)?);
     let deferred = mr_components::parse_placement(&opts.placement)?;
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
@@ -487,7 +487,7 @@ fn clip(poly: &mut Vec<Vec4>, scratch: &mut Vec<Vec4>) {
 
 
 /// The quads a frame draws, numbered for visibility ids (0 = nothing), and how a quad's
-/// pixel is shaded: the quad id is cpu-raster's encoding of the hit record, decoded here
+/// pixel is shaded: the quad id is raster-cpu's encoding of the hit record, decoded here
 /// (the pixel's ray against the quad's plane, in f64) and shaded with the reference model.
 struct Quads<'a> {
     visible: &'a [(IVec3, &'a Mesh, u32)],

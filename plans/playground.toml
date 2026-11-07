@@ -12,4 +12,4 @@ resolution = [1280, 720]
 view_radius = 10
 
 [[renderer]]
-compose = { backend = "gpu-compute" }
+compose = { preset = "raycast-gpu" }

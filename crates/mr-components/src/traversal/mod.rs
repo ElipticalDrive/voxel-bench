@@ -27,7 +27,7 @@ pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     })
 }
 
-/// The kernels of the gpu-rt back end (hardware ray queries against its BLAS).
+/// The kernels of the rayquery-gpu back end (hardware ray queries against its BLAS).
 pub fn rt_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {
         "rayquery" => include_str!("rayquery/gpu.wgsl"),
@@ -41,7 +41,7 @@ mod tests {
     use mr_gpu::program::{COMMON, LIGHTING, Program, VOXELS};
 
     /// A primary walk plus a secondary walk of every other storage and kernel form one
-    /// valid shader as modules, without renaming (as gpu-compute assembles them).
+    /// valid shader as modules, without renaming (as raycast-gpu assembles them).
     #[test]
     fn secondary_walks_compile_next_to_the_primary() {
         let storages = ["bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap"];

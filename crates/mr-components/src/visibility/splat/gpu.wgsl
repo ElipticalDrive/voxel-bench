@@ -1,4 +1,4 @@
-// Visibility `splat` on the GPU (the root of gpu-splat's program): software point
+// Visibility `splat` on the GPU (the root of splat-gpu's program): software point
 // rasterisation. Each point of geometry `points` is a face-exposed block; passes: clear,
 // depth splat (atomicMin of the depth where each pixel's ray enters the block), the same for
 // points larger than `max_splat` (a workgroup each), id splat (atomicMax where depth

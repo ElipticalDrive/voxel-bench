@@ -79,7 +79,7 @@ enum Cmd {
     List,
     /// A pipeline as a graph: its nodes (TOML, for a plan's
     /// `[renderer.graph]`), sites form, canonical form and cache key. The renderer as for
-    /// `view -r` (`gpu-compute:prefix+incremental,shadow=tree64/sphere`).
+    /// `view -r` (`raycast-gpu:prefix+incremental,shadow=tree64/sphere`).
     /// With `--keys`: reads observations (JSON lines) on stdin and prints each one's graph
     /// key (`-` if it has none), for records written before they carried one.
     Graph {
@@ -145,7 +145,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Graph { renderer, .. } => {
-            let renderer = renderer.context("which renderer? e.g. `graph gpu-compute:prefix+incremental`")?;
+            let renderer = renderer.context("which renderer? e.g. `graph raycast-gpu:prefix+incremental`")?;
             let mut spec = plan::RendererSpec::from_cli(&renderer)?;
             spec.resolve()?;
             let g = spec.pipeline().with_context(|| format!("`{renderer}` is not a composition"))?;
@@ -161,7 +161,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::List => {
-            println!("Renderers are assembled from components (plan: compose = {{ backend, storage, geometry, prepass, visibility, shading, meshes }};\nCLI: -r backend:<its required slots in order>[+shading[+prepass[+meshes]]], e.g. gpu-compute:prefix+incremental, gpu-compute:bricks+refloor+direct+beam).\nSites bound otherwise (shadow, bounce, exposure, meshes-shadow; plan: sites = {{ ... }}; CLI: after commas):\n  gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere — a site's value is another site (shared), <kernel> (over the lead's storage),\n  <storage>/<kernel> or <site>/<kernel>; `multirenderer graph <renderer>` shows the graph.\nThe world's side: link = free | net(latency_ms=30,jitter_ms=10,bandwidth_mbps=200,loss=0.01,reorder=true,seed=1),\n  client = pick | derive, with its region as knobs: client=derive(radius=4,max_lod=2) (unset: run.view_radius, run.max_lod).\n\nBack ends:");
+            println!("Renderers are assembled from components (plan: compose = {{ preset, storage, geometry, prepass, visibility, shading, meshes }};\nCLI: -r preset:<its required slots in order>[+shading[+prepass[+meshes]]], e.g. raycast-gpu:prefix+incremental, raycast-gpu:bricks+refloor+direct+beam).\nSites bound otherwise (shadow, bounce, exposure, meshes-shadow; plan: sites = {{ ... }}; CLI: after commas):\n  raycast-gpu:bricks+refloor+pathtrace,bounce=tree64/sphere — a site's value is another site (shared), <kernel> (over the lead's storage),\n  <storage>/<kernel> or <site>/<kernel>; `multirenderer graph <renderer>` shows the graph.\nThe world's side: link = free | net(latency_ms=30,jitter_ms=10,bandwidth_mbps=200,loss=0.01,reorder=true,seed=1),\n  client = pick | derive, with its region as knobs: client=derive(radius=4,max_lod=2) (unset: run.view_radius, run.max_lod).\n\nPresets (technique-device: starting points; the pipeline is the graph, which may take any valid shape):");
             for b in mr_components::BACKENDS {
                 let slots: Vec<String> = b.slots.iter().map(|(s, d)| format!("{}={d}", s.name())).collect();
                 let mut at: Vec<String> = vec![format!("{} (default)", b.runs.label())];

@@ -187,7 +187,7 @@ mod tests {
             g.nodes.get_mut("kernel").unwrap().inputs.insert("storage".into(), "kernel".into());
         });
         assert!(e.contains("takes storage"), "{e}");
-        // A shape gpu-compute has no composition for: two primary-ray storages.
+        // A shape raycast-gpu has no composition for: two primary-ray storages.
         let e = err(&|g| {
             g.nodes.insert("s2".into(), Node::new(Role::Storage, "rows"));
             g.nodes.insert("k2".into(), Node::new(Role::Traversal, "refloor").with(&[("storage", "s2")]));
@@ -204,7 +204,7 @@ mod tests {
         // so only a storage-less source would fail, which types already reject.
         assert!(Graph::from_composition(&Composition { traversal: "sphere".into(), ..Default::default() }).unwrap().validate().is_ok());
         // Discovery across devices: CPU discovery rays and GPU shadow rays cannot share a kernel.
-        let mut g = Graph::from_composition(&Composition::new("cpu-discover")).unwrap();
+        let mut g = Graph::from_composition(&Composition::new("discover-cpu")).unwrap();
         g.nodes.get_mut("shading").unwrap().inputs.insert("shadow".into(), "kernel".into());
         g.nodes.retain(|k, _| !k.starts_with("shadow."));
         let e = g.validate().unwrap_err();
@@ -225,17 +225,17 @@ mod tests {
             g
         };
         // cpu: one API for its one loop, read as its `isa` knob; fused nodes follow.
-        let cpu = Composition::new("cpu");
+        let cpu = Composition::new("raycast-cpu");
         let g = set(&cpu, &[("visibility", Api::Avx2), ("shading", Api::Avx2)]);
         let (c, exact) = g.accept().unwrap();
-        assert!(exact && c == Composition::new("cpu"));
+        assert!(exact && c == Composition::new("raycast-cpu"));
         assert_eq!(g.flat_knobs().unwrap().get("isa"), Some(&toml::Value::String("avx2".into())));
         let ck = g.check().unwrap();
         assert_eq!(ck.apis.get("kernel"), Some(&Api::Avx2), "the kernel runs with its caller");
         // A node without an API of its own or its callers' runs its component's only one on
         // its device (what the ray-casting region picks its caster by).
         // A walk's kernel has two (compute, raster: `dispatch`), so it has none.
-        for (backend, api) in [("gpu-rt", Some(Api::RayQuery)), ("gpu-compute", None)] {
+        for (backend, api) in [("rayquery-gpu", Some(Api::RayQuery)), ("raycast-gpu", None)] {
             let ck = Graph::from_composition(&Composition::new(backend)).unwrap().check().unwrap();
             assert_eq!(ck.api(ck.input(Role::Visibility, "primary").unwrap()), api, "{backend}");
         }
@@ -250,7 +250,7 @@ mod tests {
         let gc = Composition::default();
         assert!(set(&gc, &[("visibility", Api::Compute)]).validate().is_ok());
         assert_eq!(set(&gc, &[("visibility", Api::Compute)]).key(), Graph::from_composition(&gc).unwrap().key(), "the default: not in the key");
-        // gpu-compute's walk: a compute thread or a fragment shader per pixel (`dispatch`).
+        // raycast-gpu's walk: a compute thread or a fragment shader per pixel (`dispatch`).
         let frag = set(&gc, &[("visibility", Api::Raster)]);
         assert_eq!(frag.flat_knobs().unwrap().get("dispatch"), Some(&toml::Value::String("fragment".into())));
         assert!(frag.validate().is_ok() && frag.key() != Graph::from_composition(&gc).unwrap().key());
@@ -258,24 +258,24 @@ mod tests {
         assert!(e.contains("with one api, its `dispatch`"), "{e}");
         let e = set(&Composition { prepass: "beam".into(), ..Default::default() }, &[("prepass", Api::Raster)]).validate().unwrap_err();
         assert!(e.contains("`beam` has no raster implementation"), "{e}");
-        let e = set(&Composition::new("gpu-rt"), &[("visibility", Api::Compute)]).validate().unwrap_err();
+        let e = set(&Composition::new("rayquery-gpu"), &[("visibility", Api::Compute)]).validate().unwrap_err();
         assert!(e.contains("runs its visibility with rayquery here, not compute"), "{e}");
-        let e = set(&Composition::new("gpu-raster"), &[("shading", Api::Compute)]).validate().unwrap_err();
+        let e = set(&Composition::new("raster-gpu"), &[("shading", Api::Compute)]).validate().unwrap_err();
         assert!(e.contains("runs its shading with raster here, not compute"), "{e}");
         let e = set(&gc, &[("kernel", Api::RayQuery)]).validate().unwrap_err();
         // Primary rays as ray queries run on the ray-query caster, which draws no meshes.
-        assert!(e.contains("`meshes`: `gpu-rt` builds no meshes node"), "{e}");
+        assert!(e.contains("`meshes`: `rayquery-gpu` builds no meshes node"), "{e}");
         // A face drawer's shading: in the fragment shader for `raster`, else deferred compute.
-        let r = Composition::new("gpu-raster");
+        let r = Composition::new("raster-gpu");
         assert!(set(&r, &[("shading", Api::Raster)]).validate().is_ok());
         assert_eq!(set(&r, &[("shading", Api::Raster)]).key(), Graph::from_composition(&r).unwrap().key(), "no choice: not in the key");
         assert!(set(&r, &[("shading", Api::Compute)]).validate().is_err());
-        let vb = Composition { draw: "visbuffer".into(), ..Composition::new("gpu-raster") };
+        let vb = Composition { draw: "visbuffer".into(), ..Composition::new("raster-gpu") };
         assert!(set(&vb, &[("shading", Api::Compute)]).validate().is_ok());
-        // Implementations: cpu-raster is scalar only; pathtrace has no CPU implementation.
-        let e = set(&Composition::new("cpu-raster"), &[("shading", Api::Avx2)]).validate().unwrap_err();
+        // Implementations: raster-cpu is scalar only; pathtrace has no CPU implementation.
+        let e = set(&Composition::new("raster-cpu"), &[("shading", Api::Avx2)]).validate().unwrap_err();
         assert!(e.contains("runs its shading with scalar here, not avx2"), "{e}");
-        let mut g = Graph::from_composition(&Composition::new("cpu")).unwrap();
+        let mut g = Graph::from_composition(&Composition::new("raycast-cpu")).unwrap();
         g.nodes.get_mut("shading").unwrap().component = "pathtrace".into();
         assert!(g.validate().is_err());
         // Devices follow where the back end runs a role: rasterisers build faces on the CPU.
@@ -301,7 +301,7 @@ mod tests {
                 g.nodes.get_mut(*node).unwrap().inputs.insert(port.to_string(), format!("{id}.kernel"));
             }
         };
-        // gpu-compute: primary, shadow, bounce and mesh shadows each their own.
+        // raycast-gpu: primary, shadow, bounce and mesh shadows each their own.
         let pt = Composition { shading: "pathtrace".into(), ..Default::default() };
         let g = with(pt.clone(), &|g| {
             own(g, "s", "distance", "sphere", &[("shading", "shadow")]);
@@ -317,43 +317,43 @@ mod tests {
         let mut h = g.clone();
         h.nodes.get_mut("shading").unwrap().inputs.remove("bounce");
         assert_eq!(h.canonical(), g.canonical());
-        // gpu-raster: bounces apart from the shadow rays, also as ray queries over the
+        // raster-gpu: bounces apart from the shadow rays, also as ray queries over the
         // geometry it draws (before, a kernel it lacked).
-        let r = Composition { shading: "pathtrace".into(), ..Composition::new("gpu-raster") };
+        let r = Composition { shading: "pathtrace".into(), ..Composition::new("raster-gpu") };
         assert!(!with(r.clone(), &|g| own(g, "b", "prefix", "incremental", &[("shading", "bounce")])).accept().unwrap().1);
         let q = with(r, &|g| {
             g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "geometry")]));
             g.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "rq".into());
         });
         assert!(!q.accept().unwrap().1);
-        // gpu-discover: exposure tests read another storage than the discovery rays walk.
-        let d = with(Composition { storage: "distance".into(), traversal: "sphere".into(), ..Composition::new("gpu-discover") }, &|g| {
+        // discover-gpu: exposure tests read another storage than the discovery rays walk.
+        let d = with(Composition { storage: "distance".into(), traversal: "sphere".into(), ..Composition::new("discover-gpu") }, &|g| {
             g.nodes.insert("x".into(), Node::new(Role::Storage, "bricks"));
             g.nodes.get_mut("visibility").unwrap().inputs.insert("exposure".into(), "x".into());
         });
         assert!(!d.accept().unwrap().1);
-        // cpu-discover: exposure is the discovery storage; GPU shadow rays their own.
-        let cd = Composition::new("cpu-discover");
+        // discover-cpu: exposure is the discovery storage; GPU shadow rays their own.
+        let cd = Composition::new("discover-cpu");
         let e = with(cd.clone(), &|g| {
             g.nodes.insert("x".into(), Node::new(Role::Storage, "hier"));
             g.nodes.get_mut("visibility").unwrap().inputs.insert("exposure".into(), "x".into());
         })
         .validate()
         .unwrap_err();
-        assert!(e.contains("`cpu-discover` builds 1 storage node on cpu (here: `storage`, `x`)"), "{e}");
+        assert!(e.contains("`discover-cpu` builds 1 storage node on cpu (here: `storage`, `x`)"), "{e}");
         assert!(with(Composition { shading: "pathtrace".into(), ..cd }, &|g| own(g, "b", "rows", "rowrun", &[("shading", "bounce")])).validate().is_ok());
         // cpu: the shadow kernel of its own over the primary storage, not another storage.
-        let cpu = Composition::new("cpu");
+        let cpu = Composition::new("raycast-cpu");
         let g = with(cpu.clone(), &|g| {
             g.nodes.insert("sk".into(), Node::new(Role::Traversal, "incremental").with(&[("storage", "storage")]));
             g.nodes.get_mut("shading").unwrap().inputs.insert("shadow".into(), "sk".into());
         });
         assert!(!g.accept().unwrap().1);
         let e = with(cpu, &|g| own(g, "s", "hier", "refloor", &[("shading", "shadow")])).validate().unwrap_err();
-        assert!(e.contains("`cpu` builds 1 storage node"), "{e}");
-        // gpu-rt: its shading's rays free: a kernel node of their own over its
+        assert!(e.contains("`raycast-cpu` builds 1 storage node"), "{e}");
+        // rayquery-gpu: its shading's rays free: a kernel node of their own over its
         // one acceleration structure.
-        let g = with(Composition { shading: "pathtrace".into(), ..Composition::new("gpu-rt") }, &|g| {
+        let g = with(Composition { shading: "pathtrace".into(), ..Composition::new("rayquery-gpu") }, &|g| {
             g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "geometry")]));
             g.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "rq".into());
         });
@@ -404,8 +404,8 @@ mod tests {
                     graphs += check(c, &BTreeMap::from([(n.clone(), v.clone())]), &mut keys) as usize;
                 }
             }
-            // Pairs: shadow and bounce rays on gpu-compute, a sample of values.
-            if c.backend == "gpu-compute" && c.shading == "pathtrace" {
+            // Pairs: shadow and bounce rays on raycast-gpu, a sample of values.
+            if c.backend == "raycast-gpu" && c.shading == "pathtrace" {
                 for a in ["primary", "sphere", "rows/rowrun", "tree64/refloor"] {
                     for b in ["shadow", "incremental", "distance/sphere", "shadow/sphere", "primary"] {
                         graphs += check(c, &BTreeMap::from([("shadow".into(), a.into()), ("bounce".into(), b.into())]), &mut keys) as usize;
@@ -418,10 +418,10 @@ mod tests {
         // Labels and errors.
         let pt = Composition { shading: "pathtrace".into(), ..Default::default() };
         let g = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("bounce".into(), "tree64/sphere".into())])).unwrap();
-        assert_eq!(g.label().unwrap(), "gpu-compute: bricks + refloor + pathtrace, bounce = tree64/sphere");
+        assert_eq!(g.label().unwrap(), "raycast-gpu: bricks + refloor + pathtrace, bounce = tree64/sphere");
         // Rebinding the shadow rays takes the bounces along: a composition again.
         let g = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("shadow".into(), "rows/rowrun".into())])).unwrap();
-        assert_eq!(g.label().unwrap(), "gpu-compute: bricks + refloor + shadow rows + shadow rowrun + pathtrace");
+        assert_eq!(g.label().unwrap(), "raycast-gpu: bricks + refloor + shadow rows + shadow rowrun + pathtrace");
         let e = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("nope".into(), "x".into())])).unwrap_err();
         assert!(e.contains("no site `nope`"), "{e}");
         let e = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("bounce".into(), "x/refloor".into())])).unwrap_err();
@@ -438,25 +438,25 @@ mod tests {
         let of = |b: &str| Graph::from_composition(&Composition::new(b)).unwrap();
         // Discovery's sampler moved to the CPU: the shading's shadow rays get their own
         // instances on the GPU, the drawer its faces a frame late or now.
-        let mut g = of("gpu-discover");
+        let mut g = of("discover-gpu");
         g.nodes.get_mut("visibility").unwrap().device = Some(Device::Cpu);
         for (id, n) in [("shadow.kernel", g.nodes["kernel"].clone().with(&[("storage", "shadow.storage")])), ("shadow.storage", g.nodes["storage"].clone())] {
             g.nodes.insert(id.into(), Node { device: Some(Device::Gpu(0)), ..n });
         }
         g.nodes.get_mut("shading").unwrap().inputs.insert("shadow".into(), "shadow.kernel".into());
-        assert_eq!((g.preset(), g.executor.as_str()), (Some("cpu-discover"), "gpu"));
+        assert_eq!((g.preset(), g.executor.as_str()), (Some("discover-cpu"), "gpu"));
         let now: toml::Table = toml::from_str("pipelined = false").unwrap();
-        assert_eq!(g.key().unwrap(), of("cpu-discover").with_options(&now).key().unwrap());
+        assert_eq!(g.key().unwrap(), of("discover-cpu").with_options(&now).key().unwrap());
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
-        assert_eq!(g.key().unwrap(), key(Composition::new("cpu-discover")));
-        assert_eq!(g.to_composition().unwrap().backend, "cpu-discover");
+        assert_eq!(g.key().unwrap(), key(Composition::new("discover-cpu")));
+        assert_eq!(g.to_composition().unwrap().backend, "discover-cpu");
         // The drawer's face source a choice: discovery in place of meshing.
-        let mut g = Graph::from_composition(&Composition { meshes: "none".into(), ..Composition::new("gpu-raster") }).unwrap();
+        let mut g = Graph::from_composition(&Composition { meshes: "none".into(), ..Composition::new("raster-gpu") }).unwrap();
         g.nodes.retain(|k, _| k != "geometry");
         g.nodes.insert("visibility".into(), Node::new(Role::Visibility, "quadtree").with(&[("rays", "kernel"), ("exposure", "storage")]));
-        assert_eq!(g.key().unwrap(), key(Composition::new("gpu-discover")));
+        assert_eq!(g.key().unwrap(), key(Composition::new("discover-gpu")));
         // The GPU's presets: the same graph with or without the executor written.
-        for b in ["gpu-compute", "gpu-rt", "gpu-splat", "gpu-voxelspace", "gpu-raster", "gpu-discover", "cpu-discover"] {
+        for b in ["raycast-gpu", "rayquery-gpu", "splat-gpu", "columns-gpu", "raster-gpu", "discover-gpu", "discover-cpu"] {
             let mut g = of(b);
             assert_eq!(g.executor, "gpu", "{b}");
             g.executor.clear();
@@ -464,17 +464,17 @@ mod tests {
         }
         // The executor says where nodes without a device run: CPU ray casting's graph on the
         // GPU executor is GPU ray casting, which the CPU executor does not build.
-        let mut g = of("cpu");
+        let mut g = of("raycast-cpu");
         g.executor = "gpu".into();
-        assert_eq!(g.preset(), Some("gpu-compute"));
+        assert_eq!(g.preset(), Some("raycast-gpu"));
         g.executor = "cpu".into();
         g.nodes.values_mut().filter(|n| matches!(n.role, Role::Visibility | Role::Shading)).for_each(|n| n.device = Some(Device::Gpu(0)));
-        assert_eq!(g.preset(), Some("gpu-compute"));
-        assert!(g.check().unwrap().built().unwrap_err().contains("the cpu executor builds no `gpu-compute` pipeline"));
+        assert_eq!(g.preset(), Some("raycast-gpu"));
+        assert!(g.check().unwrap().built().unwrap_err().contains("the cpu executor builds no `raycast-gpu` pipeline"));
         // A shape no preset has keeps its reasons.
-        let mut g = of("cpu-raster");
+        let mut g = of("raster-cpu");
         g.nodes.get_mut("draw").unwrap().device = Some(Device::Gpu(0));
-        assert_eq!(g.preset(), Some("gpu-raster"));
+        assert_eq!(g.preset(), Some("raster-gpu"));
         assert!(g.validate().is_err());
     }
     /// A pipeline on one GPU runs on any slot; over two it is split at the hit records (ray
@@ -482,7 +482,7 @@ mod tests {
     /// end runs the graph as before, its key and label say so; `pick` stays out of both.
     #[test]
     fn client_in_the_sites_form() {
-        let c = Composition::new("gpu-compute");
+        let c = Composition::new("raycast-gpu");
         let pick = Graph::from_composition(&c).unwrap();
         let sites: BTreeMap<String, String> = [(CLIENT.to_string(), "derive".to_string())].into();
         let derive = pick.with_sites(&sites).unwrap();
@@ -506,7 +506,7 @@ mod tests {
     /// back end runs the graph as its composition.
     #[test]
     fn link_and_client_knobs() {
-        let pick = Graph::from_composition(&Composition::new("gpu-compute")).unwrap();
+        let pick = Graph::from_composition(&Composition::new("raycast-gpu")).unwrap();
         let with = |kv: &[(&str, &str)]| pick.with_sites(&kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
         let key = |g: &Graph| g.key().unwrap();
         assert_eq!(key(&with(&[(LINK, "free")]).unwrap()), key(&pick));
@@ -548,7 +548,7 @@ mod tests {
     /// The post after the shading, its tone mapper a choice; `clamp` keeps the key.
     #[test]
     fn post_node() {
-        for backend in ["gpu-compute", "cpu", "gpu-raster", "cpu-discover", "gpu-voxelspace"] {
+        for backend in ["raycast-gpu", "raycast-cpu", "raster-gpu", "discover-cpu", "columns-gpu"] {
             let g = Graph::from_composition(&Composition::new(backend)).unwrap();
             let with = |v: &str| g.with_sites(&[(POST.to_string(), v.to_string())].into());
             let key = |g: &Graph| g.key().unwrap();
@@ -565,7 +565,7 @@ mod tests {
             assert_eq!(aces.sites_form().unwrap().unwrap().1[POST], "aces");
             assert!(with("filmic").unwrap_err().contains("reinhard"));
         }
-        let mut g = Graph::from_composition(&Composition::new("gpu-compute")).unwrap().check().unwrap().graph;
+        let mut g = Graph::from_composition(&Composition::new("raycast-gpu")).unwrap().check().unwrap().graph;
         g.nodes.get_mut("post").unwrap().device = Some(Device::Gpu(1));
         assert!(g.check().unwrap_err().contains("compiled into the shading's output"));
         g.nodes.get_mut("post").unwrap().device = None;
@@ -575,7 +575,7 @@ mod tests {
 
     #[test]
     fn generator_placement() {
-        let pick = Graph::from_composition(&Composition::new("gpu-compute")).unwrap();
+        let pick = Graph::from_composition(&Composition::new("raycast-gpu")).unwrap();
         let with = |kv: &[(&str, &str)]| pick.with_sites(&kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
         let key = |g: &Graph| g.key().unwrap();
         assert!(!pick.generates());
@@ -624,7 +624,7 @@ mod tests {
             sh.knobs.insert("placement".into(), toml::Value::String(placement.into()));
             g
         };
-        for b in ["gpu-compute", "gpu-rt"] {
+        for b in ["raycast-gpu", "rayquery-gpu"] {
             let g = split(b, "deferred");
             let (_, exact) = g.accept().unwrap_or_else(|e| panic!("{b}: {e}"));
             assert!(!exact, "{b}: the split is no flat composition (its devices would be lost)");
@@ -646,20 +646,20 @@ mod tests {
             assert!(why.contains("hits prev") && why.contains("another GPU"), "{b}: {why}");
         }
         // The whole pipeline on the second GPU.
-        let mut g = Graph::from_composition(&Composition::new("gpu-compute")).unwrap();
+        let mut g = Graph::from_composition(&Composition::new("raycast-gpu")).unwrap();
         g.nodes.values_mut().filter(|n| n.role != Role::World).for_each(|n| n.device = Some(Device::Gpu(1)));
         g.accept().unwrap();
         // Meshes on the first GPU with the shading on the second; three GPUs; a drawer's shading.
-        let mut g = split("gpu-compute", "deferred");
+        let mut g = split("raycast-gpu", "deferred");
         g.nodes.insert("m.kernel".into(), Node::new(Role::Traversal, "refloor").with(&[("storage", "storage")]));
         g.nodes.insert("meshes".into(), Node::new(Role::Meshes, "composite").with(&[("changes", "world"), ("shadow", "m.kernel")]));
         g.nodes.get_mut("visibility").unwrap().inputs.insert("meshes".into(), "meshes".into());
         let why = g.accept().unwrap_err();
         assert!(why.contains("meshes = none"), "{why}");
-        let mut g = split("gpu-compute", "deferred");
+        let mut g = split("raycast-gpu", "deferred");
         g.nodes.get_mut("storage").unwrap().device = Some(Device::Gpu(2));
         assert!(g.accept().is_err());
-        let mut g = Graph::from_composition(&Composition::new("gpu-raster")).unwrap();
+        let mut g = Graph::from_composition(&Composition::new("raster-gpu")).unwrap();
         g.nodes.insert("s.storage".into(), Node::new(Role::Storage, "prefix").with(&[("changes", "world")]));
         g.nodes.insert("s.kernel".into(), Node::new(Role::Traversal, "incremental").with(&[("storage", "s.storage")]));
         let sh = g.nodes.get_mut("shading").unwrap();
@@ -686,7 +686,7 @@ mod tests {
         };
         let bind = |g: &mut Graph, port: &str, k: &str| drop(g.nodes.get_mut("shading").unwrap().inputs.insert(port.into(), k.into()));
         // Shadow rays as ray queries in a walk, in GPU discovery, in CPU discovery's drawing.
-        for b in ["gpu-compute", "gpu-discover", "cpu-discover"] {
+        for b in ["raycast-gpu", "discover-gpu", "discover-cpu"] {
             let mut g = of(b);
             rq(&mut g, "geo", "rq");
             bind(&mut g, "shadow", "rq");
@@ -695,36 +695,36 @@ mod tests {
             g.validate().unwrap_or_else(|e| panic!("{b}: {e}"));
             assert_eq!(g.check().unwrap().devices["geo"], Device::Cpu, "{b}");
         }
-        // Bounces as ray queries in the rasterisers; walks for gpu-rt's shadow rays.
-        for b in ["gpu-raster", "gpu-splat"] {
+        // Bounces as ray queries in the rasterisers; walks for rayquery-gpu's shadow rays.
+        for b in ["raster-gpu", "splat-gpu"] {
             let mut g = of(b);
             rq(&mut g, "geo2", "rq");
             bind(&mut g, "bounce", "rq");
             g.validate().unwrap_or_else(|e| panic!("{b}: {e}"));
         }
-        let mut g = of("gpu-rt");
+        let mut g = of("rayquery-gpu");
         walk(&mut g);
         bind(&mut g, "shadow", "wk");
         g.validate().unwrap();
         // Reasons: geometry without acceleration structures, two of them, mesh shadows of the
         // face drawer, a CPU-only storage on the GPU (its capabilities checked first).
-        let mut g = of("gpu-compute");
+        let mut g = of("raycast-gpu");
         g.nodes.insert("pts".into(), Node::new(Role::Geometry, "points"));
         g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "pts")]));
         bind(&mut g, "shadow", "rq");
         let e = g.validate().unwrap_err();
-        assert!(e.contains("`pts`: `gpu-compute` builds geometry `greedy`, `naive`, `boxes`, not `points`"), "{e}");
-        let mut g = of("gpu-rt");
+        assert!(e.contains("`pts`: `raycast-gpu` builds geometry `greedy`, `naive`, `boxes`, not `points`"), "{e}");
+        let mut g = of("rayquery-gpu");
         rq(&mut g, "geo2", "rq2");
         bind(&mut g, "shadow", "rq2");
         let e = g.validate().unwrap_err();
-        assert!(e.contains("`gpu-rt` builds 1 geometry node"), "{e}");
-        let mut g = of("gpu-raster");
+        assert!(e.contains("`rayquery-gpu` builds 1 geometry node"), "{e}");
+        let mut g = of("raster-gpu");
         rq(&mut g, "geo2", "rq");
         g.nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), "rq".into());
         let e = g.validate().unwrap_err();
-        assert!(e.contains("`meshes`.shadow → `rq`: `gpu-raster` reads `refloor`, `incremental`, `sphere`, `rowrun` here, not `rayquery`"), "{e}");
-        let mut g = of("gpu-compute");
+        assert!(e.contains("`meshes`.shadow → `rq`: `raster-gpu` reads `refloor`, `incremental`, `sphere`, `rowrun` here, not `rayquery`"), "{e}");
+        let mut g = of("raycast-gpu");
         g.nodes.insert("st".into(), Node::new(Role::Storage, "palette"));
         g.nodes.insert("wk".into(), Node::new(Role::Traversal, "refloor").with(&[("storage", "st")]));
         bind(&mut g, "shadow", "wk");
@@ -734,8 +734,8 @@ mod tests {
 
     #[test]
     fn cpu_discover_needs_shadow_rays() {
-        // cpu-discover without GPU shadow rays cannot shade lit.
-        let mut g = Graph::from_composition(&Composition::new("cpu-discover")).unwrap();
+        // discover-cpu without GPU shadow rays cannot shade lit.
+        let mut g = Graph::from_composition(&Composition::new("discover-cpu")).unwrap();
         g.nodes.get_mut("shading").unwrap().inputs.remove("shadow");
         g.nodes.retain(|k, _| !k.starts_with("shadow."));
         let e = g.validate().unwrap_err();
@@ -748,7 +748,7 @@ mod tests {
     /// is not a pipeline.
     #[test]
     fn timings() {
-        let it = Graph::from_composition(&Composition { holes: "coverage".into(), ..Composition::new("gpu-discover") }).unwrap();
+        let it = Graph::from_composition(&Composition { holes: "coverage".into(), ..Composition::new("discover-gpu") }).unwrap();
         assert_eq!(it.nodes["draw"].when("faces"), When::Iterate(2));
         assert_eq!(it.nodes["holes"].when("sky"), When::Prev);
         assert_eq!(it.nodes["visibility"].inputs.get("where").map(String::as_str), Some("holes"));
@@ -760,7 +760,7 @@ mod tests {
         let canon = it.canonical().unwrap();
         assert!(canon.contains("~iterate2") && canon.contains("~prev"), "{canon}");
         // An explicit `now` is the same pipeline as none.
-        let base = Graph::from_composition(&Composition::new("gpu-discover")).unwrap();
+        let base = Graph::from_composition(&Composition::new("discover-gpu")).unwrap();
         let mut now = base.clone();
         now.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Now);
         assert_eq!(now.key().unwrap(), base.key().unwrap());
@@ -772,17 +772,17 @@ mod tests {
         assert_eq!((*passes, names(body)), (2, vec!["draw".to_string(), "holes".to_string(), "visibility".to_string()]), "{sched}");
         assert!(matches!(sched.steps.last(), Some(Step::Pass(p)) if p.node == "shading"), "{sched}");
         assert!(sched.kept.iter().any(|e| e.to == "draw" && e.port == "faces") && sched.kept.iter().any(|e| e.to == "holes" && e.port == "sky"), "{sched}");
-        // gpu-discover runs it, and it is the composition.
-        assert_eq!(it.accept().unwrap(), (Composition { holes: "coverage".into(), ..Composition::new("gpu-discover") }, true));
+        // discover-gpu runs it, and it is the composition.
+        assert_eq!(it.accept().unwrap(), (Composition { holes: "coverage".into(), ..Composition::new("discover-gpu") }, true));
         // Reasons. A cycle within the frame says how to break it.
         let mut g = it.clone();
         g.nodes.get_mut("draw").unwrap().timing.clear();
         let e = g.check().unwrap_err();
         assert!(e.contains("cycle through") && e.contains("`prev`"), "{e}");
-        // Faces a frame late instead of the loop: a valid graph gpu-discover does not build.
+        // Faces a frame late instead of the loop: a valid graph discover-gpu does not build.
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
         let e = g.validate().unwrap_err();
-        assert!(e.contains("`draw`.faces: `gpu-discover` runs this edge now or iterate 2, not prev"), "{e}");
+        assert!(e.contains("`draw`.faces: `discover-gpu` runs this edge now or iterate 2, not prev"), "{e}");
         let mut g = base.clone();
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Iterate(2));
         let e = g.check().unwrap_err();
@@ -800,18 +800,18 @@ mod tests {
         let e = g.check().unwrap_err();
         assert!(e.contains("not a bound input"), "{e}");
         // A free timing outside what the back end runs.
-        let mut g = Graph::from_composition(&Composition::new("cpu-discover")).unwrap();
+        let mut g = Graph::from_composition(&Composition::new("discover-cpu")).unwrap();
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Iterate(2));
         g.nodes.get_mut("visibility").unwrap().inputs.insert("where".into(), "draw".into());
         assert!(g.validate().is_err());
     }
 
-    /// The schedule across devices. cpu-discover: discovery on the CPU, drawing on the GPU;
+    /// The schedule across devices. discover-cpu: discovery on the CPU, drawing on the GPU;
     /// faces and the change log cross devices; by default the faces arrive a frame late and
     /// the devices overlap (`pipelined = true`); `pipelined = false` spells `now`.
     #[test]
     fn schedule_across_devices() {
-        let g = Graph::from_composition(&Composition::new("cpu-discover")).unwrap();
+        let g = Graph::from_composition(&Composition::new("discover-cpu")).unwrap();
         let sched = g.check().unwrap().schedule().unwrap();
         let crosses = |s: &Schedule, from: &str, to: &str| s.transfers.iter().find(|e| e.from == from && e.to == to).map(|e| (e.from_device, e.to_device, e.when));
         assert_eq!(crosses(&sched, "visibility", "draw"), Some((Device::Cpu, Device::Gpu(0), When::Prev)), "{sched}");
@@ -833,7 +833,7 @@ mod tests {
         assert!(!sched.pipelined());
         assert_eq!(sync.timing_options(), vec![("pipelined", false)]);
         // Both run, as the same composition; the knob carries the difference.
-        assert_eq!(sync.accept().unwrap(), (Composition::new("cpu-discover"), true));
+        assert_eq!(sync.accept().unwrap(), (Composition::new("discover-cpu"), true));
         assert_eq!(sync.flat_knobs().unwrap().get("pipelined"), Some(&toml::Value::Boolean(false)));
         assert_ne!(sync.key().unwrap(), g.key().unwrap());
     }
@@ -856,7 +856,7 @@ mod tests {
             // Kept values and loops only where discovery's timings are.
             let looped = s.steps.iter().any(|x| matches!(x, Step::Loop { .. }));
             assert_eq!(looped, c.holes == "coverage", "{}\n{s}", c.label());
-            assert_eq!(s.kept.is_empty(), c.holes != "coverage" && c.backend != "cpu-discover", "{}\n{s}", c.label());
+            assert_eq!(s.kept.is_empty(), c.holes != "coverage" && c.backend != "discover-cpu", "{}\n{s}", c.label());
             for (id, n) in &ck.graph.nodes {
                 let is_pass = passes.iter().any(|p| p.node == *id);
                 // Ray queries build their acceleration structures from faces: a pass too.
@@ -874,7 +874,7 @@ mod tests {
     /// Every node needs an implementation on its device's kind, whatever its API.
     #[test]
     fn nodes_need_an_implementation_on_their_device() {
-        let mut c = Composition::new("cpu");
+        let mut c = Composition::new("raycast-cpu");
         c.fill_defaults();
         let mut g = Graph::from_composition(&c).unwrap();
         let k = g.nodes.iter().find(|(_, n)| n.role == Role::Traversal).map(|(id, _)| id.clone()).unwrap();

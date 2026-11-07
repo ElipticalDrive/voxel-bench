@@ -299,17 +299,17 @@ mod tests {
     /// draft reaches graphs that run again.
     #[test]
     fn free_changes_are_exact() {
-        let s = spec("gpu-compute");
+        let s = spec("raycast-gpu");
         let g = graph_of(&s).unwrap();
         let mut t = Trial::new(s.clone(), g.clone());
         let (st, vis, shading) = (node(&g, Role::Storage), node(&g, Role::Visibility), node(&g, Role::Shading));
         // Another storage: only that node changes.
         let (h, l) = t.try_change(&Change::Component(st.clone(), "tree64"), &[]).unwrap();
-        assert_eq!(l.name, "gpu-compute");
+        assert_eq!(l.name, "raycast-gpu");
         let mut want = g.clone();
         want.nodes.get_mut(&st).unwrap().component = "tree64".into();
         assert_eq!(h, want);
-        // The hits from a new drawer: gpu-compute builds no draw node, and the ray caster is
+        // The hits from a new drawer: raycast-gpu builds no draw node, and the ray caster is
         // left reaching no image. Refused; as a draft the drawer comes unbound, the caster stays.
         let to_draw = Change::Bind(shading.clone(), "hits".into(), Target::New(Role::Draw, "raster"));
         let why = t.try_change(&to_draw, &[]).unwrap_err();
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(h, g);
         t.drop_draft();
         assert!(t.draft().is_none() && *t.graph() == g);
-        // Discovery on gpu-compute: refused as it is (no regraft onto gpu-discover's shape).
+        // Discovery on raycast-gpu: refused as it is (no regraft onto discover-gpu's shape).
         assert!(t.try_change(&Change::Component(vis, "quadtree"), &[]).is_err());
     }
 }

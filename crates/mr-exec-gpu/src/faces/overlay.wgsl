@@ -1,4 +1,4 @@
-// gpu-discover diagnostic overlays, blended over the rendered image by a fullscreen pass.
+// discover-gpu diagnostic overlays, blended over the rendered image by a fullscreen pass.
 // `tiles`: level-0 tiles tinted by why they were discovered this frame. `rays`: a dot at
 // every lattice point whose ray was cast this frame (the adaptive quadtree's samples).
 // `overdraw`: the fragment counts (red of a copy of the output) on the shared colour ramp.

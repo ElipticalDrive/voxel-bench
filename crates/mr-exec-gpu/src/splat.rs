@@ -27,7 +27,7 @@ use crate::{Core, CoreSpec, REGION_BINDING, storage_entry};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: "gpu-splat".into(),
+        name: "splat-gpu".into(),
         description: "GPU-splat back end (storage for shadow rays, points geometry, splat visibility, shading). Compute point splatting: one point per exposed block, atomicMin depth + id buffer, ray-box resolve".into(),
         tags: vec!["gpu".into(), "compute".into(), "points".into(), "splat".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
@@ -72,7 +72,7 @@ impl Default for Options {
     }
 }
 
-pub(crate) const BACKEND: &str = "gpu-splat";
+pub(crate) const BACKEND: &str = "splat-gpu";
 
 /// The region the splat's nodes share: the points and their buffers, the program, group 0,
 /// the frame's world and storages.
@@ -192,7 +192,7 @@ fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, pts: &wgpu::Buffer, z: &wg
 /// shading component and the common deferred pass (the resolve) as the root.
 fn program(g: &graph::Checked, shading: &str) -> anyhow::Result<(Walks, mr_gpu::program::Program, String, Vec<String>)> {
     let mut walks = Walks::of(g);
-    let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("gpu-splat: shadow rays are not bound"))?, &[2, 3, 4], false);
+    let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("splat-gpu: shadow rays are not bound"))?, &[2, 3, 4], false);
     let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, &[2, 3, 4], false));
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
     let own = format!("{}\n{}\n{shade}\n{}", splat::GPU_WGSL, ShadeState::wgsl(0, crate::STATE_BINDING), mr_components::shading::DEFERRED_WGSL);

@@ -1,4 +1,4 @@
-// Geometry `greedy` / `naive` on gpu-rt: the quads as two triangles each in one BLAS per
+// Geometry `greedy` / `naive` on rayquery-gpu: the quads as two triangles each in one BLAS per
 // chunk; the RT cores resolve everything, the shader only decodes the quad that was hit
 // into a `Hit`. `shadow`: any hit ends the query, no facing is culled.
 

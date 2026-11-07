@@ -14,28 +14,28 @@ modes = ["unlit", "lit"]
 view_radius = 16
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 
 [[renderer]]
-compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
+compose = { preset = "raster-gpu", storage = "bricks", geometry = "greedy", draw = "raster" }
 
 [[renderer]]
-compose = { backend = "cpu-raster", geometry = "greedy", draw = "raster" }
+compose = { preset = "raster-cpu", geometry = "greedy", draw = "raster" }
 
 [[renderer]]
-compose = { backend = "gpu-rt", geometry = "greedy", traversal = "rayquery" }
+compose = { preset = "rayquery-gpu", geometry = "greedy", traversal = "rayquery" }
 
 [[renderer]]
-compose = { backend = "gpu-rt", geometry = "boxes", traversal = "rayquery" }
+compose = { preset = "rayquery-gpu", geometry = "boxes", traversal = "rayquery" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "tree64", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "tree64", traversal = "refloor" }
 
 [[renderer]]
-compose = { backend = "cpu", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-cpu", storage = "bricks", traversal = "refloor" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "distance", traversal = "sphere" }
+compose = { preset = "raycast-gpu", storage = "distance", traversal = "sphere" }
 
 [output]
 compare = { every = 100 }

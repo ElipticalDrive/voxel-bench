@@ -1,5 +1,5 @@
 //! The face drawer's host side, shared by every back end that
-//! rasterises block faces (gpu-raster, gpu-discover, cpu-discover): the pipelines of the
+//! rasterises block faces (raster-gpu, discover-gpu, discover-cpu): the pipelines of the
 //! three raster visibility components and the passes that run them.
 //!
 //! * `raster` (forward): faces drawn and shaded in one pass (`fill`); in lit mode with a
@@ -8,7 +8,7 @@
 //!   through the images group ([`FaceDrawer::images_layout`], the shade layout's last
 //!   group).
 //!
-//! Meshes (gpu-raster) are drawn into the same depth: forward drawers shade
+//! Meshes (raster-gpu) are drawn into the same depth: forward drawers shade
 //! their fragments in each pass; deferred ones draw them into the same id or record target
 //! (the record's mesh capability), and the shade pass decodes them from the triangles in the
 //! images group.
@@ -269,9 +269,9 @@ impl FaceDrawer {
     }
 
     /// The frame's draw passes (the draw node's): `draw` issues the face draws into a pass
-    /// whose pipeline and groups are set; `extra` draws more into the same depth (gpu-raster's
+    /// whose pipeline and groups are set; `extra` draws more into the same depth (raster-gpu's
     /// meshes: in each forward pass, into the ids or records when deferred); `main` replaces
-    /// the forward main pipeline (gpu-discover's painter order and overdraw view; no prepass).
+    /// the forward main pipeline (discover-gpu's painter order and overdraw view; no prepass).
     /// Forward, drawing and shading the faces (shading fused into the fragments); deferred,
     /// their ids or records.
     pub fn encode_draw(

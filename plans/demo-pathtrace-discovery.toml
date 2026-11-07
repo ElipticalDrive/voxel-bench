@@ -14,7 +14,7 @@ modes = ["lit"]
 view_radius = 8
 
 [[renderer]]
-compose = { backend = "gpu-discover", visibility = "quadtree", holes = "coverage", shading = "pathtrace" }
+compose = { preset = "discover-gpu", visibility = "quadtree", holes = "coverage", shading = "pathtrace" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor", shading = "pathtrace" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor", shading = "pathtrace" }

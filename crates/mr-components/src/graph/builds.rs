@@ -72,7 +72,7 @@ const RT: Only = Only { role: Role::Traversal, of: &["rayquery"], port: "geometr
 const SHADOW_WALKED: Only = Only { role: Role::Shading, of: &[], port: "shadow", components: GPU_WALKS, bound: true };
 const SHADOW_BOUND: Only = Only { role: Role::Shading, of: &[], port: "shadow", components: GPU_KERNELS, bound: true };
 
-/// `cpu` ray casting: one storage (one monomorphised instance; the shadow rays walk it too),
+/// `raycast-cpu`: one storage (one monomorphised instance; the shadow rays walk it too),
 /// its primary and shadow kernels, the ray caster and the shading.
 pub const CPU_RAYCAST: Builds = Builds {
     nodes: &[
@@ -85,7 +85,7 @@ pub const CPU_RAYCAST: Builds = Builds {
     only: &[],
 };
 
-/// `cpu-raster`: the geometry's quads, their culling, the rasteriser and the shading.
+/// `raster-cpu`: the geometry's quads, their culling, the rasteriser and the shading.
 pub const CPU_RASTER: Builds = Builds {
     nodes: &[
         Build::one(Role::Geometry, &["greedy", "naive"], Kind::Cpu),
@@ -97,7 +97,7 @@ pub const CPU_RASTER: Builds = Builds {
     only: &[],
 };
 
-/// `cpu-voxelspace`: the heightmap, the column march and the shading.
+/// `columns-cpu`: the heightmap, the column march and the shading.
 pub const CPU_COLUMNS: Builds = Builds {
     nodes: &[
         Build::one(Role::Storage, &["heightmap"], Kind::Cpu),
@@ -108,7 +108,7 @@ pub const CPU_COLUMNS: Builds = Builds {
     only: &[],
 };
 
-/// The GPU walk (`gpu-compute`): a storage and kernel per walk (primary, shadow, bounce and
+/// The GPU walk (`raycast-gpu`): a storage and kernel per walk (primary, shadow, bounce and
 /// mesh-shadow rays), a ray-query kernel's geometry (built on the CPU), the mesh records, the
 /// beam prepass (over the primary rays' storage, which its shader reads), the walk and the
 /// shading (on this GPU or another).
@@ -126,7 +126,7 @@ pub const GPU_WALK: Builds = Builds {
     only: &[],
 };
 
-/// GPU ray queries (`gpu-rt`): the geometry of the acceleration structures (on the CPU), the
+/// GPU ray queries (`rayquery-gpu`): the geometry of the acceleration structures (on the CPU), the
 /// primary ray queries, storages and kernels for walked shadow and bounce rays, the visibility
 /// and the shading (on this GPU or another). No meshes and no prepass.
 pub const GPU_RAYQUERY: Builds = Builds {
@@ -141,7 +141,7 @@ pub const GPU_RAYQUERY: Builds = Builds {
     only: &[],
 };
 
-/// Faces with the meshing source (`gpu-raster`): the geometry the drawer draws (and one for
+/// Faces with the meshing source (`raster-gpu`): the geometry the drawer draws (and one for
 /// ray-queried bounce rays), its culling, the drawer, meshes into the depth buffer lit through
 /// walks, and the shading, whose shadow rays (and the meshes') are walks.
 pub const GPU_MESHING: Builds = Builds {
@@ -164,7 +164,7 @@ pub const GPU_MESHING: Builds = Builds {
     ],
 };
 
-/// GPU discovery (`gpu-discover`): the sampler (its rays and exposure tests over any GPU
+/// GPU discovery (`discover-gpu`): the sampler (its rays and exposure tests over any GPU
 /// storage), its hole detection, the drawer of the face set, the shading (any rays, a
 /// ray-query geometry on the CPU).
 pub const GPU_SAMPLER: Builds = Builds {
@@ -186,7 +186,7 @@ pub const GPU_SAMPLER: Builds = Builds {
     ],
 };
 
-/// CPU discovery (`cpu-discover`): the sampler over a CPU storage (exposure tests over the one
+/// CPU discovery (`discover-cpu`): the sampler over a CPU storage (exposure tests over the one
 /// its rays walk), the face set drawn on the GPU, the shading there (any GPU rays, a ray-query
 /// geometry on the CPU).
 pub const CPU_SAMPLER: Builds = Builds {
@@ -204,7 +204,7 @@ pub const CPU_SAMPLER: Builds = Builds {
     only: &[Only { role: Role::Draw, of: &[], port: "faces", components: &["quadtree", "cluster"], bound: true }, SHADOW_BOUND, RT],
 };
 
-/// Point splatting (`gpu-splat`): the points (and a geometry for ray-queried bounce rays), the
+/// Point splatting (`splat-gpu`): the points (and a geometry for ray-queried bounce rays), the
 /// splat passes, the shading (its shadow rays walked).
 pub const GPU_SPLAT: Builds = Builds {
     nodes: &[
@@ -218,7 +218,7 @@ pub const GPU_SPLAT: Builds = Builds {
     only: &[Only { role: Role::Visibility, of: &[], port: "points", components: &["points"], bound: true }, SHADOW_WALKED, RT],
 };
 
-/// Voxel Space on the GPU (`gpu-voxelspace`): the heightmap, the column march, the shading.
+/// Voxel Space on the GPU (`columns-gpu`): the heightmap, the column march, the shading.
 pub const GPU_COLUMNS: Builds = Builds {
     nodes: &[
         Build::one(Role::Storage, &["heightmap"], Kind::Gpu),
@@ -244,16 +244,16 @@ impl Checked {
             return None;
         }
         Some(match preset {
-            "cpu" => ("cpu", CPU_RAYCAST),
-            "cpu-raster" => ("cpu-raster", CPU_RASTER),
-            "cpu-voxelspace" => ("cpu-voxelspace", CPU_COLUMNS),
-            "gpu-rt" => ("gpu-rt", GPU_RAYQUERY),
-            "gpu-compute" => ("gpu-compute", GPU_WALK),
-            "gpu-raster" => ("gpu-raster", GPU_MESHING),
-            "gpu-discover" => ("gpu-discover", GPU_SAMPLER),
-            "cpu-discover" => ("cpu-discover", CPU_SAMPLER),
-            "gpu-splat" => ("gpu-splat", GPU_SPLAT),
-            "gpu-voxelspace" => ("gpu-voxelspace", GPU_COLUMNS),
+            "raycast-cpu" => ("raycast-cpu", CPU_RAYCAST),
+            "raster-cpu" => ("raster-cpu", CPU_RASTER),
+            "columns-cpu" => ("columns-cpu", CPU_COLUMNS),
+            "rayquery-gpu" => ("rayquery-gpu", GPU_RAYQUERY),
+            "raycast-gpu" => ("raycast-gpu", GPU_WALK),
+            "raster-gpu" => ("raster-gpu", GPU_MESHING),
+            "discover-gpu" => ("discover-gpu", GPU_SAMPLER),
+            "discover-cpu" => ("discover-cpu", CPU_SAMPLER),
+            "splat-gpu" => ("splat-gpu", GPU_SPLAT),
+            "columns-gpu" => ("columns-gpu", GPU_COLUMNS),
             _ => return None,
         })
     }

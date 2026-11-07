@@ -16,10 +16,10 @@ view_radius = 10
 streaming = { budget = 512 }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "prefix", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "prefix", traversal = "refloor" }
 
 [[renderer]]
-compose = { backend = "gpu-raster", storage = "bricks", geometry = "greedy", draw = "raster" }
+compose = { preset = "raster-gpu", storage = "bricks", geometry = "greedy", draw = "raster" }

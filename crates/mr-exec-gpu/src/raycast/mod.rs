@@ -2,11 +2,11 @@
 //! ray per pixel, shaded inline or (`placement = deferred`) through hit records and the common
 //! shading pass. One region for the two ways the visibility node's primary rays are cast, its
 //! kernel's API:
-//! - `gpu-compute` (`compute`, [`walk`]): a walk, the traversal kernel over a storage component
+//! - `raycast-gpu` (`compute`, [`walk`]): a walk, the traversal kernel over a storage component
 //!   (any storage, any kernel, missing capabilities from adapters), with an optional prepass,
 //!   meshes' records (mesh mode), LOD and the steps view; pixels in compute threads or a
 //!   fragment shader;
-//! - `gpu-rt` (`rayquery`, [`rayquery`]): hardware ray queries over acceleration structures
+//! - `rayquery-gpu` (`rayquery`, [`rayquery`]): hardware ray queries over acceleration structures
 //!   built from the geometry component (triangles or brick boxes).
 //!
 //! Which caster runs is the graph's: the primary rays' kernel node's API. The nodes run on the

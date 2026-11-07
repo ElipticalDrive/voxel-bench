@@ -34,11 +34,11 @@ fn live_session_end_to_end() {
         view_radius = 3
         isolation = "thread"
         [[renderer]]
-        compose = { backend = "gpu-compute" }
+        compose = { preset = "raycast-gpu" }
         [[renderer]]
-        compose = { backend = "gpu-raster" }
+        compose = { preset = "raster-gpu" }
         [[renderer]]
-        compose = { backend = "gpu-compute" }
+        compose = { preset = "raycast-gpu" }
         label = "lod"
         sites = { client = "pick(radius=2, max_lod=2)" }
         "#,
@@ -70,7 +70,7 @@ fn live_session_end_to_end() {
     live.send(Cmd::SetParam { lane: 0, name: "host.render_scale".into(), value: ParamValue::Float(0.5) });
     wait(&live.shared, "resize", 20, |s| s.lanes[0].frame.as_ref().is_some_and(|f| f.width == 160 && f.height == 90));
 
-    // Live compile-time knobs (lane 1, gpu-raster): the drawer is rebuilt at the next frame.
+    // Live compile-time knobs (lane 1, raster-gpu): the drawer is rebuilt at the next frame.
     for (name, value) in [("geometry", "naive"), ("draw", "visbuffer"), ("geometry", "greedy"), ("draw", "raster")] {
         let frames = live.shared.lock().unwrap().lanes[1].frames;
         live.send(Cmd::SetParam { lane: 1, name: name.into(), value: ParamValue::Choice(value.into()) });
@@ -152,7 +152,7 @@ fn live_session_end_to_end() {
 /// A restart from the plan keeps the knobs changed since, unless the plan changes them.
 #[test]
 fn restarts_keep_knobs() {
-    let given = RendererSpec::from_cli("gpu-compute:bricks+refloor").unwrap();
+    let given = RendererSpec::from_cli("raycast-gpu:bricks+refloor").unwrap();
     let mut now = given.clone();
     now.options.insert("max_steps".into(), toml::Value::Integer(300));
     now.options.insert("accumulate".into(), toml::Value::Boolean(false));
@@ -162,13 +162,13 @@ fn restarts_keep_knobs() {
     assert_eq!(value(&kept, "max_steps"), Some(toml::Value::Integer(300)));
     assert_eq!(value(&kept, "accumulate"), Some(toml::Value::Boolean(false)));
     // The plan changes one knob and the storage: its knob and components win.
-    let mut new = RendererSpec::from_cli("gpu-compute:prefix+refloor").unwrap();
+    let mut new = RendererSpec::from_cli("raycast-gpu:prefix+refloor").unwrap();
     new.options.insert("max_steps".into(), toml::Value::Integer(500));
     let kept = keep_knobs(&given, &now, new);
     assert_eq!((value(&kept, "max_steps"), value(&kept, "accumulate")), (Some(toml::Value::Integer(500)), Some(toml::Value::Boolean(false))));
     assert_eq!(kept.options.get("storage").and_then(|v| v.as_str()), Some("prefix"));
     // Another back end: its own knobs only.
-    let kept = keep_knobs(&given, &now, RendererSpec::from_cli("gpu-raster").unwrap());
+    let kept = keep_knobs(&given, &now, RendererSpec::from_cli("raster-gpu").unwrap());
     assert_eq!(value(&kept, "max_steps"), None);
     // The LOD depth (a client knob).
     let mut now = given.clone();
@@ -191,7 +191,7 @@ fn live_hdr_window() {
         view_radius = 3
         isolation = "thread"
         [[renderer]]
-        compose = { backend = "gpu-compute" }
+        compose = { preset = "raycast-gpu" }
         sites = { post = "hdr" }
         "#,
         &[],
@@ -215,7 +215,7 @@ fn live_hdr_window() {
 /// Mesh mode through a live session (needs a GPU; run with `--ignored`): the probe's
 /// reference draws the meshes, so a mesh-capable lane matches it closely and a lane
 /// without mesh support does not.
-/// A `cpu` lane with `compile = "native"`: the generic build runs first, the pipeline
+/// A `raycast-cpu` lane with `compile = "native"`: the generic build runs first, the pipeline
 /// compiled for this machine (built and checked in the background) hot-swaps in.
 #[test]
 #[ignore]
@@ -231,7 +231,7 @@ fn live_compiled_pipeline() {
         isolation = "process"
         compile = "native"
         [[renderer]]
-        compose = { backend = "cpu", storage = "prefix" }
+        compose = { preset = "raycast-cpu", storage = "prefix" }
         "#,
         &[],
     )
@@ -260,7 +260,7 @@ fn live_compiled_pipeline() {
 fn live_meshes_end_to_end() {
     let plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/meshes.toml")), &[
         "run.isolation=\"thread\"".into(),
-        "renderer=[{compose={backend=\"gpu-raster\"}},{compose={backend=\"cpu\"}}]".into(),
+        "renderer=[{compose={preset=\"raster-gpu\"}},{compose={preset=\"raycast-cpu\"}}]".into(),
         "run.resolution=[480,270]".into(),
     ])
     .unwrap();
@@ -272,11 +272,11 @@ fn live_meshes_end_to_end() {
         let sh = live.shared.lock().unwrap();
         (sh.lanes[0].quality.back().unwrap().psnr, sh.lanes[1].quality.back().unwrap().psnr)
     };
-    println!("mesh mode probe: gpu-raster {with:.1} dB, cpu (no meshes) {without:.1} dB");
+    println!("mesh mode probe: raster-gpu {with:.1} dB, cpu (no meshes) {without:.1} dB");
     // The forward drawer draws the meshes in its stage.
     let stages = live.shared.lock().unwrap().lanes[0].stages.clone();
     assert!(stages.iter().any(|s| s.name == "draw+shade" && s.nodes.iter().any(|n| n == "meshes")), "{stages:?}");
-    assert!(with > 45.0, "gpu-raster with meshes vs reference: {with:.1} dB");
-    assert!(with > without + 5.0, "meshes should matter: gpu-raster {with:.1} dB, cpu (no meshes) {without:.1} dB");
+    assert!(with > 45.0, "raster-gpu with meshes vs reference: {with:.1} dB");
+    assert!(with > without + 5.0, "meshes should matter: raster-gpu {with:.1} dB, cpu (no meshes) {without:.1} dB");
     drop(live);
 }

@@ -1,9 +1,9 @@
 //! The CPU executor: every pipeline whose image is made on the CPU, each run as passes of the
 //! generic node executor ([`exec`]):
 //! - ray casting ([`raycast`]): one primary ray per pixel walked over a storage, monomorphised
-//!   per storage (`cpu`);
-//! - rasterisation ([`raster`]): meshed quads drawn into a visibility buffer (`cpu-raster`);
-//! - columns ([`columns`]): the Voxel Space heightmap march (`cpu-voxelspace`).
+//!   per storage (`raycast-cpu`);
+//! - rasterisation ([`raster`]): meshed quads drawn into a visibility buffer (`raster-cpu`);
+//! - columns ([`columns`]): the Voxel Space heightmap march (`columns-cpu`).
 //!
 //! Which nodes are built is the graph's: rasterisation when a drawer draws faces, else by the
 //! visibility node's component. Each pipeline declares the nodes it builds

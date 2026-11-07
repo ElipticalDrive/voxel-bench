@@ -82,7 +82,7 @@ impl Graph {
             c.fill_defaults();
             c
         });
-        // Without knobs and APIs (the composition has neither; `cpu` reads its API as `isa`)
+        // Without knobs and APIs (the composition has neither; `raycast-cpu` reads its API as `isa`)
         // and with free timings as `prev` (their knobs: see `TIMING_KNOBS`).
         let strip = |g: &Graph| {
             let mut g = g.clone();
@@ -216,7 +216,7 @@ fn device_blocker(ck: &Checked) -> Option<String> {
         v.iter().map(|id| format!("`{id}`")).collect::<Vec<_>>().join(", ")
     };
     let used = slots.iter().map(|&i| format!("{} ({})", Device::Gpu(i), on(Device::Gpu(i)))).collect::<Vec<_>>().join("; ");
-    if !matches!(ck.preset, Some("gpu-compute" | "gpu-rt")) {
+    if !matches!(ck.preset, Some("raycast-gpu" | "rayquery-gpu")) {
         return Some(format!("`{}` runs on one GPU (here: {used}); a pipeline over two GPUs is split at the hit records, ray casting's deferred shading on the second", ck.preset.unwrap_or("this pipeline")));
     }
     let (Some(vis), Some(shading)) = (g.nodes.iter().find(|(_, n)| n.role == Role::Visibility), g.nodes.iter().find(|(_, n)| n.role == Role::Shading)) else {
@@ -293,12 +293,12 @@ pub fn of_init(kind: &str, p: &mr_core::InitParams) -> anyhow::Result<Checked> {
 fn follows_lead(executor: &str, role: Role, port: &str) -> bool {
     !matches!(
         (executor, role, port),
-        ("gpu-compute", Role::Shading | Role::Meshes, _)
-            | ("gpu-rt", Role::Shading, _)
-            | ("gpu-raster" | "gpu-splat", Role::Shading, "bounce")
-            | ("gpu-raster", Role::Meshes, "shadow")
-            | ("gpu-discover", Role::Visibility, "exposure")
-            | ("gpu-discover" | "cpu-discover", Role::Shading, _)
-            | ("cpu", Role::Shading, "shadow")
+        ("raycast-gpu", Role::Shading | Role::Meshes, _)
+            | ("rayquery-gpu", Role::Shading, _)
+            | ("raster-gpu" | "splat-gpu", Role::Shading, "bounce")
+            | ("raster-gpu", Role::Meshes, "shadow")
+            | ("discover-gpu", Role::Visibility, "exposure")
+            | ("discover-gpu" | "discover-cpu", Role::Shading, _)
+            | ("raycast-cpu", Role::Shading, "shadow")
     )
 }

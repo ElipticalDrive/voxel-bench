@@ -15,9 +15,9 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
   field is recomputed. It is also slow to stream: 23–30 ms of world update per frame on the
   `city` and `islands` plans (bricks: about 1 ms), from a field build quadratic per line.
 - The stress worlds (2026-10-19, 100 frames each): on `lattice` (beams every 24 blocks) ray
-  walks cost 2–4.5 ms of GPU time, while `gpu-raster` takes 0.15 ms; on `checker` (96³, every
+  walks cost 2–4.5 ms of GPU time, while `raster-gpu` takes 0.15 ms; on `checker` (96³, every
   block six faces) rays stop at once (0.06–0.3 ms) while rasterisers pay for hidden faces
-  (`gpu-raster` 1.1 ms, `cpu-raster` 72 ms); `city` costs `gpu-raster` 3.6 ms of CPU meshing
+  (`raster-gpu` 1.1 ms, `raster-cpu` 72 ms); `city` costs `raster-gpu` 3.6 ms of CPU meshing
   per frame while streaming.
 - `rows` + `rowrun` is 5–15% slower than `bricks` + `refloor`.
 - `tree64` matches `bricks` in speed with about 15% of the VRAM. `svo_dag` deduplicates about 3×
@@ -36,7 +36,7 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
 
 ## CPU
 
-- The `cpu` back end is about 1.5× the reference renderer; avoiding libm `floor` calls was
+- The `raycast-cpu` preset is about 1.5× the reference renderer; avoiding libm `floor` calls was
   the big win.
 - SIMD packets do not help, and **not** because of memory: hardware counters show ~80 cycles
   and ~220 instructions per DDA step at IPC 2.6, with L2 misses costing at most 3% of the
@@ -52,9 +52,9 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
 - Pipelines compiled for the machine (`compile = "native"`) are 2–13% faster than the generic
   build (`prefix` + `refloor` 11–13%): the generic x86-64 target lacks `popcnt` and wide
   vectors outside the hand-written AVX paths.
-- `cpu-raster` is the closest match to the reference (64–99 dB), but its cost scales with the
-  number of faces (Menger sponge: 8 fps). `cpu-voxelspace` gives the same image as
-  `gpu-voxelspace` at about half its speed.
+- `raster-cpu` is the closest match to the reference (64–99 dB), but its cost scales with the
+  number of faces (Menger sponge: 8 fps). `columns-cpu` gives the same image as
+  `columns-gpu` at about half its speed.
 
 ## Rasterisers and hardware ray tracing
 
@@ -65,19 +65,19 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
   time for `cubes`. `gbuffer` is a little slower than `visbuffer`.
 - Lit-mode shadow rays of the rasterisers walking the composed storage are 7–18% faster than
   their former fixed walk.
-- `gpu-rt` traces fastest on the RT cores, but its BLAS rebuilds make it CPU-bound when chunks
+- `rayquery-gpu` traces fastest on the RT cores, but its BLAS rebuilds make it CPU-bound when chunks
   stream in or change.
 
 ## Discovery
 
-- `gpu-discover` (`quadtree`): 0.05–0.34 rays per pixel, audit misses ≈0–1 pixel per frame.
+- `discover-gpu` (`quadtree`): 0.05–0.34 rays per pixel, audit misses ≈0–1 pixel per frame.
   It is not yet faster than rasterising everything: the levels run one after another, and late
   rays are incoherent. `holes = coverage` (only re-discover where something may have changed)
   uses 83% fewer rays and 33% less GPU time at walking speed with equal or better quality, but
   is 13–19% slower in fast flight. A still camera skips discovery entirely (17× less GPU time).
   `visbuffer` / `gbuffer` drawing is 2–4× faster than `raster` when lit on terrain, and a
   little slower unlit.
-- `cpu-discover`: `cluster` is more complete than `quadtree` on every scene at about the same
+- `discover-cpu`: `cluster` is more complete than `quadtree` on every scene at about the same
   number of rays (terrain 0.24 rays per pixel, 51.0 against 43.8 dB; menger 51.5 against
   26.4 dB), at 2.5× its CPU time. Pipelined (discovering frame N+1 while the GPU draws frame N),
   one frame of latency costs 0.1–0.3% of the pixels while moving. CPU discovery (25–60 ms) is
@@ -85,11 +85,11 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
 
 ## Approximate techniques
 
-- `gpu-splat`: exact wherever a block covers more than 2 px (each pixel takes the depth where
+- `splat-gpu`: exact wherever a block covers more than 2 px (each pixel takes the depth where
   its ray enters the block); smaller points cover their whole pixel, so distant foliage fattens
   (PSNR 31–33 dB on `far`, 39–79 dB elsewhere, 2026-10-19). Before, a square footprint at the
   block centre's depth, capped at 8 px, left near surfaces full of holes (10–26 dB).
-- `gpu-voxelspace`: no overhangs, caves or trunks (PSNR ~15–36 dB on terrain-like plans; 4–21 dB
+- `columns-gpu`: no overhangs, caves or trunks (PSNR ~15–36 dB on terrain-like plans; 4–21 dB
   on the stress worlds, where little is a heightmap), 27 MB of GPU memory.
 
 ## Shading

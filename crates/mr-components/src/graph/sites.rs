@@ -68,7 +68,7 @@ pub fn site_name(role: Role, port: &str) -> String {
 
 /// The *sites form* of a graph, its flat composition plus a binding per site that
 /// the composition binds otherwise (`shadow = "tree64/sphere"`), for the CLI
-/// (`gpu-compute:prefix+incremental,bounce=tree64/sphere`), plans (`sites = { ... }`),
+/// (`raycast-gpu:prefix+incremental,bounce=tree64/sphere`), plans (`sites = { ... }`),
 /// labels, sweeps and the GUI. A site's value is one of:
 /// - another site's name: the same kernel (an exposure site: the same storage);
 /// - `<kernel>`: a kernel of its own over the lead's storage;
@@ -417,7 +417,7 @@ impl Graph {
     }
 
     /// A label: the composition's, then the sites bound otherwise
-    /// (`gpu-compute: prefix + incremental, bounce = tree64/sphere`); a graph without a sites
+    /// (`raycast-gpu: prefix + incremental, bounce = tree64/sphere`); a graph without a sites
     /// form gets its key.
     pub fn label(&self) -> Result<String, String> {
         Ok(match self.sites_form()? {

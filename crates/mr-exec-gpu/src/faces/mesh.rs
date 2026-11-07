@@ -1,4 +1,4 @@
-//! Meshing (`gpu-raster`): the face source of view-independent geometry. The executor's
+//! Meshing (`raster-gpu`): the face source of view-independent geometry. The executor's
 //! drawer rasterises the geometry component's faces:
 //!
 //! * **geometry** turns each chunk into packed face instances on the CPU (parallel,
@@ -39,7 +39,7 @@ use super::{CoreOpts, Draw, SourceSpec};
 use crate::exec::{self, Cx, Node, Region, State};
 use crate::Core;
 
-pub(crate) const BACKEND: &str = "gpu-raster";
+pub(crate) const BACKEND: &str = "raster-gpu";
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
@@ -266,7 +266,7 @@ impl Meshing {
         walks.set_max_steps(opts.max_steps);
         let mesh_storage = walks.kernels[mesh_shadow].storage.ok_or_else(|| anyhow::anyhow!("{BACKEND}: mesh shadows walk a storage (not ray queries)"))?;
         let (occ, rays) = walks.shadow_program(mesh_shadow);
-        tracing::info!("gpu-raster: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
+        tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let meshes = opts.meshes != "none";
         let (core, drawing) = super::new(

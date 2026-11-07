@@ -1,4 +1,4 @@
-//! The CPU sampler (`cpu-discover`): self-directed (non screen-space) visibility ray
+//! The CPU sampler (`discover-cpu`): self-directed (non screen-space) visibility ray
 //! casting on the CPU, drawn by the executor's face drawer on the GPU. The CPU **storage** discovery rays
 //! walk (any CPU representation, refloor walk, monomorphised:
 //! `mr_components::visibility::discover::grid`), the **visibility** component (`quadtree`,
@@ -48,7 +48,7 @@ use super::{CoreOpts, Draw, SourceSpec};
 use crate::exec::{self, Cx, Node, Region};
 use crate::Core;
 
-pub(crate) const BACKEND: &str = "cpu-discover";
+pub(crate) const BACKEND: &str = "discover-cpu";
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {

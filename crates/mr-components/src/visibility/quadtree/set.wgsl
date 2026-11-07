@@ -1,7 +1,7 @@
 // The quadtree's GPU face set and discovery buffers (module `quadtree::set`), shared by the sampler (`gpu.wgsl`) and hole detection (`holes/coverage/gpu.wgsl`),
-// which are separate roots over it. Was gpu-discover's `discover.wgsl`.
+// which are separate roots over it. Was discover-gpu's `discover.wgsl`.
 //
-// gpu-discover: GPU face discovery. Adaptive screen-space quadtree of corner rays; coherent
+// discover-gpu: GPU face discovery. Adaptive screen-space quadtree of corner rays; coherent
 // tiles add every exposed face of the hit plane inside their footprint to a GPU hash set
 // of world-space faces (S). Faces persist for `keep` frames (survivor pass).
 //

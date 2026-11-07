@@ -1,5 +1,5 @@
 //! The quadtree sampler on the CPU (discovery's pieces as components; was
-//! part of cpu-discover's `discover.rs`): adaptive screen-space tiles of corner rays, see
+//! part of discover-cpu's `discover.rs`): adaptive screen-space tiles of corner rays, see
 //! [`crate::visibility::discover`] for the tile rules and the shared state.
 
 use std::time::Instant;

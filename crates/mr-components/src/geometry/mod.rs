@@ -37,7 +37,7 @@ impl Default for Knobs {
 
 pub type MeshFn = fn(&ChunkData, [Option<&ChunkData>; 6], u16, Knobs) -> Mesh;
 
-/// What the gpu-rt back end builds per chunk for a geometry.
+/// What the rayquery-gpu back end builds per chunk for a geometry.
 #[derive(Copy, Clone)]
 pub enum RtKind {
     /// Quads (the `mesh` encoding) as two triangles each.
@@ -46,7 +46,7 @@ pub enum RtKind {
     Boxes,
 }
 
-/// The gpu-rt implementation of a geometry: WGSL `g_rt_trace(o, d, max_t, shadow) -> Hit`
+/// The rayquery-gpu implementation of a geometry: WGSL `g_rt_trace(o, d, max_t, shadow) -> Hit`
 /// and what to build.
 pub fn rt(name: &str) -> Option<(&'static str, RtKind)> {
     let quads = include_str!("greedy/rt.wgsl");

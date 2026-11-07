@@ -309,35 +309,35 @@ impl When {
     }
 }
 
-/// When a discovery back end's drawer gets its faces: cpu-discover discovers one frame
+/// When a discovery back end's drawer gets its faces: discover-cpu discovers one frame
 /// ahead (`prev`; its `pipelined` knob, see [`Graph::with_options`]); with hole detection
 /// the faces iterate twice within the frame.
 pub(super) fn faces_timing(executor: &str, holes: bool) -> Option<When> {
     match (executor, holes) {
         (_, true) => Some(When::Iterate(2)),
-        ("cpu-discover", false) => Some(When::Prev),
+        ("discover-cpu", false) => Some(When::Prev),
         _ => None,
     }
 }
 
 /// Edge timings a back end lets a graph choose, with the values it runs (the rest are its
-/// composition's): cpu-discover's faces now or a frame late; ray casting's shading on a
+/// composition's): discover-cpu's faces now or a frame late; ray casting's shading on a
 /// second GPU shading this frame's hit records or the last frame's (the GPUs
 /// then overlap; `device_blocker` says why not on one GPU).
 pub(super) const FREE_TIMINGS: &[(&str, Role, &str, &[When])] = &[
-    ("cpu-discover", Role::Draw, "faces", &[When::Now, When::Prev]),
+    ("discover-cpu", Role::Draw, "faces", &[When::Now, When::Prev]),
     // Hole detection closes a cycle through the drawer, which draws twice a frame, and reads
     // the last frame's sky mask.
-    ("gpu-discover", Role::Draw, "faces", &[When::Now, When::Iterate(2)]),
-    ("gpu-discover", Role::Holes, "sky", &[When::Prev]),
-    ("gpu-compute", Role::Shading, "hits", &[When::Now, When::Prev]),
-    ("gpu-rt", Role::Shading, "hits", &[When::Now, When::Prev]),
+    ("discover-gpu", Role::Draw, "faces", &[When::Now, When::Iterate(2)]),
+    ("discover-gpu", Role::Holes, "sky", &[When::Prev]),
+    ("raycast-gpu", Role::Shading, "hits", &[When::Now, When::Prev]),
+    ("rayquery-gpu", Role::Shading, "hits", &[When::Now, When::Prev]),
 ];
 
 /// Knobs that spell an edge timing (the graph says it; the knob is how plans, the CLI and
 /// the GUI write it): back end, knob, the edge's role and port, the timing when the knob
 /// is true, when false.
-pub(super) const TIMING_KNOBS: &[(&str, &str, Role, &str, When, When)] = &[("cpu-discover", "pipelined", Role::Draw, "faces", When::Prev, When::Now)];
+pub(super) const TIMING_KNOBS: &[(&str, &str, Role, &str, When, When)] = &[("discover-cpu", "pipelined", Role::Draw, "faces", When::Prev, When::Now)];
 
 /// The client's components (`mr_core::client::Levels`): `pick` takes the server's LOD
 /// levels, `derive` builds them on the client from LOD 0. The sites form writes a client

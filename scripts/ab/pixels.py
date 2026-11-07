@@ -4,7 +4,7 @@ frames 0, 20, 39 with reference comparisons) with the saved "before" build
 (scripts/ab/save-before.py) and the current build, then compares the saved frames pixel
 by pixel. AFTER_RENDERERS (optional, a TOML list) gives the current build different
 renderers (e.g. a new knob set to reproduce the old behaviour).
-  scripts/ab/pixels.py terrain '[{compose={backend="gpu-compute"}}]'
+  scripts/ab/pixels.py terrain '[{compose={preset="raycast-gpu"}}]'
 """
 import os
 import subprocess

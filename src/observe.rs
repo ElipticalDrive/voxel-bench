@@ -237,7 +237,7 @@ impl Observation {
     /// The pipeline it measured: its graph, or its composition with its sites (`None` for
     /// standalone renderers).
     pub fn pipeline(&self) -> Option<mr_components::graph::Graph> {
-        // Records keep the knobs that spell timings (cpu-discover `pipelined`): they load as the
+        // Records keep the knobs that spell timings (discover-cpu `pipelined`): they load as the
         // graphs they ran.
         let options: toml::Table = serde_json::from_value(self.options.clone()).unwrap_or_default();
         if let Some(g) = &self.graph {

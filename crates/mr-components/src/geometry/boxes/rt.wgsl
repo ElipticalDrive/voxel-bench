@@ -1,4 +1,4 @@
-// Geometry `boxes` on gpu-rt (from gpu-rtx-bricks): one AABB per occupied 4^3 brick (or one
+// Geometry `boxes` on rayquery-gpu (from gpu-rtx-bricks): one AABB per occupied 4^3 brick (or one
 // per uniform solid chunk). The RT cores walk the BVH to candidate boxes; a small software
 // DDA through the voxel pool finds the voxel inside and reports it with
 // rayQueryGenerateIntersection.

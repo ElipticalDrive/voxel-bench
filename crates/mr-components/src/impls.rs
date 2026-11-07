@@ -127,10 +127,10 @@ pub const GPU_RAYQUERY: Place = Place { kind: Kind::Gpu, apis: &[Api::RayQuery] 
 /// Shading of a face drawer: in the fragment shader (`raster`) or a deferred compute pass
 /// (`visbuffer`, `gbuffer`); with it the storages and kernels its shadow rays walk.
 pub const GPU_DRAWN: Place = Place { kind: Kind::Gpu, apis: &[Api::Raster, Api::Compute] };
-/// gpu-compute's walk and its inline shading: a compute thread or a fragment shader per
+/// raycast-gpu's walk and its inline shading: a compute thread or a fragment shader per
 /// pixel (knob `dispatch`, or the nodes' `api`).
 pub const GPU_DISPATCH: Place = Place { kind: Kind::Gpu, apis: &[Api::Compute, Api::Raster] };
-/// The `cpu` back end's hot loop: one ISA per run (knob `isa`, or the nodes' `api`).
+/// The `raycast-cpu` preset's hot loop: one ISA per run (knob `isa`, or the nodes' `api`).
 pub const CPU_ISAS: Place = Place { kind: Kind::Cpu, apis: ISAS };
 pub const CPU_SCALAR: Place = Place { kind: Kind::Cpu, apis: &[Api::Scalar] };
 

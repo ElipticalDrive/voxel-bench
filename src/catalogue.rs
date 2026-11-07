@@ -424,7 +424,7 @@ mod tests {
         let cat = Catalogue::build(&all, 35.0);
         assert_eq!(cat.scenarios.len(), 2);
         let terrain = cat.scenarios.iter().find(|s| s.plan == "terrain").unwrap();
-        assert_eq!(terrain.entries[0].label, "gpu-compute: prefix + refloor", "an incorrect renderer is never best");
+        assert_eq!(terrain.entries[0].label, "raycast-gpu: prefix + refloor", "an incorrect renderer is never best");
         let hier = cat.renderers.iter().find(|r| r.label.contains("hier")).unwrap();
         assert_eq!(hier.incorrect, ["terrain [unlit]"]);
         let prefix = cat.renderers.iter().find(|r| r.label.contains("prefix")).unwrap();

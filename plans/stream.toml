@@ -23,7 +23,7 @@ modes = ["unlit"]
 view_radius = 6
 
 [[renderer]]
-compose = { backend = "gpu-compute", storage = "bricks", traversal = "refloor" }
+compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
 sites = { link = [
     "free",
     "net(latency_ms=1, bandwidth_mbps=1000)",

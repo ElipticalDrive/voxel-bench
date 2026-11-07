@@ -112,10 +112,10 @@ impl Graph {
 
     /// The preset this graph's shape and devices name (the region of its executor that
     /// builds it, and the tables keyed by the former back ends' names): the face drawer's
-    /// source (meshing: `gpu-raster` / `cpu-raster` by the drawer's device; discovery:
-    /// `gpu-discover` / `cpu-discover` by the sampler's), else the visibility node's
-    /// component and device (ray casting: `cpu`, `gpu-rt` when its primary rays are ray
-    /// queries (the kernel's component or API), else `gpu-compute`; `columns`; `splat`). `None` for a
+    /// source (meshing: `raster-gpu` / `raster-cpu` by the drawer's device; discovery:
+    /// `discover-gpu` / `discover-cpu` by the sampler's), else the visibility node's
+    /// component and device (ray casting: `raycast-cpu`, `rayquery-gpu` when its primary rays are ray
+    /// queries (the kernel's component or API), else `raycast-gpu`; `columns`; `splat`). `None` for a
     /// shape no preset has.
     pub fn preset(&self) -> Option<&'static str> {
         let dev = |n: &Node| n.device.unwrap_or_else(|| default_device(&self.executor, n.role, &n.component)).kind();
@@ -125,8 +125,8 @@ impl Graph {
         if hits.role == Role::Draw {
             let src = self.nodes.get(hits.inputs.get("faces")?)?;
             return match (src.role, src.component.as_str()) {
-                (Role::Visibility, "quadtree" | "cluster") if gpu(hits) => Some(if gpu(src) { "gpu-discover" } else { "cpu-discover" }),
-                (Role::Visibility, "faces") => Some(if gpu(hits) { "gpu-raster" } else { "cpu-raster" }),
+                (Role::Visibility, "quadtree" | "cluster") if gpu(hits) => Some(if gpu(src) { "discover-gpu" } else { "discover-cpu" }),
+                (Role::Visibility, "faces") => Some(if gpu(hits) { "raster-gpu" } else { "raster-cpu" }),
                 _ => None,
             };
         }
@@ -134,18 +134,18 @@ impl Graph {
             return None;
         }
         match (hits.component.as_str(), gpu(hits)) {
-            ("columns", g) => Some(if g { "gpu-voxelspace" } else { "cpu-voxelspace" }),
-            ("splat", true) => Some("gpu-splat"),
-            ("raycast", false) => Some("cpu"),
+            ("columns", g) => Some(if g { "columns-gpu" } else { "columns-cpu" }),
+            ("splat", true) => Some("splat-gpu"),
+            ("raycast", false) => Some("raycast-cpu"),
             ("raycast", true) => {
                 let rq = hits.inputs.get("primary").and_then(|k| self.nodes.get(k)).is_some_and(|k| k.component == "rayquery" || k.api == Some(crate::Api::RayQuery));
-                Some(if rq { "gpu-rt" } else { "gpu-compute" })
+                Some(if rq { "rayquery-gpu" } else { "raycast-gpu" })
             }
             _ => None,
         }
     }
 
-    /// The graph with the edge timings its knobs spell set (`TIMING_KNOBS`: cpu-discover's
+    /// The graph with the edge timings its knobs spell set (`TIMING_KNOBS`: discover-cpu's
     /// `pipelined = false` makes the drawer's faces arrive `now`). Knobs not given keep the
     /// graph's timing.
     pub fn with_options(self, options: &toml::Table) -> Graph {

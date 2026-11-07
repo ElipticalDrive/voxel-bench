@@ -1,4 +1,4 @@
-// The ray-query caster (gpu-rt): the primary ray is a hardware ray query (`ctrace` from the
+// The ray-query caster (rayquery-gpu): the primary ray is a hardware ray query (`ctrace` from the
 // traversal kernel `rayquery` over the core's acceleration structures, whose bindings and
 // trace are the program's root code).
 

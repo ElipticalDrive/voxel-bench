@@ -3,7 +3,7 @@
 //! `-s dotted.path=value` (value parsed as TOML, falling back to a string).
 //!
 //! **Sweeps:** a `compose` field may be `"*"` (every component the back end has for that
-//! stage; for `backend`, every back end) or a list; the renderer then expands into one
+//! stage; for `preset`, every preset) or a list; the renderer then expands into one
 //! renderer per valid combination (`RendererSpec::swept`). Stages left out keep their
 //! defaults, `"*"` on a stage a back end lacks is ignored (a named component there skips
 //! that back end), and the entry's `options` go to each
@@ -270,17 +270,17 @@ impl RendererSpec {
         Ok(())
     }
 
-    /// From the command line: `backend:slot+slot+...` for a composition (a bare back-end
+    /// From the command line: `preset:slot+slot+...` for a composition (a bare preset
     /// name gives its default composition): the back end's
     /// required slots in order, then optionally shading, prepass, meshes and its quiet slots
-    /// (`BackendInfo::quiet`, e.g. `gpu-raster:bricks+greedy+raster+direct+depth+sphere`)
-    /// (`gpu-compute:prefix+incremental`, `gpu-compute:tree64+refloor+direct+beam`,
-    /// `gpu-raster:bricks+greedy+visbuffer`); otherwise a renderer name (a back end's, giving its default composition, or a
+    /// (`BackendInfo::quiet`, e.g. `raster-gpu:bricks+greedy+raster+direct+depth+sphere`)
+    /// (`raycast-gpu:prefix+incremental`, `raycast-gpu:tree64+refloor+direct+beam`,
+    /// `raster-gpu:bricks+greedy+visbuffer`); otherwise a renderer name (a back end's, giving its default composition, or a
     /// standalone one). A label as the renderer prints it reads back as the same renderer
-    /// (`gpu-compute: prefix + beam + incremental, bounce = tree64/sphere`).
+    /// (`raycast-gpu: prefix + beam + incremental, bounce = tree64/sphere`).
     ///
     /// Sites bound otherwise follow after commas:
-    /// `gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere`.
+    /// `raycast-gpu:bricks+refloor+pathtrace,bounce=tree64/sphere`.
     pub fn from_cli(s: &str) -> anyhow::Result<Self> {
         // Commas inside a site's knobs (`link=net(latency_ms=30,loss=0.01)`) are its own.
         let mut depth = 0i32;
@@ -304,12 +304,12 @@ impl RendererSpec {
         };
         let backend = backend.trim();
         if mr_components::backend(backend).is_none() {
-            bail!("composition `{s}`: no back end `{backend}` (`multirenderer list` shows them)");
+            bail!("composition `{s}`: no preset `{backend}` (`multirenderer list` shows them)");
         }
         let parts: Vec<&str> = rest.split('+').map(str::trim).collect();
         let c = match Self::cli_composition(s, backend, &parts) {
             Ok(c) => c,
-            // A label as printed (`gpu-discover: bricks + quadtree + coverage`) reads back too.
+            // A label as printed (`discover-gpu: bricks + quadtree + coverage`) reads back too.
             Err(e) => Self::label_composition(backend, &parts).ok_or(e)?,
         };
         let mut spec = Self::new("");
@@ -427,7 +427,7 @@ impl RendererSpec {
     /// The graph the back end runs: the one given, else the composition's (`None` for
     /// standalone renderers).
     pub fn pipeline(&self) -> Option<mr_components::graph::Graph> {
-        // Knobs that spell timings (cpu-discover `pipelined`) set them on the composition's graph.
+        // Knobs that spell timings (discover-cpu `pipelined`) set them on the composition's graph.
         self.ran_graph.clone().or_else(|| self.compose.as_ref().and_then(|c| mr_components::graph::Graph::from_composition(c).ok())).map(|g| g.with_options(&self.options))
     }
 
@@ -708,13 +708,13 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
         let site_axes: Vec<(String, Pick)> = e.get("sites").and_then(|s| s.as_table()).map(|t| t.iter().map(|(k, v)| Ok((k.clone(), Pick::of(Some(v), &format!("sites.{k}"))?))).collect::<anyhow::Result<_>>()).transpose()?.unwrap_or_default();
         // Distinct pipelines once each (several spellings can give one graph).
         let mut keys = std::collections::HashSet::new();
-        if let Some(k) = compose.keys().find(|k| *k != "backend" && !mr_components::Slot::ALL.iter().any(|s| s.name() == k.as_str())) {
+        if let Some(k) = compose.keys().find(|k| *k != "preset" && !mr_components::Slot::ALL.iter().any(|s| s.name() == k.as_str())) {
             bail!("compose: unknown field `{k}`");
         }
-        let backends: Vec<&mr_components::BackendInfo> = match Pick::of(compose.get("backend"), "backend")? {
-            Pick::Default => vec![mr_components::backend("gpu-compute").unwrap()],
+        let backends: Vec<&mr_components::BackendInfo> = match Pick::of(compose.get("preset"), "preset")? {
+            Pick::Default => vec![mr_components::backend("raycast-gpu").unwrap()],
             Pick::All => mr_components::BACKENDS.iter().filter(|b| b.renderer.is_some()).collect(),
-            Pick::Some(names) => names.iter().map(|n| mr_components::backend(n).with_context(|| format!("compose.backend: unknown back end `{n}`"))).collect::<anyhow::Result<_>>()?,
+            Pick::Some(names) => names.iter().map(|n| mr_components::backend(n).with_context(|| format!("compose.preset: unknown preset `{n}`"))).collect::<anyhow::Result<_>>()?,
         };
         let before = out.len();
         for b in backends {
@@ -855,7 +855,7 @@ mod tests {
     #[test]
     fn region_lives_in_nodes() {
         let scene = "[scene]\ngenerator = { type = \"terrain\", seed = 1 }\ncamera = { type = \"line\", from = [0, 150, 0], to = [300, 150, 75] }\n";
-        let r = "[[renderer]]\ncompose = { backend = \"gpu-compute\", storage = \"bricks\", traversal = \"refloor\" }\n";
+        let r = "[[renderer]]\ncompose = { preset = \"raycast-gpu\", storage = \"bricks\", traversal = \"refloor\" }\n";
         let home = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)";
         let new = format!(
             "{scene}[run]\nview_radius = 8\n\
@@ -885,7 +885,7 @@ mod tests {
             assert_eq!((a.label(), a.pipeline().map(|g| g.key().unwrap()), a.link(), a.view_radius(&again.run)), (b.label(), b.pipeline().map(|g| g.key().unwrap()), b.link(), b.view_radius(&new.run)));
         }
         // The CLI: commas inside a site's knobs are its own.
-        let cli = RendererSpec::from_cli(&format!("gpu-compute:bricks+refloor,link={},client=pick(radius=4)", home.replace(' ', ""))).unwrap();
+        let cli = RendererSpec::from_cli(&format!("raycast-gpu:bricks+refloor,link={},client=pick(radius=4)", home.replace(' ', ""))).unwrap();
         assert_eq!((cli.link(), cli.view_radius(&new.run)), (new.renderers[2].link(), 4));
         // The GUI's knob setter, both ways.
         let mut s = new.renderers[0].clone();
@@ -937,52 +937,52 @@ mod tests {
         let text = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n\n[[renderer]]\ncompose = { storage = \"prefix\", traversal = \"incremental\" }\noptions = { exact = false }\n";
         let p = Plan::parse(text, &[]).unwrap();
         let r = &p.renderers[0];
-        assert_eq!(r.name, "gpu-compute");
+        assert_eq!(r.name, "raycast-gpu");
         assert_eq!(r.options.get("storage").and_then(|v| v.as_str()), Some("prefix"));
         assert_eq!(r.options.get("traversal").and_then(|v| v.as_str()), Some("incremental"));
         assert_eq!(r.options.get("visibility").and_then(|v| v.as_str()), Some("raycast"));
-        assert_eq!(r.label(), "gpu-compute: prefix + incremental");
+        assert_eq!(r.label(), "raycast-gpu: prefix + incremental");
         let saved = p.to_toml().unwrap();
-        assert!(!saved.contains("name = \"gpu-compute\"") && saved.contains("compose") && !saved.contains("[renderer.options]\nstorage"), "{saved}");
+        assert!(!saved.contains("name = \"raycast-gpu\"") && saved.contains("compose") && !saved.contains("[renderer.options]\nstorage"), "{saved}");
         assert_eq!(Plan::parse(&saved, &[]).unwrap().renderers[0].options, r.options);
         // Unsupported combinations are rejected with the reason.
-        let bad = text.replace("storage = \"prefix\"", "backend = \"gpu-rt\", storage = \"prefix\"");
+        let bad = text.replace("storage = \"prefix\"", "preset = \"rayquery-gpu\", storage = \"prefix\"");
         assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("no storage slot"));
-        let cpu = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"palette\"");
-        assert_eq!(Plan::parse(&cpu, &[]).unwrap().renderers[0].name, "cpu");
-        let bad = text.replace("storage = \"prefix\"", "backend = \"cpu\", storage = \"rows\"");
+        let cpu = text.replace("storage = \"prefix\"", "preset = \"raycast-cpu\", storage = \"palette\"");
+        assert_eq!(Plan::parse(&cpu, &[]).unwrap().renderers[0].name, "raycast-cpu");
+        let bad = text.replace("storage = \"prefix\"", "preset = \"raycast-cpu\", storage = \"rows\"");
         assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("has no cpu scalar/avx2/avx512 implementation"));
-        let raster = text.replace("storage = \"prefix\", traversal = \"incremental\"", "backend = \"gpu-raster\", geometry = \"cubes\"");
+        let raster = text.replace("storage = \"prefix\", traversal = \"incremental\"", "preset = \"raster-gpu\", geometry = \"cubes\"");
         let r = &Plan::parse(&raster, &[]).unwrap().renderers[0];
-        assert_eq!((r.name.as_str(), r.label()), ("gpu-raster", "gpu-raster: bricks + cubes + raster"));
+        assert_eq!((r.name.as_str(), r.label()), ("raster-gpu", "raster-gpu: bricks + cubes + raster"));
         assert!(Plan::parse(&text.replace("traversal = \"incremental\"", "geometry = \"greedy\""), &[]).unwrap_err().to_string().contains("no geometry slot"));
-        let spec = RendererSpec::from_cli("gpu-raster:hier+naive+visbuffer").unwrap();
+        let spec = RendererSpec::from_cli("raster-gpu:hier+naive+visbuffer").unwrap();
         assert_eq!(spec.options.get("geometry").and_then(|v| v.as_str()), Some("naive"));
-        assert!(RendererSpec::from_cli("gpu-raster:hier+naive").is_err());
-        let spec = RendererSpec::from_cli("gpu-raster:distance+greedy+raster+direct+depth+sphere").unwrap();
+        assert!(RendererSpec::from_cli("raster-gpu:hier+naive").is_err());
+        let spec = RendererSpec::from_cli("raster-gpu:distance+greedy+raster+direct+depth+sphere").unwrap();
         assert_eq!(spec.options.get("traversal").and_then(|v| v.as_str()), Some("sphere"));
-        assert_eq!(spec.label(), "gpu-raster: distance + greedy + raster + sphere");
-        let spec = RendererSpec::from_cli("gpu-raster:hier+naive+gbuffer").unwrap();
+        assert_eq!(spec.label(), "raster-gpu: distance + greedy + raster + sphere");
+        let spec = RendererSpec::from_cli("raster-gpu:hier+naive+gbuffer").unwrap();
         assert_eq!(spec.options.get("draw").and_then(|v| v.as_str()), Some("gbuffer"));
         // Naming a back end's renderer gives its default composition.
-        let named = text.replace("compose = { storage = \"prefix\", traversal = \"incremental\" }", "name = \"gpu-discover\"").replace("options = { exact = false }", "");
+        let named = text.replace("compose = { storage = \"prefix\", traversal = \"incremental\" }", "name = \"discover-gpu\"").replace("options = { exact = false }", "");
         let r = &Plan::parse(&named, &[]).unwrap().renderers[0];
-        assert_eq!(r.label(), "gpu-discover: bricks + quadtree");
+        assert_eq!(r.label(), "discover-gpu: bricks + quadtree");
         assert!(Plan::parse(&named, &[]).unwrap().to_toml().unwrap().contains("compose"));
-        let spec = RendererSpec::from_cli("gpu-compute:tree64+refloor+direct+beam").unwrap();
+        let spec = RendererSpec::from_cli("raycast-gpu:tree64+refloor+direct+beam").unwrap();
         assert_eq!(spec.options.get("prepass").and_then(|v| v.as_str()), Some("beam"));
-        let spec = RendererSpec::from_cli("gpu-compute:distance+sphere").unwrap();
+        let spec = RendererSpec::from_cli("raycast-gpu:distance+sphere").unwrap();
         assert_eq!(spec.options.get("storage").and_then(|v| v.as_str()), Some("distance"));
-        assert!(RendererSpec::from_cli("gpu-compute:nope+sphere").is_err());
+        assert!(RendererSpec::from_cli("raycast-gpu:nope+sphere").is_err());
         // The meshes stage: last in the CLI form; `none` drops mesh passes.
-        let spec = RendererSpec::from_cli("gpu-compute:bricks+refloor+direct+none+none").unwrap();
+        let spec = RendererSpec::from_cli("raycast-gpu:bricks+refloor+direct+none+none").unwrap();
         assert_eq!(spec.options.get("meshes").and_then(|v| v.as_str()), Some("none"));
-        assert_eq!(spec.label(), "gpu-compute: bricks + refloor + no meshes");
-        let info = mr_core::RendererInfo { name: "gpu-compute".into(), description: String::new(), tags: vec!["meshes".into()], modes: vec![mr_core::RenderMode::Unlit, mr_core::RenderMode::Lit], max_lod: 0, params: vec![] };
+        assert_eq!(spec.label(), "raycast-gpu: bricks + refloor + no meshes");
+        let info = mr_core::RendererInfo { name: "raycast-gpu".into(), description: String::new(), tags: vec!["meshes".into()], modes: vec![mr_core::RenderMode::Unlit, mr_core::RenderMode::Lit], max_lod: 0, params: vec![] };
         let lit_meshes = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
         assert!(!spec.supports(&info, lit_meshes) && spec.supports(&info, PassMode::LIT));
-        assert!(RendererSpec::from_cli("gpu-compute:bricks+refloor").unwrap().supports(&info, lit_meshes));
-        assert_eq!(RendererSpec::from_cli("gpu-raster:bricks+greedy+raster+direct+none").unwrap().options.get("meshes").and_then(|v| v.as_str()), Some("none"));
+        assert!(RendererSpec::from_cli("raycast-gpu:bricks+refloor").unwrap().supports(&info, lit_meshes));
+        assert_eq!(RendererSpec::from_cli("raster-gpu:bricks+greedy+raster+direct+none").unwrap().options.get("meshes").and_then(|v| v.as_str()), Some("none"));
     }
 
     /// A renderer written as a graph loads as the composition it is.
@@ -1012,7 +1012,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let own = graph.replace("shadow = \"k\" } }", "shadow = \"k2\" } }\nnodes.k2 = { role = \"traversal\", component = \"incremental\", inputs = { storage = \"s\" }, knobs = { exact = true, skip8 = false } }");
         let p = Plan::parse(&format!("{base}{own}"), &[]).unwrap();
         let r = &p.renderers[0];
-        assert!(r.label().starts_with("gpu-compute: prefix + incremental + no meshes [graph "), "{}", r.label());
+        assert!(r.label().starts_with("raycast-gpu: prefix + incremental + no meshes [graph "), "{}", r.label());
         assert_eq!(r.options.get("exact"), Some(&toml::Value::Boolean(false)), "the primary kernel's knob");
         assert!(r.options.get("skip8").is_none());
         assert!(r.pipeline().unwrap().nodes.contains_key("k2"));
@@ -1027,7 +1027,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let p = Plan::parse(&format!("{base}{plain}"), &[]).unwrap();
         let r = &p.renderers[0];
         assert!(r.graph.is_none() && r.sites.get("shadow").map(String::as_str) == Some("incremental"), "{:?}", r.sites);
-        assert_eq!(r.label(), "gpu-compute: prefix + incremental + no meshes, shadow = incremental");
+        assert_eq!(r.label(), "raycast-gpu: prefix + incremental + no meshes, shadow = incremental");
         assert!(p.to_toml().unwrap().contains("[renderer.sites]"));
         let both = graph.replace("[[renderer]]\n", "[[renderer]]\nsites = { bounce = \"rows/rowrun\" }\n");
         assert!(Plan::parse(&format!("{base}{both}"), &[]).unwrap_err().to_string().contains("not both"));
@@ -1069,7 +1069,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
             }
         }
         assert!(n > 100, "{n}");
-        let base = RendererSpec::from_cli("gpu-compute:bricks+refloor+pathtrace").unwrap();
+        let base = RendererSpec::from_cli("raycast-gpu:bricks+refloor+pathtrace").unwrap();
         let g = base.pipeline().unwrap();
         for site in ["shadow", "bounce", "client", "link"] {
             for v in g.site_choices(site) {
@@ -1079,28 +1079,28 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
                 }
             }
         }
-        check(&RendererSpec::from_cli("gpu-compute:bricks+refloor,link=net(latency_ms=30,loss=0.01),client=derive(radius=4)").unwrap());
+        check(&RendererSpec::from_cli("raycast-gpu:bricks+refloor,link=net(latency_ms=30,loss=0.01),client=derive(radius=4)").unwrap());
     }
 
     /// Sites from the command line and in plans, run as graphs.
     #[test]
     fn sites() {
-        let r = RendererSpec::from_cli("gpu-compute:bricks+refloor+pathtrace,bounce=tree64/sphere").unwrap();
-        assert_eq!(r.label(), "gpu-compute: bricks + refloor + pathtrace, bounce = tree64/sphere");
+        let r = RendererSpec::from_cli("raycast-gpu:bricks+refloor+pathtrace,bounce=tree64/sphere").unwrap();
+        assert_eq!(r.label(), "raycast-gpu: bricks + refloor + pathtrace, bounce = tree64/sphere");
         let g = r.pipeline().unwrap();
         assert!(g.nodes.values().any(|n| n.component == "tree64"));
         // Effective in unlit passes: the bounces are moot, so is the shading.
         let u = r.effective(PassMode::UNLIT).unwrap();
-        assert!(u.sites.is_empty() && u.ran_graph.is_none() && u.label() == "gpu-compute: bricks + refloor", "{}", u.label());
+        assert!(u.sites.is_empty() && u.ran_graph.is_none() && u.label() == "raycast-gpu: bricks + refloor", "{}", u.label());
         assert_eq!(r.effective(PassMode::LIT).unwrap().label(), r.label());
         // Errors say why.
-        let e = RendererSpec::from_cli("gpu-compute:bricks+refloor,bounce=tree64/sphere").unwrap_err().to_string();
+        let e = RendererSpec::from_cli("raycast-gpu:bricks+refloor,bounce=tree64/sphere").unwrap_err().to_string();
         assert!(e.contains("no site `bounce`"), "{e}");
-        let e = RendererSpec::from_cli("gpu-rt,bounce=bricks/refloor").unwrap_err().to_string();
+        let e = RendererSpec::from_cli("rayquery-gpu,bounce=bricks/refloor").unwrap_err().to_string();
         assert!(e.contains("no site `bounce`") || e.contains("through its primary kernel"), "{e}");
-        let e = RendererSpec::from_cli("cpu:bricks+refloor,shadow=hier/refloor").unwrap_err().to_string();
-        assert!(e.contains("`cpu` builds 1 storage node"), "{e}");
-        assert!(RendererSpec::from_cli("cpu:bricks+refloor,shadow=incremental").is_ok());
+        let e = RendererSpec::from_cli("raycast-cpu:bricks+refloor,shadow=hier/refloor").unwrap_err().to_string();
+        assert!(e.contains("`raycast-cpu` builds 1 storage node"), "{e}");
+        assert!(RendererSpec::from_cli("raycast-cpu:bricks+refloor,shadow=incremental").is_ok());
         // set_sites keeps the old ones when the new ones cannot run.
         let mut r = r;
         assert!(r.set_sites(BTreeMap::from([("bounce".into(), "x/y".into())])).is_err());
@@ -1112,16 +1112,16 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
     fn sweeps() {
         let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
         let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = \"*\", traversal = [\"refloor\", \"sphere\"] }}\noptions = {{ exact = false, merge = \"rows\" }}\n"), &[]).unwrap();
-        // gpu-compute: 8 storages x 2 walks.
+        // raycast-gpu: 8 storages x 2 walks.
         assert_eq!(p.renderers.len(), 16);
-        assert!(p.renderers.iter().all(|r| r.swept && r.name == "gpu-compute" && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
-        let all = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = \"*\", storage = \"*\", geometry = \"*\", prepass = \"*\", visibility = \"*\", draw = \"*\", traversal = \"*\", shading = \"*\", meshes = \"*\" }}\n"), &[]).unwrap();
+        assert!(p.renderers.iter().all(|r| r.swept && r.name == "raycast-gpu" && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
+        let all = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ preset = \"*\", storage = \"*\", geometry = \"*\", prepass = \"*\", visibility = \"*\", draw = \"*\", traversal = \"*\", shading = \"*\", meshes = \"*\" }}\n"), &[]).unwrap();
         let n = |b: &str| all.renderers.iter().filter(|r| r.compose.as_ref().unwrap().backend == b).count();
-        assert_eq!(n("gpu-compute"), 8 * 2 * 4 * 2 * 2);
-        assert_eq!(n("gpu-rt"), 3 * 2);
+        assert_eq!(n("raycast-gpu"), 8 * 2 * 4 * 2 * 2);
+        assert_eq!(n("rayquery-gpu"), 3 * 2);
         // The rasteriser's shadow rays: 8 storages x 4 kernels x 3 geometries x 3 draws x 2 shadings x 2 meshes.
-        assert_eq!(n("gpu-raster"), 8 * 4 * 3 * 3 * 2 * 2);
-        assert_eq!(n("cpu-voxelspace"), 1);
+        assert_eq!(n("raster-gpu"), 8 * 4 * 3 * 3 * 2 * 2);
+        assert_eq!(n("columns-cpu"), 1);
         // Only what a pass can tell apart: unlit collapses shading, meshes and the
         // rasteriser's shadow-ray storage.
         let distinct = |m: PassMode| {
@@ -1132,9 +1132,9 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         };
         assert!(distinct(PassMode::UNLIT) < distinct(PassMode::LIT) && distinct(PassMode::LIT) < all.renderers.len());
         // A name the back end lacks skips it; nothing valid is an error.
-        let only = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = \"*\", storage = \"palette\" }}\n"), &[]).unwrap();
+        let only = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ preset = \"*\", storage = \"palette\" }}\n"), &[]).unwrap();
         let names: Vec<&str> = only.renderers.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["cpu", "cpu-discover"], "named components: only back ends that have them");
+        assert_eq!(names, ["raycast-cpu", "discover-cpu"], "named components: only back ends that have them");
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = [\"palette\"] }}\n"), &[]).is_err());
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = \"*\", nope = \"x\" }}\n"), &[]).is_err());
         // Sweeps over sites, once per distinct graph.
@@ -1144,10 +1144,10 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         // shared with the shadow rays, 4 kernels over the primary storage, 8 storages x 4 kernels,
         // ray queries over 3 geometries.
         assert!(p.renderers.len() == 40 && p.renderers.iter().any(|r| r.sites.is_empty()), "{}", p.renderers.len());
-        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = [\"gpu-compute\", \"gpu-raster\"], shading = \"pathtrace\" }}\nsites = {{ bounce = [\"shadow\", \"rows/rowrun\"] }}\n"), &[]).unwrap();
+        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ preset = [\"raycast-gpu\", \"raster-gpu\"], shading = \"pathtrace\" }}\nsites = {{ bounce = [\"shadow\", \"rows/rowrun\"] }}\n"), &[]).unwrap();
         let labels: Vec<&str> = p.renderers.iter().map(|r| r.label()).collect();
         assert_eq!(labels.len(), 4, "{labels:?}");
-        assert!(labels.contains(&"gpu-raster: bricks + greedy + raster + pathtrace, bounce = rows/rowrun"), "{labels:?}");
+        assert!(labels.contains(&"raster-gpu: bricks + greedy + raster + pathtrace, bounce = rows/rowrun"), "{labels:?}");
         // A named site a pipeline lacks skips it.
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ shading = \"direct\" }}\nsites = {{ bounce = [\"rows/rowrun\"] }}\n"), &[]).is_err());
         // Sweeps over the world's side (link, client, generator); a client's region
@@ -1165,7 +1165,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert_eq!((p.renderers.len(), keys.len()), (4, 4));
         assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces", "hdr"]);
         // A CPU pipeline's sweep takes all four too (`hdr`: float pixels on the CPU as well).
-        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ backend = \"cpu\" }}\nsites = {{ post = \"*\" }}\n"), &[]).unwrap();
+        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ preset = \"raycast-cpu\" }}\nsites = {{ post = \"*\" }}\n"), &[]).unwrap();
         assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces", "hdr"]);
     }
 

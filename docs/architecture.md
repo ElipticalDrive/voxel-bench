@@ -117,6 +117,6 @@ features asked for. Asynchronous renderers call the `Waker` when work may have f
   existing pipelines keep their pixels and speed. The A/B scripts in `scripts/ab/` check
   both. `.cargo/config.toml` forces code alignment, because unaligned builds moved fps by
   5–8% from layout alone; A/B comparisons need both binaries built that way.
-- CPU performance: pin to one CCD (`taskset -c 0-7,16-23`) and read the `cpu` back end's
+- CPU performance: pin to one CCD (`taskset -c 0-7,16-23`) and read the `raycast-cpu` preset's
   `perf = true` hardware counters (cycles, instructions and steps per pixel) rather than fps
   alone.

@@ -92,7 +92,7 @@ reopens the windows.
 ## The pipeline editor
 
 A renderer is its pipeline graph (see [pipelines.md](pipelines.md)). The plan editor and the
-Metrics tab show it in compact form: the back end it runs on (derived from the graph, never
+Metrics tab show it in compact form: the preset it runs as (derived from the graph, never
 chosen directly), then one row per node with its component and that component's knobs.
 
 **✏ graph** opens the editor in its pane (an OS window of its own to start with; a dock or the
@@ -105,14 +105,14 @@ Dragging from an output onto an input rebinds the input. Dragging a node moves i
 the background pans and the wheel zooms about the pointer; the view fits the graph until then,
 and a double click on the background fits it again (with **auto-frame** on, so does
 releasing a dragged node). Undo and redo are available, and
-"start from…" loads a back end's default pipeline.
+"start from…" loads a preset's default pipeline.
 
 Every choice is tried before it is offered. A change is made exactly as picked: a new node comes
 unbound, nothing is filled in and nothing is dropped. If the resulting graph cannot run, the
 choice is orange with ✱ and hovering over it gives the reason; picking it anyway makes a draft
 (shown with the reason, while the renderer keeps its last graph) to edit on from. A choice that
-moves the graph to another back end says so (`➡ gpu-discover`). In the live session an edit applies in place
-when the back end can change that knob live, and otherwise as a hot swap. Trying the choices is cheap: every
+moves the graph to another preset says so (`➡ discover-gpu`). In the live session an edit applies in place
+when the executor can change that knob live, and otherwise as a hot swap. Trying the choices is cheap: every
 choice the editor lists on every preset (1,110) is answered in 0.07 ms each.
 
 ## Knobs and hot swaps
@@ -138,11 +138,11 @@ values back into the plan.
 ## Diagnostic views
 
 `view` knobs show how much work is done where, like a thermal camera. Numeric views (`steps`
-and `distance` on gpu-compute and cpu, `overdraw` on gpu-discover) map each pixel's value through one shared
+and `distance` on raycast-gpu and cpu, `overdraw` on discover-gpu) map each pixel's value through one shared
 colour ramp (Turbo), on a scale from 0 to `view_max` (white above it). `distance` is the
 primary hit's distance in blocks (linear; the sky is white): where the far field starts, how
 deep a scene is, and with a LOD run where the coarse rings begin. Category views
-(gpu-discover `tiles` / `rays` / `churn` / `quads`, cpu-discover `clusters` / `kinds`) use
+(discover-gpu `tiles` / `rays` / `churn` / `quads`, discover-cpu `clusters` / `kinds`) use
 fixed colours. The renderer sends a legend with every frame. The viewport draws the legend in
 the lane's corner and, over a numeric view, shows the value under the cursor.
 
@@ -193,7 +193,7 @@ renderer. To watch it on real terrain:
 ```sh
 LOCK=host.view_radius TARGET_FPS=900 SECONDS=60 ALGO=bayes \
   cargo test --release --bin multirenderer tuner_demo -- --ignored --nocapture
-RENDERER=gpu-compute:prefix+refloor cargo test --release --bin multirenderer scale_curve -- --ignored --nocapture
+RENDERER=raycast-gpu:prefix+refloor cargo test --release --bin multirenderer scale_curve -- --ignored --nocapture
 ```
 
 `scale_curve` prints quality against render scale under all three metrics.

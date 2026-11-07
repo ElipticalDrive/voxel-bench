@@ -1,4 +1,4 @@
-//! CPU ray casting (`cpu`): a renderer from components (`mr-components`), run as nodes of
+//! CPU ray casting (`raycast-cpu`): a renderer from components (`mr-components`), run as nodes of
 //! the generic executor ([`crate::exec`]): a
 //! **storage** (`Repr`, one generic instantiation per storage: monomorphised, so the split
 //! costs nothing), a **traversal** kernel cast per pixel (`refloor` with SIMD-friendly ray
@@ -50,7 +50,7 @@ pub fn storage_type(name: &str) -> Option<&'static str> {
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: "cpu".into(),
+        name: "raycast-cpu".into(),
         description: "CPU back end: renders a composition of components (storage, traversal, shading), multi-threaded".into(),
         tags: vec!["cpu".into(), "raycast".into(), "simd".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
@@ -80,7 +80,7 @@ fn of<R: Repr, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn 
     executor::<R, Generic, P>(p, g)
 }
 
-pub(crate) const BACKEND: &str = "cpu";
+pub(crate) const BACKEND: &str = "raycast-cpu";
 
 
 fn params() -> Vec<ParamSpec> {
