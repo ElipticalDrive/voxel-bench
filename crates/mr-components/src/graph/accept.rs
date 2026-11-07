@@ -147,27 +147,42 @@ impl Graph {
     /// The flat composition of the graph's skeleton (everything but its free sites), and
     /// whether it is exactly the graph (else the graph is run as such: the composition is
     /// the nearest, for labels and the flat options). Fails with the reasons if the back end
-    /// cannot run the graph.
+    /// cannot run the graph. A node executor runs any valid graph whose nodes it declares
+    /// ([`Checked::builder`]); a back end with its own frame loop runs the graphs of its
+    /// compositions (the skeleton must be one).
     pub fn accept(&self) -> Result<(Composition, bool), String> {
         let placed = self.placed();
         if placed.executor != self.executor {
             return placed.accept();
         }
         let ck = self.check()?;
-        // Timings a back end lets the graph choose; the others must be its composition's.
+        let nodes = ck.builder().is_some();
+        // Timings a back end lets the graph choose; the others must be its composition's (a
+        // node executor's: every edge now).
         let free = |n: &Node, p: &str| FREE_TIMINGS.iter().find(|(e, r, port, _)| *e == self.executor && *r == n.role && *port == p).map(|f| f.3);
         for (id, n) in &ck.graph.nodes {
             for (p, w) in &n.timing {
-                if let Some(ok) = free(n, p).filter(|ok| !ok.contains(w)) {
+                if let Some(ok) = free(n, p).or(nodes.then_some(&[When::Now])).filter(|ok| !ok.contains(w)) {
                     return Err(format!("`{id}`.{p}: `{}` runs this edge {}, not {}", self.executor, ok.iter().map(|w| w.label()).collect::<Vec<_>>().join(" or "), w.label()));
                 }
             }
         }
-        if let Some(why) = self.site_blocker(&ck).or_else(|| device_blocker(&ck)) {
+        ck.built()?;
+        let sites = if nodes { None } else { self.site_blocker(&ck) };
+        if let Some(why) = sites.or_else(|| device_blocker(&ck)) {
             return Err(why);
         }
         let skel = ck.graph.skeleton();
-        let mut c = skel.skeleton_composition()?;
+        let mut c = match skel.skeleton_composition() {
+            Ok(c) => c,
+            // The nearest of a shape no composition has: the back end's default.
+            Err(_) if nodes => {
+                let mut c = Composition::new(&self.executor);
+                c.fill_defaults();
+                c
+            }
+            Err(e) => return Err(e),
+        };
         // Without knobs and APIs (the composition has neither; `cpu` reads its API as `isa`)
         // and free timings (its knobs: see `TIMING_KNOBS`); `all` makes every timed edge
         // `prev` (the graphs' shapes compared, whatever their timings).
@@ -202,7 +217,7 @@ impl Graph {
             g
         };
         let expected = Graph::from_composition(&c)?;
-        if strip(&expected.skeleton())? != strip(&one_gpu(&skel))? {
+        if !nodes && strip(&expected.skeleton())? != strip(&one_gpu(&skel))? {
             if strip_with(&expected.skeleton(), true)? == strip_with(&one_gpu(&skel), true)? {
                 let timed = |g: &Graph| {
                     let v: Vec<String> = g.nodes.iter().flat_map(|(id, n)| n.timing.iter().map(move |(p, w)| format!("`{id}`.{p} {}", w.label()))).collect();

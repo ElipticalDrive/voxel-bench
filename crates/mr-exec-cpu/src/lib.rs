@@ -6,8 +6,9 @@
 //! - columns ([`columns`]): the Voxel Space heightmap march (`cpu-voxelspace`).
 //!
 //! Which nodes are built is the graph's: rasterisation when a drawer draws faces, else by the
-//! visibility node's component. Each pipeline declares the nodes it builds (`BUILDS`) and
-//! refuses any other graph at creation with the reason. The executor owns the thread pool every frame runs in (the
+//! visibility node's component. Each pipeline declares the nodes it builds
+//! (`graph::CPU_RAYCAST`, `CPU_RASTER`, `CPU_COLUMNS`); `Graph::accept` refuses any other graph
+//! with the reason. The executor owns the thread pool every frame runs in (the
 //! `threads` knob), the world (`mr_reference::World`: blocks, environment, lights, the
 //! `shadows` knob) and the image size; the chunks are each pipeline's representation (its
 //! storage or geometry node's output).
@@ -161,25 +162,22 @@ mod tests {
     }
 
     /// The valid graphs one or two edits from the pipelines' own are either refused by what
-    /// their executor declares, with the reason, or built without a panic; every graph
-    /// `accept` takes is built.
+    /// their executor declares, with the reason, or built (with the flat options of the
+    /// nearest composition, as the host sends them); `accept` takes exactly the built ones.
     #[test]
     fn executors_build_what_they_declare() {
-        let builds = |e: &str| match e {
-            raycast::BACKEND => raycast::BUILDS,
-            raster::BACKEND => raster::BUILDS,
-            columns::BACKEND => columns::BUILDS,
-            other => unreachable!("{other}"),
-        };
         let (mut built, mut refused) = (0, 0);
         for ck in graph::near(&[raycast::BACKEND, raster::BACKEND, columns::BACKEND]) {
             let e = ck.graph.executor.clone();
             let key = ck.graph.canonical().unwrap();
-            if let Err(why) = ck.built_by(&e, builds(&e)) {
+            if let Err(why) = ck.built() {
                 assert!(ck.graph.accept().is_err(), "`{e}` refuses a graph `accept` takes ({why}): {key}");
                 refused += 1;
                 continue;
             }
+            let (c, _) = ck.graph.accept().unwrap_or_else(|why| panic!("`{e}` builds a graph `accept` refuses ({why}): {key}"));
+            // The flat options the host sends with the graph: its nearest composition's.
+            let opts: serde_json::Map<String, serde_json::Value> = c.clone().resolve().unwrap().1.into_iter().map(|(k, v)| (k.to_string(), v.into())).collect();
             let p = InitParams {
                 width: 32,
                 height: 16,
@@ -187,7 +185,7 @@ mod tests {
                 environment: Default::default(),
                 view_radius_chunks: 1,
                 max_lod: 0,
-                options_json: String::new(),
+                options_json: serde_json::to_string(&opts).unwrap(),
                 graph_json: serde_json::to_string(&ck.graph).unwrap(),
                 devices: DeviceConfig { gpus: vec![], cpu_threads: 1 },
                 stage_times: false,
@@ -195,7 +193,11 @@ mod tests {
                 link: Default::default(),
             };
             let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| create(&e, p).map(drop)));
-            assert!(made.is_ok(), "`{e}` panics building {key}");
+            match made {
+                Ok(Ok(())) => {}
+                Ok(Err(why)) => panic!("`{e}` fails building {key}: {why}"),
+                Err(_) => panic!("`{e}` panics building {key}"),
+            }
             built += 1;
         }
         assert!(built > 0 && refused > 0, "{built} built, {refused} refused");

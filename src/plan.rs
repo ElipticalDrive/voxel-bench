@@ -1099,7 +1099,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let e = RendererSpec::from_cli("gpu-rt,bounce=bricks/refloor").unwrap_err().to_string();
         assert!(e.contains("no site `bounce`") || e.contains("through its primary kernel"), "{e}");
         let e = RendererSpec::from_cli("cpu:bricks+refloor,shadow=hier/refloor").unwrap_err().to_string();
-        assert!(e.contains("over the storage of its primary rays"), "{e}");
+        assert!(e.contains("`cpu` builds 1 storage node"), "{e}");
         assert!(RendererSpec::from_cli("cpu:bricks+refloor,shadow=incremental").is_ok());
         // set_sites keeps the old ones when the new ones cannot run.
         let mut r = r;

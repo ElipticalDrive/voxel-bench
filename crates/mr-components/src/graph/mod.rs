@@ -265,7 +265,8 @@ mod tests {
         let e = set(&Composition::new("gpu-raster"), &[("shading", Api::Compute)]).validate().unwrap_err();
         assert!(e.contains("runs its shading with raster here, not compute"), "{e}");
         let e = set(&gc, &[("kernel", Api::RayQuery)]).validate().unwrap_err();
-        assert!(e.contains("`kernel` (in `meshes`): `gpu-compute` runs its meshes with raster here, not rayquery"), "{e}");
+        // Primary rays as ray queries run on the ray-query caster, which draws no meshes.
+        assert!(e.contains("`meshes`: `gpu-rt` builds no meshes node"), "{e}");
         // A face drawer's shading: in the fragment shader for `raster`, else deferred compute.
         let r = Composition::new("gpu-raster");
         assert!(set(&r, &[("shading", Api::Raster)]).validate().is_ok());
@@ -351,7 +352,7 @@ mod tests {
         });
         assert!(!g.accept().unwrap().1);
         let e = with(cpu, &|g| own(g, "s", "hier", "refloor", &[("shading", "shadow")])).validate().unwrap_err();
-        assert!(e.contains("over the storage of its primary rays"), "{e}");
+        assert!(e.contains("`cpu` builds 1 storage node"), "{e}");
         // gpu-rt: its shading's rays free: a kernel node of their own over its
         // one acceleration structure.
         let g = with(Composition { shading: "pathtrace".into(), ..Composition::new("gpu-rt") }, &|g| {
@@ -712,11 +713,13 @@ mod tests {
         g.nodes.insert("pts".into(), Node::new(Role::Geometry, "points"));
         g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "pts")]));
         bind(&mut g, "shadow", "rq");
-        assert!(g.validate().unwrap_err().contains("builds no acceleration structure"));
+        let e = g.validate().unwrap_err();
+        assert!(e.contains("`pts`: `gpu-compute` builds geometry `greedy`, `naive`, `boxes`, not `points`"), "{e}");
         let mut g = of("gpu-rt");
         rq(&mut g, "geo2", "rq2");
         bind(&mut g, "shadow", "rq2");
-        assert!(g.validate().unwrap_err().contains("one acceleration structure per pipeline"));
+        let e = g.validate().unwrap_err();
+        assert!(e.contains("`gpu-rt` builds 1 geometry node"), "{e}");
         let mut g = of("gpu-raster");
         rq(&mut g, "geo2", "rq");
         g.nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), "rq".into());

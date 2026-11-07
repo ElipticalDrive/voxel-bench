@@ -172,7 +172,7 @@ compared against anything; their slowness is their own.
 |---|---|
 | Back end = device + API | Back ends are ten named executors, each a family of graph shapes (`gpu-compute`, `gpu-raster`, `gpu-rt`, `gpu-discover`, `gpu-splat`, `gpu-voxelspace`, `cpu`, `cpu-raster`, `cpu-discover`, `cpu-voxelspace`) derived from the graph. |
 | One generic executor per device walking the schedule | Two executor crates (GPU, CPU) pick a hard-coded *lane* from the visibility component: raycast, faces, splat, columns, discovery. Each lane fixes its own pass order, buffers and bind groups. |
-| Validity = types, cycles, implementations, composable regions | `Graph::check` applies rules 1–3 (types, cycles, an implementation on each node's device kind and API). `Graph::accept` then reduces the graph to a flat `Composition` skeleton and checks it against what a lane can run. Shapes no lane runs are refused. The node executors (`cpu`, `cpu-raster`, `cpu-voxelspace`, `gpu-compute`, `gpu-rt`) also declare the nodes they build (`graph::Builds`: per role the components, the device kind and how many; inputs read as one node) and refuse any other graph at creation with the reason; `accept` does not use that yet. |
+| Validity = types, cycles, implementations, composable regions | `Graph::check` applies rules 1–3 (types, cycles, an implementation on each node's device kind and API). The node executors (`cpu`, `cpu-raster`, `cpu-voxelspace`, `gpu-compute`, `gpu-rt`) declare the nodes they build (`graph::Builds`: per role the components, the device kind and how many; inputs read as one node), and `Graph::accept` takes their graphs exactly when they are valid and declared (plus the edge timings and the two-GPU split they run); the flat `Composition` is then only the nearest one, for labels and flat options. For the other back ends `accept` still reduces the graph to a flat `Composition` skeleton and checks it against what their lane runs. |
 | Editor allows any edge | The editor offers only choices whose resulting graph a lane accepts, fills inputs from presets, and drops nodes that no longer reach the image. |
 | Graph-driven program generator | `src/pipelines.rs` generates specialised crates, per lane. |
 
@@ -216,6 +216,9 @@ GPU the region submits through the transfer (records read back, written to the o
 shaded there) and that GPU completes the frame. The hit records are still a binding of the
 region's group 0, not a node output the executor owns, and the second GPU's shading is the
 region's remote part, not a node of an executor of its own.
+Step 4 has begun: for the node executors, `accept` is the validity rules plus the nodes each
+executor declares it builds; the skeleton remains for the other back ends, and the editor
+still re-fills or drops edges.
 
 ## Non-goals
 
