@@ -5,7 +5,7 @@
 //!   changed chunks on the CPU (view-independent: every exposed face), uploaded per chunk (the
 //!   schedule's transfer of the faces from the CPU to the GPU), culled per chunk and face
 //!   direction, drawn with multi-draw-indirect; with meshes (mesh mode) in the same depth buffer;
-//! - `gpu-discover`: discovery on the GPU ([`gpu`]): the sampler (`visibility` quadtree, with
+//! - `gpu-discover`: discovery on the GPU ([`gpu`], on the node executor): the sampler (`visibility` quadtree, with
 //!   hole detection `holes = coverage`) finds the faces the camera sees and keeps them in a
 //!   GPU hash set;
 //! - `cpu-discover`: discovery on the CPU ([`cpu`], on the node executor): the sampler (quadtree or cluster) over a
@@ -13,10 +13,10 @@
 //!   arrive `prev`.
 //!
 //! Which source runs is the graph's: meshing when the drawer's faces come from the `faces`
-//! visibility (every meshed face), else discovery on the visibility node's device (on the GPU
-//! the faces lane, [`Faces`]; on the CPU a region). The drawing ([`Draw`]) is every source's, over the executor's core: the
+//! visibility (every meshed face), else discovery on the visibility node's device; each a region
+//! of the node executor. The drawing ([`Draw`]) is every source's, over the executor's core: the
 //! face drawer compiled over the shared frame (the core's group 0: its camera uniform, shading
-//! state, acceleration structures; the source's two buffers at the lane's bindings) and the
+//! state, acceleration structures; the source's two buffers at the drawer's bindings) and the
 //! source's WGSL, the depth buffer.
 
 use glam::IVec3;
@@ -28,7 +28,7 @@ use mr_core::*;
 use mr_gpu::voxels::Shadows;
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
 
-use crate::{Core, CoreSpec, Lane, State};
+use crate::{Core, CoreSpec};
 
 pub(crate) mod cpu;
 pub(crate) mod gpu;
@@ -45,13 +45,9 @@ pub(crate) fn create(backend: &str, p: &InitParams, devices: &Devices, waker: Wa
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{backend}: no visibility node"))?;
     match g.devices[vis] {
         Device::Cpu => cpu::create(p, devices, waker, g, cpu_world),
-        Device::Gpu(_) => run(gpu::GpuSampler::new(p, devices, waker, g)?),
+        Device::Gpu(_) => gpu::create(p, devices, waker, g),
         Device::Server => unreachable!("checked graphs run only the world on the server"),
     }
-}
-
-fn run<S: FaceSource + 'static>((core, draw, source): (Core, Draw, S)) -> anyhow::Result<Box<dyn Renderer>> {
-    crate::run((core, Faces { draw, source }))
 }
 
 /// What the core and the drawer need of a face source's options.
@@ -380,63 +376,6 @@ impl Draw {
 
     fn memory_bytes(&self, core: &Core) -> u64 {
         self.drawer.memory_bytes() + core.width as u64 * core.height as u64 * 4
-    }
-}
-
-/// A discovery face source on the faces lane: what feeds the drawer's faces (the GPU sampler).
-trait FaceSource {
-    /// World changes before the GPU world applies them (the CPU world, event areas).
-    fn updating(&mut self, updates: &[WorldUpdate]);
-    /// Chunks the GPU world changed.
-    fn updated(&mut self, core: &Core, changed: &[IVec3]);
-    /// Meshes (mesh mode), for a source that draws them.
-    fn update_meshes(&mut self, _update: MeshUpdate) {}
-    fn render(&mut self, core: &mut Core, draw: &mut Draw, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()>;
-    /// Its knobs; `None` if `name` is not one.
-    fn set_param(&mut self, core: &mut Core, draw: &mut Draw, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>>;
-    fn resize(&mut self, core: &Core, draw: &Draw);
-    /// (CPU, GPU) bytes beyond the core's and the drawing's.
-    fn memory(&self, core: &Core) -> (u64, u64);
-}
-
-/// The drawing and one face source (static dispatch).
-struct Faces<S> {
-    draw: Draw,
-    source: S,
-}
-
-impl<S: FaceSource> State for Faces<S> {
-    fn updating(&mut self, updates: &[WorldUpdate]) {
-        self.source.updating(updates);
-    }
-
-    fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
-        self.source.updated(core, changed);
-        Ok(())
-    }
-
-    fn update_meshes(&mut self, update: MeshUpdate) {
-        self.source.update_meshes(update);
-    }
-
-    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        self.source.set_param(core, &mut self.draw, name, value).or_else(|| self.draw.set_param(core, name, value))
-    }
-
-    fn resize(&mut self, core: &Core) {
-        self.draw.resize(core);
-        self.source.resize(core, &self.draw);
-    }
-
-    fn memory(&self, core: &Core) -> (u64, u64) {
-        let (cpu, gpu) = self.source.memory(core);
-        (cpu, gpu + self.draw.memory_bytes(core))
-    }
-}
-
-impl<S: FaceSource> Lane for Faces<S> {
-    fn render(&mut self, core: &mut Core, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.source.render(core, &mut self.draw, req, sink)
     }
 }
 

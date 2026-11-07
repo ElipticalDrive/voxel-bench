@@ -189,7 +189,7 @@ impl Region for Columns {
         (self.hm.counters().into_iter().chain(core.accum.counter(req.mode)).collect(), None, Vec::new())
     }
 
-    fn finish(&mut self, _enc: &mut wgpu::CommandEncoder) {}
+    fn finish(&mut self, _: &Core, _: &mut wgpu::CommandEncoder, _: mr_gpu::Ticket) {}
 }
 
 /// The march (with `placement = inline` the shading fused into it).

@@ -463,7 +463,7 @@ impl<C: Cast> crate::exec::Region for Raycast<C> {
         (counters, legend, stages)
     }
 
-    fn finish(&mut self, enc: &mut wgpu::CommandEncoder) {
+    fn finish(&mut self, _: &Core, enc: &mut wgpu::CommandEncoder, _: Ticket) {
         self.cast.finish(enc);
     }
 

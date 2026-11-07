@@ -38,8 +38,8 @@ pub(crate) trait Region: State {
     fn setup(&mut self, core: &mut Core, req: &FrameRequest);
     /// The frame's counters, legend and CPU stage times.
     fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>);
-    /// Before the frame's submission (readbacks).
-    fn finish(&mut self, enc: &mut wgpu::CommandEncoder);
+    /// Before the frame's submission, after its nodes' passes (readbacks, diagnostics).
+    fn finish(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket);
     /// The frame's ticket on its ring (frames completing to `sink`).
     fn begin(&mut self, core: &mut Core, sink: &mut dyn FrameSink) -> anyhow::Result<Ticket> {
         core.ring.begin(&core.gpu, sink)
@@ -113,7 +113,7 @@ impl<R: Region> Lane for Nodes<R> {
         }
         let (counters, legend, stages) = self.region.stats(core, req);
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
-        self.region.finish(&mut enc);
+        self.region.finish(core, &mut enc, ticket);
         self.region.submit(core, enc, ticket, req, stats, sink)
     }
 }

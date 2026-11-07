@@ -51,7 +51,6 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Instant;
 
 use std::collections::HashMap;
 
@@ -69,7 +68,9 @@ use mr_gpu::voxels::{Shadows, hash3, shadows_param};
 use mr_gpu::{Gpu, wgpu};
 use serde::Deserialize;
 
-use super::{CoreOpts, Draw, FaceSource, SourceSpec};
+use super::{CoreOpts, Draw, SourceSpec};
+use crate::exec::{self, Cx, Node, Region};
+use crate::State as LaneState;
 use crate::Core;
 
 pub(crate) fn info() -> RendererInfo {
@@ -466,6 +467,34 @@ pub(crate) struct GpuSampler {
     list_cap: u32,
     frame: u32,
     rng: u64,
+    drawing: Draw,
+    /// This frame's state: its discovery settings, what its nodes did so far and its groups.
+    now: Frame,
+}
+
+/// What a frame's nodes share.
+#[derive(Default)]
+struct Frame {
+    /// A static frame: camera and world unchanged since the last discovery, so the last face
+    /// list is still complete; only drawing and shading run.
+    redraw: bool,
+    stored: bool,
+    opened: bool,
+    holed: bool,
+    discovered: bool,
+    drawn: bool,
+    parity: usize,
+    /// The lattice's jitter and its level-0 tiles.
+    off: (u32, u32),
+    cols: u32,
+    rows: u32,
+    levels: usize,
+    world: Option<wgpu::BindGroup>,
+    bound: Option<Bound>,
+    bind_disc: Option<wgpu::BindGroup>,
+    out: Option<wgpu::TextureView>,
+    /// This frame's counter/timestamp staging buffer.
+    stage: Option<usize>,
 }
 
 fn storage(gpu: &Gpu, label: &str, size: u64, extra: wgpu::BufferUsages) -> wgpu::Buffer {
@@ -528,7 +557,7 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
 }
 
 impl GpuSampler {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Draw, Self)> {
+    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
         let mut opts: Options = p.options()?;
         require(BACKEND, Slot::Visibility, &opts.visibility)?;
         require(BACKEND, Slot::Draw, &opts.draw)?;
@@ -868,11 +897,13 @@ impl GpuSampler {
             list_cap,
             frame: 0,
             rng: 0x9e3779b97f4a7c15,
+            drawing,
+            now: Frame::default(),
         };
-        Ok((core, drawing, s))
+        Ok((core, s))
     }
 
-    fn make_bind_disc(&self, core: &Core, drawing: &Draw) -> [wgpu::BindGroup; 2] {
+    fn make_bind_disc(&self, core: &Core) -> [wgpu::BindGroup; 2] {
         let s = &self.sized;
         [0usize, 1].map(|par| {
             let prev = 1 - par;
@@ -900,7 +931,7 @@ impl GpuSampler {
                 (17, res(&self.seen)),
                 (18, res(&s.need)),
                 (19, wgpu::BindingResource::TextureView(&s.idtex)),
-                (20, wgpu::BindingResource::TextureView(&drawing.depth)),
+                (20, wgpu::BindingResource::TextureView(&self.drawing.depth)),
                 (21, res(&s.changed_tiles)),
                 (22, res(&s.sky[par])),
                 (23, res(&s.sky[prev])),
@@ -1092,49 +1123,6 @@ impl GpuSampler {
         out
     }
 
-    /// Rasterises list `parity` into the output (depth pre-pass + equal-depth shading in lit
-    /// mode). `ts` = (begin, end) frame timestamps carried by these passes.
-    fn encode_shade(&self, core: &Core, drawing: &Draw, enc: &mut wgpu::CommandEncoder, parity: usize, world_bg: &wgpu::BindGroup, bound: &Bound, mode: RenderMode, ts: (bool, bool), ticket: mr_gpu::Ticket) {
-        let painter = self.opts.order == "painter";
-        let overdraw = view_code(&self.opts.view) == 4;
-        let sky = if overdraw { [0, 0, 0, 255] } else { core.sky() };
-        let clear = wgpu::Color { r: sky[0] as f64 / 255.0, g: sky[1] as f64 / 255.0, b: sky[2] as f64 / 255.0, a: 1.0 };
-        let out_view = core.output.create_view(&Default::default());
-        let prepass = drawing.depth_prepass && mode == RenderMode::Lit && !painter && !overdraw;
-        let merging = self.merging();
-        let draw_ofs = if merging { 108 * 4 } else { (72 + parity as u64 * 4) * 4 };
-        let bind_draw = if painter {
-            &self.bind_sorted
-        } else if merging {
-            &self.bind_merged
-        } else {
-            &self.bind_draw[parity]
-        };
-        let (st, more) = bound.split();
-        let frame = DrawFrame {
-            out: &out_view,
-            depth: &drawing.depth,
-            clear,
-            prepass,
-            keep_depth: self.opts.incremental,
-            binds: &[bind_draw, world_bg, st.expect("discovery rays walk a storage")],
-            more: &more,
-            mesh_verts: None,
-            ring: &core.ring,
-            ticket,
-            ts,
-            nodes: &drawing.draw_nodes,
-        };
-        let draw = |pass: &mut wgpu::RenderPass<'_>| pass.draw_indirect(&self.args, draw_ofs);
-        let main = match (overdraw, painter) {
-            (true, true) => Some(&self.pipe_over_paint),
-            (true, false) => Some(&self.pipe_over_depth),
-            (false, true) => Some(&self.pipe_paint),
-            (false, false) => None,
-        };
-        drawing.drawer.encode(&core.gpu, enc, &frame, &draw, None, main);
-    }
-
     /// `view = tiles | rays`: blends the diagnostic overlay over the output (`overdraw`:
     /// replaces the counts with their colours). `frame` is the
     /// discovery frame to show (0: nothing was discovered this frame).
@@ -1183,34 +1171,11 @@ impl GpuSampler {
         pass.draw(0..3, 0..1);
     }
 
-    /// Event-driven static frame: camera and world unchanged since the last discovery, so
-    /// the last face list is still complete. Only shading runs (lights may move).
-    fn render_static(&mut self, core: &mut Core, drawing: &Draw, req: &FrameRequest, sink: &mut dyn FrameSink, ticket: mr_gpu::Ticket, start: Instant) -> anyhow::Result<()> {
-        self.last_kind = FrameKind::Static;
-        self.kind_counts[FrameKind::Static as usize] += 1;
-        let parity = (self.frame & 1) as usize;
-        let c = &req.camera;
-        // Nothing is new in a static frame.
-        drawing.write_frame(core, c, req.mode, if view_code(&self.opts.view) == 5 { 2 } else { 0 }, IVec3::ZERO);
-        let world_bg = core.world.prepare(&core.gpu, c).clone();
-        let bound = Bound(core.storages.prepare(&core.gpu, &core.world).0.clone());
-        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
-        if core.build_accel(&mut enc, ticket, req) {
-            self.bind_faces(core, drawing);
-        }
-        self.encode_shade(core, drawing, &mut enc, parity, &world_bg, &bound, req.mode, (true, true), ticket);
-        let tile = self.opts.tile;
-        self.encode_overlay(core, &mut enc, ticket, 0, 0, 0, core.width.div_ceil(tile), core.height.div_ceil(tile));
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(core, req.mode), legend: self.legend(), stages: core.accel_stats().1 };
-        core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
-        core.ring.poll(&core.gpu, sink, false)
-    }
-
     /// The drawing's bind groups over the face lists (anew when the drawing's group changes).
-    fn bind_faces(&mut self, core: &Core, drawing: &Draw) {
-        self.bind_merged = drawing.bind(core, &self.merged, &self.cpos);
-        self.bind_sorted = drawing.bind(core, &self.sorted, &self.cpos);
-        self.bind_draw = [0, 1].map(|i| drawing.bind(core, &self.lists[i], &self.cpos));
+    fn bind_faces(&mut self, core: &Core) {
+        self.bind_merged = self.drawing.bind(core, &self.merged, &self.cpos);
+        self.bind_sorted = self.drawing.bind(core, &self.sorted, &self.cpos);
+        self.bind_draw = [0, 1].map(|i| self.drawing.bind(core, &self.lists[i], &self.cpos));
     }
 
     /// Row merge active (painter order sorts single faces, so it takes precedence).
@@ -1223,7 +1188,334 @@ impl GpuSampler {
     }
 }
 
-impl FaceSource for GpuSampler {
+impl GpuSampler {
+    /// Its own knobs; `None` if `name` is not one.
+    fn set_knob(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
+        match name {
+            "tile" => self.opts.tile = int(8),
+            "criterion" => self.opts.criterion = value.as_str().unwrap_or("plane").into(),
+            "sky_tile" => self.opts.sky_tile = int(4),
+            "keep_frames" => self.opts.keep_frames = int(8),
+            "max_footprint" => self.opts.max_footprint = int(128),
+            "strict" => self.opts.strict = value.as_bool().unwrap_or(true),
+            "inline_fp" => self.opts.inline_fp = int(8),
+            "morton" => self.opts.morton = value.as_bool().unwrap_or(true),
+            "closure_px" => self.opts.closure_px = int(2),
+            "closure_box" => self.opts.closure_box = int(2),
+            "block_faces" => self.opts.block_faces = value.as_bool().unwrap_or(true),
+            "jitter" => self.opts.jitter = value.as_bool().unwrap_or(true),
+            "holes" => {
+                self.opts.holes = value.as_str().unwrap_or("none").into();
+                match require(BACKEND, Slot::Holes, &self.opts.holes) {
+                    Ok(h) => self.opts.incremental = h == "coverage",
+                    Err(e) => return Some(Err(e)),
+                }
+                self.pending.clear();
+            }
+            "refresh" => self.opts.refresh = int(16),
+            "keep_unseen" => self.opts.keep_unseen = int(64),
+            "parallax_px" => self.opts.parallax_px = value.as_f64().unwrap_or(0.5) as f32,
+            "reveal_tiles" => self.opts.reveal_tiles = int(4),
+            "audit" => self.opts.audit = value.as_bool().unwrap_or(false),
+            "events" => self.opts.events = value.as_bool().unwrap_or(true),
+            "still_holes" => self.opts.still_holes = value.as_str().unwrap_or("now").into(),
+            // Drawing and display only: the face set is unaffected.
+            "merge" => self.opts.merge = value.as_str().unwrap_or("none").into(),
+            "order" => self.opts.order = value.as_str().unwrap_or("depth").into(),
+            "view" => self.opts.view = value.as_str().unwrap_or("image").into(),
+            "view_max" => self.opts.view_max = int(8).clamp(1, 255),
+            _ => return None,
+        }
+        // Any discovery setting can change what is discoverable: start over from a full frame.
+        if !matches!(name, "merge" | "order" | "view" | "view_max") {
+            self.force_full = true;
+        }
+        Some(Ok(()))
+    }
+
+    /// A timestamp `k` of the phase profile into this frame's slot (when it has one).
+    fn mark(&self, enc: &mut wgpu::CommandEncoder, k: u32) {
+        if let (Some(q), Some(i)) = (&self.profile, self.now.stage) {
+            let base = i as u32 * PROFILE_TS;
+            enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("ts"),
+                timestamp_writes: Some(wgpu::ComputePassTimestampWrites { query_set: q, beginning_of_pass_write_index: Some(base + k), end_of_pass_write_index: None }),
+            });
+        }
+    }
+
+    /// The frame's groups: world, storages, discovery's.
+    fn groups(&self) -> (&wgpu::BindGroup, &Bound, &wgpu::BindGroup) {
+        let f = &self.now;
+        (f.world.as_ref().expect("set up"), f.bound.as_ref().expect("stored"), f.bind_disc.as_ref().expect("set up"))
+    }
+
+    /// The storages' groups for discovery's and the shadow rays, after the acceleration
+    /// structures.
+    fn store(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        if std::mem::replace(&mut self.now.stored, true) {
+            return;
+        }
+        self.now.bound = Some(Bound(core.storages.prepare(&core.gpu, &core.world).0.clone()));
+        if core.build_accel(enc, ticket, req) {
+            self.bind_faces(core);
+        }
+    }
+
+    /// Discovery's start: an empty pass carrying the frame's begin timestamp (so the clears
+    /// are timed), its first stage, this frame's set cleared.
+    fn open(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        self.store(core, enc, ticket, req);
+        if self.now.redraw || std::mem::replace(&mut self.now.opened, true) {
+            return;
+        }
+        let parity = self.now.parity;
+        enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("frame begin"), timestamp_writes: core.ring.compute_timestamps(ticket, true, false) });
+        let first = if self.opts.incremental { ("holes", &self.holes_nodes) } else { ("discover", &self.vis_nodes) };
+        core.ring.stage(enc, ticket, first.0, first.1);
+        self.mark(enc, 0);
+        enc.clear_buffer(&self.stats, 0, None);
+        enc.clear_buffer(&self.keys[parity], 0, None);
+        enc.clear_buffer(&self.vals[parity], 0, None);
+        enc.clear_buffer(&self.lcount, parity as u64 * 4, Some(4));
+        enc.clear_buffer(&self.lcount, 8, Some(4));
+    }
+
+    /// The holes node: last frame's faces at this frame's camera (which faces are still seen,
+    /// and where the image is uncovered or may reveal something new); rotation and chunk
+    /// changes only (`still_holes = late`): the entering strip and changed chunks.
+    fn holes(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        self.open(core, enc, ticket, req);
+        if self.now.redraw || !self.opts.incremental || std::mem::replace(&mut self.now.holed, true) {
+            return;
+        }
+        let (world_bg, storage_bg, bind_disc) = self.groups();
+        let (parity, cols, rows) = (self.now.parity, self.now.cols, self.now.rows);
+        let kind = self.last_kind;
+        if kind == FrameKind::Still && self.opts.still_holes == "late" {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("still needs"), timestamp_writes: None });
+            pass.set_bind_group(0, bind_disc, &[0]);
+            pass.set_bind_group(1, world_bg, &[]);
+            storage_bg.compute(&mut pass);
+            pass.set_pipeline(&self.pipe_need_still);
+            pass.dispatch_workgroups((cols * rows).div_ceil(256), 1, 1);
+            return;
+        }
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("face ids"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.sized.idtex,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.drawing.depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipe_id);
+            pass.set_bind_group(0, &self.bind_draw[1 - parity], &[]);
+            pass.set_bind_group(1, world_bg, &[]);
+            storage_bg.render(&mut pass);
+            pass.draw_indirect(&self.args, (72 + (1 - parity as u64) * 4) * 4);
+        }
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("incremental needs"), timestamp_writes: None });
+        pass.set_bind_group(0, bind_disc, &[0]);
+        pass.set_bind_group(1, world_bg, &[]);
+        storage_bg.compute(&mut pass);
+        if kind != FrameKind::Still {
+            // Still frames count faces in view as seen in `survive` instead.
+            pass.set_pipeline(&self.pipe_mark);
+            let g = (core.width * core.height).div_ceil(256);
+            pass.dispatch_workgroups(g.min(32768), g.div_ceil(32768), 1);
+        }
+        pass.set_pipeline(&self.pipe_need_raw);
+        pass.dispatch_workgroups((cols * rows).div_ceil(256), 1, 1);
+        pass.set_pipeline(&self.pipe_need_final);
+        pass.dispatch_workgroups((cols * rows).div_ceil(256), 1, 1);
+    }
+
+    /// The visibility node: last frame's survivors, the quadtree's levels, the list's
+    /// arguments and the row merge.
+    fn discover(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        self.holes(core, enc, ticket, req);
+        if self.now.redraw || std::mem::replace(&mut self.now.discovered, true) {
+            return;
+        }
+        let (world_bg, storage_bg, bind_disc) = self.groups();
+        let (parity, cols, rows, levels) = (self.now.parity, self.now.cols, self.now.rows, self.now.levels);
+        let holes = self.opts.incremental as usize;
+        let lofs = |l: usize| (l as u64 * LEVEL_STRIDE) as u32;
+        let aofs = |w: u64| w * 4;
+        if self.opts.incremental {
+            core.ring.stage(enc, ticket, "discover", &self.vis_nodes);
+        }
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("survive"), timestamp_writes: None });
+            pass.set_bind_group(1, world_bg, &[]);
+            storage_bg.compute(&mut pass);
+            // Temporal survivors from last frame's list.
+            pass.set_pipeline(&self.pipe_survive[holes]);
+            pass.set_bind_group(0, bind_disc, &[lofs(0)]);
+            pass.dispatch_workgroups_indirect(&self.args, aofs(64 + (1 - parity as u64) * 4));
+        }
+        self.mark(enc, 1);
+        // Level-0 work items: the grid, or the Z-curve over its enclosing power-of-two square.
+        let morton = self.opts.morton;
+        let l0_items = |w: u32, h: u32| if morton { w.max(h).next_power_of_two().pow(2) } else { w * h };
+        for l in 0..levels {
+            {
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover rays"), timestamp_writes: None });
+                if l > 0 {
+                    pass.set_pipeline(&self.pipe_level_args);
+                    pass.set_bind_group(0, &self.bind_args, &[lofs(l)]);
+                    pass.dispatch_workgroups(1, 1, 1);
+                }
+                pass.set_bind_group(0, bind_disc, &[lofs(l)]);
+                pass.set_bind_group(1, world_bg, &[]);
+                storage_bg.compute(&mut pass);
+                pass.set_pipeline(&self.pipe_rays[holes]);
+                if l == 0 {
+                    pass.dispatch_workgroups(l0_items(cols + 1, rows + 1).div_ceil(256), 1, 1);
+                } else {
+                    pass.dispatch_workgroups_indirect(&self.args, aofs(l as u64 * 8));
+                }
+            }
+            self.mark(enc, 2 + 2 * l as u32);
+            {
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover classify"), timestamp_writes: None });
+                pass.set_bind_group(0, bind_disc, &[lofs(l)]);
+                pass.set_bind_group(1, world_bg, &[]);
+                storage_bg.compute(&mut pass);
+                pass.set_pipeline(&self.pipe_classify[holes]);
+                if l == 0 {
+                    pass.dispatch_workgroups(l0_items(cols, rows).div_ceil(256), 1, 1);
+                } else {
+                    pass.dispatch_workgroups_indirect(&self.args, aofs(l as u64 * 8 + 4));
+                }
+                pass.set_pipeline(&self.pipe_job_args);
+                pass.set_bind_group(0, &self.bind_args, &[lofs(l)]);
+                pass.dispatch_workgroups(1, 1, 1);
+                pass.set_pipeline(&self.pipe_footprint);
+                pass.set_bind_group(0, bind_disc, &[lofs(l)]);
+                pass.dispatch_workgroups_indirect(&self.args, aofs(80 + l as u64 * 4));
+            }
+            self.mark(enc, 3 + 2 * l as u32);
+        }
+        // Unused level slots still get written so every resolved query is available.
+        for l in levels..MAX_LEVELS {
+            self.mark(enc, 2 + 2 * l as u32);
+            self.mark(enc, 3 + 2 * l as u32);
+        }
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover finalize"), timestamp_writes: None });
+            pass.set_pipeline(&self.pipe_finalize);
+            pass.set_bind_group(0, &self.bind_args, &[lofs(0)]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        self.mark(enc, 2 + 2 * MAX_LEVELS as u32);
+        if self.merging() {
+            core.ring.stage(enc, ticket, "merge", &self.vis_nodes);
+            // Merge rows of faces into runs (timed with the raster).
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("row merge"), timestamp_writes: None });
+            pass.set_bind_group(0, bind_disc, &[lofs(0)]);
+            pass.set_bind_group(1, world_bg, &[]);
+            storage_bg.compute(&mut pass);
+            pass.set_pipeline(&self.pipe_merge);
+            pass.dispatch_workgroups_indirect(&self.args, aofs(64 + parity as u64 * 4));
+            pass.set_pipeline(&self.pipe_merge_args);
+            pass.set_bind_group(0, &self.bind_args, &[lofs(0)]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+    }
+
+    /// The drawer's passes over list `parity` (depth pre-pass + equal-depth shading in lit
+    /// mode); a static frame's carry the frame's begin timestamp too.
+    fn encode(&self, core: &Core, ticket: mr_gpu::Ticket, req: &FrameRequest, pass: impl FnOnce(&DrawFrame, &dyn Fn(&mut wgpu::RenderPass<'_>), Option<&wgpu::RenderPipeline>)) {
+        let f = &self.now;
+        let painter = self.opts.order == "painter";
+        let overdraw = view_code(&self.opts.view) == 4;
+        let sky = if overdraw { [0, 0, 0, 255] } else { core.sky() };
+        let clear = wgpu::Color { r: sky[0] as f64 / 255.0, g: sky[1] as f64 / 255.0, b: sky[2] as f64 / 255.0, a: 1.0 };
+        let merging = self.merging();
+        let draw_ofs = if merging { 108 * 4 } else { (72 + f.parity as u64 * 4) * 4 };
+        let bind_draw = if painter {
+            &self.bind_sorted
+        } else if merging {
+            &self.bind_merged
+        } else {
+            &self.bind_draw[f.parity]
+        };
+        let (st, more) = f.bound.as_ref().expect("stored").split();
+        let frame = DrawFrame {
+            out: f.out.as_ref().expect("set up"),
+            depth: &self.drawing.depth,
+            clear,
+            prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit && !painter && !overdraw,
+            keep_depth: self.opts.incremental,
+            binds: &[bind_draw, f.world.as_ref().expect("set up"), st.expect("discovery rays walk a storage")],
+            more: &more,
+            mesh_verts: None,
+            ring: &core.ring,
+            ticket,
+            ts: (f.redraw, true),
+            nodes: &self.drawing.draw_nodes,
+        };
+        let draw = |pass: &mut wgpu::RenderPass<'_>| pass.draw_indirect(&self.args, draw_ofs);
+        let main = match (overdraw, painter) {
+            (true, true) => Some(&self.pipe_over_paint),
+            (true, false) => Some(&self.pipe_over_depth),
+            (false, true) => Some(&self.pipe_paint),
+            (false, false) => None,
+        };
+        pass(&frame, &draw, main);
+    }
+
+    /// The draw node: painter order's sort (far to near), then one instanced quad per face of
+    /// the list (indirect), shaded in the fragments when forward.
+    fn draw(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        self.discover(core, enc, ticket, req);
+        if std::mem::replace(&mut self.now.drawn, true) {
+            return;
+        }
+        if !self.now.redraw && self.opts.order == "painter" {
+            // Sort the list back to front (timed with the raster).
+            let (world_bg, storage_bg, bind_disc) = self.groups();
+            let aofs = 4 * (64 + self.now.parity as u64 * 4);
+            core.ring.stage(enc, ticket, "sort", &self.draw_ids);
+            enc.clear_buffer(&self.hist, 0, None);
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("painter sort"), timestamp_writes: None });
+            pass.set_bind_group(0, bind_disc, &[0]);
+            pass.set_bind_group(1, world_bg, &[]);
+            storage_bg.compute(&mut pass);
+            pass.set_pipeline(&self.pipe_sort_hist);
+            pass.dispatch_workgroups_indirect(&self.args, aofs);
+            pass.set_pipeline(&self.pipe_sort_scan);
+            pass.dispatch_workgroups(1, 1, 1);
+            pass.set_pipeline(&self.pipe_sort_scatter);
+            pass.dispatch_workgroups_indirect(&self.args, aofs);
+        }
+        self.encode(core, ticket, req, |f, draw, main| self.drawing.drawer.encode_draw(enc, f, draw, None, main));
+    }
+
+    /// The shading node: the deferred drawers' pass over the ids or records.
+    fn shade(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+        self.draw(core, enc, ticket, req);
+        self.encode(core, ticket, req, |f, _, _| self.drawing.drawer.encode_shade(&core.gpu, enc, f, false));
+        if !self.now.redraw {
+            self.mark(enc, 3 + 2 * MAX_LEVELS as u32);
+        }
+    }
+}
+
+impl LaneState for GpuSampler {
     fn updating(&mut self, updates: &[WorldUpdate]) {
         if self.opts.incremental {
             // Event areas for the next frame: edited blocks exactly, chunk loads whole.
@@ -1237,19 +1529,43 @@ impl FaceSource for GpuSampler {
         }
     }
 
-    fn updated(&mut self, core: &Core, changed: &[IVec3]) {
+    fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
         self.update_slots(core, changed);
+        Ok(())
     }
 
-    fn render(&mut self, core: &mut Core, drawing: &mut Draw, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        let forward = !drawing.drawer.mode().deferred();
-        if !forward && (self.opts.order == "painter" || view_code(&self.opts.view) == 4) {
+    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        self.set_knob(name, value).or_else(|| self.drawing.set_param(core, name, value))
+    }
+
+    fn resize(&mut self, core: &Core) {
+        self.drawing.resize(core);
+        self.sized = make_sized(&core.gpu, core.width, core.height);
+        self.bind_faces(core);
+        self.bind_disc = None;
+        self.bind_ov = None;
+        self.force_full = true;
+    }
+
+    fn memory(&self, core: &Core) -> (u64, u64) {
+        let s = &self.sized;
+        let set = (self.keys[0].size() + self.vals[0].size() + self.lists[0].size()) * 2 + self.jobs.size() + self.seen.size() + s.changed_tiles.size() + s.need.size() + core.width as u64 * core.height as u64 * 4;
+        (0, set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size() + self.drawing.memory_bytes(core))
+    }
+}
+
+impl Region for GpuSampler {
+    fn compile(&mut self, _: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
+        if self.drawing.drawer.mode().deferred() && (self.opts.order == "painter" || view_code(&self.opts.view) == 4) {
             anyhow::bail!("order = painter and view = overdraw need draw = raster (both draw forward)");
         }
-        drawing.check_state(req.mode, Some(self.opts.order == "painter"))?;
+        self.drawing.check_state(req.mode, Some(self.opts.order == "painter"))
+    }
+
+    /// The frame's discovery settings (its kind: static when nothing that affects visibility
+    /// changed, else still, moving or full), camera and world.
+    fn setup(&mut self, core: &mut Core, req: &FrameRequest) {
         core.accum.begin(&core.gpu, &req.camera, req.mode);
-        let ticket = core.ring.begin(&core.gpu, sink)?;
-        let start = Instant::now();
         self.harvest();
         self.upload_slots(core);
         let events = self.opts.incremental && self.opts.events;
@@ -1258,8 +1574,16 @@ impl FaceSource for GpuSampler {
         let same_pos = self.prev_pos == Some(c.position);
         let same_rot = self.prev_cam.is_some_and(|p| p == (c.forward().to_array(), c.right().to_array(), c.up().to_array(), tan_now));
         if events && same_pos && same_rot && self.pending.is_empty() && !self.force_full && self.frame > 0 {
-            // Nothing that affects visibility changed: redraw the last face list.
-            return self.render_static(core, drawing, req, sink, ticket, start);
+            // Nothing that affects visibility changed: redraw the last face list (only
+            // shading runs: lights may move).
+            self.last_kind = FrameKind::Static;
+            self.kind_counts[FrameKind::Static as usize] += 1;
+            // Nothing is new in a static frame.
+            self.drawing.write_frame(core, c, req.mode, if view_code(&self.opts.view) == 5 { 2 } else { 0 }, IVec3::ZERO);
+            let tile = self.opts.tile;
+            let world = Some(core.world.prepare(&core.gpu, c).clone());
+            self.now = Frame { redraw: true, parity: (self.frame & 1) as usize, cols: core.width.div_ceil(tile), rows: core.height.div_ceil(tile), world, out: Some(core.output.create_view(&Default::default())), ..Frame::default() };
+            return;
         }
         self.frame = self.frame.wrapping_add(1).max(1);
         let parity = (self.frame & 1) as usize;
@@ -1390,214 +1714,68 @@ impl FaceSource for GpuSampler {
             5 => 2,
             _ => 0,
         };
-        drawing.write_frame(core, c, req.mode, view, IVec3::ZERO);
-        let world_bg = core.world.prepare(&core.gpu, c).clone();
-        let storage_bg = Bound(core.storages.prepare(&core.gpu, &core.world).0.clone());
+        self.drawing.write_frame(core, c, req.mode, view, IVec3::ZERO);
+        let world = core.world.prepare(&core.gpu, c).clone();
         if self.bind_disc.is_none() {
-            self.bind_disc = Some(self.make_bind_disc(core, drawing));
+            self.bind_disc = Some(self.make_bind_disc(core));
         }
         let bind_disc = self.bind_disc.as_ref().unwrap()[parity].clone();
-        let holes = self.opts.incremental as usize;
-
-        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
-        if core.build_accel(&mut enc, ticket, req) {
-            self.bind_faces(core, drawing);
-        }
         // Counter/timestamp staging buffer for this frame (if one is free).
         let stage = self.stages.iter().position(|s| s.state.load(Ordering::SeqCst) == 0);
-        let qs = self.profile.as_ref().zip(stage).map(|(q, i)| (q, i as u32 * PROFILE_TS));
-        let mark = |enc: &mut wgpu::CommandEncoder, k: u32| {
-            if let Some((q, base)) = qs {
-                enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("ts"),
-                    timestamp_writes: Some(wgpu::ComputePassTimestampWrites { query_set: q, beginning_of_pass_write_index: Some(base + k), end_of_pass_write_index: None }),
-                });
-            }
+        self.now = Frame {
+            parity,
+            off: (off_x, off_y),
+            cols,
+            rows,
+            levels,
+            world: Some(world),
+            bind_disc: Some(bind_disc),
+            out: Some(core.output.create_view(&Default::default())),
+            stage,
+            ..Frame::default()
         };
-        // Empty pass carrying the frame's begin timestamp, so the clears below are timed.
-        enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("frame begin"), timestamp_writes: core.ring.compute_timestamps(ticket, true, false) });
-        let first = if self.opts.incremental { ("holes", &self.holes_nodes) } else { ("discover", &self.vis_nodes) };
-        core.ring.stage(&mut enc, ticket, first.0, first.1);
-        mark(&mut enc, 0);
-        enc.clear_buffer(&self.stats, 0, None);
-        enc.clear_buffer(&self.keys[parity], 0, None);
-        enc.clear_buffer(&self.vals[parity], 0, None);
-        enc.clear_buffer(&self.lcount, parity as u64 * 4, Some(4));
-        enc.clear_buffer(&self.lcount, 8, Some(4));
-        let lofs = |l: usize| (l as u64 * LEVEL_STRIDE) as u32;
-        let aofs = |w: u64| w * 4;
-        let late = self.opts.still_holes == "late";
-        if self.opts.incremental && kind == FrameKind::Still && late {
-            // Rotation / chunk changes only: the entering strip and changed chunks.
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("still needs"), timestamp_writes: None });
-            pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
-            pass.set_bind_group(1, &world_bg, &[]);
-            storage_bg.compute(&mut pass);
-            pass.set_pipeline(&self.pipe_need_still);
-            pass.dispatch_workgroups((cols * rows).div_ceil(256), 1, 1);
-        } else if self.opts.incremental {
-            // Last frame's faces at this frame's camera: which faces are still seen, and where
-            // the image is uncovered or may reveal something new.
-            {
-                let id_view = &self.sized.idtex;
-                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("face ids"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: id_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &drawing.depth,
-                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
-                        stencil_ops: None,
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(&self.pipe_id);
-                pass.set_bind_group(0, &self.bind_draw[1 - parity], &[]);
-                pass.set_bind_group(1, &world_bg, &[]);
-                storage_bg.render(&mut pass);
-                pass.draw_indirect(&self.args, aofs(72 + (1 - parity as u64) * 4));
-            }
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("incremental needs"), timestamp_writes: None });
-            pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
-            pass.set_bind_group(1, &world_bg, &[]);
-            storage_bg.compute(&mut pass);
-            if kind != FrameKind::Still {
-                // Still frames count faces in view as seen in `survive` instead.
-                pass.set_pipeline(&self.pipe_mark);
+    }
+
+    fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
+        (self.counters(core, req.mode), self.legend(), core.accel_stats().1)
+    }
+
+    /// After the timed passes: hole detection's sky mask (from this frame's drawing, for the
+    /// next), the diagnostic overlay, the audit (so it does not inflate gpu_ms) and the
+    /// counters' copy into the staging buffer.
+    fn finish(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket) {
+        let Frame { redraw, parity, off, cols, rows, stage, .. } = self.now;
+        let (width, height) = (core.width, core.height);
+        if !redraw {
+            let (world_bg, storage_bg, bind_disc) = self.groups();
+            let pixels = |pass: &mut wgpu::ComputePass<'_>, pipe: &wgpu::ComputePipeline| {
+                pass.set_pipeline(pipe);
+                pass.set_bind_group(0, bind_disc, &[0]);
+                pass.set_bind_group(1, world_bg, &[]);
+                storage_bg.compute(pass);
                 let g = (width * height).div_ceil(256);
                 pass.dispatch_workgroups(g.min(32768), g.div_ceil(32768), 1);
+            };
+            if self.opts.incremental {
+                core.ring.stage(enc, ticket, "sky mask", &self.holes_nodes);
+                pixels(&mut enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sky mask"), timestamp_writes: None }), &self.pipe_sky);
             }
-            pass.set_pipeline(&self.pipe_need_raw);
-            pass.dispatch_workgroups((cols * rows).div_ceil(256), 1, 1);
-            pass.set_pipeline(&self.pipe_need_final);
-            pass.dispatch_workgroups((cols * rows).div_ceil(256), 1, 1);
         }
-        if self.opts.incremental {
-            core.ring.stage(&mut enc, ticket, "discover", &self.vis_nodes);
+        self.encode_overlay(core, enc, ticket, if redraw { 0 } else { self.frame }, off.0, off.1, cols, rows);
+        if redraw {
+            return;
         }
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("survive"), timestamp_writes: None });
-            pass.set_bind_group(1, &world_bg, &[]);
-            storage_bg.compute(&mut pass);
-            // Temporal survivors from last frame's list.
-            pass.set_pipeline(&self.pipe_survive[holes]);
-            pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
-            pass.dispatch_workgroups_indirect(&self.args, aofs(64 + (1 - parity as u64) * 4));
-        }
-        mark(&mut enc, 1);
-        // Level-0 work items: the grid, or the Z-curve over its enclosing power-of-two square.
-        let morton = self.opts.morton;
-        let l0_items = |w: u32, h: u32| if morton { w.max(h).next_power_of_two().pow(2) } else { w * h };
-        for l in 0..levels {
-            {
-                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover rays"), timestamp_writes: None });
-                if l > 0 {
-                    pass.set_pipeline(&self.pipe_level_args);
-                    pass.set_bind_group(0, &self.bind_args, &[lofs(l)]);
-                    pass.dispatch_workgroups(1, 1, 1);
-                }
-                pass.set_bind_group(0, &bind_disc, &[lofs(l)]);
-                pass.set_bind_group(1, &world_bg, &[]);
-            storage_bg.compute(&mut pass);
-                pass.set_pipeline(&self.pipe_rays[holes]);
-                if l == 0 {
-                    pass.dispatch_workgroups(l0_items(cols + 1, rows + 1).div_ceil(256), 1, 1);
-                } else {
-                    pass.dispatch_workgroups_indirect(&self.args, aofs(l as u64 * 8));
-                }
-            }
-            mark(&mut enc, 2 + 2 * l as u32);
-            {
-                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover classify"), timestamp_writes: None });
-                pass.set_bind_group(0, &bind_disc, &[lofs(l)]);
-                pass.set_bind_group(1, &world_bg, &[]);
-            storage_bg.compute(&mut pass);
-                pass.set_pipeline(&self.pipe_classify[holes]);
-                if l == 0 {
-                    pass.dispatch_workgroups(l0_items(cols, rows).div_ceil(256), 1, 1);
-                } else {
-                    pass.dispatch_workgroups_indirect(&self.args, aofs(l as u64 * 8 + 4));
-                }
-                pass.set_pipeline(&self.pipe_job_args);
-                pass.set_bind_group(0, &self.bind_args, &[lofs(l)]);
-                pass.dispatch_workgroups(1, 1, 1);
-                pass.set_pipeline(&self.pipe_footprint);
-                pass.set_bind_group(0, &bind_disc, &[lofs(l)]);
-                pass.dispatch_workgroups_indirect(&self.args, aofs(80 + l as u64 * 4));
-            }
-            mark(&mut enc, 3 + 2 * l as u32);
-        }
-        // Unused level slots still get written so every resolved query is available.
-        for l in levels..MAX_LEVELS {
-            mark(&mut enc, 2 + 2 * l as u32);
-            mark(&mut enc, 3 + 2 * l as u32);
-        }
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover finalize"), timestamp_writes: None });
-            pass.set_pipeline(&self.pipe_finalize);
-            pass.set_bind_group(0, &self.bind_args, &[lofs(0)]);
-            pass.dispatch_workgroups(1, 1, 1);
-        }
-        mark(&mut enc, 2 + 2 * MAX_LEVELS as u32);
-        if self.merging() {
-            core.ring.stage(&mut enc, ticket, "merge", &self.vis_nodes);
-            // Merge rows of faces into runs (timed with the raster).
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("row merge"), timestamp_writes: None });
-            pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
-            pass.set_bind_group(1, &world_bg, &[]);
-            storage_bg.compute(&mut pass);
-            pass.set_pipeline(&self.pipe_merge);
-            pass.dispatch_workgroups_indirect(&self.args, aofs(64 + parity as u64 * 4));
-            pass.set_pipeline(&self.pipe_merge_args);
-            pass.set_bind_group(0, &self.bind_args, &[lofs(0)]);
-            pass.dispatch_workgroups(1, 1, 1);
-        }
-        if self.opts.order == "painter" {
-            // Sort the list back to front (timed with the raster).
-            core.ring.stage(&mut enc, ticket, "sort", &self.draw_ids);
-            enc.clear_buffer(&self.hist, 0, None);
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("painter sort"), timestamp_writes: None });
-            pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
-            pass.set_bind_group(1, &world_bg, &[]);
-            storage_bg.compute(&mut pass);
-            pass.set_pipeline(&self.pipe_sort_hist);
-            pass.dispatch_workgroups_indirect(&self.args, aofs(64 + parity as u64 * 4));
-            pass.set_pipeline(&self.pipe_sort_scan);
-            pass.dispatch_workgroups(1, 1, 1);
-            pass.set_pipeline(&self.pipe_sort_scatter);
-            pass.dispatch_workgroups_indirect(&self.args, aofs(64 + parity as u64 * 4));
-        }
-        self.encode_shade(core, drawing, &mut enc, parity, &world_bg, &storage_bg, req.mode, (false, true), ticket);
-        mark(&mut enc, 3 + 2 * MAX_LEVELS as u32);
-        if self.opts.incremental {
-            core.ring.stage(&mut enc, ticket, "sky mask", &self.holes_nodes);
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sky mask"), timestamp_writes: None });
-            pass.set_pipeline(&self.pipe_sky);
-            pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
-            pass.set_bind_group(1, &world_bg, &[]);
-            storage_bg.compute(&mut pass);
-            let g = (width * height).div_ceil(256);
-            pass.dispatch_workgroups(g.min(32768), g.div_ceil(32768), 1);
-        }
-        self.encode_overlay(core, &mut enc, ticket, self.frame, off_x, off_y, cols, rows);
-        // Audit runs after the timed passes so it does not inflate gpu_ms.
         if self.opts.audit {
-            core.ring.stage(&mut enc, ticket, "audit", &[]);
+            let (world_bg, storage_bg, bind_disc) = self.groups();
+            core.ring.stage(enc, ticket, "audit", &[]);
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover audit"), timestamp_writes: None });
             pass.set_pipeline(&self.pipe_audit);
-            pass.set_bind_group(0, &bind_disc, &[lofs(0)]);
-            pass.set_bind_group(1, &world_bg, &[]);
+            pass.set_bind_group(0, bind_disc, &[0]);
+            pass.set_bind_group(1, world_bg, &[]);
             storage_bg.compute(&mut pass);
             let g = (width * height).div_ceil(256);
             pass.dispatch_workgroups(g.min(32768), g.div_ceil(32768), 1);
         }
-        // Counters: copy into the staging buffer; mapped asynchronously.
         if let Some(i) = stage {
             let b = &self.stages[i].buf;
             enc.copy_buffer_to_buffer(&self.stats, 0, b, 0, STATS_WORDS * 4);
@@ -1609,9 +1787,12 @@ impl FaceSource for GpuSampler {
             }
             self.stages[i].tag = (self.frame, parity as u32);
         }
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: self.counters(core, req.mode), legend: self.legend(), stages: core.accel_stats().1 };
+    }
+
+    /// Submits the frame, then maps its counters asynchronously.
+    fn submit(&mut self, core: &mut Core, enc: wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest, stats: FrameStats, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
-        if let Some(i) = stage {
+        if let Some(i) = self.now.stage {
             let st = &self.stages[i];
             st.state.store(1, Ordering::SeqCst);
             let flag = st.state.clone();
@@ -1619,64 +1800,65 @@ impl FaceSource for GpuSampler {
         }
         core.ring.poll(&core.gpu, sink, false)
     }
+}
 
-    fn set_param(&mut self, _: &mut Core, _: &mut Draw, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
-        match name {
-            "tile" => self.opts.tile = int(8),
-            "criterion" => self.opts.criterion = value.as_str().unwrap_or("plane").into(),
-            "sky_tile" => self.opts.sky_tile = int(4),
-            "keep_frames" => self.opts.keep_frames = int(8),
-            "max_footprint" => self.opts.max_footprint = int(128),
-            "strict" => self.opts.strict = value.as_bool().unwrap_or(true),
-            "inline_fp" => self.opts.inline_fp = int(8),
-            "morton" => self.opts.morton = value.as_bool().unwrap_or(true),
-            "closure_px" => self.opts.closure_px = int(2),
-            "closure_box" => self.opts.closure_box = int(2),
-            "block_faces" => self.opts.block_faces = value.as_bool().unwrap_or(true),
-            "jitter" => self.opts.jitter = value.as_bool().unwrap_or(true),
-            "holes" => {
-                self.opts.holes = value.as_str().unwrap_or("none").into();
-                match require(BACKEND, Slot::Holes, &self.opts.holes) {
-                    Ok(h) => self.opts.incremental = h == "coverage",
-                    Err(e) => return Some(Err(e)),
-                }
-                self.pending.clear();
-            }
-            "refresh" => self.opts.refresh = int(16),
-            "keep_unseen" => self.opts.keep_unseen = int(64),
-            "parallax_px" => self.opts.parallax_px = value.as_f64().unwrap_or(0.5) as f32,
-            "reveal_tiles" => self.opts.reveal_tiles = int(4),
-            "audit" => self.opts.audit = value.as_bool().unwrap_or(false),
-            "events" => self.opts.events = value.as_bool().unwrap_or(true),
-            "still_holes" => self.opts.still_holes = value.as_str().unwrap_or("now").into(),
-            // Drawing and display only: the face set is unaffected.
-            "merge" => self.opts.merge = value.as_str().unwrap_or("none").into(),
-            "order" => self.opts.order = value.as_str().unwrap_or("depth").into(),
-            "view" => self.opts.view = value.as_str().unwrap_or("image").into(),
-            "view_max" => self.opts.view_max = int(8).clamp(1, 255),
+/// The storages discovery's and the shadow rays walk (after the acceleration structures).
+struct Storage;
+/// Hole detection: where last frame's faces leave the image uncovered.
+struct Holes;
+/// Discovery: the quadtree's passes into this frame's face set and list.
+struct Visibility;
+/// The face drawer's draw passes over the list.
+struct DrawFaces;
+/// The deferred drawers' shading pass.
+struct Shading;
+
+impl Node<GpuSampler> for Storage {
+    fn run(&mut self, cx: &mut Cx<GpuSampler>) {
+        cx.region.store(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+impl Node<GpuSampler> for Holes {
+    fn run(&mut self, cx: &mut Cx<GpuSampler>) {
+        cx.region.holes(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+impl Node<GpuSampler> for Visibility {
+    fn run(&mut self, cx: &mut Cx<GpuSampler>) {
+        cx.region.discover(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+impl Node<GpuSampler> for DrawFaces {
+    fn run(&mut self, cx: &mut Cx<GpuSampler>) {
+        cx.region.draw(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+impl Node<GpuSampler> for Shading {
+    fn run(&mut self, cx: &mut Cx<GpuSampler>) {
+        cx.region.shade(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+/// The GPU discovery executor for `g`: storages, hole detection, discovery, drawing and
+/// shading as nodes, each running what it reads first (the drawer's faces iterate through
+/// hole detection and discovery: last frame's list, then this frame's).
+pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    let passes = exec::passes(g, |role| -> Option<Box<dyn Node<GpuSampler>>> {
+        Some(match role {
+            Role::Storage => Box::new(Storage),
+            Role::Holes => Box::new(Holes),
+            Role::Visibility => Box::new(Visibility),
+            Role::Draw => Box::new(DrawFaces),
+            Role::Shading => Box::new(Shading),
             _ => return None,
-        }
-        // Any discovery setting can change what is discoverable: start over from a full frame.
-        if !matches!(name, "merge" | "order" | "view" | "view_max") {
-            self.force_full = true;
-        }
-        Some(Ok(()))
-    }
-
-    fn resize(&mut self, core: &Core, drawing: &Draw) {
-        self.sized = make_sized(&core.gpu, core.width, core.height);
-        self.bind_faces(core, drawing);
-        self.bind_disc = None;
-        self.bind_ov = None;
-        self.force_full = true;
-    }
-
-    fn memory(&self, core: &Core) -> (u64, u64) {
-        let s = &self.sized;
-        let set = (self.keys[0].size() + self.vals[0].size() + self.lists[0].size()) * 2 + self.jobs.size() + self.seen.size() + s.changed_tiles.size() + s.need.size() + core.width as u64 * core.height as u64 * 4;
-        (0, set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size())
-    }
+        })
+    })?;
+    let (core, region) = GpuSampler::new(p, devices, waker, g)?;
+    crate::run((core, exec::Nodes::new(region, passes)))
 }
 
 /// Screen rectangle, in level-0 tiles, of the world box `[min, min + size)`: `Some(None)`

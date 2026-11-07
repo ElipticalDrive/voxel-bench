@@ -592,7 +592,7 @@ impl Region for CpuSampler {
         (counters, f.legend.clone(), stages)
     }
 
-    fn finish(&mut self, _enc: &mut wgpu::CommandEncoder) {}
+    fn finish(&mut self, _: &Core, _: &mut wgpu::CommandEncoder, _: mr_gpu::Ticket) {}
 }
 
 /// The storages the shadow rays walk (after the acceleration structures).

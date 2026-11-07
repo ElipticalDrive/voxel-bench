@@ -248,7 +248,7 @@ impl Region for Splat {
         (counters, None, stages)
     }
 
-    fn finish(&mut self, _enc: &mut wgpu::CommandEncoder) {}
+    fn finish(&mut self, _: &Core, _: &mut wgpu::CommandEncoder, _: mr_gpu::Ticket) {}
 }
 
 /// The splat passes (after the shadow rays' acceleration structures): clear, then the small

@@ -708,7 +708,7 @@ impl Region for Meshing {
         (counters, None, stages)
     }
 
-    fn finish(&mut self, _enc: &mut wgpu::CommandEncoder) {}
+    fn finish(&mut self, _: &Core, _: &mut wgpu::CommandEncoder, _: mr_gpu::Ticket) {}
 }
 
 /// Visibility `faces`: the CPU culling into the indirect draws.

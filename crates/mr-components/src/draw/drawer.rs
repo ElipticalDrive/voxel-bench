@@ -268,25 +268,12 @@ impl FaceDrawer {
         Ok(pipes)
     }
 
-    /// Encodes the frame's face passes. `draw` issues the face draws into a pass whose
-    /// pipeline and groups are set; `extra` draws more into the same depth (gpu-raster's
-    /// meshes: in each forward pass, into the ids or records when deferred); `main` replaces the
-    /// forward main pipeline (gpu-discover's painter order and overdraw view; no prepass).
-    pub fn encode(
-        &self,
-        gpu: &Gpu,
-        enc: &mut wgpu::CommandEncoder,
-        f: &DrawFrame,
-        draw: &dyn Fn(&mut wgpu::RenderPass<'_>),
-        extra: Option<&dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass)>,
-        main: Option<&wgpu::RenderPipeline>,
-    ) {
-        self.encode_draw(enc, f, draw, extra, main);
-        self.encode_shade(gpu, enc, f, extra.is_some());
-    }
-
-    /// The draw node's passes of [`encode`](Self::encode): forward, drawing and shading the
-    /// faces (shading fused into the fragments); deferred, their ids or records.
+    /// The frame's draw passes (the draw node's): `draw` issues the face draws into a pass
+    /// whose pipeline and groups are set; `extra` draws more into the same depth (gpu-raster's
+    /// meshes: in each forward pass, into the ids or records when deferred); `main` replaces
+    /// the forward main pipeline (gpu-discover's painter order and overdraw view; no prepass).
+    /// Forward, drawing and shading the faces (shading fused into the fragments); deferred,
+    /// their ids or records.
     pub fn encode_draw(
         &self,
         enc: &mut wgpu::CommandEncoder,
@@ -371,7 +358,7 @@ impl FaceDrawer {
         }
     }
 
-    /// The shading node's pass of [`encode`](Self::encode): deferred, shading the ids or
+    /// The shading node's pass (after [`encode_draw`](Self::encode_draw)): deferred, shading the ids or
     /// records (`meshes`: with the meshes drawn into them); nothing when forward.
     pub fn encode_shade(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, f: &DrawFrame, meshes: bool) {
         match &self.pipes {

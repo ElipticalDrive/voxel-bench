@@ -224,7 +224,10 @@ drawing (the faces are meshed on the CPU and uploaded before the frame; culling,
 the meshes, the drawer's draw passes and the deferred shading pass are nodes; a forward drawer
 shades in its draw pass), and so does CPU discovery's (the discovery on the CPU and the records'
 upload run before the frame; the storages, the draw passes and the deferred shading pass are
-nodes). GPU discovery still runs as the faces lane.
+nodes), and so does GPU discovery (the frame's discovery settings are the region's before the
+frame; the storages, hole detection, the quadtree's passes, the draw passes and the deferred
+shading pass are nodes, the drawer's faces iterating through hole detection and discovery; the
+sky mask, the diagnostic overlay, the audit and the counters' readback follow the passes).
 Step 4 has begun: for the node executors, `accept` is the validity rules plus the nodes each
 executor declares it builds, and the editor edits their graphs exactly, drafts included; the
 skeleton (and the editor's filling in and pruning) remains for the other back ends.
