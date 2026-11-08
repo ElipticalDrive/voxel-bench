@@ -48,27 +48,53 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
+/// The preset's own knobs (the nodes' are read from the graph).
+#[derive(Deserialize, Default)]
+#[serde(default)]
 struct Options {
+    threads: usize,
+}
+
+/// A geometry node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct GeometryKnobs {
+    cull: bool,
+}
+
+impl Default for GeometryKnobs {
+    fn default() -> Self {
+        Self { cull: true }
+    }
+}
+
+/// The draw node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct DrawKnobs {
     /// Tile width in pixels.
     tile_width: u32,
     /// Band height in pixels (bands are the unit of parallelism).
     band_height: u32,
-    threads: usize,
-    shadows: Shadows,
-    geometry: String,
-    visibility: String,
-    draw: String,
-    shading: String,
-    placement: String,
-    merge: String,
-    cull: bool,
 }
 
-impl Default for Options {
+impl Default for DrawKnobs {
     fn default() -> Self {
-        Self { tile_width: 64, band_height: 16, threads: 0, shadows: Shadows::All, geometry: "greedy".into(), visibility: "faces".into(), draw: "raster".into(), shading: "direct".into(), placement: "deferred".into(), merge: "block".into(), cull: true }
+        Self { tile_width: 64, band_height: 16 }
+    }
+}
+
+/// The shading node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct ShadingKnobs {
+    placement: String,
+    shadows: Shadows,
+}
+
+impl Default for ShadingKnobs {
+    fn default() -> Self {
+        Self { placement: "deferred".into(), shadows: Shadows::All }
     }
 }
 
@@ -389,12 +415,8 @@ impl<P: Pixel> Node for Shading<P> {
 /// node; `S` what a compiled pipeline baked in.
 pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let opts: Options = p.options()?;
-    require(PRESET, Slot::Visibility, &opts.visibility)?;
-    require(PRESET, Slot::Draw, &opts.draw)?;
-    require(PRESET, Slot::Shading, &opts.shading)?;
-    anyhow::ensure!(opts.merge == "block", "merge = `{}`: raster-cpu has no per-pixel block lookup (only `block`)", opts.merge);
-    let mesh = mesh_fn(&require(PRESET, Slot::Geometry, &opts.geometry)?);
-    let deferred = mr_components::parse_placement(&opts.placement)?;
+    let shading: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
+    let deferred = mr_components::parse_placement(&shading.placement)?;
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
     let (mut passes, mut index): (Vec<Pass>, HashMap<String, usize>) = (vec![], HashMap::new());
     let (mut geometry, mut faces) = (None, None);
@@ -404,7 +426,9 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
         let node: Box<dyn Node> = match g.node(id).role {
             Role::Geometry => {
                 geometry = Some(passes.len());
-                Box::new(Geometry { dirty: HashSet::new(), mesh, knobs: Knobs { cull: opts.cull, ..Default::default() }, nodes: vec![id.to_string()] })
+                let mesh = mesh_fn(&require(PRESET, Slot::Geometry, &g.node(id).component)?);
+                let k: GeometryKnobs = g.knobs(id).map_err(anyhow::Error::msg)?;
+                Box::new(Geometry { dirty: HashSet::new(), mesh, knobs: Knobs { cull: k.cull, ..Default::default() }, nodes: vec![id.to_string()] })
             }
             Role::Visibility => {
                 faces = Some(passes.len());
@@ -416,8 +440,9 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
             Role::Draw => {
                 exec::reads(g, id, &index, &mut ins);
                 ins.extend(geometry);
+                let k: DrawKnobs = g.knobs(id).map_err(anyhow::Error::msg)?;
                 let nodes = if deferred { vec![id.to_string()] } else { g.ids(&[Role::Draw, Role::Shading]) };
-                Box::new(Draw::<P> { fused: !deferred, tile_width: opts.tile_width, band_height: opts.band_height, depth: vec![], nodes, px: std::marker::PhantomData })
+                Box::new(Draw::<P> { fused: !deferred, tile_width: k.tile_width, band_height: k.band_height, depth: vec![], nodes, px: std::marker::PhantomData })
             }
             // Fused into the draw pass.
             Role::Shading if !deferred => continue,
@@ -435,7 +460,7 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
         index.insert(id.to_string(), passes.len());
         passes.push(Pass { node, ins });
     }
-    let world = crate::world::<P>(p, g, opts.shadows)?;
+    let world = crate::world::<P>(p, g, shading.shadows)?;
     Ok(Box::new(exec::Executor::<P>::new(p, opts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))
 }
 

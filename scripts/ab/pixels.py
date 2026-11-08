@@ -5,6 +5,7 @@ frames 0, 20, 39 with reference comparisons) with the saved "before" build
 by pixel. AFTER_RENDERERS (optional, a TOML list) gives the current build different
 renderers (e.g. a new knob set to reproduce the old behaviour).
   scripts/ab/pixels.py terrain '[{compose={preset="raycast-gpu"}}]'
+AFTER_BIN: another binary as the "after" side (e.g. the "before" build itself, for a noise floor).
 """
 import os
 import subprocess
@@ -19,7 +20,7 @@ ra = rb
 if rest and not rest[0].startswith("-"):
     ra, rest = rest[0], rest[1:]
 t = fresh(ROOT / "target" / "ab" / "pixels")
-for side, exe, r in (("before", before(), rb), ("after", release(), ra)):
+for side, exe, r in (("before", before(), rb), ("after", os.environ.get("AFTER_BIN") or release(), ra)):
     args = [exe, "run", f"plans/{plan}.toml", "-s", f"renderer={r}", "-s", "run.frames=40", "-s", "run.warmup=5", "-s", "output.compare.every=20", "-s", "output.save.every=20", "-s", f'output.dir="{(t / side).as_posix()}"', *rest]
     if not run_logged(args, t / f"{side}.log"):
         print(f"{side} FAILED (see {t / f'{side}.log'})")
