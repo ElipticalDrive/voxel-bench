@@ -80,25 +80,10 @@ fn params() -> Vec<ParamSpec> {
     p
 }
 
+/// The preset's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct Options {
-    storage: String,
-    geometry: String,
-    visibility: String,
-    draw: String,
-    traversal: String,
-    shading: String,
-    meshes: String,
-    merge: String,
-    cull: bool,
-    /// raster, lit mode: lay down depth first so the expensive fragment shader runs once
-    /// per pixel.
-    depth_prepass: bool,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
-    shadows: Shadows,
     max_steps: u32,
     mesh_budget: usize,
     /// Voxel pool for lighting rays (unused in unlit mode but always allocated).
@@ -109,28 +94,61 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self {
-            storage: "bricks".into(),
-            geometry: "greedy".into(),
-            visibility: "faces".into(),
-            draw: "raster".into(),
-            traversal: "refloor".into(),
-            shading: "direct".into(),
-            meshes: "depth".into(),
-            merge: "block".into(),
-            cull: true,
-            depth_prepass: true,
-            bounces: 1,
-            spp: 1,
-            accumulate: true,
-            shadows: Shadows::All,
-            max_steps: 2048,
-            mesh_budget: 0,
-            pool_mb: 1536,
-            quad_buffer_mb: 1024,
-            frames_in_flight: 3,
-        }
+        Self { max_steps: 2048, mesh_budget: 0, pool_mb: 1536, quad_buffer_mb: 1024, frames_in_flight: 3 }
     }
+}
+
+/// The geometry node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct GeometryKnobs {
+    merge: String,
+    cull: bool,
+}
+
+impl Default for GeometryKnobs {
+    fn default() -> Self {
+        Self { merge: "block".into(), cull: true }
+    }
+}
+
+/// The draw node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct DrawKnobs {
+    /// raster, lit mode: lay down depth first so the expensive fragment shader runs once
+    /// per pixel.
+    depth_prepass: bool,
+}
+
+impl Default for DrawKnobs {
+    fn default() -> Self {
+        Self { depth_prepass: true }
+    }
+}
+
+/// The shading node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct ShadingKnobs {
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
+    shadows: Shadows,
+}
+
+impl Default for ShadingKnobs {
+    fn default() -> Self {
+        Self { bounces: 1, spp: 1, accumulate: true, shadows: Shadows::All }
+    }
+}
+
+/// The components and geometry knobs live knobs change.
+struct Live {
+    geometry: String,
+    shading: String,
+    meshes: String,
+    knobs: Knobs,
 }
 
 
@@ -195,6 +213,7 @@ impl ChunkMesh {
 /// frame's culled draws, world and storages.
 pub(crate) struct Meshing {
     opts: Options,
+    live: Live,
     drawing: Draw,
     /// Geometry the faces were meshed with; `stale`: a compile-time knob (geometry, shading,
     /// meshes) changed, the drawer is rebuilt at the next frame (one rebuild for several).
@@ -248,14 +267,16 @@ struct Frame {
 impl Meshing {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
-        require(PRESET, Slot::Meshes, &opts.meshes)?;
-        parse_merge(&opts.merge)?;
-        require(PRESET, Slot::Storage, &opts.storage)?;
-        require(PRESET, Slot::Traversal, &opts.traversal)?;
-        require(PRESET, Slot::Visibility, &opts.visibility)?;
-        let geometry = require(PRESET, Slot::Geometry, &opts.geometry)?;
-        let draw = require(PRESET, Slot::Draw, &opts.draw)?;
-        let shading = require(PRESET, Slot::Shading, &opts.shading)?;
+        let node = |role| g.find(role).ok_or_else(|| anyhow::anyhow!("{PRESET}: no {role:?} node"));
+        let (geometry_id, draw_id) = (node(Role::Geometry)?, node(Role::Draw)?);
+        let geometry = g.node(geometry_id).component.clone();
+        let draw = g.node(draw_id).component.clone();
+        let shading = g.node(g.shading()).component.clone();
+        let meshes_node = g.find(Role::Meshes).map_or("none", |id| g.node(id).component.as_str()).to_string();
+        let gk: GeometryKnobs = g.knobs(geometry_id).map_err(anyhow::Error::msg)?;
+        let dk: DrawKnobs = g.knobs(draw_id).map_err(anyhow::Error::msg)?;
+        let sk: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
+        let knobs = Knobs { merge: parse_merge(&gk.merge)?, cull: gk.cull };
         // The faces cross from the CPU (meshing) to the GPU (the drawer): the schedule's
         // transfer; its adapter is the per-chunk upload.
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
@@ -267,15 +288,15 @@ impl Meshing {
         let mesh_storage = walks.kernels[mesh_shadow].storage.ok_or_else(|| anyhow::anyhow!("{PRESET}: mesh shadows walk a storage (not ray queries)"))?;
         let (occ, rays) = walks.shadow_program(mesh_shadow);
         tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
-        let o = CoreOpts { shading: &shading, draw: &draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
-        let meshes = opts.meshes != "none";
+        let o = CoreOpts { shading: &shading, draw: &draw, bounces: sk.bounces, spp: sk.spp, accumulate: sk.accumulate, shadows: sk.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
+        let meshes = meshes_node != "none";
         let (core, drawing) = super::new(
             p,
             devices,
             waker,
             g,
             &o,
-            opts.depth_prepass,
+            dk.depth_prepass,
             SourceSpec {
                 wgsl: source_wgsl(&geometry),
                 walks,
@@ -309,7 +330,7 @@ impl Meshing {
         // Mesh shadows of forward drawers: their site's walk (by default the shadow rays').
         let mesh = GpuMeshes::new(gpu, &core.world, Some(Occlusion { program: &occ, rays: &rays, layout: core.storages.layout(mesh_storage), format: core.output_format() }));
         let s = Self {
-            built: geometry,
+            built: geometry.clone(),
             stale: false,
             mesh_storage,
             mesh,
@@ -326,13 +347,14 @@ impl Meshing {
             overflowed: false,
             frame: Frame::default(),
             opts,
+            live: Live { geometry, shading, meshes: meshes_node, knobs },
             drawing,
         };
         Ok((core, s))
     }
 
     fn knobs(&self) -> Knobs {
-        Knobs { merge: parse_merge(&self.opts.merge).unwrap_or_default(), cull: self.opts.cull }
+        self.live.knobs
     }
 
     fn remesh_all(&mut self) {
@@ -627,20 +649,20 @@ impl Meshing {
                 self.opts.mesh_budget = value.as_i64().unwrap_or(0) as usize;
                 Ok(())
             }
-            "geometry" => compiled(Slot::Geometry, &mut self.opts.geometry),
-            "shading" => compiled(Slot::Shading, &mut self.opts.shading),
-            "meshes" => compiled(Slot::Meshes, &mut self.opts.meshes),
+            "geometry" => compiled(Slot::Geometry, &mut self.live.geometry),
+            "shading" => compiled(Slot::Shading, &mut self.live.shading),
+            "meshes" => compiled(Slot::Meshes, &mut self.live.meshes),
             "visibility" => r(Slot::Visibility).map(drop),
-            "merge" => parse_merge(&s).map(|_| {
-                if s != self.opts.merge {
-                    self.opts.merge = s.clone();
+            "merge" => parse_merge(&s).map(|m| {
+                if m != self.live.knobs.merge {
+                    self.live.knobs.merge = m;
                     self.remesh_all();
                 }
             }),
             "cull" => {
                 let c = value.as_bool().unwrap_or(true);
-                if c != self.opts.cull {
-                    self.opts.cull = c;
+                if c != self.live.knobs.cull {
+                    self.live.knobs.cull = c;
                     self.remesh_all();
                 }
                 Ok(())
@@ -654,7 +676,7 @@ impl Region for Meshing {
     /// The drawer when a compile-time knob changed it (and the faces when the geometry did).
     fn compile(&mut self, core: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
         if self.stale {
-            let o = &self.opts;
+            let o = &self.live;
             if self.drawing.rebuild(core, source_wgsl(&o.geometry), geometry(&o.geometry).strip, &o.shading, o.meshes != "none")? {
                 self.bind0 = None;
             }
@@ -677,7 +699,7 @@ impl Region for Meshing {
         self.drawing.write_frame(core, c, req.mode, 0, IVec3::ZERO);
         core.accum.begin(&core.gpu, c, req.mode);
         self.frame = Frame {
-            want_meshes: req.meshes && self.opts.meshes != "none",
+            want_meshes: req.meshes && self.live.meshes != "none",
             view_proj: c.projection(core.width as f32 / core.height as f32) * c.view_rotation(),
             camera: c.split_position(),
             world: Some(core.world.prepare(&core.gpu, c).clone()),

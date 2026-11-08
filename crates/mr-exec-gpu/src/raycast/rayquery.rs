@@ -18,7 +18,7 @@ use mr_components::graph::{self, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
 use mr_components::storage::gpu_data::Bound;
-use mr_components::{Slot, components, names_on, placement_param, require, traversal};
+use mr_components::{Slot, components, names_on, placement_param, traversal};
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GpuNeeds, wgpu};
@@ -78,25 +78,13 @@ enum Cull {
     None,
 }
 
+/// The preset's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct Options {
-    geometry: String,
-    visibility: String,
-    traversal: String,
-    shading: String,
-    placement: String,
-    merge: String,
-    cull: bool,
-    /// Triangle facing culled for primary rays.
-    cull_faces: Cull,
-    shadows: Shadows,
     /// Prefer fast BVH builds over fast traversal (helps edit-heavy scenes).
     fast_build: bool,
     build_budget: usize,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
     /// Voxel pool for the boxes geometry.
     pool_mb: u32,
     frames_in_flight: usize,
@@ -104,24 +92,39 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self {
-            geometry: "greedy".into(),
-            visibility: "raycast".into(),
-            traversal: "rayquery".into(),
-            shading: "direct".into(),
-            placement: "inline".into(),
-            merge: "block".into(),
-            cull: true,
-            cull_faces: Cull::Back,
-            shadows: Shadows::All,
-            fast_build: false,
-            build_budget: 0,
-            bounces: 1,
-            spp: 1,
-            accumulate: true,
-            pool_mb: 2048,
-            frames_in_flight: 3,
-        }
+        Self { fast_build: false, build_budget: 0, pool_mb: 2048, frames_in_flight: 3 }
+    }
+}
+
+/// The geometry node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct GeometryKnobs {
+    cull: bool,
+    /// Triangle facing culled for primary rays.
+    cull_faces: Cull,
+}
+
+impl Default for GeometryKnobs {
+    fn default() -> Self {
+        Self { cull: true, cull_faces: Cull::Back }
+    }
+}
+
+/// The shading node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct ShadingKnobs {
+    placement: String,
+    shadows: Shadows,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
+}
+
+impl Default for ShadingKnobs {
+    fn default() -> Self {
+        Self { placement: "inline".into(), shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
     }
 }
 
@@ -133,7 +136,8 @@ pub(crate) struct RayQuery {
     walks: Walks,
     shadow: usize,
     bounce: usize,
-    opts: Options,
+    /// Triangle facing culled for primary rays.
+    cull_faces: Cull,
     /// The walks' storages' bind groups this frame.
     bound: Bound,
 }
@@ -144,11 +148,11 @@ const STORAGE_GROUPS: &[u32] = &[2, 3, 4, 5];
 impl RayQuery {
     pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String, Option<crate::remote::Far>)> {
         let opts: Options = p.options()?;
-        let geometry = require(PRESET, Slot::Geometry, &opts.geometry)?;
-        require(PRESET, Slot::Visibility, &opts.visibility)?;
-        require(PRESET, Slot::Traversal, &opts.traversal)?;
-        let shading = require(PRESET, Slot::Shading, &opts.shading)?;
-        anyhow::ensure!(opts.merge == "block", "merge = `{}`: rayquery-gpu has no per-pixel block lookup (only `block`)", opts.merge);
+        let geometry_id = g.find(Role::Geometry).ok_or_else(|| anyhow::anyhow!("{PRESET}: no geometry node"))?;
+        let geometry = g.node(geometry_id).component.clone();
+        let gk: GeometryKnobs = g.knobs(geometry_id).map_err(anyhow::Error::msg)?;
+        let shading = g.node(g.shading()).component.clone();
+        let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         let mut walks = Walks::of(g);
         let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{PRESET}: {} `{port}` rays are not bound", role.name()));
         let primary = walks.site(g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
@@ -161,7 +165,7 @@ impl RayQuery {
             Some(Some(s)) => walks.site(g, s, STORAGE_GROUPS, false),
             _ => shadow,
         };
-        let accel = AccelSpec { geometry, cull: opts.cull, fast_build: opts.fast_build, build_budget: opts.build_budget };
+        let accel = AccelSpec { geometry, cull: gk.cull, fast_build: opts.fast_build, build_budget: opts.build_budget };
         let spec = CoreSpec {
                 gpu: GpuNeeds { experimental: true, required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY, optional_features: wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS },
                 walks: &walks,
@@ -169,12 +173,12 @@ impl RayQuery {
                 stages: wgpu::ShaderStages::COMPUTE,
                 max_lod: 0,
                 voxels: false,
-                records: mr_components::parse_placement(&opts.placement)?,
+                records: mr_components::parse_placement(&k.placement)?,
                 shading: &shading,
-                bounces: opts.bounces,
-                spp: opts.spp,
-                accumulate: opts.accumulate,
-                shadows: opts.shadows,
+                bounces: k.bounces,
+                spp: k.spp,
+                accumulate: k.accumulate,
+                shadows: k.shadows,
                 // Walks at the shading's sites (ray queries need no step limit).
                 max_steps: 2048,
                 pool_mb: opts.pool_mb,
@@ -183,7 +187,7 @@ impl RayQuery {
         let core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
         let far = crate::remote::Far::of(p, devices, waker, g, &core, &spec)?;
         tracing::info!("rayquery-gpu: primary {}, shadow {}, bounce {}, shading {shading}", walks.label(0), walks.label(shadow), walks.label(bounce));
-        Ok((core, Self { walks, shadow, bounce, opts, bound: Bound(Vec::new()) }, shading, far))
+        Ok((core, Self { walks, shadow, bounce, cull_faces: gk.cull_faces, bound: Bound(Vec::new()) }, shading, far))
     }
 }
 
@@ -214,7 +218,7 @@ impl Cast for RayQuery {
     fn compiled(&mut self) {}
 
     fn camera(&self) -> [u32; 2] {
-        let cull = match self.opts.cull_faces {
+        let cull = match self.cull_faces {
             Cull::Back => 0x10,
             Cull::Front => 0x20,
             Cull::None => 0,
@@ -241,7 +245,7 @@ impl Cast for RayQuery {
     fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         match name {
             "cull_faces" => {
-                self.opts.cull_faces = match value.as_str() {
+                self.cull_faces = match value.as_str() {
                     Some("front") => Cull::Front,
                     Some("none") => Cull::None,
                     _ => Cull::Back,
