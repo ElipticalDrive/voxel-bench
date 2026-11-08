@@ -61,8 +61,7 @@ pub(crate) fn info() -> RendererInfo {
 
 /// The executor for graph `g`, its nodes monomorphised for its storage.
 pub(crate) fn create<P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    let opts: Options = p.options()?;
-    let storage = require(PRESET, Slot::Storage, &opts.storage)?;
+    let storage = require(PRESET, Slot::Storage, &g.node(primary(g)?.storage).component)?;
     match storage.as_str() {
         "bricks" => of::<U16, P>(p, g),
         "u8" => of::<U8, P>(p, g),
@@ -105,23 +104,12 @@ fn params() -> Vec<ParamSpec> {
     p
 }
 
+/// The preset's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct Options {
     threads: usize,
-    shadows: Shadows,
-    storage: String,
-    visibility: String,
-    traversal: String,
-    shading: String,
-    placement: String,
-    exact: bool,
-    packet: String,
     isa: String,
-    skip2: bool,
-    skip4: bool,
-    skip8: bool,
-    skip16: bool,
     schedule: String,
     tile_order: String,
     tile: u32,
@@ -132,8 +120,45 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { threads: 0, shadows: Shadows::All, storage: "bricks".into(), visibility: "raycast".into(), traversal: "refloor".into(), shading: "direct".into(), placement: "inline".into(), exact: true, packet: "1".into(), isa: "auto".into(), skip2: true, skip4: true, skip8: true, skip16: true, schedule: "rows".into(), tile_order: "morton".into(), tile: 16, perf: false, view: "image".into(), view_max: 256 }
+        Self { threads: 0, isa: "auto".into(), schedule: "rows".into(), tile_order: "morton".into(), tile: 16, perf: false, view: "image".into(), view_max: 256 }
     }
+}
+
+/// The primary rays' kernel node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct KernelKnobs {
+    exact: bool,
+    packet: String,
+    skip2: bool,
+    skip4: bool,
+    skip8: bool,
+    skip16: bool,
+}
+
+impl Default for KernelKnobs {
+    fn default() -> Self {
+        Self { exact: true, packet: "1".into(), skip2: true, skip4: true, skip8: true, skip16: true }
+    }
+}
+
+/// The shading node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct ShadingKnobs {
+    placement: String,
+    shadows: Shadows,
+}
+
+impl Default for ShadingKnobs {
+    fn default() -> Self {
+        Self { placement: "inline".into(), shadows: Shadows::All }
+    }
+}
+
+/// The primary rays' site: their kernel and storage nodes.
+fn primary(g: &Checked) -> anyhow::Result<mr_components::graph::Site<'_>> {
+    g.site(Role::Visibility, "primary").ok_or_else(|| anyhow::anyhow!("raycast-cpu: no primary rays' kernel"))
 }
 
 /// The traversal kernel, with the `exact` knob folded in.
@@ -463,13 +488,15 @@ struct Parts<R, S, P> {
 impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
     fn new(p: &InitParams, g: &Checked) -> anyhow::Result<Self> {
         let o: Options = p.options()?;
-        if o.storage == "u8" && p.blocks.blocks.len() > 256 {
+        let site = primary(g)?;
+        let (storage, kernel) = (&g.node(site.storage).component, &g.node(site.kernel).component);
+        let k: KernelKnobs = g.knobs(site.kernel).map_err(anyhow::Error::msg)?;
+        let shading: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
+        if storage == "u8" && p.blocks.blocks.len() > 256 {
             anyhow::bail!("storage u8 needs <= 256 block types, registry has {}", p.blocks.blocks.len());
         }
         let isa = detect(&o.isa);
-        tracing::info!("cpu: storage {}, traversal {}, {:?} hot loop, packets of {}", o.storage, o.traversal, isa, o.packet);
-        require(PRESET, Slot::Visibility, &o.visibility)?;
-        require(PRESET, Slot::Shading, &o.shading)?;
+        tracing::info!("cpu: storage {storage}, traversal {kernel}, {isa:?} hot loop, packets of {}", k.packet);
         let shadow = shadow_kernel(g)?;
         if let Some((t, _)) = shadow {
             tracing::info!("cpu: shadow rays through their own kernel ({t:?})");
@@ -477,7 +504,7 @@ impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
         fixed("shadow rays", S::SHADOW, shadow)?;
         fixed("tone", S::TONE, g.tone())?;
         let b = Self {
-            kernel: Kernel { kernel: o.traversal.clone(), exact: o.exact },
+            kernel: Kernel { kernel: kernel.clone(), exact: k.exact },
             cast: Cast {
                 spec: std::marker::PhantomData,
                 tiles: parse_schedule(&o.schedule)?,
@@ -486,7 +513,7 @@ impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
                 rects: vec![],
                 perf: perf::allowed(o.perf)?,
                 counters: None,
-                packet: o.packet.parse().unwrap_or(1),
+                packet: k.packet.parse().unwrap_or(1),
                 isa,
                 isa_choice: o.isa,
                 view: parse_view(&o.view)?,
@@ -496,13 +523,13 @@ impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
                 chunks: HashMap::new(),
                 grid: Grid::default(),
                 grid_dirty: false,
-                traversal: fixed("traversal", S::TRAVERSAL, traversal(&o.traversal, o.exact)?)?,
-                levels: level_mask([o.skip2, o.skip4, o.skip8, o.skip16]),
+                traversal: fixed("traversal", S::TRAVERSAL, traversal(kernel, k.exact)?)?,
+                levels: level_mask([k.skip2, k.skip4, k.skip8, k.skip16]),
                 shadow,
             },
-            deferred: parse_placement(&o.placement)?,
+            deferred: parse_placement(&shading.placement)?,
             threads: o.threads,
-            shadows: o.shadows,
+            shadows: shading.shadows,
         };
         fixed("packets of", S::PACKET, b.cast.packet)?;
         fixed("levels", S::LEVELS, b.scene.levels)?;
