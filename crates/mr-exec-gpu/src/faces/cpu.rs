@@ -96,38 +96,19 @@ fn params() -> Vec<ParamSpec> {
     .collect()
 }
 
+/// The preset's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct Options {
-    storage: String,
-    /// `algorithm` is its name from before the component split.
-    #[serde(alias = "algorithm")]
-    visibility: String,
-    traversal: String,
-    shading: String,
-    shadow_storage: String,
-    shadow_traversal: String,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
-    seed_step: u32,
-    sky: String,
     view: String,
-    tile: u32,
-    criterion: String,
     sky_tile: Option<u32>,
     keep_frames: u32,
-    max_footprint: u32,
     predict: bool,
-    dilate: u32,
-    dilate_below: u32,
     margin: f32,
     pipelined: bool,
     audit: bool,
     threads: usize,
-    shadows: Shadows,
     max_steps: u32,
-    draw: String,
     depth_prepass: bool,
     pool_mb: u32,
     frames_in_flight: usize,
@@ -136,33 +117,15 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            storage: "bricks".into(),
-            visibility: "quadtree".into(),
-            traversal: "refloor".into(),
-            shading: "direct".into(),
-            shadow_storage: "bricks".into(),
-            shadow_traversal: "same".into(),
-            bounces: 1,
-            spp: 1,
-            accumulate: true,
-            seed_step: 16,
-            sky: "corners".into(),
             view: "image".into(),
-            tile: 32,
-            criterion: "plane".into(),
             sky_tile: None,
             keep_frames: 8,
-            max_footprint: 4096,
             predict: true,
-            dilate: 0,
-            dilate_below: 2,
             margin: 0.0,
             pipelined: true,
             audit: false,
             threads: 0,
-            shadows: Shadows::All,
             max_steps: 2048,
-            draw: "raster".into(),
             depth_prepass: true,
             pool_mb: 1536,
             frames_in_flight: 3,
@@ -170,21 +133,38 @@ impl Default for Options {
     }
 }
 
-impl Options {
-    fn settings(&self) -> Settings {
-        Settings {
-            tile: self.tile.max(1),
-            face_criterion: self.criterion == "face",
-            sky_tile: self.sky_tile.unwrap_or(if self.visibility == "cluster" { 16 } else { 8 }),
-            keep_frames: self.keep_frames,
-            max_footprint: self.max_footprint,
-            margin: self.margin,
-            dilate: self.dilate,
-            dilate_below: self.dilate_below,
-            cluster: self.visibility == "cluster",
-            seed_step: self.seed_step,
-            sky_sparse: self.sky == "sparse",
-        }
+/// The visibility node's knobs (quadtree's and cluster's).
+#[derive(Deserialize)]
+#[serde(default)]
+struct VisibilityKnobs {
+    seed_step: u32,
+    sky: String,
+    tile: u32,
+    criterion: String,
+    max_footprint: u32,
+    dilate: u32,
+    dilate_below: u32,
+}
+
+impl Default for VisibilityKnobs {
+    fn default() -> Self {
+        Self { seed_step: 16, sky: "corners".into(), tile: 32, criterion: "plane".into(), max_footprint: 4096, dilate: 0, dilate_below: 2 }
+    }
+}
+
+/// The shading node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct ShadingKnobs {
+    shadows: Shadows,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
+}
+
+impl Default for ShadingKnobs {
+    fn default() -> Self {
+        Self { shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
     }
 }
 
@@ -198,6 +178,9 @@ pub(crate) struct CpuSampler {
     /// The CPU world discovery rays walk (the storage monomorphised).
     cpu: grid::CpuWorld,
     opts: Options,
+    /// The visibility component (`quadtree` or `cluster`) and its node's knobs.
+    visibility: String,
+    vis: VisibilityKnobs,
     pool: Arc<rayon::ThreadPool>,
     state: Option<State>,
     pending: Option<Receiver<Output>>,
@@ -255,11 +238,14 @@ impl CpuSampler {
     /// `world`: the CPU world of a pipeline compiled for one storage (else the `storage` knob's).
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<(Core, Self)> {
         let mut opts: Options = p.options()?;
-        let storage = require(PRESET, Slot::Storage, &opts.storage)?;
-        require(PRESET, Slot::Visibility, &opts.visibility)?;
-        require(PRESET, Slot::Traversal, &opts.traversal)?;
-        require(PRESET, Slot::Draw, &opts.draw)?;
-        require(PRESET, Slot::Shading, &opts.shading)?;
+        let site = g.site(Role::Visibility, "rays").ok_or_else(|| anyhow::anyhow!("{PRESET}: discovery rays are not bound"))?;
+        let storage = g.node(site.storage).component.clone();
+        let vis_id = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{PRESET}: no visibility node"))?;
+        let visibility = g.node(vis_id).component.clone();
+        let vis: VisibilityKnobs = g.knobs(vis_id).map_err(anyhow::Error::msg)?;
+        let draw = g.node(g.find(Role::Draw).ok_or_else(|| anyhow::anyhow!("{PRESET}: no draw node"))?).component.clone();
+        let shading = g.node(g.shading()).component.clone();
+        let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         // The faces cross from the CPU to the GPU: the schedule's transfer, whose timing is
         // the pipelining (`prev`: drawn a frame after they were discovered).
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
@@ -270,7 +256,7 @@ impl CpuSampler {
         let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("{PRESET}: GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
-        let o = CoreOpts { shading: &opts.shading, draw: &opts.draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
+        let o = CoreOpts { shading: &shading, draw: &draw, bounces: k.bounces, spp: k.spp, accumulate: k.accumulate, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let (core, drawing) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("records.wgsl").into(),
             walks,
@@ -293,6 +279,8 @@ impl CpuSampler {
                 None => grid::CpuWorld::new(&storage)?,
             },
             opts,
+            visibility,
+            vis,
             pool,
             state: Some(State::default()),
             pending: None,
@@ -358,24 +346,41 @@ impl CpuSampler {
 }
 
 impl CpuSampler {
+    fn settings(&self) -> Settings {
+        let (o, v) = (&self.opts, &self.vis);
+        Settings {
+            tile: v.tile.max(1),
+            face_criterion: v.criterion == "face",
+            sky_tile: o.sky_tile.unwrap_or(if self.visibility == "cluster" { 16 } else { 8 }),
+            keep_frames: o.keep_frames,
+            max_footprint: v.max_footprint,
+            margin: o.margin,
+            dilate: v.dilate,
+            dilate_below: v.dilate_below,
+            cluster: self.visibility == "cluster",
+            seed_step: v.seed_step,
+            sky_sparse: v.sky == "sparse",
+        }
+    }
+
     /// Its own knobs; `None` if `name` is not one.
     fn set_knob(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
         match name {
-            "tile" => self.opts.tile = int(32),
+            "tile" => self.vis.tile = int(32),
             "algorithm" | "visibility" => match require(PRESET, Slot::Visibility, value.as_str().unwrap_or("quadtree")) {
-                Ok(v) => self.opts.visibility = v,
+                Ok(v) => self.visibility = v,
                 Err(e) => return Some(Err(e)),
             },
-            "seed_step" => self.opts.seed_step = int(16),
-            "sky" => self.opts.sky = value.as_str().unwrap_or("corners").to_string(),
+            "seed_step" => self.vis.seed_step = int(16),
+            "sky" => self.vis.sky = value.as_str().unwrap_or("corners").to_string(),
             "view" => self.opts.view = value.as_str().unwrap_or("image").to_string(),
-            "criterion" => self.opts.criterion = value.as_str().unwrap_or("plane").to_string(),
+            "criterion" => self.vis.criterion = value.as_str().unwrap_or("plane").to_string(),
             "sky_tile" => self.opts.sky_tile = Some(int(8)),
             "keep_frames" => self.opts.keep_frames = int(8),
-            "max_footprint" => self.opts.max_footprint = int(4096),
-            "dilate" => self.opts.dilate = int(0),
-            "dilate_below" => self.opts.dilate_below = int(2),
+            "max_footprint" => self.vis.max_footprint = int(4096),
+            "dilate" => self.vis.dilate = int(0),
+            "dilate_below" => self.vis.dilate_below = int(2),
             "predict" => self.opts.predict = value.as_bool().unwrap_or(true),
             "margin" => self.opts.margin = value.as_f64().unwrap_or(0.0) as f32,
             "pipelined" => {
@@ -488,7 +493,7 @@ impl Region for CpuSampler {
         let start = Instant::now();
         let (w, h) = (core.width, core.height);
         let grid = self.cpu.snapshot();
-        let settings = self.opts.settings();
+        let settings = self.settings();
         let c = req.camera;
 
         // 1. The face set for this frame: from the job launched last frame, or (first
@@ -561,7 +566,7 @@ impl Region for CpuSampler {
             ("build_ms".into(), out.phase_ms[2] as f64),
             ("tiles_accepted".into(), out.tiles_accepted as f64),
             ("discovery_ms".into(), out.ms as f64),
-            ("algorithm_cluster".into(), (self.opts.visibility == "cluster") as u32 as f64),
+            ("algorithm_cluster".into(), (self.visibility == "cluster") as u32 as f64),
             ("wait_ms".into(), wait_ms),
         ];
         if let Some((px, faces, hit, ms)) = audit {

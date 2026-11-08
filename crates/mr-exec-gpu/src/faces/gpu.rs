@@ -135,13 +135,26 @@ fn params() -> Vec<ParamSpec> {
     .collect()
 }
 
+/// The preset's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct Options {
-    storage: String,
-    visibility: String,
-    traversal: String,
-    shading: String,
+    max_steps: u32,
+    depth_prepass: bool,
+    pool_mb: u32,
+    frames_in_flight: usize,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { max_steps: 2048, depth_prepass: true, pool_mb: 1536, frames_in_flight: 3 }
+    }
+}
+
+/// The visibility node's knobs (quadtree).
+#[derive(Deserialize)]
+#[serde(default)]
+struct VisibilityKnobs {
     tile: u32,
     criterion: String,
     sky_tile: u32,
@@ -154,40 +167,16 @@ struct Options {
     closure_box: u32,
     block_faces: bool,
     jitter: bool,
-    holes: String,
-    /// Hole detection on: a `holes` node in the graph (`coverage`).
-    #[serde(skip)]
-    incremental: bool,
-    keep_unseen: u32,
-    refresh: u32,
-    parallax_px: f32,
-    reveal_tiles: u32,
-    events: bool,
-    order: String,
     merge: String,
-    still_holes: String,
     view: String,
     view_max: u32,
     audit: bool,
-    shadows: Shadows,
-    max_steps: u32,
-    draw: String,
-    depth_prepass: bool,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
     max_faces: u32,
-    pool_mb: u32,
-    frames_in_flight: usize,
 }
 
-impl Default for Options {
+impl Default for VisibilityKnobs {
     fn default() -> Self {
         Self {
-            storage: "bricks".into(),
-            visibility: "quadtree".into(),
-            traversal: "refloor".into(),
-            shading: "direct".into(),
             tile: 8,
             criterion: "plane".into(),
             sky_tile: 4,
@@ -200,30 +189,59 @@ impl Default for Options {
             closure_box: 2,
             block_faces: true,
             jitter: true,
-            holes: "none".into(),
-            incremental: false,
-            keep_unseen: 64,
-            refresh: 16,
-            parallax_px: 0.5,
-            reveal_tiles: 4,
-            events: true,
-            order: "depth".into(),
             merge: "none".into(),
-            still_holes: "now".into(),
             view: "image".into(),
             view_max: 8,
             audit: false,
-            shadows: Shadows::All,
-            max_steps: 2048,
-            draw: "raster".into(),
-            depth_prepass: true,
-            bounces: 1,
-            spp: 1,
-            accumulate: true,
             max_faces: 1 << 20,
-            pool_mb: 1536,
-            frames_in_flight: 3,
         }
+    }
+}
+
+/// The hole-detection node's knobs (coverage).
+#[derive(Deserialize)]
+#[serde(default)]
+struct HolesKnobs {
+    keep_unseen: u32,
+    refresh: u32,
+    parallax_px: f32,
+    reveal_tiles: u32,
+    events: bool,
+    still_holes: String,
+}
+
+impl Default for HolesKnobs {
+    fn default() -> Self {
+        Self { keep_unseen: 64, refresh: 16, parallax_px: 0.5, reveal_tiles: 4, events: true, still_holes: "now".into() }
+    }
+}
+
+/// The draw node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct DrawKnobs {
+    order: String,
+}
+
+impl Default for DrawKnobs {
+    fn default() -> Self {
+        Self { order: "depth".into() }
+    }
+}
+
+/// The shading node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct ShadingKnobs {
+    shadows: Shadows,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
+}
+
+impl Default for ShadingKnobs {
+    fn default() -> Self {
+        Self { shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
     }
 }
 
@@ -379,7 +397,12 @@ struct Stage {
 const STORAGE_GROUPS: &[u32] = &[2, 4, 5, 6];
 
 pub(crate) struct GpuSampler {
-    opts: Options,
+    vis: VisibilityKnobs,
+    cover: HolesKnobs,
+    /// The draw node's face order.
+    order: String,
+    /// Hole detection on: a `holes` node in the graph (`coverage`).
+    incremental: bool,
     /// The sampler's passes without and with hole detection's tiles (shader def `HOLES`).
     pipe_survive: [wgpu::ComputePipeline; 2],
     pipe_rays: [wgpu::ComputePipeline; 2],
@@ -557,12 +580,17 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
 
 impl GpuSampler {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
-        let mut opts: Options = p.options()?;
-        require(PRESET, Slot::Visibility, &opts.visibility)?;
-        require(PRESET, Slot::Draw, &opts.draw)?;
-        let shading = require(PRESET, Slot::Shading, &opts.shading)?;
+        let opts: Options = p.options()?;
+        let node = |role: Role| g.find(role).ok_or_else(|| anyhow::anyhow!("{PRESET}: no {} node", role.name()));
+        let vis: VisibilityKnobs = g.knobs(node(Role::Visibility)?).map_err(anyhow::Error::msg)?;
+        let draw_id = node(Role::Draw)?;
+        let draw = g.node(draw_id).component.clone();
+        let dk: DrawKnobs = g.knobs(draw_id).map_err(anyhow::Error::msg)?;
+        let shading = g.node(g.shading()).component.clone();
+        let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         // Hole detection is a node of the graph (the drawer's faces iterating through it).
-        opts.incremental = g.find(Role::Holes).is_some();
+        let holes = g.find(Role::Holes);
+        let cover: HolesKnobs = holes.map_or(Ok(HolesKnobs::default()), |h| g.knobs(h)).map_err(anyhow::Error::msg)?;
         // The sites' walks: discovery rays (the storage and traversal stages),
         // the storage exposure tests read, shadow and bounce rays; each its own or shared.
         let mut walks = Walks::of(g);
@@ -572,7 +600,7 @@ impl GpuSampler {
         let shadow = walks.site(g, bound(Role::Shading, "shadow")?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
-        let o = CoreOpts { shading: &shading, draw: &opts.draw, bounces: opts.bounces, spp: opts.spp, accumulate: opts.accumulate, shadows: opts.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
+        let o = CoreOpts { shading: &shading, draw: &draw, bounces: k.bounces, spp: k.spp, accumulate: k.accumulate, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let (core, drawing) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("set_faces.wgsl").into(),
             walks,
@@ -780,7 +808,7 @@ impl GpuSampler {
             cache: gpu.cache(),
         });
 
-        let list_cap = opts.max_faces.clamp(1 << 16, 1 << 24);
+        let list_cap = vis.max_faces.clamp(1 << 16, 1 << 24);
         let table_cap = (list_cap * 2).next_power_of_two();
         let none = wgpu::BufferUsages::empty();
         let uniform = |label, size| dev.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -825,7 +853,10 @@ impl GpuSampler {
             holes_nodes: g.ids(&[Role::Holes]),
             draw_ids: g.ids(&[Role::Draw]),
             sized,
-            opts,
+            vis,
+            cover,
+            order: dk.order,
+            incremental: holes.is_some(),
             pipe_survive,
             pipe_rays,
             pipe_classify,
@@ -1023,8 +1054,8 @@ impl GpuSampler {
 
     /// What the active `view`'s colours mean.
     fn legend(&self) -> Option<Legend> {
-        Some(match self.opts.view.as_str() {
-            "overdraw" => Legend::ramp("fragments shaded per pixel", self.opts.view_max.clamp(1, 255) as f64, false),
+        Some(match self.vis.view.as_str() {
+            "overdraw" => Legend::ramp("fragments shaded per pixel", self.vis.view_max.clamp(1, 255) as f64, false),
             "tiles" => Legend::categories(&[
                 ("full frame", Some([255, 255, 255])),
                 ("edited block / changed chunk", Some([64, 102, 255])),
@@ -1045,7 +1076,7 @@ impl GpuSampler {
         let mut out = vec![("chunk_slots".into(), self.slots.len() as f64), ("slot_overflow".into(), self.slot_overflow as f64)];
         out.extend(core.accum.counter(mode));
         out.extend(core.accel_stats().0);
-        if self.opts.incremental && self.opts.events {
+        if self.incremental && self.cover.events {
             // 0 static (skipped), 1 still (rotation / chunk changes), 2 moving, 3 full.
             out.push(("frame_kind".into(), self.last_kind as u32 as f64));
             let total = self.kind_counts.iter().sum::<u64>().max(1) as f64;
@@ -1094,7 +1125,7 @@ impl GpuSampler {
         out.push(("faces_from_closure".into(), w[41] as f64));
         out.push(("no_chunk_slot".into(), w[35] as f64));
         for l in 0..levels {
-            out.push((format!("acc_L{l}_{}px", self.opts.tile >> l), w[16 + l] as f64));
+            out.push((format!("acc_L{l}_{}px", self.vis.tile >> l), w[16 + l] as f64));
             out.push((format!("sky_L{l}"), w[24 + l] as f64));
             out.push((format!("tiles_L{l}"), w[l] as f64));
             out.push((format!("jobs_L{l}"), w[48 + l] as f64));
@@ -1108,13 +1139,13 @@ impl GpuSampler {
             out.push(("faces_per_quad".into(), faces as f64 / quads.max(1.0)));
         }
         out.push(("faces_dropped".into(), (prev_faces - w[32] as f64).max(0.0)));
-        if self.opts.incremental {
-            let tiles = (core.width.div_ceil(self.opts.tile) * core.height.div_ceil(self.opts.tile)) as f64;
+        if self.incremental {
+            let tiles = (core.width.div_ceil(self.vis.tile) * core.height.div_ceil(self.vis.tile)) as f64;
             out.push(("tiles_needed".into(), w[42] as f64));
             out.push(("tiles_needed_pct".into(), w[42] as f64 / tiles * 100.0));
             out.push(("reveal_clamped".into(), w[43] as f64));
         }
-        if self.opts.audit {
+        if self.vis.audit {
             out.push(("audit_miss_px".into(), w[33] as f64));
             out.push(("audit_miss_pct".into(), w[33] as f64 / px * 100.0));
             out.push(("audit_hit_px".into(), w[36] as f64));
@@ -1126,13 +1157,13 @@ impl GpuSampler {
     /// replaces the counts with their colours). `frame` is the
     /// discovery frame to show (0: nothing was discovered this frame).
     fn encode_overlay(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, frame: u32, off_x: u32, off_y: u32, cols: u32, rows: u32) {
-        let view = view_code(&self.opts.view);
+        let view = view_code(&self.vis.view);
         if view < 2 {
             return;
         }
         // A diagnostic, not a node's work.
         core.ring.stage(enc, ticket, "view", &[]);
-        let u = OverlayUniform { view, frame, tile: self.opts.tile, cols, rows, need_off: self.sized.need_off, lat_w: self.sized.lat_w, off_x, off_y, view_max: self.opts.view_max.clamp(1, 255), _p: [0; 2] };
+        let u = OverlayUniform { view, frame, tile: self.vis.tile, cols, rows, need_off: self.sized.need_off, lat_w: self.sized.lat_w, off_x, off_y, view_max: self.vis.view_max.clamp(1, 255), _p: [0; 2] };
         if view == 4 {
             // The overlay ramps the counts, so it reads them from a copy of the output.
             let size = wgpu::Extent3d { width: core.width, height: core.height, depth_or_array_layers: 1 };
@@ -1179,11 +1210,11 @@ impl GpuSampler {
 
     /// Row merge active (painter order sorts single faces, so it takes precedence).
     fn merging(&self) -> bool {
-        self.opts.merge == "rows" && self.opts.order != "painter"
+        self.vis.merge == "rows" && self.order != "painter"
     }
 
     fn levels(&self) -> usize {
-        (self.opts.tile.trailing_zeros() as usize + 1).min(MAX_LEVELS)
+        (self.vis.tile.trailing_zeros() as usize + 1).min(MAX_LEVELS)
     }
 }
 
@@ -1192,38 +1223,37 @@ impl GpuSampler {
     fn set_knob(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
         match name {
-            "tile" => self.opts.tile = int(8),
-            "criterion" => self.opts.criterion = value.as_str().unwrap_or("plane").into(),
-            "sky_tile" => self.opts.sky_tile = int(4),
-            "keep_frames" => self.opts.keep_frames = int(8),
-            "max_footprint" => self.opts.max_footprint = int(128),
-            "strict" => self.opts.strict = value.as_bool().unwrap_or(true),
-            "inline_fp" => self.opts.inline_fp = int(8),
-            "morton" => self.opts.morton = value.as_bool().unwrap_or(true),
-            "closure_px" => self.opts.closure_px = int(2),
-            "closure_box" => self.opts.closure_box = int(2),
-            "block_faces" => self.opts.block_faces = value.as_bool().unwrap_or(true),
-            "jitter" => self.opts.jitter = value.as_bool().unwrap_or(true),
+            "tile" => self.vis.tile = int(8),
+            "criterion" => self.vis.criterion = value.as_str().unwrap_or("plane").into(),
+            "sky_tile" => self.vis.sky_tile = int(4),
+            "keep_frames" => self.vis.keep_frames = int(8),
+            "max_footprint" => self.vis.max_footprint = int(128),
+            "strict" => self.vis.strict = value.as_bool().unwrap_or(true),
+            "inline_fp" => self.vis.inline_fp = int(8),
+            "morton" => self.vis.morton = value.as_bool().unwrap_or(true),
+            "closure_px" => self.vis.closure_px = int(2),
+            "closure_box" => self.vis.closure_box = int(2),
+            "block_faces" => self.vis.block_faces = value.as_bool().unwrap_or(true),
+            "jitter" => self.vis.jitter = value.as_bool().unwrap_or(true),
             "holes" => {
-                self.opts.holes = value.as_str().unwrap_or("none").into();
-                match require(PRESET, Slot::Holes, &self.opts.holes) {
-                    Ok(h) => self.opts.incremental = h == "coverage",
+                match require(PRESET, Slot::Holes, value.as_str().unwrap_or("none")) {
+                    Ok(h) => self.incremental = h == "coverage",
                     Err(e) => return Some(Err(e)),
                 }
                 self.pending.clear();
             }
-            "refresh" => self.opts.refresh = int(16),
-            "keep_unseen" => self.opts.keep_unseen = int(64),
-            "parallax_px" => self.opts.parallax_px = value.as_f64().unwrap_or(0.5) as f32,
-            "reveal_tiles" => self.opts.reveal_tiles = int(4),
-            "audit" => self.opts.audit = value.as_bool().unwrap_or(false),
-            "events" => self.opts.events = value.as_bool().unwrap_or(true),
-            "still_holes" => self.opts.still_holes = value.as_str().unwrap_or("now").into(),
+            "refresh" => self.cover.refresh = int(16),
+            "keep_unseen" => self.cover.keep_unseen = int(64),
+            "parallax_px" => self.cover.parallax_px = value.as_f64().unwrap_or(0.5) as f32,
+            "reveal_tiles" => self.cover.reveal_tiles = int(4),
+            "audit" => self.vis.audit = value.as_bool().unwrap_or(false),
+            "events" => self.cover.events = value.as_bool().unwrap_or(true),
+            "still_holes" => self.cover.still_holes = value.as_str().unwrap_or("now").into(),
             // Drawing and display only: the face set is unaffected.
-            "merge" => self.opts.merge = value.as_str().unwrap_or("none").into(),
-            "order" => self.opts.order = value.as_str().unwrap_or("depth").into(),
-            "view" => self.opts.view = value.as_str().unwrap_or("image").into(),
-            "view_max" => self.opts.view_max = int(8).clamp(1, 255),
+            "merge" => self.vis.merge = value.as_str().unwrap_or("none").into(),
+            "order" => self.order = value.as_str().unwrap_or("depth").into(),
+            "view" => self.vis.view = value.as_str().unwrap_or("image").into(),
+            "view_max" => self.vis.view_max = int(8).clamp(1, 255),
             _ => return None,
         }
         // Any discovery setting can change what is discoverable: start over from a full frame.
@@ -1271,7 +1301,7 @@ impl GpuSampler {
         }
         let parity = self.now.parity;
         enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("frame begin"), timestamp_writes: core.ring.compute_timestamps(ticket, true, false) });
-        let first = if self.opts.incremental { ("holes", &self.holes_nodes) } else { ("discover", &self.vis_nodes) };
+        let first = if self.incremental { ("holes", &self.holes_nodes) } else { ("discover", &self.vis_nodes) };
         core.ring.stage(enc, ticket, first.0, first.1);
         self.mark(enc, 0);
         enc.clear_buffer(&self.stats, 0, None);
@@ -1286,13 +1316,13 @@ impl GpuSampler {
     /// changes only (`still_holes = late`): the entering strip and changed chunks.
     fn holes(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
         self.open(core, enc, ticket, req);
-        if self.now.redraw || !self.opts.incremental || std::mem::replace(&mut self.now.holed, true) {
+        if self.now.redraw || !self.incremental || std::mem::replace(&mut self.now.holed, true) {
             return;
         }
         let (world_bg, storage_bg, bind_disc) = self.groups();
         let (parity, cols, rows) = (self.now.parity, self.now.cols, self.now.rows);
         let kind = self.last_kind;
-        if kind == FrameKind::Still && self.opts.still_holes == "late" {
+        if kind == FrameKind::Still && self.cover.still_holes == "late" {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("still needs"), timestamp_writes: None });
             pass.set_bind_group(0, bind_disc, &[0]);
             pass.set_bind_group(1, world_bg, &[]);
@@ -1350,10 +1380,10 @@ impl GpuSampler {
         }
         let (world_bg, storage_bg, bind_disc) = self.groups();
         let (parity, cols, rows, levels) = (self.now.parity, self.now.cols, self.now.rows, self.now.levels);
-        let holes = self.opts.incremental as usize;
+        let holes = self.incremental as usize;
         let lofs = |l: usize| (l as u64 * LEVEL_STRIDE) as u32;
         let aofs = |w: u64| w * 4;
-        if self.opts.incremental {
+        if self.incremental {
             core.ring.stage(enc, ticket, "discover", &self.vis_nodes);
         }
         {
@@ -1367,7 +1397,7 @@ impl GpuSampler {
         }
         self.mark(enc, 1);
         // Level-0 work items: the grid, or the Z-curve over its enclosing power-of-two square.
-        let morton = self.opts.morton;
+        let morton = self.vis.morton;
         let l0_items = |w: u32, h: u32| if morton { w.max(h).next_power_of_two().pow(2) } else { w * h };
         for l in 0..levels {
             {
@@ -1439,8 +1469,8 @@ impl GpuSampler {
     /// mode); a static frame's carry the frame's begin timestamp too.
     fn encode(&self, core: &Core, ticket: mr_gpu::Ticket, req: &FrameRequest, pass: impl FnOnce(&DrawFrame, &dyn Fn(&mut wgpu::RenderPass<'_>), Option<&wgpu::RenderPipeline>)) {
         let f = &self.now;
-        let painter = self.opts.order == "painter";
-        let overdraw = view_code(&self.opts.view) == 4;
+        let painter = self.order == "painter";
+        let overdraw = view_code(&self.vis.view) == 4;
         let sky = if overdraw { [0, 0, 0, 255] } else { core.sky() };
         let clear = wgpu::Color { r: sky[0] as f64 / 255.0, g: sky[1] as f64 / 255.0, b: sky[2] as f64 / 255.0, a: 1.0 };
         let merging = self.merging();
@@ -1458,7 +1488,7 @@ impl GpuSampler {
             depth: &self.drawing.depth,
             clear,
             prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit && !painter && !overdraw,
-            keep_depth: self.opts.incremental,
+            keep_depth: self.incremental,
             binds: &[bind_draw, f.world.as_ref().expect("set up"), st.expect("discovery rays walk a storage")],
             more: &more,
             mesh_verts: None,
@@ -1484,7 +1514,7 @@ impl GpuSampler {
         if std::mem::replace(&mut self.now.drawn, true) {
             return;
         }
-        if !self.now.redraw && self.opts.order == "painter" {
+        if !self.now.redraw && self.order == "painter" {
             // Sort the list back to front (timed with the raster).
             let (world_bg, storage_bg, bind_disc) = self.groups();
             let aofs = 4 * (64 + self.now.parity as u64 * 4);
@@ -1516,7 +1546,7 @@ impl GpuSampler {
 
 impl exec::State for GpuSampler {
     fn updating(&mut self, updates: &[WorldUpdate]) {
-        if self.opts.incremental {
+        if self.incremental {
             // Event areas for the next frame: edited blocks exactly, chunk loads whole.
             for u in updates {
                 match u {
@@ -1555,10 +1585,10 @@ impl exec::State for GpuSampler {
 
 impl Region for GpuSampler {
     fn compile(&mut self, _: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
-        if self.drawing.drawer.mode().deferred() && (self.opts.order == "painter" || view_code(&self.opts.view) == 4) {
+        if self.drawing.drawer.mode().deferred() && (self.order == "painter" || view_code(&self.vis.view) == 4) {
             anyhow::bail!("order = painter and view = overdraw need draw = raster (both draw forward)");
         }
-        self.drawing.check_state(req.mode, Some(self.opts.order == "painter"))
+        self.drawing.check_state(req.mode, Some(self.order == "painter"))
     }
 
     /// The frame's discovery settings (its kind: static when nothing that affects visibility
@@ -1567,7 +1597,7 @@ impl Region for GpuSampler {
         core.accum.begin(&core.gpu, &req.camera, req.mode);
         self.harvest();
         self.upload_slots(core);
-        let events = self.opts.incremental && self.opts.events;
+        let events = self.incremental && self.cover.events;
         let c = &req.camera;
         let tan_now = (c.fov_y * 0.5).tan();
         let same_pos = self.prev_pos == Some(c.position);
@@ -1578,18 +1608,18 @@ impl Region for GpuSampler {
             self.last_kind = FrameKind::Static;
             self.kind_counts[FrameKind::Static as usize] += 1;
             // Nothing is new in a static frame.
-            self.drawing.write_frame(core, c, req.mode, if view_code(&self.opts.view) == 5 { 2 } else { 0 }, IVec3::ZERO);
-            let tile = self.opts.tile;
+            self.drawing.write_frame(core, c, req.mode, if view_code(&self.vis.view) == 5 { 2 } else { 0 }, IVec3::ZERO);
+            let tile = self.vis.tile;
             let world = Some(core.world.prepare(&core.gpu, c).clone());
             self.now = Frame { redraw: true, parity: (self.frame & 1) as usize, cols: core.width.div_ceil(tile), rows: core.height.div_ceil(tile), world, out: Some(core.output.create_view(&Default::default())), ..Frame::default() };
             return;
         }
         self.frame = self.frame.wrapping_add(1).max(1);
         let parity = (self.frame & 1) as usize;
-        let tile = self.opts.tile.next_power_of_two().clamp(2, MAX_TILE);
-        self.opts.tile = tile;
+        let tile = self.vis.tile.next_power_of_two().clamp(2, MAX_TILE);
+        self.vis.tile = tile;
         let levels = self.levels();
-        let (off_x, off_y) = if self.opts.jitter && !self.opts.incremental {
+        let (off_x, off_y) = if self.vis.jitter && !self.incremental {
             self.rng ^= self.rng << 13;
             self.rng ^= self.rng >> 7;
             self.rng ^= self.rng << 17;
@@ -1610,7 +1640,7 @@ impl Region for GpuSampler {
         let f_px = height as f32 * 0.5 / tan_half_fov;
         let mut full = self.force_full || moved > 64.0;
         let mut any_changed = false;
-        if self.opts.incremental && !self.pending.is_empty() {
+        if self.incremental && !self.pending.is_empty() {
             let vp = c.projection(aspect) * c.view_rotation();
             let mut mask = vec![0u32; (cols * rows) as usize];
             for (lo, size) in self.pending.drain(..) {
@@ -1658,37 +1688,37 @@ impl Region for GpuSampler {
             lat_h: self.sized.lat_h,
             cols,
             rows,
-            keep: if self.opts.incremental { self.opts.keep_unseen } else { self.opts.keep_frames }.max(1),
-            criterion: (self.opts.criterion == "face") as u32,
-            sky_tile: self.opts.sky_tile,
-            max_fp: self.opts.max_footprint,
+            keep: if self.incremental { self.cover.keep_unseen } else { self.vis.keep_frames }.max(1),
+            criterion: (self.vis.criterion == "face") as u32,
+            sky_tile: self.vis.sky_tile,
+            max_fp: self.vis.max_footprint,
             table_mask: self.table_cap - 1,
             list_cap: self.list_cap,
             chunk_mask: CHUNK_TABLE as u32 - 1,
             chunk_probe: self.chunk_probe,
             queue_cap,
             parity: parity as u32,
-            strict: self.opts.strict as u32,
+            strict: self.vis.strict as u32,
             still: (kind == FrameKind::Still) as u32,
-            closure_px: self.opts.closure_px,
-            closure_box: self.opts.closure_box as i32,
-            block_faces: self.opts.block_faces as u32,
-            inline_fp: self.opts.inline_fp,
+            closure_px: self.vis.closure_px,
+            closure_box: self.vis.closure_box as i32,
+            block_faces: self.vis.block_faces as u32,
+            inline_fp: self.vis.inline_fp,
             unused: 0,
-            refresh: self.opts.refresh,
+            refresh: self.cover.refresh,
             par_k: if moved.is_finite() { f_px * moved as f32 / c.near } else { 0.0 },
             changed: any_changed as u32,
             full: full as u32,
-            r_max: self.opts.reveal_tiles.max(1),
+            r_max: self.cover.reveal_tiles.max(1),
             need_off: self.sized.need_off,
-            par_thresh: self.opts.parallax_px,
+            par_thresh: self.cover.parallax_px,
             prev_forward: prev_cam.map(|p| p.0).unwrap_or_default(),
             prev_tan: prev_cam.map(|p| p.3).unwrap_or(1.0),
             prev_right: prev_cam.map(|p| p.1).unwrap_or_default(),
             has_prev: prev_cam.is_some() as u32,
             prev_up: prev_cam.map(|p| p.2).unwrap_or_default(),
-            keep_out: self.opts.keep_frames.max(1),
-            morton: self.opts.morton as u32,
+            keep_out: self.vis.keep_frames.max(1),
+            morton: self.vis.morton as u32,
             morton_side: (cols + 1).max(rows + 1).next_power_of_two(),
             _q: [0; 2],
         };
@@ -1708,7 +1738,7 @@ impl Region for GpuSampler {
             };
         }
         core.gpu.queue.write_buffer(&self.level_buf, 0, bytemuck::cast_slice(&lvls));
-        let view = match view_code(&self.opts.view) {
+        let view = match view_code(&self.vis.view) {
             1 => 1,
             5 => 2,
             _ => 0,
@@ -1755,7 +1785,7 @@ impl Region for GpuSampler {
                 let g = (width * height).div_ceil(256);
                 pass.dispatch_workgroups(g.min(32768), g.div_ceil(32768), 1);
             };
-            if self.opts.incremental {
+            if self.incremental {
                 core.ring.stage(enc, ticket, "sky mask", &self.holes_nodes);
                 pixels(&mut enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sky mask"), timestamp_writes: None }), &self.pipe_sky);
             }
@@ -1764,7 +1794,7 @@ impl Region for GpuSampler {
         if redraw {
             return;
         }
-        if self.opts.audit {
+        if self.vis.audit {
             let (world_bg, storage_bg, bind_disc) = self.groups();
             core.ring.stage(enc, ticket, "audit", &[]);
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover audit"), timestamp_writes: None });
