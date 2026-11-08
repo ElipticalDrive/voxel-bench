@@ -256,6 +256,12 @@ impl Session {
 
     /// Changes one knob of lane `i`.
     pub(super) fn set_param(&mut self, i: usize, name: &str, value: ParamValue) {
+        self.set_knob(i, name, value, false);
+    }
+
+    /// Sets one knob of lane `i`; `again`: sends it even when the lane has that value (a
+    /// switched node's knobs: its new component starts from what it is sent).
+    fn set_knob(&mut self, i: usize, name: &str, value: ParamValue, again: bool) {
         let Some(spec) = self.specs(i).into_iter().find(|s| s.name == name) else {
             self.log(format!("lane {i}: unknown knob `{name}`"));
             return;
@@ -263,7 +269,7 @@ impl Session {
         let Some(value) = spec.clamp(&value) else { return };
         let base = self.plan.run.resolution;
         let Some(lane) = self.lanes.get_mut(i) else { return };
-        if lane.values.get(name) == Some(&value) {
+        if !again && lane.values.get(name) == Some(&value) {
             return;
         }
         lane.values.insert(name.to_string(), value.clone());
@@ -351,6 +357,11 @@ impl Session {
                 self.fan_out(WorldUpdate::LightRemove(ids));
             }
             Cmd::SetParam { lane, name, value } => self.set_param(lane, &name, value),
+            Cmd::Edits { lane, edits } => {
+                for (name, value) in edits {
+                    self.set_knob(lane, &name, value, true);
+                }
+            }
             Cmd::Restart { lane, spec } => {
                 if let Some(l) = self.lanes.get_mut(lane) {
                     let kept = keep_knobs(&l.given, l.latest(), spec.clone());

@@ -63,6 +63,9 @@ pub enum Cmd {
     ClearUserLights,
     /// Change one knob (renderer parameter or `host.*`). Restart-only ones hot-swap.
     SetParam { lane: usize, name: String, value: ParamValue },
+    /// A graph edit the lane takes live, as its knob changes in order (`graph::live_edits`):
+    /// each sent even where the lane has that value already.
+    Edits { lane: usize, edits: Vec<(String, ParamValue)> },
     /// Restart a lane with the plan's spec for it (a hot swap), keeping the knob values
     /// changed since that the plan's spec leaves as it was ([`keep_knobs`]).
     Restart { lane: usize, spec: RendererSpec },

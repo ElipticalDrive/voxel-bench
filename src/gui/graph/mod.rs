@@ -584,21 +584,79 @@ pub fn apply_to_plan(r: &mut RendererSpec, edits: Vec<Edit>) -> (bool, Option<Op
     (changed, open)
 }
 
-/// The component switch `new` makes on `old` if it is one the running renderer takes live
-/// (its slot's knob is live): (slot, component).
-pub fn live_switch(old: &RendererSpec, new: &RendererSpec, params: &[(ParamSpec, ParamValue)]) -> Option<(String, String)> {
+/// The graph edit `new` makes on `old` as the knob changes a running renderer takes live,
+/// if it takes them all live: `new` switches one component, and the worker's graphs then
+/// differ in that node (see [`graph_edits`]).
+pub fn live_edits(old: &RendererSpec, new: &RendererSpec, params: &[(ParamSpec, ParamValue)]) -> Option<Vec<(String, ParamValue)>> {
     let (Some(a), Some(b)) = (&old.compose, &new.compose) else { return None };
     if old.name != new.name || old.sites != new.sites || old.graph.is_some() || new.graph.is_some() || old.ran_graph.is_some() || new.ran_graph.is_some() {
         return None;
     }
-    let diff: Vec<mr_components::Slot> = mr_components::Slot::ALL.into_iter().filter(|s| a.get(*s) != b.get(*s)).collect();
-    let [slot] = diff.as_slice() else { return None };
-    params.iter().any(|(p, _)| p.name == slot.name() && p.live).then(|| (slot.name().to_string(), b.get(*slot).to_string()))
+    if mr_components::Slot::ALL.into_iter().filter(|s| a.get(*s) != b.get(*s)).count() != 1 {
+        return None;
+    }
+    let (Ok(Some(g0)), Ok(Some(g1))) = (old.worker_graph(), new.worker_graph()) else { return None };
+    let specs: Vec<ParamSpec> = params.iter().map(|(p, _)| p.clone()).collect();
+    let edits = graph_edits(&g0, &g1, &specs);
+    edits.iter().all(|(k, _)| params.iter().any(|(p, _)| p.name == *k && p.live)).then_some(edits)
+}
+
+/// The knob changes that take a renderer running graph `old` to `new`, node by node (by
+/// id): a node whose component changed (or that came or went: to or from `none`) is its
+/// slot's switch, then every knob its new component owns (the node's value, else the
+/// default: nothing of the old component's state carries over); a node that kept its
+/// component, the knobs that changed (one removed back to its default).
+pub fn graph_edits(old: &Graph, new: &Graph, params: &[ParamSpec]) -> Vec<(String, ParamValue)> {
+    let value = |p: &ParamSpec, n: &mr_components::graph::Node| knobs::option_value(p, &n.knobs);
+    let owns = |p: &ParamSpec, n: &mr_components::graph::Node| p.owner.as_ref().is_some_and(|(role, comps)| n.role.name() == role && comps.contains(&n.component));
+    let mut v = vec![];
+    for id in old.nodes.keys().chain(new.nodes.keys().filter(|id| !old.nodes.contains_key(*id))) {
+        let (a, b) = (old.nodes.get(id), new.nodes.get(id));
+        let Some(slot) = a.or(b).and_then(|n| n.role.slot()) else { continue };
+        match (a, b) {
+            (Some(a), Some(b)) if a.component == b.component => {
+                v.extend(params.iter().filter(|p| owns(p, b) && value(p, a) != value(p, b)).map(|p| (p.name.clone(), value(p, b))));
+            }
+            (_, Some(b)) => {
+                v.push((slot.name().to_string(), ParamValue::Choice(b.component.clone())));
+                v.extend(params.iter().filter(|p| owns(p, b)).map(|p| (p.name.clone(), value(p, b))));
+            }
+            (Some(_), None) => v.push((slot.name().to_string(), ParamValue::Choice("none".into()))),
+            (None, None) => {}
+        }
+    }
+    v
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A live switch sends the new node's knobs as the plan has them (not the component's
+    /// defaults), and a switch the preset cannot take live is none.
+    #[test]
+    fn live_switch_sends_the_nodes_knobs() {
+        let spec = |slot: mr_components::Slot, c: &str| {
+            let mut r = RendererSpec::from_cli("discover-gpu").unwrap();
+            r.options.insert("refresh".into(), 4.into());
+            r.resolve().unwrap();
+            let mut comp = r.compose.clone().unwrap();
+            comp.set(slot, c);
+            r.set_compose(comp).unwrap();
+            r
+        };
+        let old = spec(mr_components::Slot::Holes, "none");
+        let (_, params) = crate::pipelines::params_of("discover-gpu").unwrap();
+        let knobs: Vec<_> = params.iter().map(|p| (p.clone(), knobs::option_value(p, &old.options))).collect();
+        let edits = live_edits(&old, &spec(mr_components::Slot::Holes, "coverage"), &knobs).unwrap();
+        assert_eq!(edits[0], ("holes".into(), ParamValue::Choice("coverage".into())));
+        assert!(edits.contains(&("refresh".into(), ParamValue::Int(4))), "{edits:?}");
+        assert!(edits.contains(&("keep_unseen".into(), ParamValue::Int(64))), "{edits:?}");
+        let back = live_edits(&spec(mr_components::Slot::Holes, "coverage"), &old, &knobs).unwrap();
+        assert_eq!(back, vec![("holes".into(), ParamValue::Choice("none".into()))]);
+        // Storage is not live on discover-gpu.
+        assert!(live_edits(&old, &spec(mr_components::Slot::Storage, "tree64"), &knobs).is_none());
+    }
 
     /// Every choice the editor lists on every preset's graph is answered (runs, or a reason),
     /// and the answers come quickly enough for a picker.

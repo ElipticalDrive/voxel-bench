@@ -50,6 +50,7 @@ impl App {
                     self.focus = None;
                 }
                 LaneAction::Set(lane, name, value) => self.send(Cmd::SetParam { lane, name, value }),
+                LaneAction::Edits(lane, edits) => self.send(Cmd::Edits { lane, edits }),
                 LaneAction::Tune(lane, config) => self.send(Cmd::Tune { lane, config }),
                 LaneAction::SaveToPlan(i, spec) => {
                     if let Some(r) = self.plan.renderers.get_mut(i) {
@@ -267,8 +268,8 @@ impl App {
                         }
                     }
                     // A component the running preset switches live, else a hot swap.
-                    graph::Edit::Spec(spec) => match graph::live_switch(&l.spec, &spec, &l.params) {
-                        Some((slot, c)) => actions.push(LaneAction::Set(i, slot, mr_core::ParamValue::Choice(c))),
+                    graph::Edit::Spec(spec) => match graph::live_edits(&l.spec, &spec, &l.params) {
+                        Some(edits) => actions.push(LaneAction::Edits(i, edits)),
                         None => actions.push(LaneAction::Swap(i, spec)),
                     },
                     graph::Edit::Open(sel) => self.open_graph(ui.ctx(), graph::Of::Lane(i), sel),
@@ -414,6 +415,7 @@ enum LaneAction {
     Remove(usize),
     SaveToPlan(usize, crate::plan::RendererSpec),
     Set(usize, String, mr_core::ParamValue),
+    Edits(usize, Vec<(String, mr_core::ParamValue)>),
     Tune(usize, Option<tune::TunerConfig>),
 }
 

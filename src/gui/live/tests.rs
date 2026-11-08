@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 use crate::tune;
+use mr_components::Slot;
 
 use super::*;
 
@@ -70,11 +71,20 @@ fn live_session_end_to_end() {
     live.send(Cmd::SetParam { lane: 0, name: "host.render_scale".into(), value: ParamValue::Float(0.5) });
     wait(&live.shared, "resize", 20, |s| s.lanes[0].frame.as_ref().is_some_and(|f| f.width == 160 && f.height == 90));
 
-    // Live compile-time knobs (lane 1, raster-gpu): the drawer is rebuilt at the next frame.
-    for (name, value) in [("geometry", "naive"), ("draw", "visbuffer"), ("geometry", "greedy"), ("draw", "raster")] {
-        let frames = live.shared.lock().unwrap().lanes[1].frames;
-        live.send(Cmd::SetParam { lane: 1, name: name.into(), value: ParamValue::Choice(value.into()) });
-        wait(&live.shared, &format!("{name} = {value}"), 20, |s| s.lanes[1].frames > frames + 3 && s.lanes[1].status == LaneStatus::Running);
+    // Live component switches as graph edits (lane 1, raster-gpu): the drawer is rebuilt at
+    // the next frame.
+    for (slot, value) in [(Slot::Geometry, "naive"), (Slot::Draw, "visbuffer"), (Slot::Geometry, "greedy"), (Slot::Draw, "raster")] {
+        let (frames, spec, params) = {
+            let sh = live.shared.lock().unwrap();
+            (sh.lanes[1].frames, sh.lanes[1].spec.clone(), sh.lanes[1].params.clone())
+        };
+        let mut new = spec.clone();
+        let mut c = new.compose.clone().unwrap();
+        c.set(slot, value);
+        new.set_compose(c).unwrap();
+        let edits = crate::gui::graph::live_edits(&spec, &new, &params).unwrap_or_else(|| panic!("{slot:?} = {value} live"));
+        live.send(Cmd::Edits { lane: 1, edits });
+        wait(&live.shared, &format!("{slot:?} = {value}"), 20, |s| s.lanes[1].frames > frames + 3 && s.lanes[1].status == LaneStatus::Running && s.lanes[1].spec.compose.as_ref().is_some_and(|c| c.get(slot) == value));
     }
 
     // Hot swap (restart-only knob): lane 1 must keep producing frames throughout.

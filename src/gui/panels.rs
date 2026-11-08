@@ -388,8 +388,8 @@ impl App {
                                 self.knob_edits.insert((i, name), value);
                             }
                         }
-                        graph::Edit::Spec(new) => match graph::live_switch(&spec, &new, &knobs) {
-                            Some((slot, c)) => self.send(Cmd::SetParam { lane: i, name: slot, value: mr_core::ParamValue::Choice(c) }),
+                        graph::Edit::Spec(new) => match graph::live_edits(&spec, &new, &knobs) {
+                            Some(edits) => self.send(Cmd::Edits { lane: i, edits }),
                             None => self.send(Cmd::Swap { lane: i, spec: new }),
                         },
                         graph::Edit::Open(_) => {}
