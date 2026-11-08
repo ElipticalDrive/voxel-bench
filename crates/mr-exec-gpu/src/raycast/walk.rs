@@ -79,31 +79,13 @@ fn params() -> Vec<ParamSpec> {
     p
 }
 
+/// The preset's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct Options {
-    storage: String,
-    visibility: String,
-    traversal: String,
-    shadow_storage: String,
-    shadow_traversal: String,
-    shading: String,
-    placement: String,
-    prepass: String,
-    meshes: String,
-    tile: u32,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
-    exact: bool,
-    skip2: bool,
-    skip4: bool,
-    skip8: bool,
-    skip16: bool,
     view: String,
     view_max: u32,
     dispatch: String,
-    shadows: Shadows,
     pool_mb: u32,
     max_steps: u32,
     frames_in_flight: usize,
@@ -111,33 +93,54 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self {
-            storage: "bricks".into(),
-            visibility: "raycast".into(),
-            traversal: "refloor".into(),
-            shadow_storage: "same".into(),
-            shadow_traversal: "same".into(),
-            shading: "direct".into(),
-            placement: "inline".into(),
-            prepass: "none".into(),
-            meshes: "composite".into(),
-            tile: 8,
-            bounces: 1,
-            spp: 1,
-            accumulate: true,
-            exact: true,
-            skip2: true,
-            skip4: true,
-            skip8: true,
-            skip16: true,
-            view: "image".into(),
-            view_max: 256,
-            dispatch: "compute".into(),
-            shadows: Shadows::All,
-            pool_mb: 2048,
-            max_steps: 2048,
-            frames_in_flight: 3,
-        }
+        Self { view: "image".into(), view_max: 256, dispatch: "compute".into(), pool_mb: 2048, max_steps: 2048, frames_in_flight: 3 }
+    }
+}
+
+/// The primary rays' kernel node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct KernelKnobs {
+    exact: bool,
+    skip2: bool,
+    skip4: bool,
+    skip8: bool,
+    skip16: bool,
+}
+
+impl Default for KernelKnobs {
+    fn default() -> Self {
+        Self { exact: true, skip2: true, skip4: true, skip8: true, skip16: true }
+    }
+}
+
+/// The prepass node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct PrepassKnobs {
+    tile: u32,
+}
+
+impl Default for PrepassKnobs {
+    fn default() -> Self {
+        Self { tile: 8 }
+    }
+}
+
+/// The shading node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct ShadingKnobs {
+    placement: String,
+    shadows: Shadows,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
+}
+
+impl Default for ShadingKnobs {
+    fn default() -> Self {
+        Self { placement: "inline".into(), shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
     }
 }
 
@@ -145,7 +148,7 @@ impl Default for Options {
 #[derive(Clone, PartialEq, Debug)]
 struct Composition {
     /// The ray-casting sites' storages and kernels: kernel 0 is the primary
-    /// rays' (its constants from this preset's knobs); the other sites' kernels are their
+    /// rays' (its constants from its node's knobs and this preset's step limit); the other sites' kernels are their
     /// own nodes, or the primary's when the graph binds them to it.
     walks: Walks,
     /// Kernel of the shadow, bounce (pathtrace; else the shadow rays') and mesh-shadow rays.
@@ -171,16 +174,16 @@ struct Composition {
 const STORAGE_GROUPS: &[u32] = &[2, 4, 5, 6];
 
 impl Composition {
-    /// The composition of graph `g` with this preset's knobs `opts` (LOD if `max_lod`
+    /// The composition of graph `g` (its nodes' knobs) with this preset's knobs `opts` (LOD if `max_lod`
     /// levels are streamed and every walk handles them).
     fn of(g: &graph::Checked, opts: &Options, max_lod: u8) -> anyhow::Result<Self> {
-        require(PRESET, Slot::Visibility, &opts.visibility)?;
-        // Every site's walk; the primary kernel's constants are this preset's knobs.
+        // Every site's walk; the primary kernel's constants are its node's knobs.
         let mut walks = Walks::of(g);
         let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("raycast-gpu: {} `{port}` rays are not bound", role.name()));
-        let primary = walks.site(g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
-        walks.kernels[primary].component = require(PRESET, Slot::Traversal, &opts.traversal)?;
-        walks.kernels[primary].consts = mr_components::shaders::KernelConsts { lod: false, exact: opts.exact, levels: [opts.skip2, opts.skip4, opts.skip8, opts.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)), max_steps: opts.max_steps };
+        let primary_site = site(Role::Visibility, "primary")?;
+        let k: KernelKnobs = g.knobs(primary_site.kernel).map_err(anyhow::Error::msg)?;
+        let primary = walks.site(g, primary_site, STORAGE_GROUPS, false);
+        walks.kernels[primary].consts = mr_components::shaders::KernelConsts { lod: false, exact: k.exact, levels: [k.skip2, k.skip4, k.skip8, k.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)), max_steps: opts.max_steps };
         walks.set_max_steps(opts.max_steps);
         let shadow = match super::shading_site(g, "shadow") {
             Some(_) => walks.site(g, site(Role::Shading, "shadow")?, STORAGE_GROUPS, false),
@@ -191,17 +194,22 @@ impl Composition {
             _ => shadow,
         };
         let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+        let (prepass, pk) = match g.find(Role::Prepass) {
+            Some(id) => (g.node(id).component.clone(), g.knobs::<PrepassKnobs>(id).map_err(anyhow::Error::msg)?),
+            None => ("none".into(), PrepassKnobs::default()),
+        };
+        let meshes = g.find(Role::Meshes).is_some_and(|id| g.node(id).component != "none");
         let mut comp = Self {
             walks,
             shadow,
             bounce,
             mesh_shadow,
-            prepass: require(PRESET, Slot::Prepass, &opts.prepass)?,
-            tile: opts.tile.clamp(1, 64),
+            prepass,
+            tile: pk.tile.clamp(1, 64),
             view: View::parse(&opts.view)?,
             lod: false,
             fragment: parse_dispatch(&opts.dispatch)?,
-            meshes: require(PRESET, Slot::Meshes, &opts.meshes)? != "none",
+            meshes,
         };
         if max_lod > 0 {
             comp.set_lod(true);
@@ -314,7 +322,8 @@ impl Walk {
         if let Some(why) = feature_blocker(&comp) {
             anyhow::bail!(why);
         }
-        let shading = require(PRESET, Slot::Shading, &opts.shading)?;
+        let shading = g.node(g.shading()).component.clone();
+        let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         // Fragment too: `dispatch = "fragment"` runs the pixels (and walks the storages) in a
         // fragment shader.
         let stages = wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT;
@@ -326,12 +335,12 @@ impl Walk {
                 stages,
                 max_lod: if comp.lod { p.max_lod.min(6) } else { 0 },
                 voxels: false,
-                records: mr_components::parse_placement(&opts.placement)?,
+                records: mr_components::parse_placement(&k.placement)?,
                 shading: &shading,
-                bounces: opts.bounces,
-                spp: opts.spp,
-                accumulate: opts.accumulate,
-                shadows: opts.shadows,
+                bounces: k.bounces,
+                spp: k.spp,
+                accumulate: k.accumulate,
+                shadows: k.shadows,
                 max_steps: opts.max_steps,
                 pool_mb: opts.pool_mb,
                 frames_in_flight: opts.frames_in_flight,
@@ -621,10 +630,17 @@ mod tests {
                                 g.nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), "m.kernel".into());
                                 graphs.push(g);
                             }
-                            for (gi, g) in graphs.into_iter().enumerate() {
+                            for (gi, mut g) in graphs.into_iter().enumerate() {
+                                // The primary kernel's and the prepass's knobs on their nodes.
+                                let kernel = g.nodes.get_mut("kernel").unwrap();
+                                kernel.knobs.insert("exact".into(), toml::Value::Boolean(false));
+                                kernel.knobs.insert("skip4".into(), toml::Value::Boolean(false));
+                                if let Some(pre) = g.nodes.get_mut("prepass") {
+                                    pre.knobs.insert("tile".into(), toml::Value::Integer(tile));
+                                }
                                 assert!(g.validate().is_ok(), "{g:?}");
                                 let ck = g.check().unwrap();
-                                let opts = Options { storage: st.to_string(), traversal: k.to_string(), shading: shading.to_string(), prepass: prepass.into(), tile, exact: false, skip4: false, view: "steps".into(), max_steps: 77, ..Default::default() };
+                                let opts = Options { view: "steps".into(), max_steps: 77, ..Default::default() };
                                 let lod = *st == "bricks" && *k == "refloor" && ss == "same" && sk == "same";
                                 let c = Composition::of(&ck, &opts, if lod { 4 } else { 0 }).unwrap_or_else(|e| panic!("{g:?}: {e}"));
                                 // The walks of their own lack LOD.
