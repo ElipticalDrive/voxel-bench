@@ -16,7 +16,7 @@ use mr_components::shaders::Walks;
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::Bound;
 use mr_components::visibility::splat;
-use mr_components::{Slot, names_on, require};
+use mr_components::{Slot, names_on};
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
@@ -49,26 +49,46 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
+/// The preset's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct Options {
-    storage: String,
-    geometry: String,
-    visibility: String,
-    traversal: String,
-    shading: String,
-    max_splat: u32,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
-    shadows: Shadows,
     pool_mb: u32,
     frames_in_flight: usize,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { storage: "bricks".into(), geometry: "points".into(), visibility: "splat".into(), traversal: "refloor".into(), shading: "direct".into(), max_splat: 16, bounces: 1, spp: 1, accumulate: true, shadows: Shadows::All, pool_mb: 2048, frames_in_flight: 3 }
+        Self { pool_mb: 2048, frames_in_flight: 3 }
+    }
+}
+
+/// The visibility node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct VisibilityKnobs {
+    max_splat: u32,
+}
+
+impl Default for VisibilityKnobs {
+    fn default() -> Self {
+        Self { max_splat: 16 }
+    }
+}
+
+/// The shading node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct ShadingKnobs {
+    shadows: Shadows,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
+}
+
+impl Default for ShadingKnobs {
+    fn default() -> Self {
+        Self { shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
     }
 }
 
@@ -110,9 +130,10 @@ fn big_buffer(gpu: &Gpu, points_bytes: u64) -> wgpu::Buffer {
 impl Splat {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
-        for (slot, name) in [(Slot::Geometry, &opts.geometry), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
-            require(PRESET, slot, name)?;
-        }
+        let visibility = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{PRESET}: no visibility node"))?;
+        let v: VisibilityKnobs = g.knobs(visibility).map_err(anyhow::Error::msg)?;
+        let shading = &g.node(g.shading()).component;
+        let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         // The points cross from the CPU (geometry) to the GPU (visibility): the schedule's
         // transfer, its adapter `upload`.
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
@@ -121,7 +142,7 @@ impl Splat {
         }
         // The sites' walks: shadow rays (the storage and traversal stages),
         // bounces their own or the same.
-        let (walks, mut program, own, deps) = program(g, &opts.shading)?;
+        let (walks, mut program, own, deps) = program(g, shading)?;
         let core = Core::new(
             p,
             devices,
@@ -135,11 +156,11 @@ impl Splat {
                 max_lod: 0,
                 voxels: false,
                 records: false,
-                shading: &opts.shading,
-                bounces: opts.bounces,
-                spp: opts.spp,
-                accumulate: opts.accumulate,
-                shadows: opts.shadows,
+                shading,
+                bounces: k.bounces,
+                spp: k.spp,
+                accumulate: k.accumulate,
+                shadows: k.shadows,
                 max_steps: 2048,
                 pool_mb: opts.pool_mb,
                 frames_in_flight: opts.frames_in_flight,
@@ -157,7 +178,7 @@ impl Splat {
         let (points_buf, zbuf, idbuf) = (points_buffer(gpu, 1024), pixel_buffer(gpu, p.width, p.height), pixel_buffer(gpu, p.width, p.height));
         let big_buf = big_buffer(gpu, points_buf.size());
         let bind0 = bind0(&core, &layout0, &points_buf, &zbuf, &idbuf, &big_buf);
-        let splat = Self { pipes, layout0, zbuf, idbuf, points_buf, big_buf, bind0, points: Points::default(), count: 0, max_splat: opts.max_splat.clamp(1, 64), world: None, bound: Bound(Vec::new()) };
+        let splat = Self { pipes, layout0, zbuf, idbuf, points_buf, big_buf, bind0, points: Points::default(), count: 0, max_splat: v.max_splat.clamp(1, 64), world: None, bound: Bound(Vec::new()) };
         Ok((core, splat))
     }
 

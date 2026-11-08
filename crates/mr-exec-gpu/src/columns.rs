@@ -42,17 +42,10 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
+/// The preset's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct Options {
-    storage: String,
-    visibility: String,
-    shading: String,
-    placement: String,
-    shadows: Shadows,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
     frames_in_flight: usize,
 }
 
@@ -60,7 +53,24 @@ pub(crate) const PRESET: &str = "columns-gpu";
 
 impl Default for Options {
     fn default() -> Self {
-        Self { storage: "heightmap".into(), visibility: "columns".into(), shading: "direct".into(), placement: "inline".into(), shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true, frames_in_flight: 3 }
+        Self { frames_in_flight: 3 }
+    }
+}
+
+/// The shading node's knobs.
+#[derive(Deserialize)]
+#[serde(default)]
+struct ShadingKnobs {
+    placement: String,
+    shadows: Shadows,
+    bounces: u32,
+    spp: u32,
+    accumulate: bool,
+}
+
+impl Default for ShadingKnobs {
+    fn default() -> Self {
+        Self { placement: "inline".into(), shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
     }
 }
 
@@ -83,11 +93,9 @@ pub(crate) struct Columns {
 impl Columns {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
-        use mr_components::{Slot, require};
-        for (slot, name) in [(Slot::Storage, &opts.storage), (Slot::Visibility, &opts.visibility), (Slot::Shading, &opts.shading)] {
-            require(PRESET, slot, name)?;
-        }
-        let deferred = mr_components::parse_placement(&opts.placement)?;
+        let shading = &g.node(g.shading()).component;
+        let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
+        let deferred = mr_components::parse_placement(&k.placement)?;
         // The voxel world holds the chunks, the texture atlas and the lighting parameters only.
         let core = Core::new(
             p,
@@ -102,11 +110,11 @@ impl Columns {
                 max_lod: 0,
                 voxels: false,
                 records: deferred,
-                shading: &opts.shading,
-                bounces: opts.bounces,
-                spp: opts.spp,
-                accumulate: opts.accumulate,
-                shadows: opts.shadows,
+                shading,
+                bounces: k.bounces,
+                spp: k.spp,
+                accumulate: k.accumulate,
+                shadows: k.shadows,
                 max_steps: 1,
                 pool_mb: 64,
                 frames_in_flight: opts.frames_in_flight,
@@ -118,7 +126,7 @@ impl Columns {
         let hm_info = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("heightmap info"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         gpu.queue.write_buffer(&hm_info, 0, bytemuck::cast_slice(&hm.info()));
         // Shadow and bounce rays walk the heightmap (its `ctrace`).
-        let (program, root, deps) = program(&opts.shading, deferred, g.tone());
+        let (program, root, deps) = program(shading, deferred, g.tone());
         let module = mr_gpu::program::compile(&gpu.device, "voxelspace", &program, &root, &deps);
         let mut entries = core.layout_entries();
         entries.push(storage_entry(REGION_BINDING, true, core.stages));
