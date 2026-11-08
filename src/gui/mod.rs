@@ -153,7 +153,7 @@ pub fn param_to_toml(v: &mr_core::ParamValue) -> toml::Value {
 }
 
 fn option_texts(plan: &Plan) -> Vec<String> {
-    plan.renderers.iter().map(|r| toml::to_string(&r.extra_options()).unwrap_or_default()).collect()
+    plan.renderers.iter().map(|r| toml::to_string(&r.options).unwrap_or_default()).collect()
 }
 
 impl App {

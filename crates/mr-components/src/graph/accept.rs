@@ -58,7 +58,7 @@ impl Graph {
 
     /// Whether the graph's executor builds it (`Graph::check`, its timings, the nodes it
     /// declares: [`Checked::builder`], its GPUs and APIs), with the nearest flat composition
-    /// (its skeleton's, else the preset's default; for labels and the flat options) and
+    /// (its skeleton's, else the preset's default; for labels and the sites form) and
     /// whether that composition is exactly the graph. Fails with the reason.
     pub fn accept(&self) -> Result<(Composition, bool), String> {
         let ck = self.check()?;

@@ -321,7 +321,7 @@ impl Ctx<'_> {
                 sites: spec.sites.clone(),
                 graph: spec.graph.clone(),
                 graph_key: spec.pipeline().and_then(|g| g.key().ok()),
-                options: spec.extra_options(),
+                options: spec.options.clone(),
                 view_radius: spec.view_radius(run),
                 link: spec.link(),
                 mode,
@@ -466,7 +466,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
                     return Some(s.clone());
                 }
                 let e = s.effective(mode).ok()?;
-                if seen.insert((e.label().to_string(), toml::to_string(&e.extra_options()).unwrap_or_default())) {
+                if seen.insert((e.label().to_string(), toml::to_string(&e.options).unwrap_or_default())) {
                     Some(e)
                 } else {
                     moot += 1;

@@ -174,11 +174,9 @@ impl Graph {
         v
     }
 
-    /// The knobs of the skeleton's nodes as the preset's flat options (the nodes on free
-    /// sites keep theirs: presets read them per instance). Two skeleton nodes with
-    /// different values of one knob cannot be expressed yet.
-    pub fn flat_knobs(&self) -> Result<toml::Table, String> {
-        let skel = self.normalised()?.skeleton();
+    /// The preset's own knobs this graph spells (not node knobs, which the executors read
+    /// from the nodes): the API choice (`isa`, `dispatch`) and the timings (`pipelined`).
+    pub fn preset_options(&self) -> Result<toml::Table, String> {
         let preset = self.preset().unwrap_or_default();
         let mut t = toml::Table::new();
         if let Some((b, ch)) = preset_info(preset).and_then(|b| b.api_choice.map(|ch| (b, ch)))
@@ -188,21 +186,27 @@ impl Graph {
         for (k, v) in self.normalised()?.timing_options() {
             t.insert(k.into(), v.into());
         }
-        // (The link's and the client's knobs are theirs: the worker's, not the preset's.)
-        for (id, n) in self.nodes.iter().filter(|(id, n)| skel.nodes.contains_key(*id) && n.role.slot().is_some()) {
-            for (k, v) in &n.knobs {
-                if let Some(old) = t.insert(k.clone(), v.clone()).filter(|old| old != v) {
-                    return Err(format!("knob `{k}` set to {old} and {v} (`{id}`): `{preset}` has one `{k}` for its stages"));
-                }
-            }
-        }
         Ok(t)
     }
 }
 
 impl Graph {
-    /// The graph with flat knob values placed on the nodes they belong to (what the
-    /// executors read, and what a compiled build bakes in, for its cache key): each
+    /// The knobs set on the skeleton's nodes (the preset's stages; the first value of each),
+    /// as a preset-wide knob list shows them.
+    pub fn stage_knobs(&self) -> Result<toml::Table, String> {
+        let g = self.normalised()?;
+        let skel = g.skeleton();
+        let mut t = toml::Table::new();
+        for (_, n) in g.nodes.iter().filter(|(id, n)| skel.nodes.contains_key(*id) && n.role.slot().is_some()) {
+            for (k, v) in &n.knobs {
+                t.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        Ok(t)
+    }
+
+    /// The graph with the options that are node knobs placed on the nodes they belong to
+    /// (what the executors read, and what a compiled build bakes in, for its cache key): each
     /// `(spec, value)` replaces the knob on the skeleton's nodes its `owner` names (the
     /// preset's stages; nodes on free sites keep their own knobs). A knob whose owner is not
     /// in the graph is moot here and left out;

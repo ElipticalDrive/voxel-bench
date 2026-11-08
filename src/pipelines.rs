@@ -98,19 +98,25 @@ pub struct Compiled {
 pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
     use mr_components::graph::{Device, Role};
     let Some((executor, params)) = params_of(&spec.name) else { return Ok(None) };
-    let graph = spec.pipeline().context("the renderer has no graph")?;
-    // A knob's value: the renderer's, else the preset's default.
-    let value = |k: &str| -> anyhow::Result<(&mr_core::ParamSpec, toml::Value)> {
-        let p = params.iter().find(|p| p.name == k).with_context(|| format!("`{}` has no knob `{k}`", spec.name))?;
-        Ok((p, spec.options.get(k).cloned().map_or_else(|| toml::Value::try_from(p.default.to_json()), Ok)?))
-    };
-    let knobs: Vec<_> = bakes(&spec.name).iter().map(|k| value(k)).collect::<anyhow::Result<_>>()?;
-    let graph = graph.with_knobs(&knobs).map_err(anyhow::Error::msg)?;
+    // The graph the worker gets, every baked knob valued on each node of its owner (given
+    // there, else the preset's default): what the worker checks the build against.
+    let mut graph = spec.worker_graph()?.context("the renderer has no graph")?;
+    let mut baked: Vec<(String, toml::Value)> = vec![];
+    for k in bakes(&spec.name) {
+        let p = params.iter().find(|p| p.name == *k).with_context(|| format!("`{}` has no knob `{k}`", spec.name))?;
+        let (role, comps) = p.owner.as_ref().with_context(|| format!("baked knob `{k}` belongs to no node"))?;
+        let default = toml::Value::try_from(p.default.to_json())?;
+        let mut value = None;
+        for n in graph.nodes.values_mut().filter(|n| n.role.name() == role && comps.contains(&n.component)) {
+            let v = n.knobs.entry(k.to_string()).or_insert_with(|| default.clone()).clone();
+            if value.get_or_insert_with(|| v.clone()) != &v {
+                bail!("`{k}` differs between nodes: one build bakes one value");
+            }
+        }
+        // (A knob whose owner is not in the graph is moot: not compiled in.)
+        baked.extend(value.map(|v| (k.to_string(), v)));
+    }
     let ck = graph.check().map_err(anyhow::Error::msg)?;
-    // The knobs compiled in: the baked ones that are on a node (not moot), and on the ray
-    // casting lane the components the flat options name.
-    let on_node = |k: &str| graph.nodes.values().any(|n| n.knobs.contains_key(k));
-    let mut baked: Vec<(String, toml::Value)> = knobs.iter().filter(|(p, _)| on_node(&p.name)).map(|(p, v)| (p.name.clone(), v.clone())).collect();
     let rust = |v: &toml::Value| -> anyhow::Result<String> { Ok(format!("{:?}", serde_json::to_string(v)?)) };
     let variant = |s: &str| s[..1].to_uppercase() + &s[1..];
     let mut consts = vec![];
@@ -809,5 +815,14 @@ mod tests {
             s.resolve().unwrap();
             assert_eq!(bake(&s).unwrap().unwrap(), b, "{r}");
         }
+        // The values are the nodes': two kernels with two values of a baked knob are no one build.
+        let mut g = bake(&spec("raycast-cpu:prefix+incremental,shadow=incremental", &[])).unwrap().unwrap().graph;
+        let kernels: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == mr_components::graph::Role::Traversal).map(|(id, _)| id.clone()).collect();
+        assert_eq!(kernels.len(), 2, "{kernels:?}");
+        g.nodes.get_mut(&kernels[0]).unwrap().knobs.insert("exact".into(), false.into());
+        let mut s = RendererSpec::new("raycast-cpu");
+        s.graph = Some(g);
+        s.resolve().unwrap();
+        assert!(bake(&s).unwrap_err().to_string().contains("`exact` differs between nodes"));
     }
 }

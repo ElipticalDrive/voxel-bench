@@ -149,7 +149,6 @@ mod tests {
         .unwrap();
         let c = g.to_composition().unwrap();
         assert_eq!(c, Composition { storage: "prefix".into(), traversal: "incremental".into(), meshes: "none".into(), ..Default::default() });
-        assert_eq!(g.flat_knobs().unwrap().get("exact"), Some(&toml::Value::Boolean(true)));
         // Shadow rays through their own kernel over the same storage.
         let mut sep = g.clone();
         sep.nodes.insert("k2".into(), Node::new(Role::Traversal, "sphere").with(&[("storage", "s")]));
@@ -229,7 +228,7 @@ mod tests {
         let g = set(&cpu, &[("visibility", Api::Avx2), ("shading", Api::Avx2)]);
         let (c, exact) = g.accept().unwrap();
         assert!(exact && c == Composition::new("raycast-cpu"));
-        assert_eq!(g.flat_knobs().unwrap().get("isa"), Some(&toml::Value::String("avx2".into())));
+        assert_eq!(g.preset_options().unwrap().get("isa"), Some(&toml::Value::String("avx2".into())));
         let ck = g.check().unwrap();
         assert_eq!(ck.apis.get("kernel"), Some(&Api::Avx2), "the kernel runs with its caller");
         // A node without an API of its own or its callers' runs its component's only one on
@@ -252,7 +251,7 @@ mod tests {
         assert_eq!(set(&gc, &[("visibility", Api::Compute)]).key(), Graph::from_composition(&gc).unwrap().key(), "the default: not in the key");
         // raycast-gpu's walk: a compute thread or a fragment shader per pixel (`dispatch`).
         let frag = set(&gc, &[("visibility", Api::Raster)]);
-        assert_eq!(frag.flat_knobs().unwrap().get("dispatch"), Some(&toml::Value::String("fragment".into())));
+        assert_eq!(frag.preset_options().unwrap().get("dispatch"), Some(&toml::Value::String("fragment".into())));
         assert!(frag.validate().is_ok() && frag.key() != Graph::from_composition(&gc).unwrap().key());
         let e = set(&gc, &[("visibility", Api::Raster), ("shading", Api::Compute)]).validate().unwrap_err();
         assert!(e.contains("with one api, its `dispatch`"), "{e}");
@@ -358,11 +357,6 @@ mod tests {
             g.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "rq".into());
         });
         assert!(!g.accept().unwrap().1);
-        // Knobs of free-site nodes stay with their nodes.
-        let mut g = with(Composition::default(), &|g| own(g, "s", "prefix", "incremental", &[("shading", "shadow")]));
-        g.nodes.get_mut("s.kernel").unwrap().knobs.insert("exact".into(), toml::Value::Boolean(false));
-        g.nodes.get_mut("kernel").unwrap().knobs.insert("exact".into(), toml::Value::Boolean(true));
-        assert_eq!(g.flat_knobs().unwrap().get("exact"), Some(&toml::Value::Boolean(true)));
     }
 
     /// Every graph one or two site bindings away from a preset's compositions
@@ -834,7 +828,7 @@ mod tests {
         assert_eq!(sync.timing_options(), vec![("pipelined", false)]);
         // Both run, as the same composition; the knob carries the difference.
         assert_eq!(sync.accept().unwrap(), (Composition::new("discover-cpu"), true));
-        assert_eq!(sync.flat_knobs().unwrap().get("pipelined"), Some(&toml::Value::Boolean(false)));
+        assert_eq!(sync.preset_options().unwrap().get("pipelined"), Some(&toml::Value::Boolean(false)));
         assert_ne!(sync.key().unwrap(), g.key().unwrap());
     }
 

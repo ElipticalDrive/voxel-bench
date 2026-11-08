@@ -167,9 +167,10 @@ impl Session {
                 Ok(w) => {
                     let info = w.info.clone();
                     let init_ms = w.init_ms;
-                    // Renderer knob values from its options (else defaults).
+                    // Renderer knob values as its spec sets them (else defaults).
+                    let values = lane.run.spec.knob_values();
                     for p in &info.params {
-                        let v = lane.run.spec.options.get(&p.name).and_then(|t| serde_json::to_value(t).ok()).and_then(|j| p.from_json(&j)).unwrap_or(p.default.clone());
+                        let v = values.get(&p.name).and_then(|t| serde_json::to_value(t).ok()).and_then(|j| p.from_json(&j)).unwrap_or(p.default.clone());
                         lane.values.insert(p.name.clone(), v);
                     }
                     // Now that its LOD support is known, stream the levels it can use.
@@ -287,8 +288,9 @@ impl Session {
             }
             let info = lane.run.worker.as_ref().map(|w| w.info.clone());
             if let Some(info) = info {
+                let values = lane.run.spec.knob_values();
                 for p in &info.params {
-                    let v = lane.run.spec.options.get(&p.name).and_then(|t| serde_json::to_value(t).ok()).and_then(|j| p.from_json(&j)).unwrap_or(p.default.clone());
+                    let v = values.get(&p.name).and_then(|t| serde_json::to_value(t).ok()).and_then(|j| p.from_json(&j)).unwrap_or(p.default.clone());
                     lane.values.insert(p.name.clone(), v);
                 }
                 lane.info = Some(info);

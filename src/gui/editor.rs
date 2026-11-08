@@ -514,7 +514,8 @@ fn is_preset_renderer(name: &str) -> bool {
 fn composition(ui: &mut Ui, i: usize, r: &mut RendererSpec, run: &crate::plan::RunSpec, ctx: &mut EditorCtx) -> Changed {
     use super::graph::{self, Of};
     let params: &[mr_core::ParamSpec] = ctx.infos.iter().find(|x| x.name == r.name).map_or(&[], |x| &x.params);
-    let knobs: Vec<_> = params.iter().map(|p| (p.clone(), super::knobs::option_value(p, &r.options))).collect();
+    let values = r.knob_values();
+    let knobs: Vec<_> = params.iter().map(|p| (p.clone(), super::knobs::option_value(p, &values))).collect();
     let edits = graph::summary(ui, &format!("{:?}", Of::Plan(i)), r, &knobs, false, None, ctx.trials, ctx.infos, run);
     let (changed, open) = graph::apply_to_plan(r, edits);
     if let Some(sel) = open {
@@ -551,7 +552,7 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
                 });
                 if r.compose.is_some() {
                     if composition(ui, i, r, &run, ctx) {
-                        ctx.option_text[i] = toml::to_string(&r.extra_options()).unwrap_or_default();
+                        ctx.option_text[i] = toml::to_string(&r.options).unwrap_or_default();
                         c = true;
                     }
                 } else if let Some(info) = ctx.infos.iter().find(|x| x.name == r.name) {

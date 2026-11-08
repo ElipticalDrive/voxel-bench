@@ -495,13 +495,11 @@ impl Composition {
         format!("{}: {}", self.preset, parts.join(" + "))
     }
 
-    /// The renderer entry to run and the options that select the components (fills
-    /// defaults first).
-    pub fn resolve(&mut self) -> Result<(&'static str, Vec<(&'static str, String)>), String> {
+    /// The renderer entry to run (fills defaults first).
+    pub fn resolve(&mut self) -> Result<&'static str, String> {
         self.fill_defaults();
         self.validate()?;
-        let b = preset_info(&self.preset).unwrap();
-        Ok((b.renderer.unwrap(), self.slots().map(|s| (s.name(), self.get(s).to_string())).collect()))
+        Ok(preset_info(&self.preset).unwrap().renderer.unwrap())
     }
 
     /// Whether this composition draws passes of mode `m`: meshes need a meshes stage that
@@ -806,7 +804,7 @@ mod tests {
             assert!(ok, "rayquery-gpu {} `{}`", c.slot.name(), c.name);
         }
         let mut raster = Composition { geometry: "cubes".into(), ..Composition::new("raster-gpu") };
-        assert_eq!(raster.resolve().unwrap().0, "raster-gpu");
+        assert_eq!(raster.resolve().unwrap(), "raster-gpu");
         assert_eq!(raster.label(), "raster-gpu: bricks + cubes + raster");
         let vb = Composition { draw: "visbuffer".into(), ..Composition::new("raster-gpu") };
         assert_eq!(vb.label(), "raster-gpu: bricks + greedy + visbuffer", "labels as before the draw stage");

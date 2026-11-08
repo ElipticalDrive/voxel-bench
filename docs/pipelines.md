@@ -101,6 +101,10 @@ nodes.shading = { role = "shading", component = "direct", device = "gpu1", knobs
 Here the shading runs on the second GPU, with a shadow walk of its own there, and it shades
 the previous frame's hit records while the first GPU casts the current frame's rays.
 
+A graph the sites form can say is loaded and saved in that form, unless its stages carry
+knobs: those stay on their nodes (each node keeps its own values), so it stays a graph. A
+renderer's `options` set a knob on every stage it belongs to.
+
 `multirenderer graph <renderer>` prints any renderer in this form, together with its sites
 form, its canonical form, its cache key and its schedule: the passes in frame order, with the
 nodes that are fused into each pass and the transfers between devices.

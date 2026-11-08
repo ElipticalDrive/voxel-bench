@@ -176,7 +176,7 @@ fn restarts_keep_knobs() {
     new.options.insert("max_steps".into(), toml::Value::Integer(500));
     let kept = keep_knobs(&given, &now, new);
     assert_eq!((value(&kept, "max_steps"), value(&kept, "accumulate")), (Some(toml::Value::Integer(500)), Some(toml::Value::Boolean(false))));
-    assert_eq!(kept.options.get("storage").and_then(|v| v.as_str()), Some("prefix"));
+    assert_eq!(kept.compose.as_ref().unwrap().storage, "prefix");
     // Another preset: its own knobs only.
     let kept = keep_knobs(&given, &now, RendererSpec::from_cli("raster-gpu").unwrap());
     assert_eq!(value(&kept, "max_steps"), None);

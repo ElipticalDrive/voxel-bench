@@ -221,21 +221,26 @@ impl RendererSpec {
         s
     }
 
-    /// For compositions: checks them and sets `name` (the preset's renderer) and the
-    /// options that select the components.
+    /// For compositions: checks them and sets `name` (the preset's renderer); options naming
+    /// a slot's component move into the composition.
     pub fn resolve(&mut self) -> anyhow::Result<()> {
         self.ran_graph = None;
         self.compose_label = Default::default();
         if let Some(g) = &self.graph {
             let (c, _) = g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
-            for (k, v) in g.flat_knobs().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
+            for (k, v) in g.preset_options().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
                 if self.options.get(&k).is_some_and(|o| *o != v) {
                     bail!("renderer graph: knob `{k}` is set in the graph and in `options`");
                 }
                 self.options.insert(k, v);
             }
-            // Written in the sites form where it has one (one form per pipeline).
-            match g.sites_form().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
+            if let Some(k) = self.options.keys().find(|k| mr_components::Slot::ALL.iter().any(|s| s.name() == k.as_str())) {
+                bail!("renderer graph: `{k}` is a node's component, not an option");
+            }
+            // Written in the sites form where it has one (one form per pipeline); a graph
+            // whose stages have knobs stays a graph (the knobs stay on their nodes).
+            let knobs = g.nodes.values().any(|n| n.role.slot().is_some() && !n.knobs.is_empty());
+            match if knobs { None } else { g.sites_form().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? } {
                 Some((c, sites)) => {
                     self.graph = None;
                     self.compose = Some(c);
@@ -254,11 +259,13 @@ impl RendererSpec {
             self.compose = Some(mr_components::Composition::new(b.name));
         }
         if let Some(c) = &mut self.compose {
-            let (name, opts) = c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?;
-            self.name = name.to_string();
-            for (k, v) in opts {
-                self.options.insert(k.into(), toml::Value::String(v));
+            // A component given as an option (`traversal = "sphere"`) is the composition's.
+            for slot in mr_components::Slot::ALL {
+                if let Some(v) = self.options.remove(slot.name()) {
+                    c.set(slot, v.as_str().with_context(|| format!("option `{}`: a component name", slot.name()))?);
+                }
             }
+            self.name = c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?.to_string();
             if self.graph.is_none() && !self.sites.is_empty() {
                 let g = mr_components::graph::Graph::from_composition(c).and_then(|g| g.with_sites(&self.sites)).and_then(|g| g.accept().map(|_| g)).map_err(|e| anyhow::anyhow!("renderer {}: sites: {e}", c.label()))?;
                 self.ran_graph = Some(g);
@@ -441,14 +448,14 @@ impl RendererSpec {
         g.with_knobs(&knobs).map(Some).map_err(|e| anyhow::anyhow!("{}: {e}", self.label()))
     }
 
-    /// Options as the user sees them: without the keys a composition derives.
-    pub fn extra_options(&self) -> toml::Table {
-        let mut t = self.options.clone();
-        if self.compose.is_some() {
-            for k in mr_components::Slot::ALL.map(|s| s.name()) {
-                t.remove(k);
-            }
+    /// The knob values it runs with as far as they are set: its stages' node knobs, its
+    /// components (the slot knobs), then its options (which win, as `worker_graph` places them).
+    pub fn knob_values(&self) -> toml::Table {
+        let mut t = self.ran_graph.as_ref().and_then(|g| g.stage_knobs().ok()).unwrap_or_default();
+        if let Some(c) = &self.compose {
+            t.extend(c.slots().map(|s| (s.name().to_string(), c.get(s).into())));
         }
+        t.extend(self.options.clone());
         t
     }
 
@@ -654,20 +661,17 @@ impl Plan {
 
 impl Plan {
     /// TOML of the plan. Compositions are written as their `compose` table only (the
-    /// derived renderer name and component options are left out).
+    /// derived renderer name is left out).
     pub fn to_toml(&self) -> anyhow::Result<String> {
         let mut p = self.clone();
         for r in &mut p.renderers {
             if r.compose.is_some() {
                 r.name.clear();
-                for k in mr_components::Slot::ALL.map(|s| s.name()) {
-                    r.options.remove(k);
-                }
             }
-            // A graph is written as such: its knobs stay in its nodes.
+            // A graph is written as such: what it spells stays in it.
             if let Some(g) = &r.graph {
                 r.compose = None;
-                for k in g.flat_knobs().unwrap_or_default().keys() {
+                for k in g.preset_options().unwrap_or_default().keys() {
                     r.options.remove(k);
                 }
             }
@@ -954,18 +958,20 @@ mod tests {
         }
     }
 
-    /// Compositions resolve to their preset's renderer and component options, are
-    /// validated, and save as just the `compose` table.
+    /// Compositions resolve to their preset's renderer, are validated, and save as just the
+    /// `compose` table; a component given as an option is the composition's.
     #[test]
     fn compositions() {
         let text = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n\n[[renderer]]\ncompose = { storage = \"prefix\", traversal = \"incremental\" }\noptions = { exact = false }\n";
         let p = Plan::parse(text, &[]).unwrap();
         let r = &p.renderers[0];
         assert_eq!(r.name, "raycast-gpu");
-        assert_eq!(r.options.get("storage").and_then(|v| v.as_str()), Some("prefix"));
-        assert_eq!(r.options.get("traversal").and_then(|v| v.as_str()), Some("incremental"));
-        assert_eq!(r.options.get("visibility").and_then(|v| v.as_str()), Some("raycast"));
+        let c = r.compose.as_ref().unwrap();
+        assert_eq!((c.storage.as_str(), c.traversal.as_str(), c.visibility.as_str()), ("prefix", "incremental", "raycast"));
+        assert!(r.options.get("storage").is_none() && r.knob_values().get("storage").and_then(|v| v.as_str()) == Some("prefix"));
         assert_eq!(r.label(), "raycast-gpu: prefix + incremental");
+        let opt = Plan::parse(&text.replace("{ exact = false }", "{ exact = false, traversal = \"sphere\" }"), &[]).unwrap();
+        assert_eq!((opt.renderers[0].compose.as_ref().unwrap().traversal.as_str(), opt.renderers[0].options.get("traversal")), ("sphere", None));
         let saved = p.to_toml().unwrap();
         assert!(!saved.contains("name = \"raycast-gpu\"") && saved.contains("compose") && !saved.contains("[renderer.options]\nstorage"), "{saved}");
         assert_eq!(Plan::parse(&saved, &[]).unwrap().renderers[0].options, r.options);
@@ -981,35 +987,36 @@ mod tests {
         assert_eq!((r.name.as_str(), r.label()), ("raster-gpu", "raster-gpu: bricks + cubes + raster"));
         assert!(Plan::parse(&text.replace("traversal = \"incremental\"", "geometry = \"greedy\""), &[]).unwrap_err().to_string().contains("no geometry slot"));
         let spec = RendererSpec::from_cli("raster-gpu:hier+naive+visbuffer").unwrap();
-        assert_eq!(spec.options.get("geometry").and_then(|v| v.as_str()), Some("naive"));
+        assert_eq!(spec.compose.as_ref().unwrap().geometry, "naive");
         assert!(RendererSpec::from_cli("raster-gpu:hier+naive").is_err());
         let spec = RendererSpec::from_cli("raster-gpu:distance+greedy+raster+direct+depth+sphere").unwrap();
-        assert_eq!(spec.options.get("traversal").and_then(|v| v.as_str()), Some("sphere"));
+        assert_eq!(spec.compose.as_ref().unwrap().traversal, "sphere");
         assert_eq!(spec.label(), "raster-gpu: distance + greedy + raster + sphere");
         let spec = RendererSpec::from_cli("raster-gpu:hier+naive+gbuffer").unwrap();
-        assert_eq!(spec.options.get("draw").and_then(|v| v.as_str()), Some("gbuffer"));
+        assert_eq!(spec.compose.as_ref().unwrap().draw, "gbuffer");
         // Naming a preset's renderer gives its default composition.
         let named = text.replace("compose = { storage = \"prefix\", traversal = \"incremental\" }", "name = \"discover-gpu\"").replace("options = { exact = false }", "");
         let r = &Plan::parse(&named, &[]).unwrap().renderers[0];
         assert_eq!(r.label(), "discover-gpu: bricks + quadtree");
         assert!(Plan::parse(&named, &[]).unwrap().to_toml().unwrap().contains("compose"));
         let spec = RendererSpec::from_cli("raycast-gpu:tree64+refloor+direct+beam").unwrap();
-        assert_eq!(spec.options.get("prepass").and_then(|v| v.as_str()), Some("beam"));
+        assert_eq!(spec.compose.as_ref().unwrap().prepass, "beam");
         let spec = RendererSpec::from_cli("raycast-gpu:distance+sphere").unwrap();
-        assert_eq!(spec.options.get("storage").and_then(|v| v.as_str()), Some("distance"));
+        assert_eq!(spec.compose.as_ref().unwrap().storage, "distance");
         assert!(RendererSpec::from_cli("raycast-gpu:nope+sphere").is_err());
         // The meshes stage: last in the CLI form; `none` drops mesh passes.
         let spec = RendererSpec::from_cli("raycast-gpu:bricks+refloor+direct+none+none").unwrap();
-        assert_eq!(spec.options.get("meshes").and_then(|v| v.as_str()), Some("none"));
+        assert_eq!(spec.compose.as_ref().unwrap().meshes, "none");
         assert_eq!(spec.label(), "raycast-gpu: bricks + refloor + no meshes");
         let info = mr_core::RendererInfo { name: "raycast-gpu".into(), description: String::new(), tags: vec!["meshes".into()], modes: vec![mr_core::RenderMode::Unlit, mr_core::RenderMode::Lit], max_lod: 0, params: vec![] };
         let lit_meshes = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
         assert!(!spec.supports(&info, lit_meshes) && spec.supports(&info, PassMode::LIT));
         assert!(RendererSpec::from_cli("raycast-gpu:bricks+refloor").unwrap().supports(&info, lit_meshes));
-        assert_eq!(RendererSpec::from_cli("raster-gpu:bricks+greedy+raster+direct+none").unwrap().options.get("meshes").and_then(|v| v.as_str()), Some("none"));
+        assert_eq!(RendererSpec::from_cli("raster-gpu:bricks+greedy+raster+direct+none").unwrap().compose.unwrap().meshes, "none");
     }
 
-    /// A renderer written as a graph loads as the composition it is.
+    /// A renderer written as a graph loads as the composition it is, unless its stages have
+    /// knobs: then it stays the graph, its knobs on its nodes.
     #[test]
     fn graph_renderers() {
         let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
@@ -1026,8 +1033,11 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let g = Plan::parse(&format!("{base}{graph}"), &[]).unwrap();
         let c = Plan::parse(&format!("{base}{compose}"), &[]).unwrap();
         let (g, c) = (&g.renderers[0], &c.renderers[0]);
-        assert_eq!((&g.name, g.label(), &g.options), (&c.name, c.label(), &c.options));
-        assert!(g.graph.is_none() && g.compose == c.compose);
+        assert_eq!((&g.name, g.label()), (&c.name, c.label()));
+        assert!(g.graph.is_some() && g.options.is_empty() && g.compose == c.compose);
+        assert_eq!(g.knob_values().get("exact"), c.knob_values().get("exact"));
+        let bare = Plan::parse(&format!("{base}{}", graph.replace(", knobs = { exact = false }", "")), &[]).unwrap();
+        assert!(bare.renderers[0].graph.is_none() && bare.renderers[0].compose == c.compose);
         let bad = graph.replace("primary = \"k\"", "primary = \"s\"");
         let e = Plan::parse(&format!("{base}{bad}"), &[]).unwrap_err().to_string();
         assert!(e.contains("takes ray queries"), "{e}");
@@ -1037,8 +1047,8 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let p = Plan::parse(&format!("{base}{own}"), &[]).unwrap();
         let r = &p.renderers[0];
         assert!(r.label().starts_with("raycast-gpu: prefix + incremental + no meshes [graph "), "{}", r.label());
-        assert_eq!(r.options.get("exact"), Some(&toml::Value::Boolean(false)), "the primary kernel's knob");
-        assert!(r.options.get("skip8").is_none());
+        assert_eq!(r.knob_values().get("exact"), Some(&toml::Value::Boolean(false)), "the primary kernel's knob");
+        assert!(r.options.is_empty());
         assert!(r.pipeline().unwrap().nodes.contains_key("k2"));
         // Saved as the graph it is (its knobs in its nodes), and loads back the same.
         let saved = p.to_toml().unwrap();
@@ -1046,8 +1056,8 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let again = Plan::parse(&saved, &[]).unwrap();
         assert_eq!(again.renderers[0].pipeline().unwrap().key(), r.pipeline().unwrap().key());
         assert_eq!(again.renderers[0].label(), r.label());
-        // Without knobs on its own kernel, the same graph has a sites form and is kept so.
-        let plain = own.replace(", knobs = { exact = true, skip8 = false }", "");
+        // Without knobs on its kernels, the same graph has a sites form and is kept so.
+        let plain = own.replace(", knobs = { exact = true, skip8 = false }", "").replace(", knobs = { exact = false }", "");
         let p = Plan::parse(&format!("{base}{plain}"), &[]).unwrap();
         let r = &p.renderers[0];
         assert!(r.graph.is_none() && r.sites.get("shadow").map(String::as_str) == Some("incremental"), "{:?}", r.sites);

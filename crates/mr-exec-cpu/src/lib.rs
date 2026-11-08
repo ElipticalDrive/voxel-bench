@@ -173,8 +173,8 @@ mod tests {
     }
 
     /// The valid graphs one or two edits from the pipelines' own are either refused by what
-    /// their executor declares, with the reason, or built (with the flat options of the
-    /// nearest composition, as the host sends them); `accept` takes exactly the built ones.
+    /// their executor declares, with the reason, or built (with the preset options the graph
+    /// spells, as the host sends them); `accept` takes exactly the built ones.
     #[test]
     fn executors_build_what_they_declare() {
         let (mut built, mut refused) = (0, 0);
@@ -186,9 +186,8 @@ mod tests {
                 refused += 1;
                 continue;
             }
-            let (c, _) = ck.graph.accept().unwrap_or_else(|why| panic!("`{e}` builds a graph `accept` refuses ({why}): {key}"));
-            // The flat options the host sends with the graph: its nearest composition's.
-            let opts: serde_json::Map<String, serde_json::Value> = c.clone().resolve().unwrap().1.into_iter().map(|(k, v)| (k.to_string(), v.into())).collect();
+            ck.graph.accept().unwrap_or_else(|why| panic!("`{e}` builds a graph `accept` refuses ({why}): {key}"));
+            let opts = ck.graph.preset_options().unwrap();
             let p = InitParams {
                 width: 32,
                 height: 16,
