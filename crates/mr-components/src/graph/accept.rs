@@ -1,7 +1,6 @@
-//! Acceptance by the executors (validity, timings, declarations, device and API blockers)
-//! and the nearest flat composition (the skeleton).
+//! Acceptance by the executors (validity, timings, declarations, device and API blockers).
 
-use crate::{Api, Composition, Slot, preset_info};
+use crate::{Api, preset_info};
 
 use super::*;
 
@@ -34,33 +33,9 @@ impl Graph {
         n.inputs.get("storage").or(n.inputs.get("geometry")).map(String::as_str)
     }
 
-    /// The skeleton: free sites rebound as a flat composition binds them (exposure tests
-    /// to the lead kernel's storage, secondary rays unbound so they follow the lead), and
-    /// the nodes only they reached dropped.
-    pub(super) fn skeleton(&self) -> Graph {
-        let mut g = self.clone();
-        let preset = g.preset().unwrap_or_default();
-        let lead = g.lead();
-        let lead_storage = lead.as_ref().and_then(|(c, p)| g.nodes[c].inputs.get(*p)).and_then(|k| g.walked(k)).map(String::from);
-        for (caster, port, _) in g.sites() {
-            if lead.as_ref().is_some_and(|(c, p)| *c == caster && *p == port) || follows_lead(preset, g.nodes[&caster].role, port) {
-                continue;
-            }
-            let n = g.nodes.get_mut(&caster).unwrap();
-            match (port, &lead_storage) {
-                ("exposure", Some(s)) => drop(n.inputs.insert(port.into(), s.clone())),
-                ("exposure", None) => {}
-                _ => drop(n.inputs.remove(port)),
-            }
-        }
-        g.pruned()
-    }
-
     /// Whether the graph's executor builds it (`Graph::check`, its timings, the nodes it
-    /// declares: [`Checked::builder`], its GPUs and the APIs it declares), with the nearest flat composition
-    /// (its skeleton's, else the preset's default; for labels and the sites form) and
-    /// whether that composition is exactly the graph. Fails with the reason.
-    pub fn accept(&self) -> Result<(Composition, bool), String> {
+    /// declares: [`Checked::builder`], its GPUs and the APIs it declares). Fails with the reason.
+    pub fn accept(&self) -> Result<(), String> {
         let ck = self.check()?;
         let preset = ck.preset.ok_or_else(|| ck.built().err().unwrap_or_else(|| "no preset has this shape".into()))?;
         // Timings an executor lets the graph choose; every other edge runs now.
@@ -77,118 +52,12 @@ impl Graph {
         if let Some(why) = device_blocker(&ck).or_else(|| api_blocker(&ck)) {
             return Err(why);
         }
-        let mut c = ck.graph.skeleton().skeleton_composition().unwrap_or_else(|_| {
-            let mut c = Composition::new(preset);
-            c.fill_defaults();
-            c
-        });
-        // Without knobs and APIs (the composition has neither; `raycast-cpu` reads its API as `isa`)
-        // and with free timings as `prev` (their knobs: see `TIMING_KNOBS`).
-        let strip = |g: &Graph| {
-            let mut g = g.clone();
-            g.nodes.values_mut().for_each(|n| {
-                n.knobs.clear();
-                n.api = None;
-                // The worker runs the link, the client and a generator on the client, whichever
-                // they are; the preset sees the client's messages.
-                match n.role {
-                    Role::Client => n.component = "pick".into(),
-                    Role::Link => n.component = "free".into(),
-                    Role::Generator => n.device = None,
-                    // Every executor compiles in any tone mapper.
-                    Role::Post => n.component = "clamp".into(),
-                    _ => {}
-                }
-                let role = n.role;
-                // A free timing compares as `prev` (whichever it is; a cycle stays closed).
-                for (_, _, port, _) in FREE_TIMINGS.iter().filter(|(e, r, _, _)| *e == preset && *r == role) {
-                    if n.inputs.contains_key(*port) {
-                        n.timing.insert(port.to_string(), When::Prev);
-                    }
-                }
-            });
-            g.canonical()
-        };
-        // The secondary-ray stages where the composition has them.
-        let b = preset_info(preset).unwrap();
-        let g = &ck.graph;
-        let shading = ck.shading();
-        if let (true, Some(s), Some(k)) = (b.has(Slot::ShadowTraversal), g.nodes[shading].inputs.get("shadow"), g.lead().and_then(|(c, p)| g.nodes[&c].inputs.get(p).cloned())) {
-            let mut e = c.clone();
-            if *s == k {
-                e.shadow_storage = "same".into();
-                e.shadow_traversal = "same".into();
-            } else {
-                e.shadow_traversal = if g.nodes[s].component == g.nodes[&k].component { "same".into() } else { g.nodes[s].component.clone() };
-                let (ss, ps) = (g.walked(s).unwrap_or(""), g.walked(&k).unwrap_or(""));
-                e.shadow_storage = if ss == ps { "same".into() } else { g.nodes.get(ss).map_or(String::new(), |n| n.component.clone()) };
-            }
-            if e.check_slots().is_ok() {
-                c = e;
-            }
-        }
-        let exact = strip(&Graph::from_composition(&c)?)? == strip(self)?;
-        Ok((c, exact))
-    }
-
-    /// The composition the preset runs the graph as (see [`Self::accept`]).
-    pub fn to_composition(&self) -> Result<Composition, String> {
-        self.accept().map(|(c, _)| c)
-    }
-
-    /// A skeleton's flat composition: each stage node in its slot.
-    fn skeleton_composition(&self) -> Result<Composition, String> {
-        let ck = self.check()?;
-        let g = &ck.graph;
-        let n = |id: &str| &g.nodes[id];
-        let input = |id: &str, p: &str| n(id).inputs.get(p).map(String::as_str);
-        let preset = ck.preset.ok_or("no preset has this shape")?;
-        let mut c = Composition { preset: preset.into(), ..Composition::new("") };
-        let b = preset_info(preset).unwrap();
-        let shading = ck.shading();
-        c.shading = n(shading).component.clone();
-        let hits = input(shading, "hits").unwrap();
-        let vis = if n(hits).role == Role::Draw {
-            c.draw = n(hits).component.clone();
-            input(hits, "faces").unwrap()
-        } else {
-            hits
-        };
-        if n(vis).role != Role::Visibility {
-            return Err(format!("`{}` draws faces straight from `{vis}`: this preset needs a visibility stage between them", preset));
-        }
-        c.visibility = n(vis).component.clone();
-        let take = |c: &mut Composition, id: &str| {
-            if let Some(slot) = n(id).role.slot() {
-                c.set(slot, &n(id).component);
-            }
-        };
-        n(vis).inputs.values().for_each(|src| take(&mut c, src));
-        if n(hits).role == Role::Draw {
-            input(hits, "meshes").into_iter().for_each(|m| take(&mut c, m));
-        }
-        // The lead kernel's storage; rasterisers' only rays are the shadow rays.
-        if let Some((caster, port)) = g.lead() {
-            let k = input(&caster, port).unwrap();
-            take(&mut c, k);
-            if let Some(st) = g.walked(k) {
-                take(&mut c, st);
-            }
-        }
-        // Stages a preset has but the graph leaves out are at their "off" component.
-        for (slot, off) in [(Slot::Prepass, "none"), (Slot::Meshes, "none")] {
-            if b.has(slot) && c.get(slot).is_empty() {
-                c.set(slot, off);
-            }
-        }
-        c.fill_defaults();
-        c.check_slots()?;
-        Ok(c)
+        Ok(())
     }
 
     /// Checks the graph and that its preset runs it.
     pub fn validate(&self) -> Result<(), String> {
-        self.accept().map(|_| ())
+        self.accept()
     }
 }
 
@@ -294,20 +163,3 @@ pub fn of_init(kind: &str, p: &mr_core::InitParams) -> anyhow::Result<Checked> {
     g.validate().map_err(anyhow::Error::msg)?;
     g.check().map_err(anyhow::Error::msg)
 }
-
-/// Whether preset `executor`'s composition casts the `port` site of its `role` node
-/// through its lead kernel (or for exposure tests, reads the lead kernel's storage), so the
-/// skeleton rebinds it there; the other sites are the graph's own.
-fn follows_lead(executor: &str, role: Role, port: &str) -> bool {
-    !matches!(
-        (executor, role, port),
-        ("raycast-gpu", Role::Shading | Role::Meshes, _)
-            | ("rayquery-gpu", Role::Shading, _)
-            | ("raster-gpu" | "splat-gpu", Role::Shading, "bounce")
-            | ("raster-gpu", Role::Meshes, "shadow")
-            | ("discover-gpu", Role::Visibility, "exposure")
-            | ("discover-gpu" | "discover-cpu", Role::Shading, _)
-            | ("raycast-cpu", Role::Shading, "shadow")
-    )
-}
-

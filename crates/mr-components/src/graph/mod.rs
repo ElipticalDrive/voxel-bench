@@ -19,9 +19,8 @@
 //! and the conversion from today's flat [`Composition`](crate::Composition)s (so every stored record loads as a
 //! graph). Presets consume graphs ([`of_init`], [`Checked::site`]). Each executor declares
 //! the nodes it builds ([`Builds`]); [`Graph::accept`] takes a valid graph whose nodes its
-//! executor declares and returns the nearest flat composition (its *skeleton's*: the graph
-//! with the sites a composition casts through its lead kernel rebound there) and whether that
-//! composition is exactly the graph.
+//! executor declares. [`Graph::shorthand`] reads a flat composition and the sites bound
+//! otherwise off the graph's nodes, for labels, the CLI and plans.
 
 mod accept;
 mod builds;
@@ -68,8 +67,8 @@ mod tests {
         all
     }
 
-    /// Today's compositions load as graphs that validate, and convert back to a composition
-    /// with the same graph.
+    /// Today's compositions load as graphs that validate, and their shorthand gives the
+    /// same graph back.
     #[test]
     fn compositions_round_trip() {
         let all = every_composition();
@@ -78,8 +77,9 @@ mod tests {
         for c in &all {
             let g = Graph::from_composition(c).unwrap();
             assert_eq!(g.preset(), Some(c.preset.as_str()), "{}", c.label());
-            let back = g.to_composition().unwrap_or_else(|e| panic!("{}: {e}\n{g:#?}", c.label()));
-            assert_eq!(Graph::from_composition(&back).unwrap().canonical(), g.canonical(), "{}", c.label());
+            let sh = g.shorthand().unwrap_or_else(|e| panic!("{}: {e}\n{g:#?}", c.label()));
+            assert!(sh.exact, "{}", c.label());
+            assert_eq!(Graph::from_composition(&sh.compose).unwrap().with_sites(&sh.sites).unwrap().canonical(), g.canonical(), "{}", c.label());
             // Exactly, except `same` and an explicit name meaning one graph.
             let same = |c: &Composition| {
                 let mut c = c.clone();
@@ -91,7 +91,16 @@ mod tests {
                 }
                 c
             };
-            assert_eq!(same(&back), same(c), "{}", c.label());
+            // The composition itself, but for the secondary-ray stages (sites in the shorthand).
+            let primary = |c: &Composition| {
+                let mut c = c.clone();
+                for s in [Slot::ShadowStorage, Slot::ShadowTraversal] {
+                    let d = preset_info(&c.preset).and_then(|b| b.default_for(s)).unwrap_or("");
+                    c.set(s, d);
+                }
+                c
+            };
+            assert_eq!(primary(&sh.compose), primary(c), "{}", c.label());
             keys.entry(g.key().unwrap()).or_insert_with(Vec::new).push(same(c));
         }
         // Distinct compositions are distinct graphs, unless they differ only in `same`.
@@ -147,14 +156,13 @@ mod tests {
             "#,
         )
         .unwrap();
-        let c = g.to_composition().unwrap();
+        let c = g.shorthand().unwrap().compose;
         assert_eq!(c, Composition { storage: "prefix".into(), traversal: "incremental".into(), meshes: "none".into(), ..Default::default() });
         // Shadow rays through their own kernel over the same storage.
         let mut sep = g.clone();
         sep.nodes.insert("k2".into(), Node::new(Role::Traversal, "sphere").with(&[("storage", "s")]));
         sep.nodes.get_mut("out").unwrap().inputs.insert("shadow".into(), "k2".into());
-        let c = sep.to_composition().unwrap();
-        assert_eq!((c.shadow_storage.as_str(), c.shadow_traversal.as_str()), ("same", "sphere"));
+        assert_eq!(sep.shorthand().unwrap().sites, BTreeMap::from([("shadow".to_string(), "sphere".to_string())]));
     }
 
     /// Invalid graphs say why.
@@ -226,8 +234,8 @@ mod tests {
         // cpu: one API for its one loop, read as its `isa` knob; fused nodes follow.
         let cpu = Composition::new("raycast-cpu");
         let g = set(&cpu, &[("visibility", Api::Avx2), ("shading", Api::Avx2)]);
-        let (c, exact) = g.accept().unwrap();
-        assert!(exact && c == Composition::new("raycast-cpu"));
+        g.accept().unwrap();
+        assert_eq!(g.shorthand().unwrap(), Shorthand { compose: Composition::new("raycast-cpu"), sites: BTreeMap::new(), exact: true });
         assert_eq!(g.preset_options().unwrap().get("isa"), Some(&toml::Value::String("avx2".into())));
         let ck = g.check().unwrap();
         assert_eq!(ck.apis.get("kernel"), Some(&Api::Avx2), "the kernel runs with its caller");
@@ -315,11 +323,12 @@ mod tests {
             own(g, "b", "rows", "rowrun", &[("shading", "bounce")]);
             own(g, "m", "tree64", "refloor", &[("meshes", "shadow")]);
         });
-        let (c, exact) = g.accept().unwrap();
-        assert!(!exact && c.shadow_storage == "distance" && c.shadow_traversal == "sphere", "{c:?}");
-        // The same shadow and bounce walk is a composition again.
+        g.accept().unwrap();
+        let sh = g.shorthand().unwrap();
+        assert!(sh.exact && sh.sites.len() == 3, "{sh:?}");
+        // The same shadow and bounce walk: the others follow the shadow rays.
         let g = with(pt.clone(), &|g| own(g, "s", "distance", "sphere", &[("shading", "shadow"), ("shading", "bounce"), ("meshes", "shadow")]));
-        assert!(g.accept().unwrap().1);
+        assert_eq!(g.shorthand().unwrap().sites, BTreeMap::from([("shadow".to_string(), "distance/sphere".to_string())]));
         // Unbound bounces follow the shadow rays.
         let mut h = g.clone();
         h.nodes.get_mut("shading").unwrap().inputs.remove("bounce");
@@ -327,18 +336,19 @@ mod tests {
         // raster-gpu: bounces apart from the shadow rays, also as ray queries over the
         // geometry it draws (before, a kernel it lacked).
         let r = Composition { shading: "pathtrace".into(), ..Composition::new("raster-gpu") };
-        assert!(!with(r.clone(), &|g| own(g, "b", "prefix", "incremental", &[("shading", "bounce")])).accept().unwrap().1);
+        assert_eq!(with(r.clone(), &|g| own(g, "b", "prefix", "incremental", &[("shading", "bounce")])).shorthand().unwrap().sites, BTreeMap::from([("bounce".to_string(), "prefix/incremental".to_string())]));
         let q = with(r, &|g| {
             g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "geometry")]));
             g.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "rq".into());
         });
-        assert!(!q.accept().unwrap().1);
+        // (The sites form has no words for a walk over the geometry the drawer draws.)
+        assert!(!q.shorthand().unwrap().exact);
         // discover-gpu: exposure tests read another storage than the discovery rays walk.
         let d = with(Composition { storage: "distance".into(), traversal: "sphere".into(), ..Composition::new("discover-gpu") }, &|g| {
             g.nodes.insert("x".into(), Node::new(Role::Storage, "bricks"));
             g.nodes.get_mut("visibility").unwrap().inputs.insert("exposure".into(), "x".into());
         });
-        assert!(!d.accept().unwrap().1);
+        assert!(d.shorthand().unwrap().exact);
         // discover-cpu: exposure is the discovery storage; GPU shadow rays their own.
         let cd = Composition::new("discover-cpu");
         let e = with(cd.clone(), &|g| {
@@ -355,7 +365,7 @@ mod tests {
             g.nodes.insert("sk".into(), Node::new(Role::Traversal, "incremental").with(&[("storage", "storage")]));
             g.nodes.get_mut("shading").unwrap().inputs.insert("shadow".into(), "sk".into());
         });
-        assert!(!g.accept().unwrap().1);
+        assert!(g.shorthand().unwrap().exact);
         let e = with(cpu, &|g| own(g, "s", "hier", "refloor", &[("shading", "shadow")])).validate().unwrap_err();
         assert!(e.contains("`raycast-cpu` builds 1 storage node"), "{e}");
         // rayquery-gpu: its shading's rays free: a kernel node of their own over its
@@ -364,7 +374,7 @@ mod tests {
             g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "geometry")]));
             g.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "rq".into());
         });
-        assert!(!g.accept().unwrap().1);
+        assert!(g.shorthand().unwrap().exact);
     }
 
     /// Every graph one or two site bindings away from a preset's compositions
@@ -391,7 +401,8 @@ mod tests {
             if g.accept().is_err() {
                 return false;
             }
-            let (c2, s2) = g.sites_form().unwrap().unwrap_or_else(|| panic!("{}: {sites:?} has no sites form", c.label()));
+            let Shorthand { compose: c2, sites: s2, exact } = g.shorthand().unwrap();
+            assert!(exact, "{}: {sites:?} has no shorthand", c.label());
             let again = Graph::from_composition(&c2).unwrap().with_sites(&s2).unwrap();
             assert_eq!(again.canonical(), g.canonical(), "{} {sites:?} → {} {s2:?}", c.label(), c2.label());
             assert!(g.label().unwrap().starts_with(&c2.label()));
@@ -423,7 +434,7 @@ mod tests {
         assert_eq!(g.label().unwrap(), "raycast-gpu: bricks + refloor + pathtrace, bounce = tree64/sphere");
         // Rebinding the shadow rays takes the bounces along: a composition again.
         let g = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("shadow".into(), "rows/rowrun".into())])).unwrap();
-        assert_eq!(g.label().unwrap(), "raycast-gpu: bricks + refloor + shadow rows + shadow rowrun + pathtrace");
+        assert_eq!(g.label().unwrap(), "raycast-gpu: bricks + refloor + pathtrace, shadow = rows/rowrun");
         let e = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("nope".into(), "x".into())])).unwrap_err();
         assert!(e.contains("no site `nope`"), "{e}");
         let e = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("bounce".into(), "x/refloor".into())])).unwrap_err();
@@ -451,7 +462,7 @@ mod tests {
         assert_eq!(g.key().unwrap(), of("discover-cpu").with_options(&now).key().unwrap());
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
         assert_eq!(g.key().unwrap(), key(Composition::new("discover-cpu")));
-        assert_eq!(g.to_composition().unwrap().preset, "discover-cpu");
+        assert_eq!(g.shorthand().unwrap().compose.preset, "discover-cpu");
         // The drawer's face source a choice: discovery in place of meshing.
         let mut g = Graph::from_composition(&Composition { meshes: "none".into(), ..Composition::new("raster-gpu") }).unwrap();
         g.nodes.retain(|k, _| k != "geometry");
@@ -489,14 +500,14 @@ mod tests {
         let sites: BTreeMap<String, String> = [(CLIENT.to_string(), "derive".to_string())].into();
         let derive = pick.with_sites(&sites).unwrap();
         assert_eq!(derive.client(), "derive");
-        assert_eq!(derive.to_composition().unwrap().label(), pick.to_composition().unwrap().label());
+        assert_eq!(derive.shorthand().unwrap().compose.label(), pick.shorthand().unwrap().compose.label());
         assert_ne!(derive.key().unwrap(), pick.key().unwrap());
-        assert_eq!(derive.sites_form().unwrap().unwrap().1, sites);
+        assert_eq!(derive.shorthand().unwrap().sites, sites);
         assert!(derive.label().unwrap().ends_with(", client = derive"), "{}", derive.label().unwrap());
-        assert!(pick.sites_form().unwrap().unwrap().1.is_empty());
+        assert!(pick.shorthand().unwrap().sites.is_empty());
         let with_shadow: BTreeMap<String, String> = [(CLIENT.to_string(), "derive".to_string()), ("shadow".to_string(), "tree64/sphere".to_string())].into();
         let g = pick.with_sites(&with_shadow).unwrap();
-        let (c, form) = g.sites_form().unwrap().unwrap();
+        let Shorthand { compose: c, sites: form, .. } = g.shorthand().unwrap();
         assert_eq!(form.get(CLIENT).map(String::as_str), Some("derive"));
         assert_eq!(Graph::from_composition(&c).unwrap().with_sites(&form).unwrap().key().unwrap(), g.key().unwrap());
         let bad: BTreeMap<String, String> = [(CLIENT.to_string(), "fetch".to_string())].into();
@@ -518,13 +529,13 @@ mod tests {
         assert_eq!(key(&with(&[(LINK, "net(reorder=true, latency_ms=30.0, loss=0.01, jitter_ms=10)")]).unwrap()), key(&home), "knob order and 30 / 30.0");
         assert_ne!(key(&with(&[(LINK, "net(latency_ms=31, jitter_ms=10, loss=0.01, reorder=true)")]).unwrap()), key(&home));
         assert_eq!(home.link().unwrap(), mr_core::link::LinkSpec { latency_ms: 30.0, jitter_ms: 10.0, loss: 0.01, reorder: true, ..Default::default() });
-        assert_eq!(home.to_composition().unwrap().label(), pick.to_composition().unwrap().label());
-        let (_, form) = home.sites_form().unwrap().unwrap();
+        assert_eq!(home.shorthand().unwrap().compose.label(), pick.shorthand().unwrap().compose.label());
+        let form = home.shorthand().unwrap().sites;
         assert_eq!(form[LINK], "net(jitter_ms=10.0, latency_ms=30.0, loss=0.01, reorder=true)");
         assert_eq!(key(&pick.with_sites(&form).unwrap()), key(&home));
         let region = with(&[(CLIENT, "derive(radius=4)"), (LINK, "net(latency_ms=1)")]).unwrap();
         assert_eq!((region.client(), region.client_knob("radius"), region.client_knob("max_lod")), ("derive", Some(4), None));
-        assert_eq!(region.sites_form().unwrap().unwrap().1[CLIENT], "derive(radius=4)");
+        assert_eq!(region.shorthand().unwrap().sites[CLIENT], "derive(radius=4)");
         assert!(region.label().unwrap().ends_with(", client = derive(radius=4), link = net(latency_ms=1.0)"), "{}", region.label().unwrap());
         // The chain: world -> link -> client -> the renderer's readers.
         let ck = home.check().unwrap();
@@ -562,9 +573,10 @@ mod tests {
             let aces = with("aces").unwrap();
             assert_ne!(key(&aces), key(&g));
             assert_eq!(aces.tone(), crate::post::Tone::Aces);
-            assert_eq!(aces.accept().unwrap(), g.accept().unwrap(), "{preset}: every executor compiles any tone in");
+            aces.accept().unwrap_or_else(|e| panic!("{preset}: every executor compiles any tone in: {e}"));
+            assert_eq!(aces.shorthand().unwrap().compose, g.shorthand().unwrap().compose);
             assert_eq!(aces.sites_value(POST), "aces");
-            assert_eq!(aces.sites_form().unwrap().unwrap().1[POST], "aces");
+            assert_eq!(aces.shorthand().unwrap().sites[POST], "aces");
             assert!(with("filmic").unwrap_err().contains("reinhard"));
         }
         let mut g = Graph::from_composition(&Composition::new("raycast-gpu")).unwrap().check().unwrap().graph;
@@ -593,11 +605,11 @@ mod tests {
         assert!(!ck.graph.nodes["world"].inputs.contains_key("chunks"));
         assert_eq!(local.sites_value(GENERATOR), "cpu");
         assert_eq!(pick.sites_value(GENERATOR), "server");
-        let (_, form) = local.sites_form().unwrap().unwrap();
+        let form = local.shorthand().unwrap().sites;
         assert_eq!(form[GENERATOR], "cpu");
         assert_eq!(key(&pick.with_sites(&form).unwrap()), key(&local));
         assert!(local.label().unwrap().ends_with(", generator = cpu"), "{}", local.label().unwrap());
-        assert_eq!(local.to_composition().unwrap().label(), pick.to_composition().unwrap().label());
+        assert_eq!(local.shorthand().unwrap().compose.label(), pick.shorthand().unwrap().compose.label());
         // With the other world nodes set.
         let both = with(&[(GENERATOR, "cpu"), (CLIENT, "derive")]).unwrap();
         assert_ne!(key(&both), key(&with(&[(CLIENT, "derive")]).unwrap()));
@@ -628,8 +640,8 @@ mod tests {
         };
         for b in ["raycast-gpu", "rayquery-gpu"] {
             let g = split(b, "deferred");
-            let (_, exact) = g.accept().unwrap_or_else(|e| panic!("{b}: {e}"));
-            assert!(!exact, "{b}: the split is no flat composition (its devices would be lost)");
+            g.accept().unwrap_or_else(|e| panic!("{b}: {e}"));
+            assert!(!g.shorthand().unwrap().exact, "{b}: the split is no flat composition (its devices would be lost)");
             let ck = g.check().unwrap();
             assert_eq!((ck.devices["s.kernel"], ck.devices["visibility"]), (Device::Gpu(1), Device::Gpu(0)));
             let sched = ck.schedule().unwrap().to_string();
@@ -775,7 +787,8 @@ mod tests {
         assert!(matches!(sched.steps.last(), Some(Step::Pass(p)) if p.node == "shading"), "{sched}");
         assert!(sched.kept.iter().any(|e| e.to == "draw" && e.port == "faces") && sched.kept.iter().any(|e| e.to == "holes" && e.port == "sky"), "{sched}");
         // discover-gpu runs it, and it is the composition.
-        assert_eq!(it.accept().unwrap(), (Composition { holes: "coverage".into(), ..Composition::new("discover-gpu") }, true));
+        it.accept().unwrap();
+        assert_eq!(it.shorthand().unwrap(), Shorthand { compose: Composition { holes: "coverage".into(), ..Composition::new("discover-gpu") }, sites: BTreeMap::new(), exact: true });
         // Reasons. A cycle within the frame says how to break it.
         let mut g = it.clone();
         g.nodes.get_mut("draw").unwrap().timing.clear();
@@ -835,7 +848,8 @@ mod tests {
         assert!(!sched.pipelined());
         assert_eq!(sync.timing_options(), vec![("pipelined", false)]);
         // Both run, as the same composition; the knob carries the difference.
-        assert_eq!(sync.accept().unwrap(), (Composition::new("discover-cpu"), true));
+        sync.accept().unwrap();
+        assert_eq!(sync.shorthand().unwrap(), Shorthand { compose: Composition::new("discover-cpu"), sites: BTreeMap::new(), exact: true });
         assert_eq!(sync.preset_options().unwrap().get("pipelined"), Some(&toml::Value::Boolean(false)));
         assert_ne!(sync.key().unwrap(), g.key().unwrap());
     }

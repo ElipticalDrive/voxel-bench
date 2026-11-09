@@ -182,8 +182,9 @@ pub struct RendererSpec {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sites: BTreeMap<String, String>,
     /// The pipeline as a graph (`mr_components::graph`), instead of
-    /// `compose`: run as such; `compose` becomes the nearest composition (labels, the flat
-    /// options), its skeleton nodes' knobs the options.
+    /// `compose`: run as such; `compose` becomes its shorthand's composition
+    /// (`Graph::shorthand`), and a graph the shorthand says exactly (without stage knobs) is
+    /// written so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<mr_components::graph::Graph>,
     /// Display label, to run the same renderer twice with different options.
@@ -227,7 +228,7 @@ impl RendererSpec {
         self.ran_graph = None;
         self.compose_label = Default::default();
         if let Some(g) = &self.graph {
-            let (c, _) = g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
+            g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
             for (k, v) in g.preset_options().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
                 if self.options.get(&k).is_some_and(|o| *o != v) {
                     bail!("renderer graph: knob `{k}` is set in the graph and in `options`");
@@ -240,17 +241,14 @@ impl RendererSpec {
             // Written in the sites form where it has one (one form per pipeline); a graph
             // whose stages have knobs stays a graph (the knobs stay on their nodes).
             let knobs = g.nodes.values().any(|n| n.role.slot().is_some() && !n.knobs.is_empty());
-            match if knobs { None } else { g.sites_form().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? } {
-                Some((c, sites)) => {
-                    self.graph = None;
-                    self.compose = Some(c);
-                    self.sites = sites;
-                }
-                None => {
-                    self.ran_graph = Some(g.clone());
-                    self.compose = Some(c);
-                }
+            let sh = g.shorthand().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
+            if sh.exact && !knobs {
+                self.graph = None;
+                self.sites = sh.sites;
+            } else {
+                self.ran_graph = Some(g.clone());
             }
+            self.compose = Some(sh.compose);
         }
         // `name = "<preset's renderer>"` (the CLI, the GUI's presets): the preset's
         // default composition.
@@ -266,10 +264,17 @@ impl RendererSpec {
                 }
             }
             self.name = c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?.to_string();
-            if self.graph.is_none() && !self.sites.is_empty() {
-                let g = mr_components::graph::Graph::from_composition(c).and_then(|g| g.with_sites(&self.sites)).and_then(|g| g.accept().map(|_| g)).map_err(|e| anyhow::anyhow!("renderer {}: sites: {e}", c.label()))?;
-                self.ran_graph = Some(g);
+        }
+        // A composition with sites is written as its graph's shorthand (secondary-ray stages
+        // as sites, the sites it binds so anyway left out).
+        if let (Some(c), None) = (&self.compose, &self.graph) {
+            let g = mr_components::graph::Graph::from_composition(c).and_then(|g| g.with_sites(&self.sites)).and_then(|g| g.accept().map(|_| g)).map_err(|e| anyhow::anyhow!("renderer {}: sites: {e}", c.label()))?;
+            let sh = g.shorthand().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?;
+            if sh.exact {
+                self.compose = Some(sh.compose);
+                self.sites = sh.sites;
             }
+            self.ran_graph = (!self.sites.is_empty()).then_some(g);
         }
         if self.name.is_empty() {
             bail!("a renderer needs `compose = {{ ... }}` or a `name`");
@@ -400,8 +405,8 @@ impl RendererSpec {
         self.resolve()
     }
 
-    /// Replaces the sites bound otherwise and re-resolves (on failure the old ones stay),
-    /// then writes the result in its sites form.
+    /// Replaces the sites bound otherwise and re-resolves (on failure the old ones stay;
+    /// the result in its shorthand).
     pub fn set_sites(&mut self, sites: BTreeMap<String, String>) -> anyhow::Result<()> {
         let old = std::mem::replace(&mut self.sites, sites);
         self.graph = None;
@@ -409,12 +414,6 @@ impl RendererSpec {
             self.sites = old;
             self.resolve()?;
             return Err(e);
-        }
-        // In its sites form: e.g. shadow rays a composition's own stages express move there.
-        if let Some(Ok(Some((c, sites)))) = self.ran_graph.as_ref().map(|g| g.sites_form()) {
-            self.compose = Some(c);
-            self.sites = sites;
-            self.resolve()?;
         }
         Ok(())
     }
@@ -833,8 +832,8 @@ fn expand_sites(c: &mr_components::Composition, axes: &[(String, Pick)]) -> anyh
     let mut out = vec![];
     for m in maps {
         let Ok(g) = base.with_sites(&m) else { continue };
-        if let Ok(Some(form)) = g.accept().and_then(|_| g.sites_form()) {
-            out.push(form);
+        if let Some(sh) = g.accept().and_then(|_| g.shorthand()).ok().filter(|sh| sh.exact) {
+            out.push((sh.compose, sh.sites));
         }
     }
     Ok(out)

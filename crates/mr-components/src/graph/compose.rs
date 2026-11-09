@@ -191,13 +191,13 @@ impl Graph {
 }
 
 impl Graph {
-    /// The knobs set on the skeleton's nodes (the preset's stages; the first value of each),
+    /// The knobs set on the stage nodes (`stage_nodes`; the first value of each),
     /// as a preset-wide knob list shows them.
     pub fn stage_knobs(&self) -> Result<toml::Table, String> {
         let g = self.normalised()?;
-        let skel = g.skeleton();
+        let stages = g.stage_nodes();
         let mut t = toml::Table::new();
-        for (_, n) in g.nodes.iter().filter(|(id, n)| skel.nodes.contains_key(*id) && n.role.slot().is_some()) {
+        for (_, n) in g.nodes.iter().filter(|(id, n)| stages.contains(*id) && n.role.slot().is_some()) {
             for (k, v) in &n.knobs {
                 t.entry(k.clone()).or_insert_with(|| v.clone());
             }
@@ -207,18 +207,18 @@ impl Graph {
 
     /// The graph with the options that are node knobs placed on the nodes they belong to
     /// (what the executors read, and what a compiled build bakes in, for its cache key): each
-    /// `(spec, value)` replaces the knob on the skeleton's nodes its `owner` names (the
-    /// preset's stages; nodes on free sites keep their own knobs). A knob whose owner is not
+    /// `(spec, value)` replaces the knob on the stage nodes its `owner` names (`stage_nodes`;
+    /// nodes on sites of their own keep their own knobs). A knob whose owner is not
     /// in the graph is moot here and left out;
     /// a knob without an owner (the preset's own) has no node and is an error.
     pub fn with_knobs(&self, knobs: &[(&mr_core::ParamSpec, toml::Value)]) -> Result<Graph, String> {
         let mut g = self.normalised()?;
-        let skel = g.skeleton();
+        let stages = g.stage_nodes();
         for (spec, v) in knobs {
             let Some((slot, comps)) = &spec.owner else {
                 return Err(format!("knob `{}` belongs to the preset, not to a node", spec.name));
             };
-            for (_, n) in g.nodes.iter_mut().filter(|(id, _)| skel.nodes.contains_key(*id)) {
+            for (_, n) in g.nodes.iter_mut().filter(|(id, _)| stages.contains(*id)) {
                 if n.role.name() == slot && comps.contains(&n.component) {
                     n.knobs.insert(spec.name.clone(), v.clone());
                 }

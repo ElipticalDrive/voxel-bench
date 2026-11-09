@@ -66,7 +66,7 @@ pub fn site_name(role: Role, port: &str) -> String {
     }
 }
 
-/// The *sites form* of a graph, its flat composition plus a binding per site that
+/// The *sites form* of a graph, its shorthand's flat composition plus a binding per site that
 /// the composition binds otherwise (`shadow = "tree64/sphere"`), for the CLI
 /// (`raycast-gpu:prefix+incremental,bounce=tree64/sphere`), plans (`sites = { ... }`),
 /// labels, sweeps and the GUI. A site's value is one of:
@@ -253,6 +253,28 @@ impl Graph {
         self
     }
 
+    /// The stage nodes: those the output reads other than through a site off the lead
+    /// (the nodes a site of its own adds are not stages; their knobs are their own).
+    pub(super) fn stage_nodes(&self) -> std::collections::HashSet<String> {
+        let read = |k: &String| self.nodes.values().any(|r| r.inputs.values().any(|s| s == k));
+        let lead = self.lead();
+        let mut keep = std::collections::HashSet::new();
+        let mut stack: Vec<String> = self.nodes.iter().filter(|(k, n)| known(n.role, &n.component) && output(n.role, &n.component) == Data::Image && !read(k)).map(|(k, _)| k.clone()).take(1).collect();
+        while let Some(id) = stack.pop() {
+            if !keep.insert(id.clone()) {
+                continue;
+            }
+            let Some(n) = self.nodes.get(&id) else { continue };
+            for (port, src) in &n.inputs {
+                let off_lead = inputs(n.role, &n.component).iter().any(|p| p.name == port && is_site(p)) && lead.as_ref().is_none_or(|(c, p)| *c != id || p != port);
+                if !off_lead {
+                    stack.push(src.clone());
+                }
+            }
+        }
+        keep
+    }
+
     /// Whether the world is generated on the client (the generator node off the server).
     pub fn generates(&self) -> bool {
         self.nodes.values().any(|n| n.role == Role::Generator && n.device.is_some_and(|d| d != Device::Server))
@@ -363,47 +385,29 @@ impl Graph {
         sites
     }
 
-    /// The graph in its sites form: the composition the preset runs it as and the sites
-    /// bound otherwise (`None` if it cannot be written so: nodes on free sites have knobs,
-    /// or a shape the form has no words for).
-    pub fn sites_form(&self) -> Result<Option<(Composition, BTreeMap<String, String>)>, String> {
-        let (c, exact) = self.accept()?;
-        // A link or client other than the default (which `accept` leaves to the worker) is
-        // written out.
-        let client = self.normalised()?.world_sites();
-        if exact && client.is_empty() {
-            return Ok(Some((c, client)));
-        }
-        let me = self.normalised()?.pruned();
-        let skel = me.skeleton();
-        if me.nodes.iter().any(|(id, n)| !skel.nodes.contains_key(id) && !n.knobs.is_empty()) {
-            return Ok(None);
-        }
-        let strip = |g: &Graph| {
-            let mut g = g.clone();
-            g.nodes.values_mut().for_each(|n| n.knobs.clear());
-            g.canonical()
-        };
-        let target = strip(&me)?;
-        let described = me.site_values();
+    /// The graph's shorthand, read off its nodes: each stage node on the main path (the
+    /// shading, what it draws or reads hits from, the visibility's inputs, the lead site's
+    /// kernel and storage) in its slot, and the sites bound otherwise than that composition
+    /// binds them, fewest first. Stage knobs, APIs and free timings are not part of it (they
+    /// go as knobs). Not `exact` when the composition and the sites do not give the graph
+    /// back, or a site's own nodes have knobs.
+    pub fn shorthand(&self) -> Result<Shorthand, String> {
+        let ck = self.normalised()?.pruned().check()?;
+        let preset = ck.preset.ok_or_else(|| ck.built().err().unwrap_or_else(|| "no preset has this shape".into()))?;
+        let g = &ck.graph;
+        let target = g.bare(preset)?;
+        let compose = g.stages(&ck, preset);
+        let Ok(base) = Graph::from_composition(&compose) else { return Ok(Shorthand { compose: Composition::new(preset), sites: BTreeMap::new(), exact: false }) };
+        let same = |s: &BTreeMap<String, String>| base.with_sites(s).and_then(|g| g.bare(preset)).is_ok_and(|x| x == target);
+        let described = g.site_values();
         let order: Vec<String> = described.iter().map(|(n, _)| n.clone()).collect();
-        let mut sites: BTreeMap<String, String> = described.into_iter().chain(client).collect();
-        let same_on = |c: &Composition, s: &BTreeMap<String, String>| Graph::from_composition(c).and_then(|b| b.with_sites(s)).and_then(|g| strip(&g)).is_ok_and(|x| x == target);
-        if !same_on(&c, &sites) {
-            return Ok(None);
+        let mut sites: BTreeMap<String, String> = described.into_iter().chain(g.world_sites()).collect();
+        // Knobs on a site's own nodes have no words in the shorthand (stage knobs are knobs).
+        let stages = g.stage_nodes();
+        let own_knobs = g.nodes.iter().any(|(id, n)| n.role.slot().is_some() && !n.knobs.is_empty() && !stages.contains(id));
+        if own_knobs || !same(&sites) {
+            return Ok(Shorthand { compose, sites: BTreeMap::new(), exact: false });
         }
-        // The composition's secondary-ray stages, where the sites say it all (a shadow walk
-        // with a storage of its own, which the stages cannot say), back at their defaults.
-        let mut c = c;
-        let defaults = crate::preset_info(&c.preset).map(|b| c.slots().filter(|s| s.secondary()).filter_map(|s| Some((s, b.default_for(s)?))).collect::<Vec<_>>()).unwrap_or_default();
-        for &(slot, d) in defaults.iter().rev() {
-            let mut fewer = c.clone();
-            fewer.set(slot, d);
-            if fewer.get(slot) != c.get(slot) && fewer.validate().is_ok() && same_on(&fewer, &sites) {
-                c = fewer;
-            }
-        }
-        let same = |s: &BTreeMap<String, String>| same_on(&c, s);
         // Only what differs from the composition: drop the sites it binds so anyway, last first.
         for name in order.iter().rev() {
             let mut fewer = sites.clone();
@@ -413,17 +417,78 @@ impl Graph {
                 sites = fewer;
             }
         }
-        Ok(Some((c, sites)))
+        Ok(Shorthand { compose, sites, exact: true })
     }
 
-    /// A label: the composition's, then the sites bound otherwise
-    /// (`raycast-gpu: prefix + incremental, bounce = tree64/sphere`); a graph without a sites
-    /// form gets its key.
+    /// The flat composition of the stage nodes on the main path (see [`Self::shorthand`]);
+    /// stages a preset has but the graph leaves out at their "off" component, the rest at
+    /// their defaults.
+    fn stages(&self, ck: &Checked, preset: &str) -> Composition {
+        let n = |id: &str| &self.nodes[id];
+        let input = |id: &str, p: &str| n(id).inputs.get(p).map(String::as_str);
+        let mut c = Composition { preset: preset.into(), ..Composition::new("") };
+        let take = |c: &mut Composition, id: &str| {
+            if let Some(slot) = n(id).role.slot() {
+                c.set(slot, &n(id).component);
+            }
+        };
+        let shading = ck.shading();
+        take(&mut c, shading);
+        if let Some(hits) = input(shading, "hits") {
+            take(&mut c, hits);
+            let vis = if n(hits).role == Role::Draw {
+                input(hits, "meshes").into_iter().for_each(|m| take(&mut c, m));
+                input(hits, "faces")
+            } else {
+                Some(hits)
+            };
+            if let Some(vis) = vis {
+                take(&mut c, vis);
+                n(vis).inputs.values().for_each(|src| take(&mut c, src));
+            }
+        }
+        // The lead kernel and its storage; rasterisers' only rays are the shadow rays.
+        if let Some(k) = self.lead().and_then(|(caster, port)| input(&caster, port)) {
+            take(&mut c, k);
+            if let Some(st) = self.walked(k) {
+                take(&mut c, st);
+            }
+        }
+        let b = crate::preset_info(preset).unwrap();
+        for (slot, off) in [(Slot::Prepass, "none"), (Slot::Meshes, "none")] {
+            if b.has(slot) && c.get(slot).is_empty() {
+                c.set(slot, off);
+            }
+        }
+        c.fill_defaults();
+        c
+    }
+
+    /// The canonical form without what the shorthand leaves to knobs: stage knobs, APIs
+    /// (`raycast-cpu` reads its API as `isa`), free timings (as `prev`; see `TIMING_KNOBS`).
+    fn bare(&self, preset: &str) -> Result<String, String> {
+        let mut g = self.clone();
+        for n in g.nodes.values_mut() {
+            if n.role.slot().is_some() {
+                n.knobs.clear();
+            }
+            n.api = None;
+            let role = n.role;
+            for (_, _, port, _) in FREE_TIMINGS.iter().filter(|(e, r, _, _)| *e == preset && *r == role) {
+                if n.inputs.contains_key(*port) {
+                    n.timing.insert(port.to_string(), When::Prev);
+                }
+            }
+        }
+        g.canonical()
+    }
+
+    /// A label: the shorthand's composition, then the sites bound otherwise
+    /// (`raycast-gpu: prefix + incremental, bounce = tree64/sphere`); a graph the shorthand
+    /// does not give back gets its key.
     pub fn label(&self) -> Result<String, String> {
-        Ok(match self.sites_form()? {
-            Some((c, s)) => sites_label(&c, &s),
-            None => format!("{} [graph {}]", self.accept()?.0.label(), &self.key()?[..8]),
-        })
+        let s = self.shorthand()?;
+        Ok(if s.exact { sites_label(&s.compose, &s.sites) } else { format!("{} [graph {}]", s.compose.label(), &self.key()?[..8]) })
     }
 
     /// The values site `name` could take on its own (for sweeps' `"*"` and the GUI; not
@@ -458,6 +523,14 @@ impl Graph {
         }
         v
     }
+}
+
+/// A graph's shorthand ([`Graph::shorthand`]): how the CLI, plans and labels write it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shorthand {
+    pub compose: Composition,
+    pub sites: BTreeMap<String, String>,
+    pub exact: bool,
 }
 
 /// A composition's label with sites bound otherwise.

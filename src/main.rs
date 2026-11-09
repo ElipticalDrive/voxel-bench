@@ -150,9 +150,10 @@ fn main() -> anyhow::Result<()> {
             spec.resolve()?;
             let g = spec.pipeline().with_context(|| format!("`{renderer}` is not a composition"))?;
             println!("# {}\n{}", spec.label(), toml::to_string(&g)?);
-            if let Some((c, sites)) = g.sites_form().map_err(anyhow::Error::msg)? {
-                let sites: Vec<String> = sites.iter().map(|(k, v)| format!(",{k}={v}")).collect();
-                println!("# sites form: compose = {} {}", serde_json::to_string(&c)?, sites.concat());
+            let sh = g.shorthand().map_err(anyhow::Error::msg)?;
+            if sh.exact {
+                let sites: Vec<String> = sh.sites.iter().map(|(k, v)| format!(",{k}={v}")).collect();
+                println!("# sites form: compose = {} {}", serde_json::to_string(&sh.compose)?, sites.concat());
             }
             println!("# canonical: {}\n# key: {}", g.canonical().map_err(anyhow::Error::msg)?, g.key().map_err(anyhow::Error::msg)?);
             let schedule = g.check().and_then(|c| c.schedule()).map_err(anyhow::Error::msg)?;
