@@ -271,6 +271,14 @@ mod tests {
         assert!(set(&r, &[("shading", Api::Compute)]).validate().is_err());
         let vb = Composition { draw: "visbuffer".into(), ..Composition::new("raster-gpu") };
         assert!(set(&vb, &[("shading", Api::Compute)]).validate().is_ok());
+        // A role's API is where its executor declares it on the node's device: the walk's
+        // ray-query geometry is built on the CPU.
+        let mut g = Graph::from_composition(&gc).unwrap();
+        g.nodes.insert("geo".into(), Node::new(Role::Geometry, "greedy").with(&[("changes", "world")]));
+        g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "geo")]));
+        g.nodes.get_mut("shading").unwrap().inputs.insert("shadow".into(), "rq".into());
+        g.nodes.get_mut("geo").unwrap().api = Some(Api::Scalar);
+        g.validate().unwrap();
         // Implementations: raster-cpu is scalar only; pathtrace has no CPU implementation.
         let e = set(&Composition::new("raster-cpu"), &[("shading", Api::Avx2)]).validate().unwrap_err();
         assert!(e.contains("runs its shading with scalar here, not avx2"), "{e}");
@@ -877,3 +885,4 @@ mod tests {
         assert!(why.contains("`rowrun` has no cpu implementation"), "{why}");
     }
 }
+

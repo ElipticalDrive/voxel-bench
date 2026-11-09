@@ -57,7 +57,7 @@ impl Graph {
     }
 
     /// Whether the graph's executor builds it (`Graph::check`, its timings, the nodes it
-    /// declares: [`Checked::builder`], its GPUs and APIs), with the nearest flat composition
+    /// declares: [`Checked::builder`], its GPUs and the APIs it declares), with the nearest flat composition
     /// (its skeleton's, else the preset's default; for labels and the sites form) and
     /// whether that composition is exactly the graph. Fails with the reason.
     pub fn accept(&self) -> Result<(Composition, bool), String> {
@@ -74,7 +74,7 @@ impl Graph {
             }
         }
         ck.built()?;
-        if let Some(why) = device_blocker(&ck) {
+        if let Some(why) = device_blocker(&ck).or_else(|| api_blocker(&ck)) {
             return Err(why);
         }
         let mut c = ck.graph.skeleton().skeleton_composition().unwrap_or_else(|_| {
@@ -126,9 +126,6 @@ impl Graph {
             if e.check_slots().is_ok() {
                 c = e;
             }
-        }
-        if let Some(why) = api_blocker(b, &ck, &c) {
-            return Err(why);
         }
         let exact = strip(&Graph::from_composition(&c)?)? == strip(self)?;
         Ok((c, exact))
@@ -239,11 +236,16 @@ fn device_blocker(ck: &Checked) -> Option<String> {
     (!why.is_empty()).then(|| why.join("; "))
 }
 
-/// Why the APIs set in `ck` cannot run on preset `b` running composition `c`, if they
-/// can't: a non-fused node's API must be the one the preset runs its stage with, or one
-/// of its choices; the stages its `api_choice` sets run with one API.
-fn api_blocker(b: &crate::PresetInfo, ck: &Checked, c: &Composition) -> Option<String> {
+/// Why the APIs set in `ck` cannot run on its executor, if they can't: a non-fused node's
+/// API must be one its executor's declaration runs that role with on that device kind
+/// ([`Build::at`]), the one a face drawer fixes for the shading behind it (the fragment shader
+/// for `raster`, else a deferred compute pass) when the place has two and the API choice does
+/// not set it; the stages its `api_choice` sets run with one API.
+fn api_blocker(ck: &Checked) -> Option<String> {
     let g = &ck.graph;
+    let (name, builds) = ck.builder()?;
+    let b = preset_info(name)?;
+    let drawer = ck.find(Role::Draw).map(|d| g.nodes[d].component.as_str());
     let mut why = Vec::new();
     for (id, &a) in ck.apis.iter().filter(|(id, _)| g.nodes[*id].api.is_some()) {
         // A fused node runs as the stages calling it (through other fused nodes) do.
@@ -255,12 +257,18 @@ fn api_blocker(b: &crate::PresetInfo, ck: &Checked, c: &Composition) -> Option<S
         stages.sort();
         stages.dedup();
         for st in stages {
-            let Some(slot) = g.nodes[st].role.slot() else { continue };
-            let place = b.place(slot);
+            let role = g.nodes[st].role;
+            let Some(place) = builds.nodes.iter().find(|d| d.role == role && d.at.kind == ck.devices[st].kind()).map(|d| d.at) else { continue };
+            let chosen = role.slot().is_some_and(|sl| b.chooses(sl));
             let at = if st == id { format!("`{id}`") } else { format!("`{id}` (in `{st}`)") };
-            match b.api(slot, c) {
-                Some(x) if x != a => why.push(format!("{at}: `{}` runs its {} with {} here, not {}", b.name, slot.name(), x.name(), a.name())),
-                None if !place.apis.contains(&a) => why.push(format!("{at}: `{}` runs its {} with {}, not {}", b.name, slot.name(), place.label(), a.name())),
+            let fixed = match place.apis {
+                [x] => Some(*x),
+                _ if chosen => None,
+                _ => drawer.map(|d| if d == "raster" { Api::Raster } else { Api::Compute }),
+            };
+            match fixed {
+                Some(x) if x != a => why.push(format!("{at}: `{name}` runs its {} with {} here, not {}", role.name(), x.name(), a.name())),
+                None if !place.apis.contains(&a) => why.push(format!("{at}: `{name}` runs its {} with {}, not {}", role.name(), place.label(), a.name())),
                 _ => {}
             }
         }
@@ -270,7 +278,7 @@ fn api_blocker(b: &crate::PresetInfo, ck: &Checked, c: &Composition) -> Option<S
         set.sort();
         set.dedup();
         if set.len() > 1 {
-            why.push(format!("`{}` runs its {} with one api, its `{}` (have: {})", b.name, ch.slots.iter().map(|s| s.name()).collect::<Vec<_>>().join(", "), ch.knob, set.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")));
+            why.push(format!("`{name}` runs its {} with one api, its `{}` (have: {})", ch.slots.iter().map(|s| s.name()).collect::<Vec<_>>().join(", "), ch.knob, set.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")));
         }
     }
     (!why.is_empty()).then(|| why.join("; "))
@@ -302,3 +310,4 @@ fn follows_lead(executor: &str, role: Role, port: &str) -> bool {
             | ("raycast-cpu", Role::Shading, "shadow")
     )
 }
+

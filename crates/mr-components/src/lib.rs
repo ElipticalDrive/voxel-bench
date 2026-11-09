@@ -168,21 +168,6 @@ impl PresetInfo {
     pub fn chooses(&self, slot: Slot) -> bool {
         self.api_choice.is_some_and(|ch| ch.slots.contains(&slot.source()))
     }
-
-    /// The API it runs non-fused `slot` with in `c`, if that is fixed (`None`: a choice, its
-    /// `api_choice`). A face drawer's shading runs in the fragment shader for `raster`, else
-    /// in a deferred compute pass.
-    pub fn api(&self, slot: Slot, c: &Composition) -> Option<Api> {
-        if self.chooses(slot) {
-            return None;
-        }
-        let p = self.place(slot);
-        match p.apis {
-            [a] => Some(*a),
-            _ if p.kind == Kind::Gpu => Some(if c.draw == "raster" { Api::Raster } else { Api::Compute }),
-            _ => None,
-        }
-    }
 }
 
 const RAY_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Visibility, "raycast"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")];
