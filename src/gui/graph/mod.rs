@@ -588,10 +588,11 @@ pub fn apply_to_plan(r: &mut RendererSpec, edits: Vec<Edit>) -> (bool, Option<Op
 /// if it takes them all live: `new` switches one component, and the worker's graphs then
 /// differ in that node (see [`graph_edits`]).
 pub fn live_edits(old: &RendererSpec, new: &RendererSpec, params: &[(ParamSpec, ParamValue)]) -> Option<Vec<(String, ParamValue)>> {
-    let (Some(a), Some(b)) = (&old.compose, &new.compose) else { return None };
-    if old.name != new.name || old.sites != new.sites || old.graph.is_some() || new.graph.is_some() || old.ran_graph.is_some() || new.ran_graph.is_some() {
+    let (Some(a), Some(b)) = (old.shorthand_form(), new.shorthand_form()) else { return None };
+    if old.name != new.name || !a.sites.is_empty() || !b.sites.is_empty() {
         return None;
     }
+    let (a, b) = (&a.compose, &b.compose);
     if mr_components::Slot::ALL.into_iter().filter(|s| a.get(*s) != b.get(*s)).count() != 1 {
         return None;
     }
@@ -640,7 +641,7 @@ mod tests {
             let mut r = RendererSpec::from_cli("discover-gpu").unwrap();
             r.options.insert("refresh".into(), 4.into());
             r.resolve().unwrap();
-            let mut comp = r.compose.clone().unwrap();
+            let mut comp = r.composition().unwrap().clone();
             comp.set(slot, c);
             r.set_compose(comp).unwrap();
             r

@@ -79,12 +79,12 @@ fn live_session_end_to_end() {
             (sh.lanes[1].frames, sh.lanes[1].spec.clone(), sh.lanes[1].params.clone())
         };
         let mut new = spec.clone();
-        let mut c = new.compose.clone().unwrap();
+        let mut c = new.composition().unwrap().clone();
         c.set(slot, value);
         new.set_compose(c).unwrap();
         let edits = crate::gui::graph::live_edits(&spec, &new, &params).unwrap_or_else(|| panic!("{slot:?} = {value} live"));
         live.send(Cmd::Edits { lane: 1, edits });
-        wait(&live.shared, &format!("{slot:?} = {value}"), 20, |s| s.lanes[1].frames > frames + 3 && s.lanes[1].status == LaneStatus::Running && s.lanes[1].spec.compose.as_ref().is_some_and(|c| c.get(slot) == value));
+        wait(&live.shared, &format!("{slot:?} = {value}"), 20, |s| s.lanes[1].frames > frames + 3 && s.lanes[1].status == LaneStatus::Running && s.lanes[1].spec.composition().is_some_and(|c| c.get(slot) == value));
     }
 
     // Hot swap (restart-only knob): lane 1 must keep producing frames throughout.
@@ -176,7 +176,7 @@ fn restarts_keep_knobs() {
     new.options.insert("max_steps".into(), toml::Value::Integer(500));
     let kept = keep_knobs(&given, &now, new);
     assert_eq!((value(&kept, "max_steps"), value(&kept, "accumulate")), (Some(toml::Value::Integer(500)), Some(toml::Value::Boolean(false))));
-    assert_eq!(kept.compose.as_ref().unwrap().storage, "prefix");
+    assert_eq!(kept.composition().unwrap().storage, "prefix");
     // Another preset: its own knobs only.
     let kept = keep_knobs(&given, &now, RendererSpec::from_cli("raster-gpu").unwrap());
     assert_eq!(value(&kept, "max_steps"), None);

@@ -318,9 +318,9 @@ impl Ctx<'_> {
             let mut report = PassReport {
                 label: label.clone(),
                 renderer: spec.name.clone(),
-                composition: spec.compose.clone(),
-                sites: spec.sites.clone(),
-                graph: spec.graph.clone(),
+                composition: spec.composition().cloned(),
+                sites: spec.sites(),
+                graph: spec.written().graph,
                 graph_key: spec.pipeline().and_then(|g| g.key().ok()),
                 options: spec.options.clone(),
                 view_radius: spec.view_radius(run),

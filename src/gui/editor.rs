@@ -533,7 +533,7 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
         ui.push_id(("renderer", i), |ui| {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    if r.compose.is_some() {
+                    if r.graph.is_some() {
                         ui.strong(r.label()).on_hover_text("A pipeline graph: a row per node with its component and knobs; ✏ graph opens the editor");
                     } else {
                         ui.strong(&r.name).on_hover_text("A standalone renderer (cpu-reference defines the reference images)");
@@ -550,7 +550,7 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
                         *ctx.restart_lane = Some(i);
                     }
                 });
-                if r.compose.is_some() {
+                if r.graph.is_some() {
                     if composition(ui, i, r, &run, ctx) {
                         ctx.option_text[i] = toml::to_string(&r.options).unwrap_or_default();
                         c = true;

@@ -41,8 +41,6 @@ pub enum Change {
 pub fn load(base: &RendererSpec, g: &Graph, infos: &[RendererInfo]) -> Result<RendererSpec, String> {
     let mut s = base.clone();
     s.graph = Some(g.clone());
-    s.compose = None;
-    s.sites.clear();
     s.name.clear();
     // The options selecting components are the composition's, derived again.
     s.options.retain(|k, _| !mr_components::Slot::ALL.iter().any(|sl| sl.name() == k));
