@@ -74,7 +74,7 @@ quality at 120 fps.
 
 - [docs/gui.md](docs/gui.md): the GUI, keys, the pipeline editor, knobs, quality probes and
   the auto-tuner.
-- [docs/pipelines.md](docs/pipelines.md): pipelines as graphs: nodes, components, back ends,
+- [docs/pipelines.md](docs/pipelines.md): pipelines as graphs: nodes, components, executors and presets,
   devices, timing, and pipelines compiled for the local machine.
 - [docs/plans.md](docs/plans.md): run plans, sweeps, observations, the catalogue, and the
   scripts.

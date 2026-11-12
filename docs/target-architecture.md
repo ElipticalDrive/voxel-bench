@@ -168,75 +168,43 @@ compared against anything; their slowness is their own.
 
 ## Where the code differs
 
+The migration below is done (2026-11-04 to 2026-11-09): every pipeline runs as nodes on the
+generic executor of its device, "back end" means device + API, and the editor edits any graph
+exactly. What still differs from the target:
+
 | Target | Today |
 |---|---|
-| Back end = device + API | Back ends are ten named executors, each a family of graph shapes (`raycast-gpu`, `raster-gpu`, `rayquery-gpu`, `discover-gpu`, `splat-gpu`, `columns-gpu`, `raycast-cpu`, `raster-cpu`, `discover-cpu`, `columns-cpu`) derived from the graph. |
-| One generic executor per device walking the schedule | Two executor crates (GPU, CPU) pick a hard-coded *lane* from the visibility component: raycast, faces, splat, columns, discovery. Each lane fixes its own pass order, buffers and bind groups. |
-| Validity = types, cycles, implementations, composable regions | `Graph::check` applies rules 1–3 (types, cycles, an implementation on each node's device kind and API). Every executor declares the nodes it builds (`graph::Builds`: per role and device kind the components and how many; inputs read as one node; what it reads from some inputs), and `Graph::accept` takes a graph exactly when it is valid and declared (plus the edge timings and the two-GPU split it runs); labels and the sites form are the graph's shorthand (`Graph::shorthand`: a flat composition and sites read off its nodes); executors read each node's knobs from the graph. |
-| Editor allows any edge | On a graph a node executor runs, the editor makes every change exactly (a new node comes unbound, a node can be removed, nothing is filled in or pruned); a graph that does not run is kept as a draft, shown with the reason, while the renderer keeps its last graph. On the other back ends it offers only choices whose resulting graph a lane accepts, fills inputs from presets, and drops nodes that no longer reach the image. |
-| Graph-driven program generator | `src/pipelines.rs` generates specialised crates, per lane. |
+| Edge resources owned by the executor | On the GPU, nodes compiled into one program share a *region* (ray casting, faces, splats, columns, discovery) that owns the frame's state and bindings; the hit records are a binding of the region's group 0, not an output resource the executor owns, and the second GPU's shading is the region's remote part rather than a node of an executor of its own. On the CPU, two edges the graph leaves implicit are added by hand: columns' shading reads the heightmap storage (its shadow rays), and rasterisation's draw and shading read the geometry (the quad behind an id). |
+| Fusion is attempted, not pre-judged | Each executor declares the nodes it builds (`graph::Builds`: per role the components, device kind and count), and `Graph::accept` refuses, with the reason, any valid graph outside the declarations at creation instead of trying it. The declarations are the regions' shapes, so a graph is accepted exactly when a region builds it. The ten presets named by technique and device (`raycast-gpu`, `raster-cpu`, ...) are those regions' names: derived from the graph, offered as starting points, never chosen. |
+| Graph-driven program generator | `src/pipelines.rs` is keyed by the graph (the baked knobs valued on their nodes) and generates one crate per executor, but which knobs it bakes is still a list per preset (`bakes`), and only the CPU regions are specialised (the GPU executor's crate builds its CPU work natively). |
+| Diagnostics on the node or edge at fault | A graph that does not run is a draft with its reason as text; the canvas does not mark the node at fault, draft steps are not in the undo stack, and nothing suggests a fix. |
 
-What already matches: typed ports, per-node device and API, `prev`/`iterate` timings, the
-schedule, shader-module composition, the shared hit record, isolation and the stream/link/
-client nodes, the canonical graph key, on-demand compiled builds with pixel verification, and
-the A/B tooling.
+What already matches: typed ports, free edges, per-node device and API, `prev`/`iterate`
+timings, the schedule, shader-module composition, the shared hit record, isolation and the
+stream/link/client nodes, the canonical graph key, on-demand compiled builds with pixel
+verification, the A/B tooling, one executor per device, executors reading their nodes' knobs
+and plans and labels read off the graph.
 
 ## Migration
 
-Not a rewrite: one lane at a time, the old path kept until its replacement matches.
-1. Define the node interface and the generic executor for one device (GPU first or CPU
-   first; see below).
-2. Split one lane into nodes (the ray-casting lane: prepass, trace, shade, with the hit
-   record as the edge) and run it through the generic executor. Pixels identical, speed
-   within noise of the lane. This is the spike that tests the native-speed claim, the CPU
-   side in particular. If the glue turns out to need no generator, the generator is not built.
-3. Move the other lanes the same way (faces, splat, columns, discovery).
-4. Replace `accept`/skeleton by the validity rules above, make the generator graph-driven,
-   and open the editor to any edge.
-5. Retire the lanes and the ten named back ends; "back end" means device + API.
-
-Progress: step 1 is done for the CPU, and step 2 for its ray-casting lane: a generic CPU
-executor walks the graph's schedule, each pass a node with an *output* resource the executor
-owns (dispatch per pass only); the lane runs as storage → visibility → shading nodes, the hit
-records the edge between them, `placement = inline` fusing visibility and shading. It is the
-only CPU ray-casting path, compiled pipelines included (the lane is gone); pixels were
-identical to the lane's and speed within noise. Step 3 is done for the CPU: columns run as
-storage → visibility → shading and rasterisation as geometry → visibility → draw → shading
-nodes, so every CPU pipeline runs on the generic executor and the CPU lane interface is
-gone. Two edges the graph leaves implicit are added by hand for now: columns' shading reads
-the heightmap storage (its shadow rays), rasterisation's draw and shading read the geometry
-(the quad behind an id).
-On the GPU, step 1 is done and step 2 for ray casting: a generic executor walks the schedule's GPU passes, each a node recording into the frame's
-command encoder; nodes compiled into one program share a *region* (its pipelines, group 0,
-the frame's state), which answers the region-boundary question for now: one region per
-program. Ray casting runs as (acceleration structures | storage) → meshes → prepass →
-visibility → shading nodes, pixels identical to the lane's; it is ray casting's only GPU
-path. The frame's start and submission are the region's, so with the shading on a second
-GPU the region submits through the transfer (records read back, written to the other GPU,
-shaded there) and that GPU completes the frame. The hit records are still a binding of the
-region's group 0, not a node output the executor owns, and the second GPU's shading is the
-region's remote part, not a node of an executor of its own.
-Step 3 has begun on the GPU: columns run as visibility → shading nodes sharing a region (the
-heightmap storage has no pass of its own: it is patched and uploaded with the world's changes),
-and so does point splatting (the points are built on the CPU and uploaded before the frame; the
-splat passes and the resolve are the visibility and shading nodes), and so does meshing's face
-drawing (the faces are meshed on the CPU and uploaded before the frame; culling, the storages,
-the meshes, the drawer's draw passes and the deferred shading pass are nodes; a forward drawer
-shades in its draw pass), and so does CPU discovery's (the discovery on the CPU and the records'
-upload run before the frame; the storages, the draw passes and the deferred shading pass are
-nodes), and so does GPU discovery (the frame's discovery settings are the region's before the
-frame; the storages, hole detection, the quadtree's passes, the draw passes and the deferred
-shading pass are nodes, the drawer's faces iterating through hole detection and discovery; the
-sky mask, the diagnostic overlay, the audit and the counters' readback follow the passes).
-Step 3 is done on the GPU too: every GPU pipeline runs as a region and its nodes on the
-generic executor, which owns the renderer interface itself (world changes, knobs, resizes,
-memory, frames); the GPU lane interface is gone.
-Step 4 has begun: `accept` is the validity rules plus the nodes each executor declares it
-builds, for every back end, and the editor edits graphs exactly, drafts included (no filling in
-or pruning). A graph names its executor by device kind (`executor = "cpu"` or `"gpu"`, none =
-`gpu`), where its nodes without a device run; which of the executor's regions builds it, and its
-declarations, follow from its shape (the preset it names). The ten names remain as those presets'
-names, the worker's renderer entries and in compositions until retired.
+Done, one lane at a time, the old path kept until its replacement matched (pixels identical,
+speed within noise; `scripts/ab/`):
+1. The node interface and the generic executor: the CPU first (`crates/mr-exec-cpu/src/exec.rs`,
+   each pass a node with an output resource the executor owns, dispatch per pass only), then the
+   GPU (`crates/mr-exec-gpu/src/exec.rs`, each node recording into the frame's command encoder,
+   nodes compiled into one program sharing a region).
+2. Ray casting as storage → visibility → shading nodes on both, the hit records the edge
+   between them, `placement = inline` fusing visibility and shading. This was the spike for the
+   native-speed claim; it needed no generator, so none was built.
+3. The other lanes the same way: columns, rasterisation (geometry → visibility → draw →
+   shading), point splatting, meshing's faces, CPU and GPU discovery. The lane interfaces are
+   gone; the executors own the renderer interface (world changes, knobs, resizes, memory, frames).
+4. `accept` = the validity rules plus the executors' declarations, for every graph; the editor
+   edits exactly, with drafts.
+5. The ten named back ends retired: a graph names its executor by device kind (`executor =
+   "cpu"` or `"gpu"`), executors read their nodes' knobs from the graph (a live slot switch is a
+   graph edit), plans and labels are read off the graph (`compose` + `sites` an input shorthand),
+   `RendererSpec` holds the graph. Left: the compiled pipelines' per-preset knob lists (above).
 
 ## Non-goals
 
@@ -248,12 +216,10 @@ names, the worker's renderer entries and in compositions until retired.
 
 ## Open questions
 
-- **Where the first spike goes:** the GPU executor's ray-casting lane (most used; has both a
-  fused site and a deferred boundary) or the CPU executor (smaller, but the likelier place
-  for glue overhead to show).
-- **Region boundaries:** whether they are decided automatically by the generator, declared
-  by components, or chosen on the node by the user.
+- **Region boundaries:** today one region per program, as the executor's declarations say.
+  Whether they are decided automatically by the generator, declared by components, or chosen
+  on the node by the user is still open.
 - **Resource formats on edges:** how a component declares the layouts it can read and
   write, so the generator can pick one without extra conversion passes.
 - **Which graphs the CPU generator can specialise:** how far monomorphisation reaches when
-  the graph, not a fixed lane, decides the generic parameters.
+  the graph, not a fixed region, decides the generic parameters.

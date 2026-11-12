@@ -57,14 +57,14 @@ const LIGHTING_ALLOWED: &[(&str, &str)] = &[
     ("crates/mr-gpu/src/program.rs", "the module system's test links a root to the lighting module"),
 ];
 
-/// Each executor lane's shading entry point (a string its sources must contain), by its path
-/// under `crates/mr-exec-*` (the GPU and the CPU executor, a lane per visibility).
+/// Each executor region's shading entry point (a string its sources must contain), by its path
+/// under `crates/mr-exec-*` (the GPU and the CPU executor, a region per kind of visibility).
 const SHADING_USE: &[(&str, &str)] = &[
     // `shaders::shading`: the shading component's module (`shading::gpu_wgsl`).
-    // The ray-casting lane (gpu-compute and gpu-rt): each caster.
+    // The ray-casting region (raycast-gpu and rayquery-gpu): each caster.
     ("gpu/src/raycast/walk.rs", "shaders::shading(&mut program, shading, &rays"),
     ("gpu/src/raycast/rayquery.rs", "shaders::shading(&mut program, shading, &rays"),
-    // The faces lane (gpu-raster, gpu-discover and cpu-discover).
+    // The faces region (raster-gpu, discover-gpu and discover-cpu).
     ("gpu/src/faces", "shading::gpu_wgsl("),
     ("gpu/src/splat.rs", "shading::gpu_wgsl("),
     ("gpu/src/columns.rs", "shading::gpu_wgsl("),
@@ -102,12 +102,12 @@ fn rel(p: &Path) -> String {
     p.strip_prefix(root()).unwrap().to_string_lossy().replace('\\', "/")
 }
 
-/// Owner of a source file: the executor's lane (`gpu/faces`: `crates/mr-exec-gpu/src/faces...`),
+/// Owner of a source file: the executor's region (`gpu/faces`: `crates/mr-exec-gpu/src/faces...`),
 /// the executor for its own files, or "shared".
 fn owner(rel: &str) -> String {
     let Some(r) = rel.strip_prefix("crates/mr-exec-") else { return "shared".into() };
     match r.split('/').collect::<Vec<_>>().as_slice() {
-        [ex, "src", lane, ..] if *lane != "lib.rs" => format!("{ex}/{}", lane.trim_end_matches(".rs")),
+        [ex, "src", region, ..] if *region != "lib.rs" => format!("{ex}/{}", region.trim_end_matches(".rs")),
         [ex, ..] => ex.to_string(),
         [] => unreachable!(),
     }

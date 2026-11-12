@@ -72,9 +72,9 @@ every face, so UV and orientation mistakes are obvious.
 | `crates/mr-serve`, `mr-worker` | the worker side: one renderer driven over the protocol; the worker with its three entries: the `cpu` and `gpu` executors (each runs the region its graph picks) and the reference |
 | `crates/mr-gpu` | wgpu plumbing: adapter choice, the frame ring (readback, timestamps), shader programs composed from modules, meshes |
 | `crates/mr-mesh` | the greedy mesher and quad encoding |
-| `crates/mr-components` | the registry (`lib.rs`: back ends, components, their implementations), the graph (`graph/`: model, checks, canonical form and key, accept, sites form, schedule), capabilities and adapters (`caps.rs`), and one directory per component: `storage/prefix/{gpu.wgsl,cpu.rs}`, `traversal/sphere/...`, ... |
-| `crates/mr-exec-gpu` | the GPU executor: one core and a region per kind of visibility (ray casting, faces, discovery, splats, columns) |
-| `crates/mr-exec-cpu` | the CPU executor: ray casting, the software rasteriser, columns; `exec.rs` the generic node executor being migrated to ([target architecture](target-architecture.md)) |
+| `crates/mr-components` | the registry (`lib.rs`: components, their implementations per device kind and API, the presets), the graph (`graph/`: model, checks, canonical form and key, accept with the executors' declarations, the shorthand (compose and sites read off a graph), schedule), capabilities and adapters (`caps.rs`), and one directory per component: `storage/prefix/{gpu.wgsl,cpu.rs}`, `traversal/sphere/...`, ... |
+| `crates/mr-exec-gpu` | the GPU executor: the generic node executor (`exec.rs`), one core, and a region per program (ray casting, faces, discovery, splats, columns) whose nodes it schedules |
+| `crates/mr-exec-cpu` | the CPU executor: the generic node executor (`exec.rs`) and its regions: ray casting, the software rasteriser, columns (what still differs from the [target architecture](target-architecture.md) is listed there) |
 | `crates/mr-reference` | the reference renderer (f64, exact), standing alone on purpose |
 | `tests/architecture.rs` | the architecture guard (below) |
 | `plans/` | example plans |
@@ -110,7 +110,7 @@ features asked for. Asynchronous renderers call the `Waker` when work may have f
 - GPU end-to-end tests: `cargo test -q --release --bin multirenderer -- --ignored --skip
   tuner_demo --skip scale_curve --skip gui_screenshot`.
 - The architecture guard, `cargo test -q --test architecture`: no WGSL function defined twice
-  across back ends or redefining shared code, no bodies copied under other names, and
+  across executors or redefining shared code, no bodies copied under other names, and
   lighting only through the shading component. Exceptions are listed in the test with their
   reasons.
 - Speed: a composed pipeline must be as fast as a hand-written one of the same pieces, and

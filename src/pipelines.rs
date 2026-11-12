@@ -1,7 +1,7 @@
 //! Pipelines compiled on demand: for one graph, generate a
 //! small Rust crate whose worker serves only that graph, built with `cargo` for this machine
-//! (`-C target-cpu=native`). For the CPU executor (any of its lanes: ray casting,
-//! rasterisation, columns) the lane's entry is instantiated for the graph's storage type with
+//! (`-C target-cpu=native`). For the CPU executor (any of its regions: ray casting,
+//! rasterisation, columns) the region's entry is instantiated for the graph's storage type with
 //! its choices baked in as constants (`mr_exec_cpu::Spec`); for the GPU executor its worker's
 //! CPU work (client, storage encoding, meshing, discovery on the CPU in the graph's storage
 //! alone) is built for this CPU (`mr_exec_gpu::Spec`). The build runs in its own process,
@@ -66,7 +66,7 @@ impl Executor {
 }
 
 /// The knobs a generated pipeline of CPU executor `preset` bakes in (each declared
-/// specialisable and belonging to a node, a test checks): those its lane folds into code; the
+/// specialisable and belonging to a node, a test checks): those its region folds into code; the
 /// others stay run-time values in it.
 pub fn bakes(preset: &str) -> &'static [&'static str] {
     match preset {
@@ -146,7 +146,7 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
         mr_core::lighting::PixelFormat::Rgba16F => "mr_exec_cpu::Half4",
     };
     let entry = if ck.find(Role::Draw).is_some() {
-        // The raster lane's shading is the reference model's (tone and shadows read at run time).
+        // The raster region's shading is the reference model's (tone and shadows read at run time).
         consts.clear();
         format!("mr_exec_cpu::raster_entry::<Baked, {px}>()")
     } else if ck.find(Role::Visibility).is_some_and(|v| ck.node(v).component == "columns") {
