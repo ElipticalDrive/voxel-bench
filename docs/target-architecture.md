@@ -176,7 +176,7 @@ exactly. What still differs from the target:
 |---|---|
 | Edge resources owned by the executor | On the GPU, nodes compiled into one program share a *region* (ray casting, faces, splats, columns, discovery) that owns the frame's state and bindings; the hit records are a binding of the region's group 0, not an output resource the executor owns, and the second GPU's shading is the region's remote part rather than a node of an executor of its own. On the CPU, two edges the graph leaves implicit are added by hand: columns' shading reads the heightmap storage (its shadow rays), and rasterisation's draw and shading read the geometry (the quad behind an id). |
 | Fusion is attempted, not pre-judged | Each executor declares the nodes it builds (`graph::Builds`: per role the components, device kind and count), and `Graph::accept` refuses, with the reason, any valid graph outside the declarations at creation instead of trying it. The declarations are the regions' shapes, so a graph is accepted exactly when a region builds it. The ten presets named by technique and device (`raycast-gpu`, `raster-cpu`, ...) are those regions' names: derived from the graph, offered as starting points, never chosen. |
-| Graph-driven program generator | `src/pipelines.rs` is keyed by the graph (the baked knobs valued on their nodes) and generates one crate per executor, but which knobs it bakes is still a list per preset (`bakes`), and only the CPU regions are specialised (the GPU executor's crate builds its CPU work natively). |
+| Graph-driven program generator | `src/pipelines.rs` is keyed by the graph and its executor alone (the knobs declared specialisable valued on their nodes) and generates one crate per executor, but only the CPU regions are specialised: the GPU executor's crate builds its CPU work natively and bakes no knob (the shaders compile their own constants in). |
 | Diagnostics on the node or edge at fault | A graph that does not run is a draft with its reason as text; the canvas does not mark the node at fault, draft steps are not in the undo stack, and nothing suggests a fix. |
 
 What already matches: typed ports, free edges, per-node device and API, `prev`/`iterate`
@@ -204,7 +204,8 @@ speed within noise; `scripts/ab/`):
 5. The ten named back ends retired: a graph names its executor by device kind (`executor =
    "cpu"` or `"gpu"`), executors read their nodes' knobs from the graph (a live slot switch is a
    graph edit), plans and labels are read off the graph (`compose` + `sites` an input shorthand),
-   `RendererSpec` holds the graph. Left: the compiled pipelines' per-preset knob lists (above).
+   `RendererSpec` holds the graph, and the compiled pipelines are keyed by the graph and its
+   executor alone (the knobs each component declares specialisable).
 
 ## Non-goals
 

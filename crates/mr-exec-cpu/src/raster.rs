@@ -111,7 +111,9 @@ fn params() -> Vec<ParamSpec> {
     p.push(ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours", true, true).of("geometry", &["naive"]));
     p.push(ParamSpec::int("tile_width", "Raster tile width (pixels)", 8, 1024, 64, true).of("draw", &["raster"]));
     p.push(ParamSpec::int("band_height", "Raster band height (pixels); bands are the unit of parallelism", 1, 512, 16, true).of("draw", &["raster"]));
-    p
+    // A compiled build of this region folds none of them (it shades with the reference model,
+    // shadows and tone read at run time).
+    p.into_iter().map(|q| q.baked(false)).collect()
 }
 
 /// Screen-space triangle: (x, y, depth) per vertex plus visibility id.

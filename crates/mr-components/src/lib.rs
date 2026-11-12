@@ -651,6 +651,7 @@ pub fn placement_param(preset: &str, default: &str) -> mr_core::ParamSpec {
         false,
     )
     .of(Slot::Shading.name(), &names_on(preset, Slot::Shading))
+    .baked(false)
 }
 
 /// Parses a placement value: `true` for deferred.

@@ -531,7 +531,7 @@ impl RendererSpec {
     /// preset's own knobs (`threads`, ...) stay options.
     pub fn worker_graph(&self) -> anyhow::Result<Option<mr_components::graph::Graph>> {
         let Some(g) = self.pipeline() else { return Ok(None) };
-        let Some((_, params)) = crate::pipelines::params_of(&self.name) else { return Ok(Some(g)) };
+        let Some((_, params)) = crate::pipelines::executor_of(&g) else { return Ok(Some(g)) };
         let knobs: Vec<_> = self.options.iter().filter_map(|(k, v)| params.iter().find(|p| p.name == *k && p.owner.is_some()).map(|p| (p, v.clone()))).collect();
         g.with_knobs(&knobs).map(Some).map_err(|e| anyhow::anyhow!("{}: {e}", self.label()))
     }

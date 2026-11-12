@@ -131,7 +131,10 @@ costs nothing at run time.
 
 - `off` (default): the generic build.
 - `native`: a small crate is generated for the pipeline, with its graph and baked knobs as
-  constants, and built with `-C target-cpu=native`.
+  constants (the knobs its components declare specialisable, read off the graph's nodes; on
+  the CPU executor `exact`, `packet`, `skip*` and `shadows`), and built with `-C target-cpu=native`.
+  The GPU executor's crate builds its CPU work natively and bakes no knob: its specialisable
+  knobs (`max_steps`, `bounces`) are the shaders', compiled in by every build.
 - `break-in`: as `native`, then instrumented, trained on a short flight, and rebuilt with
   profile-guided optimisation and/or fat LTO; the fastest candidate is kept.
 

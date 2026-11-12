@@ -28,8 +28,8 @@ use anyhow::{Context, bail};
 use crate::plan::{Compile, RendererSpec};
 
 /// What a generated pipeline bakes in: the pipeline (its graph, with the values of the knobs
-/// in [`bakes`] on the nodes they belong to: its identity, the cache key), the executor, its
-/// entry and the `Spec` constants read off it.
+/// declared specialisable on the nodes they belong to: its identity, the cache key), the
+/// executor, its entry and the `Spec` constants read off it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bake {
     pub graph: mr_components::graph::Graph,
@@ -65,23 +65,14 @@ impl Executor {
     }
 }
 
-/// The knobs a generated pipeline of CPU executor `preset` bakes in (each declared
-/// specialisable and belonging to a node, a test checks): those its region folds into code; the
-/// others stay run-time values in it.
-pub fn bakes(preset: &str) -> &'static [&'static str] {
-    match preset {
-        "raycast-cpu" => &["exact", "packet", "skip2", "skip4", "skip8", "skip16", "shadows"],
-        "columns-cpu" => &["shadows"],
-        _ => &[],
-    }
-}
-
-/// The executor of `preset` and its knobs (`None`: no generated pipeline runs it).
-pub(crate) fn params_of(preset: &str) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
-    Some(match preset {
-        "raycast-cpu" | "raster-cpu" | "columns-cpu" => (Executor::Cpu, mr_exec_cpu::info(preset).params),
-        "raster-gpu" | "discover-gpu" | "discover-cpu" | "raycast-gpu" | "rayquery-gpu" | "splat-gpu" | "columns-gpu" => (Executor::Gpu, mr_exec_gpu::info(preset).params),
-        _ => return None,
+/// The executor that runs `g` (`Graph::runs_on`) and the knobs of its region that builds
+/// the graph's shape (`None`: no region of that executor does, so no generated pipeline
+/// runs it).
+pub(crate) fn executor_of(g: &mr_components::graph::Graph) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
+    let preset = g.preset().filter(|p| mr_components::graph::executor_of(p) == g.runs_on())?;
+    Some(match g.runs_on() {
+        "cpu" => (Executor::Cpu, mr_exec_cpu::info(preset).params),
+        _ => (Executor::Gpu, mr_exec_gpu::info(preset).params),
     })
 }
 
@@ -97,17 +88,21 @@ pub struct Compiled {
 /// What a renderer run by an executor bakes in (`None` for other renderers).
 pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
     use mr_components::graph::{Device, Role};
-    let Some((executor, params)) = params_of(&spec.name) else { return Ok(None) };
-    // The graph the worker gets, every baked knob valued on each node of its owner (given
-    // there, else the preset's default): what the worker checks the build against.
-    let mut graph = spec.worker_graph()?.context("the renderer has no graph")?;
+    let Some(mut graph) = spec.worker_graph()? else { return Ok(None) };
+    let Some((executor, params)) = executor_of(&graph) else { return Ok(None) };
+    // The knobs the generated code bakes: those declared specialisable (`ParamSpec::baked`)
+    // on a node of the graph, each valued on every node of its owner in the graph the worker
+    // gets (given there, else its default): what the worker checks the build against. Only
+    // the CPU regions fold them into constants (a test checks the declarations against the
+    // code); the GPU executor's crate builds its CPU work natively and bakes no knob, its
+    // specialisable knobs being the shaders', which every build compiles in itself.
     let mut baked: Vec<(String, toml::Value)> = vec![];
-    for k in bakes(&spec.name) {
-        let p = params.iter().find(|p| p.name == *k).with_context(|| format!("`{}` has no knob `{k}`", spec.name))?;
-        let (role, comps) = p.owner.as_ref().with_context(|| format!("baked knob `{k}` belongs to no node"))?;
+    for p in params.iter().filter(|p| executor == Executor::Cpu && p.baked && p.owner.is_some()) {
+        let k = p.name.as_str();
+        let (role, comps) = p.owner.as_ref().unwrap();
         let default = toml::Value::try_from(p.default.to_json())?;
         let mut value = None;
-        for n in graph.nodes.values_mut().filter(|n| n.role.name() == role && comps.contains(&n.component)) {
+        for n in graph.nodes.values_mut().filter(|n| n.role.name() == *role && comps.contains(&n.component)) {
             let v = n.knobs.entry(k.to_string()).or_insert_with(|| default.clone()).clone();
             if value.get_or_insert_with(|| v.clone()) != &v {
                 bail!("`{k}` differs between nodes: one build bakes one value");
@@ -341,7 +336,7 @@ fn profdata() -> anyhow::Result<PathBuf> {
 /// bricks + refloor, 960x540: 71 ms a frame on one thread, 547 on four, 850 on all 32).
 fn train_options(b: &Bake) -> toml::Table {
     let mut options = toml::Table::new();
-    if b.graph.preset().and_then(params_of).is_some_and(|(_, ps)| ps.iter().any(|p| p.name == "threads")) {
+    if executor_of(&b.graph).is_some_and(|(_, ps)| ps.iter().any(|p| p.name == "threads")) {
         options.insert("threads".into(), 1.into());
     }
     options
@@ -716,8 +711,9 @@ mod tests {
         s
     }
 
-    /// Every CPU storage and kernel of the `raycast-cpu` preset and every other lane of the CPU
-    /// executor has generated code; the knobs it bakes are declared specialisable.
+    /// Every CPU storage and kernel of the `raycast-cpu` preset and every other region of the CPU
+    /// executor has generated code; the knobs declared specialisable on a node are exactly the
+    /// ones its generated code folds.
     #[test]
     fn every_cpu_graph_has_a_source() {
         for st in mr_components::names_on("cpu", mr_components::Slot::Storage) {
@@ -743,12 +739,14 @@ mod tests {
             let s = source(&bake(&spec(r, &[])).unwrap().unwrap()).unwrap();
             assert!(s.contains(entry), "{entry} in {s}");
         }
-        for b in ["raycast-cpu", "raster-cpu", "columns-cpu"] {
-            let (_, params) = params_of(b).unwrap();
-            for k in bakes(b) {
-                assert!(params.iter().any(|p| p.name == *k && p.baked && p.owner.is_some()), "{b}: `{k}` is declared specialisable and belongs to a node");
-            }
+        for (b, folded) in [("raycast-cpu", vec!["exact", "packet", "shadows", "skip16", "skip2", "skip4", "skip8"]), ("raster-cpu", vec![]), ("columns-cpu", vec!["shadows"])] {
+            let (e, params) = executor_of(&spec(b, &[]).pipeline().unwrap()).unwrap();
+            assert_eq!(e, Executor::Cpu);
+            let mut declared: Vec<&str> = params.iter().filter(|p| p.baked && p.owner.is_some()).map(|p| p.name.as_str()).collect();
+            declared.sort();
+            assert_eq!(declared, folded, "{b}: the knobs declared specialisable on a node are the ones the generated code folds");
         }
+        assert!(executor_of(&spec("raycast-gpu", &[]).pipeline().unwrap()).is_some_and(|(e, _)| e == Executor::Gpu));
         assert!(manifest(repo(), Executor::Cpu).contains("[workspace]"), "the generated crate is its own workspace");
     }
 

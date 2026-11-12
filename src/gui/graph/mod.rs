@@ -647,7 +647,7 @@ mod tests {
             r
         };
         let old = spec(mr_components::Slot::Holes, "none");
-        let (_, params) = crate::pipelines::params_of("discover-gpu").unwrap();
+        let (_, params) = crate::pipelines::executor_of(&old.pipeline().unwrap()).unwrap();
         let knobs: Vec<_> = params.iter().map(|p| (p.clone(), knobs::option_value(p, &old.knob_values()))).collect();
         let edits = live_edits(&old, &spec(mr_components::Slot::Holes, "coverage"), &knobs).unwrap();
         assert_eq!(edits[0], ("holes".into(), ParamValue::Choice("coverage".into())));
