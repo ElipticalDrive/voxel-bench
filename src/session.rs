@@ -332,7 +332,7 @@ impl Outputs {
 fn save_image(path: &Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
     if path.extension().is_some_and(|e| e == "hdr") {
         use mr_core::lighting::{half_to_f32, srgb_extended_to_linear};
-        let rgb: Vec<image::Rgb<f32>> = px.chunks_exact(8).map(|p| image::Rgb(std::array::from_fn(|c| srgb_extended_to_linear(half_to_f32(u16::from_le_bytes([p[2 * c], p[2 * c + 1]])))))).collect();
+        let rgb: Vec<image::Rgb<f32>> = px.as_chunks::<8>().0.iter().map(|p| image::Rgb(std::array::from_fn(|c| srgb_extended_to_linear(half_to_f32(u16::from_le_bytes([p[2 * c], p[2 * c + 1]])))))).collect();
         image::codecs::hdr::HdrEncoder::new(std::io::BufWriter::new(std::fs::File::create(path)?)).encode(&rgb, w as usize, h as usize)?;
     } else {
         image::save_buffer(path, px, w, h, image::ExtendedColorType::Rgba8)?;

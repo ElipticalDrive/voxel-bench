@@ -196,4 +196,5 @@ LOCK=host.view_radius TARGET_FPS=900 SECONDS=60 ALGO=bayes \
 RENDERER=raycast-gpu:prefix+refloor cargo test --release --bin multirenderer scale_curve -- --ignored --nocapture
 ```
 
-`scale_curve` prints quality against render scale under all three metrics.
+`scale_curve` prints quality against render scale under all three metrics. `scripts/check.py gpu`
+runs both briefly as tests (`SECONDS=8`).

@@ -4,7 +4,9 @@
   scripts/check.py [build|clippy|test|gpu|windows|wine|all]...
 
 Default: build clippy test. `build`: dev and release builds, warnings count as failures.
-`clippy`: clippy over the workspace, every warning a failure. `test`: the workspace's tests. `gpu`: the end-to-end tests that need a GPU. `windows`: zero-warning
+`clippy`: clippy over the workspace, every warning a failure. `test`: the workspace's tests. `gpu`: the tests that need a GPU (the
+host's end-to-end live sessions, the tuner and scale-curve demos run briefly, the device pool);
+only `gui_screenshot` stays manual. `windows`: zero-warning
 cross-checks for both Windows targets (`rustup target add x86_64-pc-windows-gnu
 x86_64-pc-windows-msvc`). `wine`: the unit and GPU end-to-end tests of the `-gnu` build under
 Wine (mingw64-gcc, wine); not in `all`."""
@@ -65,12 +67,10 @@ for w in what:
         rc |= tests("tests", s, t)
     elif w == "gpu":
         subprocess.run(["cargo", "build", "--release", "-q"], cwd=ROOT, capture_output=True)
-        s, t = cargo(["test", "-q", "--release", "--bin", "multirenderer", "--", "--ignored", "--skip", "tuner_demo", "--skip", "scale_curve", "--skip", "gui_screenshot"], logs / "gpu.log")
-        res = re.findall(r"test result: .*", t)
-        print(f"gpu e2e: {'ok' if s == 0 else 'FAILED'} {res[-1][:60] if res else ''}")
-        if s != 0:
-            print("\n".join([l for l in t.splitlines() if l.startswith("---- ") or "panicked" in l][:20]))
-        rc |= s != 0
+        os.environ.setdefault("SECONDS", "8")  # the tuner demo's run, long enough for trials
+        for name, args in (("gpu e2e", ["--bin", "multirenderer", "--", "--ignored", "--skip", "gui_screenshot"]), ("gpu pool", ["-p", "mr-gpu", "--", "--ignored"])):
+            s, t = cargo(["test", "-q", "--release", *args], logs / f"{name.replace(' ', '-')}.log")
+            rc |= tests(name, s, t)
     elif w == "windows":
         for target in ("x86_64-pc-windows-gnu", "x86_64-pc-windows-msvc"):
             s, t = cargo(["check", "--workspace", "--all-targets", "--message-format=short", "--target", target], logs / f"check-{target}.log")

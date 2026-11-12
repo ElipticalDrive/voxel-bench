@@ -5,7 +5,8 @@ use std::time::Duration;
 use super::*;
 
 /// Prints quality vs render scale for a renderer: `RENDERER=raycast-gpu:bricks+refloor cargo test
-/// --release --bin multirenderer scale_curve -- --ignored --nocapture`.
+/// --release --bin multirenderer scale_curve -- --ignored --nocapture`. `check gpu` runs it and
+/// asks only that every metric is finite and full scale beats the smallest.
 #[test]
 #[ignore]
 fn scale_curve() {
@@ -22,6 +23,7 @@ fn scale_curve() {
         }
     };
     wait(&|s| s.lanes.first().is_some_and(|l| l.samples.len() > 100 && l.pending_chunks == 0));
+    let mut psnr = Vec::new();
     for scale in [1.0, 0.98, 0.9, 0.75, 0.5, 0.35] {
         live.send(Cmd::SetParam { lane: 0, name: "host.render_scale".into(), value: ParamValue::Float(scale) });
         std::thread::sleep(Duration::from_millis(600));
@@ -35,5 +37,8 @@ fn scale_curve() {
         }
         let q = sh.lanes[0].quality.back().unwrap();
         println!("scale {scale:.2} ({}x{}): PSNR {:.1} dB, SSIM {:.1} dB, MS-SSIM {:.1} dB, {:.2}% bad", sh.lanes[0].resolution[0], sh.lanes[0].resolution[1], q.psnr, q.ssim_db, q.ms_ssim_db, q.bad_pct);
+        assert!(q.psnr.is_finite() && q.ssim_db.is_finite() && q.ms_ssim_db.is_finite(), "scale {scale}: {q:?}");
+        psnr.push(q.psnr);
     }
+    assert!(psnr[0] > psnr[5], "full scale should beat 0.35: {psnr:?}");
 }

@@ -74,7 +74,7 @@ impl Meshes {
                 let c = m.colors[i as usize];
                 Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32) / 255.0
             };
-            for t in m.indices.chunks_exact(3) {
+            for t in m.indices.as_chunks::<3>().0 {
                 let (a, b, c) = (xf(m.positions[t[0] as usize]), xf(m.positions[t[1] as usize]), xf(m.positions[t[2] as usize]));
                 self.tris.push(Tri { p0: a, e1: b - a, e2: c - a, c: [col(t[0]), col(t[1]), col(t[2])] });
             }

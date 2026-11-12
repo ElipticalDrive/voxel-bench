@@ -32,7 +32,7 @@ pub fn compare(a: &[u8], b: &[u8], width: u32) -> Quality {
     let ssim = ssim_luma(&la, &lb, w, h);
     let ms_ssim = ms_ssim(la, lb, w, h);
     let (mut se, mut ae, mut bad) = (0u64, 0u64, 0u64);
-    for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+    for (pa, pb) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
         let mut worst = 0;
         for c in 0..3 {
             let d = (pa[c] as i32 - pb[c] as i32).unsigned_abs();
@@ -61,7 +61,7 @@ fn to_db(s: f64) -> f64 {
 }
 
 fn luma(p: &[u8]) -> Vec<f32> {
-    p.chunks_exact(4).map(|c| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32).collect()
+    p.as_chunks::<4>().0.iter().map(|c| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32).collect()
 }
 
 fn half(l: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
@@ -128,14 +128,14 @@ fn ssim_luma(la: &[f32], lb: &[f32], w: usize, h: usize) -> f64 {
 /// a larger difference).
 pub fn diff_image(a: &[u8], b: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; a.len()];
-    for ((pa, pb), o) in a.chunks_exact(4).zip(b.chunks_exact(4)).zip(out.chunks_exact_mut(4)) {
+    for ((pa, pb), o) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0).zip(out.as_chunks_mut::<4>().0) {
         let d = (0..3).map(|c| (pa[c] as i32 - pb[c] as i32).unsigned_abs()).max().unwrap();
         if d > 2 {
             let v = (64 + d * 4).min(255) as u8;
-            o.copy_from_slice(&[v, 0, 0, 255]);
+            *o = [v, 0, 0, 255];
         } else {
             let g = ((pa[0] as u32 + pa[1] as u32 + pa[2] as u32) / 9) as u8;
-            o.copy_from_slice(&[g, g, g, 255]);
+            *o = [g, g, g, 255];
         }
     }
     out

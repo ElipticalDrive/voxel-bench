@@ -215,7 +215,7 @@ impl GpuMeshes {
         for inst in &self.instances {
             let Some(m) = self.data.get(&inst.mesh) else { continue };
             let xf = inst.matrix_rel(origin);
-            for t in m.indices.chunks_exact(3) {
+            for t in m.indices.as_chunks::<3>().0 {
                 let p: [Vec3; 3] = std::array::from_fn(|k| xf.transform_point3(Vec3::from_array(m.positions[t[k] as usize])));
                 let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
                 for (k, &i) in t.iter().enumerate() {

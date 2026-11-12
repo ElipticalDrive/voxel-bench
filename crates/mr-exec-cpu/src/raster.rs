@@ -275,8 +275,9 @@ impl Node for Faces {
                     let axis = f / 2;
                     let facing = if f % 2 == 0 { 0.0 > min[axis] } else { 0.0 < min[axis] + 32.0 };
                     if facing {
-                        for qi in first..first + n as usize {
-                            let q = Quad::decode(m.quads[qi]);
+                        for (k, &packed) in m.quads[first..first + n as usize].iter().enumerate() {
+                            let qi = first + k;
+                            let q = Quad::decode(packed);
                             poly.clear();
                             let [c0, c1, c2, c3] = q.corners();
                             for c in [c0, c1, c3, c2] {

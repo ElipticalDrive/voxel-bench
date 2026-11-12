@@ -6,13 +6,14 @@ use crate::tune;
 use super::*;
 
 /// Watch the tuner work on real terrain: `cargo test --release --bin multirenderer
-/// tuner_demo -- --ignored --nocapture`.
+/// tuner_demo -- --ignored --nocapture` (`SECONDS`, `TARGET_FPS`, `LOCK`, `ALGO`). `check gpu`
+/// runs it briefly and asks only that the tuner ran trials and reported a best.
 #[test]
 #[ignore]
 fn tuner_demo() {
     let plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/terrain.toml")), &[
         "run.isolation=\"thread\"".into(),
-        "renderer=[{name=\"gpu-dda\"}]".into(),
+        "renderer=[{compose={preset=\"raycast-gpu\"}}]".into(),
         "run.resolution=[1920,1080]".into(),
     ])
     .unwrap();
@@ -48,4 +49,6 @@ fn tuner_demo() {
     for (p, v) in &sh.lanes[0].params {
         println!("  knob {} = {}", p.name, v.display());
     }
+    assert!(tv.trials > 0, "the tuner ran no trial in {secs} s: {}", tv.status);
+    assert!(tv.best.is_some(), "the tuner reported no best: {}", tv.status);
 }

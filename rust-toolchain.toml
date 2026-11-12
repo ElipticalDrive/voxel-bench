@@ -1,0 +1,6 @@
+# One toolchain everywhere (local, CI, the compiled pipelines), so lints and features agree.
+# Bump it deliberately: `scripts/check.py all` on the new version, then commit.
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "llvm-tools"]
+targets = ["x86_64-pc-windows-gnu", "x86_64-pc-windows-msvc"]

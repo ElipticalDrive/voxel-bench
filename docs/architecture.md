@@ -107,8 +107,14 @@ features asked for. Asynchronous renderers call the `Waker` when work may have f
 - `cargo build --release` with no warnings; `cargo test -q --workspace` (unit tests,
   including: the registry matches its implementations, storages are exact, the CPU walks
   agree, every shipped plan loads).
-- GPU end-to-end tests: `cargo test -q --release --bin multirenderer -- --ignored --skip
-  tuner_demo --skip scale_curve --skip gui_screenshot`.
+- The toolchain is pinned by `rust-toolchain.toml` (rustup installs it on first use, with
+  clippy, llvm-tools and the Windows targets); CI, the installer and the compiled pipelines
+  use the same one, so lints and features agree everywhere. Bump it deliberately, with
+  `scripts/check.py all` on the new version.
+- GPU tests, `scripts/check.py gpu`: the host's end-to-end live sessions, the tuner and
+  scale-curve demos (briefly: `SECONDS=8`), and `mr-gpu`'s device pool, all `#[ignore]`d so
+  the workspace tests run without a GPU. Only `gui_screenshot` stays manual (it saves a
+  picture to look at).
 - The architecture guard, `cargo test -q --test architecture`: no WGSL function defined twice
   across executors or redefining shared code, no bodies copied under other names, and
   lighting only through the shading component. Exceptions are listed in the test with their

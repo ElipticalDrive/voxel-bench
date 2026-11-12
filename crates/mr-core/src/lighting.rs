@@ -278,7 +278,7 @@ pub fn srgb_extended_to_linear(c: f32) -> f32 {
 pub fn hdr_to_rgba8(px: &[u8]) -> Vec<u8> {
     static TABLE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     let t = TABLE.get_or_init(|| (0..=u16::MAX).map(|h| (half_to_f32(h).clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect());
-    px.chunks_exact(2).map(|h| t[u16::from_le_bytes([h[0], h[1]]) as usize]).collect()
+    px.as_chunks::<2>().0.iter().map(|&h| t[u16::from_le_bytes(h) as usize]).collect()
 }
 
 /// A pixel of a CPU-made frame, in its frame's [`PixelFormat`]: RGBA8 (`[u8; 4]`) or

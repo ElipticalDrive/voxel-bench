@@ -1,5 +1,6 @@
 # scripts/check.py on every push: builds, clippy and tests without warnings, and the Windows
-# cross-checks. No GPU here, so not the end-to-end tests (`check.py gpu`).
+# cross-checks. No GPU here, so not the end-to-end tests (`check.py gpu`). The toolchain is the
+# one `rust-toolchain.toml` pins (rustup installs it, with its components and targets).
 name: check
 on:
   push:
@@ -8,15 +9,12 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-          targets: x86_64-pc-windows-gnu, x86_64-pc-windows-msvc
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install && rustup show
       - uses: Swatinem/rust-cache@v2
       - run: python3 scripts/check.py build clippy test windows
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: logs
           path: target/logs/

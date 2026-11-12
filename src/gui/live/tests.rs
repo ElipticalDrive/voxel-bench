@@ -21,6 +21,15 @@ fn wait(shared: &Arc<Mutex<Shared>>, what: &str, secs: u64, f: impl Fn(&Shared) 
     panic!("{msg}");
 }
 
+/// The built host executable, for process workers (they start from the real executable, not
+/// this test harness): the nearest ancestor of the harness that holds one, `target/<profile>/`,
+/// whatever cargo's layout for test binaries is (cargo 1.100 moved them under `build/`).
+fn built_host() -> std::path::PathBuf {
+    let me = std::env::current_exe().unwrap();
+    let name = format!("multirenderer{}", std::env::consts::EXE_SUFFIX);
+    me.ancestors().map(|d| d.join(&name)).find(|p| p.is_file()).unwrap_or_else(|| panic!("build the binary first (none above {})", me.display()))
+}
+
 /// Drives a whole live session headlessly (needs a GPU; run with `--ignored`).
 #[test]
 #[ignore]
@@ -207,8 +216,7 @@ fn live_hdr_window() {
         &[],
     )
     .unwrap();
-    let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join(format!("multirenderer{}", std::env::consts::EXE_SUFFIX));
-    assert!(exe.exists(), "build the binary first ({})", exe.display());
+    let exe = built_host();
     // SAFETY: set before any thread of this test starts; the other tests that read it set the same.
     unsafe { std::env::set_var("MR_WORKER_EXE", &exe) };
     let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 30.0, probe_interval: 0.0, windows: 1, paper_white: 1.0 };
@@ -247,10 +255,7 @@ fn live_compiled_pipeline() {
     )
     .unwrap();
     let control = Control { camera: CameraControl::Path, mode: PassMode::UNLIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.0, windows: 0, paper_white: 1.0 };
-    // Process workers start from the real executable, not this test harness
-    // (target/<profile>/deps/<test> -> target/<profile>/multirenderer; build it first).
-    let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join(format!("multirenderer{}", std::env::consts::EXE_SUFFIX));
-    assert!(exe.exists(), "build the binary first ({})", exe.display());
+    let exe = built_host();
     // SAFETY: set before any worker thread of this test starts; no other test reads it.
     unsafe { std::env::set_var("MR_WORKER_EXE", &exe) };
     let live = LiveHandle::start(plan, vec![], control, || {});

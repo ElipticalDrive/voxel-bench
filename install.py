@@ -151,13 +151,16 @@ def ensure_rust(m):
             init.chmod(0o755)
             run(init, "-y", "--profile", "minimal", "--default-toolchain", "stable")
         m["rustup"] = True
+    if not tool("rustup"):
+        say("Rust is not managed by rustup: make sure it is the version rust-toolchain.toml names and has llvm-tools (profile-guided builds)")
+
+
+def pin_toolchain():
+    """Installs the toolchain the fetched tree pins (`rust-toolchain.toml`: version, llvm-tools,
+    targets); cargo run in that tree, by the installer or for the compiled pipelines, uses it."""
     rustup = tool("rustup")
     if rustup:
-        # Edition 2024 needs 1.85; the tree tracks recent stable.
-        run(rustup, "update", "stable", "--no-self-update", check=False)
-        run(rustup, "component", "add", "llvm-tools")
-    else:
-        say("Rust is not managed by rustup: make sure it is recent and has llvm-tools (profile-guided builds)")
+        run(rustup, "toolchain", "install", cwd=SRC)
 
 
 # --- a C compiler --------------------------------------------------------------------------
@@ -384,6 +387,7 @@ def install(args):
     ensure_rust(m)
     save_manifest(m)
     fetch(m)
+    pin_toolchain()
     build(m)
     sync_plans(m)
     m["shortcut"] = not args.no_shortcut
@@ -406,6 +410,7 @@ def update(args):
     ensure_rust(m)
     save_manifest(m)
     fetch(m)
+    pin_toolchain()
     build(m)
     sync_plans(m)
     if m.get("shortcut"):

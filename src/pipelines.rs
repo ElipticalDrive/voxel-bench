@@ -198,6 +198,14 @@ fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// `cargo` / `rustc` (`$CARGO`, `$RUSTC` when set) run in [`repo`], so rustup picks the
+/// toolchain the repository pins wherever the host was started from.
+fn tool(var: &str, name: &str) -> Command {
+    let mut cmd = Command::new(std::env::var(var).unwrap_or(name.into()));
+    cmd.current_dir(repo());
+    cmd
+}
+
 fn manifest(repo: &Path, executor: Executor) -> String {
     let dep = |name: &str, path: &str| format!("{name} = {{ path = {} }}\n", toml::Value::String(repo.join(path).to_string_lossy().into_owned()));
     let (name, path, _) = executor.parts();
@@ -260,7 +268,7 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
 
 /// The toolchain and CPU parts of the cache key.
 fn machine_id() -> anyhow::Result<String> {
-    let rustc = Command::new(std::env::var("RUSTC").unwrap_or("rustc".into())).arg("-vV").output().context("running rustc -vV (a Rust toolchain builds the pipelines)")?;
+    let rustc = tool("RUSTC", "rustc").arg("-vV").output().context("running rustc -vV (a Rust toolchain builds the pipelines)")?;
     let cpu = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
     let model: Vec<&str> = cpu.lines().filter(|l| l.starts_with("model name") || l.starts_with("flags")).take(2).collect();
     Ok(format!("{}\n{}", String::from_utf8_lossy(&rustc.stdout), model.join("\n")))
@@ -292,7 +300,7 @@ const FLAGS: &str = "-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all
 /// and returns the worker executable.
 fn cargo(key: &str, src: &Path, target: &Path, profile: &str, extra: &str) -> anyhow::Result<PathBuf> {
     tracing::info!("compiling pipeline {key} (cargo, profile {profile}, target {})", target.display());
-    let out = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()))
+    let out = tool("CARGO", "cargo")
         .args(["build", "--quiet", "--profile", profile, "--manifest-path"])
         .arg(src.join("Cargo.toml"))
         .env("CARGO_TARGET_DIR", target)
@@ -319,9 +327,8 @@ fn tail(out: &[u8], n: usize) -> String {
 
 /// The toolchain's `llvm-profdata` (rustup component `llvm-tools`: its LLVM is rustc's).
 fn profdata() -> anyhow::Result<PathBuf> {
-    let rustc = std::env::var("RUSTC").unwrap_or("rustc".into());
-    let sysroot = Command::new(&rustc).args(["--print", "sysroot"]).output().context("running rustc --print sysroot")?;
-    let vv = Command::new(&rustc).arg("-vV").output().context("running rustc -vV")?;
+    let sysroot = tool("RUSTC", "rustc").args(["--print", "sysroot"]).output().context("running rustc --print sysroot")?;
+    let vv = tool("RUSTC", "rustc").arg("-vV").output().context("running rustc -vV")?;
     let vv = String::from_utf8_lossy(&vv.stdout);
     let host = vv.lines().find_map(|l| l.strip_prefix("host: ")).context("rustc -vV names no host")?;
     let exe = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim()).join("lib").join("rustlib").join(host).join("bin").join(exe_name("llvm-profdata"));
