@@ -98,10 +98,11 @@ pub const CPU_RASTER: Builds = Builds {
     only: &[],
 };
 
-/// `columns-cpu`: the heightmap, the column march and the shading.
+/// `columns-cpu`: the heightmap, its own ray march (the shadow rays), the column march and the shading.
 pub const CPU_COLUMNS: Builds = Builds {
     nodes: &[
         Build::one(Role::Storage, &["heightmap"], impls::CPU_SCALAR),
+        Build::one(Role::Traversal, &["heightfield"], impls::CPU_SCALAR),
         Build::one(Role::Visibility, &["columns"], impls::CPU_SCALAR),
         Build::one(Role::Shading, &["direct"], impls::CPU_SCALAR),
     ],
@@ -219,10 +220,12 @@ pub const GPU_SPLAT: Builds = Builds {
     only: &[Only { role: Role::Visibility, of: &[], port: "points", components: &["points"], bound: true }, SHADOW_WALKED, RT],
 };
 
-/// Voxel Space on the GPU (`columns-gpu`): the heightmap, the column march, the shading.
+/// Voxel Space on the GPU (`columns-gpu`): the heightmap, its own ray march (the shadow and
+/// bounce rays), the column march, the shading.
 pub const GPU_COLUMNS: Builds = Builds {
     nodes: &[
         Build::one(Role::Storage, &["heightmap"], impls::GPU_COMPUTE),
+        Build::one(Role::Traversal, &["heightfield"], impls::GPU_COMPUTE),
         Build::one(Role::Visibility, &["columns"], impls::GPU_COMPUTE),
         Build::one(Role::Shading, &["direct", "pathtrace"], impls::GPU_COMPUTE),
     ],

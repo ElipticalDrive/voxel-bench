@@ -241,14 +241,14 @@ pub const PRESETS: &[PresetInfo] = &[
         name: "columns-gpu",
         description: "Comanche-style Voxel Space (2.5D, no overhangs) in a compute shader: one thread per screen column marches a heightmap front to back with a y-buffer",
         renderer: Some("columns-gpu"),
-        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
+        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Traversal, "heightfield"), (Slot::Shading, "direct")], lit_only: &[Slot::Traversal], quiet: &[Slot::Traversal],
         runs: impls::GPU_COMPUTE, at: NONE, api_choice: None,
     },
     PresetInfo {
         name: "columns-cpu",
         description: "Comanche-style Voxel Space (2.5D) on the CPU, rayon-parallel over screen columns",
         renderer: Some("columns-cpu"),
-        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[],
+        slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Traversal, "heightfield"), (Slot::Shading, "direct")], lit_only: &[Slot::Traversal], quiet: &[Slot::Traversal],
         runs: impls::CPU_SCALAR, at: NONE, api_choice: None,
     },
     PresetInfo {
@@ -325,6 +325,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Traversal, name: "sphere", description: "Chebyshev sphere tracing: leave the whole empty box around the cell in one step (from gpu-sdf). Fast with `distance`.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Steps] }], needs: &[(Slot::Storage, Cap::Voxels), (Slot::Storage, Cap::Dist)] },
     ComponentInfo { slot: Slot::Traversal, name: "rowrun", description: "Refloor plus bit-scan jumps across empty row runs when the ray runs along x (from gpu-bitmask). Fast with `rows`.", impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Steps] }], needs: &[(Slot::Storage, Cap::Voxels), (Slot::Storage, Cap::Row)] },
     ComponentInfo { slot: Slot::Traversal, name: "rayquery", description: "Hardware ray queries against the acceleration structure (RT cores) for primary, shadow and bounce rays. Knob: cull (triangle facing culled for primary rays).", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::RayQuery], provides: &[] }], needs: &[] },
+    ComponentInfo { slot: Slot::Traversal, name: "heightfield", description: "The heightmap's own ray march (shadow and bounce rays of the columns pipelines): a 2D DDA over its columns, chunk columns the ray passes above skipped in one step.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }, Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] }], needs: &[(Slot::Storage, Cap::Heights)] },
     // Prepass.
     ComponentInfo { slot: Slot::Prepass, name: "none", description: "No prepass: every ray walks from the camera.", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[Cap::Lod] }], needs: &[] },
     ComponentInfo { slot: Slot::Prepass, name: "beam", description: "Conservative per-tile beam (from gpu-beam): one cone per tile marches top cells; rays start where their tile's cone is provably empty. Exact. Knob: tile (pixels, 1 = off).", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }], needs: &[(Slot::Storage, Cap::Voxels)] },

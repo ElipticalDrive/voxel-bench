@@ -3,7 +3,8 @@
 //! The march is the columns component's (`mr_components::visibility::columns::cpu`),
 //! rayon-parallel over screen columns. Lit mode: the shading component (`direct::cpu::shade`)
 //! with the heightmap gradient as the top faces' normal; ambient, sun and point lights,
-//! shadow rays walking the heightmap storage (`Heightmap::trace`), as columns-gpu. Shading
+//! shadow rays walking the heightmap storage (`Heightmap::trace`: the `heightfield` kernel the
+//! graph binds to the shading's `shadow` port), as columns-gpu. Shading
 //! placement: inline in the march (one fused pass), or deferred (the march writes hit
 //! records, the common pass `shading::deferred` shades them). The heightmap is patched from
 //! the change log.
@@ -34,6 +35,7 @@ pub(crate) fn info() -> RendererInfo {
         params: vec![
             ParamSpec::choice("storage", "Storage component", &mr_components::names_on(PRESET, mr_components::Slot::Storage), "heightmap", false),
             ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(PRESET, mr_components::Slot::Visibility), "columns", false),
+            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &mr_components::names_on(PRESET, mr_components::Slot::Traversal), "heightfield", false),
             ParamSpec::choice("shading", "Shading component", &mr_components::names_on(PRESET, mr_components::Slot::Shading), "direct", false),
             mr_components::placement_param(PRESET, "inline"),
             ParamSpec::int("threads", "Worker threads (0 = all cores)", 0, 256, 0, true),
@@ -181,7 +183,8 @@ impl<S: Spec, P: Pixel> Node for Visibility<S, P> {
     }
 }
 
-/// The common deferred pass over the hit records; shadow rays walk the heightmap.
+/// The common deferred pass over the hit records; its shadow rays walk the heightmap (the
+/// `heightfield` kernel bound to its `shadow` port, over the storage: `ins[1]`).
 struct Shading<S, P> {
     nodes: Vec<String>,
     spec: std::marker::PhantomData<(S, P)>,
@@ -207,8 +210,9 @@ impl<S: Spec, P: Pixel> Node for Shading<S, P> {
     }
 }
 
-/// The executor for graph `g`: one pass per scheduled storage, visibility and shading node;
-/// `S` what a compiled pipeline baked in.
+/// The executor for graph `g`: one pass per scheduled storage, visibility and shading node
+/// (the kernel is fused: the shading reads the storage through it); `S` what a compiled
+/// pipeline baked in.
 pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let opts: Options = p.options()?;
     let shading: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
@@ -217,33 +221,23 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
     let mut init = Some(Field { hm: Heightmap::new(p.view_radius_chunks), chunks: Chunks::default() });
     let (mut passes, mut index): (Vec<Pass>, HashMap<String, usize>) = (vec![], HashMap::new());
-    let mut storage = None;
     for pass in schedule.passes() {
         let id = pass.node.as_str();
-        let mut ins = vec![];
         let node: Box<dyn Node> = match g.node(id).role {
-            Role::Storage => {
-                storage = Some(passes.len());
-                Box::new(Storage { init: init.take() })
-            }
+            Role::Storage => Box::new(Storage { init: init.take() }),
             Role::Visibility => {
                 let nodes = if deferred { vec![id.to_string()] } else { g.ids(&[Role::Visibility, Role::Shading]) };
                 Box::new(Visibility::<S, P> { fused: !deferred, cols: vec![], nodes, spec: std::marker::PhantomData })
             }
             // Fused into the visibility pass.
             Role::Shading if !deferred => continue,
-            Role::Shading => {
-                // Its shadow rays walk the heightmap, which the graph leaves implicit (no
-                // shadow input): read the storage's pass too.
-                exec::reads(g, id, &index, &mut ins);
-                ins.extend(storage);
-                Box::new(Shading::<S, P> { nodes: vec![id.to_string()], spec: std::marker::PhantomData })
-            }
+            // Reads the records and, through its shadow rays' kernel (the heightmap's own
+            // march), the heightmap.
+            Role::Shading => Box::new(Shading::<S, P> { nodes: vec![id.to_string()], spec: std::marker::PhantomData }),
             _ => continue,
         };
-        if ins.is_empty() {
-            exec::reads(g, id, &index, &mut ins);
-        }
+        let mut ins = vec![];
+        exec::reads(g, id, &index, &mut ins);
         index.insert(id.to_string(), passes.len());
         passes.push(Pass { node, ins });
     }

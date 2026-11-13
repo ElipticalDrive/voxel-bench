@@ -1,6 +1,7 @@
 //! Columns on the node executor (`columns-gpu`; components): storage
 //! `heightmap`, visibility `columns`, shading `direct` or `pathtrace` (heightmap-gradient
-//! normals on column tops; shadow and bounce rays walk the heightmap, `hm_trace`). The march
+//! normals on column tops; shadow and bounce rays walk the heightmap, `hm_trace`: the
+//! `heightfield` kernel the graph binds to the shading's ray ports). The march
 //! is the columns component's root (`mr_components::visibility::columns::GPU_WGSL`) in one
 //! compute pass; shading inline in the march or deferred (`placement`: the
 //! march writes hit records, the common pass `shading/deferred.wgsl` shades them). The
@@ -31,6 +32,7 @@ pub(crate) fn info() -> RendererInfo {
         params: mr_components::lighting_knobs(PRESET, vec![
             ParamSpec::choice("storage", "Storage component", &mr_components::names_on(PRESET, mr_components::Slot::Storage), "heightmap", false),
             ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(PRESET, mr_components::Slot::Visibility), "columns", false),
+            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &mr_components::names_on(PRESET, mr_components::Slot::Traversal), "heightfield", false),
             ParamSpec::choice("shading", "Shading component", &mr_components::names_on(PRESET, mr_components::Slot::Shading), "direct", false),
             mr_components::placement_param(PRESET, "inline"),
             shadows_param(),

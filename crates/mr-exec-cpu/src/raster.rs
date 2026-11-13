@@ -22,6 +22,7 @@
 //!    shades every fragment that passes the depth test instead (forward shading).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use mr_reference::{Chunks, Shadows, VoxelScene};
@@ -124,22 +125,19 @@ struct Tri {
 }
 
 
-/// The geometry's output: the chunks and their meshes.
+/// The geometry's output: the chunks and their meshes (shared with the frame's visible set
+/// downstream; a remeshed chunk gets a new one).
 struct Meshes {
     chunks: Chunks,
-    meshes: HashMap<IVec3, Mesh>,
+    meshes: HashMap<IVec3, Arc<Mesh>>,
 }
 
 fn meshes(r: &Res) -> &Meshes {
     r.downcast_ref().expect("meshes")
 }
 
-impl Meshes {
-    /// The meshes of `tris`'s visible chunks, with their first quad ids.
-    fn visible(&self, tris: &Tris) -> Vec<(IVec3, &Mesh, u32)> {
-        tris.visible.iter().map(|&(p, base)| (p, &self.meshes[&p], base)).collect()
-    }
-}
+/// A visible chunk: position, mesh, first quad id.
+type Visible = (IVec3, Arc<Mesh>, u32);
 
 /// The geometry component: remeshes the changed chunks (in parallel, incrementally).
 struct Geometry {
@@ -164,7 +162,7 @@ impl Geometry {
         for (p, mesh) in meshes {
             match mesh {
                 Some(mesh) if !mesh.quads.is_empty() => {
-                    m.meshes.insert(p, mesh);
+                    m.meshes.insert(p, Arc::new(mesh));
                 }
                 _ => {
                     m.meshes.remove(&p);
@@ -220,10 +218,10 @@ impl Node for Geometry {
     }
 }
 
-/// The visibility's output: the visible chunks with a global quad numbering for visibility
-/// ids (0 = empty), and their screen-space triangles.
+/// The visibility's output: the visible chunks' meshes with a global quad numbering for
+/// visibility ids (0 = empty), and their screen-space triangles.
 struct Tris {
-    visible: Vec<(IVec3, u32)>,
+    visible: Vec<Visible>,
     tris: Vec<Tri>,
 }
 
@@ -246,12 +244,14 @@ impl Node for Faces {
         let vp = cam.projection(w as f32 / h as f32) * cam.view_rotation();
         let planes = frustum_planes(vp);
 
-        let mut visible: Vec<(IVec3, &Mesh, u32)> = vec![];
+        let out = out.downcast_mut::<Tris>().expect("triangles");
+        let visible = &mut out.visible;
+        visible.clear();
         let mut next_id = 1u32;
         for (pos, m) in &m.meshes {
             let min = (*pos * 32 - cam_block).as_vec3() - frac;
             if aabb_visible(&planes, min, min + 32.0) {
-                visible.push((*pos, m, next_id));
+                visible.push((*pos, m.clone(), next_id));
                 next_id += m.quads.len() as u32;
             }
         }
@@ -260,12 +260,12 @@ impl Node for Faces {
         // Transform, clip, triangulate (parallel per chunk), into last frame's triangles'
         // memory.
         let (fw, fh) = (w as f32, h as f32);
-        let out = out.downcast_mut::<Tris>().expect("triangles");
         let tris = &mut out.tris;
         tris.clear();
         tris.par_extend(visible
             .par_iter()
-            .flat_map_iter(|&(pos, m, base)| {
+            .flat_map_iter(|(pos, m, base)| {
+                let (pos, base) = (*pos, *base);
                 let min = (pos * 32 - cam_block).as_vec3() - frac;
                 let mut out = vec![];
                 let mut poly = Vec::with_capacity(12);
@@ -306,15 +306,21 @@ impl Node for Faces {
         let t = start.elapsed().as_secs_f64() * 1e3;
         report.stages.push(StageTime::cpu("transform", &self.nodes, t as f32));
         report.counters.extend([("chunks_drawn".into(), visible.len() as f64), ("triangles".into(), tris.len() as f64), ("geometry_ms".into(), t)]);
-        out.visible.clear();
-        out.visible.extend(visible.iter().map(|&(p, _, base)| (p, base)));
     }
 }
 
+/// The drawer's hit records: the quad id per pixel (0 = sky) and the visible set the ids
+/// index (the quad behind an id), as the visibility numbered it this frame.
+struct Ids {
+    ids: Vec<u32>,
+    visible: Vec<Visible>,
+}
+
 /// Draw `raster`: bins the triangles into (band, tile) cells, rasterises each band in
-/// parallel into the depth buffer and quad ids (its output); `fused` (`placement = inline`):
-/// shading compiled in, each fragment passing the depth test shaded into the image (its
-/// output).
+/// parallel into the depth buffer and quad ids (its output, [`Ids`]); `fused`
+/// (`placement = inline`): shading compiled in, each fragment passing the depth test shaded
+/// into the image (its output); the shading's shadow rays walk the geometry's chunks
+/// (`ins[1]`, the region's own shadow storage: raster-cpu's graph has no storage node).
 struct Draw<P> {
     fused: bool,
     tile_width: u32,
@@ -327,11 +333,11 @@ struct Draw<P> {
 impl<P: Pixel> Node for Draw<P> {
     fn output(&mut self, w: u32, h: u32) -> Res {
         self.depth = vec![0.0; (w * h) as usize];
-        if self.fused { exec::image::<P>(w, h) } else { Box::new(vec![0u32; (w * h) as usize]) }
+        if self.fused { exec::image::<P>(w, h) } else { Box::new(Ids { ids: vec![0u32; (w * h) as usize], visible: vec![] }) }
     }
     fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
         let start = Instant::now();
-        let (t, m) = (ins[0].downcast_ref::<Tris>().expect("triangles"), meshes(ins[1]));
+        let t = ins[0].downcast_ref::<Tris>().expect("triangles");
         let (w, h) = (cx.width, cx.height);
         let (fw, fh) = (w as f32, h as f32);
         let tris = &t.tris;
@@ -356,17 +362,18 @@ impl<P: Pixel> Node for Draw<P> {
         }
 
         // Rasterise: each band owns its rows of the depth buffer and of the output.
-        let visible = m.visible(t);
-        let quads = Quads::new(&visible, &m.chunks, cx);
-        let sky: P = cx.world.sky();
-        let raster = Raster { tris, bins: &bins, tiles_x, tw, bh, w, quads: &quads, sky };
         let rows = (bh * w) as usize;
         if self.fused {
+            let quads = Quads::new(&t.visible, &meshes(ins[1]).chunks, cx);
+            let raster = Raster { tris, bins: &bins, tiles_x, tw, bh, w, shade: |id, x, y| quads.shade::<P>(id, x, y), sky: cx.world.sky() };
             let pixels = out.downcast_mut::<Vec<P>>().expect("an image");
             self.depth.par_chunks_mut(rows).zip(pixels.par_chunks_mut(rows)).enumerate().for_each(|(band, (depth, pixels))| raster.band::<true>(band, depth, &mut [], pixels));
         } else {
-            let ids = out.downcast_mut::<Vec<u32>>().expect("quad ids");
-            self.depth.par_chunks_mut(rows).zip(ids.par_chunks_mut(rows)).enumerate().for_each(|(band, (depth, ids))| raster.band::<false>(band, depth, ids, &mut []));
+            let sky: P = cx.world.sky();
+            let raster = Raster { tris, bins: &bins, tiles_x, tw, bh, w, shade: |_, _, _| sky, sky };
+            let out = out.downcast_mut::<Ids>().expect("quad ids");
+            self.depth.par_chunks_mut(rows).zip(out.ids.par_chunks_mut(rows)).enumerate().for_each(|(band, (depth, ids))| raster.band::<false>(band, depth, ids, &mut []));
+            out.visible.clone_from(&t.visible);
         }
         let t = start.elapsed().as_secs_f64() * 1e3;
         report.stages.push(StageTime::cpu(if self.fused { "raster+shade" } else { "raster" }, &self.nodes, t as f32));
@@ -384,11 +391,12 @@ impl<P: Pixel> Node for Draw<P> {
         *out = self.output(w, h);
     }
     fn memory(&self, out: &Res) -> u64 {
-        (std::mem::size_of_val(&self.depth[..]) + out.downcast_ref::<Vec<u32>>().map_or(0, |ids| std::mem::size_of_val(&ids[..]))) as u64
+        (std::mem::size_of_val(&self.depth[..]) + out.downcast_ref::<Ids>().map_or(0, |r| std::mem::size_of_val(&r.ids[..]))) as u64
     }
 }
 
-/// The common deferred pass over the quad ids.
+/// The common deferred pass over the quad ids; its shadow rays walk the geometry's chunks
+/// (`ins[1]`, the region's own shadow storage: raster-cpu's graph has no storage node).
 struct Shading<P> {
     nodes: Vec<String>,
     px: std::marker::PhantomData<P>,
@@ -400,11 +408,9 @@ impl<P: Pixel> Node for Shading<P> {
     }
     fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
         let start = Instant::now();
-        let ids = ins[0].downcast_ref::<Vec<u32>>().expect("quad ids");
-        let (t, m) = (ins[1].downcast_ref::<Tris>().expect("triangles"), meshes(ins[2]));
-        let visible = m.visible(t);
-        let quads = Quads::new(&visible, &m.chunks, cx);
-        mr_components::shading::deferred::shade(&QuadIds { ids, quads: &quads, sky: cx.world.sky() }, cx.width, out.downcast_mut::<Vec<P>>().expect("an image"));
+        let r = ins[0].downcast_ref::<Ids>().expect("quad ids");
+        let quads = Quads::new(&r.visible, &meshes(ins[1]).chunks, cx);
+        mr_components::shading::deferred::shade(&QuadIds { ids: &r.ids, quads: &quads, sky: cx.world.sky() }, cx.width, out.downcast_mut::<Vec<P>>().expect("an image"));
         let t = start.elapsed().as_secs_f64() * 1e3;
         report.stages.push(StageTime::cpu("shade", &self.nodes, t as f32));
         report.counters.push(("shade_ms".into(), t));
@@ -422,7 +428,7 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
     let deferred = mr_components::parse_placement(&shading.placement)?;
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
     let (mut passes, mut index): (Vec<Pass>, HashMap<String, usize>) = (vec![], HashMap::new());
-    let (mut geometry, mut faces) = (None, None);
+    let mut geometry = None;
     for pass in schedule.passes() {
         let id = pass.node.as_str();
         let mut ins = vec![];
@@ -433,16 +439,15 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
                 let k: GeometryKnobs = g.knobs(id).map_err(anyhow::Error::msg)?;
                 Box::new(Geometry { dirty: HashSet::new(), mesh, knobs: Knobs { cull: k.cull, ..Default::default() }, nodes: vec![id.to_string()] })
             }
-            Role::Visibility => {
-                faces = Some(passes.len());
-                Box::new(Faces { nodes: vec![id.to_string()] })
-            }
-            // Drawing and shading recompute the surface from the quad (its mesh), which the
-            // graph leaves implicit (only the triangles or ids are inputs): read the
-            // geometry's pass, and the visibility's for the shading, too.
+            Role::Visibility => Box::new(Faces { nodes: vec![id.to_string()] }),
+            // The shading's shadow rays (inline: in the draw pass) walk the geometry's chunks,
+            // the region's own shadow storage: its `shadow` port is unbound (the graph has no
+            // storage node), so the geometry's pass is read by hand.
             Role::Draw => {
                 exec::reads(g, id, &index, &mut ins);
-                ins.extend(geometry);
+                if !deferred {
+                    ins.extend(geometry);
+                }
                 let k: DrawKnobs = g.knobs(id).map_err(anyhow::Error::msg)?;
                 let nodes = if deferred { vec![id.to_string()] } else { g.ids(&[Role::Draw, Role::Shading]) };
                 Box::new(Draw::<P> { fused: !deferred, tile_width: k.tile_width, band_height: k.band_height, depth: vec![], nodes, px: std::marker::PhantomData })
@@ -451,7 +456,6 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
             Role::Shading if !deferred => continue,
             Role::Shading => {
                 exec::reads(g, id, &index, &mut ins);
-                ins.extend(faces);
                 ins.extend(geometry);
                 Box::new(Shading::<P> { nodes: vec![id.to_string()], px: std::marker::PhantomData })
             }
@@ -518,7 +522,7 @@ fn clip(poly: &mut Vec<Vec4>, scratch: &mut Vec<Vec4>) {
 /// pixel is shaded: the quad id is raster-cpu's encoding of the hit record, decoded here
 /// (the pixel's ray against the quad's plane, in f64) and shaded with the reference model.
 struct Quads<'a> {
-    visible: &'a [(IVec3, &'a Mesh, u32)],
+    visible: &'a [Visible],
     bases: Vec<u32>,
     scene: VoxelScene<'a>,
     cam: Camera,
@@ -528,7 +532,7 @@ struct Quads<'a> {
 }
 
 impl<'a> Quads<'a> {
-    fn new(visible: &'a [(IVec3, &'a Mesh, u32)], chunks: &'a Chunks, cx: &Cx<'a>) -> Self {
+    fn new(visible: &'a [Visible], chunks: &'a Chunks, cx: &Cx<'a>) -> Self {
         let bases = visible.iter().map(|v| v.2).collect();
         Quads { visible, bases, scene: VoxelScene { world: cx.world, chunks }, cam: cx.req.camera, w: cx.width, h: cx.height, mode: cx.req.mode }
     }
@@ -536,7 +540,8 @@ impl<'a> Quads<'a> {
     #[inline]
     fn shade<P: Pixel>(&self, id: u32, x: u32, y: u32) -> P {
         let k = self.bases.partition_point(|&b| b <= id) - 1;
-        let (pos, m, base) = self.visible[k];
+        let (pos, m, base) = &self.visible[k];
+        let (pos, base) = (*pos, *base);
         let q = Quad::decode(m.quads[(id - base) as usize]);
         let (a, ua, va) = FACE_AXES[q.face as usize];
         let positive = (q.face as usize).is_multiple_of(2);
@@ -553,18 +558,19 @@ impl<'a> Quads<'a> {
 }
 
 /// What every band of a frame's rasterisation reads.
-struct Raster<'a, P> {
+struct Raster<'a, P, F> {
     tris: &'a [Tri],
     bins: &'a [Vec<u32>],
     tiles_x: usize,
     tw: u32,
     bh: u32,
     w: u32,
-    quads: &'a Quads<'a>,
+    /// Shades quad `id` at a pixel (with `INLINE`; the quad table's).
+    shade: F,
     sky: P,
 }
 
-impl<P: Pixel> Raster<'_, P> {
+impl<P: Pixel, F: Fn(u32, u32, u32) -> P + Sync> Raster<'_, P, F> {
     /// Rasterises band `band` into its rows of the depth and id buffers; with `INLINE`
     /// (`placement = inline`) every fragment that passes the depth test is shaded into
     /// `pixels` instead (forward shading: overdrawn fragments are shaded too).
@@ -609,7 +615,7 @@ impl<P: Pixel> Raster<'_, P> {
                         if z > depth[i] {
                             depth[i] = z;
                             if INLINE {
-                                pixels[i] = self.quads.shade(t.id, x, y);
+                                pixels[i] = (self.shade)(t.id, x, y);
                             } else {
                                 ids[i] = t.id;
                             }
