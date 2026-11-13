@@ -1,8 +1,10 @@
-//! Shading components: the colour of a surface point, `shade_surface(s, d, lit, px)` on the
-//! GPU (`s`: the `Surface` a visibility strategy found, ray walks via `surface_of`; `d`: the
+//! Shading components: the colour of a surface point, on the GPU `shade_surface(s, d, lit,
+//! px)` (`s`: the `Surface` a visibility strategy found, ray walks via `surface_of`; `d`: the
 //! view ray; `px`: the pixel, for per-pixel state such as random sequences and
-//! accumulation) and `shade` on the CPU (`direct::cpu`). Lit / unlit is
-//! the pass mode, not a component; a shading component decides how either is computed.
+//! accumulation) and `shade_point(albedo, p, n, d, lit, px)` for any surface given its
+//! sRGB albedo, point and normal (meshes: `mesh.wgsl`, the vertex colour), and `shade` on
+//! the CPU (`direct::cpu`). Lit / unlit is the pass mode, not a component; a shading
+//! component decides how either is computed.
 //!
 //! Placement: inline, called where the strategy finds the hit, or deferred,
 //! the common pass over the hit records the strategy wrote (`deferred.wgsl` on the GPU,
@@ -20,6 +22,8 @@ pub const DEFERRED_WGSL: &str = include_str!("deferred.wgsl");
 /// The deferred pass over the common packed record (`pack_hit`; the back end provides
 /// `record_at`, its view and `view_surface`).
 pub const DEFERRED_PACKED_WGSL: &str = concat!(include_str!("deferred.wgsl"), "\n", include_str!("packed.wgsl"));
+/// Mesh surfaces through the shading component (`shade_mesh`; module `shaders::SHADING_MESH`).
+pub const SHADE_MESH_WGSL: &str = include_str!("mesh.wgsl");
 
 pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {

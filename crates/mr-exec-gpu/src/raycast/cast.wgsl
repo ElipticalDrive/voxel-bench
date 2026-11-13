@@ -35,7 +35,7 @@ fn pixel_color(px: vec2<u32>) -> vec4<f32> {
     // No voxel in front of the mesh: its record's surface.
     if (!h.hit && mt < 1e29) {
         let m = mesh_record(px);
-        color = shade_mesh(mesh_surface(record_mesh_tri(m), cam.origin, d, bitcast<f32>(m.x)), cam.mode == 1u);
+        color = shade_mesh(mesh_surface(record_mesh_tri(m), cam.origin, d, bitcast<f32>(m.x)), d, cam.mode == 1u, px);
     }
 #endif
     if (h.hit) { color = shade_surface(surface_of(h, cam.origin, d), d, cam.mode == 1u, px); }

@@ -244,20 +244,6 @@ impl Walks {
         (!why.is_empty()).then(|| why.join("; "))
     }
 
-    /// A separate program for one site's shadow rays (meshes' own pipelines): the world,
-    /// kernel `k`'s walk with its storage at bind group 2, lighting through `occluded`.
-    /// Returns the program and the shadow rays' module path.
-    pub fn shadow_program(&self, k: usize) -> (Program, String) {
-        let rays = "walk::rays".to_string();
-        let mut p = Program::world(Some(&rays));
-        crate::post::add_to(self.post, &mut p);
-        let ki = &self.kernels[k];
-        let st = ki.storage.expect("mesh shadows walk a storage");
-        storage(&mut p, "walk::storage", &self.gpu_storage(st), 2);
-        kernel(&mut p, "walk::kernel", "walk::storage", &ki.component, &ki.consts);
-        shadow_rays(&mut p, &rays, "walk::kernel");
-        (p, rays)
-    }
 }
 
 /// The ray services of a shading node's sites through `walks`' kernels: shadow rays and
@@ -270,23 +256,27 @@ pub fn shading_rays(p: &mut Program, walks: &Walks, shadow: usize, bounce: usize
     vec!["rays::shadow".to_string(), "rays::bounce".to_string()]
 }
 
-/// Adds mesh surfaces to `p`: the mesh-surface module (`mesh_surface`,
-/// `shade_mesh`) with the triangles at `group`, `binding`, lit through the mesh-shadow
-/// site's kernel `mesh_shadow` (the program's lighting when that is the shadow rays' kernel
-/// `shadow`, else a lighting instance of its own), and shader def `MESHES`, which compiles in
-/// the record's mesh capability. Returns the module's path for the root's dependencies.
-pub fn meshes(p: &mut Program, walks: &Walks, shadow: usize, mesh_shadow: usize, group: u32, binding: u32) -> String {
+/// Adds mesh surfaces to `p` (after [`shading`]): the mesh-surface module (`mesh_surface`)
+/// with the triangles at `group`, `binding`; [`SHADING_MESH`] (`shade_mesh`), which shades
+/// them with the shading component `shading` lit through the mesh-shadow site's kernel
+/// `mesh_shadow` (the program's shading instance when that is the shadow rays' kernel
+/// `shadow`, else an instance of its own with a lighting of its own, its bounces the
+/// shading's); and shader def `MESHES`, which compiles in the record's mesh capability.
+/// Returns the modules' paths for the root's dependencies.
+pub fn meshes(p: &mut Program, walks: &Walks, shading: &str, shadow: usize, mesh_shadow: usize, group: u32, binding: u32) -> Vec<String> {
     use mr_gpu::meshes::{MESH_SURFACE, surface_wgsl};
-    let lighting = if mesh_shadow == shadow {
-        LIGHTING
+    p.add(MESH_SURFACE, surface_wgsl(group, binding), &[VOXELS, mr_gpu::program::COMMON]);
+    let shade = if mesh_shadow == shadow {
+        SHADING
     } else {
         walks.services(p, "rays::mesh", mesh_shadow, true, false);
         p.add("lighting::mesh", mr_gpu::voxels::LIGHTING_WGSL, &["rays::mesh", VOXELS, mr_gpu::program::POST]);
-        "lighting::mesh"
+        shading_instance(p, "shading::meshlit", shading, &["rays::mesh", "rays::bounce"], "lighting::mesh");
+        "shading::meshlit"
     };
-    p.add(MESH_SURFACE, surface_wgsl(group, binding), &[lighting, VOXELS, mr_gpu::program::COMMON]);
+    p.add(SHADING_MESH, crate::shading::SHADE_MESH_WGSL, &[shade, MESH_SURFACE]);
     p.define("MESHES");
-    MESH_SURFACE.to_string()
+    vec![SHADING_MESH.to_string(), MESH_SURFACE.to_string()]
 }
 
 /// The usual program of back ends whose root (`lead`) casts through a kernel and reads a
@@ -342,14 +332,22 @@ pub const STATE: &str = "mr::shade_state";
 /// The shading component's module (`shade_surface`), with its state, lighting and the ray
 /// services at `rays` (its shadow and bounce rays).
 pub const SHADING: &str = "shading";
+/// Mesh surfaces through the shading component (`shade_mesh`; [`meshes`]).
+pub const SHADING_MESH: &str = "shading::mesh";
 
 pub fn shading(p: &mut Program, name: &str, rays: &[&str], group: u32, binding: u32) {
     p.add(STATE, crate::shading::state::ShadeState::wgsl(group, binding), &[]);
+    shading_instance(p, SHADING, name, rays, LIGHTING);
+}
+
+/// An instance of shading component `name` at `path`: over the state, its rays and the
+/// lighting module `lighting` (a second instance lights through other shadow rays).
+fn shading_instance(p: &mut Program, path: &str, name: &str, rays: &[&str], lighting: &str) {
     let src = crate::shading::gpu_wgsl(name).unwrap_or_else(|| panic!("no GPU shading `{name}`"));
     let mut deps = vec![STATE];
     deps.extend(rays);
-    deps.extend([LIGHTING, VOXELS]);
-    p.add(SHADING, src, &deps);
+    deps.extend([lighting, VOXELS]);
+    p.add(path, src, &deps);
 }
 
 /// The root's usual dependencies with a walk: what it casts and shades with.

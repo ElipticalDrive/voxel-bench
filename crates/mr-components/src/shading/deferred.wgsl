@@ -11,8 +11,8 @@
 // `view_origin()`, `view_miss(px)` (the colour where no surface was hit: the sky, or what
 // the back end composites there), `view_lit()`, and the output `out_tex`. With meshes
 // (shader def `MESHES`, the record's mesh capability), also `record_is_mesh(r)` and
-// `record_mesh(r, d)` (the `MeshSurface` on ray `d`); mesh surfaces are shaded by
-// `shade_mesh` (`mr::mesh_surface`).
+// `record_mesh(r, d)` (the `MeshSurface` on ray `d`); mesh surfaces go through the shading
+// component too (`shade_mesh`, `shading::mesh`).
 
 @compute @workgroup_size(8, 8)
 fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -26,7 +26,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     let d = view_ray(gid.xy);
 #ifdef MESHES
     if (record_is_mesh(r)) {
-        textureStore(out_tex, vec2<i32>(gid.xy), shade_mesh(record_mesh(r, d), view_lit()));
+        textureStore(out_tex, vec2<i32>(gid.xy), shade_mesh(record_mesh(r, d), d, view_lit(), gid.xy));
         return;
     }
 #endif

@@ -1,15 +1,14 @@
 // Mesh mode (mr_core::mesh): camera-relative triangles with sRGB vertex colours, drawn into
 // the voxel renderer's depth buffer. Fragments either write the hit record's mesh
 // capability (`mesh_record_fs`, `mesh_id_fs`: shaded later, where the pixel is shaded) or,
-// with shader def `SHADE` (forward drawers), shade themselves with the shared lighting
-// (voxel shadow rays).
+// with shader def `SHADE` (forward drawers), shade themselves through the shading
+// component (`shade_mesh`, `shading::mesh`). The root provides `mesh_frame()`, the camera
+// as a `MeshFrame`: the record passes' own uniform, or a forward drawer's frame.
 
 struct MeshFrame {
     view_proj: mat4x4<f32>,
     cam_frac: vec3<f32>, mode: u32,   // camera position within vp.cam_block; 0 unlit, 1 lit
 }
-
-@group(0) @binding(0) var<uniform> mf: MeshFrame;
 
 struct MeshIn {
     @location(0) pos: vec3<f32>,       // relative to vp.cam_block
@@ -28,6 +27,7 @@ struct MeshOut {
 
 @vertex
 fn mesh_vs(v: MeshIn, @builtin(vertex_index) vi: u32) -> MeshOut {
+    let mf = mesh_frame();
     var out: MeshOut;
     out.pos = mf.view_proj * vec4<f32>(v.pos - mf.cam_frac, 1.0);
     out.rel = v.pos;
@@ -40,7 +40,7 @@ fn mesh_vs(v: MeshIn, @builtin(vertex_index) vi: u32) -> MeshOut {
 // The packed hit record (ray casters' mesh targets, `gbuffer`).
 @fragment
 fn mesh_record_fs(in: MeshOut) -> @location(0) vec2<u32> {
-    return pack_mesh_hit(length(in.rel - mf.cam_frac), in.tri);
+    return pack_mesh_hit(length(in.rel - mesh_frame().cam_frac), in.tri);
 }
 
 // `visbuffer`'s face-id encoding.
@@ -52,11 +52,12 @@ fn mesh_id_fs(in: MeshOut) -> @location(0) u32 {
 #ifdef SHADE
 @fragment
 fn mesh_fs(in: MeshOut) -> @location(0) vec4<f32> {
+    let mf = mesh_frame();
     // Interpolated sRGB colour (perspective-correct, like the reference's barycentrics).
     let c = vec4<f32>(in.color.rgb, 1.0);
-    if (mf.mode == 0u) { return c; }
+    let to = in.rel - mf.cam_frac;
     // Meshes need not be closed or consistently wound: light the side facing the camera.
-    let n = select(in.normal, -in.normal, dot(in.normal, in.rel - mf.cam_frac) > 0.0);
-    return shade_lit(c, in.rel, n);
+    let n = select(in.normal, -in.normal, dot(in.normal, to) > 0.0);
+    return shade_mesh(MeshSurface(in.rel, n, c), normalize(to), mf.mode == 1u, vec2<u32>(in.pos.xy));
 }
 #endif

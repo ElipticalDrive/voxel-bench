@@ -163,11 +163,14 @@ vertex colours, scattered copies, and spin / orbit / bob animation; see `plans/m
 A pass mode combines lighting and meshes: `run.modes` takes `unlit`, `lit`, `unlit+meshes`
 and `lit+meshes`, and the GUI has **Lit** and **Meshes** toggles.
 
-Meshes and voxels occlude each other, and lit meshes are shadowed by voxels. Meshes do not
-cast shadows yet. Pipelines with a `meshes` node draw them: `depth` on the rasterisers (the
-same depth buffer) and `composite` on raycast-gpu (meshes are rasterised first, and rays stop
-at them). Pipelines without one are skipped in `+meshes` benchmark passes, and the GUI labels
-them "(no meshes)".
+Meshes and voxels occlude each other. A mesh pixel is shaded by the pipeline's shading
+component like a voxel's, with the interpolated vertex colour as its albedo: `direct` lights
+it with the same lights and shadow rays, `pathtrace` bounces off it (bounces land on voxels).
+The `meshes` node's `shadow` port picks the rays that shadow meshes (unbound: the shading's).
+Meshes do not cast shadows yet. Pipelines with a `meshes` node draw them: `depth` on the
+rasterisers (the same depth buffer) and `composite` on raycast-gpu (meshes are rasterised
+first, and rays stop at them). Pipelines without one are skipped in `+meshes` benchmark
+passes, and the GUI labels them "(no meshes)".
 
 ## Devices
 

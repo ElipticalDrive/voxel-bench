@@ -29,7 +29,7 @@ use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
 use mr_components::{names_on, require, Slot, components};
 use mr_core::*;
-use mr_gpu::meshes::{GpuMeshes, MeshPass, Occlusion};
+use mr_gpu::meshes::{ForwardSpec, GpuMeshes, MeshPass};
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
@@ -220,7 +220,6 @@ pub(crate) struct Meshing {
     built: String,
     stale: bool,
     /// The storage of the mesh-shadow site's walk.
-    mesh_storage: usize,
     /// Mesh mode: drawn into the same depth buffer.
     mesh: GpuMeshes,
     quad_buf: GrowableBuffer,
@@ -285,8 +284,6 @@ impl Meshing {
         }
         let (mut walks, shadow, bounce, mesh_shadow) = walks(g)?;
         walks.set_max_steps(opts.max_steps);
-        let mesh_storage = walks.kernels[mesh_shadow].storage.ok_or_else(|| anyhow::anyhow!("{PRESET}: mesh shadows walk a storage (not ray queries)"))?;
-        let (occ, rays) = walks.shadow_program(mesh_shadow);
         tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: sk.bounces, spp: sk.spp, accumulate: sk.accumulate, shadows: sk.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let meshes = meshes_node != "none";
@@ -327,12 +324,12 @@ impl Meshing {
         let quad_buf = GrowableBuffer::new(gpu, "quads", 1 << 20, quad_capacity as u64 * QUAD_BYTES, wgpu::BufferUsages::STORAGE);
         let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
-        // Mesh shadows of forward drawers: their site's walk (by default the shadow rays').
-        let mesh = GpuMeshes::new(gpu, &core.world, Some(Occlusion { program: &occ, rays: &rays, layout: core.storages.layout(mesh_storage), format: core.output_format() }));
+        // Forward drawers shade meshes through the region's shading component (lit through the
+        // mesh-shadow site's rays: `shaders::meshes`).
+        let mesh = GpuMeshes::new(gpu, Some(ForwardSpec { module: &drawing.mesh_module(&core).expect("raster-gpu has meshes"), layout: &drawing.pl_draw, format: core.output_format() }));
         let s = Self {
             built: geometry.clone(),
             stale: false,
-            mesh_storage,
             mesh,
             quad_buf,
             chunk_buf,
@@ -524,7 +521,6 @@ impl Meshing {
             self.bind0 = Some(self.drawing.bind(core, self.quad_buf.buffer(), &self.chunk_buf));
         }
         let bound = core.storages.prepare(&core.gpu, &core.world);
-        self.mesh.set_occlusion_bind_group(bound.get(self.mesh_storage));
         self.frame.bound = Some(bound);
         if core.build_accel(enc, ticket, req) {
             self.bind0 = Some(self.drawing.bind(core, self.quad_buf.buffer(), &self.chunk_buf));
@@ -586,8 +582,7 @@ impl Meshing {
                 pass.multi_draw_indirect(&self.indirect, 0, n);
             }
         };
-        let world = self.frame.world.as_ref();
-        let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp, world);
+        let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp);
         let meshes = self.draws_meshes().then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass));
         self.encode(core, ticket, req, |f| self.drawing.drawer.encode_draw(enc, f, &draw, meshes, None));
     }
@@ -680,6 +675,8 @@ impl Region for Meshing {
             if self.drawing.rebuild(core, source_wgsl(&o.geometry), geometry(&o.geometry).strip, &o.shading, o.meshes != "none")? {
                 self.bind0 = None;
             }
+            // The forward mesh passes shade through the drawer's shading.
+            self.mesh.set_forward(&core.gpu, ForwardSpec { module: &self.drawing.mesh_module(core).expect("raster-gpu has meshes"), layout: &self.drawing.pl_draw, format: core.output_format() });
             if o.geometry != self.built {
                 self.built = o.geometry.clone();
                 self.remesh_all();
@@ -798,7 +795,6 @@ mod tests {
     /// Every composition's shader composes from its modules and validates (no GPU needed).
     #[test]
     fn programs_compose() {
-        use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         let mut n = 0;
         for st in names_on(PRESET, Slot::Storage) {
             for k in names_on(PRESET, Slot::Traversal) {
@@ -827,14 +823,9 @@ mod tests {
                             let what = format!("{st} {k} {g} {shading}");
                             let (walks, shadow, bounce, mesh_shadow) = walks(&ck).unwrap();
                             // The drawer (with mesh records for deferred drawers, and without).
-                            let (program, deps, meshed) = crate::faces::programs(&walks, None, [shadow, bounce], Some(mesh_shadow));
-                            let draw_src = crate::faces::draw_src(&source_wgsl(g), shading, false);
+                            let (program, deps, meshed) = crate::faces::programs(&walks, None, [shadow, bounce], Some(mesh_shadow), shading);
+                            let draw_src = crate::faces::draw_src(&source_wgsl(g), false);
                             crate::faces::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, PRESET);
-                            // Forward mesh shading through the mesh-shadow site.
-                            let (mut p, rays) = walks.shadow_program(mesh_shadow);
-                            p.define("SHADE");
-                            let m = p.naga(mr_gpu::meshes::MESH_WGSL, &[&rays, mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON]).unwrap_or_else(|e| panic!("meshes {what}: {e}"));
-                            Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("meshes {what}: {e:?}"));
                             n += 1;
                         }
                     }

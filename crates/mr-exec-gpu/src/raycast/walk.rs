@@ -248,7 +248,7 @@ impl Composition {
         let rays = shaders::shading_rays(&mut program, &self.walks, self.shadow, self.bounce);
         shaders::shading(&mut program, shading, &rays.iter().map(String::as_str).collect::<Vec<_>>(), 0, crate::STATE_BINDING);
         // Mesh records at group 3 (the triangles at binding 3), lit through the mesh-shadow site.
-        let meshes = meshed.then(|| shaders::meshes(&mut program, &self.walks, self.shadow, self.mesh_shadow, 3, 3));
+        let meshes = meshed.then(|| shaders::meshes(&mut program, &self.walks, shading, self.shadow, self.mesh_shadow, 3, 3));
         let pre = mr_components::prepass::gpu_wgsl(self.prepass()).expect("validated");
         let primary = self.primary();
         let primary_storage = primary.storage.expect("the walk's primary rays walk a storage");
@@ -265,7 +265,7 @@ impl Composition {
             include_str!("walk.wgsl"),
         );
         let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string(), self.walks.kernel_path(0), self.walks.storage_path(primary_storage)];
-        deps.extend(meshes);
+        deps.extend(meshes.into_iter().flatten());
         deps.extend(rays);
         deps.extend([mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON].map(String::from));
         CastProgram { program, root, deps }
@@ -350,7 +350,7 @@ impl Walk {
         let walk = |k: usize| comp.walks.label(k);
         tracing::info!("raycast-gpu: primary {}, shadow {}, bounce {}, shading {shading}", walk(0), walk(comp.shadow), walk(comp.bounce));
         let walk = Self {
-            meshes: MeshRecords::new(&core.gpu, &core.world, p.width, p.height),
+            meshes: MeshRecords::new(&core.gpu, p.width, p.height),
             built: comp.clone(),
             comp,
             bound: Bound(Vec::new()),

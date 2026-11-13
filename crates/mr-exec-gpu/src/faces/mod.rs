@@ -23,7 +23,7 @@ use glam::IVec3;
 use mr_components::draw::{self, drawer::{DrawMode, DrawNodes, DrawerSpec, FaceDrawer}};
 use mr_components::graph::{self, Device, Role};
 use mr_components::shaders::Walks;
-use mr_components::shading::state::{self as shade_state, ShadeState};
+use mr_components::shading::state::{self as shade_state};
 use mr_core::*;
 use mr_gpu::voxels::Shadows;
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
@@ -172,27 +172,49 @@ impl DrawParts<'_> {
 /// drawing in the fragment shader.
 fn draw_wgsl(mode: DrawMode, shading: &str) -> String {
     let vis = draw::gpu_wgsl(mode.name()).unwrap();
-    if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis) }
+    if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis, "fs") }
 }
 
-/// The walks' program for a source's sites (discovery rays, exposure, shadow, bounce) and the
-/// root's dependencies; with meshes (the mesh-shadow site's walk) also the mesh capability's
-/// variant, the triangles in the images group.
-fn programs(walks: &Walks, lead: Option<(usize, usize)>, [shadow, bounce]: [usize; 2], meshes: Option<usize>) -> (mr_gpu::program::Program, Vec<String>, Option<Meshed>) {
-    let (program, deps) = mr_components::shaders::sites_program(walks, lead, shadow, bounce);
+/// The walks' program for a source's sites (discovery rays, exposure, shadow, bounce) with
+/// the shading component `shading` (its state in group 0) and the root's dependencies; with
+/// meshes (the mesh-shadow site's walk) also the mesh capability's variant, the triangles in
+/// the images group.
+fn programs(walks: &Walks, lead: Option<(usize, usize)>, [shadow, bounce]: [usize; 2], meshes: Option<usize>, shading: &str) -> (mr_gpu::program::Program, Vec<String>, Option<Meshed>) {
+    use mr_components::shaders;
+    let (mut program, sites) = shaders::sites_program(walks, lead, shadow, bounce);
+    // The shading's rays are the sites' (`sites_program`: `rays::shadow`, `rays::bounce`).
+    shaders::shading(&mut program, shading, &["rays::shadow", "rays::bounce"], 0, crate::STATE_BINDING);
+    let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string()];
+    deps.extend(sites);
     let meshed = meshes.map(|mesh_shadow| {
         let (mut program, mut deps) = (program.clone(), deps.clone());
-        deps.insert(0, mr_components::shaders::meshes(&mut program, walks, shadow, mesh_shadow, 3, 2));
+        deps.splice(0..0, shaders::meshes(&mut program, walks, shading, shadow, mesh_shadow, 3, 2));
         Meshed { program, deps }
     });
     (program, deps, meshed)
 }
 
 /// The drawing region's WGSL before the draw component: the frame, the face source, the
-/// shading state and component, the face drawer's vertex stage.
-fn draw_src(source: &str, shading: &str, varyings: bool) -> String {
-    let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
-    format!("{}\n{source}\n{}\n{shade}\n{}", include_str!("frame.wgsl"), ShadeState::wgsl(0, crate::STATE_BINDING), draw::faces_wgsl(varyings))
+/// face drawer's vertex stage (the shading component and its state are modules of the
+/// program).
+fn draw_src(source: &str, varyings: bool) -> String {
+    format!("{}\n{source}\n{}", include_str!("frame.wgsl"), draw::faces_wgsl(varyings))
+}
+
+/// The forward mesh passes' root: the frame as the meshes' camera, then `mesh.wgsl` with
+/// `SHADE` (the fragments shaded through `shade_mesh`; stateful shading once per pixel).
+fn mesh_src(shading: &str) -> String {
+    let frame = "fn mesh_frame() -> MeshFrame { return MeshFrame(fr.view_proj, fr.cam_frac, fr.mode); }\n";
+    shade_state::fragment_wgsl(shading, &format!("{}\n{frame}{}", include_str!("frame.wgsl"), mr_gpu::meshes::MESH_WGSL), "mesh_fs")
+}
+
+impl Meshed {
+    /// The program with `SHADE`, for the forward mesh passes.
+    fn forward(&self) -> mr_gpu::program::Program {
+        let mut p = self.program.clone();
+        p.define("SHADE");
+        p
+    }
 }
 
 fn depth_view(gpu: &Gpu, w: u32, h: u32, read: bool) -> wgpu::TextureView {
@@ -241,13 +263,13 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
     let shading = o.shading.to_string();
     // The walks' modules: the roots cast through the discovery rays' kernel and read the
     // exposure storage; shading's rays through theirs.
-    let (mut program, deps, mut meshed) = programs(&src.walks, src.lead, src.sites, src.meshes);
+    let (mut program, deps, mut meshed) = programs(&src.walks, src.lead, src.sites, src.meshes, &shading);
     // Ray queries at the sites: their bindings and trace in every root.
     core.trace_root(&mut program, "0u");
     if let Some(m) = &mut meshed {
         core.trace_root(&mut m.program, "0u");
     }
-    let draw_src = draw_src(&src.wgsl, &shading, src.varyings);
+    let draw_src = draw_src(&src.wgsl, src.varyings);
     let buf = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
@@ -313,13 +335,21 @@ impl Draw {
         self.parts(core).drawer(draw)
     }
 
+    /// The forward mesh passes' module (`mr_gpu::meshes::ForwardSpec`), when the source has
+    /// meshes: `mesh.wgsl` over the mesh capability's program, drawn with the face drawer's
+    /// layout.
+    fn mesh_module(&self, core: &Core) -> Option<wgpu::ShaderModule> {
+        let m = self.meshed.as_ref()?;
+        Some(DrawParts::compile(&core.gpu, "forward meshes", &m.forward(), &m.deps, &mesh_src(&self.shading)))
+    }
+
     /// Recompiles the drawer for a new face source WGSL (`strip`: its primitive), shading
     /// (also the shading state's) and whether frames draw meshes; returns whether the shading
     /// state's bindings changed (the source's draw bind group is then stale).
     fn rebuild(&mut self, core: &mut Core, source: String, strip: bool, shading: &str, meshes: bool) -> anyhow::Result<bool> {
         let rebound = core.accum.set_shading(&core.gpu, shading);
         self.shading = shading.to_string();
-        self.draw_src = draw_src(&source, shading, self.varyings);
+        self.draw_src = draw_src(&source, self.varyings);
         self.source = source;
         self.strip = strip;
         self.draw_meshes = meshes && self.meshed.is_some();
@@ -386,7 +416,8 @@ mod tests {
 
     /// A face source's drawing region (`draw_src`) with every drawer `preset` offers (the
     /// raster's fragment stage with the sampler's own entry points) composes and validates
-    /// over `program`, and over the mesh capability's variant where deferred drawers have it.
+    /// over `program`, and over the mesh capability's variant where deferred drawers have it;
+    /// with meshes, the forward mesh passes too.
     pub(crate) fn drawers(program: &mr_gpu::program::Program, deps: &[String], meshed: Option<&super::Meshed>, draw_src: &str, shading: &str, what: &str, preset: &str) {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         let check = |program: &mr_gpu::program::Program, deps: &[String], root: &str, what: &str| {
@@ -401,6 +432,9 @@ mod tests {
             if let Some(m) = meshed.filter(|_| mode.deferred()) {
                 check(&m.program, &m.deps, &root, &format!("{preset} drawer with meshes {what} {d}"));
             }
+        }
+        if let Some(m) = meshed {
+            check(&m.forward(), &m.deps, &super::mesh_src(shading), &format!("{preset} forward meshes {what}"));
         }
     }
 
@@ -419,8 +453,8 @@ mod tests {
                 let groups = &[2, 4];
                 let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), groups, false);
                 let bounce = ck.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&ck, s, groups, false));
-                let (program, deps) = mr_components::shaders::sites_program(&walks, None, shadow, bounce);
-                drawers(&program, &deps, None, &super::draw_src(include_str!("records.wgsl"), shading, true), shading, &format!("{st} {shading}"), preset);
+                let (program, deps, _) = super::programs(&walks, None, [shadow, bounce], None, shading);
+                drawers(&program, &deps, None, &super::draw_src(include_str!("records.wgsl"), true), shading, &format!("{st} {shading}"), preset);
             }
         }
     }

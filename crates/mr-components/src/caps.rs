@@ -69,7 +69,7 @@ pub const RECORD_CAPS: &[RecordCap] = &[
     RecordCap {
         name: "meshes",
         bits: Some(23..=23),
-        description: "Mesh surfaces: bit 23 flags a mesh triangle's hit, its index in bits 1-22 (`pack_mesh_hit`; `visbuffer`: `VIS_MESH | tri`); decoded from the mesh vertices and shaded by `shade_mesh`. Compiled in with a meshes stage (`MESHES`).",
+        description: "Mesh surfaces: bit 23 flags a mesh triangle's hit, its index in bits 1-22 (`pack_mesh_hit`; `visbuffer`: `VIS_MESH | tri`); decoded from the mesh vertices and shaded by the shading component (`shade_mesh`). Compiled in with a meshes stage (`MESHES`).",
         built: true,
     },
     RecordCap {

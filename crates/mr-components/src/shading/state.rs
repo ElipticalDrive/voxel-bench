@@ -41,16 +41,17 @@ pub fn stateful(name: &str) -> bool {
 pub const FRAGMENT_FEATURE: wgpu::Features = wgpu::Features::SHADER_EARLY_DEPTH_TEST;
 
 /// Fragment shading with `shading`: stateful shading writes per-pixel state, so only the
-/// fragment that survives the depth test may run. Its fragment entry point `fs` gets
+/// fragment that survives the depth test may run. Its fragment entry point `entry` gets
 /// `@early_depth_test(force)` ([`FRAGMENT_FEATURE`]), and lit passes need a depth prepass
 /// with an `Equal` test so that exactly one fragment per pixel shades. Stateless shading
 /// keeps the source as it is.
-pub fn fragment_wgsl(shading: &str, src: &str) -> String {
+pub fn fragment_wgsl(shading: &str, src: &str, entry: &str) -> String {
     if !stateful(shading) {
         return src.to_string();
     }
-    assert!(src.contains("@fragment\nfn fs("), "fragment entry point `fs` not found");
-    src.replace("@fragment\nfn fs(", "@fragment @early_depth_test(force)\nfn fs(")
+    let at = format!("@fragment\nfn {entry}(");
+    assert!(src.contains(&at), "fragment entry point `{entry}` not found");
+    src.replace(&at, &format!("@fragment @early_depth_test(force)\nfn {entry}("))
 }
 
 /// Why `shading` cannot shade fragments on `device` (the feature is missing), if it can't.

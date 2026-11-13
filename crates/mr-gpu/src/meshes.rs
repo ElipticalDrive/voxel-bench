@@ -6,9 +6,11 @@
 //! capability (`Records`: the packed record, `Ids`: `visbuffer`'s encoding), and the pixel is
 //! shaded wherever the strategy shades (the ray caster's walk, the common deferred pass),
 //! decoding the triangle from the same vertices ([`surface_wgsl`]). Forward drawers shade
-//! the fragments themselves in three flavours: `Fill` (depth test + write), `Depth`
-//! (pre-pass, no colour) and `Equal` (shading after a pre-pass). Back faces are not culled:
-//! meshes may be open or inconsistently wound.
+//! the fragments themselves ([`ForwardSpec`]: the region's module of `mesh.wgsl` with
+//! `SHADE`, over its program and bind groups) in three flavours: `Fill` (depth test +
+//! write), `Depth` (pre-pass, no colour) and `Equal` (shading after a pre-pass). Either way
+//! the shading component shades the mesh surface. Back faces are not culled: meshes may be
+//! open or inconsistently wound.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,7 +20,6 @@ use glam::{IVec3, Vec3};
 use mr_core::{Camera, MeshData, MeshInstance, MeshUpdate, RenderMode};
 
 use crate::Gpu;
-use crate::voxels::VoxelWorld;
 
 /// Seven words, as `mesh_surface.wgsl` reads them.
 #[repr(C)]
@@ -40,13 +41,12 @@ struct MeshFrame {
     mode: u32,
 }
 
-/// A renderer's shadow rays for forward mesh shading: a program with the world, lighting
-/// and the ray services at `rays` (`occluded()`, reading bind group 2 with `layout`, visible
-/// to the fragment stage).
-pub struct Occlusion<'a> {
-    pub program: &'a crate::program::Program,
-    pub rays: &'a str,
-    pub layout: &'a wgpu::BindGroupLayout,
+/// A region's forward mesh shading: [`MESH_WGSL`] with `SHADE` compiled over the region's
+/// program (its frame as `mesh_frame()`, its shading component), drawn with the region's
+/// pipeline `layout` and the bind groups its drawer set.
+pub struct ForwardSpec<'a> {
+    pub module: &'a wgpu::ShaderModule,
+    pub layout: &'a wgpu::PipelineLayout,
     /// The output's format.
     pub format: wgpu::TextureFormat,
 }
@@ -71,6 +71,40 @@ struct Forward {
     equal: wgpu::RenderPipeline,
 }
 
+impl Forward {
+    fn new(gpu: &Gpu, f: &ForwardSpec) -> Self {
+        use wgpu::CompareFunction::{Equal, Greater};
+        Self {
+            fill: pipeline(gpu, "mesh fill", f.module, f.layout, Some("mesh_fs"), f.format, true, Greater),
+            depth: pipeline(gpu, "mesh depth", f.module, f.layout, None, f.format, true, Greater),
+            equal: pipeline(gpu, "mesh equal", f.module, f.layout, Some("mesh_fs"), f.format, false, Equal),
+        }
+    }
+}
+
+/// A mesh pipeline: `mesh_vs` over the vertex layout, fragment `entry` (none: depth only)
+/// into `target`, depth `compare` with (`write`) or without writing, no culling.
+fn pipeline(gpu: &Gpu, label: &str, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, entry: Option<&str>, target: wgpu::TextureFormat, write: bool, compare: wgpu::CompareFunction) -> wgpu::RenderPipeline {
+    let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Float32x3];
+    let targets = [Some(wgpu::ColorTargetState { format: target, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+    gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("mesh_vs"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout { array_stride: size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attrs })],
+        },
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(write), depth_compare: Some(compare), stencil: Default::default(), bias: Default::default() }),
+        multisample: Default::default(),
+        fragment: entry.map(|e| wgpu::FragmentState { module, entry_point: Some(e), compilation_options: Default::default(), targets: &targets }),
+        multiview_mask: None,
+        cache: gpu.cache(),
+    })
+}
+
 pub struct GpuMeshes {
     data: HashMap<u32, Arc<MeshData>>,
     instances: Vec<MeshInstance>,
@@ -80,23 +114,19 @@ pub struct GpuMeshes {
     vcount: u32,
     frame_buf: wgpu::Buffer,
     bind: wgpu::BindGroup,
-    /// Forward shading, when built with shadow rays.
+    /// Forward shading, when built with a [`ForwardSpec`].
     forward: Option<Forward>,
     records: wgpu::RenderPipeline,
     ids: wgpu::RenderPipeline,
-    /// The [`Occlusion`]'s bind group 2, set by the renderer each frame.
-    occlusion_bg: Option<wgpu::BindGroup>,
     warned: bool,
 }
 
 impl GpuMeshes {
-    /// `world` provides bind group 1 (lighting and shadow rays); its visibility must
-    /// include the fragment stage. `occlusion`: for forward shading (`Fill`, `Depth`,
-    /// `Equal`), the renderer's shadow rays through its composed storage (bind group 2, see
-    /// [`Self::set_occlusion_bind_group`]); record passes need none.
-    pub fn new(gpu: &Gpu, world: &VoxelWorld, occlusion: Option<Occlusion>) -> Self {
+    /// `forward`: the region's forward shading (`Fill`, `Depth`, `Equal`); record passes
+    /// need none.
+    pub fn new(gpu: &Gpu, forward: Option<ForwardSpec>) -> Self {
         let dev = &gpu.device;
-        use crate::program::{COMMON, LIGHTING, Program, VOXELS};
+        use crate::program::{COMMON, Program, VOXELS};
         let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mesh frame"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -108,40 +138,10 @@ impl GpuMeshes {
         });
         let frame_buf = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh frame"), size: size_of::<MeshFrame>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let bind = dev.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("mesh frame"), layout: &layout0, entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() }] });
-        let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Float32x3];
-        let pipeline = |label, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, entry: Option<&str>, target: wgpu::TextureFormat, write: bool, compare| {
-            let targets = [Some(wgpu::ColorTargetState { format: target, blend: None, write_mask: wgpu::ColorWrites::ALL })];
-            dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module,
-                    entry_point: Some("mesh_vs"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout { array_stride: size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attrs })],
-                },
-                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
-                depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(write), depth_compare: Some(compare), stencil: Default::default(), bias: Default::default() }),
-                multisample: Default::default(),
-                fragment: entry.map(|e| wgpu::FragmentState { module, entry_point: Some(e), compilation_options: Default::default(), targets: &targets }),
-                multiview_mask: None,
-                cache: gpu.cache(),
-            })
-        };
-        use wgpu::CompareFunction::{Equal, Greater};
+        use wgpu::CompareFunction::Greater;
         use wgpu::TextureFormat::{R32Uint, Rg32Uint};
-        let forward = occlusion.map(|occ| {
-            let mut program = occ.program.clone();
-            program.define("SHADE");
-            let module = crate::program::compile(dev, "meshes", &program, MESH_WGSL, &[occ.rays, LIGHTING, VOXELS, COMMON]);
-            let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("meshes"), bind_group_layouts: &[Some(&layout0), Some(world.layout()), Some(occ.layout)], immediate_size: 0 });
-            Forward {
-                fill: pipeline("mesh fill", &module, &pl, Some("mesh_fs"), occ.format, true, Greater),
-                depth: pipeline("mesh depth", &module, &pl, None, occ.format, true, Greater),
-                equal: pipeline("mesh equal", &module, &pl, Some("mesh_fs"), occ.format, false, Equal),
-            }
-        });
-        let module = crate::program::compile(dev, "mesh records", &Program::world(None), MESH_WGSL, &[VOXELS, COMMON]);
+        let forward = forward.map(|f| Forward::new(gpu, &f));
+        let module = crate::program::compile(dev, "mesh records", &Program::world(None), &records_root(), &[VOXELS, COMMON]);
         let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("mesh records"), bind_group_layouts: &[Some(&layout0)], immediate_size: 0 });
         Self {
             data: HashMap::new(),
@@ -153,11 +153,15 @@ impl GpuMeshes {
             frame_buf,
             bind,
             forward,
-            records: pipeline("mesh records", &module, &pl, Some("mesh_record_fs"), Rg32Uint, true, Greater),
-            ids: pipeline("mesh ids", &module, &pl, Some("mesh_id_fs"), R32Uint, true, Greater),
-            occlusion_bg: None,
+            records: pipeline(gpu, "mesh records", &module, &pl, Some("mesh_record_fs"), Rg32Uint, true, Greater),
+            ids: pipeline(gpu, "mesh ids", &module, &pl, Some("mesh_id_fs"), R32Uint, true, Greater),
             warned: false,
         }
+    }
+
+    /// Replaces the forward passes (the region's shading changed).
+    pub fn set_forward(&mut self, gpu: &Gpu, forward: ForwardSpec) {
+        self.forward = Some(Forward::new(gpu, &forward));
     }
 
     /// Vertices are drawn and, as storage, read by [`surface_wgsl`]'s decoding.
@@ -173,10 +177,6 @@ impl GpuMeshes {
 
     /// The occlusion module's bind group 2 for the next draws (it may change when the
     /// renderer's buffers grow).
-    pub fn set_occlusion_bind_group(&mut self, bg: &wgpu::BindGroup) {
-        self.occlusion_bg = Some(bg.clone());
-    }
-
     pub fn apply(&mut self, u: MeshUpdate) {
         match u {
             MeshUpdate::Meshes(ms) => {
@@ -243,10 +243,10 @@ impl GpuMeshes {
         grown
     }
 
-    /// Draws the meshes into an open render pass (sets its own pipeline and bind groups;
-    /// record passes only group 0).
-    /// `world_bg`: the world's group, for forward passes.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, kind: MeshPass, world_bg: Option<&wgpu::BindGroup>) {
+    /// Draws the meshes into an open render pass: record passes with their own pipeline
+    /// layout (the frame at group 0), forward passes over the bind groups the region's
+    /// drawer set (its [`ForwardSpec`] layout).
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, kind: MeshPass) {
         if self.vcount == 0 {
             return;
         }
@@ -254,11 +254,7 @@ impl GpuMeshes {
             MeshPass::Records => &self.records,
             MeshPass::Ids => &self.ids,
             _ => {
-                let f = self.forward.as_ref().expect("forward mesh passes need shadow rays (GpuMeshes::new)");
-                pass.set_bind_group(1, world_bg.expect("forward mesh passes read the world"), &[]);
-                if let Some(bg) = &self.occlusion_bg {
-                    pass.set_bind_group(2, bg, &[]);
-                }
+                let f = self.forward.as_ref().expect("forward mesh passes need the region's shading (GpuMeshes::new)");
                 match kind {
                     MeshPass::Fill => &f.fill,
                     MeshPass::Depth => &f.depth,
@@ -267,22 +263,33 @@ impl GpuMeshes {
             }
         };
         pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &self.bind, &[]);
+        if matches!(kind, MeshPass::Records | MeshPass::Ids) {
+            pass.set_bind_group(0, &self.bind, &[]);
+        }
         pass.set_vertex_buffer(0, self.vbuf.slice(..));
         pass.draw(0..self.vcount, 0..1);
     }
 }
 
-/// The mesh pass's shader (the root of its programs; with `SHADE`, shadow rays from the
-/// occlusion module).
+/// The mesh pass's shader (the root of its programs). The root provides `mesh_frame()`
+/// ([`MESH_FRAME_WGSL`] for the record passes; a forward drawer's frame) and, with `SHADE`,
+/// `shade_mesh` (the shading component's, `shading::mesh`).
 pub const MESH_WGSL: &str = include_str!("mesh.wgsl");
+
+/// The record passes' camera: the `MeshFrame` uniform at group 0, binding 0.
+pub const MESH_FRAME_WGSL: &str = "@group(0) @binding(0) var<uniform> mf: MeshFrame;\nfn mesh_frame() -> MeshFrame { return mf; }\n";
+
+/// The record passes' root: [`MESH_FRAME_WGSL`] then [`MESH_WGSL`].
+pub fn records_root() -> String {
+    format!("{MESH_FRAME_WGSL}{MESH_WGSL}")
+}
 
 /// The module path of [`surface_wgsl`] in programs that decode mesh hits.
 pub const MESH_SURFACE: &str = "mr::mesh_surface";
 
-/// The mesh-surface module (`mesh_surface`, `shade_mesh`; `mesh_surface.wgsl`) with the
-/// triangles ([`GpuMeshes::vertices`]) at `group`, `binding`. It depends on a lighting module
-/// (the mesh-shadow site's) and the world modules.
+/// The mesh-surface module (`mesh_surface`; `mesh_surface.wgsl`) with the triangles
+/// ([`GpuMeshes::vertices`]) at `group`, `binding`. It depends on the world modules only;
+/// the shading component shades what it decodes (`shade_mesh`, `shading::mesh`).
 pub fn surface_wgsl(group: u32, binding: u32) -> String {
     format!("@group({group}) @binding({binding}) var<storage, read> mesh_verts: array<u32>;\n{}", include_str!("mesh_surface.wgsl"))
 }
@@ -333,7 +340,7 @@ pub struct MeshRecords {
 }
 
 impl MeshRecords {
-    pub fn new(gpu: &Gpu, world: &VoxelWorld, width: u32, height: u32) -> Self {
+    pub fn new(gpu: &Gpu, width: u32, height: u32) -> Self {
         let dev = &gpu.device;
         // Fragment too: ray casters may run per pixel in a fragment shader.
         let stages = wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT;
@@ -355,7 +362,7 @@ impl MeshRecords {
         });
         let uniform = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh records"), size: size_of::<CompUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let (records, depth) = Self::targets(gpu, width, height);
-        let meshes = GpuMeshes::new(gpu, world, None);
+        let meshes = GpuMeshes::new(gpu, None);
         let bind = Self::bind(gpu, &layout, &records, &depth, &uniform, meshes.vertices());
         Self { meshes, layout, uniform, records, depth, bind }
     }
@@ -446,18 +453,18 @@ impl MeshRecords {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        self.meshes.draw(&mut pass, MeshPass::Records, None);
+        self.meshes.draw(&mut pass, MeshPass::Records);
     }
 }
 
 #[cfg(test)]
 mod tests {
     /// The record passes' program composes without lighting or shadow rays (forward shading,
-    /// `SHADE`, is the back ends' tests'), and the record's constants agree with Rust.
+    /// `SHADE`, is the face executor's tests'), and the record's constants agree with Rust.
     #[test]
     fn record_program_composes() {
         use crate::program::{COMMON, Program, VOXELS};
-        let m = Program::world(None).naga(super::MESH_WGSL, &[VOXELS, COMMON]).unwrap();
+        let m = Program::world(None).naga(&super::records_root(), &[VOXELS, COMMON]).unwrap();
         wgpu::naga::valid::Validator::new(wgpu::naga::valid::ValidationFlags::all(), wgpu::naga::valid::Capabilities::all()).validate(&m).unwrap();
         assert!(m.entry_points.iter().all(|e| e.name != "mesh_fs"));
         assert!(crate::voxels::VOXELS_WGSL.contains(&format!("const MESH_TRIS: u32 = {:#x}u;", super::MESH_TRIS)));

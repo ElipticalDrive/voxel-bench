@@ -634,7 +634,7 @@ impl GpuSampler {
         }
         // The forward raster's fragment stage, for painter order, the overdraw view and the
         // face-id raster.
-        let draw_mod = drawing.module(&core, "discover raster", &shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap()));
+        let draw_mod = drawing.module(&core, "discover raster", &shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap(), "fs"));
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {
             binding,
@@ -1974,8 +1974,8 @@ mod tests {
                     let mut with_bounce = walks.clone();
                     let bounce = with_bounce.site(&ck, ck.site(Role::Shading, "bounce").unwrap(), STORAGE_GROUPS, false);
                     for (walks, bounce, shading) in [(walks, shadow, "direct"), (with_bounce, bounce, "pathtrace")] {
-                        let (mut program, deps) = mr_components::shaders::sites_program(&walks, Some((rays, exposure)), shadow, bounce);
-                        crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("set_faces.wgsl"), shading, true), shading, &format!("{st} {k} {shading}"), PRESET);
+                        let (mut program, deps, _) = crate::faces::programs(&walks, Some((rays, exposure)), [shadow, bounce], None, shading);
+                        crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("set_faces.wgsl"), true), shading, &format!("{st} {k} {shading}"), PRESET);
                         // Discovery's pieces: the sampler and hole detection over the shared set.
                         program.add(quadtree::SET, quadtree::SET_WGSL, &deps.iter().map(String::as_str).collect::<Vec<_>>());
                         let disc_deps: Vec<String> = std::iter::once(quadtree::SET.to_string()).chain(deps.iter().cloned()).collect();
