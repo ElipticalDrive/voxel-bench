@@ -2,15 +2,98 @@
 //! [`Node`] recording its GPU work into the frame's one command encoder. Nodes running on one
 //! device and API in one program share a [`Region`]: the program's compiled pipelines, group 0
 //! and the frame's state (on the GPU, fusing nodes means compiling them into one shader
-//! module). Dispatch is per pass (a virtual call per node per frame); every per-pixel cost
-//! stays in the shaders.
+//! module). What crosses between passes is an edge's resource ([`Edges`]), the executor's: a
+//! program attaches it where it chooses. Dispatch is per pass (a virtual call per node per
+//! frame); every per-pixel cost stays in the shaders.
 
 use glam::IVec3;
 use mr_components::graph::{self, Role};
 use mr_core::*;
-use mr_gpu::{Ticket, wgpu};
+use mr_gpu::{Gpu, Ticket, wgpu};
 
 use crate::Core;
+
+/// The resources of the graph's edges that cross between passes on one GPU: allocated by the
+/// executor from the graph, sized to the frame, remade on a resize. A program whose node
+/// writes or reads an edge attaches its resource at the group and binding it chooses
+/// (`layout_entry`, `bind_entry`, the declaration from `wgsl`). An edge whose two ends one
+/// pass computes (fused nodes) has no resource.
+pub(crate) struct Edges {
+    hits: Option<Hits>,
+}
+
+/// The hit records' edge, `from` -> `to`.hits: one `pack_hit` record per pixel (8 bytes),
+/// written by the pass of `from` (or, when that runs on another GPU, by the edge's transfer)
+/// and read by the pass of `to` (or copied out by the transfer).
+pub(crate) struct Hits {
+    pub from: String,
+    pub to: String,
+    buffer: wgpu::Buffer,
+}
+
+impl Edges {
+    /// The edges of `g` on `gpu`; `hits`: the shading's hit records cross between passes (the
+    /// shading is not fused into the pass that finds the hits).
+    pub fn of(gpu: &Gpu, g: &graph::Checked, width: u32, height: u32, hits: bool) -> anyhow::Result<Self> {
+        let hits = if hits {
+            let to = g.shading();
+            let from = g.input(Role::Shading, "hits").ok_or_else(|| anyhow::anyhow!("`{to}`: no node's hits to shade (its `hits` input is not bound)"))?;
+            Some(Hits { from: from.to_string(), to: to.to_string(), buffer: Hits::buffer_on(gpu, width, height) })
+        } else {
+            None
+        };
+        Ok(Self { hits })
+    }
+
+    /// The hit records' edge, if it crosses between passes.
+    pub fn hits(&self) -> Option<&Hits> {
+        self.hits.as_ref()
+    }
+
+    pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) {
+        if let Some(h) = &mut self.hits {
+            h.buffer = Hits::buffer_on(gpu, width, height);
+        }
+    }
+
+    pub fn memory_bytes(&self) -> u64 {
+        self.hits.as_ref().map_or(0, |h| h.buffer.size())
+    }
+}
+
+impl Hits {
+    /// The records' bytes for a frame of `width` x `height`.
+    pub fn size(width: u32, height: u32) -> u64 {
+        (width as u64 * height as u64 * 8).max(16)
+    }
+
+    fn buffer_on(gpu: &Gpu, width: u32, height: u32) -> wgpu::Buffer {
+        // Copied out and written by the transfers between GPUs.
+        let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("hit records"), size: Self::size(width, height), usage, mapped_at_creation: false })
+    }
+
+    pub fn buffer(&self) -> &wgpu::Buffer {
+        &self.buffer
+    }
+
+    /// The declaration a program attaches the records with, and `record_at` (the common
+    /// deferred pass's reader); the root provides `cam` (the frame's width).
+    pub fn wgsl(group: u32, binding: u32) -> String {
+        format!(
+            "@group({group}) @binding({binding}) var<storage, read_write> records: array<vec2<u32>>;\n\
+             fn record_at(px: vec2<u32>) -> vec2<u32> {{ return records[px.y * cam.width + px.x]; }}\n"
+        )
+    }
+
+    pub fn layout_entry(&self, binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+        crate::storage_entry(binding, false, visibility)
+    }
+
+    pub fn bind_entry(&self, binding: u32) -> wgpu::BindGroupEntry<'_> {
+        wgpu::BindGroupEntry { binding, resource: self.buffer.as_entire_binding() }
+    }
+}
 
 /// What every pass of a frame shares.
 pub(crate) struct Cx<'a, R> {

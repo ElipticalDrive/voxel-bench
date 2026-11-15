@@ -114,7 +114,7 @@ fn staging(near: &Core, late: bool) -> Vec<wgpu::Buffer> {
     let one = || {
         near.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hit records readback"),
-            size: crate::records_size(near.width, near.height),
+            size: crate::exec::Hits::size(near.width, near.height),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
@@ -127,7 +127,7 @@ impl Far {
     /// visibility node (`spec`: the first GPU's core, whose knobs it shares).
     pub(crate) fn of(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, near: &Core, spec: &CoreSpec) -> anyhow::Result<Option<Self>> {
         let Some(slot) = far_slot(g) else { return Ok(None) };
-        anyhow::ensure!(near.records.is_some(), "the shading on gpu{slot} shades the hit records the rays write on another GPU: placement = deferred");
+        anyhow::ensure!(near.edges.hits().is_some(), "the shading on gpu{slot} shades the hit records the rays write on another GPU: placement = deferred");
         let mut walks = Walks::of(g);
         let site = |port| g.site(Role::Shading, port);
         let shadow = walks.site(g, site("shadow").ok_or_else(|| anyhow::anyhow!("the shading's shadow rays are not bound"))?, STORAGE_GROUPS, false);
@@ -155,8 +155,9 @@ impl Far {
         let pipeline_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("remote shading"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
         let shade = compile(&core, &pipeline_layout, &walks, shadow, bounce, spec.shading)?;
         core.gpu.save_cache();
-        let vis = g.find(Role::Visibility).unwrap_or("visibility").to_string();
-        let sh = g.find(Role::Shading).unwrap_or("shading").to_string();
+        // The transfer is the hits edge's: the same edge on both GPUs.
+        let edge = core.edges.hits().expect("records");
+        let (vis, sh) = (edge.from.clone(), edge.to.clone());
         let late = g.graph.nodes.get(&sh).is_some_and(|n| n.when("hits") == When::Prev);
         tracing::info!("remote shading on gpu{slot} ({}): shadow {}, bounce {}, hits {}", core.gpu.info.name, walks.label(shadow), walks.label(bounce), if late { "prev" } else { "now" });
         Ok(Some(Self {
@@ -202,7 +203,7 @@ impl Far {
     /// The transfer's first half: submits the first GPU's frame `enc` with its records copied
     /// out (with the frame's stats from the first GPU) and starts reading them back.
     pub(crate) fn send(&mut self, near: &mut Core, mut enc: wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, stats: FrameStats) {
-        let records = near.records.as_ref().expect("placement = deferred");
+        let records = near.edges.hits().expect("placement = deferred").buffer();
         // `prev`: the other buffer than the records sent last frame, which are shaded next.
         let buffer = self.sent.back().map_or(0, |s| (s.buffer + 1) % self.staging.len());
         near.ring.stage(&mut enc, ticket, "copy", &self.transfer_nodes);
@@ -232,7 +233,7 @@ impl Far {
         }
         let arrived = Instant::now();
         let staging = &self.staging[s.buffer];
-        self.core.gpu.queue.write_buffer(self.core.records.as_ref().expect("records"), 0, &staging.slice(..).get_mapped_range()?);
+        self.core.gpu.queue.write_buffer(self.core.edges.hits().expect("records").buffer(), 0, &staging.slice(..).get_mapped_range()?);
         staging.unmap();
         self.wait_ms = (arrived - start).as_secs_f32() * 1e3;
         self.transfer_ms = arrived.elapsed().as_secs_f32() * 1e3;
@@ -339,7 +340,7 @@ fn program(walks: &Walks, shadow: usize, bounce: usize, shading: &str) -> (mr_gp
     let (mut program, rays) = shaders::sites_program(walks, None, shadow, bounce);
     let services: Vec<&str> = rays.iter().map(String::as_str).filter(|r| r.starts_with("rays::")).collect();
     shaders::shading(&mut program, shading, &services, 0, crate::STATE_BINDING);
-    let root = format!("// Remote shading: shading = {shading}\n{}\n{}\n{}", include_str!("raycast/view.wgsl"), include_str!("raycast/records.wgsl"), mr_components::shading::DEFERRED_PACKED_WGSL);
+    let root = format!("// Remote shading: shading = {shading}\n{}\n{}\n{}", include_str!("raycast/view.wgsl"), crate::hits_wgsl() + include_str!("raycast/records.wgsl"), mr_components::shading::DEFERRED_PACKED_WGSL);
     let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string()];
     deps.extend(rays);
     (program, root, deps)

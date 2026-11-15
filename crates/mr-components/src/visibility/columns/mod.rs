@@ -3,8 +3,8 @@
 //! or deferred (`placement`: the march writes hit records, the common pass shades them).
 //! CPU: [`cpu`]. GPU: [`GPU_WGSL`] (the root: the march, entry `main`; its `Camera` uniform,
 //! group 0 binding 0, is the GPU executor's with `max_cells` as the last word) and, with
-//! shader def `DEFERRED`, [`DEFERRED_WGSL`] (the records at group 0 binding 4 and the view
-//! the common deferred pass decodes them with).
+//! shader def `DEFERRED`, [`DEFERRED_WGSL`] (the view the common deferred pass decodes the
+//! records with; the records are the hits edge's resource, declared by the executor).
 
 pub mod cpu;
 

@@ -223,7 +223,7 @@ impl Passes {
 
     fn variant<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, meshed: bool, remote: bool) -> anyhow::Result<(Variant, Vec<wgpu::ComputePipeline>)> {
         let dev = &core.gpu.device;
-        let deferred = core.records.is_some() && cast.view() == View::Image;
+        let deferred = core.edges.hits().is_some() && cast.view() == View::Image;
         let mut lp = cast.program(shading, meshed);
         core.trace_root(&mut lp.program, C::RT_FLAGS);
         let lp = shader(lp, deferred, cast.view(), cast.fragment());
@@ -301,7 +301,7 @@ fn shader(mut lp: CastProgram, deferred: bool, view: View, fragment: bool) -> Ca
     }
     lp.root = format!("{}\n{}\n{}", lp.root, include_str!("view.wgsl"), include_str!("cast.wgsl"));
     if deferred {
-        lp.root = format!("{}\n{}\n{}\n{}", lp.root, include_str!("records.wgsl"), include_str!("deferred.wgsl"), mr_components::shading::DEFERRED_PACKED_WGSL);
+        lp.root = format!("{}\n{}\n{}\n{}", lp.root, crate::hits_wgsl() + include_str!("records.wgsl"), include_str!("deferred.wgsl"), mr_components::shading::DEFERRED_PACKED_WGSL);
     }
     lp
 }

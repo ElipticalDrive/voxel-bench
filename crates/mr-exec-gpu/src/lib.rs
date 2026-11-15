@@ -10,8 +10,9 @@
 //! Which region runs is the graph's: faces when a drawer draws them, else by the visibility
 //! node's component. The rest is shared ([`Core`]): the GPU device, the voxel world, the
 //! storages the GPU's rays walk, the acceleration structures its ray queries trace
-//! ([`accel`]), the shading state, the camera uniform and group 0 (camera, output, shading
-//! state, hit records, acceleration structures, then the region's), the output, the frame ring
+//! ([`accel`]), the shading state, the camera uniform, the resources of the edges between
+//! passes ([`exec::Edges`]: the hit records) and group 0 (camera, output, shading state, the
+//! hit records' edge, acceleration structures, then the region's), the output, the frame ring
 //! and the timed stages' nodes.
 //!
 //! The executor is also compiled on demand for one graph (the host's
@@ -187,8 +188,8 @@ struct CameraUniform {
     anchor: [i32; 4],
 }
 
-/// Group 0: the camera (0), the output (1), the shading state (2-3), the hit records (4,
-/// `placement = deferred`), the acceleration structures (5-7, `accel::ACCEL_BINDING`), the
+/// Group 0: the camera (0), the output (1), the shading state (2-3), the hit records' edge (4,
+/// `placement = deferred`: where the core's programs attach it), the acceleration structures (5-7, `accel::ACCEL_BINDING`), the
 /// region's bindings from `REGION_BINDING`.
 const STATE_BINDING: u32 = 2;
 const RECORDS_BINDING: u32 = 4;
@@ -208,7 +209,8 @@ struct CoreSpec<'a> {
     max_lod: u8,
     /// The region reads the voxel pool itself (beyond its storages' needs).
     voxels: bool,
-    /// One hit record per pixel (`placement = deferred`; fixed at creation).
+    /// The hit records cross between passes (`placement = deferred`; fixed at creation): the
+    /// executor allocates their edge.
     records: bool,
     shading: &'a str,
     bounces: u32,
@@ -234,8 +236,8 @@ pub(crate) struct Core {
     /// Shading state (pathtrace's accumulation).
     accum: ShadeState,
     camera_buf: wgpu::Buffer,
-    /// placement = deferred: the hit records (one `pack_hit` per pixel).
-    records: Option<wgpu::Buffer>,
+    /// The resources of the edges between passes (placement = deferred: the hit records).
+    edges: exec::Edges,
     output: wgpu::Texture,
     stages: wgpu::ShaderStages,
     ring: FrameRing,
@@ -251,15 +253,9 @@ pub(crate) struct Core {
     tone: mr_core::lighting::Tone,
 }
 
-/// The records of `placement = deferred` (8 bytes per pixel; copied between GPUs when the
-/// shading runs on another, [`remote`]).
-fn records(gpu: &Gpu, width: u32, height: u32) -> wgpu::Buffer {
-    let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
-    gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("hit records"), size: records_size(width, height), usage, mapped_at_creation: false })
-}
-
-fn records_size(width: u32, height: u32) -> u64 {
-    (width as u64 * height as u64 * 8).max(16)
+/// The hit records' declaration where the core's programs attach their edge (group 0).
+fn hits_wgsl() -> String {
+    exec::Hits::wgsl(0, RECORDS_BINDING)
 }
 
 /// The GPU slot a pipeline's nodes run on (the device configuration's): its
@@ -317,7 +313,7 @@ impl Core {
         Ok(Self {
             accum: ShadeState::new(&gpu, p.width, p.height, s.shading, s.bounces, s.spp, s.accumulate),
             camera_buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("camera"), size: size_of::<CameraUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
-            records: s.records.then(|| records(&gpu, p.width, p.height)),
+            edges: exec::Edges::of(&gpu, g, p.width, p.height, s.records)?,
             output: mr_gpu::output_texture(&gpu, p.width, p.height, s.walks.post.format()),
             stages: s.stages,
             ring: FrameRing::new(&gpu, p.width, p.height, s.walks.post.format(), fif, waker.clone()).with_stages(p.stage_times),
@@ -393,7 +389,7 @@ impl Core {
         // Writable buffers are not visible to vertex shaders (the faces').
         let writable = self.stages - wgpu::ShaderStages::VERTEX;
         e.extend(ShadeState::layout_entries(STATE_BINDING, writable));
-        e.extend(self.records.as_ref().map(|_| storage_entry(RECORDS_BINDING, false, writable)));
+        e.extend(self.edges.hits().map(|h| h.layout_entry(RECORDS_BINDING, writable)));
         e.extend(self.accel.iter().flat_map(|a| a.layout_entries(self.stages)));
         e
     }
@@ -407,7 +403,7 @@ impl Core {
         let mut e = vec![wgpu::BindGroupEntry { binding: 0, resource: self.camera_buf.as_entire_binding() }];
         e.extend(view.map(|v| wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(v) }));
         e.extend(self.accum.bind_entries(STATE_BINDING));
-        e.extend(self.records.as_ref().map(|r| wgpu::BindGroupEntry { binding: RECORDS_BINDING, resource: r.as_entire_binding() }));
+        e.extend(self.edges.hits().map(|h| h.bind_entry(RECORDS_BINDING)));
         e.extend(self.accel.iter().flat_map(|a| a.bind_entries()));
         e
     }
@@ -451,13 +447,11 @@ impl Core {
         self.height = height;
         self.output = mr_gpu::output_texture(&self.gpu, width, height, self.tone.format());
         self.accum.resize(&self.gpu, width, height);
-        if self.records.is_some() {
-            self.records = Some(records(&self.gpu, width, height));
-        }
+        self.edges.resize(&self.gpu, width, height);
         self.ring = FrameRing::new(&self.gpu, width, height, self.tone.format(), self.frames_in_flight, self.waker.clone()).with_stages(self.ring.stages());
     }
 
     fn memory_bytes(&self) -> u64 {
-        self.world.memory_bytes() + self.storages.memory_bytes() + self.accel.as_ref().map_or(0, |a| a.memory_bytes()) + self.accum.memory_bytes() + self.records.as_ref().map_or(0, |r| r.size()) + self.width as u64 * self.height as u64 * self.tone.format().bytes() as u64
+        self.world.memory_bytes() + self.storages.memory_bytes() + self.accel.as_ref().map_or(0, |a| a.memory_bytes()) + self.accum.memory_bytes() + self.edges.memory_bytes() + self.width as u64 * self.height as u64 * self.tone.format().bytes() as u64
     }
 }

@@ -262,7 +262,7 @@ fn program(shading: &str, deferred: bool, tone: mr_components::post::Tone) -> (m
     p.add("heightmap", heightmap::gpu_wgsl(0, REGION_BINDING), &[VOXELS]);
     mr_components::shaders::rays(&mut p, "heightmap::rays", "heightmap");
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
-    let place = if deferred { format!("{}\n{}", columns::DEFERRED_WGSL, mr_components::shading::DEFERRED_PACKED_WGSL) } else { String::new() };
+    let place = if deferred { format!("{}{}\n{}", crate::hits_wgsl(), columns::DEFERRED_WGSL, mr_components::shading::DEFERRED_PACKED_WGSL) } else { String::new() };
     if deferred {
         p.define("DEFERRED");
     }
