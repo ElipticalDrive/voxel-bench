@@ -343,7 +343,7 @@ impl Ctx<'_> {
                     let mut lane = Lane::new(worker, region, report, i, w, h);
                     // A reference records for the region it was given; a pipeline given another
                     // region than the full-resolution reference is scored against that one too.
-                    lane.like = spec.like.or(plan::Like::of(&lane.region, run).filter(|_| self.plan.output.compare.is_some() && spec.name != self.plan.output.compare.as_ref().unwrap().reference));
+                    lane.like = spec.like.or(plan::Like::of(&lane.region, mode.map(|m| spec.lighting(m)).unwrap_or_default(), run).filter(|_| self.plan.output.compare.is_some() && spec.name != self.plan.output.compare.as_ref().unwrap().reference));
                     if spec.like.is_none() {
                         lane.report.like = lane.like.map(|l| l.to_string());
                     }
@@ -364,7 +364,8 @@ impl Ctx<'_> {
     }
 
     /// The reference's pass: its sampled frames recorded for the comparisons. With `like`, the
-    /// reference given that region (its LOD levels) instead of everything at full resolution.
+    /// reference given that region (its LOD levels) instead of everything at full resolution,
+    /// computing that lighting model (path tracing, converged) instead of direct lighting.
     fn reference(&self, like: Option<plan::Like>, mode: PassMode, base: &World, out: &mut Outputs) -> anyhow::Result<Vec<PassReport>> {
         let Some(c) = &self.plan.output.compare else { return Ok(vec![]) };
         let mut spec = RendererSpec::new(c.reference.clone());
@@ -372,6 +373,9 @@ impl Ctx<'_> {
         spec.label = Some(match like {
             Some(l) => {
                 spec.options.insert("lod".into(), true.into());
+                if let plan::Lighting::Paths { bounces } = l.lighting {
+                    spec.options.insert("bounces".into(), (bounces as i64).into());
+                }
                 format!("{} as {l} (ref)", c.reference)
             }
             None => format!("{} (ref)", c.reference),

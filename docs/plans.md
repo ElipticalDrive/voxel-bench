@@ -64,6 +64,14 @@ levels) is also scored against the reference given the same (`quality_like`, the
 (ref)`): how far its frames are from what they should show. A lossy pipeline scores low on the
 first and high on the second; a wrong one low on both.
 
+The same holds for the lighting model. A pipeline whose shading path traces its lit frames
+(`pathtrace` with at least one bounce) is also scored against the reference path tracing with
+the same bounces, converged (256 paths per pixel; `compare.reference_options = { paths = N }`
+changes it), labelled `cpu-reference as pick(radius=16), pathtrace(bounces=1) (ref)`. What is
+left in that score is the pipeline's noise (and any error): it rises about 3 dB with every
+doubling of `spp` when the pipeline computes the same model. Such a reference takes seconds
+per compared frame.
+
 A pipeline reports what it supports for its graph (its lighting modes, meshes, the LOD levels
 it holds), and is asked for nothing beyond that. What a plan asks of one that lacks it is left
 out and named in its report (`not_supported`, e.g. `max_lod 2: storage `tree64` lacks lod`):
@@ -143,7 +151,8 @@ compose = { preset = "*", storage = "*", geometry = "*", visibility = "*", draw 
 writes `catalogue.md` and `catalogue.csv` (the CSV has the scene features as columns). Per
 scenario (plan × mode) it ranks the renderers by fps. Renderers below the PSNR floor count as
 incorrect: they are ranked, but never best (the floor applies to `psnr_like` where a renderer
-has one: fewer levels of detail are a loss, not an error). For each renderer it lists:
+has one: fewer levels of detail are a loss, not an error; a path tracer is held to its own
+lighting model, and its noise counts). For each renderer it lists:
 - the geometric mean of its speed relative to each scenario's best;
 - its wins, and where it is within 10% of the best (*good at*);
 - where it is comparatively strong (*stands out*: at least 1.25× its own average relative

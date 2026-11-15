@@ -102,6 +102,52 @@ struct Options {
     /// Render the LOD levels its client holds, as the pipelines do (the finest level whose
     /// region contains a cell). Off: LOD 0 only, the full-resolution reference.
     lod: bool,
+    /// Lit frames by diffuse path tracing with this many indirect bounces (the `pathtrace`
+    /// shading's lighting model, converged: `paths` per pixel) instead of direct lighting.
+    bounces: Option<u32>,
+    /// Paths per pixel when path tracing.
+    paths: Option<u32>,
+}
+
+/// Paths per pixel of a path-traced reference unless `paths` says otherwise: its noise is
+/// 24 dB below one path's.
+const PATHS: u32 = 256;
+
+/// The path-traced lighting model of a reference (`bounces` set).
+#[derive(Copy, Clone)]
+struct Paths {
+    bounces: u32,
+    paths: u32,
+}
+
+/// Random numbers of one pixel's paths (PCG; the same frame gives the same image).
+pub struct Rng(u32);
+
+impl Rng {
+    pub fn new(seed: u32) -> Self {
+        let mut r = Self(seed.wrapping_mul(0x9E37_79B9).wrapping_add(1));
+        r.next();
+        r
+    }
+
+    fn next(&mut self) -> u32 {
+        self.0 = self.0.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+        let w = ((self.0 >> ((self.0 >> 28) + 4)) ^ self.0).wrapping_mul(277_803_737);
+        (w >> 22) ^ w
+    }
+
+    /// Uniform in `[0, 1)`.
+    pub fn unit(&mut self) -> f64 {
+        (self.next() >> 8) as f64 / 16_777_216.0
+    }
+
+    /// A direction around `n`, cosine-weighted.
+    pub fn cosine(&mut self, n: DVec3) -> DVec3 {
+        let (u, phi) = (self.unit(), std::f64::consts::TAU * self.unit());
+        let t = n.cross(if n.x.abs() > 0.5 { DVec3::Y } else { DVec3::X }).normalize();
+        let b = n.cross(t);
+        (t * (u.sqrt() * phi.cos()) + b * (u.sqrt() * phi.sin()) + n * (1.0 - u).sqrt()).normalize()
+    }
 }
 
 /// The LOD levels the reference renders when asked to (`lod = true`).
@@ -255,6 +301,8 @@ pub struct CpuReference {
     meshes: mesh::Meshes,
     pool: Pool,
     pixels: Vec<u8>,
+    /// Lit frames are path traced.
+    paths: Option<Paths>,
 }
 
 pub struct Hit {
@@ -272,7 +320,8 @@ impl CpuReference {
         let mut world = World::new(&p);
         world.shadows = opts.shadows;
         let chunks = if opts.lod && p.max_lod > 0 { Chunks::with_lod(p.view_radius_chunks, p.max_lod.min(MAX_LOD)) } else { Chunks::default() };
-        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))? })
+        let paths = opts.bounces.map(|bounces| Paths { bounces, paths: opts.paths.unwrap_or(PATHS).max(1) });
+        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths })
     }
 }
 
@@ -542,10 +591,53 @@ impl VoxelScene<'_> {
     }
 
     pub fn shade(&self, o: DVec3, d: DVec3, hit: &Hit, mode: RenderMode) -> [u8; 4] {
+        self.shade_surface(o + d * hit.t, Self::local(o, d, hit), hit.face, hit.block, mode)
+    }
+
+    /// The hit point within its block.
+    fn local(o: DVec3, d: DVec3, hit: &Hit) -> Vec3 {
         let p = o + d * hit.t;
         // A coarse cell shows its block's texture once per block, as the pipelines do.
-        let local = if hit.lod == 0 { (o - hit.cell.as_dvec3() + d * hit.t).as_vec3() } else { (p - p.floor()).as_vec3() };
-        self.shade_surface(p, local, hit.face, hit.block, mode)
+        if hit.lod == 0 { (o - hit.cell.as_dvec3() + d * hit.t).as_vec3() } else { (p - p.floor()).as_vec3() }
+    }
+
+    /// The linear albedo where `hit` was hit.
+    fn albedo(&self, o: DVec3, d: DVec3, hit: &Hit) -> Vec3 {
+        let uv = hit.face.uv(Self::local(o, d, hit));
+        let texel = self.world.blocks.texture_of(hit.block, hit.face).texel(texel_coord(uv.x), texel_coord(uv.y));
+        Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]))
+    }
+
+    /// Incoming light (linear) at surface point `p` with normal `n` by diffuse path tracing,
+    /// the mean of `paths` paths of up to `bounces` bounces: the `pathtrace` shading's model.
+    /// Every vertex takes the sun and the point lights with their shadow rays
+    /// ([`Self::light_at`]); the ambient term stands in for the sky, so only a ray that
+    /// escapes and the last vertex take it. Bounces land on voxels. `bounces = 0` is
+    /// [`Self::light_at`].
+    pub fn light_by_paths(&self, p: DVec3, n: Vec3, bounces: u32, paths: u32, rng: &mut Rng) -> Vec3 {
+        let ambient = self.world.env.ambient;
+        let direct = self.light_at(p, n);
+        if bounces == 0 {
+            return direct;
+        }
+        let max_dist = self.max_dist();
+        let mut sum = Vec3::ZERO;
+        for _ in 0..paths {
+            let (mut p, mut n, mut through) = (p, n.as_dvec3(), Vec3::ONE);
+            for depth in 1..=bounces {
+                let o = p + n * 1e-4;
+                let d = rng.cosine(n);
+                let Some(hit) = self.trace(o, d, max_dist) else {
+                    sum += through * ambient;
+                    break;
+                };
+                (p, n) = (o + d * hit.t, hit.face.normal().as_dvec3());
+                through *= self.albedo(o, d, &hit);
+                let light = self.light_at(p, n.as_vec3());
+                sum += through * if depth < bounces { light - ambient } else { light };
+            }
+        }
+        direct - ambient + sum / paths as f32
     }
 
     /// Shades a surface point `p` on `face` of `block` (`local` = position within the
@@ -637,6 +729,10 @@ impl Renderer for CpuReference {
         let this = VoxelScene { world: &self.world, chunks: &self.chunks };
         let max_dist = this.max_dist();
         let sky = self.world.sky();
+        // Path-traced lit frames: the light at the primary point from its paths.
+        let paths = self.paths.filter(|_| req.mode == RenderMode::Lit);
+        let (tone, exposure) = (self.world.tone, self.world.env.exposure);
+        let lit = |albedo: Vec3, p: DVec3, n: Vec3, k: Paths, rng: &mut Rng| -> [u8; 4] { tone.encode(albedo * this.light_by_paths(p, n, k.bounces, k.paths, rng) * exposure) };
         let mut pixels = std::mem::take(&mut self.pixels);
         self.pool.install(|| pixels.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
             for x in 0..w {
@@ -644,10 +740,13 @@ impl Renderer for CpuReference {
                 let hit = this.trace(o, d, max_dist);
                 // Mesh mode: the nearest mesh surface in front of the voxel hit wins.
                 let mesh_hit = meshes.and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_dist, |h| h.t)));
-                let px = match (mesh_hit, hit) {
-                    (Some(m), _) => this.shade_mesh(o + d * m.t, m.normal, m.color, req.mode),
-                    (None, Some(hit)) => this.shade(o, d, &hit, req.mode),
-                    (None, None) => sky,
+                let mut rng = Rng::new(y as u32 * w + x);
+                let px = match (mesh_hit, hit, paths) {
+                    (Some(m), _, Some(k)) => lit(Vec3::new(srgb_to_linear_f(m.color.x), srgb_to_linear_f(m.color.y), srgb_to_linear_f(m.color.z)), o + d * m.t, m.normal, k, &mut rng),
+                    (Some(m), _, None) => this.shade_mesh(o + d * m.t, m.normal, m.color, req.mode),
+                    (None, Some(hit), Some(k)) => lit(this.albedo(o, d, &hit), o + d * hit.t, hit.face.normal().as_vec3(), k, &mut rng),
+                    (None, Some(hit), None) => this.shade(o, d, &hit, req.mode),
+                    (None, None, _) => sky,
                 };
                 row[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&px);
             }
@@ -732,5 +831,54 @@ mod tests {
         // Without the level-0 block the ray crosses the fine region to its far side unseen.
         load(&mut c, IVec3::ZERO, 0, &[]);
         assert!(c.trace(DVec3::new(39.5, 1.5, 1.5), -d, 1e7).is_none());
+    }
+
+    /// The path-traced light: without bounces the direct light; in the open the same (every
+    /// path escapes into the ambient the direct model adds); under a ceiling with no sun what
+    /// the ambient gives however the paths go when the ceiling is white (no energy lost or
+    /// made), less when it is grey.
+    #[test]
+    fn paths_agree_with_direct_light_where_they_must() {
+        let texture = |v: u8| Texture { name: String::new(), texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE] };
+        let block = |t: u16| BlockType { name: String::new(), faces: [t; 6] };
+        let blocks = Arc::new(BlockRegistry { textures: vec![texture(255), texture(128)], blocks: vec![block(0), block(0), block(1)] });
+        let mut world = World { blocks, env: Environment::default(), shadows: Shadows::All, tone: Tone::Clamp, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false };
+        let ambient = world.env.ambient;
+        let (at, up) = (DVec3::new(8.5, 1.0, 8.5), Vec3::Y);
+        let chunks = chunk_of(&[(IVec3::new(8, 0, 8), STONE)]);
+        {
+            let s = VoxelScene { world: &world, chunks: &chunks };
+            let direct = s.light_at(at, up);
+            assert!(direct.max_element() > ambient.max_element(), "the sun reaches it");
+            assert_eq!(s.light_by_paths(at, up, 0, 16, &mut Rng::new(1)), direct);
+            assert!((s.light_by_paths(at, up, 3, 16, &mut Rng::new(1)) - direct).abs().max_element() < 1e-6);
+        }
+        world.env.sun = None;
+        for (ceiling, grey) in [(STONE, false), (BlockId(2), true)] {
+            let mut cells = vec![(IVec3::new(8, 0, 8), STONE)];
+            cells.extend((0..32).flat_map(|x| (0..32).map(move |z| (IVec3::new(x, 4, z), ceiling))));
+            let chunks = chunk_of(&cells);
+            let s = VoxelScene { world: &world, chunks: &chunks };
+            let light = s.light_by_paths(at, up, 2, 1024, &mut Rng::new(1));
+            if grey {
+                assert!(light.max_element() < ambient.max_element() * 0.9 && light.min_element() > ambient.min_element() * 0.2, "{light}");
+            } else {
+                assert!((light - ambient).abs().max_element() < 1e-5, "{light}");
+            }
+            // The same seed, the same light.
+            assert_eq!(light, s.light_by_paths(at, up, 2, 1024, &mut Rng::new(1)));
+        }
+    }
+
+    /// Chunks of one LOD-0 chunk at the origin holding these cells.
+    fn chunk_of(cells: &[(IVec3, BlockId)]) -> Chunks {
+        let mut data = ChunkData::Uniform(BlockId::AIR);
+        for &(cell, b) in cells {
+            data.set(cell, b);
+        }
+        let mut c = Chunks::default();
+        c.apply(&[WorldUpdate::ChunkLoad { key: ChunkKey { pos: IVec3::ZERO, lod: 0 }, data }]);
+        c.prepare();
+        c
     }
 }

@@ -194,23 +194,35 @@ pub struct RendererSpec {
     compose_label: std::sync::OnceLock<String>,
 }
 
-/// What a pipeline is given of the world when that is not what the full-resolution reference
-/// gets (another radius, LOD levels): a reference given the same tells a wrong pipeline from
-/// a lossy one.
+/// What a pipeline is given of the world and the lighting model it computes, when they are
+/// not the full-resolution reference's (another radius, LOD levels; path tracing): a
+/// reference given the same tells a wrong pipeline from a lossy or a noisy one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Like {
     pub radius: u32,
     pub max_lod: u8,
     pub levels: mr_core::client::Levels,
+    pub lighting: Lighting,
+}
+
+/// The lighting model of a lit frame: the reference's direct lighting, or diffuse path
+/// tracing (the `pathtrace` shading) with its bounces.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Lighting {
+    #[default]
+    Direct,
+    Paths {
+        bounces: u8,
+    },
 }
 
 impl Like {
     /// The class of a client's region, if it differs from the full-resolution reference's
     /// (the run's radius at LOD 0).
-    pub fn of(region: &crate::stream::Region, run: &RunSpec) -> Option<Self> {
+    pub fn of(region: &crate::stream::Region, lighting: Lighting, run: &RunSpec) -> Option<Self> {
         // Without coarse levels it does not matter how they would be made.
         let levels = if region.max_lod > 0 { region.levels } else { Default::default() };
-        (region.max_lod > 0 || region.radius != run.view_radius).then_some(Self { radius: region.radius, max_lod: region.max_lod, levels })
+        (region.max_lod > 0 || region.radius != run.view_radius || lighting != Lighting::Direct).then_some(Self { radius: region.radius, max_lod: region.max_lod, levels, lighting })
     }
 }
 
@@ -223,6 +235,10 @@ impl std::fmt::Display for Like {
         match self.max_lod {
             0 => write!(f, "{levels}(radius={})", self.radius),
             l => write!(f, "{levels}(radius={}, max_lod={l})", self.radius),
+        }?;
+        match self.lighting {
+            Lighting::Direct => Ok(()),
+            Lighting::Paths { bounces } => write!(f, ", pathtrace(bounces={bounces})"),
         }
     }
 }
@@ -616,6 +632,23 @@ impl RendererSpec {
         let asked = self.max_lod(run, u8::MAX);
         let why = info.lacks.iter().find_map(|l| l.strip_prefix("lod: ")).map_or_else(|| format!("it holds levels up to {}", info.max_lod), String::from);
         (asked > info.max_lod).then(|| format!("max_lod {asked}: {why}")).into_iter().collect()
+    }
+
+    /// The lighting model of its frames in a pass of mode `m`: path tracing where its
+    /// shading node path traces a lit frame (with the node's `bounces`), else direct.
+    pub fn lighting(&self, m: PassMode) -> Lighting {
+        use mr_components::graph::Role;
+        let traced = || {
+            let g = self.worker_graph().ok()??;
+            let n = g.nodes.values().find(|n| n.role == Role::Shading && n.component == "pathtrace")?;
+            let default = mr_components::shading::state::params().iter().find(|p| p.name == "bounces").and_then(|p| p.default.as_i64()).unwrap_or(1);
+            // Without bounces it is the direct model.
+            match n.knobs.get("bounces").and_then(|v| v.as_integer()).unwrap_or(default) as u8 {
+                0 => None,
+                bounces => Some(Lighting::Paths { bounces }),
+            }
+        };
+        if m.lighting == mr_core::RenderMode::Lit { traced().unwrap_or_default() } else { Lighting::Direct }
     }
 
     /// Chunks streamed around the camera: its client's `radius`, else the run's.
@@ -1246,6 +1279,28 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
     }
 
     /// Sweeps expand into every valid combination, with options only where they apply.
+    /// The scoring class takes the lighting model: path tracing in lit passes, with its
+    /// bounces; direct otherwise (unlit, no bounces, other shading).
+    #[test]
+    fn lighting_class() {
+        use mr_core::PassMode;
+        let pt = RendererSpec::from_cli("raycast-gpu:bricks+refloor+pathtrace").unwrap();
+        assert_eq!(pt.lighting(PassMode::LIT), Lighting::Paths { bounces: 1 });
+        assert_eq!(pt.lighting(PassMode::UNLIT), Lighting::Direct);
+        let mut more = pt.clone();
+        more.options.insert("bounces".into(), 3.into());
+        assert_eq!(more.lighting(PassMode::LIT), Lighting::Paths { bounces: 3 });
+        more.options.insert("bounces".into(), 0.into());
+        assert_eq!(more.lighting(PassMode::LIT), Lighting::Direct);
+        assert_eq!(RendererSpec::from_cli("raycast-gpu:bricks+refloor").unwrap().lighting(PassMode::LIT), Lighting::Direct);
+        assert_eq!(RendererSpec::new("cpu-reference").lighting(PassMode::LIT), Lighting::Direct);
+        let run = RunSpec::default();
+        let region = pt.region(&run, 0);
+        assert_eq!(Like::of(&region, Lighting::Direct, &run), None);
+        let like = Like::of(&region, pt.lighting(PassMode::LIT), &run).unwrap();
+        assert_eq!(like.to_string(), format!("pick(radius={}), pathtrace(bounces=1)", run.view_radius));
+    }
+
     #[test]
     fn sweeps() {
         let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
