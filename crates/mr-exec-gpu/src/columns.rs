@@ -240,7 +240,7 @@ impl Node<Columns> for Shading {
 /// The columns executor for `g`: the march and the deferred shading as nodes (the storage
 /// has no pass: the heightmap is patched and uploaded with the world's changes).
 pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    let passes = exec::passes(g, |role| -> Option<Box<dyn Node<Columns>>> {
+    let passes = exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<Columns>>> {
         match role {
             Role::Visibility => Some(Box::new(Visibility)),
             Role::Shading => Some(Box::new(Shading)),

@@ -320,7 +320,7 @@ impl Node<Splat> for Shading {
 /// The splat executor for `g`: the splat passes and the resolve as nodes (the points are
 /// built on the CPU and uploaded before the frame: the geometry node and its transfer).
 pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    let passes = exec::passes(g, |role| -> Option<Box<dyn Node<Splat>>> {
+    let passes = exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<Splat>>> {
         match role {
             Role::Visibility => Some(Box::new(Visibility)),
             Role::Shading => Some(Box::new(Shading)),

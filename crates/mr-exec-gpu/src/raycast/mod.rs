@@ -13,8 +13,8 @@
 //! node executor ([`crate::exec`]); what they share is the region's ([`Raycast`], [`Passes`])
 //! over the executor's core: the shader (the caster's root and modules, then `view.wgsl` and
 //! `cast.wgsl`, and when deferred `records.wgsl` and `deferred.wgsl` with the common pass),
-//! the rays' pass and the deferred shading pass, or (the shading on another GPU) the records
-//! sent to it ([`crate::remote`]).
+//! the rays' pass and the deferred shading pass (the shading on another GPU: that GPU's
+//! executor's, [`crate::remote`]; this region's rays then only write the records).
 
 use glam::IVec3;
 use mr_components::Api;
@@ -22,7 +22,6 @@ use mr_components::graph::{self, Role};
 use mr_core::*;
 use mr_gpu::{Ticket, wgpu};
 
-use crate::remote::Far;
 use crate::Core;
 use crate::exec::State;
 
@@ -34,21 +33,27 @@ pub(crate) mod walk;
 pub(crate) fn create(preset: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let kernel = g.input(Role::Visibility, "primary").ok_or_else(|| anyhow::anyhow!("{preset}: the primary rays are not bound"))?;
     match g.api(kernel) {
-        Some(Api::RayQuery) => run(Raycast::new(rayquery::RayQuery::new(p, devices, waker, g)?)?, g),
+        Some(Api::RayQuery) => run(rayquery::RayQuery::new(p, devices, waker, g)?, g),
         // A walk: compute threads or a fragment shader (`dispatch`), the kernel compiled in.
-        _ => run(Raycast::new(walk::Walk::new(p, devices, waker, g)?)?, g),
+        _ => run(walk::Walk::new(p, devices, waker, g)?, g),
     }
 }
 
-fn run<C: Cast + 'static>((core, region): (Core, Raycast<C>), g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
+/// The executor of a caster's GPU, alone or (the shading on another GPU, `far`) with that
+/// GPU's.
+fn run<C: Cast + 'static>((core, cast, shading, far): (Core, C, String, Option<crate::remote::Far>), g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    let region = Raycast::new(&core, cast, shading, far.is_some())?;
     let passes = nodes::of::<C>(g)?;
     tracing::debug!("{}: {} passes", C::PRESET, passes.len());
-    crate::exec::run(core, region, passes)
+    match far {
+        Some(far) => crate::exec::split(g, crate::exec::Executor::new(core, region, passes), far),
+        None => crate::exec::run(core, region, passes),
+    }
 }
 
 /// The site `port` of the shading's rays, unless the shading runs on another GPU (then its
-/// rays are the remote part's, [`Far`], and this GPU's program walks the primary rays' kernel
-/// there, never called).
+/// rays are that GPU's executor's, [`crate::remote`], and this GPU's program walks the primary
+/// rays' kernel there, never called).
 fn shading_site<'a>(g: &'a graph::Checked, port: &str) -> Option<Option<graph::Site<'a>>> {
     match crate::remote::far_slot(g) {
         Some(_) => None,
@@ -192,7 +197,7 @@ enum Main {
 pub(crate) struct Passes {
     layout0: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
-    /// The records are shaded on another GPU (no shading pass here).
+    /// The shading is another GPU's executor's node (no shading pass here).
     remote: bool,
     plain: Variant,
     meshed: Option<Variant>,
@@ -307,12 +312,10 @@ fn shader(mut lp: CastProgram, deferred: bool, view: View, fragment: bool) -> Ca
 }
 
 /// The region the ray-casting nodes share ([`nodes`]): the caster, its passes (one program,
-/// group 0) and the shading they were compiled with, the frame's state; the shading's GPU
-/// when it is another.
+/// group 0) and the shading they were compiled with, the frame's state.
 struct Raycast<C> {
     passes: Passes,
     cast: C,
-    far: Option<Far>,
     shading: String,
     /// Shading the passes were compiled with (recompiled at the next frame on a change).
     built_shading: String,
@@ -322,10 +325,11 @@ struct Raycast<C> {
 }
 
 impl<C: Cast> Raycast<C> {
-    fn new((core, cast, shading, far): (Core, C, String, Option<Far>)) -> anyhow::Result<(Core, Self)> {
-        anyhow::ensure!(far.is_none() || cast.view() == View::Image, "{}: a diagnostic view shades inline, not on the shading's GPU", C::PRESET);
-        let passes = Passes::new(&core, &cast, &shading, far.is_some())?;
-        Ok((core, Self { passes, cast, far, built_shading: shading.clone(), shading, steps: Steps::default(), world: None }))
+    /// `remote`: the shading is a node of another GPU's executor.
+    fn new(core: &Core, cast: C, shading: String, remote: bool) -> anyhow::Result<Self> {
+        anyhow::ensure!(!remote || cast.view() == View::Image, "{}: a diagnostic view shades inline, not on the shading's GPU", C::PRESET);
+        let passes = Passes::new(core, &cast, &shading, remote)?;
+        Ok(Self { passes, cast, built_shading: shading.clone(), shading, steps: Steps::default(), world: None })
     }
 
     /// The variant this frame runs: the meshed one when the meshes' records ran.
@@ -468,40 +472,12 @@ impl<C: Cast> crate::exec::Region for Raycast<C> {
         self.cast.finish(enc);
     }
 
-    /// With the shading on another GPU, this GPU's frames are the first half of one (their
-    /// stats go with the records).
-    fn begin(&mut self, core: &mut Core, sink: &mut dyn FrameSink) -> anyhow::Result<Ticket> {
-        match &mut self.far {
-            Some(f) => core.ring.begin(&core.gpu, f.near_sink()),
-            None => core.ring.begin(&core.gpu, sink),
-        }
-    }
-
-    /// The records go to the shading's GPU, which shades them and completes the frame.
-    fn submit(&mut self, core: &mut Core, enc: wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, stats: FrameStats, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        match &mut self.far {
-            Some(f) => {
-                f.send(core, enc, ticket, req, stats);
-                self.cast.submitted();
-                f.render(core, req, &self.shading, sink)
-            }
-            None => {
-                core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
-                self.cast.submitted();
-                core.ring.poll(&core.gpu, sink, false)
-            }
-        }
+    fn submitted(&mut self, _core: &Core) {
+        self.cast.submitted();
     }
 }
 
 impl<C: Cast> State for Raycast<C> {
-    fn updating(&mut self, updates: &[WorldUpdate]) {
-        if let Some(f) = &mut self.far
-            && let Err(e) = f.update(updates) {
-            tracing::error!("the shading's GPU: {e}");
-        }
-    }
-
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
         self.cast.updated(core, changed)
     }
@@ -514,36 +490,22 @@ impl<C: Cast> State for Raycast<C> {
         if name == "shading" {
             return Some(mr_components::require(C::PRESET, mr_components::Slot::Shading, value.as_str().unwrap_or("")).map(|s| self.shading = s));
         }
-        // The core's knobs (shadows, the shading state's) reach both GPUs' cores.
-        if let Some(Err(e)) = self.far.as_mut().and_then(|f| f.set_param(name, value)) {
-            return Some(Err(e));
-        }
         self.cast.set_param(name, value)
     }
 
     fn resize(&mut self, core: &Core) {
         self.cast.resize(core);
         self.passes.unbind();
-        if let Some(Err(e)) = self.far.as_mut().map(|f| f.resize(core)) {
-            tracing::error!("the shading's GPU: {e}");
-        }
     }
 
     fn memory(&self, _core: &Core) -> (u64, u64) {
-        (0, self.cast.memory_bytes() + self.far.as_ref().map_or(0, |f| f.memory_bytes()))
-    }
-
-    fn poll(&mut self, core: &mut Core, sink: &mut dyn FrameSink, wait: bool) -> anyhow::Result<()> {
-        match &mut self.far {
-            Some(f) => f.poll(core, sink, wait),
-            None => core.ring.poll(&core.gpu, sink, wait),
-        }
+        (0, self.cast.memory_bytes())
     }
 }
 
 /// The ray-casting nodes on the node executor ([`crate::exec`]), one per pass of the graph's
-/// schedule on a GPU (the shading's on another GPU: its pass here records nothing, the
-/// region's submission sends the records there); they share [`Raycast`] as their region.
+/// schedule on this GPU (the shading's on another GPU is that GPU's executor's); they share
+/// [`Raycast`] as their region.
 mod nodes {
     use mr_components::graph::{self, Role};
 
@@ -595,9 +557,9 @@ mod nodes {
         }
     }
 
-    /// The nodes of `g`'s passes on the GPU, in frame order.
+    /// The nodes of `g`'s passes on the casters' GPU, in frame order.
     pub(super) fn of<C: Cast + 'static>(g: &graph::Checked) -> anyhow::Result<Vec<Box<dyn Node<Raycast<C>>>>> {
-        crate::exec::passes(g, |role| -> Option<Box<dyn Node<Raycast<C>>>> {
+        crate::exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<Raycast<C>>>> {
             Some(match role {
                 Role::Traversal => Box::new(Accel),
                 Role::Storage => Box::new(Storage),

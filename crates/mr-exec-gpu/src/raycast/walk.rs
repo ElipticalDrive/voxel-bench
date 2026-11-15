@@ -346,7 +346,7 @@ impl Walk {
                 frames_in_flight: opts.frames_in_flight,
         };
         let core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
-        let far = crate::remote::Far::of(p, devices, waker, g, &core, &spec)?;
+        let far = crate::remote::create(p, devices, waker, g, &core, &spec)?;
         let walk = |k: usize| comp.walks.label(k);
         tracing::info!("raycast-gpu: primary {}, shadow {}, bounce {}, shading {shading}", walk(0), walk(comp.shadow), walk(comp.bounce));
         let walk = Self {

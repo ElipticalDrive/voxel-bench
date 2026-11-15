@@ -3,7 +3,8 @@
 //! device and API in one program share a [`Region`]: the program's compiled pipelines, group 0
 //! and the frame's state (on the GPU, fusing nodes means compiling them into one shader
 //! module). What crosses between passes is an edge's resource ([`Edges`]), the executor's: a
-//! program attaches it where it chooses. Dispatch is per pass (a virtual call per node per
+//! program attaches it where it chooses. A pipeline over two GPUs runs an executor per GPU slot
+//! ([`Split`]), the edge that crosses carried by its transfer ([`crate::transfer`]). Dispatch is per pass (a virtual call per node per
 //! frame); every per-pixel cost stays in the shaders.
 
 use glam::IVec3;
@@ -12,6 +13,7 @@ use mr_core::*;
 use mr_gpu::{Gpu, Ticket, wgpu};
 
 use crate::Core;
+use crate::transfer::Transfer;
 
 /// The resources of the graph's edges that cross between passes on one GPU: allocated by the
 /// executor from the graph, sized to the frame, remade on a resize. A program whose node
@@ -125,10 +127,6 @@ pub(crate) trait State {
     fn resize(&mut self, core: &Core);
     /// (CPU, GPU) bytes beyond the core's.
     fn memory(&self, core: &Core) -> (u64, u64);
-    /// Completes finished frames (`wait`: all of them).
-    fn poll(&mut self, core: &mut Core, sink: &mut dyn FrameSink, wait: bool) -> anyhow::Result<()> {
-        core.ring.poll(&core.gpu, sink, wait)
-    }
 }
 
 /// The state a region's nodes share, and what of the frame is its own beyond its nodes'
@@ -143,26 +141,20 @@ pub(crate) trait Region: State {
     fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>);
     /// Before the frame's submission, after its nodes' passes (readbacks, diagnostics).
     fn finish(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket);
-    /// The frame's ticket on its ring (frames completing to `sink`).
-    fn begin(&mut self, core: &mut Core, sink: &mut dyn FrameSink) -> anyhow::Result<Ticket> {
-        core.ring.begin(&core.gpu, sink)
-    }
-    /// Submits the frame's commands `enc` and completes finished frames.
-    fn submit(&mut self, core: &mut Core, enc: wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, stats: FrameStats, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
-        core.ring.poll(&core.gpu, sink, false)
-    }
+    /// After the frame's submission (readbacks' mapping).
+    fn submitted(&mut self, _core: &Core) {}
 }
 
-/// The nodes of `g`'s passes on the GPU in frame order, each by its node's role (`node`; a
-/// role without one has no pass of its own here).
-pub(crate) fn passes<R>(g: &graph::Checked, node: impl Fn(Role) -> Option<Box<dyn Node<R>>>) -> anyhow::Result<Vec<Box<dyn Node<R>>>> {
+/// The nodes of `g`'s passes on GPU slot `slot` in frame order, each by its node's role
+/// (`node`; a role without one has no pass of its own here).
+pub(crate) fn passes<R>(g: &graph::Checked, slot: usize, node: impl Fn(Role) -> Option<Box<dyn Node<R>>>) -> anyhow::Result<Vec<Box<dyn Node<R>>>> {
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
-    Ok(schedule.passes().filter(|p| matches!(p.device, graph::Device::Gpu(_))).filter_map(|p| node(g.node(&p.node).role)).collect())
+    Ok(schedule.passes().filter(|p| matches!(p.device, graph::Device::Gpu(i) if i as usize == slot)).filter_map(|p| node(g.node(&p.node).role)).collect())
 }
 
-/// The core, a region and its nodes' passes in frame order (static dispatch over the region).
-struct Executor<R> {
+/// One GPU slot's executor: its core, a region and its nodes' passes in frame order (static
+/// dispatch over the region).
+pub(crate) struct Executor<R> {
     core: Core,
     region: R,
     passes: Vec<Box<dyn Node<R>>>,
@@ -171,7 +163,51 @@ struct Executor<R> {
 /// The renderer running `region`'s `passes` over `core`.
 pub(crate) fn run<R: Region + 'static>(core: Core, region: R, passes: Vec<Box<dyn Node<R>>>) -> anyhow::Result<Box<dyn Renderer>> {
     core.gpu.save_cache();
-    Ok(Box::new(Executor { core, region, passes }))
+    Ok(Box::new(Executor::new(core, region, passes)))
+}
+
+impl<R: Region> Executor<R> {
+    pub fn new(core: Core, region: R, passes: Vec<Box<dyn Node<R>>>) -> Self {
+        Self { core, region, passes }
+    }
+
+    /// The frame's commands on this GPU, before their submission: its ticket on the ring
+    /// (frames completing to `sink`), its passes and its stats.
+    fn encode(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<(wgpu::CommandEncoder, Ticket, FrameStats)> {
+        let (core, region) = (&mut self.core, &mut self.region);
+        region.compile(core, req)?;
+        let ticket = core.ring.begin(&core.gpu, sink)?;
+        let start = std::time::Instant::now();
+        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
+        region.setup(core, req);
+        let mut cx = Cx { core, region, enc: &mut enc, ticket, req };
+        for pass in &mut self.passes {
+            pass.run(&mut cx);
+        }
+        let (counters, legend, stages) = region.stats(core, req);
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
+        region.finish(core, &mut enc, ticket);
+        Ok((enc, ticket, stats))
+    }
+
+    /// Submits the frame as this GPU's image and completes finished frames.
+    fn submit(&mut self, enc: wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, stats: FrameStats, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        let core = &mut self.core;
+        core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
+        self.region.submitted(core);
+        core.ring.poll(&core.gpu, sink, false)
+    }
+
+    /// Knob `name` set where it is one of the region's or the core's (`None`: of neither).
+    fn offer(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        if let Some(r) = self.region.set_param(&mut self.core, name, value) {
+            // A region rebuilds its pipelines lazily, at its next frame; they reach the file
+            // with the next change or at exit.
+            self.core.gpu.save_cache();
+            return Some(r);
+        }
+        self.core.set_param(name, value)
+    }
 }
 
 impl<R: Region> Renderer for Executor<R> {
@@ -195,38 +231,20 @@ impl<R: Region> Renderer for Executor<R> {
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        let (core, region) = (&mut self.core, &mut self.region);
-        region.compile(core, req)?;
-        let ticket = region.begin(core, sink)?;
-        let start = std::time::Instant::now();
-        let mut enc = core.gpu.device.create_command_encoder(&Default::default());
-        region.setup(core, req);
-        let mut cx = Cx { core, region, enc: &mut enc, ticket, req };
-        for pass in &mut self.passes {
-            pass.run(&mut cx);
-        }
-        let (counters, legend, stages) = region.stats(core, req);
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
-        region.finish(core, &mut enc, ticket);
-        region.submit(core, enc, ticket, req, stats, sink)
+        let (enc, ticket, stats) = self.encode(req, sink)?;
+        self.submit(enc, ticket, req, stats, sink)
     }
 
     fn poll(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.region.poll(&mut self.core, sink, false)
+        self.core.ring.poll(&self.core.gpu, sink, false)
     }
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
-        if let Some(r) = self.region.set_param(&mut self.core, name, value) {
-            // A region rebuilds its pipelines lazily, at its next frame; they reach the file
-            // with the next change or at exit.
-            self.core.gpu.save_cache();
-            return r;
-        }
-        self.core.set_param(name, value).unwrap_or_else(|| anyhow::bail!("`{name}` cannot change while running"))
+        self.offer(name, value).unwrap_or_else(|| anyhow::bail!("`{name}` cannot change while running"))
     }
 
     fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.region.poll(&mut self.core, sink, true)
+        self.core.ring.poll(&self.core.gpu, sink, true)
     }
 
     fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
@@ -238,5 +256,83 @@ impl<R: Region> Renderer for Executor<R> {
     fn memory(&self) -> MemoryReport {
         let (cpu, gpu) = self.region.memory(&self.core);
         MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu }
+    }
+}
+
+/// A pipeline over two GPUs: an executor per GPU slot, each running its device's passes of
+/// the schedule, and the transfer of the hits edge that crosses between them. A frame: the
+/// first executor's passes, submitted with the records sent ([`Transfer::send`]); the records
+/// the second's shading reads delivered to its edge ([`Transfer::arrive`]); the second
+/// executor's passes with the camera those records were cast with, its image the frame's.
+/// The frame's stats are both GPUs' (the second's ring adds its GPU time to the first's).
+struct Split<R, F> {
+    near: Executor<R>,
+    transfer: Transfer,
+    far: Executor<F>,
+}
+
+/// The renderer running `near` and `far`, the executors of graph `g`'s two GPU slots.
+pub(crate) fn split<R: Region + 'static, F: Region + 'static>(g: &graph::Checked, near: Executor<R>, far: Executor<F>) -> anyhow::Result<Box<dyn Renderer>> {
+    near.core.gpu.save_cache();
+    let transfer = Transfer::of(g, &near.core, &far.core)?;
+    Ok(Box::new(Split { near, transfer, far }))
+}
+
+impl<R: Region, F: Region> Renderer for Split<R, F> {
+    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        self.far.update(updates.clone())?;
+        self.near.update(updates)
+    }
+
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        self.near.update_meshes(update)
+    }
+
+    fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        let (near, far, transfer) = (&mut self.near, &mut self.far, &mut self.transfer);
+        // The first GPU's frames are the first half of one: their stats go with the records.
+        let (enc, ticket, stats) = near.encode(req, transfer.sink())?;
+        transfer.send(&mut near.core, enc, ticket, req, stats);
+        near.region.submitted(&near.core);
+        let (mut stats, camera) = transfer.arrive(&mut near.core, &far.core, req)?;
+        let req = FrameRequest { camera, ..req.clone() };
+        let (enc, ticket, shaded) = far.encode(&req, sink)?;
+        let (stage, wait_ms, cpu_ms) = transfer.times();
+        stats.stages.push(stage);
+        stats.counters.extend(shaded.counters);
+        stats.stages.extend(shaded.stages);
+        stats.counters.push(("transfer_wait_ms".into(), wait_ms as f64));
+        stats.cpu_ms += shaded.cpu_ms + cpu_ms;
+        far.submit(enc, ticket, &req, stats, sink)
+    }
+
+    fn poll(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        self.far.poll(sink)
+    }
+
+    /// A knob reaches both executors (the cores' knobs: shadows, the shading state's; the
+    /// shading); it must be one of either's.
+    fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
+        match (self.far.offer(name, value), self.near.offer(name, value)) {
+            (Some(Err(e)), _) => Err(e),
+            (_, Some(r)) | (Some(r), None) => r,
+            (None, None) => anyhow::bail!("`{name}` cannot change while running"),
+        }
+    }
+
+    fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        self.near.flush(self.transfer.sink())?;
+        self.far.flush(sink)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
+        self.near.resize(width, height)?;
+        self.transfer.resize(&self.near.core)?;
+        self.far.resize(width, height)
+    }
+
+    fn memory(&self) -> MemoryReport {
+        let (near, far) = (self.near.memory(), self.far.memory());
+        MemoryReport { cpu_bytes: near.cpu_bytes + far.cpu_bytes, gpu_bytes: near.gpu_bytes + far.gpu_bytes + self.transfer.memory_bytes() }
     }
 }

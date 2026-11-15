@@ -185,7 +185,7 @@ impl RayQuery {
                 frames_in_flight: opts.frames_in_flight,
         };
         let core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
-        let far = crate::remote::Far::of(p, devices, waker, g, &core, &spec)?;
+        let far = crate::remote::create(p, devices, waker, g, &core, &spec)?;
         tracing::info!("rayquery-gpu: primary {}, shadow {}, bounce {}, shading {shading}", walks.label(0), walks.label(shadow), walks.label(bounce));
         Ok((core, Self { walks, shadow, bounce, cull_faces: gk.cull_faces, bound: Bound(Vec::new()) }, shading, far))
     }

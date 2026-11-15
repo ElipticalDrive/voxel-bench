@@ -774,7 +774,7 @@ impl Node<Meshing> for Shading {
 /// The meshing executor for `g`: culling, storages, meshes, drawing and shading as nodes (the
 /// geometry is meshed on the CPU and uploaded before them: the geometry node and its transfer).
 pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    let passes = exec::passes(g, |role| -> Option<Box<dyn Node<Meshing>>> {
+    let passes = exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<Meshing>>> {
         Some(match role {
             Role::Visibility => Box::new(Visibility),
             Role::Storage => Box::new(Storage),

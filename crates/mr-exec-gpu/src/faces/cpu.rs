@@ -628,7 +628,7 @@ impl Node<CpuSampler> for Shading {
 /// The CPU discovery executor for `g`: storages, drawing and shading as nodes (discovery on
 /// the CPU and the records' upload run before them: the visibility node and its transfer).
 pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
-    let passes = exec::passes(g, |role| -> Option<Box<dyn Node<CpuSampler>>> {
+    let passes = exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<CpuSampler>>> {
         Some(match role {
             Role::Storage => Box::new(Storage),
             Role::Draw => Box::new(DrawFaces),

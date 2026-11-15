@@ -39,6 +39,7 @@ mod faces;
 mod raycast;
 mod remote;
 mod splat;
+mod transfer;
 
 pub use mr_components::visibility::discover::grid::CpuWorld;
 

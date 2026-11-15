@@ -87,7 +87,7 @@ slots to adapters, so components hold no hardware opinion) and `api` how it runs
 its kernel) never crosses devices; any other edge may, through a transfer adapter (readback,
 upload). Devices are handed to components; no component opens one.
 
-Code: `crates/mr-components/src/impls.rs`, `crates/mr-exec-gpu/src/remote.rs` (the split over two GPUs);
+Code: `crates/mr-components/src/impls.rs`, `crates/mr-exec-gpu/src/exec.rs` (`Split`: an executor per GPU slot), `transfer.rs` (the hit records' edge between them), `remote.rs` (the shading's region on its own GPU);
 `plans/two-gpus.toml` (ray casting on an RTX 5060, shading on a Radeon iGPU a frame behind).
 
 ## Pipelines compiled on demand

@@ -1,38 +1,19 @@
-//! The shading node on a second GPU: one pipeline split over two GPUs at
-//! the hit records. The visibility node casts the primary rays on its GPU and writes one
-//! record per pixel (`placement = deferred`); the schedule's transfer adapter for that edge
-//! (`visibility` -> `shading`.hits, `now`) carries them to the shading's GPU, through the
-//! host (read back from the one, written to the other: no peer copy in wgpu); there the
-//! common deferred pass shades them, its shadow and bounce rays walking (or tracing) the
+//! The shading node on a second GPU: one pipeline split over two GPUs at the hit records. Each
+//! GPU slot has an executor of its own ([`crate::exec`]) running its device's passes of the
+//! schedule: the first the rays' (the ray-casting region, its program without the shading),
+//! the second the shading's, this region ([`Shade`]): the common deferred pass over the hit
+//! records of its executor's hits edge, its shadow and bounce rays walking (or tracing) the
 //! storages compiled into the shading, kept on that GPU from the world's change log like any
-//! storage. The image is the shading's GPU's.
-//!
-//! [`Far`] is everything on the second GPU: a core of its own (the world, the shading's
-//! storages and acceleration structures, the shading state, the camera, the records that
-//! arrived, the output, its frame ring) and the shading pass. A frame: the rays' pass on the
-//! first GPU, its records copied out and submitted ([`Far::send`]), then ([`Far::render`])
-//! the records the shading reads waited for, written to the second GPU and shaded there with
-//! the camera they were cast with. Edge `now` shades the records just sent (the GPUs take
-//! turns); edge `prev` (history) the last frame's, so the second GPU shades
-//! frame N - 1 while the first casts N: frame N's image shows the view of frame N - 1 (the
-//! first frame's, nothing arrived yet: sky), and the last records cast are never shaded.
-//! The frame's GPU time is both GPUs' passes; its stages are the first's (`cast`, `copy`:
-//! the records into the readback buffer; for `prev` the cast of the frame before), the
-//! transfer (CPU: the upload; the wait for the first GPU is the counter `transfer_wait_ms`)
-//! and the second's (`shade`).
+//! storage. The records reach its edge through the edge's transfer ([`crate::transfer`]), the
+//! executors' own; the image is this GPU's.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
-
-use glam::IVec3;
-use mr_components::graph::{self, Device, Role, When};
+use mr_components::graph::{self, Device, Role};
 use mr_components::shaders::{self, Walks};
 use mr_components::storage::gpu_data::Bound;
 use mr_core::*;
 use mr_gpu::{GpuNeeds, Ticket, wgpu};
 
+use crate::exec::{self, Cx, Executor, Node};
 use crate::{Core, CoreSpec};
 
 /// The storage groups of the shading's walks on the second GPU.
@@ -47,45 +28,13 @@ pub(crate) fn far_slot(g: &graph::Checked) -> Option<usize> {
     }
 }
 
-/// Frames' stats captured from the first GPU's ring (its frames are no frames of their own).
-#[derive(Default)]
-struct Captured(VecDeque<(u64, FrameStats)>);
+/// The second GPU's executor.
+pub(crate) type Far = Executor<Shade>;
 
-impl FrameSink for Captured {
-    fn complete(&mut self, frame: CompletedFrame<'_>) {
-        self.0.push_back((frame.frame_id, frame.stats));
-    }
-}
-
-impl Captured {
-    /// Frame `id`'s stats (older ones are dropped: their frames were not shaded).
-    fn take(&mut self, id: u64) -> Option<FrameStats> {
-        while let Some((i, _)) = self.0.front() {
-            if *i > id {
-                return None;
-            }
-            let (i, stats) = self.0.pop_front().unwrap();
-            if i == id {
-                return Some(stats);
-            }
-        }
-        None
-    }
-}
-
-/// A frame's records on their way: copied into `staging[buffer]` on the first GPU by
-/// submission `index`, mapped once `mapped`; cast with `camera`.
-struct Sent {
-    frame_id: u64,
-    camera: Camera,
-    buffer: usize,
-    index: wgpu::SubmissionIndex,
-    mapped: Arc<AtomicBool>,
-}
-
-/// The second GPU's part of the pipeline.
-pub(crate) struct Far {
-    core: Core,
+/// The region of the shading's nodes on a GPU of their own: the deferred pass's program and
+/// group 0, the shading it was compiled with, the frame's state.
+pub(crate) struct Shade {
+    preset: &'static str,
     walks: Walks,
     shadow: usize,
     bounce: usize,
@@ -94,242 +43,178 @@ pub(crate) struct Far {
     shade: wgpu::ComputePipeline,
     bind0: Option<wgpu::BindGroup>,
     bound: Bound,
+    shading: String,
+    /// Shading the pass was compiled with (recompiled at the next frame on a change).
     built_shading: String,
-    /// On the first GPU: the records read back (two for edge `prev`: one being written while
-    /// the other's are shaded).
-    staging: Vec<wgpu::Buffer>,
-    /// The records sent and not yet shaded, oldest first.
-    sent: VecDeque<Sent>,
-    /// Edge `prev`: the shading reads the last frame's records.
-    late: bool,
-    near: Captured,
-    /// The transfer's nodes (the edge's ends); its last CPU times: waiting for the first GPU's
-    /// frame (its passes and the records' copy) and the upload.
-    transfer_nodes: Vec<String>,
-    wait_ms: f32,
-    transfer_ms: f32,
+    /// This frame's world bind group, and what ran of the work before the pass (each once,
+    /// from its node's pass or the shading's).
+    world: Option<wgpu::BindGroup>,
+    accel: bool,
+    stored: bool,
 }
 
-fn staging(near: &Core, late: bool) -> Vec<wgpu::Buffer> {
-    let one = || {
-        near.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("hit records readback"),
-            size: crate::exec::Hits::size(near.width, near.height),
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
+/// The executor of graph `g`'s shading on its own GPU, if that is another than the visibility
+/// node's (`near`, `spec`: the first GPU's core, whose knobs it shares).
+pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, near: &Core, spec: &CoreSpec) -> anyhow::Result<Option<Far>> {
+    let Some(slot) = far_slot(g) else { return Ok(None) };
+    anyhow::ensure!(near.edges.hits().is_some(), "the shading on gpu{slot} shades the hit records the rays write on another GPU: placement = deferred");
+    let mut walks = Walks::of(g);
+    let site = |port| g.site(Role::Shading, port);
+    let shadow = walks.site(g, site("shadow").ok_or_else(|| anyhow::anyhow!("the shading's shadow rays are not bound"))?, STORAGE_GROUPS, false);
+    let bounce = site("bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+    walks.set_max_steps(spec.max_steps);
+    let core = Core::on(
+        slot,
+        p,
+        devices,
+        waker,
+        g,
+        CoreSpec {
+            gpu: GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS },
+            walks: &walks,
+            accel: crate::accel::AccelSpec::of(g, &walks)?,
+            stages: wgpu::ShaderStages::COMPUTE,
+            max_lod: 0,
+            voxels: false,
+            records: true,
+            ..*spec
+        },
+    )?;
+    let dev = &core.gpu.device;
+    let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("remote shading"), entries: &core.layout_entries() });
+    let pipeline_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("remote shading"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
+    let shade = compile(&core, &pipeline_layout, &walks, shadow, bounce, spec.shading)?;
+    core.gpu.save_cache();
+    tracing::info!("shading on gpu{slot} ({}): shadow {}, bounce {}", core.gpu.info.name, walks.label(shadow), walks.label(bounce));
+    let passes = exec::passes(g, slot, |role| -> Option<Box<dyn Node<Shade>>> {
+        Some(match role {
+            Role::Traversal => Box::new(Accel),
+            Role::Storage => Box::new(Storage),
+            Role::Shading => Box::new(Shading),
+            _ => return None,
         })
+    })?;
+    let region = Shade {
+        preset: g.preset.expect("of_init: a preset"),
+        shading: spec.shading.to_string(),
+        built_shading: spec.shading.to_string(),
+        bind0: None,
+        bound: Bound(Vec::new()),
+        world: None,
+        accel: false,
+        stored: false,
+        layout0,
+        pipeline_layout,
+        shade,
+        walks,
+        shadow,
+        bounce,
     };
-    (0..if late { 2 } else { 1 }).map(|_| one()).collect()
+    Ok(Some(Executor::new(core, region, passes)))
 }
 
-impl Far {
-    /// The second GPU's part of graph `g` if its shading runs on another GPU than its
-    /// visibility node (`spec`: the first GPU's core, whose knobs it shares).
-    pub(crate) fn of(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, near: &Core, spec: &CoreSpec) -> anyhow::Result<Option<Self>> {
-        let Some(slot) = far_slot(g) else { return Ok(None) };
-        anyhow::ensure!(near.edges.hits().is_some(), "the shading on gpu{slot} shades the hit records the rays write on another GPU: placement = deferred");
-        let mut walks = Walks::of(g);
-        let site = |port| g.site(Role::Shading, port);
-        let shadow = walks.site(g, site("shadow").ok_or_else(|| anyhow::anyhow!("the shading's shadow rays are not bound"))?, STORAGE_GROUPS, false);
-        let bounce = site("bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
-        walks.set_max_steps(spec.max_steps);
-        let core = Core::on(
-            slot,
-            p,
-            devices,
-            waker,
-            g,
-            CoreSpec {
-                gpu: GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS },
-                walks: &walks,
-                accel: crate::accel::AccelSpec::of(g, &walks)?,
-                stages: wgpu::ShaderStages::COMPUTE,
-                max_lod: 0,
-                voxels: false,
-                records: true,
-                ..*spec
-            },
-        )?;
-        let dev = &core.gpu.device;
-        let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("remote shading"), entries: &core.layout_entries() });
-        let pipeline_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("remote shading"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
-        let shade = compile(&core, &pipeline_layout, &walks, shadow, bounce, spec.shading)?;
-        core.gpu.save_cache();
-        // The transfer is the hits edge's: the same edge on both GPUs.
-        let edge = core.edges.hits().expect("records");
-        let (vis, sh) = (edge.from.clone(), edge.to.clone());
-        let late = g.graph.nodes.get(&sh).is_some_and(|n| n.when("hits") == When::Prev);
-        tracing::info!("remote shading on gpu{slot} ({}): shadow {}, bounce {}, hits {}", core.gpu.info.name, walks.label(shadow), walks.label(bounce), if late { "prev" } else { "now" });
-        Ok(Some(Self {
-            staging: staging(near, late),
-            sent: VecDeque::new(),
-            late,
-            near: Captured::default(),
-            transfer_nodes: vec![vis, sh],
-            wait_ms: 0.0,
-            transfer_ms: 0.0,
-            built_shading: spec.shading.to_string(),
-            bind0: None,
-            bound: Bound(Vec::new()),
-            layout0,
-            pipeline_layout,
-            shade,
-            walks,
-            shadow,
-            bounce,
-            core,
-        }))
-    }
-
-    /// The first GPU's frame sink: its frames' stats, kept for the frame the second shades.
-    pub(crate) fn near_sink(&mut self) -> &mut dyn FrameSink {
-        &mut self.near
-    }
-
-    /// World changes: the second GPU's world and storages apply them too.
-    pub(crate) fn update(&mut self, updates: &[WorldUpdate]) -> anyhow::Result<()> {
-        let c = &mut self.core;
-        if !updates.is_empty() {
-            c.accum.invalidate();
-        }
-        let changed: Vec<IVec3> = c.world.apply(&c.gpu, updates.to_vec());
-        c.storages.update(&c.gpu, &c.world, &changed)?;
-        if let Some(a) = &mut c.accel {
-            a.updated(&c.world, &changed);
-        }
-        Ok(())
-    }
-
-    /// The transfer's first half: submits the first GPU's frame `enc` with its records copied
-    /// out (with the frame's stats from the first GPU) and starts reading them back.
-    pub(crate) fn send(&mut self, near: &mut Core, mut enc: wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, stats: FrameStats) {
-        let records = near.edges.hits().expect("placement = deferred").buffer();
-        // `prev`: the other buffer than the records sent last frame, which are shaded next.
-        let buffer = self.sent.back().map_or(0, |s| (s.buffer + 1) % self.staging.len());
-        near.ring.stage(&mut enc, ticket, "copy", &self.transfer_nodes);
-        enc.copy_buffer_to_buffer(records, 0, &self.staging[buffer], 0, records.size());
-        let index = near.ring.submit(&near.gpu, enc, ticket, &near.output, req.frame_id, false, stats);
-        let mapped = Arc::new(AtomicBool::new(false));
-        let done = mapped.clone();
-        self.staging[buffer].slice(..).map_async(wgpu::MapMode::Read, move |r| match r {
-            Ok(()) => done.store(true, Ordering::Release),
-            Err(e) => tracing::error!("hit records readback failed: {e}"),
-        });
-        self.sent.push_back(Sent { frame_id: req.frame_id, camera: req.camera, buffer, index, mapped });
-    }
-
-    /// The transfer's second half: waits for `s`'s records (and the first GPU's stats of its
-    /// frame) and writes them to the second GPU. Returns those stats.
-    fn arrive(&mut self, near: &mut Core, s: &Sent) -> anyhow::Result<FrameStats> {
-        let start = Instant::now();
-        let mut stats = None;
-        loop {
-            near.ring.poll(&near.gpu, &mut self.near, false)?;
-            stats = stats.or_else(|| self.near.take(s.frame_id));
-            if s.mapped.load(Ordering::Acquire) && stats.is_some() {
-                break;
-            }
-            near.gpu.device.poll(wgpu::PollType::Wait { submission_index: Some(s.index.clone()), timeout: None })?;
-        }
-        let arrived = Instant::now();
-        let staging = &self.staging[s.buffer];
-        self.core.gpu.queue.write_buffer(self.core.edges.hits().expect("records").buffer(), 0, &staging.slice(..).get_mapped_range()?);
-        staging.unmap();
-        self.wait_ms = (arrived - start).as_secs_f32() * 1e3;
-        self.transfer_ms = arrived.elapsed().as_secs_f32() * 1e3;
-        Ok(stats.unwrap_or_default())
-    }
-
-    /// Shades the records the edge's timing names with `shading` (`now`: the frame just sent;
-    /// `prev`: the one before, while the first GPU casts this one) and hands frame `req` to
-    /// `sink`.
-    pub(crate) fn render(&mut self, near: &mut Core, req: &FrameRequest, shading: &str, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        let shaded = if self.sent.len() > usize::from(self.late) { self.sent.pop_front() } else { None };
-        // The first frame of `prev`: nothing arrived yet (the records are cleared: sky).
-        let (mut stats, camera) = match shaded {
-            Some(s) => (self.arrive(near, &s)?, s.camera),
-            None => {
-                (self.wait_ms, self.transfer_ms) = (0.0, 0.0);
-                (FrameStats::default(), req.camera)
-            }
-        };
-        let c = &mut self.core;
-        if shading != self.built_shading {
-            self.shade = compile(c, &self.pipeline_layout, &self.walks, self.shadow, self.bounce, shading)?;
-            if c.accum.set_shading(&c.gpu, shading) {
-                self.bind0 = None;
-            }
-            self.built_shading = shading.to_string();
-        }
-        let ticket = c.ring.begin(&c.gpu, sink)?;
-        let start = Instant::now();
-        let mut enc = c.gpu.device.create_command_encoder(&Default::default());
-        if c.build_accel(&mut enc, ticket, req) {
+impl Shade {
+    /// The frame's acceleration structures (group 0 is bound anew if they changed it).
+    fn accel(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest) {
+        if !std::mem::replace(&mut self.accel, true) && core.build_accel(enc, ticket, req) {
             self.bind0 = None;
         }
-        c.accum.begin(&c.gpu, &camera, req.mode);
-        c.write_camera(&camera, req.mode, [0, 0]);
-        let world = c.world.prepare(&c.gpu, &camera).clone();
-        self.bound = c.storages.prepare(&c.gpu, &c.world);
+    }
+
+    /// The storages' bind groups.
+    fn store(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest) {
+        self.accel(core, enc, ticket, req);
+        if !std::mem::replace(&mut self.stored, true) {
+            self.bound = core.storages.prepare(&core.gpu, &core.world);
+        }
+    }
+
+    /// The deferred pass over the records of the hits edge (after the work before it, if its
+    /// nodes had no pass).
+    fn shade(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest) {
+        self.store(core, enc, ticket, req);
         if self.bind0.is_none() {
-            let view = c.output.create_view(&Default::default());
-            self.bind0 = Some(c.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("remote shading"), layout: &self.layout0, entries: &c.bind_entries(&view) }));
+            let view = core.output.create_view(&Default::default());
+            self.bind0 = Some(core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("remote shading"), layout: &self.layout0, entries: &core.bind_entries(&view) }));
         }
-        c.ring.stage(&mut enc, ticket, "shade", &c.stage_nodes[2]);
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("remote shade"), timestamp_writes: c.ring.compute_timestamps(ticket, true, true) });
-            pass.set_pipeline(&self.shade);
-            pass.set_bind_group(0, self.bind0.as_ref().unwrap(), &[]);
-            pass.set_bind_group(1, &world, &[]);
-            self.bound.compute(&mut pass);
-            pass.dispatch_workgroups(c.width.div_ceil(8), c.height.div_ceil(8), 1);
-        }
-        // The first GPU's frame: its counters, stages and GPU time; the ring adds this one's.
-        stats.stages.push(StageTime::cpu("transfer", &self.transfer_nodes, self.transfer_ms));
-        let (accel, accel_stages) = c.accel_stats();
-        stats.counters.extend(accel);
-        stats.stages.extend(accel_stages);
-        stats.counters.extend(c.accum.counter(req.mode));
-        stats.counters.push(("transfer_wait_ms".into(), self.wait_ms as f64));
-        stats.cpu_ms += start.elapsed().as_secs_f32() * 1e3 + self.wait_ms + self.transfer_ms;
-        c.ring.submit(&c.gpu, enc, ticket, &c.output, req.frame_id, req.readback, stats);
-        c.ring.poll(&c.gpu, sink, false)
+        core.ring.stage(enc, ticket, "shade", &core.stage_nodes[2]);
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("remote shade"), timestamp_writes: core.ring.compute_timestamps(ticket, true, true) });
+        pass.set_pipeline(&self.shade);
+        pass.set_bind_group(0, self.bind0.as_ref().unwrap(), &[]);
+        pass.set_bind_group(1, self.world.as_ref().expect("set up"), &[]);
+        self.bound.compute(&mut pass);
+        pass.dispatch_workgroups(core.width.div_ceil(8), core.height.div_ceil(8), 1);
     }
+}
 
-    /// Records sent and not shaded: waited for and dropped (before a resize).
-    fn drop_sent(&mut self, near: &Core) -> anyhow::Result<()> {
-        for s in std::mem::take(&mut self.sent) {
-            while !s.mapped.load(Ordering::Acquire) {
-                near.gpu.device.poll(wgpu::PollType::Wait { submission_index: Some(s.index.clone()), timeout: None })?;
+impl exec::Region for Shade {
+    fn compile(&mut self, core: &mut Core, _req: &FrameRequest) -> anyhow::Result<()> {
+        if self.shading != self.built_shading {
+            self.shade = compile(core, &self.pipeline_layout, &self.walks, self.shadow, self.bounce, &self.shading)?;
+            if core.accum.set_shading(&core.gpu, &self.shading) {
+                self.bind0 = None;
             }
-            self.staging[s.buffer].unmap();
+            self.built_shading = self.shading.clone();
         }
         Ok(())
     }
 
-    /// Completes the second GPU's finished frames (`wait`: all of them, and the first's).
-    pub(crate) fn poll(&mut self, near: &mut Core, sink: &mut dyn FrameSink, wait: bool) -> anyhow::Result<()> {
-        if wait {
-            near.ring.poll(&near.gpu, &mut self.near, true)?;
-        }
-        self.core.ring.poll(&self.core.gpu, sink, wait)
+    /// `req`'s camera is the one the records were cast with.
+    fn setup(&mut self, core: &mut Core, req: &FrameRequest) {
+        (self.accel, self.stored) = (false, false);
+        core.accum.begin(&core.gpu, &req.camera, req.mode);
+        core.write_camera(&req.camera, req.mode, [0, 0]);
+        self.world = Some(core.world.prepare(&core.gpu, &req.camera).clone());
     }
 
-    /// The core's knobs the shading's rays and state read (`None` if `name` is not one).
-    pub(crate) fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        self.core.set_param(name, value)
+    fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
+        let (mut counters, stages) = core.accel_stats();
+        counters.extend(core.accum.counter(req.mode));
+        (counters, None, stages)
     }
 
-    pub(crate) fn resize(&mut self, near: &Core) -> anyhow::Result<()> {
-        self.drop_sent(near)?;
-        self.core.resize(near.width, near.height);
-        self.staging = staging(near, self.late);
+    fn finish(&mut self, _: &Core, _: &mut wgpu::CommandEncoder, _: Ticket) {}
+}
+
+impl exec::State for Shade {
+    fn updated(&mut self, _core: &Core, _changed: &[glam::IVec3]) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        (name == "shading").then(|| mr_components::require(self.preset, mr_components::Slot::Shading, value.as_str().unwrap_or("")).map(|s| self.shading = s))
+    }
+
+    fn resize(&mut self, _core: &Core) {
         self.bind0 = None;
-        Ok(())
     }
 
-    pub(crate) fn memory_bytes(&self) -> u64 {
-        self.core.memory_bytes() + self.staging.iter().map(|b| b.size()).sum::<u64>()
+    fn memory(&self, _core: &Core) -> (u64, u64) {
+        (0, 0)
+    }
+}
+
+/// A ray-query kernel of the shading's rays: the acceleration structures.
+struct Accel;
+struct Storage;
+/// The deferred shading pass.
+struct Shading;
+
+impl Node<Shade> for Accel {
+    fn run(&mut self, cx: &mut Cx<Shade>) {
+        cx.region.accel(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+impl Node<Shade> for Storage {
+    fn run(&mut self, cx: &mut Cx<Shade>) {
+        cx.region.store(cx.core, cx.enc, cx.ticket, cx.req);
+    }
+}
+
+impl Node<Shade> for Shading {
+    fn run(&mut self, cx: &mut Cx<Shade>) {
+        cx.region.shade(cx.core, cx.enc, cx.ticket, cx.req);
     }
 }
 

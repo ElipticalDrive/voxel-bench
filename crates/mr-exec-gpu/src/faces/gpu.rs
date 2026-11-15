@@ -1818,16 +1818,14 @@ impl Region for GpuSampler {
         }
     }
 
-    /// Submits the frame, then maps its counters asynchronously.
-    fn submit(&mut self, core: &mut Core, enc: wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest, stats: FrameStats, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
+    /// Maps the frame's counters asynchronously.
+    fn submitted(&mut self, _core: &Core) {
         if let Some(i) = self.now.stage {
             let st = &self.stages[i];
             st.state.store(1, Ordering::SeqCst);
             let flag = st.state.clone();
             st.buf.map_async(wgpu::MapMode::Read, .., move |r| flag.store(if r.is_ok() { 2 } else { 3 }, Ordering::SeqCst));
         }
-        core.ring.poll(&core.gpu, sink, false)
     }
 }
 
@@ -1876,7 +1874,7 @@ impl Node<GpuSampler> for Shading {
 /// shading as nodes, each running what it reads first (the drawer's faces iterate through
 /// hole detection and discovery: last frame's list, then this frame's).
 pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    let passes = exec::passes(g, |role| -> Option<Box<dyn Node<GpuSampler>>> {
+    let passes = exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<GpuSampler>>> {
         Some(match role {
             Role::Storage => Box::new(Storage),
             Role::Holes => Box::new(Holes),
