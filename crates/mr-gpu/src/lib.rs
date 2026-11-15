@@ -25,9 +25,10 @@ pub struct Gpu {
     adapter_features: wgpu::Features,
     /// Opened with wgpu's experimental features.
     experimental: bool,
-    /// First uncaptured wgpu error (validation, OOM, ...). Any error fails the renderer:
-    /// a renderer with an invalid pipeline must not report a frame rate.
-    error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// The first failure: an uncaptured wgpu error (validation, OOM, ...) or data a holder
+    /// could not keep ([`Gpu::fail`]). Any failure fails the renderer: one with an invalid
+    /// pipeline or an incomplete world must not report a frame rate.
+    failure: Failure,
     /// The persistent pipeline cache, once opened (`open_cache`).
     cache: std::sync::OnceLock<DiskCache>,
 }
@@ -81,14 +82,11 @@ impl Gpu {
     /// Wraps a device someone else opened (a library caller's): back ends render with it as
     /// long as it has the features they need.
     pub fn from_parts(device: wgpu::Device, queue: wgpu::Queue, info: wgpu::AdapterInfo) -> Self {
-        let error = Arc::new(std::sync::Mutex::new(None));
-        let e2 = error.clone();
-        device.on_uncaptured_error(Arc::new(move |e| {
-            tracing::error!("wgpu: {e}");
-            e2.lock().unwrap().get_or_insert_with(|| e.to_string());
-        }));
+        let failure = Failure::default();
+        let f = failure.clone();
+        device.on_uncaptured_error(Arc::new(move |e| f.set(format!("wgpu error: {}", e.to_string().lines().take(12).collect::<Vec<_>>().join("\n")))));
         let features = device.features();
-        Self { device, queue, info, timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY), adapter_features: features, experimental: false, error, cache: Default::default() }
+        Self { device, queue, info, timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY), adapter_features: features, experimental: false, failure, cache: Default::default() }
     }
 
     /// Opens the persistent pipeline cache `name` (the pipelines' graph key): a file per
@@ -144,11 +142,38 @@ impl Gpu {
         (needs.experimental && !self.experimental).then(|| format!("device on {} was opened without wgpu's experimental features", self.info.name))
     }
 
-    /// Fails if wgpu reported an error since the device was created.
+    /// Fails if anything failed since the device was created (every frame starts and
+    /// completes through this).
     pub fn check(&self) -> anyhow::Result<()> {
-        match self.error.lock().unwrap().as_ref() {
-            Some(e) => bail!("wgpu error: {}", e.lines().take(12).collect::<Vec<_>>().join("\n")),
+        match self.failure.0.lock().unwrap().as_ref() {
+            Some(e) => bail!("{e}"),
             None => Ok(()),
+        }
+    }
+
+    /// Records that frames from here on would be wrong (`why`: what was lost and the knob
+    /// that would hold it): data that did not fit a buffer, a table out of slots, a failed
+    /// read-back. The renderer fails with it at its next frame; nothing is dropped quietly.
+    pub fn fail(&self, why: impl Into<String>) {
+        self.failure.set(why.into());
+    }
+
+    /// The failure slot, for callbacks that outlive a borrow of the device.
+    pub fn failure(&self) -> Failure {
+        self.failure.clone()
+    }
+}
+
+/// A device's first failure ([`Gpu::fail`]).
+#[derive(Clone, Default)]
+pub struct Failure(Arc<std::sync::Mutex<Option<String>>>);
+
+impl Failure {
+    pub fn set(&self, why: String) {
+        let mut first = self.0.lock().unwrap();
+        if first.is_none() {
+            tracing::error!("{why}");
+            *first = Some(why);
         }
     }
 }
@@ -304,6 +329,7 @@ impl FrameRing {
         let bpp = format.bytes();
         let (submitted, rx) = std::sync::mpsc::channel::<()>();
         let device = gpu.device.clone();
+        let failure = gpu.failure();
         let waiter = std::thread::Builder::new()
             .name("gpu-waiter".into())
             .spawn(move || {
@@ -311,7 +337,7 @@ impl FrameRing {
                     while rx.try_recv().is_ok() {}
                     // Fires map/work-done callbacks for everything submitted so far.
                     if let Err(e) = device.poll(wgpu::PollType::wait_indefinitely()) {
-                        tracing::error!("gpu wait failed: {e}");
+                        failure.set(format!("gpu wait failed: {e}"));
                     }
                     waker.wake();
                 }
@@ -506,9 +532,10 @@ impl FrameRing {
         let track = |buf: &wgpu::Buffer| {
             remaining.fetch_add(1, Ordering::SeqCst);
             let r = remaining.clone();
+            let failure = gpu.failure();
             buf.map_async(wgpu::MapMode::Read, .., move |res| {
                 if let Err(e) = res {
-                    tracing::error!("map failed: {e}");
+                    failure.set(format!("frame read-back failed: {e}"));
                 }
                 r.fetch_sub(1, Ordering::SeqCst);
             });
@@ -685,8 +712,13 @@ impl RangeAlloc {
 }
 
 /// A storage buffer that starts small and doubles on demand (contents are copied on the
-/// GPU), up to a maximum. Lets several renderers share the GPU without each reserving its
-/// worst case up front.
+/// GPU), up to a maximum (at most what the device binds). Lets several renderers share the
+/// GPU without each reserving its worst case up front. A request beyond the maximum fails
+/// the device ([`Gpu::fail`]): the caller may skip the data, the renderer stops at its next
+/// frame.
+/// The `limit` of a [`GrowableBuffer`] with no maximum of its own.
+pub const DEVICE_BOUND: &str = "what the device binds";
+
 pub struct GrowableBuffer {
     buf: wgpu::Buffer,
     label: &'static str,
@@ -697,7 +729,8 @@ pub struct GrowableBuffer {
 impl GrowableBuffer {
     pub fn new(gpu: &Gpu, label: &'static str, initial: u64, max: u64, usage: wgpu::BufferUsages) -> Self {
         let limits = gpu.device.limits();
-        let max = max.min(limits.max_buffer_size).min(limits.max_storage_buffer_binding_size).max(256);
+        // A multiple of 16 (sizes are rounded up to one), so no size exceeds what the device binds.
+        let max = (max.min(limits.max_buffer_size).min(limits.max_storage_buffer_binding_size) & !15).max(256);
         let usage = usage | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
         let size = initial.clamp(256, max).next_multiple_of(16);
         Self { buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false }), label, usage, max }
@@ -715,14 +748,16 @@ impl GrowableBuffer {
         self.max
     }
 
-    /// Ensures the buffer holds at least `bytes`. Returns `Ok(true)` if it was reallocated
-    /// (bind groups referencing it must be recreated), `Err` if `bytes` exceeds the maximum.
-    pub fn reserve(&mut self, gpu: &Gpu, bytes: u64) -> anyhow::Result<bool> {
+    /// Ensures the buffer holds at least `bytes`. Returns `Some(true)` if it was reallocated
+    /// (bind groups referencing it must be recreated), `None` if `bytes` exceeds the maximum
+    /// (the device has failed, naming `limit` as what sets the maximum: a knob, [`DEVICE_BOUND`]).
+    pub fn reserve(&mut self, gpu: &Gpu, bytes: u64, limit: &str) -> Option<bool> {
         if bytes <= self.buf.size() {
-            return Ok(false);
+            return Some(false);
         }
         if bytes > self.max {
-            bail!("{} would need {} MiB, limit is {} MiB", self.label, bytes >> 20, self.max >> 20);
+            gpu.fail(format!("{}: more than {} MiB needed; the limit is {limit}; frames would miss data", self.label, self.max >> 20));
+            return None;
         }
         let size = (self.buf.size() * 2).max(bytes).min(self.max).next_multiple_of(16);
         let new = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(self.label), size, usage: self.usage, mapped_at_creation: false });
@@ -732,24 +767,23 @@ impl GrowableBuffer {
         gpu.queue.submit([enc.finish()]);
         tracing::debug!("{} grown to {} MiB", self.label, size >> 20);
         self.buf = new;
-        Ok(true)
+        Some(true)
     }
 
     /// Allocates `n` units of `unit` bytes from `alloc`, growing buffer and allocator as
-    /// needed. Returns the offset and whether the buffer was reallocated.
-    pub fn alloc(&mut self, gpu: &Gpu, alloc: &mut RangeAlloc, n: u32, unit: u64) -> anyhow::Result<(u32, bool)> {
+    /// needed. Returns the offset and whether the buffer was reallocated; `None` as
+    /// [`Self::reserve`].
+    pub fn alloc(&mut self, gpu: &Gpu, alloc: &mut RangeAlloc, n: u32, unit: u64, limit: &str) -> Option<(u32, bool)> {
         let mut grew = false;
         loop {
             if let Some(off) = alloc.alloc(n) {
-                return Ok((off, grew));
+                return Some((off, grew));
             }
-            let want = (alloc.capacity() as u64 + n as u64).max(alloc.capacity() as u64 * 2) * unit;
-            grew |= self.reserve(gpu, want.min(self.max).max((alloc.capacity() as u64 + n as u64) * unit))?;
-            let cap = (self.buf.size() / unit).min(u32::MAX as u64) as u32;
-            if cap <= alloc.capacity() {
-                bail!("{} is full", self.label);
-            }
-            alloc.grow(cap);
+            // The whole buffer is the allocator's by now and no hole fits: past the maximum.
+            let cap = alloc.capacity() as u64;
+            let need = if (cap + 1) * unit > self.max { self.max + 1 } else { ((cap + n.max(1) as u64).max(cap * 2) * unit).min(self.max) };
+            grew |= self.reserve(gpu, need, limit)?;
+            alloc.grow((self.buf.size() / unit).min(u32::MAX as u64) as u32);
         }
     }
 }
@@ -827,5 +861,29 @@ mod tests {
         let err = fixed.gpu(0, &rt).err().expect("a fixed pool cannot open a device").to_string();
         assert!(err.contains("no handed-in GPU device serves"), "{err}");
         assert!(fixed.gpu(1, &plain).is_err(), "no device in slot 1");
+    }
+
+    /// A growable buffer grows to its maximum, holds what fits, and fails the device (never
+    /// only the caller) on the first request beyond it. Needs a GPU.
+    #[test]
+    #[ignore]
+    fn growable_buffer_fails_the_device() {
+        let gpu = GpuPool::new(&[]).gpu(0, &GpuNeeds::default()).unwrap();
+        // 1000 bytes: not a multiple of the unit nor of 16; 992 are usable, 62 units of 16.
+        let mut buf = GrowableBuffer::new(&gpu, "test data", 64, 1000, wgpu::BufferUsages::STORAGE);
+        let mut alloc = RangeAlloc::new(0);
+        let mut got = 0;
+        while got < 62 {
+            let (off, _) = buf.alloc(&gpu, &mut alloc, 2, 16, "`test_mb`").expect("fits");
+            assert_eq!(off, got);
+            got += 2;
+        }
+        assert!(buf.size() <= 1000 && gpu.check().is_ok());
+        assert!(buf.alloc(&gpu, &mut alloc, 2, 16, "`test_mb`").is_none());
+        let err = gpu.check().unwrap_err().to_string();
+        assert!(err.contains("test data") && err.contains("`test_mb`"), "{err}");
+        // The first failure stays.
+        gpu.fail("later");
+        assert_eq!(gpu.check().unwrap_err().to_string(), err);
     }
 }

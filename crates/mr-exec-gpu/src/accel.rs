@@ -16,7 +16,7 @@ use mr_components::geometry::{Knobs, Merge, RtKind};
 use mr_core::chunk::cell_of_index;
 use mr_core::*;
 use mr_gpu::voxels::VoxelWorld;
-use mr_gpu::{Gpu, GrowableBuffer, RangeAlloc, wgpu};
+use mr_gpu::{DEVICE_BOUND, Gpu, GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
@@ -108,7 +108,7 @@ pub(crate) struct Accel {
 impl Accel {
     pub fn new(gpu: &Arc<Gpu>, s: &AccelSpec) -> anyhow::Result<Self> {
         let (_, rt) = mr_components::geometry::rt(&s.geometry).ok_or_else(|| anyhow::anyhow!("geometry `{}` builds no acceleration structure (have: greedy, naive, boxes)", s.geometry))?;
-        let geo_buf = GrowableBuffer::new(gpu, "geometry", 1 << 20, 1 << 30, wgpu::BufferUsages::STORAGE);
+        let geo_buf = GrowableBuffer::new(gpu, "geometry", 1 << 20, u64::MAX, wgpu::BufferUsages::STORAGE);
         let geo_words = (geo_buf.size() / 4) as u32;
         let chunk_info = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("chunk info"), size: MAX_SLOTS as u64 * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let tlas_cap = 4096;
@@ -297,7 +297,10 @@ impl Accel {
                 }
             }
             let Some(b) = b else { continue };
-            let Some(slot) = old_slot.or_else(|| self.free_slots.pop()) else { continue };
+            let Some(slot) = old_slot.or_else(|| self.free_slots.pop()) else {
+                self.gpu.fail(format!("acceleration structure: more than {MAX_SLOTS} chunks; rays would miss the rest; lower the client's radius"));
+                continue;
+            };
             let usage = wgpu::BufferUsages::BLAS_INPUT;
             let (sizes, inputs, words, info) = match &b {
                 Built::Triangles { vertices, indices, quads } => {
@@ -325,19 +328,13 @@ impl Accel {
                     (sizes, vec![ab], bricks.clone(), Some(world.table_lookup(pos).unwrap_or(0xffff_ffff)))
                 }
             };
-            let off = match self.geo_buf.alloc(&self.gpu, &mut self.geo_alloc, words.len() as u32, 4) {
-                Ok((off, grew)) => {
-                    if grew {
-                        self.rebind = true;
-                    }
-                    off
-                }
-                Err(e) => {
-                    tracing::error!("{e:#}; chunk {pos} skipped");
-                    self.free_slots.push(slot);
-                    continue;
-                }
+            let Some((off, grew)) = self.geo_buf.alloc(&self.gpu, &mut self.geo_alloc, words.len() as u32, 4, DEVICE_BOUND) else {
+                self.free_slots.push(slot);
+                continue;
             };
+            if grew {
+                self.rebind = true;
+            }
             self.gpu.queue.write_buffer(self.geo_buf.buffer(), off as u64 * 4, bytemuck::cast_slice(&words));
             // Triangles: first quad; boxes: chunk-table value and first brick.
             let info = match info {

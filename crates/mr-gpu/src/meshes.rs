@@ -118,7 +118,6 @@ pub struct GpuMeshes {
     forward: Option<Forward>,
     records: wgpu::RenderPipeline,
     ids: wgpu::RenderPipeline,
-    warned: bool,
 }
 
 impl GpuMeshes {
@@ -155,7 +154,6 @@ impl GpuMeshes {
             forward,
             records: pipeline(gpu, "mesh records", &module, &pl, Some("mesh_record_fs"), Rg32Uint, true, Greater),
             ids: pipeline(gpu, "mesh ids", &module, &pl, Some("mesh_id_fs"), R32Uint, true, Greater),
-            warned: false,
         }
     }
 
@@ -225,10 +223,7 @@ impl GpuMeshes {
         }
         // Records name at most MESH_TRIS triangles.
         if verts.len() > MESH_TRIS * 3 {
-            if !self.warned {
-                tracing::warn!("meshes: {} triangles, drawing the first {MESH_TRIS}", verts.len() / 3);
-                self.warned = true;
-            }
+            gpu.fail(format!("meshes: {} triangles, more than the {MESH_TRIS} a hit record can name; frames would miss the rest", verts.len() / 3));
             verts.truncate(MESH_TRIS * 3);
         }
         let bytes: &[u8] = bytemuck::cast_slice(&verts);

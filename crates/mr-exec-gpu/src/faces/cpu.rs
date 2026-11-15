@@ -41,7 +41,7 @@ use mr_components::visibility::discover::{Output, Settings, State, grid};
 use mr_components::{names_on, require, Slot};
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
-use mr_gpu::{GrowableBuffer, wgpu};
+use mr_gpu::{DEVICE_BOUND, GrowableBuffer, wgpu};
 use serde::Deserialize;
 
 use super::{CoreOpts, Draw, SourceSpec};
@@ -192,7 +192,6 @@ pub(crate) struct CpuSampler {
     bind0: Option<wgpu::BindGroup>,
     /// The nodes of the timed stage: discovery on the CPU.
     vis_nodes: Vec<String>,
-    overflowed: bool,
     drawing: Draw,
     /// This frame's state: what its nodes did so far, its counters and its groups.
     frame: Frame,
@@ -270,8 +269,8 @@ impl CpuSampler {
             depth_read: false,
             nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
         })?;
-        let rec_buf = GrowableBuffer::new(&core.gpu, "face records", 1 << 22, 2040 << 20, wgpu::BufferUsages::STORAGE);
-        let tag_buf = GrowableBuffer::new(&core.gpu, "face tags", 1 << 21, 1020 << 20, wgpu::BufferUsages::STORAGE);
+        let rec_buf = GrowableBuffer::new(&core.gpu, "face records", 1 << 22, u64::MAX, wgpu::BufferUsages::STORAGE);
+        let tag_buf = GrowableBuffer::new(&core.gpu, "face tags", 1 << 21, u64::MAX, wgpu::BufferUsages::STORAGE);
         let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(p.devices.cpu_threads(opts.threads)).thread_name(|i| format!("discover-{i}")).build()?);
         let s = Self {
             cpu: match world {
@@ -290,7 +289,6 @@ impl CpuSampler {
             tags_valid: false,
             bind0: None,
             vis_nodes: g.ids(&[Role::Visibility]),
-            overflowed: false,
             drawing,
             frame: Frame::default(),
         };
@@ -315,26 +313,18 @@ impl CpuSampler {
         // against the current world every pass.
         let n = out.instances.len() as u32;
         let bytes = n as u64 * REC_BYTES;
-        match self.rec_buf.reserve(&core.gpu, bytes) {
-            Ok(grew) => {
-                if grew {
-                    self.bind0 = None;
-                }
-                if n > 0 {
-                    core.gpu.queue.write_buffer(self.rec_buf.buffer(), 0, bytemuck::cast_slice(&out.instances));
-                }
+        if let Some(grew) = self.rec_buf.reserve(&core.gpu, bytes, DEVICE_BOUND) {
+            if grew {
+                self.bind0 = None;
             }
-            Err(e) => {
-                if !self.overflowed {
-                    tracing::error!("{e:#}");
-                    self.overflowed = true;
-                }
+            if n > 0 {
+                core.gpu.queue.write_buffer(self.rec_buf.buffer(), 0, bytemuck::cast_slice(&out.instances));
             }
         }
         // Tags for the views, when the algorithm provides them.
         self.tags_valid = false;
         if out.tags.len() == out.instances.len() && !out.tags.is_empty() && self.opts.view != "image"
-            && let Ok(grew) = self.tag_buf.reserve(&core.gpu, out.tags.len() as u64 * 4) {
+            && let Some(grew) = self.tag_buf.reserve(&core.gpu, out.tags.len() as u64 * 4, DEVICE_BOUND) {
             if grew {
                 self.bind0 = None;
             }

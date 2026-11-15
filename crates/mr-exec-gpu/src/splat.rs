@@ -266,7 +266,7 @@ impl Region for Splat {
 
     fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
         let (accel, stages) = core.accel_stats();
-        let counters = [("points".into(), self.count as f64), ("dropped_chunks".into(), core.world.dropped_chunks() as f64)].into_iter().chain(accel).chain(core.accum.counter(req.mode)).collect();
+        let counters = [("points".into(), self.count as f64)].into_iter().chain(accel).chain(core.accum.counter(req.mode)).collect();
         (counters, None, stages)
     }
 

@@ -463,9 +463,8 @@ impl Cast for Walk {
     }
 
     fn stats(&self, core: &Core) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
-        let counters = [("dropped_chunks".to_string(), core.world.dropped_chunks() as f64)]
+        let counters = core.storages.counters()
             .into_iter()
-            .chain(core.storages.counters())
             .chain(self.prepass.then(|| ("avg_skip_blocks".to_string(), self.beam.avg_skip)))
             .collect();
         let legend = match self.built.view {

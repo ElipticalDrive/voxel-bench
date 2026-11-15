@@ -208,7 +208,10 @@ impl GrowBuf {
     fn write(&mut self, gpu: &Gpu, data: &[u8]) -> bool {
         let mut grew = false;
         if data.len() as u64 > self.buf.size() {
-            self.buf = storage(gpu, self.label, (data.len() as u64).next_power_of_two());
+            // Doubling, but never past what the device binds while the data itself fits.
+            let limits = gpu.device.limits();
+            let max = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size) & !3;
+            self.buf = storage(gpu, self.label, (data.len() as u64).next_power_of_two().min(max).max(data.len() as u64));
             grew = true;
         }
         if !data.is_empty() {
@@ -273,7 +276,6 @@ pub struct VoxelWorld {
     light_max_probe: u32,
     pub env: Environment,
     pub cfg: VoxelWorldConfig,
-    dropped_chunks: u64,
     /// Every chunk key (all LODs) the last `apply` changed.
     changed_keys: Vec<ChunkKey>,
 }
@@ -335,7 +337,6 @@ impl VoxelWorld {
             bind_group: None,
             env,
             cfg,
-            dropped_chunks: 0,
         })
     }
 
@@ -475,21 +476,14 @@ impl VoxelWorld {
             ChunkData::Dense(d) => {
                 if self.free_slots.is_empty() && self.pool_slots < self.max_slots {
                     let new = (self.pool_slots * 2).min(self.max_slots);
-                    let grown = self.pool.reserve(gpu, new as u64 * CHUNK_BYTES).and_then(|a| Ok(a | self.bricks.reserve(gpu, new as u64 * BRICK_WORDS as u64 * 4)?));
-                    match grown {
-                        Ok(_) => {
-                            self.free_slots.extend((self.pool_slots..new).rev());
-                            self.pool_slots = new;
-                            self.bind_group = None;
-                        }
-                        Err(e) => tracing::error!("growing voxel pool: {e:#}"),
+                    if self.pool.reserve(gpu, new as u64 * CHUNK_BYTES, "`pool_mb`").and(self.bricks.reserve(gpu, new as u64 * BRICK_WORDS as u64 * 4, "`pool_mb`")).is_some() {
+                        self.free_slots.extend((self.pool_slots..new).rev());
+                        self.pool_slots = new;
+                        self.bind_group = None;
                     }
                 }
                 let Some(slot) = self.free_slots.pop() else {
-                    if self.dropped_chunks == 0 {
-                        tracing::error!("voxel pool full ({} chunks); raise `pool_mb`", self.pool_slots);
-                    }
-                    self.dropped_chunks += 1;
+                    gpu.fail(format!("the voxel pool is full ({} chunks); frames would miss chunks; raise `pool_mb`", self.pool_slots));
                     self.table.remove(tk);
                     self.chunks.remove(&pos);
                     return;
@@ -640,7 +634,4 @@ impl VoxelWorld {
         self.table.get(table_key(ChunkKey::lod0(pos)))
     }
 
-    pub fn dropped_chunks(&self) -> u64 {
-        self.dropped_chunks
-    }
 }

@@ -114,9 +114,10 @@ impl Transfer {
         let index = near.ring.submit(&near.gpu, enc, ticket, &near.output, req.frame_id, false, stats);
         let mapped = Arc::new(AtomicBool::new(false));
         let done = mapped.clone();
+        let failure = near.gpu.failure();
         self.staging[buffer].slice(..).map_async(wgpu::MapMode::Read, move |r| match r {
             Ok(()) => done.store(true, Ordering::Release),
-            Err(e) => tracing::error!("hit records readback failed: {e}"),
+            Err(e) => failure.set(format!("hit records read-back failed: {e}")),
         });
         self.sent.push_back(Sent { frame_id: req.frame_id, camera: req.camera, buffer, index, mapped });
     }

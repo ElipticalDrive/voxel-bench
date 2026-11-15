@@ -73,7 +73,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("max_steps", "Shadow-ray step limit (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
         ParamSpec::int("mesh_budget", "Chunks remeshed per frame, nearest first (0 = all)", 0, 100000, 0, true),
         ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB); for region storages (tree64) the limit of their own data", 64, 6144, 1536, false),
-        ParamSpec::int("quad_buffer_mb", "Instance buffer limit (MiB; grows on demand)", 16, 2040, 1024, false),
+        ParamSpec::int("quad_buffer_mb", "Instance buffer limit (MiB; grows on demand, to at most what the device binds)", 16, 4096, 1024, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ];
     p.extend(shade_state::params());
@@ -234,7 +234,6 @@ pub(crate) struct Meshing {
     dirty: HashSet<IVec3>,
     alloc: RangeAlloc,
     free_slots: Vec<u16>,
-    overflowed: bool,
     /// This frame's state: what its nodes did so far, its counters and its groups.
     frame: Frame,
 }
@@ -310,9 +309,7 @@ impl Meshing {
         )?;
         let gpu = &core.gpu;
         let max_bytes = gpu.device.limits().max_storage_buffer_binding_size.min(gpu.device.limits().max_buffer_size);
-        // Capped below 2 GiB: GrowableBuffer rounds sizes up to powers of two, which would
-        // overshoot a 2^31-4 storage-binding limit.
-        let quad_capacity = ((opts.quad_buffer_mb.min(2040) as u64 * 1024 * 1024).min(max_bytes) / QUAD_BYTES) as u32;
+        let quad_capacity = ((opts.quad_buffer_mb as u64 * 1024 * 1024).min(max_bytes) / QUAD_BYTES).min(u32::MAX as u64) as u32;
         let storage = |label, size: u64, extra| {
             gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -341,7 +338,6 @@ impl Meshing {
             dirty: HashSet::new(),
             alloc: RangeAlloc::new(((1 << 20) / QUAD_BYTES) as u32),
             free_slots: (0..MAX_SLOTS as u32).rev().map(|s| s as u16).collect(),
-            overflowed: false,
             frame: Frame::default(),
             opts,
             live: Live { geometry, shading, meshes: meshes_node, knobs },
@@ -393,7 +389,10 @@ impl Meshing {
                         gpu.queue.write_buffer(&self.chunk_buf, s as u64 * 16, bytemuck::cast_slice(&[pos.x, pos.y, pos.z, 0]));
                         s
                     }
-                    None => continue,
+                    None => {
+                        gpu.fail(format!("raster-gpu: more than {MAX_SLOTS} meshed chunks; frames would miss the rest; lower the client's radius"));
+                        continue;
+                    }
                 },
             };
             work.push((pos, slot));
@@ -417,21 +416,10 @@ impl Meshing {
             if len == 0 {
                 continue;
             }
-            let off = match self.quad_buf.alloc(gpu, &mut self.alloc, len, QUAD_BYTES) {
-                Ok((off, grew)) => {
-                    if grew {
-                        self.bind0 = None;
-                    }
-                    off
-                }
-                Err(e) => {
-                    if !self.overflowed {
-                        tracing::error!("{e:#}; raise `quad_buffer_mb`");
-                        self.overflowed = true;
-                    }
-                    continue;
-                }
-            };
+            let Some((off, grew)) = self.quad_buf.alloc(gpu, &mut self.alloc, len, QUAD_BYTES, "`quad_buffer_mb` (at most what the device binds)") else { continue };
+            if grew {
+                self.bind0 = None;
+            }
             let m = self.meshes.get_mut(&pos).unwrap();
             m.offset = off;
             m.counts = mesh.counts;

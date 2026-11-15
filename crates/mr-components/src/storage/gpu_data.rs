@@ -84,7 +84,6 @@ pub struct StorageData {
     dirty: HashSet<IVec3>,
     table_dirty: bool,
     rebuilt: usize,
-    overflowed: bool,
     dag: Dag,
     clip: Option<Clipmap>,
 }
@@ -114,7 +113,6 @@ impl StorageData {
             dirty: HashSet::new(),
             table_dirty: true,
             rebuilt: 0,
-            overflowed: false,
             dag: Dag::default(),
             clip: matches!(st.kind, Kind::Clipmap).then(|| Clipmap::new(gpu, limits.view_radius, limits.wide_ids)),
         }
@@ -139,7 +137,7 @@ impl StorageData {
                 let unit = aux_words as u64 * 4;
                 // Keep the side data indexed like the pool: every changed dense chunk (at any
                 // LOD) rewrites its slot (slots of unloaded chunks are simply no longer read).
-                if self.aux.reserve(gpu, world.pool_slots() as u64 * unit)? {
+                if self.aux.reserve(gpu, world.pool_slots() as u64 * unit, "`pool_mb`").ok_or_else(|| anyhow::anyhow!("the storage's side data does not fit"))? {
                     self.bind = None;
                 }
                 for &key in world.changed_keys() {
@@ -225,21 +223,10 @@ impl StorageData {
                 RegionBlob::Words(w) => {
                     // In 16-byte units: blobs start 16-byte aligned (`aux_v4`).
                     let units = w.len().div_ceil(4) as u32;
-                    let off = match self.aux.alloc(gpu, &mut self.alloc, units, 16) {
-                        Ok((off, grew)) => {
-                            if grew {
-                                self.bind = None;
-                            }
-                            off
-                        }
-                        Err(e) => {
-                            if !self.overflowed {
-                                tracing::error!("{e:#}; raise `pool_mb` (the storage limit)");
-                                self.overflowed = true;
-                            }
-                            continue;
-                        }
-                    };
+                    let Some((off, grew)) = self.aux.alloc(gpu, &mut self.alloc, units, 16, "`pool_mb`") else { continue };
+                    if grew {
+                        self.bind = None;
+                    }
                     gpu.queue.write_buffer(self.aux.buffer(), off as u64 * 16, bytemuck::cast_slice(&w));
                     Region { words: Some((off, units)), handle: off * 4 }
                 }
@@ -264,16 +251,10 @@ impl StorageData {
         }
         // Append the new nodes (all of them after a garbage collection).
         let n = self.dag.nodes.len();
-        match self.aux.reserve(gpu, n.max(1) as u64 * 32) {
-            Ok(true) => self.bind = None,
-            Ok(false) => {}
-            Err(e) => {
-                if !self.overflowed {
-                    tracing::error!("{e:#}; raise `pool_mb` (the storage limit)");
-                    self.overflowed = true;
-                }
-                return;
-            }
+        match self.aux.reserve(gpu, n.max(1) as u64 * 32, "`pool_mb`") {
+            Some(true) => self.bind = None,
+            Some(false) => {}
+            None => return,
         }
         if self.dag.uploaded < n {
             gpu.queue.write_buffer(self.aux.buffer(), self.dag.uploaded as u64 * 32, bytemuck::cast_slice(&self.dag.nodes[self.dag.uploaded..]));

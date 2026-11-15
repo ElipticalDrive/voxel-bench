@@ -57,6 +57,7 @@ multirenderer (host: the server)            worker process (one per renderer: a 
 | Lit | `albedo * (ambient + sun + Σ point lights)` with hard shadows and windowed inverse-square falloff (`lighting::attenuation`), then `encode_srgb`. **Loose:** approximations are allowed, and scored. |
 | Lights | Invisible: looking straight at one shows nothing. |
 | Output | RGBA8 sRGB, top row first, tightly packed. |
+| Lost data | Never dropped quietly. A holder that cannot keep what the frame needs (a buffer at its limit, a table out of slots, a failed read-back) fails the renderer with what was lost and the knob that would hold it: on a GPU through `Gpu::fail` (`GrowableBuffer` does it itself), checked as every frame starts and completes. The pass reports the error instead of a frame rate and a score. |
 
 The `debug` block (in the `showcase` scene) has a white marker in the `u = 0, v = 0` corner of
 every face, so UV and orientation mistakes are obvious.
@@ -112,7 +113,7 @@ features asked for. Asynchronous renderers call the `Waker` when work may have f
   use the same one, so lints and features agree everywhere. Bump it deliberately, with
   `scripts/check.py all` on the new version.
 - GPU tests, `scripts/check.py gpu`: the host's end-to-end live sessions, the tuner and
-  scale-curve demos (briefly: `SECONDS=8`), and `mr-gpu`'s device pool, all `#[ignore]`d so
+  scale-curve demos (briefly: `SECONDS=8`), and `mr-gpu`'s device pool and growable buffer, all `#[ignore]`d so
   the workspace tests run without a GPU. Only `gui_screenshot` stays manual (it saves a
   picture to look at).
 - The architecture guard, `cargo test -q --test architecture`: no WGSL function defined twice

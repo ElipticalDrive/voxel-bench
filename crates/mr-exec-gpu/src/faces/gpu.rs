@@ -483,7 +483,6 @@ pub(crate) struct GpuSampler {
     slots: HashMap<IVec3, u16>,
     free_slots: Vec<u16>,
     slots_dirty: bool,
-    slot_overflow: u64,
     chunk_probe: u32,
     table_cap: u32,
     list_cap: u32,
@@ -921,7 +920,6 @@ impl GpuSampler {
             slots: HashMap::new(),
             free_slots: (0..MAX_SLOTS as u32).rev().map(|s| s as u16).collect(),
             slots_dirty: false,
-            slot_overflow: 0,
             chunk_probe: 0,
             table_cap,
             list_cap,
@@ -985,12 +983,7 @@ impl GpuSampler {
                         self.slots.insert(pos, s);
                         self.slots_dirty = true;
                     }
-                    None => {
-                        if self.slot_overflow == 0 {
-                            tracing::error!("discover-gpu: more than {MAX_SLOTS} non-air chunks; faces of extra chunks are lost");
-                        }
-                        self.slot_overflow += 1;
-                    }
+                    None => core.gpu.fail(format!("discover-gpu: more than {MAX_SLOTS} non-air chunks; frames would miss the faces of the rest; lower the client's radius")),
                 },
                 (false, Some(s)) => {
                     self.slots.remove(&pos);
@@ -1073,7 +1066,7 @@ impl GpuSampler {
     }
 
     fn counters(&self, core: &Core, mode: RenderMode) -> Vec<(String, f64)> {
-        let mut out = vec![("chunk_slots".into(), self.slots.len() as f64), ("slot_overflow".into(), self.slot_overflow as f64)];
+        let mut out = vec![("chunk_slots".into(), self.slots.len() as f64)];
         out.extend(core.accum.counter(mode));
         out.extend(core.accel_stats().0);
         if self.incremental && self.cover.events {
