@@ -111,7 +111,7 @@ impl Columns {
                 stages: wgpu::ShaderStages::COMPUTE,
                 max_lod: 0,
                 voxels: false,
-                records: deferred,
+                hits: deferred.then_some(exec::Form::Records),
                 shading,
                 bounces: k.bounces,
                 spp: k.spp,

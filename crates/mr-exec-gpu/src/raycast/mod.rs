@@ -228,7 +228,7 @@ impl Passes {
 
     fn variant<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, meshed: bool, remote: bool) -> anyhow::Result<(Variant, Vec<wgpu::ComputePipeline>)> {
         let dev = &core.gpu.device;
-        let deferred = core.edges.hits().is_some() && cast.view() == View::Image;
+        let deferred = core.edges.records().is_some() && cast.view() == View::Image;
         let mut lp = cast.program(shading, meshed);
         core.trace_root(&mut lp.program, C::RT_FLAGS);
         let lp = shader(lp, deferred, cast.view(), cast.fragment());

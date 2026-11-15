@@ -15,7 +15,9 @@
 //!
 //! The back end owns the shader module (its face source plus `faces_wgsl`,
 //! `raster_wgsl(mode)`, the storage and the shading), the bind groups and the draw calls;
-//! the drawer owns the pipelines, the deferred targets and the pass structure.
+//! the drawer owns the pipelines and the pass structure. The deferred target (ids or hit
+//! records) is the executor's, the resource of the edge from the drawer to the shading
+//! ([`DrawMode::target`] its format, [`DrawFrame::ids`] the frame's).
 
 use mr_gpu::meshes::MeshPass;
 use mr_gpu::{FrameRing, Gpu, Ticket, wgpu};
@@ -47,6 +49,16 @@ impl DrawMode {
     pub fn deferred(self) -> bool {
         self != Self::Raster
     }
+
+    /// The format of the target a deferred drawer draws and its shade pass reads: visbuffer
+    /// face ids (r32uint), gbuffer hit records (rg32uint, `pack_hit`); none forward.
+    pub fn target(self) -> Option<wgpu::TextureFormat> {
+        match self {
+            Self::Raster => None,
+            Self::Visbuffer => Some(wgpu::TextureFormat::R32Uint),
+            Self::Gbuffer => Some(wgpu::TextureFormat::Rg32Uint),
+        }
+    }
 }
 
 /// What the drawer's pipelines are built from.
@@ -74,9 +86,6 @@ pub struct FaceDrawer {
     mode: DrawMode,
     pipes: Pipes,
     images_layout: wgpu::BindGroupLayout,
-    /// visbuffer: face ids (r32uint); gbuffer: hit records (rg32uint, `pack_hit`); 1x1 while
-    /// forward.
-    ids: wgpu::TextureView,
     width: u32,
     height: u32,
 }
@@ -89,6 +98,9 @@ pub const IMAGES_GROUP: u32 = 3;
 pub struct DrawFrame<'a> {
     pub out: &'a wgpu::TextureView,
     pub depth: &'a wgpu::TextureView,
+    /// Deferred: the target of [`DrawMode::target`]'s format the faces' ids or hit records
+    /// are drawn into and shaded from, at the frame's size.
+    pub ids: Option<&'a wgpu::TextureView>,
     pub clear: wgpu::Color,
     /// Forward: lay down depth first and shade where it is equal (lit mode).
     pub prepass: bool,
@@ -116,21 +128,6 @@ pub struct DrawNodes {
     pub draw: Vec<String>,
     pub shade: Vec<String>,
     pub extra: Vec<String>,
-}
-
-fn target(gpu: &Gpu, label: &str, w: u32, h: u32, format: wgpu::TextureFormat) -> wgpu::TextureView {
-    gpu.device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        })
-        .create_view(&Default::default())
 }
 
 impl FaceDrawer {
@@ -171,10 +168,7 @@ impl FaceDrawer {
 
     /// `images_layout` is the one the shade layout was built with.
     pub fn new(gpu: &Gpu, spec: &DrawerSpec, mode: DrawMode, images_layout: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<Self> {
-        let pipes = Self::pipes(gpu, spec, mode)?;
-        let mut d = Self { mode, pipes, images_layout: images_layout.clone(), ids: target(gpu, "ids", 1, 1, wgpu::TextureFormat::R32Uint), width, height };
-        d.resize(gpu, width, height);
-        Ok(d)
+        Ok(Self { mode, pipes: Self::pipes(gpu, spec, mode)?, images_layout: images_layout.clone(), width, height })
     }
 
     pub fn mode(&self) -> DrawMode {
@@ -185,27 +179,12 @@ impl FaceDrawer {
     pub fn rebuild(&mut self, gpu: &Gpu, spec: &DrawerSpec, mode: DrawMode) -> anyhow::Result<()> {
         self.pipes = Self::pipes(gpu, spec, mode)?;
         self.mode = mode;
-        self.resize(gpu, self.width, self.height);
         Ok(())
     }
 
-    /// Deferred targets at full size only while used.
-    pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) {
+    /// The frame's size (the shade pass's dispatch).
+    pub fn resize(&mut self, width: u32, height: u32) {
         (self.width, self.height) = (width, height);
-        let (w, h) = if self.mode.deferred() { (width, height) } else { (1, 1) };
-        self.ids = target(gpu, "ids", w, h, self.ids_format());
-    }
-
-    pub fn memory_bytes(&self) -> u64 {
-        match self.mode {
-            DrawMode::Raster => 0,
-            DrawMode::Visbuffer => self.width as u64 * self.height as u64 * 4,
-            DrawMode::Gbuffer => self.width as u64 * self.height as u64 * 8,
-        }
-    }
-
-    fn ids_format(&self) -> wgpu::TextureFormat {
-        if self.mode == DrawMode::Gbuffer { wgpu::TextureFormat::Rg32Uint } else { wgpu::TextureFormat::R32Uint }
     }
 
     fn pipes(gpu: &Gpu, spec: &DrawerSpec, mode: DrawMode) -> anyhow::Result<Pipes> {
@@ -343,7 +322,7 @@ impl FaceDrawer {
                     };
                     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("visibility ids"),
-                        color_attachments: &[attach(&self.ids)],
+                        color_attachments: &[attach(f.ids.expect("a deferred drawer draws into DrawFrame::ids"))],
                         depth_stencil_attachment: depth_attachment(wgpu::LoadOp::Clear(0.0), keep(f.keep_depth)),
                         timestamp_writes: if f.ts.0 { f.ring.render_timestamps(f.ticket, true, false) } else { None },
                         occlusion_query_set: None,
@@ -366,7 +345,7 @@ impl FaceDrawer {
             Pipes::Deferred { shade, mesh_shade, .. } => {
                 let shade = if meshes { mesh_shade.as_ref().expect("deferred meshes need DrawerSpec::mesh_module") } else { shade };
                 let mut entries = vec![
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.ids) },
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(f.ids.expect("a deferred drawer shades DrawFrame::ids")) },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(f.out) },
                 ];
                 entries.extend(f.mesh_verts.map(|b| wgpu::BindGroupEntry { binding: 2, resource: b.as_entire_binding() }));

@@ -210,9 +210,10 @@ struct CoreSpec<'a> {
     max_lod: u8,
     /// The region reads the voxel pool itself (beyond its storages' needs).
     voxels: bool,
-    /// The hit records cross between passes (`placement = deferred`; fixed at creation): the
-    /// executor allocates their edge.
-    records: bool,
+    /// The form of the shading's hits when they cross between passes (ray casting and
+    /// columns: `placement = deferred`; the deferred drawers; the splats), `None` when the
+    /// shading is fused into the pass that finds them: the executor allocates their edge.
+    hits: Option<exec::Form>,
     shading: &'a str,
     bounces: u32,
     spp: u32,
@@ -237,7 +238,7 @@ pub(crate) struct Core {
     /// Shading state (pathtrace's accumulation).
     accum: ShadeState,
     camera_buf: wgpu::Buffer,
-    /// The resources of the edges between passes (placement = deferred: the hit records).
+    /// The resources of the edges between passes (the shading's hits, unless fused).
     edges: exec::Edges,
     output: wgpu::Texture,
     stages: wgpu::ShaderStages,
@@ -314,7 +315,7 @@ impl Core {
         Ok(Self {
             accum: ShadeState::new(&gpu, p.width, p.height, s.shading, s.bounces, s.spp, s.accumulate),
             camera_buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("camera"), size: size_of::<CameraUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
-            edges: exec::Edges::of(&gpu, g, p.width, p.height, s.records)?,
+            edges: exec::Edges::of(&gpu, g, p.width, p.height, s.hits)?,
             output: mr_gpu::output_texture(&gpu, p.width, p.height, s.walks.post.format()),
             stages: s.stages,
             ring: FrameRing::new(&gpu, p.width, p.height, s.walks.post.format(), fif, waker.clone()).with_stages(p.stage_times),
@@ -390,7 +391,7 @@ impl Core {
         // Writable buffers are not visible to vertex shaders (the faces').
         let writable = self.stages - wgpu::ShaderStages::VERTEX;
         e.extend(ShadeState::layout_entries(STATE_BINDING, writable));
-        e.extend(self.edges.hits().map(|h| h.layout_entry(RECORDS_BINDING, writable)));
+        e.extend(self.edges.records().map(|h| h.layout_entry(RECORDS_BINDING, writable)));
         e.extend(self.accel.iter().flat_map(|a| a.layout_entries(self.stages)));
         e
     }
@@ -404,7 +405,7 @@ impl Core {
         let mut e = vec![wgpu::BindGroupEntry { binding: 0, resource: self.camera_buf.as_entire_binding() }];
         e.extend(view.map(|v| wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(v) }));
         e.extend(self.accum.bind_entries(STATE_BINDING));
-        e.extend(self.edges.hits().map(|h| h.bind_entry(RECORDS_BINDING)));
+        e.extend(self.edges.records().map(|h| h.bind_entry(RECORDS_BINDING)));
         e.extend(self.accel.iter().flat_map(|a| a.bind_entries()));
         e
     }

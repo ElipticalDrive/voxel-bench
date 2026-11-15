@@ -57,7 +57,7 @@ pub(crate) struct Shade {
 /// node's (`near`, `spec`: the first GPU's core, whose knobs it shares).
 pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, near: &Core, spec: &CoreSpec) -> anyhow::Result<Option<Far>> {
     let Some(slot) = far_slot(g) else { return Ok(None) };
-    anyhow::ensure!(near.edges.hits().is_some(), "the shading on gpu{slot} shades the hit records the rays write on another GPU: placement = deferred");
+    anyhow::ensure!(near.edges.records().is_some(), "the shading on gpu{slot} shades the hit records the rays write on another GPU: placement = deferred");
     let mut walks = Walks::of(g);
     let site = |port| g.site(Role::Shading, port);
     let shadow = walks.site(g, site("shadow").ok_or_else(|| anyhow::anyhow!("the shading's shadow rays are not bound"))?, STORAGE_GROUPS, false);
@@ -76,7 +76,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
             stages: wgpu::ShaderStages::COMPUTE,
             max_lod: 0,
             voxels: false,
-            records: true,
+            hits: Some(exec::Form::Records),
             ..*spec
         },
     )?;

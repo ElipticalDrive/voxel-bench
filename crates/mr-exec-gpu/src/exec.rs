@@ -18,65 +18,145 @@ use crate::transfer::Transfer;
 /// The resources of the graph's edges that cross between passes on one GPU: allocated by the
 /// executor from the graph, sized to the frame, remade on a resize. A program whose node
 /// writes or reads an edge attaches its resource at the group and binding it chooses
-/// (`layout_entry`, `bind_entry`, the declaration from `wgsl`). An edge whose two ends one
-/// pass computes (fused nodes) has no resource.
+/// (`layout_entry`, `bind_entry`, the declaration from `wgsl`; a render target as the pass's
+/// attachment, `view`). An edge whose two ends one pass computes (fused nodes) has no
+/// resource.
 pub(crate) struct Edges {
+    /// The hits edge's ends, `from` -> `to`.hits, if the shading's hits are bound.
+    ends: Option<(String, String)>,
     hits: Option<Hits>,
 }
 
-/// The hit records' edge, `from` -> `to`.hits: one `pack_hit` record per pixel (8 bytes),
-/// written by the pass of `from` (or, when that runs on another GPU, by the edge's transfer)
-/// and read by the pass of `to` (or copied out by the transfer).
+/// What a hits edge carries per pixel, as its writer's program encodes it (the reader's
+/// program decodes the same).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Form {
+    /// `pack_hit` records in a storage buffer (8 bytes): what rays find.
+    Records,
+    /// Point ids in a storage buffer (4 bytes, written with atomics): the splats'.
+    Ids,
+    /// A render target of this format: the face drawers' ids or `pack_hit` records.
+    Image(wgpu::TextureFormat),
+}
+
+impl Form {
+    fn bytes(self, width: u32, height: u32) -> u64 {
+        let px = match self {
+            Self::Records => 8,
+            Self::Ids => 4,
+            Self::Image(f) => f.block_copy_size(None).unwrap_or(4) as u64,
+        };
+        (width as u64 * height as u64 * px).max(16)
+    }
+}
+
+enum Resource {
+    Buffer(wgpu::Buffer),
+    Image(wgpu::TextureView),
+}
+
+/// The hits edge, `from` -> `to`.hits: what the pass of `from` found at each pixel (or, when
+/// that runs on another GPU, what the edge's transfer delivers), read by the pass of `to`
+/// (or copied out by the transfer).
 pub(crate) struct Hits {
     pub from: String,
     pub to: String,
-    buffer: wgpu::Buffer,
+    form: Form,
+    bytes: u64,
+    resource: Resource,
 }
 
 impl Edges {
-    /// The edges of `g` on `gpu`; `hits`: the shading's hit records cross between passes (the
-    /// shading is not fused into the pass that finds the hits).
-    pub fn of(gpu: &Gpu, g: &graph::Checked, width: u32, height: u32, hits: bool) -> anyhow::Result<Self> {
-        let hits = if hits {
-            let to = g.shading();
-            let from = g.input(Role::Shading, "hits").ok_or_else(|| anyhow::anyhow!("`{to}`: no node's hits to shade (its `hits` input is not bound)"))?;
-            Some(Hits { from: from.to_string(), to: to.to_string(), buffer: Hits::buffer_on(gpu, width, height) })
-        } else {
-            None
-        };
-        Ok(Self { hits })
+    /// The edges of `g` on `gpu`; `hits`: the form of the shading's hits when they cross
+    /// between passes (`None`: the shading is fused into the pass that finds them).
+    pub fn of(gpu: &Gpu, g: &graph::Checked, width: u32, height: u32, hits: Option<Form>) -> anyhow::Result<Self> {
+        let to = g.shading();
+        let ends = g.input(Role::Shading, "hits").map(|from| (from.to_string(), to.to_string()));
+        let mut edges = Self { ends, hits: None };
+        edges.set_hits(gpu, width, height, hits).map_err(|e| anyhow::anyhow!("`{to}`: {e}"))?;
+        Ok(edges)
     }
 
-    /// The hit records' edge, if it crosses between passes.
+    /// The hits edge's resource for `form` (`None`: fused, no resource): at creation, and when
+    /// a live knob changes what its writer writes.
+    pub fn set_hits(&mut self, gpu: &Gpu, width: u32, height: u32, form: Option<Form>) -> anyhow::Result<()> {
+        self.hits = match form {
+            Some(form) => {
+                let (from, to) = self.ends.clone().ok_or_else(|| anyhow::anyhow!("no node's hits to shade (its `hits` input is not bound)"))?;
+                Some(Hits { from, to, form, bytes: form.bytes(width, height), resource: Hits::resource_on(gpu, form, width, height) })
+            }
+            None => None,
+        };
+        Ok(())
+    }
+
+    /// The hits edge, if it crosses between passes.
     pub fn hits(&self) -> Option<&Hits> {
         self.hits.as_ref()
     }
 
+    /// The hits edge if it crosses between passes as `pack_hit` records in a buffer.
+    pub fn records(&self) -> Option<&Hits> {
+        self.hits.as_ref().filter(|h| h.form == Form::Records)
+    }
+
     pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) {
         if let Some(h) = &mut self.hits {
-            h.buffer = Hits::buffer_on(gpu, width, height);
+            h.bytes = h.form.bytes(width, height);
+            h.resource = Hits::resource_on(gpu, h.form, width, height);
         }
     }
 
     pub fn memory_bytes(&self) -> u64 {
-        self.hits.as_ref().map_or(0, |h| h.buffer.size())
+        self.hits.as_ref().map_or(0, |h| h.bytes)
     }
 }
 
 impl Hits {
     /// The records' bytes for a frame of `width` x `height`.
     pub fn size(width: u32, height: u32) -> u64 {
-        (width as u64 * height as u64 * 8).max(16)
+        Form::Records.bytes(width, height)
     }
 
-    fn buffer_on(gpu: &Gpu, width: u32, height: u32) -> wgpu::Buffer {
-        // Copied out and written by the transfers between GPUs.
-        let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
-        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("hit records"), size: Self::size(width, height), usage, mapped_at_creation: false })
+    fn resource_on(gpu: &Gpu, form: Form, width: u32, height: u32) -> Resource {
+        match form {
+            Form::Records | Form::Ids => {
+                // The records are copied out and written by the transfers between GPUs.
+                let usage = if form == Form::Records { wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::STORAGE };
+                Resource::Buffer(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(if form == Form::Records { "hit records" } else { "hit ids" }), size: form.bytes(width, height), usage, mapped_at_creation: false }))
+            }
+            Form::Image(format) => Resource::Image(
+                gpu.device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("hits"),
+                        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default()),
+            ),
+        }
     }
 
+    /// The edge's buffer (the records' or the ids').
     pub fn buffer(&self) -> &wgpu::Buffer {
-        &self.buffer
+        match &self.resource {
+            Resource::Buffer(b) => b,
+            Resource::Image(_) => panic!("`{}` -> `{}`.hits is a render target, not a buffer", self.from, self.to),
+        }
+    }
+
+    /// The edge's render target (the pass of `from` draws into it; the pass of `to` reads it
+    /// as a texture).
+    pub fn view(&self) -> &wgpu::TextureView {
+        match &self.resource {
+            Resource::Image(v) => v,
+            Resource::Buffer(_) => panic!("`{}` -> `{}`.hits is a buffer, not a render target", self.from, self.to),
+        }
     }
 
     /// The declaration a program attaches the records with, and `record_at` (the common
@@ -88,12 +168,17 @@ impl Hits {
         )
     }
 
+    /// A buffer form's layout entry at `binding`.
     pub fn layout_entry(&self, binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
         crate::storage_entry(binding, false, visibility)
     }
 
     pub fn bind_entry(&self, binding: u32) -> wgpu::BindGroupEntry<'_> {
-        wgpu::BindGroupEntry { binding, resource: self.buffer.as_entire_binding() }
+        let resource = match &self.resource {
+            Resource::Buffer(b) => b.as_entire_binding(),
+            Resource::Image(v) => wgpu::BindingResource::TextureView(v),
+        };
+        wgpu::BindGroupEntry { binding, resource }
     }
 }
 

@@ -92,7 +92,7 @@ fn staging(near: &Core, late: bool) -> Vec<wgpu::Buffer> {
 impl Transfer {
     /// The transfer of `g`'s hits edge between the executors' cores, which both hold it.
     pub fn of(g: &graph::Checked, near: &Core, far: &Core) -> anyhow::Result<Self> {
-        let (Some(edge), Some(_)) = (near.edges.hits(), far.edges.hits()) else { anyhow::bail!("no hit records cross between the two GPUs (placement = deferred)") };
+        let (Some(edge), Some(_)) = (near.edges.records(), far.edges.records()) else { anyhow::bail!("no hit records cross between the two GPUs (placement = deferred)") };
         let late = g.graph.nodes.get(&edge.to).is_some_and(|n| n.when("hits") == When::Prev);
         tracing::info!("`{}` -> `{}`.hits: {} -> {} ({})", edge.from, edge.to, near.gpu.info.name, far.gpu.info.name, if late { "prev" } else { "now" });
         Ok(Self { staging: staging(near, late), sent: VecDeque::new(), late, near: Captured::default(), nodes: vec![edge.from.clone(), edge.to.clone()], wait_ms: 0.0, upload_ms: 0.0 })
@@ -106,7 +106,7 @@ impl Transfer {
     /// The first half: submits the first GPU's frame `enc` with its records copied out (with
     /// the frame's stats from the first GPU) and starts reading them back.
     pub fn send(&mut self, near: &mut Core, mut enc: wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, stats: FrameStats) {
-        let records = near.edges.hits().expect("checked at creation").buffer();
+        let records = near.edges.records().expect("checked at creation").buffer();
         // `prev`: the other buffer than the records sent last frame, which are delivered next.
         let buffer = self.sent.back().map_or(0, |s| (s.buffer + 1) % self.staging.len());
         near.ring.stage(&mut enc, ticket, "copy", &self.nodes);
@@ -142,7 +142,7 @@ impl Transfer {
         }
         let arrived = Instant::now();
         let staging = &self.staging[s.buffer];
-        far.gpu.queue.write_buffer(far.edges.hits().expect("checked at creation").buffer(), 0, &staging.slice(..).get_mapped_range()?);
+        far.gpu.queue.write_buffer(far.edges.records().expect("checked at creation").buffer(), 0, &staging.slice(..).get_mapped_range()?);
         staging.unmap();
         self.wait_ms = (arrived - start).as_secs_f32() * 1e3;
         self.upload_ms = arrived.elapsed().as_secs_f32() * 1e3;

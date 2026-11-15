@@ -168,6 +168,12 @@ impl DrawParts<'_> {
     }
 }
 
+/// The form of the hits edge from drawer `draw` to the shading: a deferred drawer's target
+/// (forward drawing shades in its own pass: no edge resource).
+fn hits_form(draw: &str) -> Option<crate::exec::Form> {
+    DrawMode::parse(draw).and_then(DrawMode::target).map(crate::exec::Form::Image)
+}
+
 /// The draw component's WGSL after `draw_src`: deferred drawers shade in compute, forward
 /// drawing in the fragment shader.
 fn draw_wgsl(mode: DrawMode, shading: &str) -> String {
@@ -248,7 +254,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
             stages: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT,
             max_lod: 0,
             voxels: false,
-            records: false,
+            hits: hits_form(o.draw),
             shading: o.shading,
             bounces: o.bounces,
             spp: o.spp,
@@ -381,7 +387,7 @@ impl Draw {
     }
 
     /// The drawing's knobs; `None` if `name` is not one.
-    fn set_param(&mut self, core: &Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         Some(match name {
             "depth_prepass" => {
                 self.depth_prepass = value.as_bool().unwrap_or(true);
@@ -390,9 +396,12 @@ impl Draw {
             "draw" => {
                 // Drawing only: the face set is unaffected.
                 let draw = value.as_str().unwrap_or("raster");
-                self.drawer(core, draw).map(|d| {
+                // The drawer's target is the hits edge's resource: remade in the new drawer's form.
+                self.drawer(core, draw).and_then(|d| {
+                    core.edges.set_hits(&core.gpu, core.width, core.height, hits_form(draw))?;
                     self.drawer = d;
                     self.draw = draw.into();
+                    Ok(())
                 })
             }
             _ => return None,
@@ -401,11 +410,12 @@ impl Draw {
 
     fn resize(&mut self, core: &Core) {
         self.depth = depth_view(&core.gpu, core.width, core.height, self.depth_read);
-        self.drawer.resize(&core.gpu, core.width, core.height);
+        self.drawer.resize(core.width, core.height);
     }
 
+    /// The depth buffer's (the deferred target is the core's edge).
     fn memory_bytes(&self, core: &Core) -> u64 {
-        self.drawer.memory_bytes() + core.width as u64 * core.height as u64 * 4
+        core.width as u64 * core.height as u64 * 4
     }
 }
 

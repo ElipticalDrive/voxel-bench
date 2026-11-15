@@ -95,12 +95,12 @@ impl Default for ShadingKnobs {
 pub(crate) const PRESET: &str = "splat-gpu";
 
 /// The region the splat's nodes share: the points and their buffers, the program, group 0,
-/// the frame's world and storages.
+/// the frame's world and storages. The ids the splat passes write and the resolve shades are
+/// the hits edge's resource (the executor's), attached in group 0.
 pub(crate) struct Splat {
     pipes: [wgpu::ComputePipeline; 6],
     layout0: wgpu::BindGroupLayout,
     zbuf: wgpu::Buffer,
-    idbuf: wgpu::Buffer,
     points_buf: wgpu::Buffer,
     /// The large points' list (a count, then up to one id per point).
     big_buf: wgpu::Buffer,
@@ -155,7 +155,7 @@ impl Splat {
                 stages: wgpu::ShaderStages::COMPUTE,
                 max_lod: 0,
                 voxels: false,
-                records: false,
+                hits: Some(exec::Form::Ids),
                 shading,
                 bounces: k.bounces,
                 spp: k.spp,
@@ -175,10 +175,10 @@ impl Splat {
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("splat"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
         let pipe = |e: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
         let pipes = splat::ENTRIES.map(pipe);
-        let (points_buf, zbuf, idbuf) = (points_buffer(gpu, 1024), pixel_buffer(gpu, p.width, p.height), pixel_buffer(gpu, p.width, p.height));
+        let (points_buf, zbuf) = (points_buffer(gpu, 1024), pixel_buffer(gpu, p.width, p.height));
         let big_buf = big_buffer(gpu, points_buf.size());
-        let bind0 = bind0(&core, &layout0, &points_buf, &zbuf, &idbuf, &big_buf);
-        let splat = Self { pipes, layout0, zbuf, idbuf, points_buf, big_buf, bind0, points: Points::default(), count: 0, max_splat: v.max_splat.clamp(1, 64), world: None, bound: Bound(Vec::new()) };
+        let bind0 = bind0(&core, &layout0, &points_buf, &zbuf, &big_buf);
+        let splat = Self { pipes, layout0, zbuf, points_buf, big_buf, bind0, points: Points::default(), count: 0, max_splat: v.max_splat.clamp(1, 64), world: None, bound: Bound(Vec::new()) };
         Ok((core, splat))
     }
 
@@ -189,7 +189,7 @@ impl Splat {
         if (all.len() as u64) * 16 > self.points_buf.size() {
             self.points_buf = points_buffer(&core.gpu, all.len() as u64 * 3 / 2);
             self.big_buf = big_buffer(&core.gpu, self.points_buf.size());
-            self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.idbuf, &self.big_buf);
+            self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.big_buf);
         }
         if !all.is_empty() {
             core.gpu.queue.write_buffer(&self.points_buf, 0, bytemuck::cast_slice(&all));
@@ -197,13 +197,15 @@ impl Splat {
     }
 }
 
-fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, pts: &wgpu::Buffer, z: &wgpu::Buffer, id: &wgpu::Buffer, big: &wgpu::Buffer) -> wgpu::BindGroup {
+/// Group 0: the core's, the points, the depths, the ids (the hits edge, the executor's) and the
+/// large points' list.
+fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, pts: &wgpu::Buffer, z: &wgpu::Buffer, big: &wgpu::Buffer) -> wgpu::BindGroup {
     let view = core.output.create_view(&Default::default());
     let mut entries = core.bind_entries(&view);
     entries.extend([
         wgpu::BindGroupEntry { binding: REGION_BINDING, resource: pts.as_entire_binding() },
         wgpu::BindGroupEntry { binding: REGION_BINDING + 1, resource: z.as_entire_binding() },
-        wgpu::BindGroupEntry { binding: REGION_BINDING + 2, resource: id.as_entire_binding() },
+        core.edges.hits().expect("the splats' ids cross to the resolve").bind_entry(REGION_BINDING + 2),
         wgpu::BindGroupEntry { binding: REGION_BINDING + 3, resource: big.as_entire_binding() },
     ]);
     core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("splat"), layout, entries: &entries })
@@ -237,12 +239,11 @@ impl State for Splat {
 
     fn resize(&mut self, core: &Core) {
         self.zbuf = pixel_buffer(&core.gpu, core.width, core.height);
-        self.idbuf = pixel_buffer(&core.gpu, core.width, core.height);
-        self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.idbuf, &self.big_buf);
+        self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.big_buf);
     }
 
     fn memory(&self, core: &Core) -> (u64, u64) {
-        (self.points.bytes(), self.points_buf.size() + self.big_buf.size() + core.width as u64 * core.height as u64 * 8)
+        (self.points.bytes(), self.points_buf.size() + self.big_buf.size() + core.width as u64 * core.height as u64 * 4)
     }
 }
 
@@ -282,7 +283,7 @@ impl Node<Splat> for Visibility {
     fn run(&mut self, cx: &mut Cx<Splat>) {
         let (core, r, enc, ticket) = (&mut *cx.core, &mut *cx.region, &mut *cx.enc, cx.ticket);
         if core.build_accel(enc, ticket, cx.req) {
-            r.bind0 = bind0(core, &r.layout0, &r.points_buf, &r.zbuf, &r.idbuf, &r.big_buf);
+            r.bind0 = bind0(core, &r.layout0, &r.points_buf, &r.zbuf, &r.big_buf);
         }
         let groups = r.count.div_ceil(64);
         let (gx, gy) = (groups.min(65535), groups.div_ceil(65535));

@@ -1486,6 +1486,7 @@ impl GpuSampler {
         let frame = DrawFrame {
             out: f.out.as_ref().expect("set up"),
             depth: &self.drawing.depth,
+            ids: core.edges.hits().map(|h| h.view()),
             clear,
             prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit && !painter && !overdraw,
             keep_depth: self.incremental,
