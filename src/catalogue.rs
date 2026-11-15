@@ -27,6 +27,8 @@ pub struct Entry {
     pub gpu_ms: Option<f64>,
     pub cpu_ms: Option<f64>,
     pub psnr: Option<f64>,
+    /// Against a reference given the same of the world as it (LOD pipelines; else none).
+    pub psnr_like: Option<f64>,
     pub bad_pct: Option<f64>,
     pub gpu_mb: Option<f64>,
     pub rss_mb: Option<f64>,
@@ -131,6 +133,9 @@ impl Catalogue {
                     let ok: Vec<&&Observation> = os.iter().filter(|o| o.error.is_none()).collect();
                     let m = |f: &dyn Fn(&Observation) -> Option<f64>| median(ok.iter().filter_map(|o| f(o)).collect());
                     let psnr = m(&|o| o.psnr);
+                    // A pipeline given less than the full-resolution reference is judged
+                    // against the reference given the same: lossy is not incorrect.
+                    let psnr_like = m(&|o| o.psnr_like);
                     Entry {
                         label,
                         composition: os[0].composition.clone(),
@@ -140,13 +145,14 @@ impl Catalogue {
                         gpu_ms: m(&|o| o.gpu_ms),
                         cpu_ms: m(&|o| o.cpu_ms),
                         psnr,
+                        psnr_like,
                         bad_pct: m(&|o| o.bad_pct),
                         gpu_mb: m(&|o| o.gpu_mb),
                         rss_mb: m(&|o| o.peak_rss_mb),
                         samples: ok.len(),
                         error: if ok.is_empty() { os.iter().find_map(|o| o.error.clone()) } else { None },
                         rel: 0.0,
-                        valid: !ok.is_empty() && psnr.is_none_or(|p| p >= min_psnr),
+                        valid: !ok.is_empty() && psnr_like.or(psnr).is_none_or(|p| p >= min_psnr),
                     }
                 })
                 .collect();
@@ -319,7 +325,7 @@ impl Catalogue {
 
     /// One row per (scenario, renderer), for spreadsheets and scripts.
     pub fn csv(&self) -> String {
-        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,preset,storage,geometry,prepass,visibility,shading,meshes,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,bad_pct,gpu_mb,rss_mb,samples,error\n");
+        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,preset,storage,geometry,prepass,visibility,shading,meshes,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,psnr_like,bad_pct,gpu_mb,rss_mb,samples,error\n");
         let q = |x: &str| format!("\"{}\"", x.replace('"', "\"\""));
         for sc in &self.scenarios {
             // The scenario's columns, including its measured features (empty if unknown).
@@ -335,7 +341,7 @@ impl Catalogue {
                 let c = e.composition.clone().unwrap_or_else(|| Composition { preset: String::new(), ..Composition::new("") });
                 let _ = writeln!(
                     s,
-                    "{scenario},{},{},{},{},{},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{}",
+                    "{scenario},{},{},{},{},{},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{},{}",
                     q(&e.label),
                     c.preset,
                     c.storage,
@@ -352,6 +358,7 @@ impl Catalogue {
                     opt(e.gpu_ms, 3),
                     opt(e.cpu_ms, 3),
                     opt(e.psnr, 2),
+                    opt(e.psnr_like, 2),
                     opt(e.bad_pct, 3),
                     opt(e.gpu_mb, 1),
                     opt(e.rss_mb, 1),
@@ -405,6 +412,9 @@ mod tests {
             gpu_mb: None,
             psnr,
             psnr_min: None,
+            like: None,
+            psnr_like: None,
+            bad_pct_like: None,
             bad_pct: None,
             counters: Default::default(),
             stages: Vec::new(),

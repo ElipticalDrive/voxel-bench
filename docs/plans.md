@@ -56,6 +56,14 @@ dir = "runs"
 The three ways of writing a renderer (`compose`, `graph`, the command line's `-r`) are in
 [pipelines.md](pipelines.md).
 
+Two scores come out of `compare`. Every renderer is scored against the reference rendering
+everything at full resolution (the run's `view_radius`, LOD 0): `quality`, how far its frames
+are from the truth. A pipeline whose client holds something else (another `radius`, LOD
+levels) is also scored against the reference given the same (`quality_like`, the region in
+`like`; the reference's own pass is labelled `cpu-reference as pick(radius=3, max_lod=2)
+(ref)`): how far its frames are from what they should show. A lossy pipeline scores low on the
+first and high on the second; a wrong one low on both.
+
 ## Worlds
 
 Every generator is deterministic and has a plan of its name in `plans/`. Each stresses
@@ -122,13 +130,15 @@ compose = { preset = "*", storage = "*", geometry = "*", visibility = "*", draw 
   fraction and hit distances from a grid of rays, edits per frame, lights and mesh triangles;
 - the pipeline (graph, its key) and its knobs;
 - the results: fps, frame interval (mean, p50, p99), GPU and CPU ms, latency, init and load
-  time, memory, PSNR (mean and minimum), bad pixels, stage times, stream counters and the
+  time, memory, PSNR (mean and minimum), bad pixels, the same against the like reference
+  (`like`, `psnr_like`, `bad_pct_like`), stage times, stream counters and the
   renderer's own counters.
 
 `multirenderer catalogue <dirs…> [--out DIR] [--min-psnr 35]` reads any number of runs and
 writes `catalogue.md` and `catalogue.csv` (the CSV has the scene features as columns). Per
 scenario (plan × mode) it ranks the renderers by fps. Renderers below the PSNR floor count as
-incorrect: they are ranked, but never best. For each renderer it lists:
+incorrect: they are ranked, but never best (the floor applies to `psnr_like` where a renderer
+has one: fewer levels of detail are a loss, not an error). For each renderer it lists:
 - the geometric mean of its speed relative to each scenario's best;
 - its wins, and where it is within 10% of the best (*good at*);
 - where it is comparatively strong (*stands out*: at least 1.25× its own average relative

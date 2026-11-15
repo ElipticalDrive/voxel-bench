@@ -185,10 +185,46 @@ pub struct RendererSpec {
     pub compile: Option<Compile>,
     /// Expanded from a sweep (see the module docs).
     pub swept: bool,
+    /// The region it is given instead of the run's (a reference standing in for pipelines
+    /// with that region; standalone renderers have no client node to say it).
+    pub like: Option<Like>,
     /// The graph's shorthand (derived by `resolve`).
     shorthand: Option<mr_components::graph::Shorthand>,
     /// Cache of the label (derived).
     compose_label: std::sync::OnceLock<String>,
+}
+
+/// What a pipeline is given of the world when that is not what the full-resolution reference
+/// gets (another radius, LOD levels): a reference given the same tells a wrong pipeline from
+/// a lossy one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Like {
+    pub radius: u32,
+    pub max_lod: u8,
+    pub levels: mr_core::client::Levels,
+}
+
+impl Like {
+    /// The class of a client's region, if it differs from the full-resolution reference's
+    /// (the run's radius at LOD 0).
+    pub fn of(region: &crate::stream::Region, run: &RunSpec) -> Option<Self> {
+        // Without coarse levels it does not matter how they would be made.
+        let levels = if region.max_lod > 0 { region.levels } else { Default::default() };
+        (region.max_lod > 0 || region.radius != run.view_radius).then_some(Self { radius: region.radius, max_lod: region.max_lod, levels })
+    }
+}
+
+impl std::fmt::Display for Like {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let levels = match self.levels {
+            mr_core::client::Levels::Pick => "pick",
+            mr_core::client::Levels::Derive => "derive",
+        };
+        match self.max_lod {
+            0 => write!(f, "{levels}(radius={})", self.radius),
+            l => write!(f, "{levels}(radius={}, max_lod={l})", self.radius),
+        }
+    }
 }
 
 /// A renderer as plans write it.
@@ -256,7 +292,7 @@ fn stage_knobs(g: &mr_components::graph::Graph) -> bool {
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), graph: None, label: None, options: Default::default(), devices: None, compile: None, swept: false, shorthand: None, compose_label: Default::default() }
+        Self { name: name.into(), graph: None, label: None, options: Default::default(), devices: None, compile: None, swept: false, like: None, shorthand: None, compose_label: Default::default() }
     }
 
     /// A renderer assembled from components.
@@ -576,7 +612,7 @@ impl RendererSpec {
 
     /// Chunks streamed around the camera: its client's `radius`, else the run's.
     pub fn view_radius(&self, run: &RunSpec) -> u32 {
-        self.client_knob("radius").map_or(run.view_radius, |r| r as u32)
+        self.like.map_or_else(|| self.client_knob("radius").map_or(run.view_radius, |r| r as u32), |l| l.radius)
     }
 
     /// Its client's knob `name` (`radius`, `max_lod`), if set.
@@ -615,12 +651,12 @@ impl RendererSpec {
 
     /// LOD levels to stream, given what the renderer supports.
     pub fn max_lod(&self, run: &RunSpec, supported: u8) -> u8 {
-        self.client_knob("max_lod").map_or(run.max_lod, |l| l as u8).min(supported)
+        self.like.map_or_else(|| self.client_knob("max_lod").map_or(run.max_lod, |l| l as u8), |l| l.max_lod).min(supported)
     }
 
     /// How its client gets the LOD levels (its graph's `client` node).
     pub fn levels(&self) -> mr_core::client::Levels {
-        self.pipeline().and_then(|g| mr_core::client::Levels::of(g.client())).unwrap_or_default()
+        self.like.map_or_else(|| self.pipeline().and_then(|g| mr_core::client::Levels::of(g.client())).unwrap_or_default(), |l| l.levels)
     }
 
     /// What its client takes of the server's stream, given the levels the renderer supports.

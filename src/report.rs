@@ -54,6 +54,9 @@ pub struct FrameRecord {
     pub stages: Vec<StageTime>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality: Option<Quality>,
+    /// Against the like reference (`PassReport::like`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_like: Option<Quality>,
 }
 
 /// One stage over a pass: its times over the frames that ran it (a stage's CPU and GPU
@@ -181,7 +184,16 @@ pub struct PassReport {
     pub first_complete: Option<FirstComplete>,
     pub peak_rss_mb: Option<f64>,
     pub memory: MemoryReport,
+    /// Against the full-resolution reference: how far the frames are from the truth.
     pub quality: Option<QualitySummary>,
+    /// What the pipeline is given of the world when that is less than the reference's (its
+    /// LOD region), and its frames against a reference given the same: how far they are from
+    /// what they should show. A lossy pipeline scores low above and high here; a wrong one
+    /// low in both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub like: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_like: Option<QualitySummary>,
     pub error: Option<String>,
     /// The lanes of its pass that failed part-way: its timings shared the machine with them
     /// for a part of the pass only.
@@ -209,17 +221,22 @@ impl PassReport {
         if self.wall_s > 0.0 {
             self.fps = self.frames as f64 / self.wall_s;
         }
-        let q: Vec<(u32, Quality)> = f.iter().filter_map(|r| r.quality.map(|q| (r.frame, q))).collect();
-        if !q.is_empty() {
-            let worst = q.iter().max_by(|a, b| a.1.mae.total_cmp(&b.1.mae)).unwrap().0;
-            self.quality = Some(QualitySummary {
+        let summary = |q: Vec<(u32, Quality)>| {
+            let worst = q.iter().max_by(|a, b| a.1.mae.total_cmp(&b.1.mae))?.0;
+            Some(QualitySummary {
                 frames: q.len(),
                 // Identical frames have infinite PSNR; cap at 99 dB so summaries stay finite.
                 psnr: Summary::of(q.iter().map(|(_, x)| x.psnr.min(99.0))).unwrap(),
                 mae: Summary::of(q.iter().map(|(_, x)| x.mae)).unwrap(),
                 bad_pct: Summary::of(q.iter().map(|(_, x)| x.bad_pct)).unwrap(),
                 worst_frame: worst,
-            });
+            })
+        };
+        let like = summary(f.iter().filter_map(|r| r.quality_like.map(|q| (r.frame, q))).collect());
+        let q: Vec<(u32, Quality)> = f.iter().filter_map(|r| r.quality.map(|q| (r.frame, q))).collect();
+        self.quality_like = like;
+        if !q.is_empty() {
+            self.quality = summary(q);
         }
     }
 }
@@ -254,7 +271,13 @@ pub fn table(reports: &[PassReport]) -> String {
             o(r.quality.as_ref().map(|q| q.bad_pct.mean), 2),
             o(r.peak_rss_mb, 0),
             o((r.memory.gpu_bytes > 0).then(|| r.memory.gpu_bytes as f64 / 1048576.0), 0),
-            if r.beside_failed.is_empty() { String::new() } else { format!("  ! beside failed: {}", r.beside_failed.join(", ")) },
+            [
+                r.quality_like.as_ref().map(|q| format!("  like {}: {:.1} dB, {:.2} % bad", r.like.as_deref().unwrap_or("-"), q.psnr.mean, q.bad_pct.mean)),
+                (!r.beside_failed.is_empty()).then(|| format!("  ! beside failed: {}", r.beside_failed.join(", "))),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<String>(),
         );
     }
     s

@@ -16,7 +16,7 @@ use crate::chunk::{CHUNK_BITS, CHUNK_SIZE, cell_index, local_of_block};
 use crate::{BlockId, ChunkData, ChunkKey, DenseChunk, WorldUpdate};
 
 /// How a client gets its LOD levels: the graph's `client` node's component.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Levels {
     /// The server's levels, as the generator makes them.
     #[default]

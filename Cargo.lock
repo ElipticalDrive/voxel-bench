@@ -2180,7 +2180,6 @@ dependencies = [
  "mr-core",
  "rayon",
  "serde",
- "tracing",
 ]
 
 [[package]]

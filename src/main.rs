@@ -338,7 +338,14 @@ impl Ctx<'_> {
                     report.tags = worker.info.tags.clone();
                     let i = lanes.len();
                     let region = spec.region(run, worker.info.max_lod);
-                    lanes.push(Lane::new(worker, region, report, i, w, h));
+                    let mut lane = Lane::new(worker, region, report, i, w, h);
+                    // A reference records for the region it was given; a pipeline given another
+                    // region than the full-resolution reference is scored against that one too.
+                    lane.like = spec.like.or(plan::Like::of(&lane.region, run).filter(|_| self.plan.output.compare.is_some() && spec.name != self.plan.output.compare.as_ref().unwrap().reference));
+                    if spec.like.is_none() {
+                        lane.report.like = lane.like.map(|l| l.to_string());
+                    }
+                    lanes.push(lane);
                 }
                 Err(e) => {
                     tracing::error!("[{label}] failed to start: {e:#}");
@@ -354,6 +361,26 @@ impl Ctx<'_> {
         (lanes, failed)
     }
 
+    /// The reference's pass: its sampled frames recorded for the comparisons. With `like`, the
+    /// reference given that region (its LOD levels) instead of everything at full resolution.
+    fn reference(&self, like: Option<plan::Like>, mode: PassMode, base: &World, out: &mut Outputs) -> anyhow::Result<Vec<PassReport>> {
+        let Some(c) = &self.plan.output.compare else { return Ok(vec![]) };
+        let mut spec = RendererSpec::new(c.reference.clone());
+        spec.options = c.reference_options.clone();
+        spec.label = Some(match like {
+            Some(l) => {
+                spec.options.insert("lod".into(), true.into());
+                format!("{} as {l} (ref)", c.reference)
+            }
+            None => format!("{} (ref)", c.reference),
+        });
+        spec.like = like;
+        out.recording_reference = true;
+        let reports = self.pass(&[spec], mode, base, out, Some(c.every), 0);
+        out.recording_reference = false;
+        reports
+    }
+
     /// One pass: the given renderers run together through the scripted timeline.
     fn pass(&self, specs: &[RendererSpec], mode: PassMode, base: &World, out: &mut Outputs, only_every: Option<u32>, warmup: u32) -> anyhow::Result<Vec<PassReport>> {
         let run = &self.plan.run;
@@ -364,6 +391,14 @@ impl Ctx<'_> {
         let (mut lanes, mut reports) = self.spawn_lanes(specs, Some(mode));
         if lanes.is_empty() {
             return Ok(reports);
+        }
+        // The references given what these lanes are given, recorded before the lanes run.
+        if !out.recording_reference && out.compare_every.is_some() {
+            for like in lanes.iter().filter_map(|l| l.like).collect::<Vec<_>>() {
+                if !out.references.keys().any(|k| k.0 == Some(like) && k.1 == mode) {
+                    reports.extend(self.reference(Some(like), mode, base, out)?);
+                }
+            }
         }
         let names: Vec<_> = lanes.iter().map(|l| l.report.label.clone()).collect();
         tracing::info!("pass: {} [{}]", names.join(", "), mode.name());
@@ -441,13 +476,9 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
     let mut out = Outputs::new(ui, plan.output.readback, save, plan.output.compare.as_ref().map(|c| c.every), run.frames);
     let mut reports = vec![];
     for &mode in &run.modes {
-        if let Some(c) = &plan.output.compare {
-            out.recording_reference = true;
-            out.references.retain(|k, _| k.0 != mode);
-            let mut spec = RendererSpec::new(c.reference.clone());
-            (spec.label, spec.options) = (Some(format!("{} (ref)", c.reference)), c.reference_options.clone());
-            reports.extend(ctx.pass(&[spec], mode, &base, &mut out, Some(c.every), 0)?);
-            out.recording_reference = false;
+        if plan.output.compare.is_some() {
+            out.references.retain(|k, _| k.1 != mode);
+            reports.extend(ctx.reference(None, mode, &base, &mut out)?);
         }
         // Swept compositions run as what this mode can tell apart, once each.
         let mut seen = std::collections::HashSet::new();

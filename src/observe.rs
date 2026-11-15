@@ -113,6 +113,14 @@ pub struct Observation {
     pub psnr: Option<f64>,
     pub psnr_min: Option<f64>,
     pub bad_pct: Option<f64>,
+    /// What it is given of the world when less than the reference (its LOD region), and its
+    /// mean PSNR and bad pixels against a reference given the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub like: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub psnr_like: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bad_pct_like: Option<f64>,
     /// The renderer's own counters, averaged over the frames.
     pub counters: BTreeMap<String, f64>,
     /// Time per stage (version 4).
@@ -202,6 +210,9 @@ impl Observation {
             psnr: q.map(|q| q.psnr.mean),
             psnr_min: q.map(|q| q.psnr.min),
             bad_pct: q.map(|q| q.bad_pct.mean),
+            like: r.like.clone(),
+            psnr_like: r.quality_like.as_ref().map(|q| q.psnr.mean),
+            bad_pct_like: r.quality_like.as_ref().map(|q| q.bad_pct.mean),
             counters: sums.into_iter().map(|(k, (s, n))| (k, s / n.max(1) as f64)).collect(),
             stages: Vec::new(),
             stream: (r.error.is_none()).then(|| ObservedStream {

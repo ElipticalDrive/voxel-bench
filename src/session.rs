@@ -14,7 +14,7 @@ use mr_world::scenario::{FrameEvents, resolve_edits};
 use mr_world::{Scene, World};
 
 use crate::compare::{self, Quality};
-use crate::plan::{Pacing, Readback, RunSpec, SaveSpec};
+use crate::plan::{Like, Pacing, Readback, RunSpec, SaveSpec};
 use crate::report::{FirstComplete, FrameRecord, PassReport};
 use crate::stream::{Region, Streamer};
 use crate::window::{UiEvent, UiHandle};
@@ -179,12 +179,19 @@ struct InFlight {
     backlog: u32,
 }
 
+/// A frame's scores: against the full-resolution reference, and against the lane's like
+/// reference when it has one.
+type Scores = (Quality, Option<Quality>);
+
 pub struct Lane {
     pub worker: Worker,
     /// What its client takes of the server's stream (the client runs in the worker).
     pub region: Region,
     pub report: PassReport,
     pub ui_index: usize,
+    /// The reference it is also scored against, one given the same of the world as it (`None`:
+    /// the full-resolution reference alone). A reference's: the one it records.
+    pub like: Option<Like>,
     width: u32,
     height: u32,
     in_flight: VecDeque<InFlight>,
@@ -194,12 +201,12 @@ pub struct Lane {
     arrived: u64,
     last_ui: Option<Instant>,
     /// Comparisons still running off the frame loop: (index into `per_frame`, result).
-    pending_quality: Vec<(usize, crossbeam_channel::Receiver<Quality>)>,
+    pending_quality: Vec<(usize, crossbeam_channel::Receiver<Scores>)>,
 }
 
 impl Lane {
     pub fn new(worker: Worker, region: Region, report: PassReport, ui_index: usize, width: u32, height: u32) -> Self {
-        Self { worker, region, report, ui_index, width, height, in_flight: VecDeque::new(), next_id: 0, completions: vec![], arrived: 0, last_ui: None, pending_quality: vec![] }
+        Self { worker, region, report, ui_index, like: None, width, height, in_flight: VecDeque::new(), next_id: 0, completions: vec![], arrived: 0, last_ui: None, pending_quality: vec![] }
     }
 }
 
@@ -209,8 +216,9 @@ pub struct Outputs {
     pub readback: Readback,
     pub save: Option<(SaveSpec, PathBuf)>,
     pub compare_every: Option<u32>,
-    /// Reference images by (mode, frame).
-    pub references: HashMap<(PassMode, u32), Arc<Vec<u8>>>,
+    /// Reference images by (what the reference was given, mode, frame); `None`: everything
+    /// at full resolution.
+    pub references: HashMap<(Option<Like>, PassMode, u32), Arc<Vec<u8>>>,
     /// When set, sampled frames are stored as references instead of compared.
     pub recording_reference: bool,
     pub frames: u32,
@@ -277,7 +285,7 @@ impl Outputs {
     /// float frame in HDR where the display can). Comparisons and PNGs take its RGBA8 form (a
     /// float frame converted only when one of them does); the float frame of an `hdr` post is
     /// saved as Radiance `.hdr` next to the PNG.
-    fn deliver(&mut self, lane: &mut Lane, frame: u32, mode: PassMode, recorded: bool, px: Vec<u8>) -> Option<crossbeam_channel::Receiver<Quality>> {
+    fn deliver(&mut self, lane: &mut Lane, frame: u32, mode: PassMode, recorded: bool, px: Vec<u8>) -> Option<crossbeam_channel::Receiver<Scores>> {
         let (w, h) = (lane.width, lane.height);
         // Throttle what goes to the window to ~60 Hz per lane.
         let to_ui = self.ui.is_some() && lane.last_ui.is_none_or(|t| t.elapsed() > Duration::from_millis(15));
@@ -296,9 +304,10 @@ impl Outputs {
         let mut quality = None;
         if self.compare_hit(frame) {
             if self.recording_reference {
-                self.references.insert((mode, frame), Arc::new(px.to_vec()));
-            } else if let Some(r) = self.references.get(&(mode, frame))
+                self.references.insert((lane.like, mode, frame), Arc::new(px.to_vec()));
+            } else if let Some(r) = self.references.get(&(None, mode, frame))
                 && r.len() == px.len() {
+                let like = lane.like.and_then(|l| self.references.get(&(Some(l), mode, frame))).filter(|l| l.len() == px.len()).cloned();
                 let diff = match (self.save_hit(frame), &self.save, &self.writer) {
                     (true, Some((s, dir)), Some(tx)) if s.diffs => Some((dir.join(format!("{tag}/{frame:06}-diff.png")), tx.clone())),
                     _ => None,
@@ -307,7 +316,7 @@ impl Outputs {
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 self.comparer
                     .send(Box::new(move || {
-                        let _ = tx.send(compare::compare(&r, &px, w));
+                        let _ = tx.send((compare::compare(&r, &px, w), like.map(|l| compare::compare(&l, &px, w))));
                         if let Some((path, saver)) = diff {
                             let _ = saver.send((path, w, h, compare::diff_image(&r, &px)));
                         }
@@ -387,7 +396,7 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
         if let Some(rx) = quality {
             lane.pending_quality.push((lane.report.per_frame.len(), rx));
         }
-        lane.report.per_frame.push(FrameRecord { frame: f.frame, latency_ms, cpu_ms: stats.cpu_ms, gpu_ms: stats.gpu_ms, update_ms, arrived_bytes, holes, counters: stats.counters, stages: stats.stages, quality: None });
+        lane.report.per_frame.push(FrameRecord { frame: f.frame, latency_ms, cpu_ms: stats.cpu_ms, gpu_ms: stats.gpu_ms, update_ms, arrived_bytes, holes, counters: stats.counters, stages: stats.stages, quality: None, quality_like: None });
     }
     Ok(())
 }
@@ -588,7 +597,9 @@ pub fn run_pass(
             lane.report.memory = m;
         }
         for (i, rx) in lane.pending_quality.drain(..) {
-            lane.report.per_frame[i].quality = rx.recv().ok();
+            if let Ok((q, like)) = rx.recv() {
+                (lane.report.per_frame[i].quality, lane.report.per_frame[i].quality_like) = (Some(q), like);
+            }
         }
         let completions = std::mem::take(&mut lane.completions);
         lane.report.finish(&completions);

@@ -99,10 +99,20 @@ pub fn parse_shadows(value: &ParamValue) -> anyhow::Result<Shadows> {
 struct Options {
     threads: usize,
     shadows: Shadows,
+    /// Render the LOD levels its client holds, as the pipelines do (the finest level whose
+    /// region contains a cell). Off: LOD 0 only, the full-resolution reference.
+    lod: bool,
 }
 
+/// The LOD levels the reference renders when asked to (`lod = true`).
+const MAX_LOD: u8 = 15;
+
 pub fn entry() -> RendererEntry {
-    RendererEntry { name: "cpu-reference", info: |_| Ok(info()), create: |p, _, _| Ok(Box::new(CpuReference::new(p)?)) }
+    RendererEntry {
+        name: "cpu-reference",
+        info: |p| Ok(RendererInfo { max_lod: if p.options::<Options>()?.lod { MAX_LOD } else { 0 }, ..info() }),
+        create: |p, _, _| Ok(Box::new(CpuReference::new(p)?)),
+    }
 }
 
 pub fn info() -> RendererInfo {
@@ -203,6 +213,29 @@ pub struct Chunks {
     chunks: HashMap<IVec3, ChunkData>,
     bounds: Option<(IVec3, IVec3)>,
     bounds_dirty: bool,
+    /// The coarse levels, when it renders them ([`Chunks::with_lod`]).
+    lod: Option<Lod>,
+}
+
+/// The coarse levels of a streamed region: at each level a cube of `radius` chunks around the
+/// camera's chunk of that level; a cell is shown at the finest level whose cube contains it.
+struct Lod {
+    radius: i32,
+    max: u8,
+    /// The camera's block (set every frame).
+    cam: IVec3,
+    coarse: HashMap<ChunkKey, ChunkData>,
+}
+
+impl Lod {
+    fn level(&self, cell: IVec3) -> u8 {
+        (0..self.max)
+            .find(|&m| {
+                let s = CHUNK_BITS as i32 + m as i32;
+                ((cell >> s) - (self.cam >> s)).abs().max_element() <= self.radius
+            })
+            .unwrap_or(self.max)
+    }
 }
 
 /// The world with its chunks: the reference lighting model, reusable by other CPU
@@ -228,6 +261,8 @@ pub struct Hit {
     pub cell: IVec3,
     pub block: BlockId,
     pub face: Face,
+    /// The LOD level of the cell hit (its side is `2^lod` blocks, `cell` its lowest corner).
+    pub lod: u8,
 }
 
 impl CpuReference {
@@ -235,11 +270,25 @@ impl CpuReference {
         let opts: Options = p.options()?;
         let mut world = World::new(&p);
         world.shadows = opts.shadows;
-        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks: Chunks::default(), meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))? })
+        let chunks = if opts.lod && p.max_lod > 0 { Chunks::with_lod(p.view_radius_chunks, p.max_lod.min(MAX_LOD)) } else { Chunks::default() };
+        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))? })
     }
 }
 
 impl Chunks {
+    /// Chunks that hold and trace the levels up to `max_lod` of a region of `radius` chunks
+    /// per level; [`Chunks::look_from`] places the region before tracing.
+    pub fn with_lod(radius: u32, max_lod: u8) -> Self {
+        Self { lod: Some(Lod { radius: radius as i32, max: max_lod, cam: IVec3::ZERO, coarse: HashMap::new() }), ..Default::default() }
+    }
+
+    /// The camera's position: the centre of the LOD regions (nothing without LOD).
+    pub fn look_from(&mut self, o: DVec3) {
+        if let Some(l) = &mut self.lod {
+            l.cam = o.floor().as_ivec3();
+        }
+    }
+
     pub fn chunk(&self, pos: IVec3) -> Option<&ChunkData> {
         self.chunks.get(&pos)
     }
@@ -279,7 +328,20 @@ impl Chunks {
                     self.bounds_dirty = true;
                     changed.push(key.pos);
                 }
-                WorldUpdate::ChunkLoad { .. } | WorldUpdate::ChunkUnload { .. } => {}
+                WorldUpdate::ChunkLoad { key, data } => {
+                    if let Some(l) = self.lod.as_mut().filter(|l| key.lod <= l.max) {
+                        if data.is_air() {
+                            l.coarse.remove(key);
+                        } else {
+                            l.coarse.insert(*key, data.clone());
+                        }
+                    }
+                }
+                WorldUpdate::ChunkUnload { key } => {
+                    if let Some(l) = &mut self.lod {
+                        l.coarse.remove(key);
+                    }
+                }
                 WorldUpdate::SetBlocks(edits) => {
                     for e in edits {
                         let pos = ChunkKey::of_block(e.pos).pos;
@@ -306,6 +368,9 @@ impl Chunks {
     /// Two-level DDA. Ignores the cell containing `o` (so rays starting inside a block,
     /// e.g. a camera clipping into terrain, see out of it).
     pub fn trace(&self, o: DVec3, d: DVec3, max_t: f64) -> Option<Hit> {
+        if let Some(l) = &self.lod {
+            return self.trace_lod(l, o, d, max_t);
+        }
         let (lo, hi) = self.bounds?;
         // Clip against the loaded-chunk AABB.
         let bmin = (lo << CHUNK_BITS as i32).as_dvec3();
@@ -367,7 +432,7 @@ impl Chunks {
                                 if axis == 3 {
                                     return None; // degenerate: started on a boundary inside solid
                                 }
-                                return Some(Hit { t, cell, block: b, face: Face::entered(axis, step[axis]) });
+                                return Some(Hit { t, cell, block: b, face: Face::entered(axis, step[axis]), lod: 0 });
                             }
                         }
                         let tv = next_t(cell, 1);
@@ -384,6 +449,69 @@ impl Chunks {
                     }
                 }
             }
+        }
+        None
+    }
+
+    /// The walk through LOD levels: every cell at the finest level whose region contains it,
+    /// exactly (no step crosses into another level's cells unseen). Ignores the cell containing
+    /// `o`, as [`Chunks::trace`] does.
+    fn trace_lod(&self, l: &Lod, o: DVec3, d: DVec3, max_t: f64) -> Option<Hit> {
+        // The outermost level's region bounds everything.
+        let top = CHUNK_BITS as i32 + l.max as i32;
+        let c = l.cam >> top;
+        let (lo, hi) = ((c - l.radius) << top, ((c + l.radius + 1) << top) - 1);
+        let inv = d.recip();
+        let t0 = (lo.as_dvec3() - o) * inv;
+        let t1 = ((hi + 1).as_dvec3() - o) * inv;
+        let tnear = t0.min(t1).max_element().max(0.0);
+        let tfar = t0.max(t1).min_element().min(max_t);
+        if tnear > tfar {
+            return None;
+        }
+        let step = d.signum().as_ivec3();
+        let start = o.floor().as_ivec3();
+        let mut cell = (o + d * tnear).floor().as_ivec3().clamp(lo, hi);
+        let mut axis = if tnear > 0.0 { t0.min(t1).to_array().iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0 } else { 3 };
+        let mut t = tnear;
+        while t <= tfar {
+            let m = l.level(cell);
+            let key = cell >> (CHUNK_BITS as i32 + m as i32);
+            let chunk = if m == 0 { self.chunks.get(&key) } else { l.coarse.get(&ChunkKey { pos: key, lod: m }) };
+            // The box to leave next: the cell, or for an empty chunk the largest box around the
+            // cell that is all of this level (the chunk at level 0; else the chunk's octant, a
+            // chunk of the level below that its region left out whole).
+            let size = match chunk {
+                None | Some(ChunkData::Uniform(BlockId::AIR)) => CHUNK_SIZE << m.saturating_sub(1),
+                Some(chunk) => {
+                    if cell >> m != start >> m {
+                        let b = chunk.get(local_of_block(cell >> m));
+                        if b.is_solid() {
+                            if axis == 3 {
+                                return None; // degenerate: started on a boundary inside solid
+                            }
+                            return Some(Hit { t, cell: (cell >> m) << m, block: b, face: Face::entered(axis, step[axis]), lod: m });
+                        }
+                    }
+                    1 << m
+                }
+            };
+            let b0 = cell & !(size - 1);
+            let mut tv = DVec3::INFINITY;
+            for a in 0..3 {
+                if d[a] != 0.0 {
+                    tv[a] = ((if step[a] > 0 { b0[a] + size } else { b0[a] }) as f64 - o[a]) * inv[a];
+                }
+            }
+            let a = min_axis(tv);
+            t = tv[a];
+            // The axis crossed is exact; the others stay inside the box's slab.
+            let mut next = (o + d * t).floor().as_ivec3();
+            for k in 0..3 {
+                next[k] = if k == a { if step[k] > 0 { b0[k] + size } else { b0[k] - 1 } } else { next[k].clamp(b0[k], b0[k] + size - 1) };
+            }
+            cell = next;
+            axis = a;
         }
         None
     }
@@ -413,8 +541,10 @@ impl VoxelScene<'_> {
     }
 
     pub fn shade(&self, o: DVec3, d: DVec3, hit: &Hit, mode: RenderMode) -> [u8; 4] {
-        let local = (o - hit.cell.as_dvec3() + d * hit.t).as_vec3();
-        self.shade_surface(o + d * hit.t, local, hit.face, hit.block, mode)
+        let p = o + d * hit.t;
+        // A coarse cell shows its block's texture once per block, as the pipelines do.
+        let local = if hit.lod == 0 { (o - hit.cell.as_dvec3() + d * hit.t).as_vec3() } else { (p - p.floor()).as_vec3() };
+        self.shade_surface(p, local, hit.face, hit.block, mode)
     }
 
     /// Shades a surface point `p` on `face` of `block` (`local` = position within the
@@ -497,6 +627,7 @@ impl Renderer for CpuReference {
         let start = Instant::now();
         self.world.prepare();
         self.chunks.prepare();
+        self.chunks.look_from(req.camera.position);
         self.meshes.prepare();
         let meshes = req.meshes.then_some(&self.meshes);
         let (w, h) = (self.width, self.height);
@@ -556,5 +687,49 @@ impl Renderer for CpuReference {
 
     fn memory(&self) -> MemoryReport {
         MemoryReport { cpu_bytes: self.chunks.dense_bytes() + self.pixels.len() as u64, gpu_bytes: 0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STONE: BlockId = BlockId(1);
+
+    fn load(c: &mut Chunks, pos: IVec3, lod: u8, cells: &[IVec3]) {
+        let mut data = ChunkData::Uniform(BlockId::AIR);
+        for &cell in cells {
+            data.set(cell, STONE);
+        }
+        c.apply(&[WorldUpdate::ChunkLoad { key: ChunkKey { pos, lod }, data }]);
+    }
+
+    /// A cell is seen at the finest level whose region contains it: a coarse chunk's cells
+    /// inside the finer region are never seen, those outside are, at their size.
+    #[test]
+    fn lod_walk_takes_the_finest_level_present() {
+        // Radius 0, two levels: level 0 is the camera's chunk (blocks 0..32), level 1 the
+        // chunk of 64 blocks around it.
+        let mut c = Chunks::with_lod(0, 1);
+        c.look_from(DVec3::new(1.5, 1.5, 1.5));
+        // Level 1: a cell inside level 0's region (blocks 10..12) and one outside (40..42).
+        load(&mut c, IVec3::ZERO, 1, &[IVec3::new(5, 0, 0), IVec3::new(20, 0, 0)]);
+        let (o, d) = (DVec3::new(1.5, 1.5, 1.5), DVec3::X);
+        let h = c.trace(o, d, 1e7).expect("the coarse cell beyond the fine region");
+        assert_eq!((h.cell, h.lod, h.t), (IVec3::new(40, 0, 0), 1, 38.5));
+        // A level-0 block in front wins; the level-0 chunk being loaded hides nothing else.
+        load(&mut c, IVec3::ZERO, 0, &[IVec3::new(20, 1, 1)]);
+        let h = c.trace(o, d, 1e7).unwrap();
+        assert_eq!((h.cell, h.lod, h.t), (IVec3::new(20, 1, 1), 0, 18.5));
+        // Backwards: nothing, and the walk ends at the outer region's edge.
+        assert!(c.trace(o, -d, 1e7).is_none());
+        // A ray from outside the fine region entering it skips the coarse cell inside it.
+        let h = c.trace(DVec3::new(50.5, 1.5, 1.5), -d, 1e7).unwrap();
+        assert_eq!((h.cell, h.lod), (IVec3::new(40, 0, 0), 1));
+        let h = c.trace(DVec3::new(39.5, 1.5, 1.5), -d, 1e7).unwrap();
+        assert_eq!((h.cell, h.lod), (IVec3::new(20, 1, 1), 0));
+        // Without the level-0 block the ray crosses the fine region to its far side unseen.
+        load(&mut c, IVec3::ZERO, 0, &[]);
+        assert!(c.trace(DVec3::new(39.5, 1.5, 1.5), -d, 1e7).is_none());
     }
 }
