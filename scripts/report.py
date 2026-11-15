@@ -30,6 +30,7 @@ for a in args:
         print(f"{r['label'][:44]:44} {r['mode']:6} fps {r['fps']:7.1f} p99 {fi.get('p99', 0):6.2f} gpu {g.get('mean', 0) or 0:6.2f} cpu {c.get('mean', 0) or 0:6.2f}"
               + (f" psnr {ps:5.1f} bad {bad:5.2f}%" if ps is not None else "") + f" r{r.get('repeat', 0)}"
               + (f"  like {r.get('like')}: {r['quality_like']['psnr']['mean']:.1f} dB {r['quality_like']['bad_pct']['mean']:.2f}%" if r.get("quality_like") else "")
+              + (f"  settled ({', '.join(r.get('late') or [])} late): {r['quality_settled']['psnr']['mean']:.1f} dB {r['quality_settled']['bad_pct']['mean']:.2f}%" if r.get("quality_settled") else "")
               + (f"  ! beside failed: {', '.join(r['beside_failed'])}" if r.get("beside_failed") else "")
               + (f"  ! not supported: {'; '.join(r['not_supported'])}" if r.get("not_supported") else ""))
         st = r.get("stages") or []

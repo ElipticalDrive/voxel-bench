@@ -49,7 +49,7 @@ sites = { shadow = "distance/sphere", client = "pick(radius=8, max_lod=2)" }
 window = false
 readback = "auto"             # auto | always | never
 save = { every = 100, diffs = true }
-compare = { reference = "cpu-reference", every = 100 }
+compare = { reference = "cpu-reference", every = 100, settle = 2 }
 dir = "runs"
 ```
 
@@ -71,6 +71,15 @@ changes it), labelled `cpu-reference as pick(radius=16), pathtrace(bounces=1) (r
 left in that score is the pipeline's noise (and any error): it rises about 3 dB with every
 doubling of `spp` when the pipeline computes the same model. Such a reference takes seconds
 per compared frame.
+
+A pipeline whose graph has an edge that arrives a frame late (`prev`: discover-cpu's faces,
+discovered while the previous frame is drawn) shows a moving camera partly as it was a frame
+ago, and scores low for it. It is scored a third time, settled (`quality_settled`; the late
+edges in `late`): in a pass of its own over the same frames, each compared frame is held
+still for `compare.settle` more renders (2: one for the late edge, one for a prediction made
+from the previous camera) and the last is scored, against the like reference where it has
+one. A late pipeline scores low as shown and high settled; a wrong one low in both.
+`settle = 0` leaves it out.
 
 A pipeline reports what it supports for its graph (its lighting modes, meshes, the LOD levels
 it holds), and is asked for nothing beyond that. What a plan asks of one that lacks it is left
@@ -144,7 +153,8 @@ compose = { preset = "*", storage = "*", geometry = "*", visibility = "*", draw 
 - the pipeline (graph, its key) and its knobs;
 - the results: fps, frame interval (mean, p50, p99), GPU and CPU ms, latency, init and load
   time, memory, PSNR (mean and minimum), bad pixels, the same against the like reference
-  (`like`, `psnr_like`, `bad_pct_like`), stage times, stream counters and the
+  (`like`, `psnr_like`, `bad_pct_like`) and settled (`late`, `psnr_settled`,
+  `bad_pct_settled`), stage times, stream counters and the
   renderer's own counters.
 
 `multirenderer catalogue <dirs…> [--out DIR] [--min-psnr 35]` reads any number of runs and
@@ -152,7 +162,8 @@ writes `catalogue.md` and `catalogue.csv` (the CSV has the scene features as col
 scenario (plan × mode) it ranks the renderers by fps. Renderers below the PSNR floor count as
 incorrect: they are ranked, but never best (the floor applies to `psnr_like` where a renderer
 has one: fewer levels of detail are a loss, not an error; a path tracer is held to its own
-lighting model, and its noise counts). For each renderer it lists:
+lighting model, and its noise counts; and to `psnr_settled` where it has one: a frame late
+is a property, not an error). For each renderer it lists:
 - the geometric mean of its speed relative to each scenario's best;
 - its wins, and where it is within 10% of the best (*good at*);
 - where it is comparatively strong (*stands out*: at least 1.25× its own average relative

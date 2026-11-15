@@ -733,7 +733,7 @@ fn output(ui: &mut Ui, plan: &mut Plan, infos: &[RendererInfo]) -> Changed {
     }
     let mut cmp = o.compare.is_some();
     if ui.checkbox(&mut cmp, "compare against reference").on_hover_text("Score frames against a reference renderer (PSNR, SSIM, bad pixels)").changed() {
-        o.compare = cmp.then(|| CompareSpec { reference: "cpu-reference".into(), reference_options: Default::default(), every: 100 });
+        o.compare = cmp.then(|| CompareSpec { reference: "cpu-reference".into(), reference_options: Default::default(), every: 100, settle: 2 });
         c = true;
     }
     if let Some(cs) = &mut o.compare {

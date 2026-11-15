@@ -124,6 +124,14 @@ pub struct Observation {
     pub psnr_like: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bad_pct_like: Option<f64>,
+    /// Its graph's edges that arrive a frame late, and its mean PSNR and bad pixels once they
+    /// caught up (the compared frames held still; against the like reference where it has one).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub late: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub psnr_settled: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bad_pct_settled: Option<f64>,
     /// The renderer's own counters, averaged over the frames.
     pub counters: BTreeMap<String, f64>,
     /// Time per stage (version 4).
@@ -217,6 +225,9 @@ impl Observation {
             like: r.like.clone(),
             psnr_like: r.quality_like.as_ref().map(|q| q.psnr.mean),
             bad_pct_like: r.quality_like.as_ref().map(|q| q.bad_pct.mean),
+            late: r.late.clone(),
+            psnr_settled: r.quality_settled.as_ref().map(|q| q.psnr.mean),
+            bad_pct_settled: r.quality_settled.as_ref().map(|q| q.bad_pct.mean),
             counters: sums.into_iter().map(|(k, (s, n))| (k, s / n.max(1) as f64)).collect(),
             stages: Vec::new(),
             stream: (r.error.is_none()).then(|| ObservedStream {

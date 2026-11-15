@@ -634,6 +634,13 @@ impl RendererSpec {
         (asked > info.max_lod).then(|| format!("max_lod {asked}: {why}")).into_iter().collect()
     }
 
+    /// The edges of its graph whose value arrives a frame late (`node.port`): its frames show
+    /// a moving camera or a changing world partly as they were a frame ago.
+    pub fn late(&self) -> Vec<String> {
+        let Ok(Some(g)) = self.worker_graph() else { return vec![] };
+        g.nodes.iter().flat_map(|(id, n)| n.timing.iter().filter(|t| *t.1 == mr_components::graph::When::Prev).map(move |(port, _)| format!("{id}.{port}"))).collect()
+    }
+
     /// The lighting model of its frames in a pass of mode `m`: path tracing where its
     /// shading node path traces a lit frame (with the node's `bounces`), else direct.
     pub fn lighting(&self, m: PassMode) -> Lighting {
@@ -756,6 +763,14 @@ pub struct CompareSpec {
     /// Compare every n-th measured frame.
     #[serde(default = "default_every")]
     pub every: u32,
+    /// Frames a compared frame is held still (camera and world) before a pipeline with
+    /// late edges is scored once more, settled (0: no settled score).
+    #[serde(default = "default_settle")]
+    pub settle: u32,
+}
+
+fn default_settle() -> u32 {
+    2
 }
 
 fn default_every() -> u32 {
@@ -1294,6 +1309,14 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert_eq!(more.lighting(PassMode::LIT), Lighting::Direct);
         assert_eq!(RendererSpec::from_cli("raycast-gpu:bricks+refloor").unwrap().lighting(PassMode::LIT), Lighting::Direct);
         assert_eq!(RendererSpec::new("cpu-reference").lighting(PassMode::LIT), Lighting::Direct);
+        // Late edges are read off the graph: discover-cpu's faces, unless discovered in step.
+        assert!(pt.late().is_empty() && RendererSpec::new("cpu-reference").late().is_empty());
+        let late = RendererSpec::from_cli("discover-cpu:bricks+quadtree").unwrap();
+        assert_eq!(late.late().len(), 1, "{:?}", late.late());
+        assert!(late.late()[0].ends_with(".faces"), "{:?}", late.late());
+        let mut sync = late.clone();
+        sync.options.insert("pipelined".into(), false.into());
+        assert!(sync.late().is_empty(), "{:?}", sync.late());
         let run = RunSpec::default();
         let region = pt.region(&run, 0);
         assert_eq!(Like::of(&region, Lighting::Direct, &run), None);

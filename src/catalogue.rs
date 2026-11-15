@@ -29,6 +29,8 @@ pub struct Entry {
     pub psnr: Option<f64>,
     /// Against a reference given the same of the world as it (LOD pipelines; else none).
     pub psnr_like: Option<f64>,
+    /// Once its late edges caught up (pipelines with an edge a frame late; else none).
+    pub psnr_settled: Option<f64>,
     pub bad_pct: Option<f64>,
     pub gpu_mb: Option<f64>,
     pub rss_mb: Option<f64>,
@@ -136,6 +138,9 @@ impl Catalogue {
                     // A pipeline given less than the full-resolution reference is judged
                     // against the reference given the same: lossy is not incorrect.
                     let psnr_like = m(&|o| o.psnr_like);
+                    // A pipeline with an edge a frame late is judged on its settled frames:
+                    // late is not incorrect.
+                    let psnr_settled = m(&|o| o.psnr_settled);
                     Entry {
                         label,
                         composition: os[0].composition.clone(),
@@ -146,13 +151,14 @@ impl Catalogue {
                         cpu_ms: m(&|o| o.cpu_ms),
                         psnr,
                         psnr_like,
+                        psnr_settled,
                         bad_pct: m(&|o| o.bad_pct),
                         gpu_mb: m(&|o| o.gpu_mb),
                         rss_mb: m(&|o| o.peak_rss_mb),
                         samples: ok.len(),
                         error: if ok.is_empty() { os.iter().find_map(|o| o.error.clone()) } else { None },
                         rel: 0.0,
-                        valid: !ok.is_empty() && psnr_like.or(psnr).is_none_or(|p| p >= min_psnr),
+                        valid: !ok.is_empty() && psnr_settled.or(psnr_like).or(psnr).is_none_or(|p| p >= min_psnr),
                     }
                 })
                 .collect();
@@ -325,7 +331,7 @@ impl Catalogue {
 
     /// One row per (scenario, renderer), for spreadsheets and scripts.
     pub fn csv(&self) -> String {
-        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,preset,storage,geometry,prepass,visibility,shading,meshes,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,psnr_like,bad_pct,gpu_mb,rss_mb,samples,error\n");
+        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,preset,storage,geometry,prepass,visibility,shading,meshes,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,psnr_like,psnr_settled,bad_pct,gpu_mb,rss_mb,samples,error\n");
         let q = |x: &str| format!("\"{}\"", x.replace('"', "\"\""));
         for sc in &self.scenarios {
             // The scenario's columns, including its measured features (empty if unknown).
@@ -341,7 +347,7 @@ impl Catalogue {
                 let c = e.composition.clone().unwrap_or_else(|| Composition { preset: String::new(), ..Composition::new("") });
                 let _ = writeln!(
                     s,
-                    "{scenario},{},{},{},{},{},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{},{}",
+                    "{scenario},{},{},{},{},{},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{},{},{}",
                     q(&e.label),
                     c.preset,
                     c.storage,
@@ -359,6 +365,7 @@ impl Catalogue {
                     opt(e.cpu_ms, 3),
                     opt(e.psnr, 2),
                     opt(e.psnr_like, 2),
+                    opt(e.psnr_settled, 2),
                     opt(e.bad_pct, 3),
                     opt(e.gpu_mb, 1),
                     opt(e.rss_mb, 1),
@@ -416,6 +423,9 @@ mod tests {
             like: None,
             psnr_like: None,
             bad_pct_like: None,
+            late: vec![],
+            psnr_settled: None,
+            bad_pct_settled: None,
             bad_pct: None,
             counters: Default::default(),
             stages: Vec::new(),
@@ -448,5 +458,17 @@ mod tests {
         let row = |n: &str| storage.rows.iter().find(|r| r.0 == n).unwrap().clone();
         assert!((row("bricks").1 - (100.0f64 / 120.0).sqrt()).abs() < 1e-9 && row("bricks").2 == 1 && row("bricks").3 == 2);
         assert!(cat.markdown().contains("## Components") && cat.csv().lines().count() == 6);
+    }
+
+    /// A pipeline with an edge a frame late is held to the floor on its settled frames: late
+    /// is not incorrect; one that stays low once settled is.
+    #[test]
+    fn late_is_not_incorrect() {
+        let c = |st: &str| Composition { storage: st.into(), ..Default::default() };
+        let settled = |st: &str, s: f64| Observation { late: vec!["draw.faces".into()], psnr_settled: Some(s), ..obs("terrain", c(st), 100.0, Some(30.0)) };
+        let cat = Catalogue::build(&[settled("bricks", 50.0), settled("hier", 30.0)], 35.0);
+        let valid = |st: &str| cat.scenarios[0].entries.iter().find(|e| e.label.contains(st)).unwrap().valid;
+        assert!(valid("bricks") && !valid("hier"));
+        assert!(cat.csv().lines().nth(1).unwrap().contains(",30.00,-,50.00,"), "{}", cat.csv());
     }
 }

@@ -305,16 +305,21 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// A renderer's label in reports: pipelines compiled for this machine are told apart
+    /// from the generic build.
+    fn label(&self, spec: &RendererSpec) -> String {
+        match spec.compiled(&self.plan.run) {
+            Some(c) => format!("{} [{}]", spec.label(), c.name()),
+            None => spec.label().to_string(),
+        }
+    }
+
     fn spawn_lanes(&self, specs: &[RendererSpec], mode: Option<PassMode>) -> (Vec<Lane>, Vec<PassReport>) {
         let run = &self.plan.run;
         let [w, h] = run.resolution;
         let (mut lanes, mut failed) = (vec![], vec![]);
         for spec in specs {
-            // Pipelines compiled for this machine are told apart from the generic build.
-            let label = match spec.compiled(run) {
-                Some(c) => format!("{} [{}]", spec.label(), c.name()),
-                None => spec.label().to_string(),
-            };
+            let label = self.label(spec);
             let mut report = PassReport {
                 label: label.clone(),
                 renderer: spec.name.clone(),
@@ -382,13 +387,27 @@ impl Ctx<'_> {
         });
         spec.like = like;
         out.recording_reference = true;
-        let reports = self.pass(&[spec], mode, base, out, Some(c.every), 0);
+        let reports = self.pass(&[spec], mode, base, out, Some(c.every), 0, 0);
         out.recording_reference = false;
         reports
     }
 
-    /// One pass: the given renderers run together through the scripted timeline.
-    fn pass(&self, specs: &[RendererSpec], mode: PassMode, base: &World, out: &mut Outputs, only_every: Option<u32>, warmup: u32) -> anyhow::Result<Vec<PassReport>> {
+    /// The settled score of a pipeline with late edges: a pass of its own over the same
+    /// frames, the compared ones held still for `compare.settle` more renders and the last
+    /// one scored (against the like reference where it has one). `None` with `settle = 0`.
+    fn settled(&self, spec: &RendererSpec, mode: PassMode, base: &World, out: &mut Outputs) -> anyhow::Result<Option<report::QualitySummary>> {
+        let Some(c) = self.plan.output.compare.as_ref().filter(|c| c.settle > 0) else { return Ok(None) };
+        let mut held = spec.clone();
+        held.label = Some(format!("{} (settled)", spec.label()));
+        let label = self.label(&held);
+        let reports = self.pass(&[held], mode, base, out, None, self.plan.run.warmup, c.settle)?;
+        Ok(reports.into_iter().find(|r| r.label == label).and_then(|r| r.quality_like.or(r.quality)))
+    }
+
+    /// One pass: the given renderers run together through the scripted timeline. With
+    /// `only_every`, only the compared frames are rendered; with `settle`, the compared
+    /// frames that many more times, held still, and the last recorded.
+    fn pass(&self, specs: &[RendererSpec], mode: PassMode, base: &World, out: &mut Outputs, only_every: Option<u32>, warmup: u32, settle: u32) -> anyhow::Result<Vec<PassReport>> {
         let run = &self.plan.run;
         let mut world = base.clone();
         let scene = Scene::new(self.plan.scene.clone(), self.blocks.clone(), &mut world, run.frames)?;
@@ -410,6 +429,7 @@ impl Ctx<'_> {
         tracing::info!("pass: {} [{}]", names.join(", "), mode.name());
         let env = scene.environment;
         let mut driver = ScriptedDriver::new(scene, mode, warmup, run.frames, only_every, run.clock_fps);
+        driver.settle = out.compare_every.filter(|_| settle > 0).map(|every| (every, settle));
         let result = run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, run, out);
         if let Err(e) = &result {
             tracing::error!("pass failed: {e:#}");
@@ -421,6 +441,19 @@ impl Ctx<'_> {
             }
             lane.worker.shutdown();
             reports.push(r);
+        }
+        // Pipelines with an edge a frame late are scored again on settled frames.
+        if only_every.is_none() && settle == 0 && out.compare_every.is_some() {
+            for spec in specs {
+                let late = spec.late();
+                let label = self.label(spec);
+                if late.is_empty() || !reports.iter().any(|r| r.label == label && r.error.is_none()) {
+                    continue;
+                }
+                let settled = self.settled(spec, mode, base, out)?;
+                let r = reports.iter_mut().find(|r| r.label == label).unwrap();
+                (r.late, r.quality_settled) = (late, settled);
+            }
         }
         println!("{}", report::table(&reports).lines().skip(1).collect::<Vec<_>>().join("\n"));
         Ok(reports)
@@ -520,10 +553,10 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         for repeat in 0..run.repeats.max(1) {
             let mut batch = vec![];
             if run.parallel {
-                batch.extend(ctx.pass(&specs, mode, &base, &mut out, None, run.warmup)?);
+                batch.extend(ctx.pass(&specs, mode, &base, &mut out, None, run.warmup, 0)?);
             } else {
                 for s in &specs {
-                    batch.extend(ctx.pass(std::slice::from_ref(s), mode, &base, &mut out, None, run.warmup)?);
+                    batch.extend(ctx.pass(std::slice::from_ref(s), mode, &base, &mut out, None, run.warmup, 0)?);
                     if out.ui.as_ref().is_some_and(|u| u.closed()) {
                         reports.extend(batch);
                         return Ok((reports, scene_features));

@@ -194,6 +194,15 @@ pub struct PassReport {
     pub like: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality_like: Option<QualitySummary>,
+    /// The edges of its graph whose value arrives a frame late (`node.port`), and its frames
+    /// scored once those caught up (the compared frames held still for `compare.settle`
+    /// renders, in a pass of their own; against the like reference where it has one). The
+    /// scores above are of the frames as shown, late parts included: a late pipeline scores
+    /// low there and high here; a wrong one low in both.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub late: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_settled: Option<QualitySummary>,
     pub error: Option<String>,
     /// The lanes of its pass that failed part-way: its timings shared the machine with them
     /// for a part of the pass only.
@@ -277,6 +286,7 @@ pub fn table(reports: &[PassReport]) -> String {
             o((r.memory.gpu_bytes > 0).then(|| r.memory.gpu_bytes as f64 / 1048576.0), 0),
             [
                 r.quality_like.as_ref().map(|q| format!("  like {}: {:.1} dB, {:.2} % bad", r.like.as_deref().unwrap_or("-"), q.psnr.mean, q.bad_pct.mean)),
+                r.quality_settled.as_ref().map(|q| format!("  settled ({} late): {:.1} dB, {:.2} % bad", r.late.join(", "), q.psnr.mean, q.bad_pct.mean)),
                 (!r.beside_failed.is_empty()).then(|| format!("  ! beside failed: {}", r.beside_failed.join(", "))),
                 (!r.not_supported.is_empty()).then(|| format!("  ! not supported: {}", r.not_supported.join("; "))),
             ]

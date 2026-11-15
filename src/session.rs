@@ -51,17 +51,32 @@ pub struct ScriptedDriver {
     pub only_every: Option<u32>,
     /// The simulated clock's frames per second (`run.clock_fps`).
     pub clock_fps: f64,
+    /// (every, n): every frame sampled by `every` is held still for `n` more renders (the same
+    /// camera, no events) and only the last is recorded: what a pipeline shows once its late
+    /// edges caught up. The frames between are rendered as ever, so state kept over frames
+    /// is what it is in the measured pass.
+    pub settle: Option<(u32, u32)>,
+    /// Renders of the current frame still to come.
+    held: u32,
     i: u32,
 }
 
 impl ScriptedDriver {
     pub fn new(scene: Scene, mode: PassMode, warmup: u32, frames: u32, only_every: Option<u32>, clock_fps: f64) -> Self {
-        Self { scene, mode, warmup, frames, only_every, clock_fps, i: 0 }
+        Self { scene, mode, warmup, frames, only_every, clock_fps, settle: None, held: 0, i: 0 }
     }
 }
 
 impl Driver for ScriptedDriver {
     fn next(&mut self) -> anyhow::Result<Option<FrameInput>> {
+        if self.held > 0 {
+            // The frame just rendered, once more: nothing moved, nothing changed.
+            self.held -= 1;
+            let f = self.i - 1 - self.warmup;
+            let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(f));
+            let time = (self.i - 1) as f64 / self.clock_fps;
+            return Ok(Some(FrameInput { frame: f, camera: self.scene.camera(f), mode: self.mode, events: Default::default(), meshes, render: true, recorded: self.held == 0, time }));
+        }
         let i = self.i;
         self.i += 1;
         let time = i as f64 / self.clock_fps;
@@ -78,7 +93,10 @@ impl Driver for ScriptedDriver {
         let events = self.scene.events(f, &camera)?;
         let render = self.only_every.is_none_or(|n| sampled(f, n, self.frames));
         let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(f));
-        Ok(Some(FrameInput { frame: f, camera, mode: self.mode, events, meshes, render, recorded: true, time }))
+        if let Some((_, n)) = self.settle.filter(|s| render && sampled(f, s.0, self.frames)) {
+            self.held = n;
+        }
+        Ok(Some(FrameInput { frame: f, camera, mode: self.mode, events, meshes, render, recorded: self.held == 0, time }))
     }
 }
 
