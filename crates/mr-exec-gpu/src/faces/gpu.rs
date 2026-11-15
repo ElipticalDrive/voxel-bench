@@ -79,6 +79,7 @@ pub(crate) fn info() -> RendererInfo {
         tags: vec!["gpu".into(), "raster".into(), "raytrace".into(), "hybrid".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
+        lacks: vec![],
         params: mr_components::lighting_knobs(PRESET, params()),
     }
 }

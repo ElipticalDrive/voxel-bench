@@ -32,6 +32,7 @@ pub(crate) fn info() -> RendererInfo {
         tags: vec!["cpu".into(), "heightmap".into(), "2.5d".into(), "software".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
+        lacks: vec![],
         params: vec![
             ParamSpec::choice("storage", "Storage component", &mr_components::names_on(PRESET, mr_components::Slot::Storage), "heightmap", false),
             ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(PRESET, mr_components::Slot::Visibility), "columns", false),

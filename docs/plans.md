@@ -64,6 +64,11 @@ levels) is also scored against the reference given the same (`quality_like`, the
 (ref)`): how far its frames are from what they should show. A lossy pipeline scores low on the
 first and high on the second; a wrong one low on both.
 
+A pipeline reports what it supports for its graph (its lighting modes, meshes, the LOD levels
+it holds), and is asked for nothing beyond that. What a plan asks of one that lacks it is left
+out and named in its report (`not_supported`, e.g. `max_lod 2: storage `tree64` lacks lod`):
+it ran without, and its region and scores are those of what it ran.
+
 ## Worlds
 
 Every generator is deterministic and has a plan of its name in `plans/`. Each stresses

@@ -14,8 +14,13 @@ pub struct RendererInfo {
     /// Free-form category tags (`cpu`, `gpu`, `raster`, `compute`, `raytrace`, ...).
     pub tags: Vec<String>,
     pub modes: Vec<RenderMode>,
-    /// Highest LOD level the renderer wants streamed. 0 means full-resolution chunks only.
+    /// Highest LOD level the renderer handles, as built for its graph (its client holds no
+    /// coarser one). 0 means full-resolution chunks only.
     pub max_lod: u8,
+    /// Features this pipeline lacks that others of its kind have, each with the reason
+    /// (`lod: storage `tree64` lacks lod`): what it must not be asked for.
+    #[serde(default)]
+    pub lacks: Vec<String>,
     /// Knobs this renderer exposes (also its accepted `options` keys).
     #[serde(default)]
     pub params: Vec<ParamSpec>,

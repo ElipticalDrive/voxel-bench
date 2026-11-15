@@ -59,9 +59,9 @@ pub trait Spec: 'static {
 pub fn compiled_entry<S: Spec>() -> RendererEntry {
     RendererEntry {
         name: "gpu",
-        info: |p| Ok(info(region(p)?)),
+        info: info_of,
         create: |p, d, w| {
-            mr_core::baked::check(S::KNOBS, &p, &info(region(&p)?).params)?;
+            mr_core::baked::check(S::KNOBS, &p, &info_of(&p)?.params)?;
             let inner = create_with(p, d, w, S::CPU_WORLD)?;
             Ok(Box::new(Compiled { inner, baked: S::KNOBS, native: S::NATIVE }))
         },
@@ -70,12 +70,16 @@ pub fn compiled_entry<S: Spec>() -> RendererEntry {
 
 /// The GPU executor: the region its graph picks.
 pub fn entry() -> RendererEntry {
-    RendererEntry { name: "gpu", info: |p| Ok(info(region(p)?)), create: |p, d, w| create_with(p, d, w, None) }
+    RendererEntry { name: "gpu", info: info_of, create: |p, d, w| create_with(p, d, w, None) }
 }
 
-/// The region (the graph's preset) that runs `p`'s graph.
-fn region(p: &InitParams) -> anyhow::Result<&'static str> {
-    Ok(graph::of_init("gpu", p)?.preset.expect("of_init: a preset"))
+/// What the pipeline of `p`'s graph supports: its region's, less what its components lack.
+fn info_of(p: &InitParams) -> anyhow::Result<RendererInfo> {
+    let g = graph::of_init("gpu", p)?;
+    match g.preset.expect("of_init: a preset") {
+        raycast::walk::PRESET => raycast::walk::info_of(&g, p),
+        preset => Ok(info(preset)),
+    }
 }
 
 /// The knobs of every region, by preset.

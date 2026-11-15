@@ -32,6 +32,7 @@ pub(crate) fn info() -> RendererInfo {
         tags: vec!["gpu".into(), "compute".into(), "points".into(), "splat".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
+        lacks: vec![],
         params: mr_components::lighting_knobs(PRESET, vec![
             ParamSpec::choice("storage", "Storage component the lit-mode shadow rays walk (with the traversal kernel)", &names_on(PRESET, Slot::Storage), "bricks", false),
             ParamSpec::choice("geometry", "Geometry component", &names_on(PRESET, Slot::Geometry), "points", false),

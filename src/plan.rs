@@ -610,6 +610,14 @@ impl RendererSpec {
         }
     }
 
+    /// What the plan asks of it that the pipeline (`info`, as its worker reported it for this
+    /// graph) lacks, each with the reason: it is not asked for these.
+    pub fn not_supported(&self, run: &RunSpec, info: &mr_core::RendererInfo) -> Vec<String> {
+        let asked = self.max_lod(run, u8::MAX);
+        let why = info.lacks.iter().find_map(|l| l.strip_prefix("lod: ")).map_or_else(|| format!("it holds levels up to {}", info.max_lod), String::from);
+        (asked > info.max_lod).then(|| format!("max_lod {asked}: {why}")).into_iter().collect()
+    }
+
     /// Chunks streamed around the camera: its client's `radius`, else the run's.
     pub fn view_radius(&self, run: &RunSpec) -> u32 {
         self.like.map_or_else(|| self.client_knob("radius").map_or(run.view_radius, |r| r as u32), |l| l.radius)
@@ -1104,7 +1112,7 @@ mod tests {
         let spec = RendererSpec::from_cli("raycast-gpu:bricks+refloor+direct+none+none").unwrap();
         assert_eq!(spec.composition().unwrap().meshes, "none");
         assert_eq!(spec.label(), "raycast-gpu: bricks + refloor + no meshes");
-        let info = mr_core::RendererInfo { name: "raycast-gpu".into(), description: String::new(), tags: vec!["meshes".into()], modes: vec![mr_core::RenderMode::Unlit, mr_core::RenderMode::Lit], max_lod: 0, params: vec![] };
+        let info = mr_core::RendererInfo { name: "raycast-gpu".into(), description: String::new(), tags: vec!["meshes".into()], modes: vec![mr_core::RenderMode::Unlit, mr_core::RenderMode::Lit], max_lod: 0, lacks: vec![], params: vec![] };
         let lit_meshes = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
         assert!(!spec.supports(&info, lit_meshes) && spec.supports(&info, PassMode::LIT));
         assert!(RendererSpec::from_cli("raycast-gpu:bricks+refloor").unwrap().supports(&info, lit_meshes));

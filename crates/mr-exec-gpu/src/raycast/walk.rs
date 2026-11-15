@@ -33,6 +33,18 @@ use crate::{Core, CoreSpec, REGION_BINDING};
 pub(crate) const PRESET: &str = "raycast-gpu";
 
 
+/// What the pipeline of graph `g` supports: the preset's, less what its components lack (LOD
+/// needs every storage and kernel to handle LOD chunks and a prepass that copes).
+pub(crate) fn info_of(g: &graph::Checked, p: &InitParams) -> anyhow::Result<RendererInfo> {
+    let mut info = info();
+    if let Some(why) = lod_blocker(&Composition::of(g, &p.options()?, 0)?) {
+        info.max_lod = 0;
+        info.tags.retain(|t| t != "lod");
+        info.lacks.push(format!("lod: {why}"));
+    }
+    Ok(info)
+}
+
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
         name: PRESET.into(),
@@ -41,6 +53,7 @@ pub(crate) fn info() -> RendererInfo {
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         // LOD with pool storages and refloor (cells 2x coarser per level; was gpu-dda-lod).
         max_lod: 6,
+        lacks: vec![],
         params: mr_components::lighting_knobs(PRESET, params()),
     }
 }
@@ -174,8 +187,9 @@ struct Composition {
 const STORAGE_GROUPS: &[u32] = &[2, 4, 5, 6];
 
 impl Composition {
-    /// The composition of graph `g` (its nodes' knobs) with this preset's knobs `opts` (LOD if `max_lod`
-    /// levels are streamed and every walk handles them).
+    /// The composition of graph `g` (its nodes' knobs) with this preset's knobs `opts`, with
+    /// LOD if `max_lod` levels are streamed: refused when a walk does not handle them (the
+    /// pipeline reports that, `info_of`, and is not to be asked).
     fn of(g: &graph::Checked, opts: &Options, max_lod: u8) -> anyhow::Result<Self> {
         // Every site's walk; the primary kernel's constants are its node's knobs.
         let mut walks = Walks::of(g);
@@ -214,8 +228,7 @@ impl Composition {
         if max_lod > 0 {
             comp.set_lod(true);
             if let Some(why) = lod_blocker(&comp) {
-                comp.set_lod(false);
-                tracing::warn!("raycast-gpu: running without LOD (max_lod = {max_lod}): {why}");
+                anyhow::bail!("raycast-gpu: asked for LOD (max_lod = {max_lod}), which this pipeline lacks: {why}");
             }
         }
         Ok(comp)
@@ -640,10 +653,18 @@ mod tests {
                                 assert!(g.validate().is_ok(), "{g:?}");
                                 let ck = g.check().unwrap();
                                 let opts = Options { view: "steps".into(), max_steps: 77, ..Default::default() };
-                                let lod = *st == "bricks" && *k == "refloor" && ss == "same" && sk == "same";
+                                // LOD where every walk handles it (not the walks of their own)
+                                // and the prepass copes; asked of another, it is refused.
+                                let lod = *st == "bricks" && *k == "refloor" && ss == "same" && sk == "same" && prepass == "none" && gi == 0;
+                                let supported = lod_blocker(&Composition::of(&ck, &opts, 0).unwrap()).is_none();
+                                assert!(supported || !lod, "{g:?}");
+                                assert!(!(supported && (*st == "tree64" || ss == "tree64" || prepass == "beam" || gi == 1)), "{g:?}");
+                                match Composition::of(&ck, &opts, 4) {
+                                    Ok(c) => assert!(supported && c.lod, "LOD not refused: {g:?}"),
+                                    Err(e) => assert!(!supported && e.to_string().contains("lacks"), "{e}"),
+                                }
                                 let c = Composition::of(&ck, &opts, if lod { 4 } else { 0 }).unwrap_or_else(|e| panic!("{g:?}: {e}"));
-                                // The walks of their own lack LOD.
-                                assert_eq!(c.lod, lod && prepass == "none" && gi == 0, "{c:?}");
+                                assert_eq!(c.lod, lod, "{c:?}");
                                 // Every site's kernel walks with the knob's step limit, a constant.
                                 assert!(c.walks.kernels.iter().all(|k| k.consts.max_steps == 77), "{c:?}");
                                 // Inline and deferred shading (the record-writing walk and the

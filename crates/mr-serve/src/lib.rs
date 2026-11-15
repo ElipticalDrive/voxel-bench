@@ -116,7 +116,7 @@ enum Input {
 }
 
 fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>, waker: Waker, entries: Vec<RendererEntry>, devices: fn(&mr_core::DeviceConfig) -> mr_core::Devices) -> anyhow::Result<()> {
-    let Ok(Input::Host(HostMsg::Init { renderer: name, params, shm })) = rx.recv() else {
+    let Ok(Input::Host(HostMsg::Init { renderer: name, mut params, shm })) = rx.recv() else {
         bail!("expected Init as first message");
     };
     let entry = entries.into_iter().find(|e| e.name == name).with_context(|| format!("unknown renderer `{name}`"))?;
@@ -126,9 +126,11 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     // The process's devices, handed to the renderer.
     let devices = devices(&params.devices);
     // The renderer's region: its radius, and the levels it asked for that it supports.
+    // The renderer is asked only for what it reports: no level beyond its own.
     let supported = info.max_lod;
+    params.max_lod = params.max_lod.min(supported);
     let levels = params.client;
-    let mut client = Client::new(params.view_radius_chunks, params.max_lod.min(supported), levels);
+    let mut client = Client::new(params.view_radius_chunks, params.max_lod, levels);
     // The world generated here (`HostMsg::Generate`), and whether it generated this frame.
     let mut generating: Option<Generating> = None;
     let mut generated = false;

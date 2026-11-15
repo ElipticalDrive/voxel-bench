@@ -199,6 +199,10 @@ pub struct PassReport {
     /// for a part of the pass only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub beside_failed: Vec<String>,
+    /// What the plan asked of it that it reported it lacks, so was not asked to do (`max_lod
+    /// 2: ...`): it ran without, and its region and scores are those of what it ran.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_supported: Vec<String>,
     /// Which repetition this pass is (0-based) when `run.repeats > 1`.
     pub repeat: u32,
     pub per_frame: Vec<FrameRecord>,
@@ -274,6 +278,7 @@ pub fn table(reports: &[PassReport]) -> String {
             [
                 r.quality_like.as_ref().map(|q| format!("  like {}: {:.1} dB, {:.2} % bad", r.like.as_deref().unwrap_or("-"), q.psnr.mean, q.bad_pct.mean)),
                 (!r.beside_failed.is_empty()).then(|| format!("  ! beside failed: {}", r.beside_failed.join(", "))),
+                (!r.not_supported.is_empty()).then(|| format!("  ! not supported: {}", r.not_supported.join("; "))),
             ]
             .into_iter()
             .flatten()

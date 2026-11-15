@@ -45,6 +45,7 @@ pub(crate) fn info() -> RendererInfo {
         tags: vec!["cpu".into(), "raster".into(), "software".into(), "visibility-buffer".into(), "modular".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
+        lacks: vec![],
         params: mr_components::lighting_knobs(PRESET, params()),
     }
 }

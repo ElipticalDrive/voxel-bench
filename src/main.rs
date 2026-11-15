@@ -338,6 +338,8 @@ impl Ctx<'_> {
                     report.tags = worker.info.tags.clone();
                     let i = lanes.len();
                     let region = spec.region(run, worker.info.max_lod);
+                    // What the plan asks beyond what the pipeline reports is not asked of it.
+                    report.not_supported = spec.not_supported(run, &worker.info);
                     let mut lane = Lane::new(worker, region, report, i, w, h);
                     // A reference records for the region it was given; a pipeline given another
                     // region than the full-resolution reference is scored against that one too.

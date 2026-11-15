@@ -94,6 +94,9 @@ pub struct Observation {
     /// The lanes of its pass that failed part-way (its timings shared the machine with them).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub beside_failed: Vec<String>,
+    /// What the plan asked of it that it lacks and ran without.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_supported: Vec<String>,
     /// Throughput and pacing: completed frames per second, and the time between
     /// completions (mean, p50, p99).
     pub fps: f64,
@@ -196,6 +199,7 @@ impl Observation {
             repeat: r.repeat,
             error: r.error.clone(),
             beside_failed: r.beside_failed.clone(),
+            not_supported: r.not_supported.clone(),
             fps: r.fps,
             frame_ms: r.frame_interval_ms.as_ref().map(|s| s.mean),
             frame_p50_ms: r.frame_interval_ms.as_ref().map(|s| s.p50),

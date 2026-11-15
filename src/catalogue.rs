@@ -399,6 +399,7 @@ mod tests {
             repeat: 0,
             error: None,
             beside_failed: vec![],
+            not_supported: vec![],
             fps,
             frame_ms: None,
             frame_p50_ms: None,

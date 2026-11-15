@@ -122,6 +122,7 @@ pub fn info() -> RendererInfo {
         tags: vec!["cpu".into(), "raycast".into(), "reference".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
+        lacks: vec![],
         params: params(),
     }
 }

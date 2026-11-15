@@ -55,6 +55,7 @@ pub(crate) fn info() -> RendererInfo {
         tags: vec!["cpu".into(), "raycast".into(), "simd".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
+        lacks: vec![],
         params: mr_components::lighting_knobs(PRESET, params()),
     }
 }
