@@ -183,6 +183,10 @@ pub struct PassReport {
     pub memory: MemoryReport,
     pub quality: Option<QualitySummary>,
     pub error: Option<String>,
+    /// The lanes of its pass that failed part-way: its timings shared the machine with them
+    /// for a part of the pass only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub beside_failed: Vec<String>,
     /// Which repetition this pass is (0-based) when `run.repeats > 1`.
     pub repeat: u32,
     pub per_frame: Vec<FrameRecord>,
@@ -237,7 +241,7 @@ pub fn table(reports: &[PassReport]) -> String {
         let interval = r.frame_interval_ms.as_ref();
         let _ = writeln!(
             s,
-            "{:<22} {:<6} {:>8.1} {:>9} {:>9} {:>9} {:>8.0} {:>9.0} {:>8} {:>7} {:>7} {:>8}",
+            "{:<22} {:<6} {:>8.1} {:>9} {:>9} {:>9} {:>8.0} {:>9.0} {:>8} {:>7} {:>7} {:>8}{}",
             r.label,
             mode,
             r.fps,
@@ -250,6 +254,7 @@ pub fn table(reports: &[PassReport]) -> String {
             o(r.quality.as_ref().map(|q| q.bad_pct.mean), 2),
             o(r.peak_rss_mb, 0),
             o((r.memory.gpu_bytes > 0).then(|| r.memory.gpu_bytes as f64 / 1048576.0), 0),
+            if r.beside_failed.is_empty() { String::new() } else { format!("  ! beside failed: {}", r.beside_failed.join(", ")) },
         );
     }
     s

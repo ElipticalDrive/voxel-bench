@@ -91,6 +91,9 @@ pub struct Observation {
     pub options: serde_json::Value,
     pub repeat: u32,
     pub error: Option<String>,
+    /// The lanes of its pass that failed part-way (its timings shared the machine with them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub beside_failed: Vec<String>,
     /// Throughput and pacing: completed frames per second, and the time between
     /// completions (mean, p50, p99).
     pub fps: f64,
@@ -184,6 +187,7 @@ impl Observation {
             options: serde_json::to_value(&r.options).unwrap_or_default(),
             repeat: r.repeat,
             error: r.error.clone(),
+            beside_failed: r.beside_failed.clone(),
             fps: r.fps,
             frame_ms: r.frame_interval_ms.as_ref().map(|s| s.mean),
             frame_p50_ms: r.frame_interval_ms.as_ref().map(|s| s.p50),

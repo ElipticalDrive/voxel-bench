@@ -375,7 +375,7 @@ impl Ctx<'_> {
         }
         for lane in lanes {
             let mut r = lane.report;
-            if let Err(e) = &result {
+            if let (None, Err(e)) = (&r.error, &result) {
                 r.error = Some(format!("{e:#}"));
             }
             lane.worker.shutdown();
@@ -526,6 +526,9 @@ fn view(plan: &Plan, ui: UiHandle) -> anyhow::Result<()> {
     let mut driver = InteractiveDriver::new(ui.clone(), scene, mode);
     let mut out = Outputs::new(Some(ui), plan::Readback::Auto, None, None, u32::MAX);
     run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, &plan.run, &mut out).context("view session")?;
+    if lanes.iter().all(|l| l.report.error.is_some()) {
+        bail!("every renderer failed");
+    }
     for l in lanes {
         l.worker.shutdown();
     }

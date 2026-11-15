@@ -28,7 +28,8 @@ for a in args:
         q = r.get("quality") or {}; g = r.get("gpu_ms") or {}; c = r.get("cpu_ms") or {}; fi = r.get("frame_interval_ms") or {}
         ps = q.get("psnr", {}).get("mean"); bad = q.get("bad_pct", {}).get("mean")
         print(f"{r['label'][:44]:44} {r['mode']:6} fps {r['fps']:7.1f} p99 {fi.get('p99', 0):6.2f} gpu {g.get('mean', 0) or 0:6.2f} cpu {c.get('mean', 0) or 0:6.2f}"
-              + (f" psnr {ps:5.1f} bad {bad:5.2f}%" if ps is not None else "") + f" r{r.get('repeat', 0)}")
+              + (f" psnr {ps:5.1f} bad {bad:5.2f}%" if ps is not None else "") + f" r{r.get('repeat', 0)}"
+              + (f"  ! beside failed: {', '.join(r['beside_failed'])}" if r.get("beside_failed") else ""))
         st = r.get("stages") or []
         if st:
             def ms(x, k):

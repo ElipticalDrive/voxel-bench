@@ -407,6 +407,21 @@ fn pump(lane: &mut Lane, out: &mut Outputs, start: Instant, block: bool) -> anyh
     Ok(())
 }
 
+/// A lane's own failure (its worker's error, its exit, its silence) ends that lane, not the pass:
+/// its report carries the error and the other lanes go on.
+fn settle(lane: &mut Lane, r: anyhow::Result<()>) {
+    if let Err(e) = r {
+        tracing::error!("[{}] failed; its pass goes on without it: {e:#}", lane.report.label);
+        lane.report.error = Some(format!("{e:#}"));
+        lane.in_flight.clear();
+    }
+}
+
+/// The lanes still running.
+fn live(lanes: &mut [Lane]) -> impl Iterator<Item = &mut Lane> {
+    lanes.iter_mut().filter(|l| l.report.error.is_none())
+}
+
 fn flush_lane(lane: &mut Lane, out: &mut Outputs, start: Instant) -> anyhow::Result<()> {
     lane.worker.send(HostMsg::Flush)?;
     loop {
@@ -440,10 +455,14 @@ pub fn run_pass(
     let streams = lanes.iter().any(|l| !l.region.generates);
     let radii = crate::stream::union(lanes.iter().map(|l| l.region.streamed()), 0);
     let mut server = Streamer::new(radii.clone(), run.budget());
-    for l in lanes.iter() {
-        l.worker.send(HostMsg::Follow { radii: radii.clone() })?;
+    for l in lanes.iter_mut() {
+        let r = l.worker.send(HostMsg::Follow { radii: radii.clone() });
+        settle(l, r);
     }
     while let Some(input) = driver.next()? {
+        if live(lanes).next().is_none() {
+            break;
+        }
         // Mesh mode: geometry once, instances whenever they change.
         let instances = input.meshes.filter(|i| sent_instances.as_ref() != Some(i));
         let edits = resolve_edits(world, input.events.edits);
@@ -478,25 +497,29 @@ pub fn run_pass(
         edit_stream.extend(tail);
         // What crossed the link to each client.
         let loads = stream.iter().filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. })).count() as u64;
-        for lane in lanes.iter_mut() {
+        for lane in live(lanes) {
             let stream = if lane.region.generates { &edit_stream } else { &stream };
             if !lane.region.generates {
                 lane.report.chunks_sent += loads;
             }
-            if first && !meshes.is_empty() {
-                lane.worker.send(HostMsg::Meshes(MeshUpdate::Meshes(meshes.to_vec())))?;
-            }
-            if let Some(i) = &instances {
-                lane.worker.send(HostMsg::Meshes(MeshUpdate::Instances(i.clone())))?;
-            }
-            if first {
-                let t = Instant::now();
-                send_stream(&lane.worker, stream.clone(), input.camera.position, input.time)?;
-                lane.worker.flush(|m| bail!("unexpected {m:?} during initial load"))?;
-                lane.report.initial_load_ms = t.elapsed().as_secs_f64() * 1e3;
-            } else if !stream.is_empty() {
-                send_stream(&lane.worker, stream.clone(), input.camera.position, input.time)?;
-            }
+            let r = (|| {
+                if first && !meshes.is_empty() {
+                    lane.worker.send(HostMsg::Meshes(MeshUpdate::Meshes(meshes.to_vec())))?;
+                }
+                if let Some(i) = &instances {
+                    lane.worker.send(HostMsg::Meshes(MeshUpdate::Instances(i.clone())))?;
+                }
+                if first {
+                    let t = Instant::now();
+                    send_stream(&lane.worker, stream.clone(), input.camera.position, input.time)?;
+                    lane.worker.flush(|m| bail!("unexpected {m:?} during initial load"))?;
+                    lane.report.initial_load_ms = t.elapsed().as_secs_f64() * 1e3;
+                } else if !stream.is_empty() {
+                    send_stream(&lane.worker, stream.clone(), input.camera.position, input.time)?;
+                }
+                Ok(())
+            })();
+            settle(lane, r);
         }
         first = false;
         if instances.is_some() {
@@ -517,18 +540,24 @@ pub fn run_pass(
         }
         if input.recorded && measure_start.is_none() {
             // Let warm-up frames drain so they don't pollute the first measurements.
-            for lane in lanes.iter_mut() {
+            for lane in live(lanes) {
                 while !lane.in_flight.is_empty() {
-                    pump(lane, out, start, true)?;
+                    let r = pump(lane, out, start, true);
+                    settle(lane, r);
                 }
             }
             measure_start = Some(Instant::now());
         }
-        for lane in lanes.iter_mut() {
+        for lane in live(lanes) {
             while lane.in_flight.len() >= run.in_flight.max(1) as usize {
-                pump(lane, out, start, true)?;
+                let r = pump(lane, out, start, true);
+                settle(lane, r);
             }
-            pump(lane, out, start, false)?;
+            let r = pump(lane, out, start, false);
+            settle(lane, r);
+            if lane.report.error.is_some() {
+                continue;
+            }
             let readback = out.wants(input.frame, input.recorded);
             let slot = if readback { lane.worker.take_slot() } else { None };
             let id = lane.next_id;
@@ -536,14 +565,16 @@ pub fn run_pass(
             let req = FrameRequest { frame_id: id, camera: input.camera, mode: input.mode.lighting, meshes: input.mode.meshes, readback: slot.is_some() };
             let backlog = if streams && !lane.region.generates { server.pending_within(&lane.region.streamed()) as u32 } else { 0 };
             lane.in_flight.push_back(InFlight { id, frame: input.frame, mode: input.mode, sent: Instant::now(), recorded: input.recorded, time: input.time, backlog });
-            lane.worker.send(HostMsg::Render { req, slot, time: input.time })?;
+            let r = lane.worker.send(HostMsg::Render { req, slot, time: input.time });
+            settle(lane, r);
         }
         rendered += 1;
     }
-    for lane in lanes.iter_mut() {
-        flush_lane(lane, out, start)?;
-        if !lane.in_flight.is_empty() {
-            bail!("[{}] flush returned with frames in flight", lane.report.label);
+    for lane in live(lanes) {
+        let r = flush_lane(lane, out, start).and_then(|()| if lane.in_flight.is_empty() { Ok(()) } else { Err(anyhow::anyhow!("flush returned with frames in flight")) });
+        settle(lane, r);
+        if lane.report.error.is_some() {
+            continue;
         }
         let ms = measure_start.unwrap_or(start);
         let ms_off = ms.duration_since(start).as_secs_f64() * 1e3;
@@ -552,12 +583,12 @@ pub fn run_pass(
             lane.report.missed_deadlines = Some(missed);
         }
         lane.report.peak_rss_mb = lane.worker.peak_rss().map(|b| b as f64 / 1048576.0);
-        lane.worker.send(HostMsg::QueryMemory)?;
+        let _ = lane.worker.send(HostMsg::QueryMemory);
         if let Ok(WorkerMsg::Memory(m)) = recv_timeout(&lane.worker.rx, Duration::from_secs(30)) {
             lane.report.memory = m;
         }
         for (i, rx) in lane.pending_quality.drain(..) {
-            lane.report.per_frame[i].quality = Some(rx.recv()?);
+            lane.report.per_frame[i].quality = rx.recv().ok();
         }
         let completions = std::mem::take(&mut lane.completions);
         lane.report.finish(&completions);
@@ -565,6 +596,11 @@ pub fn run_pass(
         if lane.region.generates {
             lane.report.update_ns_per_byte = None;
         }
+    }
+    // The survivors shared the machine with a lane that stopped part-way: their timings say so.
+    let failed: Vec<String> = lanes.iter().filter(|l| l.report.error.is_some()).map(|l| l.report.label.clone()).collect();
+    for lane in live(lanes) {
+        lane.report.beside_failed = failed.clone();
     }
     Ok(())
 }

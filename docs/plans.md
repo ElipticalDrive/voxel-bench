@@ -29,6 +29,8 @@ in_flight = 2           # frames a renderer may have outstanding
 pacing = "max"          # or { fps = 60 }
 streaming = "complete"  # or { budget = 400 } chunk loads per frame
 parallel = false        # true: all renderers at once (side by side in the window)
+                        # a renderer that fails there stops alone; the others' reports
+                        # name it (`beside_failed`): they shared the machine with it part-way
 isolation = "process"   # or "thread"
 launcher = []           # a prefix for worker commands, e.g. ["nice", "-n", "5"]
 repeats = 1             # >1: passes repeat round-robin; medians and spread are reported
