@@ -725,7 +725,7 @@ mod tests {
     fn every_cpu_graph_has_a_source() {
         for st in mr_components::graph::CPU_RAYCAST.names(mr_components::Slot::Storage) {
             for k in mr_components::graph::CPU_RAYCAST.names(mr_components::Slot::Traversal) {
-                let b = bake(&spec(&format!("raycast-cpu:{st}+{k}"), &[("packet", "4".into())])).unwrap().unwrap();
+                let b = bake(&spec(&format!("raycast-cpu,storage={st},kernel={k}"), &[("packet", "4".into())])).unwrap().unwrap();
                 let s = source(&b).unwrap();
                 assert!(s.contains("NATIVE: bool = true") && s.contains(&format!("raycast_entry::<{}, Baked, [u8; 4]>", mr_exec_cpu::storage_type(st).unwrap())), "{s}");
                 assert_eq!(s.contains("PACKET: Option<usize> = Some(4)"), k == "refloor", "{s}");
@@ -733,16 +733,16 @@ mod tests {
                 assert!(s.contains(&format!("(\"storage\", \"\\\"{st}\\\"\")")), "{s}");
             }
         }
-        let s = source(&bake(&spec("raycast-cpu:prefix+incremental,shadow=refloor,post=aces", &[("shadows", "sun".into()), ("skip4", false.into())])).unwrap().unwrap()).unwrap();
+        let s = source(&bake(&spec("raycast-cpu,storage=prefix,kernel=incremental,shading.shadow=traversal:refloor,traversal.storage=storage,+post=post:aces", &[("shadows", "sun".into()), ("skip4", false.into())])).unwrap().unwrap()).unwrap();
         for want in ["SHADOW: Option<Option<(mr_exec_cpu::Traversal, u32)>> = Some(Some((mr_exec_cpu::Traversal::Refloor, 0b111111)))", "LEVELS: Option<u32> = Some(0b111011)", "Tone::Aces", "Shadows::Sun", "(\"skip4\", \"false\")"] {
             assert!(s.contains(want), "{want} in {s}");
         }
         let s = source(&bake(&spec("columns-cpu", &[])).unwrap().unwrap()).unwrap();
         assert!(s.contains("columns_entry::<Baked, [u8; 4]>") && s.contains("Shadows::All") && s.contains("Tone::Clamp"), "{s}");
-        let s = source(&bake(&spec("raster-cpu:naive+raster", &[])).unwrap().unwrap()).unwrap();
+        let s = source(&bake(&spec("raster-cpu,geometry=naive", &[])).unwrap().unwrap()).unwrap();
         assert!(s.contains("raster_entry::<Baked, [u8; 4]>") && s.contains("KNOBS: &'static [(&'static str, &'static str)] = &[];") && !s.contains("TONE"), "{s}");
         // `hdr`: every lane writes float pixels.
-        for (r, entry) in [("raycast-cpu,post=hdr", "raycast_entry::<mr_components::storage::bricks::cpu::U16, Baked, mr_exec_cpu::Half4>"), ("columns-cpu,post=hdr", "columns_entry::<Baked, mr_exec_cpu::Half4>"), ("raster-cpu,post=hdr", "raster_entry::<Baked, mr_exec_cpu::Half4>")] {
+        for (r, entry) in [("raycast-cpu,+post=post:hdr", "raycast_entry::<mr_components::storage::bricks::cpu::U16, Baked, mr_exec_cpu::Half4>"), ("columns-cpu,+post=post:hdr", "columns_entry::<Baked, mr_exec_cpu::Half4>"), ("raster-cpu,+post=post:hdr", "raster_entry::<Baked, mr_exec_cpu::Half4>")] {
             let s = source(&bake(&spec(r, &[])).unwrap().unwrap()).unwrap();
             assert!(s.contains(entry), "{entry} in {s}");
         }
@@ -801,19 +801,19 @@ mod tests {
     #[test]
     fn the_graph_is_the_key() {
         let key = |r: &str, o: &[(&str, toml::Value)]| bake(&spec(r, o)).unwrap().unwrap().graph.key().unwrap();
-        assert_ne!(key("raycast-cpu:prefix+refloor", &[("packet", "4".into())]), key("raycast-cpu:prefix+refloor", &[("packet", "8".into())]));
-        assert_eq!(key("raycast-cpu:prefix+incremental", &[("packet", "4".into())]), key("raycast-cpu:prefix+incremental", &[("packet", "8".into())]), "packet is moot for incremental");
-        assert_ne!(key("raycast-cpu:prefix+incremental", &[("exact", false.into())]), key("raycast-cpu:prefix+incremental", &[]));
-        assert_eq!(key("raycast-cpu:prefix+refloor", &[("exact", false.into())]), key("raycast-cpu:prefix+refloor", &[]), "exact is moot for refloor");
-        assert_eq!(key("raycast-cpu:prefix+refloor", &[("view", "steps".into())]), key("raycast-cpu:prefix+refloor", &[]), "not baked by the generated code");
-        assert_ne!(key("raycast-cpu:prefix+refloor", &[]), key("raycast-cpu:bricks+refloor", &[]));
-        assert_ne!(key("raycast-cpu:prefix+refloor", &[]), key("raycast-cpu:prefix+refloor,shadow=incremental", &[]), "the shadow rays' own kernel");
-        assert_ne!(key("raycast-cpu:prefix+incremental", &[("skip8", false.into())]), key("raycast-cpu:prefix+incremental", &[]));
-        assert_eq!(key("raycast-cpu:prefix+refloor", &[("skip8", false.into())]), key("raycast-cpu:prefix+refloor", &[]), "levels are moot for refloor");
-        assert_ne!(key("raycast-cpu:prefix+refloor", &[("shadows", "sun".into())]), key("raycast-cpu:prefix+refloor", &[]));
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=refloor", &[("packet", "4".into())]), key("raycast-cpu,storage=prefix,kernel=refloor", &[("packet", "8".into())]));
+        assert_eq!(key("raycast-cpu,storage=prefix,kernel=incremental", &[("packet", "4".into())]), key("raycast-cpu,storage=prefix,kernel=incremental", &[("packet", "8".into())]), "packet is moot for incremental");
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=incremental", &[("exact", false.into())]), key("raycast-cpu,storage=prefix,kernel=incremental", &[]));
+        assert_eq!(key("raycast-cpu,storage=prefix,kernel=refloor", &[("exact", false.into())]), key("raycast-cpu,storage=prefix,kernel=refloor", &[]), "exact is moot for refloor");
+        assert_eq!(key("raycast-cpu,storage=prefix,kernel=refloor", &[("view", "steps".into())]), key("raycast-cpu,storage=prefix,kernel=refloor", &[]), "not baked by the generated code");
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=refloor", &[]), key("raycast-cpu,storage=bricks,kernel=refloor", &[]));
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=refloor", &[]), key("raycast-cpu,storage=prefix,kernel=refloor,shading.shadow=traversal:incremental,traversal.storage=storage", &[]), "the shadow rays' own kernel");
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=incremental", &[("skip8", false.into())]), key("raycast-cpu,storage=prefix,kernel=incremental", &[]));
+        assert_eq!(key("raycast-cpu,storage=prefix,kernel=refloor", &[("skip8", false.into())]), key("raycast-cpu,storage=prefix,kernel=refloor", &[]), "levels are moot for refloor");
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=refloor", &[("shadows", "sun".into())]), key("raycast-cpu,storage=prefix,kernel=refloor", &[]));
         assert_ne!(key("columns-cpu", &[("shadows", "none".into())]), key("columns-cpu", &[]));
         // The check run's lanes: the bake's graph in a plan bakes the same pipeline.
-        for (r, o) in [("raycast-cpu:hier+incremental", vec![("exact", toml::Value::from(false))]), ("raycast-cpu:bits+refloor,shadow=incremental", vec![("packet", "8".into())])] {
+        for (r, o) in [("raycast-cpu,storage=hier,kernel=incremental", vec![("exact", toml::Value::from(false))]), ("raycast-cpu,storage=bits,kernel=refloor,shading.shadow=traversal:incremental,traversal.storage=storage", vec![("packet", "8".into())])] {
             let b = bake(&spec(r, &o)).unwrap().unwrap();
             let mut s = RendererSpec::new("raycast-cpu");
             s.graph = Some(b.graph.clone());
@@ -821,7 +821,7 @@ mod tests {
             assert_eq!(bake(&s).unwrap().unwrap(), b, "{r}");
         }
         // The values are the nodes': two kernels with two values of a baked knob are no one build.
-        let mut g = bake(&spec("raycast-cpu:prefix+incremental,shadow=incremental", &[])).unwrap().unwrap().graph;
+        let mut g = bake(&spec("raycast-cpu,storage=prefix,kernel=incremental,shading.shadow=traversal:incremental,traversal.storage=storage", &[])).unwrap().unwrap().graph;
         let kernels: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == mr_components::graph::Role::Traversal).map(|(id, _)| id.clone()).collect();
         assert_eq!(kernels.len(), 2, "{kernels:?}");
         g.nodes.get_mut(&kernels[0]).unwrap().knobs.insert("exact".into(), false.into());

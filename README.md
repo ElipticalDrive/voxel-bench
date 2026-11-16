@@ -41,8 +41,8 @@ shader compiler is linked into the binary.
 multirenderer                                    # the GUI (or: gui plans/terrain.toml)
 multirenderer list                               # presets, their slots and the components
 multirenderer run plans/terrain.toml             # benchmark, compare with the reference, report
-multirenderer view plans/terrain.toml -r raycast-gpu:prefix+incremental -r raster-gpu:bricks+greedy+raster
-multirenderer graph raycast-gpu:prefix+incremental   # a pipeline as a graph
+multirenderer view plans/terrain.toml -r raycast-gpu,storage=prefix,kernel=incremental -r raster-gpu
+multirenderer graph raycast-gpu,storage=prefix,kernel=incremental   # a pipeline as a graph
 multirenderer diff a.png b.png --out diff.png
 ```
 

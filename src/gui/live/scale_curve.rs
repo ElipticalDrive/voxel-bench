@@ -10,7 +10,7 @@ use super::*;
 #[test]
 #[ignore]
 fn scale_curve() {
-    let renderer = std::env::var("RENDERER").unwrap_or("raycast-gpu:bricks+refloor".into());
+    let renderer = std::env::var("RENDERER").unwrap_or("raycast-gpu".into());
     let mut plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/terrain.toml")), &["run.isolation=\"thread\"".into(), "run.resolution=[1280,720]".into()]).unwrap();
     plan.renderers = vec![RendererSpec::from_cli(&renderer).unwrap()];
     let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 150, events: false, fps_cap: 0.0, display_hz: 10.0, probe_interval: 0.0, windows: 0, paper_white: 1.0 };

@@ -171,7 +171,7 @@ fn live_session_end_to_end() {
 /// A restart from the plan keeps the knobs changed since, unless the plan changes them.
 #[test]
 fn restarts_keep_knobs() {
-    let given = RendererSpec::from_cli("raycast-gpu:bricks+refloor").unwrap();
+    let given = RendererSpec::from_cli("raycast-gpu").unwrap();
     let mut now = given.clone();
     now.options.insert("max_steps".into(), toml::Value::Integer(300));
     now.options.insert("accumulate".into(), toml::Value::Boolean(false));
@@ -181,7 +181,7 @@ fn restarts_keep_knobs() {
     assert_eq!(value(&kept, "max_steps"), Some(toml::Value::Integer(300)));
     assert_eq!(value(&kept, "accumulate"), Some(toml::Value::Boolean(false)));
     // The plan changes one knob and the storage: its knob and components win.
-    let mut new = RendererSpec::from_cli("raycast-gpu:prefix+refloor").unwrap();
+    let mut new = RendererSpec::from_cli("raycast-gpu,storage=prefix").unwrap();
     new.options.insert("max_steps".into(), toml::Value::Integer(500));
     let kept = keep_knobs(&given, &now, new);
     assert_eq!((value(&kept, "max_steps"), value(&kept, "accumulate")), (Some(toml::Value::Integer(500)), Some(toml::Value::Boolean(false))));

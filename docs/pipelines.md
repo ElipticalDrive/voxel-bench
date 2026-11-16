@@ -58,29 +58,8 @@ stands alone, on purpose.
 
 ## Writing a pipeline
 
-Four forms, from shortest to most general:
-
-**Command line:** a preset and its required slots in order, then optionally shading,
-prepass and meshes; other sites after commas:
-
-```sh
--r raycast-gpu:prefix+incremental
--r raster-gpu:bricks+greedy+visbuffer
--r raycast-gpu:bricks+refloor+pathtrace,bounce=tree64/sphere
--r raycast-gpu:bricks+refloor,link=net(latency_ms=30,loss=0.01),client=derive(radius=4,max_lod=2)
-```
-
-**Compose form** in a plan, one field per slot; `preset` is the starting point, slots left out take its default:
-
-```toml
-[[renderer]]
-compose = { preset = "raycast-gpu", storage = "prefix", traversal = "incremental", shading = "direct" }
-sites = { shadow = "distance/sphere", link = "net(latency_ms=30, bandwidth_mbps=200)" }
-options = { shadows = "sun" }
-```
-
-A site's value is another site (shared), a kernel (over the lead storage),
-`<storage>/<kernel>`, or `<site>/<kernel>`.
+A pipeline is written as a graph: a graph file and the edits made to it (in a plan, or on
+the command line), or the graph itself. An older flat form still reads.
 
 **A graph file and edits**: the graph of a file, changed step by step. The file is one
 shipped with the bench, by name (`pipelines/*.toml`, built into the binary: one default
@@ -121,6 +100,66 @@ list; whether the edited graph is a pipeline is decided as for any graph. A rend
 this way is saved this way while its graph is still what the file and the edits give
 (after a change in the editor it is saved by what it is). `edits` also follow an inline
 `graph`.
+
+**Command line** (`view -r`, `graph`): the same, `<graph file>[,<edit>,...]`, the edits
+in short spellings or as the plan's inline tables:
+
+```sh
+-r raycast-gpu,storage=prefix,kernel=incremental
+-r raster-gpu,geometry=cubes,draw=visbuffer
+-r raycast-gpu,shading=pathtrace,shading.bounces=2
+-r raycast-gpu,shading=pathtrace,shading.bounce=traversal:sphere,traversal.storage=storage
+-r raycast-gpu,+client=client:derive,client.radius=4,client.max_lod=2,-meshes
+-r 'raycast-gpu,{node="draw",input="faces",when="prev"}'
+-r my-graphs/far-shadows.toml,shading@gpu1
+```
+
+| Short spelling | Edit |
+|---|---|
+| `node=component` | `{ node, component }` |
+| `node.input=source` | `{ node, input, from }`: `source` an existing node, or a new one written `role:component`; empty: `{ node, unbind }` |
+| `node.knob=value` | `{ node, knob, value }` (the value as TOML, else a string) |
+| `node@device` | `{ node, device }` (`node@default`: unset) |
+| `+id=role:component` | `{ add, role, component }` |
+| `-node` | `{ remove }` |
+| `{...}` | the table itself (APIs, timings, several knobs at once) |
+
+Whether the name after a node's last dot is an input or a knob is read off the node's
+component. Commas inside braces, brackets, parentheses and quotes belong to the edit. A
+first part that is neither a shipped graph nor a file is a standalone renderer's name
+(`-r cpu-reference`).
+
+**Labels.** A renderer without a `label` of its own is labelled by its graph alone: the
+executor's device, then its nodes, each after the nodes it reads (the main path first), as
+its component, with `@device` where it runs elsewhere than on the executor's device, `:api`
+where that is a choice off the default, and in parentheses its late inputs and its knobs:
+
+```
+gpu: bricks + refloor + composite + raycast + direct                 # pipelines/raycast-gpu.toml
+gpu: greedy@cpu + faces + bricks + refloor + depth + raster + direct # pipelines/raster-gpu.toml
+gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct
+gpu: net(latency_ms=30.0) + derive(radius=4) + bricks + refloor + raycast + direct + aces
+```
+
+Left out are the nodes that say nothing: the world, the generator on the server, a `free`
+link, a `pick` client without knobs, a `clamp` post. Options are not in the label (reports
+show them beside it); two graphs that differ only in which of two like nodes an input reads
+share a label (their keys differ: give one a `label`). Labels are for reading, not for
+writing a pipeline: reports of older runs keep the labels they were written with
+(`raycast-gpu: prefix + incremental`).
+
+**The older flat form** (`compose` and `sites`; it goes away, write graphs): one field per
+slot of a named starting point, slots left out at its default:
+
+```toml
+[[renderer]]
+compose = { preset = "raycast-gpu", storage = "prefix", traversal = "incremental", shading = "direct" }
+sites = { shadow = "distance/sphere", link = "net(latency_ms=30, bandwidth_mbps=200)" }
+options = { shadows = "sun" }
+```
+
+A site's value is another site (shared), a kernel (over the lead storage),
+`<storage>/<kernel>`, or `<site>/<kernel>`.
 
 The nodes every pipeline has without writing them (the client, the link, the generator, the
 post) are changed by adding them: `{ add = "client", role = "client", component = "pick" }`

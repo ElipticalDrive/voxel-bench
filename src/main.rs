@@ -78,8 +78,8 @@ enum Cmd {
     /// List available renderers.
     List,
     /// A pipeline as a graph: its nodes (TOML, for a plan's
-    /// `[renderer.graph]`), sites form, canonical form and cache key. The renderer as for
-    /// `view -r` (`raycast-gpu:prefix+incremental,shadow=tree64/sphere`).
+    /// `[renderer.graph]`), label, canonical form, cache key and schedule. The renderer as for
+    /// `view -r`: a graph file and edits (`raycast-gpu,storage=prefix,kernel=incremental`).
     /// With `--keys`: reads observations (JSON lines) on stdin and prints each one's graph
     /// key (`-` if it has none), for records written before they carried one.
     Graph {
@@ -145,16 +145,11 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Graph { renderer, .. } => {
-            let renderer = renderer.context("which renderer? e.g. `graph raycast-gpu:prefix+incremental`")?;
+            let renderer = renderer.context("which renderer? e.g. `graph raycast-gpu,storage=prefix,kernel=incremental`")?;
             let mut spec = plan::RendererSpec::from_cli(&renderer)?;
             spec.resolve()?;
-            let g = spec.pipeline().with_context(|| format!("`{renderer}` is not a composition"))?;
+            let g = spec.pipeline().with_context(|| format!("`{renderer}` is not a pipeline (a graph file, then edits)"))?;
             println!("# {}\n{}", spec.label(), toml::to_string(&g)?);
-            let sh = g.shorthand().map_err(anyhow::Error::msg)?;
-            if sh.exact {
-                let sites: Vec<String> = sh.sites.iter().map(|(k, v)| format!(",{k}={v}")).collect();
-                println!("# sites form: compose = {} {}", serde_json::to_string(&sh.compose)?, sites.concat());
-            }
             println!("# canonical: {}\n# key: {}", g.canonical().map_err(anyhow::Error::msg)?, g.key().map_err(anyhow::Error::msg)?);
             let schedule = g.check().and_then(|c| c.schedule()).map_err(anyhow::Error::msg)?;
             println!("# schedule (passes in frame order, [fused nodes compiled in]):");
@@ -162,7 +157,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::List => {
-            println!("Renderers are assembled from components (plan: compose = {{ preset, storage, geometry, prepass, visibility, shading, meshes }};\nCLI: -r preset:<its required slots in order>[+shading[+prepass[+meshes]]], e.g. raycast-gpu:prefix+incremental, raycast-gpu:bricks+refloor+direct+beam).\nSites bound otherwise (shadow, bounce, exposure, meshes-shadow; plan: sites = {{ ... }}; CLI: after commas):\n  raycast-gpu:bricks+refloor+pathtrace,bounce=tree64/sphere — a site's value is another site (shared), <kernel> (over the lead's storage),\n  <storage>/<kernel> or <site>/<kernel>; `multirenderer graph <renderer>` shows the graph.\nThe world's side: link = free | net(latency_ms=30,jitter_ms=10,bandwidth_mbps=200,loss=0.01,reorder=true,seed=1),\n  client = pick | derive, with its region as knobs: client=derive(radius=4,max_lod=2) (unset: run.view_radius, run.max_lod).\n\nPresets (technique-device: starting points; the pipeline is the graph, which may take any valid shape):");
+            println!("A renderer is a pipeline graph: a graph file and the edits made to it.\n  plan: graph = \"raycast-gpu\", edits = [{{ node = \"storage\", component = \"tree64\" }}] (`vary` sweeps them; docs/plans.md)\n  CLI:  -r <graph>[,<edit>,...] with <graph> a shipped file's name or a path, and an edit one of\n          node=component          -r raycast-gpu,storage=prefix,kernel=incremental\n          node.input=source       an existing node, or a new one as role:component (its id: the role's name); empty: unbound\n                                  -r raycast-gpu,shading=pathtrace,shading.bounce=traversal:sphere,traversal.storage=storage\n          node.knob=value         -r raycast-gpu,shading=pathtrace,shading.bounces=2\n          node@device             -r raycast-gpu,shading@gpu1\n          -node                   -r raycast-gpu,-meshes\n          {{...}}                   any edit as the plan's inline table: -r 'raycast-gpu,{{node=\"kernel\",api=\"rayquery\"}}'\n  `multirenderer graph <renderer>` prints the graph, its label, key and schedule.\n\nShipped graph files (pipelines/*.toml; starting points: the pipeline is the graph, which may take any valid shape):");
             for b in mr_components::graph::REGIONS {
                 let slots: Vec<String> = b.base.iter().map(|(s, d)| format!("{}={d}", s.name())).collect();
                 let at: Vec<String> = b.base.iter().map(|(s, _)| format!("{} {}", s.name(), b.place(*s).label())).collect();

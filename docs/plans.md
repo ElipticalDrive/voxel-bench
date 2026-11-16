@@ -111,7 +111,7 @@ Any key can be overridden from the command line with `-s dotted.key=value`, and 
 
 ```sh
 multirenderer run plans/terrain.toml -s run.resolution=[3840,2160] \
-  -s 'renderer=[{compose={preset="raycast-gpu",storage="prefix"}}]' -u output.save
+  -s 'renderer=[{graph="raycast-gpu",edits=[{node="storage",component="prefix"}]}]' -u output.save
 ```
 
 ## Run output

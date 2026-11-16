@@ -407,7 +407,7 @@ mod tests {
             assert!(exact, "{}: {sites:?} has no shorthand", c.label());
             let again = Graph::from_composition(&c2).unwrap().with_sites(&s2).unwrap();
             assert_eq!(again.canonical(), g.canonical(), "{} {sites:?} → {} {s2:?}", c.label(), c2.label());
-            assert!(g.label().unwrap().starts_with(&c2.label()));
+            assert!(g.label().unwrap().starts_with(&format!("{}: ", g.runs_on())));
             keys.insert(g.key().unwrap());
             true
         };
@@ -433,10 +433,10 @@ mod tests {
         // Labels and errors.
         let pt = Composition { shading: "pathtrace".into(), ..Default::default() };
         let g = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("bounce".into(), "tree64/sphere".into())])).unwrap();
-        assert_eq!(g.label().unwrap(), "raycast-gpu: bricks + refloor + pathtrace, bounce = tree64/sphere");
+        assert_eq!(g.label().unwrap(), "gpu: bricks + refloor + composite + raycast + tree64 + sphere + pathtrace");
         // Rebinding the shadow rays takes the bounces along: a composition again.
         let g = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("shadow".into(), "rows/rowrun".into())])).unwrap();
-        assert_eq!(g.label().unwrap(), "raycast-gpu: bricks + refloor + pathtrace, shadow = rows/rowrun");
+        assert_eq!(g.label().unwrap(), "gpu: bricks + refloor + rows + rowrun + composite + raycast + pathtrace");
         let e = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("nope".into(), "x".into())])).unwrap_err();
         assert!(e.contains("no site `nope`"), "{e}");
         let e = Graph::from_composition(&pt).unwrap().with_sites(&BTreeMap::from([("bounce".into(), "x/refloor".into())])).unwrap_err();
@@ -505,7 +505,7 @@ mod tests {
         assert_eq!(derive.shorthand().unwrap().compose.label(), pick.shorthand().unwrap().compose.label());
         assert_ne!(derive.key().unwrap(), pick.key().unwrap());
         assert_eq!(derive.shorthand().unwrap().sites, sites);
-        assert!(derive.label().unwrap().ends_with(", client = derive"), "{}", derive.label().unwrap());
+        assert_eq!(derive.label().unwrap(), "gpu: derive + bricks + refloor + composite + raycast + direct");
         assert!(pick.shorthand().unwrap().sites.is_empty());
         let with_shadow: BTreeMap<String, String> = [(CLIENT.to_string(), "derive".to_string()), ("shadow".to_string(), "tree64/sphere".to_string())].into();
         let g = pick.with_sites(&with_shadow).unwrap();
@@ -538,7 +538,7 @@ mod tests {
         let region = with(&[(CLIENT, "derive(radius=4)"), (LINK, "net(latency_ms=1)")]).unwrap();
         assert_eq!((region.client(), region.client_knob("radius"), region.client_knob("max_lod")), ("derive", Some(4), None));
         assert_eq!(region.shorthand().unwrap().sites[CLIENT], "derive(radius=4)");
-        assert!(region.label().unwrap().ends_with(", client = derive(radius=4), link = net(latency_ms=1.0)"), "{}", region.label().unwrap());
+        assert_eq!(region.label().unwrap(), "gpu: net(latency_ms=1.0) + derive(radius=4) + bricks + refloor + composite + raycast + direct");
         // The chain: world -> link -> client -> the renderer's readers.
         let ck = home.check().unwrap();
         let reads = |id: &str| ck.graph.nodes[id].inputs["changes"].as_str();
@@ -610,7 +610,7 @@ mod tests {
         let form = local.shorthand().unwrap().sites;
         assert_eq!(form[GENERATOR], "cpu");
         assert_eq!(key(&pick.with_sites(&form).unwrap()), key(&local));
-        assert!(local.label().unwrap().ends_with(", generator = cpu"), "{}", local.label().unwrap());
+        assert_eq!(local.label().unwrap(), "gpu: procedural@cpu + pick + bricks + refloor + composite + raycast + direct");
         assert_eq!(local.shorthand().unwrap().compose.label(), pick.shorthand().unwrap().compose.label());
         // With the other world nodes set.
         let both = with(&[(GENERATOR, "cpu"), (CLIENT, "derive")]).unwrap();

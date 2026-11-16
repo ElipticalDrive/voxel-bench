@@ -484,14 +484,6 @@ impl Graph {
         g.canonical()
     }
 
-    /// A label: the shorthand's composition, then the sites bound otherwise
-    /// (`raycast-gpu: prefix + incremental, bounce = tree64/sphere`); a graph the shorthand
-    /// does not give back gets its key.
-    pub fn label(&self) -> Result<String, String> {
-        let s = self.shorthand()?;
-        Ok(if s.exact { sites_label(&s.compose, &s.sites) } else { format!("{} [graph {}]", s.compose.label(), &self.key()?[..8]) })
-    }
-
     /// The values site `name` could take on its own (for sweeps' `"*"` and the GUI; not
     /// checked against the preset): the other sites it could share, a kernel over the
     /// lead's storage, and each storage with each kernel (exposure tests: each storage).
@@ -532,13 +524,4 @@ pub struct Shorthand {
     pub compose: Composition,
     pub sites: BTreeMap<String, String>,
     pub exact: bool,
-}
-
-/// A composition's label with sites bound otherwise.
-pub fn sites_label(c: &Composition, sites: &BTreeMap<String, String>) -> String {
-    let mut s = c.label();
-    for (k, v) in sites {
-        s += &format!(", {k} = {v}");
-    }
-    s
 }

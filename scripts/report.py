@@ -23,11 +23,11 @@ for a in args:
     print("#", f)
     for r in json.load(open(f)):
         if r.get("error"):
-            print(f"{r['label'][:44]:44} {r['mode']:6} ERROR {r['error'][:150]}")
+            print(f"{r['label']:44} {r['mode']:6} ERROR {r['error'][:150]}")
             continue
         q = r.get("quality") or {}; g = r.get("gpu_ms") or {}; c = r.get("cpu_ms") or {}; fi = r.get("frame_interval_ms") or {}
         ps = q.get("psnr", {}).get("mean"); bad = q.get("bad_pct", {}).get("mean")
-        print(f"{r['label'][:44]:44} {r['mode']:6} fps {r['fps']:7.1f} p99 {fi.get('p99', 0):6.2f} gpu {g.get('mean', 0) or 0:6.2f} cpu {c.get('mean', 0) or 0:6.2f}"
+        print(f"{r['label']:44} {r['mode']:6} fps {r['fps']:7.1f} p99 {fi.get('p99', 0):6.2f} gpu {g.get('mean', 0) or 0:6.2f} cpu {c.get('mean', 0) or 0:6.2f}"
               + (f" psnr {ps:5.1f} bad {bad:5.2f}%" if ps is not None else "") + f" r{r.get('repeat', 0)}"
               + (f"  like {r.get('like')}: {r['quality_like']['psnr']['mean']:.1f} dB {r['quality_like']['bad_pct']['mean']:.2f}%" if r.get("quality_like") else "")
               + (f"  settled ({', '.join(r.get('late') or [])} late): {r['quality_settled']['psnr']['mean']:.1f} dB {r['quality_settled']['bad_pct']['mean']:.2f}%" if r.get("quality_settled") else "")

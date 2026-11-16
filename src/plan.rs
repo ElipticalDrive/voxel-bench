@@ -487,118 +487,29 @@ impl RendererSpec {
         w
     }
 
-    /// From the command line: `preset:slot+slot+...` for a composition (a bare preset
-    /// name gives its default composition): the preset's
-    /// required slots in order, then optionally shading, prepass, meshes and its quiet slots
-    /// (`Builds::quiet`, e.g. `raster-gpu:bricks+greedy+raster+direct+depth+sphere`)
-    /// (`raycast-gpu:prefix+incremental`, `raycast-gpu:tree64+refloor+direct+beam`,
-    /// `raster-gpu:bricks+greedy+visbuffer`); otherwise a renderer name (a preset's, giving its default composition, or a
-    /// standalone one). A label as the renderer prints it reads back as the same renderer
-    /// (`raycast-gpu: prefix + beam + incremental, bounce = tree64/sphere`).
-    ///
-    /// Sites bound otherwise follow after commas:
-    /// `raycast-gpu:bricks+refloor+pathtrace,bounce=tree64/sphere`.
+    /// From the command line: `<graph>[,<edit>,...]`, a graph file (a shipped one's name or
+    /// a path, as a plan's `graph`) and the edits made to it in order ([`cli_edit`]:
+    /// `raycast-gpu,storage=tree64,kernel=incremental`); or the name of a standalone
+    /// renderer (`cpu-reference`). Commas inside brackets, braces, parentheses and quotes
+    /// are the edit's own.
     pub fn from_cli(s: &str) -> anyhow::Result<Self> {
-        // Commas inside a site's knobs (`link=net(latency_ms=30,loss=0.01)`) are its own.
-        let mut depth = 0i32;
-        let mut parts = s.split(|c: char| {
-            depth += (c == '(') as i32 - (c == ')') as i32;
-            c == ',' && depth == 0
-        });
-        let s = parts.next().unwrap_or_default();
-        let mut sites = BTreeMap::new();
-        for p in parts {
-            let (k, v) = p.split_once('=').with_context(|| format!("`{p}`: sites are written `site=value` (e.g. `bounce=tree64/sphere`)"))?;
-            sites.insert(k.trim().to_string(), v.trim().to_string());
-        }
-        let Some((preset, rest)) = s.split_once(':') else {
-            let mut spec = Self::new(s);
-            if !sites.is_empty() {
-                spec.resolve()?;
-                spec.set_sites(sites)?;
+        let mut parts = split_top(s).into_iter().map(str::trim);
+        let file = parts.next().unwrap_or_default();
+        let rest: Vec<&str> = parts.filter(|p| !p.is_empty()).collect();
+        if rest.is_empty() && mr_components::graph::shipped(file).is_none() && !Path::new(file).is_file() {
+            if file.contains([':', '+']) {
+                bail!("`{s}`: a renderer is written `<graph file>[,<edit>,...]` (e.g. `raycast-gpu,storage=prefix,kernel=incremental`; `multirenderer list` shows the spellings)");
             }
-            return Ok(spec);
-        };
-        let preset = preset.trim();
-        if mr_components::graph::region_named(preset).is_none() {
-            bail!("composition `{s}`: no preset `{preset}` (`multirenderer list` shows them)");
+            return Ok(Self::new(file));
         }
-        let parts: Vec<&str> = rest.split('+').map(str::trim).collect();
-        let c = match Self::cli_composition(s, preset, &parts) {
-            Ok(c) => c,
-            // A label as printed (`discover-gpu: bricks + quadtree + coverage`) reads back too.
-            Err(e) => Self::label_composition(preset, &parts).ok_or(e)?,
-        };
-        let mut spec = Self::new("");
-        spec.set_pipeline(c, &sites)?;
-        Ok(spec)
-    }
-
-    /// The command-line order: the preset's required slots, then the optional ones in
-    /// the order shading, prepass, meshes, quiet slots.
-    fn cli_composition(s: &str, preset: &str, parts: &[&str]) -> anyhow::Result<mr_components::Composition> {
-        use mr_components::Slot;
-        let mut c = mr_components::Composition::new(preset);
-        let all: Vec<Slot> = c.slots().collect();
-        let b = mr_components::graph::region_named(preset).unwrap();
-        let mut order: Vec<Slot> = all.iter().copied().filter(|&s| !b.is_quiet(s)).collect();
-        let required = order.len();
-        order.extend([Slot::Shading, Slot::Prepass, Slot::Meshes].into_iter().filter(|s| all.contains(s)));
-        let quiet: Vec<Slot> = all.iter().copied().filter(|&s| b.is_quiet(s) && !order.contains(&s)).collect();
-        order.extend(quiet);
-        if all.is_empty() || !(required..=order.len()).contains(&parts.len()) {
-            let names = |sl: &[Slot]| sl.iter().map(|s| s.name()).collect::<Vec<_>>().join("+");
-            bail!("composition `{s}` should be {preset}:{}[+{}]", names(&order[..required]), names(&order[required..]));
+        let mut g = graph_file(file)?;
+        let mut edits = vec![];
+        for p in rest {
+            let c = cli_edit(&g, p)?;
+            g = g.edit(&c).map_err(|e| anyhow::anyhow!("`{p}`: {e}"))?;
+            edits.push(c);
         }
-        for (&slot, name) in order[..required].iter().zip(parts) {
-            c.set(slot, name);
-        }
-        // The optional parts in order, each in the next slot that has a component so named.
-        let mut next = required;
-        for name in &parts[required..] {
-            let Some(i) = (next..order.len()).find(|&i| mr_components::component(order[i], name).is_some()) else {
-                bail!("composition `{s}`: no optional stage after {} has a component `{name}`", order[next - 1].name());
-            };
-            c.set(order[i], name);
-            next = i + 1;
-        }
-        c.validate().map_err(|e| anyhow::anyhow!("composition `{s}`: {e}"))?;
-        Ok(c)
-    }
-
-    /// The label order ([`mr_components::Composition::label`]): the preset's slots in
-    /// composition order, quiet ones at their default left out, `shadow <x>` for the
-    /// secondary-ray stages and `no meshes`. The composition whose label this is, if any.
-    fn label_composition(preset: &str, parts: &[&str]) -> Option<mr_components::Composition> {
-        use mr_components::{Composition, Slot};
-        fn fit(c: &Composition, slots: &[Slot], parts: &[&str], target: &str) -> Option<Composition> {
-            let Some((part, rest)) = parts.split_first() else {
-                return (c.validate().is_ok() && c.label() == target).then(|| c.clone());
-            };
-            let b = c.region()?;
-            for (i, &slot) in slots.iter().enumerate() {
-                let name = match (slot, part.strip_prefix("shadow ")) {
-                    (s, Some(n)) if s.secondary() => Some(n),
-                    (s, None) if !s.secondary() => Some(if s == Slot::Meshes && *part == "no meshes" { "none" } else { part }),
-                    _ => None,
-                };
-                if let Some(name) = name.filter(|&n| mr_components::component(slot.source(), n).is_some() || (slot.secondary() && n == "same")) {
-                    let mut c = c.clone();
-                    c.set(slot, name);
-                    if let Some(c) = fit(&c, &slots[i + 1..], rest, target) {
-                        return Some(c);
-                    }
-                }
-                // Only a quiet slot at its default is left out of a label.
-                if !b.is_quiet(slot) {
-                    return None;
-                }
-            }
-            None
-        }
-        let c = Composition::new(preset);
-        let slots: Vec<Slot> = c.slots().collect();
-        fit(&c, &slots, parts, &format!("{preset}: {}", parts.join(" + ")))
+        Self::try_from(Written { graph: Some(GraphRef::File(file.into())), edits, ..Default::default() }).with_context(|| format!("`{s}`"))
     }
 
     /// Replaces the composition (the sites its shorthand binds otherwise stay) and
@@ -1104,6 +1015,81 @@ fn expand_sites(c: &mr_components::Composition, axes: &[(String, Pick)]) -> anyh
     Ok(out)
 }
 
+/// `s` split at its commas outside brackets, braces, parentheses and quotes.
+fn split_top(s: &str) -> Vec<&str> {
+    let (mut depth, mut quote, mut from, mut out) = (0i32, None, 0, vec![]);
+    for (i, c) in s.char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(' | '[' | '{') => depth += 1,
+            (None, ')' | ']' | '}') => depth -= 1,
+            (None, ',') if depth == 0 => {
+                out.push(&s[from..i]);
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[from..]);
+    out
+}
+
+/// One edit to graph `g` as the command line writes it: the plan's inline table
+/// (`{node="kernel",api="rayquery"}`: every edit), or one of the short spellings
+/// - `node=component`: the node's component;
+/// - `node.input=source`: the input bound to node `source`, or to a new node written
+///   `role:component` (its id: the role's name); `node.input=` unbinds it;
+/// - `node.knob=value`: a knob of the node (the value as TOML, else a string);
+/// - `node@device`: where it runs (`node@default`: unset);
+/// - `+id=role:component`: a new node under that id, unbound;
+/// - `-node`: the node removed.
+///
+/// Whether the name after the last dot is an input or a knob is read off the node's
+/// component.
+pub fn cli_edit(g: &mr_components::graph::Graph, p: &str) -> anyhow::Result<mr_components::graph::Change> {
+    use mr_components::graph::{Change, Device, Role, Target, inputs};
+    let value = |v: &str| toml::from_str::<toml::Table>(&format!("v = {v}")).ok().and_then(|mut t| t.remove("v"));
+    let nodes = || g.nodes.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ");
+    if p.starts_with('{') {
+        let t = value(p).and_then(|v| v.as_table().cloned()).with_context(|| format!("edit `{p}`: not an inline table"))?;
+        return Change::try_from(t).map_err(anyhow::Error::msg);
+    }
+    if let Some(id) = p.strip_prefix('-') {
+        return Ok(Change::Remove(id.trim().into()));
+    }
+    let role = |r: &str| toml::Value::from(r.trim()).try_into::<Role>().map_err(|e| anyhow::anyhow!("edit `{p}`: {}", e.to_string().trim()));
+    if let Some(new) = p.strip_prefix('+') {
+        let (id, (r, c)) = new.split_once('=').and_then(|(id, v)| Some((id, v.split_once(':')?))).with_context(|| format!("edit `{p}`: a new node is written `+id=role:component`"))?;
+        return Ok(Change::Add(id.trim().into(), role(r)?, c.trim().into()));
+    }
+    let Some((k, v)) = p.split_once('=') else {
+        let (id, d) = p.split_once('@').with_context(|| format!("edit `{p}`: `node=component`, `node.input=source`, `node.knob=value`, `node@device`, `+id=role:component`, `-node`, or an inline table (`{{node=\"kernel\",api=\"rayquery\"}}`)"))?;
+        let d = match d.trim() {
+            "default" => None,
+            d => Some(Device::try_from(d.to_string()).map_err(|e| anyhow::anyhow!("edit `{p}`: {e}"))?),
+        };
+        return Ok(Change::Device(id.trim().into(), d));
+    };
+    let (k, v) = (k.trim(), v.trim());
+    if g.nodes.contains_key(k) {
+        return Ok(Change::Component(k.into(), v.into()));
+    }
+    let (id, name) = k.rsplit_once('.').filter(|(id, _)| g.nodes.contains_key(*id)).with_context(|| format!("edit `{p}`: no node `{k}` (the graph has {})", nodes()))?;
+    let n = &g.nodes[id];
+    if !inputs(n.role, &n.component).iter().any(|i| i.name == name) {
+        return Ok(Change::Knob(id.into(), name.into(), Some(value(v).unwrap_or_else(|| v.into()))));
+    }
+    let target = match v.split_once(':') {
+        _ if v.is_empty() => Target::Unbound,
+        _ if g.nodes.contains_key(v) => Target::Node(v.into()),
+        Some((r, c)) => Target::New(role(r)?, c.trim().into()),
+        None => bail!("edit `{p}`: no node `{v}` to read (the graph has {}; a new one is written `role:component`)", nodes()),
+    };
+    Ok(Change::Bind(id.into(), name.into(), target))
+}
+
 fn apply_override(table: &mut toml::Table, ov: &str) -> anyhow::Result<()> {
     let (path, value) = ov.split_once('=').with_context(|| format!("override `{ov}` is not key=value"))?;
     let value: toml::Value = toml::from_str::<toml::Table>(&format!("v = {value}"))
@@ -1245,8 +1231,8 @@ mod tests {
         for (a, b) in again.renderers.iter().zip(&new.renderers) {
             assert_eq!((a.label(), a.pipeline().map(|g| g.key().unwrap()), a.link(), a.view_radius(&again.run)), (b.label(), b.pipeline().map(|g| g.key().unwrap()), b.link(), b.view_radius(&new.run)));
         }
-        // The CLI: commas inside a site's knobs are its own.
-        let cli = RendererSpec::from_cli(&format!("raycast-gpu:bricks+refloor,link={},client=pick(radius=4)", home.replace(' ', ""))).unwrap();
+        // The CLI: commas inside an edit's braces are its own.
+        let cli = RendererSpec::from_cli("raycast-gpu,+link=link:net,{node=\"link\",knobs={latency_ms=30,jitter_ms=10,bandwidth_mbps=200,loss=0.01,reorder=true}},+client=client:pick,client.radius=4").unwrap();
         assert_eq!((cli.link(), cli.view_radius(&new.run)), (new.renderers[2].link(), 4));
         // The GUI's knob setter, both ways.
         let mut s = new.renderers[0].clone();
@@ -1302,7 +1288,7 @@ mod tests {
         let c = r.composition().unwrap();
         assert_eq!((c.storage.as_str(), c.traversal.as_str(), c.visibility.as_str()), ("prefix", "incremental", "raycast"));
         assert!(r.options.get("storage").is_none() && r.knob_values().get("storage").and_then(|v| v.as_str()) == Some("prefix"));
-        assert_eq!(r.label(), "raycast-gpu: prefix + incremental");
+        assert_eq!(r.label(), "gpu: prefix + incremental + composite + raycast + direct");
         let opt = Plan::parse(&text.replace("{ exact = false }", "{ exact = false, traversal = \"sphere\" }"), &[]).unwrap();
         assert_eq!((opt.renderers[0].composition().unwrap().traversal.as_str(), opt.renderers[0].options.get("traversal")), ("sphere", None));
         let saved = p.to_toml().unwrap();
@@ -1317,35 +1303,76 @@ mod tests {
         assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("has no cpu scalar/avx2/avx512 implementation"));
         let raster = text.replace("storage = \"prefix\", traversal = \"incremental\"", "preset = \"raster-gpu\", geometry = \"cubes\"");
         let r = &Plan::parse(&raster, &[]).unwrap().renderers[0];
-        assert_eq!((r.name.as_str(), r.label()), ("raster-gpu", "raster-gpu: bricks + cubes + raster"));
+        assert_eq!((r.name.as_str(), r.label()), ("raster-gpu", "gpu: cubes@cpu + faces + bricks + refloor + depth + raster + direct"));
         assert!(Plan::parse(&text.replace("traversal = \"incremental\"", "geometry = \"greedy\""), &[]).unwrap_err().to_string().contains("no geometry slot"));
-        let spec = RendererSpec::from_cli("raster-gpu:hier+naive+visbuffer").unwrap();
-        assert_eq!(spec.composition().unwrap().geometry, "naive");
-        assert!(RendererSpec::from_cli("raster-gpu:hier+naive").is_err());
-        let spec = RendererSpec::from_cli("raster-gpu:distance+greedy+raster+direct+depth+sphere").unwrap();
-        assert_eq!(spec.composition().unwrap().traversal, "sphere");
-        assert_eq!(spec.label(), "raster-gpu: distance + greedy + raster + sphere");
-        let spec = RendererSpec::from_cli("raster-gpu:hier+naive+gbuffer").unwrap();
-        assert_eq!(spec.composition().unwrap().draw, "gbuffer");
         // Naming a preset's renderer gives its default composition.
         let named = text.replace("compose = { storage = \"prefix\", traversal = \"incremental\" }", "name = \"discover-gpu\"").replace("options = { exact = false }", "");
         let r = &Plan::parse(&named, &[]).unwrap().renderers[0];
-        assert_eq!(r.label(), "discover-gpu: bricks + quadtree");
+        assert_eq!(r.label(), "gpu: bricks + refloor + quadtree + raster + direct");
         assert!(Plan::parse(&named, &[]).unwrap().to_toml().unwrap().contains("compose"));
-        let spec = RendererSpec::from_cli("raycast-gpu:tree64+refloor+direct+beam").unwrap();
-        assert_eq!(spec.composition().unwrap().prepass, "beam");
-        let spec = RendererSpec::from_cli("raycast-gpu:distance+sphere").unwrap();
-        assert_eq!(spec.composition().unwrap().storage, "distance");
-        assert!(RendererSpec::from_cli("raycast-gpu:nope+sphere").is_err());
-        // The meshes stage: last in the CLI form; `none` drops mesh passes.
-        let spec = RendererSpec::from_cli("raycast-gpu:bricks+refloor+direct+none+none").unwrap();
-        assert_eq!(spec.composition().unwrap().meshes, "none");
-        assert_eq!(spec.label(), "raycast-gpu: bricks + refloor + no meshes");
+    }
+
+    /// The command line: a graph file, then edits in their short spellings or as tables.
+    #[test]
+    fn command_line() {
+        let cli = |s: &str| RendererSpec::from_cli(s).map_err(|e| format!("{e:#}"));
+        let plan = |s: &str| renderer(s).unwrap();
+        // A bare file is that graph; a name that is no file is a standalone renderer's.
+        for (name, _) in mr_components::graph::SHIPPED {
+            assert_eq!(key(&cli(name).unwrap()), key(&plan(&format!("graph = \"{name}\""))), "{name}");
+        }
+        assert_eq!(key(&cli(concat!(env!("CARGO_MANIFEST_DIR"), "/pipelines/columns-cpu.toml")).unwrap()), key(&cli("columns-cpu").unwrap()));
+        let r = cli("cpu-reference").unwrap();
+        assert!(r.graph.is_none() && r.name == "cpu-reference");
+        // Each short spelling is the plan's edit.
+        for (short, edits) in [
+            ("raycast-gpu,storage=tree64,kernel=incremental", r#"[{ node = "storage", component = "tree64" }, { node = "kernel", component = "incremental" }]"#),
+            ("raycast-gpu, shading = pathtrace, shading.bounces = 2", r#"[{ node = "shading", component = "pathtrace" }, { node = "shading", knob = "bounces", value = 2 }]"#),
+            ("raycast-gpu,shading=pathtrace,shading.bounce=traversal:sphere,traversal.storage=storage", r#"[{ node = "shading", component = "pathtrace" }, { node = "shading", input = "bounce", from = { role = "traversal", component = "sphere" } }, { node = "traversal", input = "storage", from = "storage" }]"#),
+            ("raycast-gpu,-meshes", r#"[{ remove = "meshes" }]"#),
+            ("raycast-gpu,+far=storage:tree64,+far.kernel=traversal:sphere,far.kernel.storage=far,shading.shadow=far.kernel", r#"[{ add = "far", role = "storage", component = "tree64" }, { add = "far.kernel", role = "traversal", component = "sphere" }, { node = "far.kernel", input = "storage", from = "far" }, { node = "shading", input = "shadow", from = "far.kernel" }]"#),
+            ("discover-cpu,shadow.kernel=sphere,shadow.storage=distance", r#"[{ node = "shadow.kernel", component = "sphere" }, { node = "shadow.storage", component = "distance" }]"#),
+            ("raycast-gpu,{node=\"kernel\",component=\"sphere\"},{ node = \"storage\", component = \"distance\" }", r#"[{ node = "kernel", component = "sphere" }, { node = "storage", component = "distance" }]"#),
+            ("raycast-gpu,+client=client:derive,{node=\"client\",knobs={radius=4,max_lod=2}}", r#"[{ add = "client", role = "client", component = "derive" }, { node = "client", knobs = { radius = 4, max_lod = 2 } }]"#),
+        ] {
+            let (c, p) = (cli(short).unwrap_or_else(|e| panic!("{short}: {e}")), plan(&format!("graph = \"{}\"\nedits = {edits}", short.split(',').next().unwrap())));
+            assert_eq!(c.graph, p.graph, "{short}");
+            assert_eq!((c.label(), c.view_radius(&RunSpec::default())), (p.label(), p.view_radius(&RunSpec::default())), "{short}");
+            // Written into a plan as its file and edits.
+            assert_eq!(toml::to_string(&c).unwrap(), toml::to_string(&p).unwrap(), "{short}");
+        }
+        // A device, set and unset; an input unbound.
+        use mr_components::graph::{Change, Device, shipped};
+        let g = shipped("raycast-gpu").unwrap();
+        assert_eq!(cli_edit(&g, "shading@gpu1").unwrap(), Change::Device("shading".into(), Some(Device::Gpu(1))));
+        assert_eq!(cli_edit(&g, "shading @ default").unwrap(), Change::Device("shading".into(), None));
+        assert_eq!(key(&cli("discover-gpu,visibility@cpu,visibility@default").unwrap()), key(&cli("discover-gpu").unwrap()));
+        assert_eq!(key(&cli("raycast-gpu,visibility.meshes=,-meshes").unwrap()), key(&cli("raycast-gpu,-meshes").unwrap()));
+        // No meshes stage: no mesh passes.
         let info = mr_core::RendererInfo { name: "raycast-gpu".into(), description: String::new(), tags: vec!["meshes".into()], modes: vec![mr_core::RenderMode::Unlit, mr_core::RenderMode::Lit], max_lod: 0, lacks: vec![], params: vec![] };
         let lit_meshes = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
-        assert!(!spec.supports(&info, lit_meshes) && spec.supports(&info, PassMode::LIT));
-        assert!(RendererSpec::from_cli("raycast-gpu:bricks+refloor").unwrap().supports(&info, lit_meshes));
-        assert_eq!(RendererSpec::from_cli("raster-gpu:bricks+greedy+raster+direct+none").unwrap().composition().unwrap().clone().meshes, "none");
+        let bare = cli("raycast-gpu,-meshes").unwrap();
+        assert!(!bare.supports(&info, lit_meshes) && bare.supports(&info, PassMode::LIT));
+        assert!(cli("raycast-gpu").unwrap().supports(&info, lit_meshes));
+        // Refused with the reason.
+        for (s, why) in [
+            ("raycast-gpu,nowhere=tree64", "no node `nowhere` (the graph has "),
+            ("raycast-gpu,storage=nope", "unknown storage component `nope`"),
+            ("raycast-gpu,shading.shadow=nowhere", "no node `nowhere` to read"),
+            ("raycast-gpu,shading.shadow=moon:sphere", "edit `shading.shadow=moon:sphere`"),
+            ("raycast-gpu,storage", "`node=component`, `node.input=source`"),
+            ("raycast-gpu,storage@moon", "unknown device `moon`"),
+            ("raycast-gpu,+far=tree64", "`+id=role:component`"),
+            ("raycast-gpu,-nowhere", "no node `nowhere`"),
+            ("raycast-gpu,{node=\"storage\"}", "what changes on the node"),
+            ("no-such-graph,storage=tree64", "neither a shipped graph"),
+            ("raycast-gpu:prefix+incremental,storage=tree64", "neither a shipped graph"),
+            ("raycast-gpu:prefix+incremental", "a renderer is written `<graph file>[,<edit>,...]`"),
+            ("raycast-cpu,storage=rows", "renderer graph: "),
+        ] {
+            let e = cli(s).err().unwrap_or_else(|| panic!("{s}: accepted"));
+            assert!(e.contains(why), "{s}: {e}");
+        }
     }
 
     /// A renderer written as a graph loads as the composition it is, unless its stages have
@@ -1366,7 +1393,8 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let g = Plan::parse(&format!("{base}{graph}"), &[]).unwrap();
         let c = Plan::parse(&format!("{base}{compose}"), &[]).unwrap();
         let (g, c) = (&g.renderers[0], &c.renderers[0]);
-        assert_eq!((&g.name, g.label()), (&c.name, c.label()));
+        assert_eq!(g.name, c.name);
+        assert_eq!((g.label(), c.label()), ("gpu: prefix + incremental(exact=false) + raycast + direct", "gpu: prefix + incremental + raycast + direct"), "a node's knob is in the label, an option is not");
         assert!(g.shorthand_form().is_none() && g.options.is_empty() && g.composition() == c.composition());
         assert_eq!(g.knob_values().get("exact"), c.knob_values().get("exact"));
         let bare = Plan::parse(&format!("{base}{}", graph.replace(", knobs = { exact = false }", "")), &[]).unwrap();
@@ -1375,11 +1403,11 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let e = Plan::parse(&format!("{base}{bad}"), &[]).unwrap_err().to_string();
         assert!(e.contains("takes ray queries"), "{e}");
         // Shadow rays through a kernel of their own (its knob stays with it) run as
-        // the graph, labelled as their nearest composition and the graph's key.
+        // the graph, labelled by its nodes.
         let own = graph.replace("shadow = \"k\" } }", "shadow = \"k2\" } }\nnodes.k2 = { role = \"traversal\", component = \"incremental\", inputs = { storage = \"s\" }, knobs = { exact = true, skip8 = false } }");
         let p = Plan::parse(&format!("{base}{own}"), &[]).unwrap();
         let r = &p.renderers[0];
-        assert!(r.label().starts_with("raycast-gpu: prefix + incremental + no meshes [graph "), "{}", r.label());
+        assert_eq!(r.label(), "gpu: prefix + incremental(exact=false) + raycast + incremental(exact=true, skip8=false) + direct");
         assert_eq!(r.knob_values().get("exact"), Some(&toml::Value::Boolean(false)), "the primary kernel's knob");
         assert!(r.options.is_empty());
         assert!(r.pipeline().unwrap().nodes.contains_key("k2"));
@@ -1394,80 +1422,32 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let p = Plan::parse(&format!("{base}{plain}"), &[]).unwrap();
         let r = &p.renderers[0];
         assert!(r.shorthand_form().is_some() && r.sites().get("shadow").map(String::as_str) == Some("incremental"), "{:?}", r.sites());
-        assert_eq!(r.label(), "raycast-gpu: prefix + incremental + no meshes, shadow = incremental");
+        assert_eq!(r.label(), "gpu: prefix + incremental + raycast + incremental + direct");
         assert!(p.to_toml().unwrap().contains("[renderer.sites]"));
         let both = graph.replace("[[renderer]]\n", "[[renderer]]\nsites = { bounce = \"rows/rowrun\" }\n");
         assert!(Plan::parse(&format!("{base}{both}"), &[]).unwrap_err().to_string().contains("not both"));
     }
 
-    /// A renderer's label reads back on the command line as the same graph: every
-    /// preset, every composition one slot away from it, and sites as sweeps vary them.
-    #[test]
-    fn labels_read_back() {
-        let key = |r: &RendererSpec| r.pipeline().unwrap().key().unwrap();
-        let check = |r: &RendererSpec| {
-            let l = r.label().to_string();
-            // A shadow walk is named once: by the composition's stages or by the site.
-            let (stages, sites) = l.split_once(", ").unwrap_or((&l, ""));
-            assert!(!(stages.contains(" shadow ") && sites.contains("shadow =")), "{l}");
-            let back = RendererSpec::from_cli(&l).unwrap_or_else(|e| panic!("{l}: {e}"));
-            assert_eq!(key(&back), key(r), "{l} read back as {}", back.label());
-        };
-        let mut n = 0;
-        for b in mr_components::graph::REGIONS {
-            let mut r = RendererSpec::new(b.name);
-            r.resolve().unwrap();
-            check(&r);
-            let c = mr_components::Composition::new(b.name);
-            for slot in c.slots() {
-                let names = mr_components::components(slot.source()).map(|x| x.name).chain(slot.secondary().then_some("same"));
-                for name in names {
-                    let mut v = c.clone();
-                    v.set(slot, name);
-                    if v.validate().is_err() {
-                        continue;
-                    }
-                    let mut r = RendererSpec::new("");
-                    if r.set_compose(v).is_ok() {
-                        check(&r);
-                        n += 1;
-                    }
-                }
-            }
-        }
-        assert!(n > 100, "{n}");
-        let base = RendererSpec::from_cli("raycast-gpu:bricks+refloor+pathtrace").unwrap();
-        let g = base.pipeline().unwrap();
-        for site in ["shadow", "bounce", "client", "link"] {
-            for v in g.site_choices(site) {
-                let mut r = base.clone();
-                if r.set_sites(BTreeMap::from([(site.to_string(), v)])).is_ok() {
-                    check(&r);
-                }
-            }
-        }
-        check(&RendererSpec::from_cli("raycast-gpu:bricks+refloor,link=net(latency_ms=30,loss=0.01),client=derive(radius=4)").unwrap());
-    }
-
-    /// Sites from the command line and in plans, run as graphs.
+    /// Sites in plans, run as graphs.
     #[test]
     fn sites() {
-        let r = RendererSpec::from_cli("raycast-gpu:bricks+refloor+pathtrace,bounce=tree64/sphere").unwrap();
-        assert_eq!(r.label(), "raycast-gpu: bricks + refloor + pathtrace, bounce = tree64/sphere");
+        let flat = |c: &str, sites: &str| renderer(&format!("compose = {{ preset = {c} }}\nsites = {{ {sites} }}")).map_err(|e| format!("{e:#}"));
+        let r = flat("\"raycast-gpu\", shading = \"pathtrace\"", "bounce = \"tree64/sphere\"").unwrap();
+        assert_eq!(r.label(), "gpu: bricks + refloor + composite + raycast + tree64 + sphere + pathtrace");
         let g = r.pipeline().unwrap();
         assert!(g.nodes.values().any(|n| n.component == "tree64"));
         // Effective in unlit passes: the bounces are moot, so is the shading.
         let u = r.effective(PassMode::UNLIT).unwrap();
-        assert!(u.sites().is_empty() && u.label() == "raycast-gpu: bricks + refloor", "{}", u.label());
+        assert!(u.sites().is_empty() && u.label() == "gpu: bricks + refloor + composite + raycast + direct", "{}", u.label());
         assert_eq!(r.effective(PassMode::LIT).unwrap().label(), r.label());
         // Errors say why.
-        let e = RendererSpec::from_cli("raycast-gpu:bricks+refloor,bounce=tree64/sphere").unwrap_err().to_string();
+        let e = flat("\"raycast-gpu\"", "bounce = \"tree64/sphere\"").unwrap_err();
         assert!(e.contains("no site `bounce`"), "{e}");
-        let e = RendererSpec::from_cli("rayquery-gpu,bounce=bricks/refloor").unwrap_err().to_string();
+        let e = flat("\"rayquery-gpu\"", "bounce = \"bricks/refloor\"").unwrap_err();
         assert!(e.contains("no site `bounce`") || e.contains("through its primary kernel"), "{e}");
-        let e = RendererSpec::from_cli("raycast-cpu:bricks+refloor,shadow=hier/refloor").unwrap_err().to_string();
+        let e = flat("\"raycast-cpu\"", "shadow = \"hier/refloor\"").unwrap_err();
         assert!(e.contains("`raycast-cpu` builds 1 storage node"), "{e}");
-        assert!(RendererSpec::from_cli("raycast-cpu:bricks+refloor,shadow=incremental").is_ok());
+        assert!(flat("\"raycast-cpu\"", "shadow = \"incremental\"").is_ok());
         // set_sites keeps the old ones when the new ones cannot run.
         let mut r = r;
         assert!(r.set_sites(BTreeMap::from([("bounce".into(), "x/y".into())])).is_err());
@@ -1480,7 +1460,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
     #[test]
     fn lighting_class() {
         use mr_core::PassMode;
-        let pt = RendererSpec::from_cli("raycast-gpu:bricks+refloor+pathtrace").unwrap();
+        let pt = RendererSpec::from_cli("raycast-gpu,shading=pathtrace").unwrap();
         assert_eq!(pt.lighting(PassMode::LIT), Lighting::Paths { bounces: 1 });
         assert_eq!(pt.lighting(PassMode::UNLIT), Lighting::Direct);
         let mut more = pt.clone();
@@ -1488,11 +1468,11 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert_eq!(more.lighting(PassMode::LIT), Lighting::Paths { bounces: 3 });
         more.options.insert("bounces".into(), 0.into());
         assert_eq!(more.lighting(PassMode::LIT), Lighting::Direct);
-        assert_eq!(RendererSpec::from_cli("raycast-gpu:bricks+refloor").unwrap().lighting(PassMode::LIT), Lighting::Direct);
+        assert_eq!(RendererSpec::from_cli("raycast-gpu").unwrap().lighting(PassMode::LIT), Lighting::Direct);
         assert_eq!(RendererSpec::new("cpu-reference").lighting(PassMode::LIT), Lighting::Direct);
         // Late edges are read off the graph: discover-cpu's faces, unless discovered in step.
         assert!(pt.late().is_empty() && RendererSpec::new("cpu-reference").late().is_empty());
-        let late = RendererSpec::from_cli("discover-cpu:bricks+quadtree").unwrap();
+        let late = RendererSpec::from_cli("discover-cpu").unwrap();
         assert_eq!(late.late().len(), 1, "{:?}", late.late());
         assert!(late.late()[0].ends_with(".faces"), "{:?}", late.late());
         let mut sync = late.clone();
@@ -1544,7 +1524,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ preset = [\"raycast-gpu\", \"raster-gpu\"], shading = \"pathtrace\" }}\nsites = {{ bounce = [\"shadow\", \"rows/rowrun\"] }}\n"), &[]).unwrap();
         let labels: Vec<&str> = p.renderers.iter().map(|r| r.label()).collect();
         assert_eq!(labels.len(), 4, "{labels:?}");
-        assert!(labels.contains(&"raster-gpu: bricks + greedy + raster + pathtrace, bounce = rows/rowrun"), "{labels:?}");
+        assert!(labels.contains(&"gpu: greedy@cpu + faces + bricks + refloor + depth + raster + rows + rowrun + pathtrace"), "{labels:?}");
         // A named site a pipeline lacks skips it.
         assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ shading = \"direct\" }}\nsites = {{ bounce = [\"rows/rowrun\"] }}\n"), &[]).is_err());
         // Sweeps over the world's side (link, client, generator); a client's region
