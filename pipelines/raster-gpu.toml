@@ -1,0 +1,60 @@
+# GPU rasterisation (wgpu): the geometry component turns chunks into faces on the CPU, drawn with vertex pulling and multi-draw-indirect after chunk and face-direction culling. Storage here is what lit-mode shadow rays walk (refloor)
+# A pipeline graph: start a renderer from it with `graph = "raster-gpu"` and `edits`.
+
+executor = "gpu"
+
+[nodes.draw]
+role = "draw"
+component = "raster"
+
+[nodes.draw.inputs]
+faces = "visibility"
+meshes = "meshes"
+
+[nodes.geometry]
+role = "geometry"
+component = "greedy"
+
+[nodes.geometry.inputs]
+changes = "world"
+
+[nodes.kernel]
+role = "traversal"
+component = "refloor"
+
+[nodes.kernel.inputs]
+storage = "storage"
+
+[nodes.meshes]
+role = "meshes"
+component = "depth"
+
+[nodes.meshes.inputs]
+changes = "world"
+shadow = "kernel"
+
+[nodes.shading]
+role = "shading"
+component = "direct"
+
+[nodes.shading.inputs]
+hits = "draw"
+shadow = "kernel"
+
+[nodes.storage]
+role = "storage"
+component = "bricks"
+
+[nodes.storage.inputs]
+changes = "world"
+
+[nodes.visibility]
+role = "visibility"
+component = "faces"
+
+[nodes.visibility.inputs]
+faces = "geometry"
+
+[nodes.world]
+role = "world"
+component = "world"

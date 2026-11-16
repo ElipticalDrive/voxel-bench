@@ -110,7 +110,7 @@ fn description(role: Role, component: &str) -> String {
 /// The component choices for node `id`.
 fn component_options(g: &Graph, id: &str) -> Vec<(String, Change, bool, String)> {
     let n = &g.nodes[id];
-    role_components(n.role).into_iter().map(|c| (c.to_string(), Change::Component(id.into(), c), n.component == c, description(n.role, c))).collect()
+    role_components(n.role).into_iter().map(|c| (c.to_string(), Change::Component(id.into(), c.into()), n.component == c, description(n.role, c))).collect()
 }
 
 /// The device choices for node `id`: where the executor runs it, or a device of the run's.
@@ -162,7 +162,7 @@ fn bind_options(g: &Graph, id: &str, port: &mr_components::graph::Port) -> Vec<(
         v.push((format!("{k} ({}){}", m.component, if shared { " · shared" } else { "" }), Change::Bind(id.into(), port.name.into(), Target::Node(k.clone())), cur == Some(&k), format!("The existing {} node `{k}`{}", m.role.name(), if shared { ": shared with what reads it already" } else { "" })));
     }
     for (role, c) in model::producers_new(port.data) {
-        v.push((format!("new {} {c}", role.name()), Change::Bind(id.into(), port.name.into(), Target::New(role, c)), false, format!("A new {} node: {}", role.name(), description(role, c))));
+        v.push((format!("new {} {c}", role.name()), Change::Bind(id.into(), port.name.into(), Target::New(role, c.into())), false, format!("A new {} node: {}", role.name(), description(role, c))));
     }
     v
 }

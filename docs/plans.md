@@ -40,7 +40,7 @@ stage_times = true      # time every stage (GPU: +0.1–0.6%)
 clock_fps = 60          # the simulated clock of scripted runs
 
 [[renderer]]
-compose = { preset = "raster-gpu", geometry = "greedy", draw = "raster" }  # or graph, or name = "cpu-reference"
+compose = { preset = "raster-gpu", geometry = "greedy", draw = "raster" }  # or graph (+ edits), or name = "cpu-reference"
 label = "raster-sunshadow"    # optional; lets one pipeline run with several option sets
 options = { shadows = "sun" } # the components' knobs
 sites = { shadow = "distance/sphere", client = "pick(radius=8, max_lod=2)" }
@@ -53,7 +53,7 @@ compare = { reference = "cpu-reference", every = 100, settle = 2 }
 dir = "runs"
 ```
 
-The three ways of writing a renderer (`compose`, `graph`, the command line's `-r`) are in
+The ways of writing a renderer (`compose`, `graph` as a file or inline with `edits`, the command line's `-r`) are in
 [pipelines.md](pipelines.md).
 
 Two scores come out of `compare`. Every renderer is scored against the reference rendering

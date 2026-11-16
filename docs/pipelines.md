@@ -58,7 +58,7 @@ stands alone, on purpose.
 
 ## Writing a pipeline
 
-Three equivalent forms, from shortest to most general:
+Four forms, from shortest to most general:
 
 **Command line:** a preset and its required slots in order, then optionally shading,
 prepass and meshes; other sites after commas:
@@ -82,7 +82,46 @@ options = { shadows = "sun" }
 A site's value is another site (shared), a kernel (over the lead storage),
 `<storage>/<kernel>`, or `<site>/<kernel>`.
 
-**Graph form**, for anything the other two cannot express:
+**A graph file and edits**: the graph of a file, changed step by step. The file is one
+shipped with the bench, by name (`pipelines/*.toml`, built into the binary: one default
+pipeline per executor region, e.g. `raycast-gpu`, `raster-cpu`, `discover-gpu`), or any
+graph file by path (relative to the working directory). A shipped file is a graph like any
+you save; nothing in the code knows it apart.
+
+```toml
+[[renderer]]
+graph = "raycast-gpu"
+edits = [
+  { node = "storage", component = "tree64" },
+  { node = "shading", component = "pathtrace" },
+  { node = "shading", input = "bounce", from = { role = "traversal", component = "sphere" } },
+  { node = "traversal", input = "storage", from = "storage" },
+]
+```
+
+The edits are the pipeline editor's own changes, made in order, each exactly as written
+(nothing filled in or pruned; a new node comes unbound):
+
+| Edit | Does |
+|---|---|
+| `{ node, component }` | another component in the node; inputs the new one lacks, its knobs and API are dropped |
+| `{ node, input, from = "<node>" }` | binds the input to an existing node |
+| `{ node, input, from = { role, component } }` | binds it to a new node (id: the role's name, then `<role>-2`, ...) |
+| `{ node, unbind = "<input>" }` | leaves the input unbound |
+| `{ node, device }` | where the node runs (`cpu`, `gpu`, `gpu1`, ...; `"default"`: unset) |
+| `{ node, api }` | how it runs there (`compute`, `rayquery`, `avx2`, ...; `"default"`: unset) |
+| `{ node, input, when }` | when the input's value arrives: `"now"`, `"prev"`, `{ iterate = 2 }` |
+| `{ node, knob, value }` | a knob on that node (no `value`: unset) |
+| `{ add = "<id>", role, component }` | a new node under that id, unbound |
+| `{ remove = "<id>" }` | the node gone, the inputs reading it unbound |
+
+An edit naming a node or an input the graph does not have is refused with its place in the
+list; whether the edited graph is a pipeline is decided as for any graph. A renderer read
+this way is saved this way while its graph is still what the file and the edits give
+(after a change in the editor it is saved by what it is). `edits` also follow an inline
+`graph`.
+
+**Graph form**, for anything the others cannot express:
 
 ```toml
 [[renderer]]

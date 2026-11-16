@@ -1,0 +1,44 @@
+# GPU point splatting: one point per exposed block, atomicMin depth + id buffers, ray-box resolve; lit-mode shadow rays walk the composed storage
+# A pipeline graph: start a renderer from it with `graph = "splat-gpu"` and `edits`.
+
+executor = "gpu"
+
+[nodes.geometry]
+role = "geometry"
+component = "points"
+
+[nodes.geometry.inputs]
+changes = "world"
+
+[nodes.kernel]
+role = "traversal"
+component = "refloor"
+
+[nodes.kernel.inputs]
+storage = "storage"
+
+[nodes.shading]
+role = "shading"
+component = "direct"
+
+[nodes.shading.inputs]
+hits = "visibility"
+shadow = "kernel"
+
+[nodes.storage]
+role = "storage"
+component = "bricks"
+
+[nodes.storage.inputs]
+changes = "world"
+
+[nodes.visibility]
+role = "visibility"
+component = "splat"
+
+[nodes.visibility.inputs]
+points = "geometry"
+
+[nodes.world]
+role = "world"
+component = "world"

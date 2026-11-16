@@ -1,0 +1,45 @@
+# GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage
+# A pipeline graph: start a renderer from it with `graph = "discover-gpu"` and `edits`.
+
+executor = "gpu"
+
+[nodes.draw]
+role = "draw"
+component = "raster"
+
+[nodes.draw.inputs]
+faces = "visibility"
+
+[nodes.kernel]
+role = "traversal"
+component = "refloor"
+
+[nodes.kernel.inputs]
+storage = "storage"
+
+[nodes.shading]
+role = "shading"
+component = "direct"
+
+[nodes.shading.inputs]
+hits = "draw"
+shadow = "kernel"
+
+[nodes.storage]
+role = "storage"
+component = "bricks"
+
+[nodes.storage.inputs]
+changes = "world"
+
+[nodes.visibility]
+role = "visibility"
+component = "quadtree"
+
+[nodes.visibility.inputs]
+exposure = "storage"
+rays = "kernel"
+
+[nodes.world]
+role = "world"
+component = "world"

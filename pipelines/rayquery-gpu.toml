@@ -1,0 +1,37 @@
+# GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component, a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries
+# A pipeline graph: start a renderer from it with `graph = "rayquery-gpu"` and `edits`.
+
+executor = "gpu"
+
+[nodes.geometry]
+role = "geometry"
+component = "greedy"
+
+[nodes.geometry.inputs]
+changes = "world"
+
+[nodes.kernel]
+role = "traversal"
+component = "rayquery"
+
+[nodes.kernel.inputs]
+geometry = "geometry"
+
+[nodes.shading]
+role = "shading"
+component = "direct"
+
+[nodes.shading.inputs]
+hits = "visibility"
+shadow = "kernel"
+
+[nodes.visibility]
+role = "visibility"
+component = "raycast"
+
+[nodes.visibility.inputs]
+primary = "kernel"
+
+[nodes.world]
+role = "world"
+component = "world"

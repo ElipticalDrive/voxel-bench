@@ -324,7 +324,7 @@ impl Ctx<'_> {
                 renderer: spec.name.clone(),
                 composition: spec.composition().cloned(),
                 sites: spec.sites(),
-                graph: spec.written().graph,
+                graph: spec.graph.clone().filter(|_| spec.shorthand_form().is_none()),
                 graph_key: spec.pipeline().and_then(|g| g.key().ok()),
                 options: spec.options.clone(),
                 view_radius: spec.view_radius(run),

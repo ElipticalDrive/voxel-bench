@@ -188,6 +188,9 @@ pub struct RendererSpec {
     /// The region it is given instead of the run's (a reference standing in for pipelines
     /// with that region; standalone renderers have no client node to say it).
     pub like: Option<Like>,
+    /// The graph file and the edits it was written as (`graph = "<file>"`, `edits`); it is
+    /// written so again while they still give its graph.
+    start: Option<(String, Vec<mr_components::graph::Change>)>,
     /// The graph's shorthand (derived by `resolve`).
     shorthand: Option<mr_components::graph::Shorthand>,
     /// Cache of the label (derived).
@@ -258,9 +261,14 @@ pub struct Written {
     /// `sites = { bounce = "tree64/sphere" }`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sites: BTreeMap<String, String>,
-    /// The pipeline as a graph, instead of `compose`.
+    /// The pipeline as a graph, instead of `compose`: a graph file (a shipped one's name,
+    /// `graph = "raycast-gpu"`, or a path) or the graph itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub graph: Option<mr_components::graph::Graph>,
+    pub graph: Option<GraphRef>,
+    /// Changes made to `graph`, in order (`mr_components::graph::Change`, the editor's own):
+    /// `edits = [{ node = "storage", component = "tree64" }]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<mr_components::graph::Change>,
     pub label: Option<String>,
     #[serde(default)]
     pub options: toml::Table,
@@ -272,6 +280,26 @@ pub struct Written {
     pub swept: bool,
 }
 
+/// A renderer's graph as plans write it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum GraphRef {
+    /// A graph file: the name of one shipped with the bench (`pipelines/<name>.toml`, built
+    /// in), else a path (relative to the working directory).
+    File(String),
+    Inline(Box<mr_components::graph::Graph>),
+}
+
+/// The graph of file `f` ([`GraphRef::File`]).
+pub fn graph_file(f: &str) -> anyhow::Result<mr_components::graph::Graph> {
+    if let Some(g) = mr_components::graph::shipped(f) {
+        return Ok(g);
+    }
+    let shipped = mr_components::graph::SHIPPED.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ");
+    let text = std::fs::read_to_string(f).with_context(|| format!("graph `{f}`: neither a shipped graph ({shipped}) nor a file that can be read"))?;
+    toml::from_str(&text).with_context(|| format!("graph file `{f}`"))
+}
+
 impl TryFrom<Written> for RendererSpec {
     type Error = anyhow::Error;
 
@@ -279,7 +307,21 @@ impl TryFrom<Written> for RendererSpec {
         if w.graph.is_some() && (w.compose.is_some() || !w.sites.is_empty()) {
             bail!("a renderer has `graph` or `compose` (with `sites`), not both");
         }
-        let mut s = Self { graph: w.graph, label: w.label, options: w.options, devices: w.devices, compile: w.compile, swept: w.swept, ..Self::new(w.name) };
+        if !w.edits.is_empty() && w.graph.is_none() {
+            bail!("`edits` change a `graph` (a file's name or the graph itself); this renderer has none");
+        }
+        let (graph, start) = match w.graph {
+            None => (None, None),
+            Some(r) => {
+                let (g, file) = match r {
+                    GraphRef::Inline(g) => (*g, None),
+                    GraphRef::File(f) => (graph_file(&f)?, Some(f)),
+                };
+                let g = g.with_edits(&w.edits).map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
+                (Some(g), file.map(|f| (f, w.edits)))
+            }
+        };
+        let mut s = Self { graph, start, label: w.label, options: w.options, devices: w.devices, compile: w.compile, swept: w.swept, ..Self::new(w.name) };
         match w.compose {
             Some(c) => {
                 s.graph = Some(s.graph_of(c, &w.sites)?);
@@ -308,7 +350,7 @@ fn stage_knobs(g: &mr_components::graph::Graph) -> bool {
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), graph: None, label: None, options: Default::default(), devices: None, compile: None, swept: false, like: None, shorthand: None, compose_label: Default::default() }
+        Self { name: name.into(), graph: None, label: None, options: Default::default(), devices: None, compile: None, swept: false, like: None, start: None, shorthand: None, compose_label: Default::default() }
     }
 
     /// A renderer assembled from components.
@@ -412,9 +454,22 @@ impl RendererSpec {
         self.shorthand_form().map(|sh| sh.sites.clone()).unwrap_or_default()
     }
 
-    /// As plans write it: the shorthand where it says the pipeline (the renderer name
+    /// Written as it was read, a graph file and edits, if reading that back gives this
+    /// renderer still (its graph was not changed since).
+    fn start_form(&self) -> Option<Written> {
+        let (file, edits) = self.start.as_ref()?;
+        let w = Written { graph: Some(GraphRef::File(file.clone())), edits: edits.clone(), label: self.label.clone(), options: self.options.clone(), devices: self.devices.clone(), compile: self.compile, swept: self.swept, ..Default::default() };
+        let back = Self::try_from(w.clone()).ok()?;
+        (back.graph == self.graph && back.options == self.options).then_some(w)
+    }
+
+    /// As plans write it: the graph file and edits it was read from while they still say
+    /// it; else the shorthand where it says the pipeline (the renderer name
     /// derived, left out), else the graph (with the knobs it spells left out of the options).
     pub fn written(&self) -> Written {
+        if let Some(w) = self.start_form() {
+            return w;
+        }
         let mut w = Written { name: self.name.clone(), label: self.label.clone(), options: self.options.clone(), devices: self.devices.clone(), compile: self.compile, swept: self.swept, ..Default::default() };
         if let Some(g) = &self.graph {
             w.name.clear();
@@ -424,7 +479,7 @@ impl RendererSpec {
                     for k in g.preset_options().unwrap_or_default().keys() {
                         w.options.remove(k);
                     }
-                    w.graph = Some(g.clone());
+                    w.graph = Some(GraphRef::Inline(Box::new(g.clone())));
                 }
             }
         }
@@ -1015,6 +1070,75 @@ fn apply_override(table: &mut toml::Table, ov: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn renderer(text: &str) -> anyhow::Result<RendererSpec> {
+        Ok(toml::from_str(text)?)
+    }
+
+    fn key(r: &RendererSpec) -> String {
+        r.pipeline().unwrap().key().unwrap()
+    }
+
+    /// A renderer written as a graph file plus edits is the pipeline its composition names,
+    /// and is written back as it was read until its graph changes.
+    #[test]
+    fn graph_files_and_edits() {
+        use mr_components::graph::{Change, REGIONS, SHIPPED};
+        // Every shipped file, bare: the default pipeline of its name, written back as the file.
+        assert_eq!(SHIPPED.len(), REGIONS.len());
+        for (name, _) in SHIPPED {
+            let r = renderer(&format!("graph = \"{name}\"")).unwrap();
+            let mut d = RendererSpec::new(*name);
+            d.resolve().unwrap();
+            assert_eq!(key(&r), key(&d), "{name}");
+            assert_eq!((r.name.as_str(), r.label()), (d.name.as_str(), d.label()), "{name}");
+            assert_eq!(toml::to_string(&r).unwrap().trim(), format!("graph = \"{name}\"\n\n[options]"), "{name}");
+        }
+        // Edits: a component, a new node bound, an API, a timing, a node knob.
+        for (edits, compose, sites) in [
+            (r#"[{ node = "storage", component = "tree64" }, { node = "kernel", component = "incremental" }]"#, r#"{ preset = "raycast-gpu", storage = "tree64", traversal = "incremental" }"#, ""),
+            (r#"[{ node = "shading", component = "pathtrace" }, { add = "far", role = "storage", component = "tree64" }, { node = "far", input = "changes", from = "world" }, { add = "sphere", role = "traversal", component = "sphere" }, { node = "sphere", input = "storage", from = "far" }, { node = "shading", input = "bounce", from = "sphere" }]"#, r#"{ preset = "raycast-gpu", shading = "pathtrace" }"#, r#"sites = { bounce = "tree64/sphere" }"#),
+        ] {
+            let text = format!("graph = \"raycast-gpu\"\nedits = {edits}");
+            let r = renderer(&text).unwrap_or_else(|e| panic!("{edits}: {e:#}"));
+            let c = renderer(&format!("compose = {compose}\n{sites}")).unwrap();
+            assert_eq!(key(&r), key(&c), "{edits}");
+            assert_eq!(r.label(), c.label());
+            // Written as read, and read back as the same renderer.
+            let w = toml::to_string(&r).unwrap();
+            assert!(w.starts_with("graph = \"raycast-gpu\"\n") && w.contains("[[edits]]"), "{w}");
+            assert_eq!(key(&renderer(&w).unwrap()), key(&r));
+        }
+        // Options stay options beside it; a knob set by an edit is the node's.
+        let r = renderer("graph = \"columns-cpu\"\nedits = [{ node = \"shading\", knob = \"shadows\", value = \"sun\" }]\noptions = { threads = 2 }").unwrap();
+        let ck = r.worker_graph().unwrap().unwrap().check().unwrap();
+        assert_eq!(ck.node(ck.shading()).knobs.get("shadows").and_then(|v| v.as_str()), Some("sun"));
+        assert_eq!(r.options.get("threads").and_then(|v| v.as_integer()), Some(2));
+        let w = toml::to_string(&r).unwrap();
+        assert!(w.contains("graph = \"columns-cpu\"") && w.contains("[[edits]]"), "{w}");
+        // The graph changed since (the editor, a slot switch): written by what it is now.
+        let mut r = renderer("graph = \"raycast-gpu\"").unwrap();
+        r.graph = Some(r.graph.clone().unwrap().edit(&Change::Component("storage".into(), "tree64".into())).unwrap());
+        r.resolve().unwrap();
+        let w = toml::to_string(&r).unwrap();
+        assert!(!w.contains("graph = \"raycast-gpu\"") && w.contains("tree64"), "{w}");
+        assert_eq!(key(&renderer(&w).unwrap()), key(&r));
+        // An inline graph takes edits too.
+        let inline = toml::to_string(&mr_components::graph::shipped("raycast-gpu").unwrap()).unwrap().replace("[nodes", "[graph.nodes").replace("executor =", "[graph]\nexecutor =");
+        let r = renderer(&format!("edits = [{{ node = \"storage\", component = \"tree64\" }}]\n{inline}")).unwrap();
+        assert_eq!(r.graph.as_ref().unwrap().nodes["storage"].component, "tree64");
+        // Refused with the reason.
+        for (text, why) in [
+            ("graph = \"no-such-graph\"", "neither a shipped graph (raycast-gpu, "),
+            ("graph = \"raycast-gpu\"\nedits = [{ node = \"nowhere\", component = \"tree64\" }]", "edit 1 (`"),
+            ("graph = \"raycast-gpu\"\nedits = [{ node = \"storage\", component = \"heightmap\" }]", "renderer graph: "),
+            ("compose = { preset = \"raycast-gpu\" }\nedits = [{ remove = \"storage\" }]", "`edits` change a `graph`"),
+            ("graph = \"raycast-gpu\"\ncompose = { preset = \"raycast-gpu\" }", "not both"),
+        ] {
+            let e = format!("{:#}", renderer(text).unwrap_err());
+            assert!(e.contains(why), "{text}: {e}");
+        }
+    }
 
     /// The region and the link are the graph's client and link nodes; the run's
     /// `view_radius` and `max_lod` are the defaults of clients without their own.

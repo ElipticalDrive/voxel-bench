@@ -79,6 +79,7 @@ every face, so UV and orientation mistakes are obvious.
 | `crates/mr-reference` | the reference renderer (f64, exact), standing alone on purpose |
 | `tests/architecture.rs` | the architecture guard (below) |
 | `plans/` | example plans |
+| `pipelines/` | the shipped graph files (built into the binary; `graph = "<name>"` in a plan) |
 | `baselines/` | a full sweep of 2026-10-11 (observations), for comparing later sweeps with `scripts/ab/sweepcmp.py` |
 | `scripts/`, `install.py` | tools (Python); the installer |
 

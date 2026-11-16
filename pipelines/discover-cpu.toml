@@ -1,0 +1,63 @@
+# CPU discovery + GPU raster (the user's idea): CPU rays discover the visible face set (one frame ahead, pipelined), the GPU rasterises only it. Storage: the CPU representation discovery rays walk
+# A pipeline graph: start a renderer from it with `graph = "discover-cpu"` and `edits`.
+
+executor = "gpu"
+
+[nodes.draw]
+role = "draw"
+component = "raster"
+
+[nodes.draw.inputs]
+faces = "visibility"
+
+[nodes.draw.timing]
+faces = "prev"
+
+[nodes.kernel]
+role = "traversal"
+component = "refloor"
+
+[nodes.kernel.inputs]
+storage = "storage"
+
+[nodes.shading]
+role = "shading"
+component = "direct"
+
+[nodes.shading.inputs]
+hits = "draw"
+shadow = "shadow.kernel"
+
+[nodes."shadow.kernel"]
+role = "traversal"
+component = "refloor"
+
+[nodes."shadow.kernel".inputs]
+storage = "shadow.storage"
+
+[nodes."shadow.storage"]
+role = "storage"
+component = "bricks"
+
+[nodes."shadow.storage".inputs]
+changes = "world"
+
+[nodes.storage]
+role = "storage"
+component = "bricks"
+
+[nodes.storage.inputs]
+changes = "world"
+
+[nodes.visibility]
+role = "visibility"
+component = "quadtree"
+device = "cpu"
+
+[nodes.visibility.inputs]
+exposure = "storage"
+rays = "kernel"
+
+[nodes.world]
+role = "world"
+component = "world"

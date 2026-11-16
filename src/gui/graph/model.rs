@@ -1,11 +1,12 @@
-//! The pipeline editor's edits: each is a change to the renderer's graph, made exactly and
+//! The pipeline editor's edits: each is a change to the renderer's graph
+//! (`mr_components::graph::Change`, the edits plans write too), made exactly and
 //! tried as the renderer would load it (a graph that does not run yet is a draft). A choice
 //! whose graph cannot run carries the reason.
 
 use std::collections::{BTreeMap, HashMap};
 
-use mr_components::graph::{Data, Device, Graph, Node, Role, When, inputs, output, role_components};
-use mr_components::Api;
+pub use mr_components::graph::{Change, Target};
+use mr_components::graph::{Data, Graph, Role, When, inputs, output, role_components};
 use mr_core::RendererInfo;
 
 use crate::plan::RendererSpec;
@@ -13,27 +14,6 @@ use crate::plan::RendererSpec;
 /// The roles of the world's side: one node each, kept whatever reads them.
 pub fn world_side(role: Role) -> bool {
     matches!(role, Role::World | Role::Generator | Role::Link | Role::Client)
-}
-
-/// What an input port is bound to after an edit.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Target {
-    Node(String),
-    New(Role, &'static str),
-    Unbound,
-}
-
-/// One change to the graph.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Change {
-    Component(String, &'static str),
-    Bind(String, String, Target),
-    Device(String, Option<Device>),
-    Api(String, Option<Api>),
-    Timing(String, String, When),
-    Knob(String, String, Option<toml::Value>),
-    /// The node gone, the inputs that read it unbound.
-    Remove(String),
 }
 
 /// The renderer `base` running graph `g`, as a plan would load it (its options pruned to
@@ -58,76 +38,6 @@ pub fn load(base: &RendererSpec, g: &Graph, infos: &[RendererInfo]) -> Result<Re
 /// The graph renderer `spec` runs, with the world's side, the client and the post filled in.
 pub fn graph_of(spec: &RendererSpec) -> Option<Graph> {
     spec.pipeline()?.check().ok().map(|c| c.graph)
-}
-
-fn fresh_id(g: &Graph, want: &str) -> String {
-    if !g.nodes.contains_key(want) {
-        return want.to_string();
-    }
-    (2..).map(|i| format!("{want}-{i}")).find(|k| !g.nodes.contains_key(k)).unwrap()
-}
-
-/// `change` made as it says and nothing else: a new node comes unbound, a node given
-/// another component keeps the inputs it still has, nothing is pruned.
-fn exact(g: &Graph, change: &Change) -> Graph {
-    let mut g = g.clone();
-    match change {
-        Change::Component(id, c) => {
-            let n = g.nodes.get_mut(id).unwrap();
-            n.component = c.to_string();
-            n.knobs.clear();
-            n.api = None;
-            let ports = inputs(n.role, c);
-            n.inputs.retain(|p, _| ports.iter().any(|x| x.name == p));
-            n.timing.retain(|p, _| ports.iter().any(|x| x.name == p));
-        }
-        Change::Bind(id, port, target) => {
-            let at = match target {
-                Target::Unbound => None,
-                Target::Node(k) => Some(k.clone()),
-                Target::New(role, c) => {
-                    let k = fresh_id(&g, role.name());
-                    g.nodes.insert(k.clone(), Node::new(*role, c));
-                    Some(k)
-                }
-            };
-            let n = g.nodes.get_mut(id).unwrap();
-            match at {
-                Some(at) => drop(n.inputs.insert(port.clone(), at)),
-                None => {
-                    n.inputs.remove(port);
-                    n.timing.remove(port);
-                }
-            }
-        }
-        Change::Device(id, d) => g.nodes.get_mut(id).unwrap().device = *d,
-        Change::Api(id, a) => g.nodes.get_mut(id).unwrap().api = *a,
-        Change::Timing(id, port, w) => {
-            let n = g.nodes.get_mut(id).unwrap();
-            match w {
-                When::Now => drop(n.timing.remove(port)),
-                w => drop(n.timing.insert(port.clone(), *w)),
-            }
-        }
-        Change::Knob(id, k, v) => {
-            let n = g.nodes.get_mut(id).unwrap();
-            match v {
-                Some(v) => drop(n.knobs.insert(k.clone(), v.clone())),
-                None => drop(n.knobs.remove(k)),
-            }
-        }
-        Change::Remove(id) => {
-            g.nodes.remove(id);
-            for n in g.nodes.values_mut() {
-                let gone: Vec<String> = n.inputs.iter().filter(|(_, s)| *s == id).map(|(p, _)| p.clone()).collect();
-                for p in gone {
-                    n.inputs.remove(&p);
-                    n.timing.remove(&p);
-                }
-            }
-        }
-    }
-    g
 }
 
 /// Tries changes against one renderer, remembering the outcomes (a picker asks every frame).
@@ -162,7 +72,7 @@ impl Trial {
     /// Makes `change` whose graph does not run: the draft (a graph that runs is loaded
     /// instead, from `try_change`).
     pub fn make_draft(&mut self, change: &Change, infos: &[RendererInfo]) {
-        let g = exact(self.graph(), change);
+        let Ok(g) = self.graph().edit(change) else { return };
         if let Err(why) = self.run(&g, infos) {
             self.draft = Some((g, why));
             self.memo.clear();
@@ -186,7 +96,7 @@ impl Trial {
         if let Some(r) = self.memo.get(&key) {
             return r.clone();
         }
-        let r = self.run(&exact(self.graph(), change), infos);
+        let r = self.graph().edit(change).and_then(|g| self.run(&g, infos));
         self.memo.insert(key, r.clone());
         r
     }
@@ -302,14 +212,14 @@ mod tests {
         let mut t = Trial::new(s.clone(), g.clone());
         let (st, vis, shading) = (node(&g, Role::Storage), node(&g, Role::Visibility), node(&g, Role::Shading));
         // Another storage: only that node changes.
-        let (h, l) = t.try_change(&Change::Component(st.clone(), "tree64"), &[]).unwrap();
+        let (h, l) = t.try_change(&Change::Component(st.clone(), "tree64".into()), &[]).unwrap();
         assert_eq!(l.name, "raycast-gpu");
         let mut want = g.clone();
         want.nodes.get_mut(&st).unwrap().component = "tree64".into();
         assert_eq!(h, want);
         // The hits from a new drawer: raycast-gpu builds no draw node, and the ray caster is
         // left reaching no image. Refused; as a draft the drawer comes unbound, the caster stays.
-        let to_draw = Change::Bind(shading.clone(), "hits".into(), Target::New(Role::Draw, "raster"));
+        let to_draw = Change::Bind(shading.clone(), "hits".into(), Target::New(Role::Draw, "raster".into()));
         let why = t.try_change(&to_draw, &[]).unwrap_err();
         t.make_draft(&to_draw, &[]);
         assert_eq!(t.draft(), Some(why.as_str()));
@@ -327,6 +237,6 @@ mod tests {
         t.drop_draft();
         assert!(t.draft().is_none() && *t.graph() == g);
         // Discovery on raycast-gpu: refused as it is (no regraft onto discover-gpu's shape).
-        assert!(t.try_change(&Change::Component(vis, "quadtree"), &[]).is_err());
+        assert!(t.try_change(&Change::Component(vis, "quadtree".into()), &[]).is_err());
     }
 }
