@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
-use mr_components::graph::{self, Role};
+use mr_components::graph::{self, RegionId, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state::ShadeState;
 use mr_components::storage::gpu_data::{self, StorageSet};
@@ -76,28 +76,28 @@ pub fn entry() -> RendererEntry {
 /// What the pipeline of `p`'s graph supports: its region's, less what its components lack.
 fn info_of(p: &InitParams) -> anyhow::Result<RendererInfo> {
     let g = graph::of_init("gpu", p)?;
-    match g.preset().expect("of_init: a region") {
-        raycast::walk::PRESET => raycast::walk::info_of(&g, p),
-        preset => Ok(info(preset)),
+    match g.region.expect("of_init: a region").id {
+        RegionId::GpuWalk => raycast::walk::info_of(&g, p),
+        region => Ok(info(region)),
     }
 }
 
-/// The knobs of every region, by preset.
+/// The knobs of every region.
 pub fn infos() -> Vec<RendererInfo> {
-    [faces::cpu::PRESET, faces::gpu::PRESET, splat::PRESET, columns::PRESET, raycast::walk::PRESET, faces::mesh::PRESET, raycast::rayquery::PRESET].map(info).into()
+    [RegionId::CpuSampler, RegionId::GpuSampler, RegionId::GpuSplat, RegionId::GpuColumns, RegionId::GpuWalk, RegionId::GpuMeshing, RegionId::GpuRayQuery].map(info).into()
 }
 
-/// The knobs of region `preset`.
-pub fn info(preset: &str) -> RendererInfo {
-    match preset {
-        faces::mesh::PRESET => faces::mesh::info(),
-        faces::gpu::PRESET => faces::gpu::info(),
-        faces::cpu::PRESET => faces::cpu::info(),
-        raycast::walk::PRESET => raycast::walk::info(),
-        raycast::rayquery::PRESET => raycast::rayquery::info(),
-        splat::PRESET => splat::info(),
-        columns::PRESET => columns::info(),
-        other => panic!("`{other}` is not run by the GPU executor"),
+/// The knobs of `region`.
+pub fn info(region: RegionId) -> RendererInfo {
+    match region {
+        RegionId::GpuMeshing => faces::mesh::info(),
+        RegionId::GpuSampler => faces::gpu::info(),
+        RegionId::CpuSampler => faces::cpu::info(),
+        RegionId::GpuWalk => raycast::walk::info(),
+        RegionId::GpuRayQuery => raycast::rayquery::info(),
+        RegionId::GpuSplat => splat::info(),
+        RegionId::GpuColumns => columns::info(),
+        other => panic!("{other:?} is not a region of the GPU executor"),
     }
 }
 

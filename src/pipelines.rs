@@ -69,10 +69,10 @@ impl Executor {
 /// the graph's shape (`None`: no region of that executor does, so no generated pipeline
 /// runs it).
 pub(crate) fn executor_of(g: &mr_components::graph::Graph) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
-    let preset = g.preset().filter(|p| mr_components::graph::executor_of(p) == g.runs_on())?;
+    let region = g.region().filter(|b| b.executor() == g.runs_on())?.id;
     Some(match g.runs_on() {
-        "cpu" => (Executor::Cpu, mr_exec_cpu::info(preset).params),
-        _ => (Executor::Gpu, mr_exec_gpu::info(preset).params),
+        "cpu" => (Executor::Cpu, mr_exec_cpu::info(region).params),
+        _ => (Executor::Gpu, mr_exec_gpu::info(region).params),
     })
 }
 

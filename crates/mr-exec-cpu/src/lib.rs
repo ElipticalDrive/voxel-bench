@@ -75,21 +75,22 @@ fn fixed<T: PartialEq + std::fmt::Debug>(what: &str, baked: Option<T>, actual: T
 
 /// The CPU executor: the pipeline its graph picks.
 pub fn entry() -> RendererEntry {
-    RendererEntry { name: "cpu", info: |p| Ok(info(graph::of_init("cpu", p)?.preset().expect("of_init: a region"))), create: |p, _, _| create(p) }
+    RendererEntry { name: "cpu", info: |p| Ok(info(graph::of_init("cpu", p)?.region.expect("of_init: a region").id)), create: |p, _, _| create(p) }
 }
 
-/// The knobs of every pipeline, by preset.
+/// The knobs of every region.
 pub fn infos() -> Vec<RendererInfo> {
     vec![raster::info(), raycast::info(), columns::info()]
 }
 
-/// The knobs of pipeline `preset`.
-pub fn info(preset: &str) -> RendererInfo {
-    match preset {
-        raycast::PRESET => raycast::info(),
-        raster::PRESET => raster::info(),
-        columns::PRESET => columns::info(),
-        other => panic!("`{other}` is not run by the CPU executor"),
+/// The knobs of `region`.
+pub fn info(region: graph::RegionId) -> RendererInfo {
+    use graph::RegionId::*;
+    match region {
+        CpuRaycast => raycast::info(),
+        CpuRaster => raster::info(),
+        CpuColumns => columns::info(),
+        other => panic!("{other:?} is not a region of the CPU executor"),
     }
 }
 

@@ -51,11 +51,30 @@ pub struct Only {
     pub bound: bool,
 }
 
+/// The regions of the executors: the parts of each that build one shape of pipeline (the CPU
+/// executor's ray caster, rasteriser and column march; the GPU executor's walk, ray queries,
+/// meshed faces, the two discovery samplers, splats and column march). An executor picks its
+/// code by it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RegionId {
+    CpuRaycast,
+    CpuRaster,
+    CpuColumns,
+    GpuWalk,
+    GpuRayQuery,
+    GpuMeshing,
+    GpuSampler,
+    CpuSampler,
+    GpuSplat,
+    GpuColumns,
+}
+
 /// What a region of an executor builds: its nodes, the inputs that must be one node, what it
 /// reads from some inputs, and the choices it leaves to the graph (edge timings, a second GPU,
 /// an API).
 #[derive(Copy, Clone, Debug)]
 pub struct Builds {
+    pub id: RegionId,
     /// The name its messages use.
     pub name: &'static str,
     pub nodes: &'static [Build],
@@ -76,8 +95,10 @@ pub struct Builds {
 }
 
 impl Builds {
-    /// Nothing built and no choices: the base the declarations fill in.
-    const NONE: Builds = Builds { name: "", nodes: &[], same: &[], only: &[], free: &[], timing_knobs: &[], split: false, api_choice: None };
+    /// Region `id` with nothing built and no choices: the base the declarations fill in.
+    const fn plain(id: RegionId, name: &'static str) -> Builds {
+        Builds { id, name, nodes: &[], same: &[], only: &[], free: &[], timing_knobs: &[], split: false, api_choice: None }
+    }
 
     /// The timings it runs the edge into `port` of a `role` node with, if the graph may choose.
     pub fn free_at(&self, role: Role, port: &str) -> Option<&'static [When]> {
@@ -120,7 +141,6 @@ const SHADOW_BOUND: Only = Only { role: Role::Shading, of: &[], port: "shadow", 
 /// `raycast-cpu`: one storage (one monomorphised instance; the shadow rays walk it too),
 /// its primary and shadow kernels, the ray caster and the shading.
 pub const CPU_RAYCAST: Builds = Builds {
-    name: "raycast-cpu",
     nodes: &[
         Build::one(Role::Storage, CPU_STORAGES, impls::CPU_ISAS),
         Build::one(Role::Traversal, &["refloor", "incremental"], impls::CPU_ISAS).count(1, 2),
@@ -130,12 +150,11 @@ pub const CPU_RAYCAST: Builds = Builds {
     same: &[],
     only: &[],
     api_choice: Some(ApiChoice { knob: "isa", slots: CAST_SLOTS, values: &[(Api::Scalar, "scalar"), (Api::Avx2, "avx2"), (Api::Avx512, "avx512")], default: None }),
-    ..Builds::NONE
+    ..Builds::plain(RegionId::CpuRaycast, "raycast-cpu")
 };
 
 /// `raster-cpu`: the geometry's quads, their culling, the rasteriser and the shading.
 pub const CPU_RASTER: Builds = Builds {
-    name: "raster-cpu",
     nodes: &[
         Build::one(Role::Geometry, &["greedy", "naive"], impls::CPU_SCALAR),
         Build::one(Role::Visibility, &["faces"], impls::CPU_SCALAR),
@@ -144,12 +163,11 @@ pub const CPU_RASTER: Builds = Builds {
     ],
     same: &[],
     only: &[],
-    ..Builds::NONE
+    ..Builds::plain(RegionId::CpuRaster, "raster-cpu")
 };
 
 /// `columns-cpu`: the heightmap, its own ray march (the shadow rays), the column march and the shading.
 pub const CPU_COLUMNS: Builds = Builds {
-    name: "columns-cpu",
     nodes: &[
         Build::one(Role::Storage, &["heightmap"], impls::CPU_SCALAR),
         Build::one(Role::Traversal, &["heightfield"], impls::CPU_SCALAR),
@@ -158,7 +176,7 @@ pub const CPU_COLUMNS: Builds = Builds {
     ],
     same: &[],
     only: &[],
-    ..Builds::NONE
+    ..Builds::plain(RegionId::CpuColumns, "columns-cpu")
 };
 
 /// The GPU walk (`raycast-gpu`): a storage and kernel per walk (primary, shadow, bounce and
@@ -166,7 +184,6 @@ pub const CPU_COLUMNS: Builds = Builds {
 /// beam prepass (over the primary rays' storage, which its shader reads), the walk and the
 /// shading (on this GPU or another).
 pub const GPU_WALK: Builds = Builds {
-    name: "raycast-gpu",
     nodes: &[
         Build::one(Role::Storage, GPU_STORAGES, impls::GPU_DISPATCH).count(0, 4),
         Build::one(Role::Traversal, GPU_KERNELS, impls::GPU_DISPATCH).count(1, 4),
@@ -181,14 +198,13 @@ pub const GPU_WALK: Builds = Builds {
     free: HITS_LATE,
     split: true,
     api_choice: Some(ApiChoice { knob: "dispatch", slots: CAST_SLOTS, values: &[(Api::Compute, "compute"), (Api::Raster, "fragment")], default: Some(Api::Compute) }),
-    ..Builds::NONE
+    ..Builds::plain(RegionId::GpuWalk, "raycast-gpu")
 };
 
 /// GPU ray queries (`rayquery-gpu`): the geometry of the acceleration structures (on the CPU), the
 /// primary ray queries, storages and kernels for walked shadow and bounce rays, the visibility
 /// and the shading (on this GPU or another). No meshes and no prepass.
 pub const GPU_RAYQUERY: Builds = Builds {
-    name: "rayquery-gpu",
     nodes: &[
         Build::one(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR),
         Build::one(Role::Storage, GPU_STORAGES, impls::GPU_RAYQUERY).count(0, 2),
@@ -200,14 +216,13 @@ pub const GPU_RAYQUERY: Builds = Builds {
     only: &[],
     free: HITS_LATE,
     split: true,
-    ..Builds::NONE
+    ..Builds::plain(RegionId::GpuRayQuery, "rayquery-gpu")
 };
 
 /// Faces with the meshing source (`raster-gpu`): the geometry the drawer draws (and one for
 /// ray-queried bounce rays), its culling, the drawer, meshes into the depth buffer lit through
 /// walks, and the shading, whose shadow rays (and the meshes') are walks.
 pub const GPU_MESHING: Builds = Builds {
-    name: "raster-gpu",
     nodes: &[
         Build::one(Role::Geometry, &["greedy", "naive", "cubes", "boxes"], impls::CPU_SCALAR).count(1, 2),
         Build::one(Role::Visibility, &["faces"], impls::GPU_RASTER),
@@ -225,14 +240,13 @@ pub const GPU_MESHING: Builds = Builds {
         SHADOW_WALKED,
         RT,
     ],
-    ..Builds::NONE
+    ..Builds::plain(RegionId::GpuMeshing, "raster-gpu")
 };
 
 /// GPU discovery (`discover-gpu`): the sampler (its rays and exposure tests over any GPU
 /// storage), its hole detection, the drawer of the face set, the shading (any rays, a
 /// ray-query geometry on the CPU).
 pub const GPU_SAMPLER: Builds = Builds {
-    name: "discover-gpu",
     nodes: &[
         Build::one(Role::Storage, GPU_STORAGES, impls::GPU_DRAWN).count(1, 4),
         Build::one(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(1, 3),
@@ -252,14 +266,13 @@ pub const GPU_SAMPLER: Builds = Builds {
     // Hole detection closes a cycle through the drawer, which draws twice a frame, and reads
     // the last frame's sky mask.
     free: &[(Role::Draw, "faces", &[When::Now, When::Iterate(2)]), (Role::Holes, "sky", &[When::Prev])],
-    ..Builds::NONE
+    ..Builds::plain(RegionId::GpuSampler, "discover-gpu")
 };
 
 /// CPU discovery (`discover-cpu`): the sampler over a CPU storage (exposure tests over the one
 /// its rays walk), the face set drawn on the GPU, the shading there (any GPU rays, a ray-query
 /// geometry on the CPU).
 pub const CPU_SAMPLER: Builds = Builds {
-    name: "discover-cpu",
     nodes: &[
         Build::one(Role::Storage, CPU_STORAGES, impls::CPU_SCALAR),
         Build::one(Role::Traversal, &["refloor"], impls::CPU_SCALAR),
@@ -275,13 +288,12 @@ pub const CPU_SAMPLER: Builds = Builds {
     // Discovery a frame ahead of the drawer, or within its frame.
     free: &[(Role::Draw, "faces", &[When::Now, When::Prev])],
     timing_knobs: &[("pipelined", Role::Draw, "faces", When::Prev, When::Now)],
-    ..Builds::NONE
+    ..Builds::plain(RegionId::CpuSampler, "discover-cpu")
 };
 
 /// Point splatting (`splat-gpu`): the points (and a geometry for ray-queried bounce rays), the
 /// splat passes, the shading (its shadow rays walked).
 pub const GPU_SPLAT: Builds = Builds {
-    name: "splat-gpu",
     nodes: &[
         Build::one(Role::Geometry, &["points", "greedy", "naive", "boxes"], impls::CPU_SCALAR).count(1, 2),
         Build::one(Role::Visibility, &["splat"], impls::GPU_COMPUTE),
@@ -291,13 +303,12 @@ pub const GPU_SPLAT: Builds = Builds {
     ],
     same: &[],
     only: &[Only { role: Role::Visibility, of: &[], port: "points", components: &["points"], bound: true }, SHADOW_WALKED, RT],
-    ..Builds::NONE
+    ..Builds::plain(RegionId::GpuSplat, "splat-gpu")
 };
 
 /// Voxel Space on the GPU (`columns-gpu`): the heightmap, its own ray march (the shadow and
 /// bounce rays), the column march, the shading.
 pub const GPU_COLUMNS: Builds = Builds {
-    name: "columns-gpu",
     nodes: &[
         Build::one(Role::Storage, &["heightmap"], impls::GPU_COMPUTE),
         Build::one(Role::Traversal, &["heightfield"], impls::GPU_COMPUTE),
@@ -306,7 +317,7 @@ pub const GPU_COLUMNS: Builds = Builds {
     ],
     same: &[],
     only: &[],
-    ..Builds::NONE
+    ..Builds::plain(RegionId::GpuColumns, "columns-gpu")
 };
 
 /// The roles the worker runs in front of every executor (the world's side), and the post every
