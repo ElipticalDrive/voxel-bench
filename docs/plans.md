@@ -160,8 +160,9 @@ The full sweep the scripts run (`sweep.py`, `ab/wgsl.py`) is `scripts/full-sweep
 shipped graph with each node given every component it takes and its optional nodes present
 and absent. `plans/stream.toml` sweeps the link, the generator's place and the client.
 
-The older form still reads: a `compose` field or a `sites` value may be `"*"` or a list
-(`compose = { preset = "*", storage = "*" }`: every preset, every storage each has).
+The older `compose` / `sites` form is not swept any more (a `"*"` or a list there is refused):
+write the sweep as a graph file, `edits` and `vary`. A component is never an option: `options`
+holds knobs only.
 
 ## Observations and the catalogue
 

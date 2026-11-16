@@ -13,7 +13,7 @@ use super::*;
 fn tuner_demo() {
     let plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/terrain.toml")), &[
         "run.isolation=\"thread\"".into(),
-        "renderer=[{compose={preset=\"raycast-gpu\"}}]".into(),
+        "renderer=[{graph=\"raycast-gpu\"}]".into(),
         "run.resolution=[1920,1080]".into(),
     ])
     .unwrap();

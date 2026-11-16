@@ -792,7 +792,7 @@ mod tests {
         assert_eq!(broken.split('-').nth(1), native.split('-').nth(1), "the same graph");
         let m = manifest(repo(), Executor::Cpu);
         assert!(m.contains("[profile.break-in]\ninherits = \"release\"\nlto = \"fat\"\ncodegen-units = 1"), "{m}");
-        let p: crate::plan::Plan = crate::plan::Plan::parse("[scene]\ngenerator = { type = \"terrain\" }\ncamera = { type = \"line\", from = [0, 1, 0], to = [1, 1, 0] }\n[run]\ncompile = \"break-in\"\n[[renderer]]\ncompose = { preset = \"raycast-cpu\" }\n", &[]).unwrap();
+        let p: crate::plan::Plan = crate::plan::Plan::parse("[scene]\ngenerator = { type = \"terrain\" }\ncamera = { type = \"line\", from = [0, 1, 0], to = [1, 1, 0] }\n[run]\ncompile = \"break-in\"\n[[renderer]]\ngraph = \"raycast-cpu\"\n", &[]).unwrap();
         assert_eq!(p.renderers[0].compiled(&p.run), Some(Compile::BreakIn));
         let plan = check_plan(&b, Path::new("/x"), &["off"], train_options(&b), 90, [960, 540], false).unwrap();
         assert!(plan.contains("threads = 1") && !plan.contains("save"), "{plan}");

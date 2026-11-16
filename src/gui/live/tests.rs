@@ -43,13 +43,13 @@ fn live_session_end_to_end() {
         view_radius = 3
         isolation = "thread"
         [[renderer]]
-        compose = { preset = "raycast-gpu" }
+        graph = "raycast-gpu"
         [[renderer]]
-        compose = { preset = "raster-gpu" }
+        graph = "raster-gpu"
         [[renderer]]
-        compose = { preset = "raycast-gpu" }
+        graph = "raycast-gpu"
         label = "lod"
-        sites = { client = "pick(radius=2, max_lod=2)" }
+        edits = [{ add = "client", role = "client", component = "pick" }, { node = "client", knobs = { radius = 2, max_lod = 2 } }]
         "#,
         &[],
     )
@@ -191,7 +191,7 @@ fn restarts_keep_knobs() {
     new.options.insert("max_steps".into(), toml::Value::Integer(500));
     let kept = keep_knobs(&given, &now, new);
     assert_eq!((value(&kept, "max_steps"), value(&kept, "accumulate")), (Some(toml::Value::Integer(500)), Some(toml::Value::Boolean(false))));
-    assert_eq!(kept.composition().unwrap().storage, "prefix");
+    assert_eq!(kept.graph.as_ref().unwrap().nodes["storage"].component, "prefix");
     // Another preset: its own knobs only.
     let kept = keep_knobs(&given, &now, RendererSpec::from_cli("raster-gpu").unwrap());
     assert_eq!(value(&kept, "max_steps"), None);
@@ -216,8 +216,8 @@ fn live_hdr_window() {
         view_radius = 3
         isolation = "thread"
         [[renderer]]
-        compose = { preset = "raycast-gpu" }
-        sites = { post = "hdr" }
+        graph = "raycast-gpu"
+        edits = [{ add = "post", role = "post", component = "hdr" }, { node = "post", input = "image", from = "shading" }]
         "#,
         &[],
     )
@@ -255,7 +255,8 @@ fn live_compiled_pipeline() {
         isolation = "process"
         compile = "native"
         [[renderer]]
-        compose = { preset = "raycast-cpu", storage = "prefix" }
+        graph = "raycast-cpu"
+        edits = [{ node = "storage", component = "prefix" }]
         "#,
         &[],
     )
@@ -281,7 +282,7 @@ fn live_compiled_pipeline() {
 fn live_meshes_end_to_end() {
     let plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/meshes.toml")), &[
         "run.isolation=\"thread\"".into(),
-        "renderer=[{compose={preset=\"raster-gpu\"}},{compose={preset=\"raycast-cpu\"}}]".into(),
+        "renderer=[{graph=\"raster-gpu\"},{graph=\"raycast-cpu\"}]".into(),
         "run.resolution=[480,270]".into(),
     ])
     .unwrap();

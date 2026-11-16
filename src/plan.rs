@@ -7,8 +7,7 @@
 //! lists of edits (`mr_components::graph::varied`). It expands into one renderer per
 //! combination that can be made and that `accept` takes, each distinct pipeline once
 //! (`RendererSpec::swept`); the entry's `options` go to each pipeline whose executor
-//! declares them. The older form does the same over a composition: a `compose` field or a
-//! `sites` value may be `"*"` or a list. In each pass, swept combinations that the pass
+//! declares them. In each pass, swept combinations that the pass
 //! mode cannot tell apart run once (`Composition::effective`).
 
 use std::collections::BTreeMap;
@@ -382,19 +381,11 @@ impl RendererSpec {
             && let Some(b) = mr_components::graph::region_named(&self.name) {
             self.graph = Some(self.graph_of(mr_components::Composition::new(b.name), &BTreeMap::new())?);
         }
-        let Some(g) = &self.graph else {
+        if self.graph.is_none() {
             if self.name.is_empty() {
                 bail!("a renderer needs `compose = {{ ... }}` or a `name`");
             }
             return Ok(());
-        };
-        // A component given as an option (`traversal = "sphere"`) is the shorthand's.
-        if let Some(k) = self.options.keys().find(|k| mr_components::Slot::ALL.iter().any(|s| s.name() == k.as_str())).cloned() {
-            let sh = g.shorthand().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
-            if !sh.exact || stage_knobs(g) {
-                bail!("renderer graph: `{k}` is a node's component, not an option");
-            }
-            self.graph = Some(self.graph_of(sh.compose, &sh.sites)?);
         }
         let g = self.graph.as_ref().unwrap();
         g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
@@ -422,14 +413,8 @@ impl RendererSpec {
         Ok(())
     }
 
-    /// The graph of composition `c` (options naming a stage's component set first) with
-    /// `sites` bound otherwise.
-    fn graph_of(&mut self, mut c: mr_components::Composition, sites: &BTreeMap<String, String>) -> anyhow::Result<mr_components::graph::Graph> {
-        for slot in mr_components::Slot::ALL {
-            if let Some(v) = self.options.remove(slot.name()) {
-                c.set(slot, v.as_str().with_context(|| format!("option `{}`: a component name", slot.name()))?);
-            }
-        }
+    /// The graph of composition `c` with `sites` bound otherwise.
+    fn graph_of(&self, mut c: mr_components::Composition, sites: &BTreeMap<String, String>) -> anyhow::Result<mr_components::graph::Graph> {
         c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?;
         mr_components::graph::Graph::from_composition(&c).and_then(|g| g.with_sites(sites)).and_then(|g| g.accept().map(|_| g)).map_err(|e| anyhow::anyhow!("renderer {}: sites: {e}", c.label()))
     }
@@ -551,14 +536,6 @@ impl RendererSpec {
             edits.push(c);
         }
         Self::try_from(Written { graph: Some(GraphRef::File(file.into())), edits, ..Default::default() }).with_context(|| format!("`{s}`"))
-    }
-
-    /// Replaces the composition (the sites its shorthand binds otherwise stay) and
-    /// re-resolves (on failure nothing changes).
-    #[cfg(test)]
-    pub fn set_compose(&mut self, c: mr_components::Composition) -> anyhow::Result<()> {
-        let sites = self.sites();
-        self.set_pipeline(c, &sites)
     }
 
     /// Replaces the sites bound otherwise and re-resolves (on failure the old ones stay;
@@ -841,123 +818,23 @@ impl Plan {
     }
 }
 
-/// How a sweep picks one `compose` field.
-enum Pick {
-    /// Not given: the preset's default.
-    Default,
-    /// `"*"`: everything available.
-    All,
-    /// A name or a list of names.
-    Some(Vec<String>),
-}
-
-impl Pick {
-    fn of(v: Option<&toml::Value>, field: &str) -> anyhow::Result<Self> {
-        Ok(match v {
-            None => Pick::Default,
-            Some(toml::Value::String(s)) if s == "*" => Pick::All,
-            Some(toml::Value::String(s)) => Pick::Some(vec![s.clone()]),
-            Some(toml::Value::Array(a)) => Pick::Some(a.iter().map(|x| x.as_str().map(String::from).with_context(|| format!("compose.{field}: list entries must be names"))).collect::<anyhow::Result<_>>()?),
-            Some(_) => bail!("compose.{field} must be a name, \"*\" or a list of names"),
-        })
-    }
-}
-
-/// Expands every swept `[[renderer]]` (a `compose` field that is `"*"` or a list) into one
-/// renderer per valid combination.
+/// Expands every swept `[[renderer]]` (one with `vary`) into one renderer per pipeline it
+/// stands for ([`expand_varied`]).
 fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
     let Some(toml::Value::Array(entries)) = table.get_mut("renderer") else { return Ok(()) };
-    let picks = |t: Option<&toml::Value>| t.and_then(|c| c.as_table()).is_some_and(|c| c.values().any(|v| v.is_array() || v.as_str() == Some("*")));
-    let swept = |e: &toml::Value| e.get("vary").is_some() || picks(e.get("compose")) || picks(e.get("sites"));
-    if !entries.iter().any(swept) {
+    if !entries.iter().any(|e| e.get("vary").is_some()) {
         return Ok(());
     }
     let infos = mr_worker::infos();
     let mut out = vec![];
     for e in entries.drain(..) {
-        if !swept(&e) {
-            out.push(e);
-            continue;
-        }
-        if e.get("vary").is_some() {
-            out.extend(expand_varied(e.as_table().unwrap(), &infos)?);
-            continue;
-        }
-        let compose = e.get("compose").and_then(|c| c.as_table()).cloned().unwrap_or_default();
-        let site_axes: Vec<(String, Pick)> = e.get("sites").and_then(|s| s.as_table()).map(|t| t.iter().map(|(k, v)| Ok((k.clone(), Pick::of(Some(v), &format!("sites.{k}"))?))).collect::<anyhow::Result<_>>()).transpose()?.unwrap_or_default();
-        // Distinct pipelines once each (several spellings can give one graph).
-        let mut keys = std::collections::HashSet::new();
-        if let Some(k) = compose.keys().find(|k| *k != "preset" && !mr_components::Slot::ALL.iter().any(|s| s.name() == k.as_str())) {
-            bail!("compose: unknown field `{k}`");
-        }
-        let presets: Vec<&'static mr_components::graph::Builds> = match Pick::of(compose.get("preset"), "preset")? {
-            Pick::Default => vec![&mr_components::graph::GPU_WALK],
-            Pick::All => mr_components::graph::REGIONS.to_vec(),
-            Pick::Some(names) => names.iter().map(|n| mr_components::graph::region_named(n).with_context(|| format!("compose.preset: unknown preset `{n}`"))).collect::<anyhow::Result<_>>()?,
-        };
-        let before = out.len();
-        for b in presets {
-            // Named components for a stage the preset lacks: not this preset ("*" there
-            // is ignored).
-            if mr_components::Slot::ALL.iter().any(|&s| !b.has(s) && matches!(Pick::of(compose.get(s.name()), s.name()), Ok(Pick::Some(_)))) {
-                continue;
-            }
-            // Per slot, the components to combine (an empty list: the preset is skipped).
-            let mut axes: Vec<(mr_components::Slot, Vec<String>)> = vec![];
-            for &(slot, default) in b.base {
-                let names = match Pick::of(compose.get(slot.name()), slot.name())? {
-                    Pick::Default => vec![default.to_string()],
-                    Pick::All => b.names(slot).into_iter().map(String::from).collect(),
-                    Pick::Some(l) => l.into_iter().filter(|n| b.unavailable(slot, n).is_none()).collect(),
-                };
-                axes.push((slot, names));
-            }
-            let mut combos = vec![mr_components::Composition::new(b.name)];
-            for (slot, names) in &axes {
-                combos = combos.iter().flat_map(|c| names.iter().map(move |n| {
-                    let mut c = c.clone();
-                    c.set(*slot, n);
-                    c
-                })).collect();
-            }
-            // Options the preset declares, and those naming a component (the shorthand's).
-            let known: Vec<String> = infos.iter().find(|i| i.name == b.name).map(|i| i.params.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
-            let options: toml::Table = e.get("options").and_then(|o| o.as_table()).map(|t| t.iter().filter(|(k, _)| known.contains(k) || component_option(k)).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
-            // Combinations whose components' needs cannot be met do not exist.
-            for c in combos.into_iter().filter(|c| c.validate().is_ok()) {
-                for (c, sites) in expand_sites(&c, &site_axes)? {
-                    let g = mr_components::graph::Graph::from_composition(&c).and_then(|g| g.with_sites(&sites)).map_err(anyhow::Error::msg)?;
-                    // The client's region is the workload, not in the key, but a pass of its own.
-                    let region: Vec<Option<i64>> = mr_components::graph::CLIENT_KNOBS.iter().map(|k| g.client_knob(k)).collect();
-                    let key = g.with_options(&options).key().map_err(anyhow::Error::msg)?;
-                    if !keys.insert((key, region)) {
-                        continue;
-                    }
-                    let mut entry = e.as_table().unwrap().clone();
-                    entry.insert("compose".into(), toml::Value::try_from(&c)?);
-                    if sites.is_empty() {
-                        entry.remove("sites");
-                    } else {
-                        entry.insert("sites".into(), toml::Value::try_from(&sites)?);
-                    }
-                    entry.insert("options".into(), toml::Value::Table(options.clone()));
-                    entry.insert("swept".into(), toml::Value::Boolean(true));
-                    entry.remove("label");
-                    out.push(toml::Value::Table(entry));
-                }
-            }
-        }
-        if out.len() == before {
-            bail!("the sweep {} matches no valid combination", toml::Value::Table(compose));
+        match e.get("vary") {
+            Some(_) => out.extend(expand_varied(e.as_table().context("a renderer is a table")?, &infos)?),
+            None => out.push(e),
         }
     }
     *entries = out;
     Ok(())
-}
-
-/// Whether option `k` names a component of the flat form (a slot), not a knob of an executor.
-fn component_option(k: &str) -> bool {
-    mr_components::Slot::ALL.iter().any(|s| s.name() == k)
 }
 
 /// The renderers a swept entry stands for (`vary`, after `graph` and `edits`): one per
@@ -968,7 +845,7 @@ fn component_option(k: &str) -> bool {
 fn expand_varied(e: &toml::Table, infos: &[mr_core::RendererInfo]) -> anyhow::Result<Vec<toml::Value>> {
     use mr_components::graph::{CLIENT_KNOBS, Change, varied};
     if e.contains_key("compose") || e.contains_key("sites") {
-        bail!("`vary` sweeps the edits of a `graph`; this renderer has `compose` / `sites` (sweep those with lists in them, or write it as a graph)");
+        bail!("`vary` sweeps the edits of a `graph`; this renderer has `compose` / `sites` (write it as a graph: a file's name and `edits`)");
     }
     let graph: GraphRef = e.get("graph").cloned().context("`vary` sweeps the edits of a `graph` (a file's name or the graph itself); this renderer has none")?.try_into()?;
     let edits: Vec<Change> = e.get("edits").cloned().map(|v| v.try_into()).transpose()?.unwrap_or_default();
@@ -989,9 +866,9 @@ fn expand_varied(e: &toml::Table, infos: &[mr_core::RendererInfo]) -> anyhow::Re
                 continue;
             }
         };
-        // The options this pipeline's executor declares, and those naming a component.
+        // The options this pipeline's executor declares.
         let known = g.preset().and_then(|name| infos.iter().find(|i| i.name == name));
-        let options: toml::Table = given.iter().filter(|(k, _)| component_option(k) || known.is_some_and(|i| i.params.iter().any(|p| p.name == **k))).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let options: toml::Table = given.iter().filter(|(k, _)| known.is_some_and(|i| i.params.iter().any(|p| p.name == **k))).map(|(k, v)| (k.clone(), v.clone())).collect();
         // The client's region is the workload, not in the key, but a pass of its own.
         let region: Vec<Option<i64>> = CLIENT_KNOBS.iter().map(|k| g.client_knob(k)).collect();
         if !keys.insert((g.with_options(&options).key().map_err(anyhow::Error::msg)?, region)) {
@@ -1008,56 +885,6 @@ fn expand_varied(e: &toml::Table, infos: &[mr_core::RendererInfo]) -> anyhow::Re
     }
     if out.is_empty() {
         bail!("the sweep `vary = {}` gives no pipeline{}", e["vary"], first.map(|w| format!(" (the first combination: {w})")).unwrap_or_default());
-    }
-    Ok(out)
-}
-
-/// Most pipelines one swept entry may expand into per composition (sweeps are bounded).
-const MAX_SITE_COMBOS: usize = 100_000;
-
-/// The site bindings of composition `c` a sweep's `sites` picks: every combination that
-/// runs, in its sites form (composition and sites). `"*"` on a site the pipeline lacks is
-/// ignored; a named value there gives nothing (as `compose` names a stage the preset
-/// lacks).
-fn expand_sites(c: &mr_components::Composition, axes: &[(String, Pick)]) -> anyhow::Result<Vec<(mr_components::Composition, BTreeMap<String, String>)>> {
-    if axes.is_empty() {
-        return Ok(vec![(c.clone(), BTreeMap::new())]);
-    }
-    let base = mr_components::graph::Graph::from_composition(c).map_err(anyhow::Error::msg)?;
-    // The ray-casting sites, and the nodes every pipeline has (the world's side, the post).
-    use mr_components::graph::{CLIENT, GENERATOR, LINK, POST};
-    let names: Vec<String> = base.site_ports().into_iter().map(|(n, ..)| n).chain([LINK, CLIENT, GENERATOR, POST].map(String::from)).collect();
-    let mut lists: Vec<(&str, Vec<String>)> = vec![];
-    for (site, pick) in axes {
-        let values = match pick {
-            Pick::Default => continue,
-            _ if !names.contains(site) => match pick {
-                Pick::All => continue,
-                _ => return Ok(vec![]),
-            },
-            Pick::All => base.site_choices(site),
-            Pick::Some(l) => l.clone(),
-        };
-        lists.push((site, values));
-    }
-    let n: usize = lists.iter().map(|(_, v)| v.len()).product();
-    if n > MAX_SITE_COMBOS {
-        bail!("sites: {n} combinations for {} (at most {MAX_SITE_COMBOS}); name fewer values", c.label());
-    }
-    let mut maps = vec![BTreeMap::new()];
-    for (site, values) in &lists {
-        maps = maps.iter().flat_map(|m| values.iter().map(move |v| {
-            let mut m = m.clone();
-            m.insert(site.to_string(), v.clone());
-            m
-        })).collect();
-    }
-    let mut out = vec![];
-    for m in maps {
-        let Ok(g) = base.with_sites(&m) else { continue };
-        if let Some(sh) = g.accept().and_then(|_| g.shorthand()).ok().filter(|sh| sh.exact) {
-            out.push((sh.compose, sh.sites));
-        }
     }
     Ok(out)
 }
@@ -1169,8 +996,8 @@ mod tests {
         r.pipeline().unwrap().key().unwrap()
     }
 
-    /// A renderer written as a graph file plus edits is the pipeline its composition names,
-    /// and is written back as it was read until its graph changes.
+    /// A renderer written as a graph file plus edits is that pipeline, and is written back
+    /// as it was read until its graph changes.
     #[test]
     fn graph_files_and_edits() {
         use mr_components::graph::{Change, REGIONS, SHIPPED};
@@ -1185,15 +1012,14 @@ mod tests {
             assert_eq!(toml::to_string(&r).unwrap().trim(), format!("graph = \"{name}\"\n\n[options]"), "{name}");
         }
         // Edits: a component, a new node bound, an API, a timing, a node knob.
-        for (edits, compose, sites) in [
-            (r#"[{ node = "storage", component = "tree64" }, { node = "kernel", component = "incremental" }]"#, r#"{ preset = "raycast-gpu", storage = "tree64", traversal = "incremental" }"#, ""),
-            (r#"[{ node = "shading", component = "pathtrace" }, { add = "far", role = "storage", component = "tree64" }, { node = "far", input = "changes", from = "world" }, { add = "sphere", role = "traversal", component = "sphere" }, { node = "sphere", input = "storage", from = "far" }, { node = "shading", input = "bounce", from = "sphere" }]"#, r#"{ preset = "raycast-gpu", shading = "pathtrace" }"#, r#"sites = { bounce = "tree64/sphere" }"#),
+        for (edits, label) in [
+            (r#"[{ node = "storage", component = "tree64" }, { node = "kernel", component = "incremental" }]"#, "gpu: tree64 + incremental + composite + raycast + direct"),
+            (r#"[{ node = "shading", component = "pathtrace" }, { add = "far", role = "storage", component = "tree64" }, { node = "far", input = "changes", from = "world" }, { add = "sphere", role = "traversal", component = "sphere" }, { node = "sphere", input = "storage", from = "far" }, { node = "shading", input = "bounce", from = "sphere" }]"#, "gpu: bricks + refloor + composite + raycast + tree64 + sphere + pathtrace"),
         ] {
             let text = format!("graph = \"raycast-gpu\"\nedits = {edits}");
             let r = renderer(&text).unwrap_or_else(|e| panic!("{edits}: {e:#}"));
-            let c = renderer(&format!("compose = {compose}\n{sites}")).unwrap();
-            assert_eq!(key(&r), key(&c), "{edits}");
-            assert_eq!(r.label(), c.label());
+            assert_eq!((r.name.as_str(), r.label()), ("raycast-gpu", label), "{edits}");
+            assert_ne!(key(&r), key(&renderer("graph = \"raycast-gpu\"").unwrap()), "{edits}");
             // Written as read, and read back as the same renderer.
             let w = toml::to_string(&r).unwrap();
             assert!(w.starts_with("graph = \"raycast-gpu\"\n") && w.contains("[[edits]]"), "{w}");
@@ -1222,7 +1048,7 @@ mod tests {
             ("graph = \"no-such-graph\"", "neither a shipped graph (raycast-gpu, "),
             ("graph = \"raycast-gpu\"\nedits = [{ node = \"nowhere\", component = \"tree64\" }]", "edit 1 (`"),
             ("graph = \"raycast-gpu\"\nedits = [{ node = \"storage\", component = \"heightmap\" }]", "renderer graph: "),
-            ("compose = { preset = \"raycast-gpu\" }\nedits = [{ remove = \"storage\" }]", "`edits` change a `graph`"),
+            ("name = \"cpu-reference\"\nedits = [{ remove = \"storage\" }]", "`edits` change a `graph`"),
             ("graph = \"raycast-gpu\"\ncompose = { preset = \"raycast-gpu\" }", "not both"),
         ] {
             let e = format!("{:#}", renderer(text).unwrap_err());
@@ -1249,11 +1075,13 @@ mod tests {
     #[test]
     fn region_lives_in_nodes() {
         let scene = "[scene]\ngenerator = { type = \"terrain\", seed = 1 }\ncamera = { type = \"line\", from = [0, 150, 0], to = [300, 150, 75] }\n";
-        let r = "[[renderer]]\ncompose = { preset = \"raycast-gpu\", storage = \"bricks\", traversal = \"refloor\" }\n";
-        let home = "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)";
+        let r = "[[renderer]]\ngraph = \"raycast-gpu\"\n";
+        let link = |knobs: &str| format!("{{ add = \"link\", role = \"link\", component = \"net\" }}, {{ node = \"link\", knobs = {{ {knobs} }} }}");
+        let home = link("latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01, reorder = true");
+        let fast = link("latency_ms = 1, bandwidth_mbps = 1000");
         let new = format!(
             "{scene}[run]\nview_radius = 8\n\
-             {r}\n{r}sites = {{ link = \"net(latency_ms=1, bandwidth_mbps=1000)\" }}\n{r}sites = {{ link = \"{home}\" }}\n{r}sites = {{ client = \"derive(radius=4, max_lod=2)\", link = \"{home}\" }}\n\
+             {r}\n{r}edits = [{fast}]\n{r}edits = [{home}]\n{r}edits = [{home}, {{ add = \"client\", role = \"client\", component = \"derive\" }}, {{ node = \"client\", knobs = {{ radius = 4, max_lod = 2 }} }}]\n\
              [[renderer]]\ngraph = {{ executor = \"gpu\", nodes = {{ s = {{ role = \"shading\", component = \"direct\", inputs = {{ hits = \"v\" }} }}, v = {{ role = \"visibility\", component = \"raycast\", inputs = {{ primary = \"k\" }} }}, k = {{ role = \"traversal\", component = \"refloor\", inputs = {{ storage = \"b\" }} }}, b = {{ role = \"storage\", component = \"bricks\" }}, \
              net = {{ role = \"link\", component = \"net\", knobs = {{ latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01, reorder = true }} }}, c = {{ role = \"client\", component = \"pick\", inputs = {{ changes = \"net\" }}, knobs = {{ radius = 6 }} }} }} }}\n\
              [[renderer]]\nname = \"cpu-reference\"\n"
@@ -1267,7 +1095,7 @@ mod tests {
             assert!(Plan::parse(&old, &[]).is_err(), "{old}");
         }
         let free = &new.renderers[0];
-        assert!(free.link().free() && free.sites().is_empty());
+        assert!(free.link().free() && free.client_knob("radius").is_none());
         assert_eq!(new.renderers[3].view_radius(&new.run), 4);
         assert_ne!(new.renderers[1].pipeline().unwrap().key(), free.pipeline().unwrap().key(), "each network its own key");
         let mut far = new.renderers[2].clone();
@@ -1284,9 +1112,9 @@ mod tests {
         // The GUI's knob setter, both ways.
         let mut s = new.renderers[0].clone();
         s.set_client_knob("max_lod", Some(2)).unwrap();
-        assert_eq!((s.max_lod(&new.run, 8), s.sites().get("client").map(String::as_str)), (2, Some("pick(max_lod=2)")));
+        assert_eq!((s.max_lod(&new.run, 8), s.client_knob("max_lod"), s.levels()), (2, Some(2), mr_core::client::Levels::Pick));
         s.set_client_knob("max_lod", None).unwrap();
-        assert!(s.sites().is_empty());
+        assert_eq!((s.client_knob("max_lod"), s.pipeline()), (None, free.pipeline()));
     }
 
     #[test]
@@ -1324,17 +1152,15 @@ mod tests {
         }
     }
 
-    /// Compositions resolve to their preset's renderer, are validated, and save as just the
-    /// `compose` table; a component given as an option is the composition's.
+    /// The components a node may be instead are knobs of the host's, asked of the graph;
+    /// setting one is the graph edit.
     #[test]
-    fn compositions() {
-        let text = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n\n[[renderer]]\ncompose = { storage = \"prefix\", traversal = \"incremental\" }\noptions = { exact = false }\n";
+    fn component_knobs_are_the_graphs() {
+        let text = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n\n[[renderer]]\ngraph = \"raycast-gpu\"\nedits = [{ node = \"storage\", component = \"prefix\" }, { node = \"kernel\", component = \"incremental\" }]\noptions = { exact = false }\n";
         let p = Plan::parse(text, &[]).unwrap();
         let r = &p.renderers[0];
         assert_eq!(r.name, "raycast-gpu");
-        let c = r.composition().unwrap();
-        assert_eq!((c.storage.as_str(), c.traversal.as_str(), c.visibility.as_str()), ("prefix", "incremental", "raycast"));
-        // The host's own list of what each slot may be (the executors list no component).
+        // The host's own list of what each node may be (the executors list no component).
         let knobs = r.component_knobs();
         let storage = knobs.iter().find(|k| k.name == "storage.component").expect("a storage choice");
         assert!(!storage.live && storage.default.as_str() == Some("prefix") && matches!(&storage.kind, mr_core::ParamKind::Choice(c) if c.iter().any(|x| x == "tree64") && c.len() > 4), "{:?}", storage.kind);
@@ -1361,24 +1187,25 @@ mod tests {
         assert!(e.set_component("storage", "heightmap").is_err() && e.set_component("nope", "bricks").is_err());
         assert_eq!((e.graph.as_ref(), &e.options, e.label()), (r.graph.as_ref(), &r.options, r.label()));
         assert_eq!(r.label(), "gpu: prefix + incremental + composite + raycast + direct");
-        let opt = Plan::parse(&text.replace("{ exact = false }", "{ exact = false, traversal = \"sphere\" }"), &[]).unwrap();
-        assert_eq!((opt.renderers[0].composition().unwrap().traversal.as_str(), opt.renderers[0].options.get("traversal")), ("sphere", None));
+        // Saved as it was read, options beside it.
         let saved = p.to_toml().unwrap();
-        assert!(!saved.contains("name = \"raycast-gpu\"") && saved.contains("compose") && !saved.contains("[renderer.options]\nstorage"), "{saved}");
-        assert_eq!(Plan::parse(&saved, &[]).unwrap().renderers[0].options, r.options);
-        // Unsupported combinations are rejected with the reason.
-        let bad = text.replace("storage = \"prefix\"", "preset = \"rayquery-gpu\", storage = \"prefix\"");
-        assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("no storage slot"));
-        let cpu = text.replace("storage = \"prefix\"", "preset = \"raycast-cpu\", storage = \"palette\"");
-        assert_eq!(Plan::parse(&cpu, &[]).unwrap().renderers[0].name, "raycast-cpu");
-        let bad = text.replace("storage = \"prefix\"", "preset = \"raycast-cpu\", storage = \"rows\"");
-        assert!(Plan::parse(&bad, &[]).unwrap_err().to_string().contains("has no cpu scalar/avx2/avx512 implementation"));
-        let raster = text.replace("storage = \"prefix\", traversal = \"incremental\"", "preset = \"raster-gpu\", geometry = \"cubes\"");
-        let r = &Plan::parse(&raster, &[]).unwrap().renderers[0];
-        assert_eq!((r.name.as_str(), r.label()), ("raster-gpu", "gpu: cubes@cpu + faces + bricks + refloor + depth + raster + direct"));
-        assert!(Plan::parse(&text.replace("traversal = \"incremental\"", "geometry = \"greedy\""), &[]).unwrap_err().to_string().contains("no geometry slot"));
+        assert!(saved.contains("graph = \"raycast-gpu\"") && saved.contains("[[renderer.edits]]") && !saved.contains("compose"), "{saved}");
+        let again = &Plan::parse(&saved, &[]).unwrap().renderers[0];
+        assert_eq!((key(again), &again.options), (key(r), &r.options));
+        // A component is no option: one named so stays an option no executor reads.
+        let opt = Plan::parse(&text.replace("{ exact = false }", "{ exact = false, traversal = \"sphere\" }"), &[]).unwrap();
+        assert_eq!((key(&opt.renderers[0]), opt.renderers[0].options.get("traversal").and_then(|v| v.as_str())), (key(r), Some("sphere")));
+        // Another region's file; what a graph cannot be is refused with the reason.
+        let raster = RendererSpec::from_cli("raster-gpu,geometry=cubes").unwrap();
+        assert_eq!((raster.name.as_str(), raster.label()), ("raster-gpu", "gpu: cubes@cpu + faces + bricks + refloor + depth + raster + direct"));
+        assert_eq!(RendererSpec::from_cli("raycast-cpu,storage=palette").unwrap().name, "raycast-cpu");
+        for (bad, why) in [("raycast-cpu,storage=rows", "renderer graph: "), ("rayquery-gpu,storage=prefix", "no node `storage`"), ("raycast-gpu,geometry=greedy", "no node `geometry`")] {
+            let e = format!("{:#}", RendererSpec::from_cli(bad).unwrap_err());
+            assert!(e.contains(why), "{bad}: {e}");
+        }
         // Naming a preset's renderer gives its default composition.
-        let named = text.replace("compose = { storage = \"prefix\", traversal = \"incremental\" }", "name = \"discover-gpu\"").replace("options = { exact = false }", "");
+        let named = text.replace("graph = \"raycast-gpu\"", "name = \"discover-gpu\"").replace("edits = [{ node = \"storage\", component = \"prefix\" }, { node = \"kernel\", component = \"incremental\" }]\n", "").replace("options = { exact = false }", "");
+        assert!(named.contains("name = \"discover-gpu\"") && !named.contains("edits") && !named.contains("exact"), "{named}");
         let r = &Plan::parse(&named, &[]).unwrap().renderers[0];
         assert_eq!(r.label(), "gpu: bricks + refloor + quadtree + raster + direct");
         assert!(Plan::parse(&named, &[]).unwrap().to_toml().unwrap().contains("compose"));
@@ -1447,8 +1274,8 @@ mod tests {
         }
     }
 
-    /// A renderer written as a graph loads as the composition it is, unless its stages have
-    /// knobs: then it stays the graph, its knobs on its nodes.
+    /// A renderer written as an inline graph is the pipeline a file and edits give; its
+    /// stages' knobs stay on its nodes.
     #[test]
     fn graph_renderers() {
         let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
@@ -1461,16 +1288,18 @@ nodes.k = { role = "traversal", component = "incremental", inputs = { storage = 
 nodes.v = { role = "visibility", component = "raycast", inputs = { primary = "k" } }
 nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", shadow = "k" } }
 "#;
-        let compose = "[[renderer]]\ncompose = { storage = \"prefix\", traversal = \"incremental\", meshes = \"none\" }\noptions = { exact = false }\n";
         let g = Plan::parse(&format!("{base}{graph}"), &[]).unwrap();
-        let c = Plan::parse(&format!("{base}{compose}"), &[]).unwrap();
-        let (g, c) = (&g.renderers[0], &c.renderers[0]);
+        let mut c = RendererSpec::from_cli("raycast-gpu,storage=prefix,kernel=incremental,visibility.meshes=,-meshes").unwrap();
+        c.options.insert("exact".into(), false.into());
+        c.resolve().unwrap();
+        let (g, c) = (&g.renderers[0], &c);
         assert_eq!(g.name, c.name);
         assert_eq!((g.label(), c.label()), ("gpu: prefix + incremental(exact=false) + raycast + direct", "gpu: prefix + incremental + raycast + direct"), "a node's knob is in the label, an option is not");
-        assert!(g.shorthand_form().is_none() && g.options.is_empty() && g.composition() == c.composition());
+        assert!(g.shorthand_form().is_none() && g.options.is_empty());
+        assert_eq!(g.worker_graph().unwrap().unwrap().key(), c.worker_graph().unwrap().unwrap().key(), "the same pipeline to the worker");
         assert_eq!(g.knob_values().get("exact"), c.knob_values().get("exact"));
         let bare = Plan::parse(&format!("{base}{}", graph.replace(", knobs = { exact = false }", "")), &[]).unwrap();
-        assert!(bare.renderers[0].shorthand_form().is_some() && bare.renderers[0].composition() == c.composition());
+        assert!(bare.renderers[0].shorthand_form().is_some() && key(&bare.renderers[0]) == key(c));
         let bad = graph.replace("primary = \"k\"", "primary = \"s\"");
         let e = Plan::parse(&format!("{base}{bad}"), &[]).unwrap_err().to_string();
         assert!(e.contains("takes ray queries"), "{e}");
@@ -1526,7 +1355,6 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert_eq!(r.sites().get("bounce").map(String::as_str), Some("tree64/sphere"));
     }
 
-    /// Sweeps expand into every valid combination, with options only where they apply.
     /// The scoring class takes the lighting model: path tracing in lit passes, with its
     /// bounces; direct otherwise (unlit, no bounces, other shading).
     #[test]
@@ -1557,69 +1385,8 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert_eq!(like.to_string(), format!("pick(radius={}), pathtrace(bounces=1)", run.view_radius));
     }
 
-    #[test]
-    fn sweeps() {
-        let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
-        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = \"*\", traversal = [\"refloor\", \"sphere\"] }}\noptions = {{ exact = false, merge = \"rows\" }}\n"), &[]).unwrap();
-        // raycast-gpu: 8 storages x 2 walks.
-        assert_eq!(p.renderers.len(), 16);
-        assert!(p.renderers.iter().all(|r| r.swept && r.name == "raycast-gpu" && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
-        let all = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ preset = \"*\", storage = \"*\", geometry = \"*\", prepass = \"*\", visibility = \"*\", draw = \"*\", traversal = \"*\", shading = \"*\", meshes = \"*\" }}\n"), &[]).unwrap();
-        let n = |b: &str| all.renderers.iter().filter(|r| r.composition().unwrap().preset == b).count();
-        assert_eq!(n("raycast-gpu"), 8 * 2 * 4 * 2 * 2);
-        assert_eq!(n("rayquery-gpu"), 3 * 2);
-        // The rasteriser's shadow rays: 8 storages x 4 kernels x 3 geometries x 3 draws x 2 shadings x 2 meshes.
-        assert_eq!(n("raster-gpu"), 8 * 4 * 3 * 3 * 2 * 2);
-        assert_eq!(n("columns-cpu"), 1);
-        // Only what a pass can tell apart: unlit collapses shading, meshes and the
-        // rasteriser's shadow-ray storage.
-        let distinct = |m: PassMode| {
-            let mut v: Vec<String> = all.renderers.iter().map(|r| r.composition().unwrap().effective(m).label()).collect();
-            v.sort();
-            v.dedup();
-            v.len()
-        };
-        assert!(distinct(PassMode::UNLIT) < distinct(PassMode::LIT) && distinct(PassMode::LIT) < all.renderers.len());
-        // A name the preset lacks skips it; nothing valid is an error.
-        let only = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ preset = \"*\", storage = \"palette\" }}\n"), &[]).unwrap();
-        let names: Vec<&str> = only.renderers.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["raycast-cpu", "discover-cpu"], "named components: only presets that have them");
-        assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = [\"palette\"] }}\n"), &[]).is_err());
-        assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ storage = \"*\", nope = \"x\" }}\n"), &[]).is_err());
-        // Sweeps over sites, once per distinct graph.
-        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ shading = \"pathtrace\" }}\nsites = {{ bounce = \"*\" }}\n"), &[]).unwrap();
-        let keys: std::collections::HashSet<String> = p.renderers.iter().map(|r| r.pipeline().unwrap().key().unwrap()).collect();
-        assert_eq!(keys.len(), p.renderers.len());
-        // shared with the shadow rays, 4 kernels over the primary storage, 8 storages x 4 kernels,
-        // ray queries over 3 geometries.
-        assert!(p.renderers.len() == 40 && p.renderers.iter().any(|r| r.sites().is_empty()), "{}", p.renderers.len());
-        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ preset = [\"raycast-gpu\", \"raster-gpu\"], shading = \"pathtrace\" }}\nsites = {{ bounce = [\"shadow\", \"rows/rowrun\"] }}\n"), &[]).unwrap();
-        let labels: Vec<&str> = p.renderers.iter().map(|r| r.label()).collect();
-        assert_eq!(labels.len(), 4, "{labels:?}");
-        assert!(labels.contains(&"gpu: greedy@cpu + faces + bricks + refloor + depth + raster + rows + rowrun + pathtrace"), "{labels:?}");
-        // A named site a pipeline lacks skips it.
-        assert!(Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ shading = \"direct\" }}\nsites = {{ bounce = [\"rows/rowrun\"] }}\n"), &[]).is_err());
-        // Sweeps over the world's side (link, client, generator); a client's region
-        // is not in the key but a pass of its own.
-        let p = Plan::parse(&format!("{base}[run]\nview_radius = 6\n[[renderer]]\nsites = {{ link = [\"free\", \"net(latency_ms=30)\"], generator = \"*\", client = [\"pick\", \"pick(radius=3, max_lod=2)\", \"derive(radius=3, max_lod=2)\"] }}\n"), &[]).unwrap();
-        assert_eq!(p.renderers.len(), 2 * 2 * 3);
-        let mut seen: Vec<(String, u32, bool, bool)> = p.renderers.iter().map(|r| (r.pipeline().unwrap().key().unwrap(), r.view_radius(&p.run), r.link().free(), r.pipeline().unwrap().generates())).collect();
-        seen.sort();
-        seen.dedup();
-        assert_eq!(seen.len(), 12);
-        assert_eq!(Plan::parse(&format!("{base}[[renderer]]\nsites = {{ link = \"*\", client = \"*\" }}\n"), &[]).unwrap().renderers.len(), 4);
-        // The post's tone mappers, each its own key.
-        let p = Plan::parse(&format!("{base}[[renderer]]\nsites = {{ post = \"*\" }}\n"), &[]).unwrap();
-        let keys: std::collections::BTreeSet<String> = p.renderers.iter().map(|r| r.pipeline().unwrap().key().unwrap()).collect();
-        assert_eq!((p.renderers.len(), keys.len()), (4, 4));
-        assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces", "hdr"]);
-        // A CPU pipeline's sweep takes all four too (`hdr`: float pixels on the CPU as well).
-        let p = Plan::parse(&format!("{base}[[renderer]]\ncompose = {{ preset = \"raycast-cpu\" }}\nsites = {{ post = \"*\" }}\n"), &[]).unwrap();
-        assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces", "hdr"]);
-    }
-
-    /// Sweeps as edits (`vary`): the pipelines the swept `compose` / `sites` forms give, and
-    /// what is refused.
+    /// Sweeps as edits (`vary`): every combination that is a pipeline, each once, with
+    /// options only where they apply; and what is refused.
     #[test]
     fn varied_sweeps() {
         use std::collections::BTreeSet;
@@ -1627,33 +1394,41 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let plan = |r: &str| Plan::parse(&format!("{base}[[renderer]]\n{r}\n"), &[]);
         // What a renderer is to a run: its pipeline, its region, its link, where its world is made.
         let set = |p: &Plan| p.renderers.iter().map(|r| (key(r), r.label().to_string(), r.view_radius(&p.run), r.max_lod(&p.run, 8), format!("{:?}", r.link()), r.generates())).collect::<BTreeSet<_>>();
-        let same = |a: &Plan, b: &Plan, what: &str| {
-            assert_eq!(a.renderers.len(), b.renderers.len(), "{what}");
-            assert_eq!(set(a).len(), a.renderers.len(), "{what}: each once");
-            assert!(set(a) == set(b), "{what}: {:?}", set(a).symmetric_difference(&set(b)).take(4).collect::<Vec<_>>());
+        let each_once = |p: &Plan, n: usize, what: &str| {
+            assert_eq!((p.renderers.len(), set(p).len()), (n, n), "{what}");
+            assert!(p.renderers.iter().all(|r| r.swept && r.pipeline().unwrap().accept().is_ok()), "{what}");
         };
         // Lists and `*` (every component the graph takes there); options as before.
         let new = plan("graph = \"raycast-gpu\"\nlabel = \"gone\"\nvary = [{ node = \"storage\", component = \"*\" }, { node = \"kernel\", component = [\"refloor\", \"sphere\"] }]\noptions = { exact = false, merge = \"rows\" }").unwrap();
-        let old = plan("compose = { storage = \"*\", traversal = [\"refloor\", \"sphere\"] }\noptions = { exact = false, merge = \"rows\" }").unwrap();
-        same(&new, &old, "storages x two kernels");
-        assert!(new.renderers.iter().all(|r| r.swept && r.name == "raycast-gpu" && r.label != Some("gone".into()) && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
+        // raycast-gpu: 8 storages x 2 kernels.
+        each_once(&new, 16, "storages x two kernels");
+        assert!(new.renderers.iter().all(|r| r.name == "raycast-gpu" && r.label != Some("gone".into()) && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
         // Each is written as its file and edits (the entry's own first), and reads back.
         let r = new.renderers.iter().find(|r| r.label().contains("tree64") && r.label().contains("sphere")).unwrap();
         let w = toml::to_string(r).unwrap();
         assert!(w.starts_with("graph = \"raycast-gpu\"\n") && w.contains("[[edits]]") && !w.contains("vary"), "{w}");
         assert_eq!(key(&renderer(&w).unwrap()), key(r));
-        // The full sweep the scripts run is the one the swept compositions gave.
+        // The full sweep the scripts run, per region.
         let full = include_str!("../scripts/full-sweep.toml").split_once("renderer = ").unwrap().1;
-        let new = Plan::parse(base, &[format!("renderer={full}")]).unwrap();
-        let old = Plan::parse(base, &["renderer=[{compose={preset=\"*\",storage=\"*\",geometry=\"*\",prepass=\"*\",visibility=\"*\",draw=\"*\",traversal=\"*\",shading=\"*\",meshes=\"*\"}}]".into()]).unwrap();
-        same(&new, &old, "the full sweep");
-        assert!(new.renderers.len() > 1700);
-        // `plans/stream.toml`: the link, the generator's place and the client, as its `sites` sweep gave them.
-        let new = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/stream.toml")), &[]).unwrap();
-        let sites = "compose = { preset = \"raycast-gpu\", storage = \"bricks\", traversal = \"refloor\" }\nsites = { link = [\"free\", \"net(latency_ms=1, bandwidth_mbps=1000)\", \"net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)\", \"net(latency_ms=150, jitter_ms=80, bandwidth_mbps=50, loss=0.05, reorder=true)\"], generator = \"*\", client = [\"pick\", \"pick(radius=3, max_lod=2)\", \"derive(radius=3, max_lod=2)\"] }";
-        let old = Plan::parse(&format!("{base}[run]\nview_radius = {}\n[[renderer]]\n{sites}\n", new.run.view_radius), &[]).unwrap();
-        same(&new, &old, "stream");
-        assert_eq!(new.renderers.len(), 4 * 2 * 3);
+        let all = Plan::parse(base, &[format!("renderer={full}")]).unwrap();
+        each_once(&all, 1787, "the full sweep");
+        let n = |b: &str| all.renderers.iter().filter(|r| r.name == b).count();
+        // raycast-gpu: 8 storages x 2 prepasses x 4 kernels x 2 shadings x 2 meshes; the
+        // rasteriser's shadow rays: 8 storages x 4 kernels x 3 geometries x 3 draws x 2 shadings x 2 meshes.
+        assert_eq!((n("raycast-gpu"), n("rayquery-gpu"), n("raster-gpu"), n("columns-cpu")), (8 * 2 * 4 * 2 * 2, 3 * 2, 8 * 4 * 3 * 3 * 2 * 2, 1));
+        assert_eq!(mr_components::graph::REGIONS.iter().map(|b| n(b.name)).sum::<usize>(), all.renderers.len(), "every one a region's");
+        assert!(mr_components::graph::REGIONS.iter().all(|b| n(b.name) > 0), "every region swept");
+        // `plans/stream.toml`: four links, the generator's two places, three clients.
+        let stream = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/stream.toml")), &[]).unwrap();
+        each_once(&stream, 4 * 2 * 3, "stream");
+        assert_eq!(stream.renderers.iter().map(|r| (r.view_radius(&stream.run), r.max_lod(&stream.run, 8), r.levels() == mr_core::client::Levels::Derive)).collect::<BTreeSet<_>>().len(), 3, "three client regions");
+        assert_eq!((stream.renderers.iter().filter(|r| r.link().free()).count(), stream.renderers.iter().filter(|r| r.generates()).count()), (6, 12));
+        // The post's tone mappers, each its own key (a CPU pipeline takes all four too).
+        for file in ["raycast-gpu", "raycast-cpu"] {
+            let p = plan(&format!("graph = \"{file}\"\nedits = [{{ add = \"post\", role = \"post\", component = \"clamp\" }}, {{ node = \"post\", input = \"image\", from = \"shading\" }}]\nvary = [{{ node = \"post\", component = \"*\" }}]")).unwrap();
+            each_once(&p, 4, file);
+            assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces", "hdr"], "{file}");
+        }
         // A knob's values; the client's region is no part of the key but a pass of its own.
         let p = plan("graph = \"raycast-gpu\"\nedits = [{ add = \"client\", role = \"client\", component = \"pick\" }]\nvary = [{ node = \"client\", knob = \"radius\", value = [3, 6] }]").unwrap();
         assert_eq!(p.renderers.iter().map(|r| r.view_radius(&p.run)).collect::<Vec<_>>(), [3, 6]);
@@ -1670,6 +1445,10 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
             ("graph = \"raycast-gpu\"\nvary = [{ node = \"storage\", component = [\"heightmap\"] }]", "gives no pipeline (the first combination: "),
             ("graph = \"raycast-gpu\"\nvary = [{ node = \"shading\", knob = \"bounces\", value = \"*\" }]", "give the values as a list"),
             ("graph = \"raycast-gpu\"\nvary = [{ any = [[]], node = \"storage\" }]", "`any` stands alone"),
+            // The swept flat form is gone: a `*` or a list there is no component's name.
+            ("compose = { storage = \"*\" }", ""),
+            ("compose = { storage = [\"bricks\", \"tree64\"] }", ""),
+            ("sites = { post = \"*\" }", ""),
         ] {
             let e = format!("{:#}", plan(r).unwrap_err());
             assert!(e.contains(why), "{r}: {e}");

@@ -133,10 +133,11 @@ fn gui_screenshot() {
             view_radius = 3
             isolation = "thread"
             [[renderer]]
-            compose = { preset = "raycast-gpu", storage = "prefix", traversal = "incremental", shading = "pathtrace" }
-            sites = { bounce = "tree64/sphere" }
+            graph = "raycast-gpu"
+            edits = [{ node = "storage", component = "prefix" }, { node = "kernel", component = "incremental" }, { node = "shading", component = "pathtrace" }, { add = "far", role = "storage", component = "tree64" }, { node = "far", input = "changes", from = "world" }, { add = "sphere", role = "traversal", component = "sphere" }, { node = "sphere", input = "storage", from = "far" }, { node = "shading", input = "bounce", from = "sphere" }]
             [[renderer]]
-            compose = { preset = "raster-gpu", geometry = "naive", draw = "visbuffer" }
+            graph = "raster-gpu"
+            edits = [{ node = "geometry", component = "naive" }, { node = "draw", component = "visbuffer" }]
             "#,
             &[],
         )
@@ -253,9 +254,9 @@ fn gui_headless_smoke() {
         view_radius = 3
         isolation = "thread"
         [[renderer]]
-        compose = { preset = "raycast-gpu" }
+        graph = "raycast-gpu"
         [[renderer]]
-        compose = { preset = "raster-gpu" }
+        graph = "raster-gpu"
         "#,
         &[],
     )

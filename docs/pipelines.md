@@ -148,7 +148,8 @@ share a label (their keys differ: give one a `label`). Labels are for reading, n
 writing a pipeline: reports of older runs keep the labels they were written with
 (`raycast-gpu: prefix + incremental`).
 
-**The older flat form** (`compose` and `sites`; it goes away, write graphs): one field per
+**The older flat form** (`compose` and `sites`; it goes away, write graphs; it is no longer
+swept, and a component named in `options` is no longer read as one): one field per
 slot of a named starting point, slots left out at its default:
 
 ```toml

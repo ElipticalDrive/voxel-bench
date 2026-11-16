@@ -318,8 +318,7 @@ pub fn keep_knobs(given: &RendererSpec, now: &RendererSpec, new: RendererSpec) -
     let mut kept = new.clone();
     if new.name == now.name {
         for (k, v) in &now.options {
-            let component = mr_components::Slot::ALL.iter().any(|s| s.name() == k);
-            if !component && given.options.get(k) != Some(v) && new.options.get(k) == given.options.get(k) {
+            if given.options.get(k) != Some(v) && new.options.get(k) == given.options.get(k) {
                 kept.options.insert(k.clone(), v.clone());
             }
         }

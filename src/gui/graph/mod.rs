@@ -621,19 +621,18 @@ mod tests {
     /// defaults), and a switch the preset cannot take live is none.
     #[test]
     fn live_switch_sends_the_nodes_knobs() {
-        let spec = |slot: mr_components::Slot, c: &str| {
-            let mut r = RendererSpec::from_cli("discover-gpu").unwrap();
+        let spec = |edits: &str| {
+            let mut r = RendererSpec::from_cli(&format!("discover-gpu{edits}")).unwrap();
             r.options.insert("refresh".into(), 4.into());
             r.resolve().unwrap();
-            let mut comp = r.composition().unwrap().clone();
-            comp.set(slot, c);
-            r.set_compose(comp).unwrap();
             r
         };
-        let old = spec(mr_components::Slot::Holes, "none");
+        // The holes node, as `plans/demo-pathtrace-discovery.toml` writes it.
+        let coverage = r#",{add="holes",role="holes",component="coverage"},{node="draw",input="faces",when={iterate=2}},{node="holes",input="covered",from="draw"},{node="holes",input="sky",from="draw"},{node="holes",input="sky",when="prev"},{node="visibility",input="where",from="holes"}"#;
+        let old = spec("");
         let (_, params) = crate::pipelines::executor_of(&old.pipeline().unwrap()).unwrap();
         let knobs: Vec<_> = params.iter().map(|p| (p.clone(), knobs::option_value(p, &old.knob_values()))).collect();
-        let new = spec(mr_components::Slot::Holes, "coverage");
+        let new = spec(coverage);
         let edits = live_edits(&old, &new, &knobs).unwrap();
         assert!(edits.contains(&("refresh".into(), ParamValue::Int(4))), "{edits:?}");
         assert!(edits.contains(&("keep_unseen".into(), ParamValue::Int(64))), "{edits:?}");
@@ -650,7 +649,7 @@ mod tests {
         assert_eq!(back, vec![]);
         assert_eq!(g1.live_edits(&g0).unwrap().1.iter().map(|s| (s.role, s.component.as_deref())).collect::<Vec<_>>(), [(Role::Holes, None)]);
         // Storage is not live on discover-gpu.
-        assert!(live_edits(&old, &spec(mr_components::Slot::Storage, "tree64"), &knobs).is_none());
+        assert!(live_edits(&old, &spec(",storage=tree64"), &knobs).is_none());
     }
 
     /// Every choice the editor lists on every preset's graph is answered (runs, or a reason),

@@ -22,8 +22,6 @@ pub fn load(base: &RendererSpec, g: &Graph, infos: &[RendererInfo]) -> Result<Re
     let mut s = base.clone();
     s.graph = Some(g.clone());
     s.name.clear();
-    // The options selecting components are the composition's, derived again.
-    s.options.retain(|k, _| !mr_components::Slot::ALL.iter().any(|sl| sl.name() == k));
     s.resolve().map_err(|e| format!("{e:#}").trim_start_matches("renderer graph: ").to_string())?;
     if let Some(info) = infos.iter().find(|i| i.name == s.name) {
         let before = s.options.len();
