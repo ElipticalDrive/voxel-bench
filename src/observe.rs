@@ -2,7 +2,7 @@
 //! tagged with the machine it ran on. `run` appends them to `observations.jsonl` in the run
 //! directory; `catalogue` reads any number of them back. They are the raw material for
 //! deciding what each renderer is good at, and later for a planner that learns which
-//! composition and knobs suit this machine and the scene at hand.
+//! pipeline and knobs suit this machine and the scene at hand.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,8 +14,9 @@ use crate::plan::Plan;
 use crate::report::PassReport;
 
 /// Bumped when fields change meaning or are added (2: `features`; 3: `sites`, `graph`,
-/// `graph_key`; 4: `stages`; 5: `stream`).
-pub const VERSION: u32 = 5;
+/// `graph_key`; 4: `stages`; 5: `stream`; 6: a pipeline is its `graph`, always, and
+/// `renderer` the executor that ran it: no `composition`, no `sites`).
+pub const VERSION: u32 = 6;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
@@ -55,7 +56,7 @@ impl Machine {
 }
 
 /// One measured pass.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Observation {
     pub version: u32,
     /// The run directory's name (UTC time stamp and plan name).
@@ -73,17 +74,18 @@ pub struct Observation {
     pub frames: u32,
     pub streaming: String,
     pub mode: String,
-    /// What rendered it: the label, the renderer entry, the composition (if composed) and
-    /// the options beyond the composition (knobs).
+    /// What rendered it: the label, the executor (`cpu`, `gpu`; a standalone renderer's
+    /// name), the pipeline's graph (none for standalone renderers) and the options (knobs).
     pub label: String,
     pub renderer: String,
-    pub composition: Option<mr_components::Composition>,
-    /// Sites bound otherwise (absent before version 3).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub sites: BTreeMap<String, String>,
-    /// The graph, when composition and sites cannot express it (version 3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<mr_components::graph::Graph>,
+    /// Records before version 6 only (read, never written; `upgraded` makes the graph of
+    /// them): the pipeline in the older flat form, and its sites bound otherwise.
+    #[serde(default, skip_serializing)]
+    pub composition: Option<mr_components::Composition>,
+    #[serde(default, skip_serializing)]
+    pub sites: BTreeMap<String, String>,
     /// The canonical graph's key: records of one pipeline share it (version 3; older
     /// records: `pipeline()`'s key, or `multirenderer graph --keys`).
     #[serde(default)]
@@ -199,9 +201,9 @@ impl Observation {
             mode: r.mode.map(|m| m.name().to_string()).unwrap_or_default(),
             label: r.label.clone(),
             renderer: r.renderer.clone(),
-            composition: r.composition.clone(),
-            sites: r.sites.clone(),
             graph: r.graph.clone(),
+            composition: None,
+            sites: BTreeMap::new(),
             graph_key: r.graph_key.clone(),
             options: serde_json::to_value(&r.options).unwrap_or_default(),
             repeat: r.repeat,
@@ -264,8 +266,8 @@ impl Observation {
 }
 
 impl Observation {
-    /// The pipeline it measured: its graph, or its composition with its sites (`None` for
-    /// standalone renderers).
+    /// The pipeline it measured (`None` for standalone renderers): its graph; for records
+    /// before version 6 without one, the graph of their flat form.
     pub fn pipeline(&self) -> Option<mr_components::graph::Graph> {
         // Records keep the knobs that spell timings (discover-cpu `pipelined`): they load as the
         // graphs they ran.
@@ -275,6 +277,27 @@ impl Observation {
         }
         let c = self.composition.clone()?;
         mr_components::graph::Graph::from_composition(&c).and_then(|g| g.with_sites(&self.sites)).ok().map(|g| g.with_options(&options))
+    }
+
+    /// The record as this version writes it. An older pipeline's gets its graph, the
+    /// executor as `renderer` and, where its label was the flat form's own, the graph's
+    /// label (a label the plan gave stays; so does a build's ` [native]`), so records of
+    /// one pipeline from before and after meet under one label.
+    pub fn upgraded(mut self) -> Self {
+        if self.version >= 6 {
+            return self;
+        }
+        let Some(g) = self.pipeline() else { return self };
+        if let (Some(c), Ok(label)) = (&self.composition, g.label())
+            && let Some(rest) = self.label.strip_prefix(&c.label())
+        {
+            let build = rest.rfind(" [").filter(|_| rest.ends_with(']')).map_or("", |i| &rest[i..]);
+            self.label = format!("{label}{build}");
+        }
+        self.renderer = g.runs_on().to_string();
+        (self.graph, self.composition) = (Some(g), None);
+        self.sites.clear();
+        self
     }
 }
 
@@ -312,13 +335,20 @@ pub fn find(paths: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
-pub fn read(files: &[PathBuf]) -> anyhow::Result<Vec<Observation>> {
-    let mut out = vec![];
+/// The records of `files`, older ones as this version writes them (`Observation::upgraded`),
+/// and how many were left out: records of an older version this build no longer reads
+/// (pipelines named in a form since removed). Anything else unreadable is an error.
+pub fn read(files: &[PathBuf]) -> anyhow::Result<(Vec<Observation>, usize)> {
+    let (mut out, mut left_out) = (vec![], 0);
     for f in files {
         let text = std::fs::read_to_string(f)?;
         for (i, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
-            out.push(serde_json::from_str(line).map_err(|e| anyhow::anyhow!("{}:{}: {e}", f.display(), i + 1))?);
+            match serde_json::from_str::<Observation>(line) {
+                Ok(o) => out.push(o.upgraded()),
+                Err(_) if serde_json::from_str::<serde_json::Value>(line).is_ok_and(|v| v["version"].as_u64().is_some_and(|n| n < VERSION as u64)) => left_out += 1,
+                Err(e) => anyhow::bail!("{}:{}: {e}", f.display(), i + 1),
+            }
         }
     }
-    Ok(out)
+    Ok((out, left_out))
 }

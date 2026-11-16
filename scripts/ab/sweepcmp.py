@@ -1,51 +1,40 @@
-# sweepcmp.py BASE_SWEEP NEW_SWEEP (e.g. baselines/sweep-20261011 target/sweep/<time>): compares two sweeps per (plan, mode, pipeline, options): GPU ms, fps, PSNR.
-# Pipelines are keyed by their canonical graph (`graph_key`), recomputed for every record by
-# `multirenderer graph --keys` (MR_BIN, default target/release/multirenderer), so records written before they
-# carried one, or under an older canonical form (geometry later placed on the CPU), compare by one key.
+# sweepcmp.py BASE_SWEEP NEW_SWEEP (two directories of runs, e.g. target/sweep/<time>; the baseline of 2026-10-11 names its pipelines in a form no longer read): compares two sweeps per (plan, mode, pipeline, options): GPU ms, fps, PSNR.
+# Pipelines are keyed by their canonical graph (`graph_key`) and shown by their graph's label, both recomputed for
+# every record by `multirenderer graph --keys` (MR_BIN, default target/release/multirenderer), so records written
+# before they carried a graph (the flat `composition` of observations before version 6), or under an older canonical
+# form (geometry later placed on the CPU), compare by one key.
 import sys, json, glob, gzip, os, subprocess, statistics as st, collections
-KERNELS = {'refloor', 'incremental', 'sphere', 'rowrun', 'rayquery'}
-DRAWS = {'raster', 'visbuffer', 'gbuffer'}
-# Slots added by the architecture refactor and their defaults per back end.
-ADDED = {'raycast-gpu': {'visibility': 'raycast'}, 'cpu': {'visibility': 'raycast'}, 'rayquery-gpu': {'visibility': 'raycast'},
-         'raster-gpu': {'visibility': 'faces', 'draw': 'raster', 'traversal': 'refloor'}, 'raster-cpu': {'visibility': 'faces', 'draw': 'raster'},
-         'discover-gpu': {'draw': 'raster', 'traversal': 'refloor'}, 'discover-cpu': {'draw': 'raster', 'traversal': 'refloor'},
-         'splat-gpu': {'traversal': 'refloor'}}
-def canonical(comp, opts):
-    """One form for records from before and after the slots were split: kernels in `traversal`, the
-    rasterisers' and discovery's drawer in `draw`, added slots at their defaults."""
-    c, opts = dict(comp), dict(opts)
-    if 'traversal' not in c and c.get('visibility') in KERNELS: c['traversal'] = c.pop('visibility')
-    if 'draw' not in c and c.get('visibility') in DRAWS: c['draw'] = c.pop('visibility')
-    if 'draw' in opts and 'draw' not in c: c['draw'] = opts.pop('draw')
-    for k, v in ADDED.get(c.get('preset', 'raycast-gpu'), {}).items():
-        if not c.get(k): c[k] = v
-    return c, opts
 def graph_keys(records):
-    """Graph keys for every record, computed by the binary (one call for all; a stored key may
-    come from an older canonical form)."""
-    need = [o for o in records if o.get('composition')]
-    if need:
+    """Graph keys and labels for every record, computed by the binary (one call for all; a stored key
+    may come from an older canonical form, a stored label from the flat form)."""
+    if records:
         exe = os.environ.get('MR_BIN', 'target/release/multirenderer')
-        text = ''.join(json.dumps(o) + '\n' for o in need)
-        keys = subprocess.run([exe, 'graph', '--keys'], input=text, capture_output=True, text=True, check=True).stdout.split()
-        assert len(keys) == len(need), (len(keys), len(need))
-        for o, k in zip(need, keys):
+        text = ''.join(json.dumps(o) + '\n' for o in records)
+        lines = subprocess.run([exe, 'graph', '--keys'], input=text, capture_output=True, text=True, check=True).stdout.splitlines()
+        assert len(lines) == len(records), (len(lines), len(records))
+        for o, line in zip(records, lines):
+            k, _, label = line.partition('\t')
             if k != '-': o['graph_key'] = k
+            if label: o['label'] = label
 def load(d):
     records = []
     for f in glob.glob(d + '/*/observations.jsonl*'):
         op = gzip.open if f.endswith('.gz') else open
         for line in op(f, 'rt'):
             o = json.loads(line)
-            if not o.get('composition'): continue
-            o['composition'], o['options'] = canonical(o['composition'], o.get('options') or {})
+            if not (o.get('graph') or o.get('composition')): continue  # a standalone renderer
+            o['options'] = o.get('options') or {}
+            o.pop('graph_key', None)
             records.append(o)
     graph_keys(records)
     out = {}
     for o in records:
-        # The composition stays in the key's display part (labels below); the graph key decides.
-        k = (o['plan'], o['mode'], o.get('graph_key') or json.dumps(o['composition'], sort_keys=True), json.dumps(o['options'], sort_keys=True), json.dumps(o['composition'], sort_keys=True))
-        out[k[:4]] = (o, k[4])
+        if 'graph_key' not in o: continue
+        # The graph key decides; the label is what is shown.
+        k = (o['plan'], o['mode'], o['graph_key'], json.dumps(o['options'], sort_keys=True))
+        out[k] = (o, o['label'])
+    unread = sum(1 for o in records if 'graph_key' not in o)
+    if unread: print(f'{d}: {unread} of {len(records)} records left out (pipelines in a form this build no longer reads)')
     return out
 base, new = load(sys.argv[1]), load(sys.argv[2])
 shown = {k: v[1] for d in (base, new) for k, v in d.items()}
@@ -53,6 +42,7 @@ base = {k: v[0] for k, v in base.items()}
 new = {k: v[0] for k, v in new.items()}
 common = [k for k in base if k in new]
 print(f'base {len(base)} obs, new {len(new)} obs, common {len(common)}, only new {len(set(new)-set(base))}, only base {len(set(base)-set(new))}')
+if not common: sys.exit('nothing in common to compare')
 rg, rf, dq = [], [], []
 worst = []
 fails = []
@@ -74,13 +64,13 @@ summ('GPU ms new/base', rg)
 summ('fps   new/base', rf)
 print('PSNR drops > 0.5 dB:', sum(1 for d in dq if d[0] < -0.5), 'of', len(dq))
 for d, k, a, b in sorted(dq)[:12]:
-    if d < -0.5: print(f'  {d:+.2f} dB  {k[0]} {k[1]} {json.loads(shown[k])} {k[3]}  {a:.1f} -> {b:.1f}')
+    if d < -0.5: print(f'  {d:+.2f} dB  {k[0]} {k[1]} {shown[k]} {k[3]}  {a:.1f} -> {b:.1f}')
 print('GPU ms worst 20:')
 for r, _, k, a, b in sorted(worst, reverse=True)[:20]:
-    print(f'  {r:.3f}  {k[0]:15s} {k[1]:10s} {a:7.3f} -> {b:7.3f}  {json.loads(shown[k])} {k[3] if k[3] != "{}" else ""}')
+    print(f'  {r:.3f}  {k[0]:15s} {k[1]:10s} {a:7.3f} -> {b:7.3f}  {shown[k]} {k[3] if k[3] != "{}" else ""}')
 print('new failures:', len(fails))
-for k, e in fails[:10]: print('  ', k[0], k[1], json.loads(shown[k]), e)
-# per back end medians
+for k, e in fails[:10]: print('  ', k[0], k[1], shown[k], e)
+# per executor medians
 byb = collections.defaultdict(list)
-for r, _, k, a, b in worst: byb[json.loads(shown[k])['preset']].append(r)
-print('GPU ms median ratio by back end:', {b: round(st.median(v), 4) for b, v in sorted(byb.items())})
+for r, _, k, a, b in worst: byb[shown[k].split(':')[0]].append(r)
+print('GPU ms median ratio by executor:', {b: round(st.median(v), 4) for b, v in sorted(byb.items())})

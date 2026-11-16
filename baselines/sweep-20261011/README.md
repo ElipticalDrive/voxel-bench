@@ -8,5 +8,8 @@ ms and ±4% fps for 90% of passes).
 - `*/observations.jsonl.gz`: one record per renderer and pass (gunzip before use).
 - `catalogue.md`, `catalogue.csv.gz`: the catalogue of the full sweep.
 
-To compare a new sweep: `gunzip -k baselines/sweep-20261011/*/observations.jsonl.gz`, then
+Since November 2026 the current build no longer reads these records: they name pipelines by
+the back ends of the time (`gpu-compute`, ...), and `multirenderer catalogue` and
+`scripts/ab/sweepcmp.py` leave them out, saying how many. The catalogue here stands as written;
+a fresh baseline replaces this one. With a build of that time, to compare a new sweep: `gunzip -k baselines/sweep-20261011/*/observations.jsonl.gz`, then
 `multirenderer catalogue baselines/sweep-20261011 target/sweep/<new>` or compare per pass.

@@ -173,7 +173,9 @@ The older form still reads: a `compose` field or a `sites` value may be `"*"` or
   in well under a second (`src/features.rs`): camera speed and turn rate, chunks at start and
   loads per frame, the fractions of non-empty chunks, solid cells and surface in range, sky
   fraction and hit distances from a grid of rays, edits per frame, lights and mesh triangles;
-- the pipeline (graph, its key) and its knobs;
+- what rendered it: the label, the executor (`renderer`: `cpu`, `gpu`; a standalone
+  renderer's name), the pipeline (`graph`, always, and `graph_key`) and its knobs (`options`);
+  records before version 6 carried a flat `composition` instead and still read (as their graphs);
 - the results: fps, frame interval (mean, p50, p99), GPU and CPU ms, latency, init and load
   time, memory, PSNR (mean and minimum), bad pixels, the same against the like reference
   (`like`, `psnr_like`, `bad_pct_like`) and settled (`late`, `psnr_settled`,
@@ -181,7 +183,8 @@ The older form still reads: a `compose` field or a `sites` value may be `"*"` or
   renderer's own counters.
 
 `multirenderer catalogue <dirs…> [--out DIR] [--min-psnr 35]` reads any number of runs and
-writes `catalogue.md` and `catalogue.csv` (the CSV has the scene features as columns). Per
+writes `catalogue.md` and `catalogue.csv` (the CSV has the scene features as columns, and a
+pipeline as its label, executor and graph key). Per
 scenario (plan × mode) it ranks the renderers by fps. Renderers below the PSNR floor count as
 incorrect: they are ranked, but never best (the floor applies to `psnr_like` where a renderer
 has one: fewer levels of detail are a loss, not an error; a path tracer is held to its own
@@ -193,8 +196,11 @@ is a property, not an error). For each renderer it lists:
   speed);
 - where it is weak (below 0.25 of the best), incorrect, or failed.
 
-For each preset and slot, it also shows the paired effect of each component: its fps
-against the best of otherwise identical pipelines.
+For each node it also shows the paired effect of each component: its fps against the best
+among the pipelines whose graphs differ in that node's component alone (knobs equal). A
+node is named by its executor, its role and the inputs leading to it from the output
+(`gpu · storage (image > hits > primary > storage)`: the storage the primary rays walk;
+`image > shadow > storage`: the one only shadow rays walk).
 
 ## Scripts
 

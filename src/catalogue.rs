@@ -6,13 +6,13 @@
 //! Per renderer: relative speed (fps / the best correct renderer's) per scenario, its
 //! geometric mean over scenarios, wins, where it is within 10% of the best ("good at"), and
 //! where it does unusually well compared with its own average ("stands out": comparative
-//! advantage). Per component: the paired effect of choosing it for a stage, other stages and
-//! knobs equal.
+//! advantage). Per component: the paired effect of choosing it for a node, among pipelines
+//! whose graphs differ in that node's component alone (knobs equal).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use mr_components::{Composition, Slot};
+use mr_components::graph::{self, Graph};
 
 use crate::observe::Observation;
 
@@ -20,7 +20,9 @@ use crate::observe::Observation;
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub label: String,
-    pub composition: Option<Composition>,
+    /// The pipeline (none for standalone renderers) and its key.
+    pub graph: Option<Graph>,
+    pub graph_key: Option<String>,
     pub options: String,
     pub fps: f64,
     pub frame_p99_ms: Option<f64>,
@@ -70,14 +72,60 @@ pub struct RendererSummary {
     pub failed: Vec<String>,
 }
 
-/// The effect of a component choice for one stage of one preset.
+/// The effect of a node's component, over the pipelines whose graphs differ in that node's
+/// component alone. Which node: its executor, its role and its place.
 #[derive(Clone, Debug)]
 pub struct ComponentEffect {
-    pub preset: String,
-    pub slot: &'static str,
-    /// (component, geomean of fps / best fps among otherwise equal compositions, wins,
+    pub executor: String,
+    pub role: &'static str,
+    /// Where the node is in its graph: every way to it from the output (`nodes`).
+    pub place: String,
+    /// (component, geomean of fps / best fps among otherwise equal pipelines, wins,
     /// comparisons)
     pub rows: Vec<(String, f64, usize, usize)>,
+}
+
+/// Every node of a graph as (role, place, component, the rest of the graph). Its place is
+/// every way to it from the output, each the inputs followed (a node's in the order its
+/// component declares them: the main path first), so a node is what its readers make of it
+/// (a storage the primary rays walk is another place than one only shadow rays walk) in
+/// every graph alike, whatever its id; the rest is the graph without that node's component,
+/// equal for the graphs that differ in it alone. Nothing for a graph that does not check.
+fn nodes(g: &Graph) -> Vec<(&'static str, String, String, String)> {
+    let Ok(c) = g.check() else { return vec![] };
+    let g = &c.graph;
+    fn visit<'a>(g: &'a Graph, id: &'a str, path: &mut Vec<&'a str>, on: &mut Vec<&'a str>, places: &mut BTreeMap<&'a str, Vec<String>>) {
+        // (An edge back to a node on the way, a frame late, is not another way to it.)
+        if on.contains(&id) {
+            return;
+        }
+        places.entry(id).or_default().push(path.join(" > "));
+        let n = &g.nodes[id];
+        let ports = graph::inputs(n.role, &n.component);
+        let mut ins: Vec<(&String, &String)> = n.inputs.iter().collect();
+        ins.sort_by_key(|(p, _)| ports.iter().position(|x| x.name == p.as_str()));
+        on.push(id);
+        for (p, s) in ins {
+            path.push(p);
+            visit(g, s, path, on, places);
+            path.pop();
+        }
+        on.pop();
+    }
+    let mut places = BTreeMap::new();
+    visit(g, &c.output, &mut vec![], &mut vec![], &mut places);
+    // Each node written once with and once without its component: a rest is the others whole.
+    let text = |id: &str, n: &graph::Node| format!("{id}={};", serde_json::to_string(n).unwrap_or_default());
+    let whole: Vec<String> = g.nodes.iter().map(|(id, n)| text(id, n)).collect();
+    g.nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (id, n))| {
+            let blank = text(id, &graph::Node { component: String::new(), ..n.clone() });
+            let rest: String = whole.iter().enumerate().map(|(j, w)| if i == j { &blank } else { w }).map(String::as_str).collect();
+            Some((n.role.name(), places.get(id.as_str())?.join("; "), n.component.clone(), format!("{}|{rest}", g.runs_on())))
+        })
+        .collect()
 }
 
 pub struct Catalogue {
@@ -143,7 +191,8 @@ impl Catalogue {
                     let psnr_settled = m(&|o| o.psnr_settled);
                     Entry {
                         label,
-                        composition: os[0].composition.clone(),
+                        graph: os[0].pipeline(),
+                        graph_key: os[0].graph_key.clone(),
                         options: os[0].options.to_string(),
                         fps: m(&|o| Some(o.fps)).unwrap_or(0.0),
                         frame_p99_ms: m(&|o| o.frame_p99_ms),
@@ -202,36 +251,35 @@ impl Catalogue {
             .collect();
         renderers.sort_by(|a, b| b.geomean.unwrap_or(-1.0).total_cmp(&a.geomean.unwrap_or(-1.0)));
 
-        // Per component: compare compositions that differ only in that stage.
+        // Per component: compare pipelines whose graphs differ only in one node's component.
+        type Place = (String, &'static str, String);
+        let mut ratios: BTreeMap<Place, BTreeMap<String, (Vec<f64>, usize)>> = BTreeMap::new();
+        let mut parts: BTreeMap<String, Vec<(&'static str, String, String, String)>> = BTreeMap::new();
+        for s in &scenarios {
+            let mut by_rest: BTreeMap<(Place, String), Vec<(String, f64)>> = BTreeMap::new();
+            for e in s.entries.iter().filter(|e| e.valid) {
+                let Some(g) = &e.graph else { continue };
+                for (role, place, component, rest) in parts.entry(e.label.clone()).or_insert_with(|| nodes(g)).iter() {
+                    by_rest.entry(((g.runs_on().to_string(), *role, place.clone()), format!("{rest} {}", e.options))).or_default().push((component.clone(), e.fps));
+                }
+            }
+            for ((place, _), group) in by_rest.iter().filter(|(_, g)| g.len() > 1) {
+                let top = group.iter().map(|g| g.1).fold(0.0, f64::max);
+                for (name, fps) in group {
+                    let r = ratios.entry(place.clone()).or_default().entry(name.clone()).or_default();
+                    r.0.push(fps / top);
+                    if *fps >= top {
+                        r.1 += 1;
+                    }
+                }
+            }
+        }
         let mut components = vec![];
-        let presets: BTreeSet<String> = scenarios.iter().flat_map(|s| s.entries.iter().filter_map(|e| e.composition.as_ref().map(|c| c.preset.clone()))).collect();
-        for b in presets {
-            for slot in Slot::ALL {
-                let mut ratios: BTreeMap<String, (Vec<f64>, usize)> = BTreeMap::new();
-                for s in &scenarios {
-                    let mut by_rest: BTreeMap<String, Vec<(&str, f64)>> = BTreeMap::new();
-                    for e in s.entries.iter().filter(|e| e.valid) {
-                        let Some(c) = e.composition.as_ref().filter(|c| c.preset == b && !c.get(slot).is_empty()) else { continue };
-                        let mut rest = c.clone();
-                        rest.set(slot, "");
-                        by_rest.entry(format!("{rest:?} {}", e.options)).or_default().push((c.get(slot), e.fps));
-                    }
-                    for group in by_rest.values().filter(|g| g.len() > 1) {
-                        let top = group.iter().map(|g| g.1).fold(0.0, f64::max);
-                        for &(name, fps) in group {
-                            let r = ratios.entry(name.to_string()).or_default();
-                            r.0.push(fps / top);
-                            if fps >= top {
-                                r.1 += 1;
-                            }
-                        }
-                    }
-                }
-                if ratios.len() > 1 {
-                    let mut rows: Vec<(String, f64, usize, usize)> = ratios.into_iter().map(|(n, (v, w))| (n, geomean(&v), w, v.len())).collect();
-                    rows.sort_by(|a, b| b.1.total_cmp(&a.1));
-                    components.push(ComponentEffect { preset: b.clone(), slot: slot.name(), rows });
-                }
+        for ((executor, role, place), ratios) in ratios {
+            if ratios.len() > 1 {
+                let mut rows: Vec<(String, f64, usize, usize)> = ratios.into_iter().map(|(n, (v, w))| (n, geomean(&v), w, v.len())).collect();
+                rows.sort_by(|a, b| b.1.total_cmp(&a.1));
+                components.push(ComponentEffect { executor, role, place, rows });
             }
         }
         let runs: BTreeSet<&str> = obs.iter().map(|o| o.run.as_str()).collect();
@@ -289,9 +337,9 @@ impl Catalogue {
         }
         let _ = writeln!(s);
         if !self.components.is_empty() {
-            let _ = writeln!(s, "## Components\n\nThe effect of a stage's component, other stages and knobs equal: the geometric mean of fps relative to the best of each such group, wins, and the number of comparisons.\n");
+            let _ = writeln!(s, "## Components\n\nThe effect of a node's component, among pipelines whose graphs differ in that node's component alone (knobs equal): the geometric mean of fps relative to the best of each such group, wins, and the number of comparisons. A node is named by its executor, its role and the inputs leading to it from the output.\n");
             for c in &self.components {
-                let _ = writeln!(s, "**{} · {}**\n\n| component | geomean rel | wins | comparisons |\n|---|---:|---:|---:|", c.preset, c.slot);
+                let _ = writeln!(s, "**{} · {} ({})**\n\n| component | geomean rel | wins | comparisons |\n|---|---:|---:|---:|", c.executor, c.role, c.place);
                 for (n, g, w, k) in &c.rows {
                     let _ = writeln!(s, "| {n} | {g:.2} | {w} | {k} |");
                 }
@@ -331,7 +379,7 @@ impl Catalogue {
 
     /// One row per (scenario, renderer), for spreadsheets and scripts.
     pub fn csv(&self) -> String {
-        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,preset,storage,geometry,prepass,visibility,shading,meshes,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,psnr_like,psnr_settled,bad_pct,gpu_mb,rss_mb,samples,error\n");
+        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,executor,graph_key,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,psnr_like,psnr_settled,bad_pct,gpu_mb,rss_mb,samples,error\n");
         let q = |x: &str| format!("\"{}\"", x.replace('"', "\"\""));
         for sc in &self.scenarios {
             // The scenario's columns, including its measured features (empty if unknown).
@@ -344,18 +392,12 @@ impl Catalogue {
             };
             let scenario = format!("{},{},{},{},{},{feats}", q(&sc.machine), q(&sc.plan), sc.mode, sc.resolution[0], sc.resolution[1]);
             for e in &sc.entries {
-                let c = e.composition.clone().unwrap_or_else(|| Composition { preset: String::new(), ..Composition::new("") });
                 let _ = writeln!(
                     s,
-                    "{scenario},{},{},{},{},{},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{},{},{}",
+                    "{scenario},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{},{},{}",
                     q(&e.label),
-                    c.preset,
-                    c.storage,
-                    c.geometry,
-                    c.prepass,
-                    c.visibility,
-                    c.shading,
-                    c.meshes,
+                    e.graph.as_ref().map_or("", |g| g.runs_on()),
+                    e.graph_key.as_deref().unwrap_or(""),
                     q(&e.options),
                     e.fps,
                     e.rel,
@@ -383,59 +425,41 @@ mod tests {
     use super::*;
     use crate::observe::{Machine, Observation};
 
-    fn obs(plan: &str, comp: Composition, fps: f64, psnr: Option<f64>) -> Observation {
+    /// The ray caster's storage: its primary rays walk it, and the shadow rays of its meshes and its shading.
+    const PRIMARY: &str = "image > hits > primary > storage; image > hits > meshes > shadow > storage; image > shadow > storage";
+
+    /// The shipped ray-casting graph with another storage.
+    fn with(storage: &str) -> Graph {
+        let mut g = graph::shipped("raycast-gpu").unwrap();
+        g.nodes.get_mut("storage").unwrap().component = storage.into();
+        g
+    }
+
+    fn obs(plan: &str, g: Graph, fps: f64, psnr: Option<f64>) -> Observation {
         Observation {
-            version: 1,
+            version: crate::observe::VERSION,
             run: "r".into(),
             machine: Machine::default(),
             plan: plan.into(),
-            scene: Default::default(),
-            features: None,
             resolution: [64, 64],
             view_radius: 4,
             frames: 10,
             streaming: "complete".into(),
             mode: "unlit".into(),
-            label: comp.label(),
-            renderer: comp.preset.clone(),
-            composition: Some(comp),
-            sites: Default::default(),
-            graph: None,
-            graph_key: None,
+            label: g.label().unwrap(),
+            renderer: g.runs_on().into(),
+            graph_key: g.key().ok(),
+            graph: Some(g),
             options: serde_json::json!({}),
-            repeat: 0,
-            error: None,
-            beside_failed: vec![],
-            not_supported: vec![],
             fps,
-            frame_ms: None,
-            frame_p50_ms: None,
-            frame_p99_ms: None,
-            gpu_ms: None,
-            cpu_ms: None,
-            latency_ms: None,
-            init_ms: 0.0,
-            initial_load_ms: 0.0,
-            peak_rss_mb: None,
-            gpu_mb: None,
             psnr,
-            psnr_min: None,
-            like: None,
-            psnr_like: None,
-            bad_pct_like: None,
-            late: vec![],
-            psnr_settled: None,
-            bad_pct_settled: None,
-            bad_pct: None,
-            counters: Default::default(),
-            stages: Vec::new(),
-            stream: None,
+            ..Default::default()
         }
     }
 
     #[test]
     fn ranks_and_effects() {
-        let c = |st: &str| Composition { storage: st.into(), ..Default::default() };
+        let c = with;
         let all = vec![
             obs("terrain", c("bricks"), 100.0, Some(50.0)),
             obs("terrain", c("prefix"), 120.0, Some(50.0)),
@@ -446,25 +470,80 @@ mod tests {
         let cat = Catalogue::build(&all, 35.0);
         assert_eq!(cat.scenarios.len(), 2);
         let terrain = cat.scenarios.iter().find(|s| s.plan == "terrain").unwrap();
-        assert_eq!(terrain.entries[0].label, "raycast-gpu: prefix + refloor", "an incorrect renderer is never best");
+        assert_eq!(terrain.entries[0].label, "gpu: prefix + refloor + composite + raycast + direct", "an incorrect renderer is never best");
         let hier = cat.renderers.iter().find(|r| r.label.contains("hier")).unwrap();
         assert_eq!(hier.incorrect, ["terrain [unlit]"]);
         let prefix = cat.renderers.iter().find(|r| r.label.contains("prefix")).unwrap();
         assert_eq!(prefix.wins, ["terrain [unlit]"]);
         assert!((prefix.geomean.unwrap() - (1.0f64 * 0.5).sqrt()).abs() < 1e-9);
         assert_eq!(hier.geomean, None, "never correct");
-        let storage = cat.components.iter().find(|e| e.slot == "storage").unwrap();
+        assert_eq!(cat.components.len(), 1, "one node differs: {:?}", cat.components);
+        let storage = &cat.components[0];
+        assert_eq!((storage.executor.as_str(), storage.role, storage.place.as_str()), ("gpu", "storage", PRIMARY));
         // bricks: 100/120 and 1; prefix: 1 and 0.5.
         let row = |n: &str| storage.rows.iter().find(|r| r.0 == n).unwrap().clone();
         assert!((row("bricks").1 - (100.0f64 / 120.0).sqrt()).abs() < 1e-9 && row("bricks").2 == 1 && row("bricks").3 == 2);
-        assert!(cat.markdown().contains("## Components") && cat.csv().lines().count() == 6);
+        assert!(cat.markdown().contains(&format!("**gpu · storage ({PRIMARY})**")) && cat.csv().lines().count() == 6);
+        assert!(cat.csv().contains(&format!(",gpu,{},", with("prefix").key().unwrap())), "{}", cat.csv());
+    }
+
+    /// A node's component is compared only among graphs that differ in it alone, and the
+    /// same component at another place is another row.
+    #[test]
+    fn effects_one_node_apart() {
+        let kernel = |st: &str, k: &str| {
+            let mut g = with(st);
+            g.nodes.get_mut("kernel").unwrap().component = k.into();
+            g
+        };
+        // Two nodes apart (bricks + refloor, prefix + incremental): no comparison.
+        let apart = Catalogue::build(&[obs("terrain", kernel("bricks", "refloor"), 100.0, None), obs("terrain", kernel("prefix", "incremental"), 50.0, None)], 35.0);
+        assert!(apart.components.is_empty(), "{:?}", apart.components);
+        // A third joins each to it: one comparison per node.
+        let cat = Catalogue::build(&[obs("terrain", kernel("bricks", "refloor"), 100.0, None), obs("terrain", kernel("prefix", "incremental"), 50.0, None), obs("terrain", kernel("prefix", "refloor"), 80.0, None)], 35.0);
+        let at = |role: &str| cat.components.iter().find(|e| e.role == role).unwrap();
+        assert_eq!(cat.components.len(), 2);
+        assert_eq!(at("storage").rows.iter().map(|r| (r.0.as_str(), r.3)).collect::<Vec<_>>(), [("bricks", 1), ("prefix", 1)]);
+        assert_eq!((at("traversal").place.as_str(), at("traversal").rows[0].0.as_str()), ("image > hits > primary; image > hits > meshes > shadow; image > shadow", "refloor"));
+        // The rasteriser's storage (its shadow rays') is another place than the ray caster's.
+        let raster = |st: &str| {
+            let mut g = graph::shipped("raster-gpu").unwrap();
+            g.nodes.get_mut("storage").unwrap().component = st.into();
+            g
+        };
+        let both = Catalogue::build(&[obs("terrain", with("bricks"), 100.0, None), obs("terrain", with("prefix"), 50.0, None), obs("terrain", raster("bricks"), 10.0, None), obs("terrain", raster("prefix"), 20.0, None)], 35.0);
+        let places: Vec<&str> = both.components.iter().map(|e| e.place.as_str()).collect();
+        assert_eq!(places, ["image > hits > meshes > shadow > storage; image > shadow > storage", PRIMARY]);
+    }
+
+    /// Records from before a pipeline was its graph load as this version writes them, under
+    /// the label a new record of the same pipeline has.
+    #[test]
+    fn older_records() {
+        let new = obs("terrain", with("prefix"), 100.0, None);
+        let old = |label: &str| {
+            let mut v = serde_json::to_value(&new).unwrap();
+            let m = v.as_object_mut().unwrap();
+            m.remove("graph");
+            m.insert("version".into(), 5.into());
+            m.insert("label".into(), label.into());
+            m.insert("renderer".into(), "raycast-gpu".into());
+            m.insert("composition".into(), serde_json::to_value(mr_components::Composition { storage: "prefix".into(), ..Default::default() }).unwrap());
+            serde_json::from_value::<Observation>(v).unwrap().upgraded()
+        };
+        let o = old("raycast-gpu: prefix + refloor");
+        assert_eq!((o.label.as_str(), o.renderer.as_str(), o.graph.as_ref().and_then(|g| g.key().ok())), (new.label.as_str(), "gpu", new.graph_key.clone()));
+        assert!(o.composition.is_none() && !serde_json::to_string(&o).unwrap().contains("composition"));
+        assert_eq!(old("raycast-gpu: prefix + refloor [native]").label, format!("{} [native]", new.label));
+        assert_eq!(old("mine").label, "mine", "a label the plan gave stays");
+        assert_eq!(Catalogue::build(&[new.clone(), o], 35.0).scenarios[0].entries.len(), 1, "one pipeline, one entry");
     }
 
     /// A pipeline with an edge a frame late is held to the floor on its settled frames: late
     /// is not incorrect; one that stays low once settled is.
     #[test]
     fn late_is_not_incorrect() {
-        let c = |st: &str| Composition { storage: st.into(), ..Default::default() };
+        let c = with;
         let settled = |st: &str, s: f64| Observation { late: vec!["draw.faces".into()], psnr_settled: Some(s), ..obs("terrain", c(st), 100.0, Some(30.0)) };
         let cat = Catalogue::build(&[settled("bricks", 50.0), settled("hier", 30.0)], 35.0);
         let valid = |st: &str| cat.scenarios[0].entries.iter().find(|e| e.label.contains(st)).unwrap().valid;

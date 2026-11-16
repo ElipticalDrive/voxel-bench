@@ -134,14 +134,9 @@ pub struct FirstComplete {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct PassReport {
     pub label: String,
+    /// The executor that ran it (`cpu`, `gpu`); a standalone renderer's name.
     pub renderer: String,
-    /// The composition and the options beyond it (knobs), when composed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub composition: Option<mr_components::Composition>,
-    /// Sites bound otherwise than the composition binds them.
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub sites: std::collections::BTreeMap<String, String>,
-    /// The graph run, when it has no sites form (else composition and sites give it).
+    /// The pipeline's graph (none for standalone renderers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub graph: Option<mr_components::graph::Graph>,
     /// The canonical graph's key (`Graph::key`): what the pass ran, for comparisons.

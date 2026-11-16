@@ -80,7 +80,7 @@ every face, so UV and orientation mistakes are obvious.
 | `tests/architecture.rs` | the architecture guard (below) |
 | `plans/` | example plans |
 | `pipelines/` | the shipped graph files (built into the binary; `graph = "<name>"` in a plan) |
-| `baselines/` | a full sweep of 2026-10-11 (observations), for comparing later sweeps with `scripts/ab/sweepcmp.py` |
+| `baselines/` | a full sweep of 2026-10-11 (observations and its catalogue; kept as data: it names its pipelines in a form this build no longer reads, so `catalogue` and `scripts/ab/sweepcmp.py` leave its records out) |
 | `scripts/`, `install.py` | tools (Python); the installer |
 
 ## Adding a component

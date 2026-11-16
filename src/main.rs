@@ -139,8 +139,9 @@ fn main() -> anyhow::Result<()> {
                 if line.trim().is_empty() {
                     continue;
                 }
-                let key = serde_json::from_str::<observe::Observation>(&line).ok().and_then(|o| o.pipeline()).and_then(|g| g.key().ok());
-                println!("{}", key.as_deref().unwrap_or("-"));
+                let g = serde_json::from_str::<observe::Observation>(&line).ok().and_then(|o| o.pipeline());
+                let key = g.as_ref().and_then(|g| g.key().ok());
+                println!("{}\t{}", key.as_deref().unwrap_or("-"), g.and_then(|g| g.label().ok()).unwrap_or_default());
             }
             Ok(())
         }
@@ -210,14 +211,18 @@ fn main() -> anyhow::Result<()> {
             if files.is_empty() {
                 bail!("no observations.jsonl under {paths:?}");
             }
-            let obs = observe::read(&files)?;
+            let (obs, left_out) = observe::read(&files)?;
+            if obs.is_empty() {
+                bail!("no readable observations under {paths:?} ({left_out} of older versions this build no longer reads)");
+            }
             let out = out.or_else(|| paths.first().filter(|p| p.is_dir()).cloned()).unwrap_or_else(|| PathBuf::from("."));
             let cat = catalogue::Catalogue::build(&obs, min_psnr);
             std::fs::create_dir_all(&out)?;
             std::fs::write(out.join("catalogue.md"), cat.markdown())?;
             std::fs::write(out.join("catalogue.csv"), cat.csv())?;
             println!("{}", cat.summary());
-            println!("{} observations from {} files → {}", obs.len(), files.len(), out.join("catalogue.md").display());
+            let older = if left_out > 0 { format!(" ({left_out} more of older versions this build no longer reads, left out)") } else { String::new() };
+            println!("{} observations from {} files{older} → {}", obs.len(), files.len(), out.join("catalogue.md").display());
             Ok(())
         }
         Cmd::Run { plan: path, overrides, unset } => {
@@ -316,11 +321,9 @@ impl Ctx<'_> {
             let label = self.label(spec);
             let mut report = PassReport {
                 label: label.clone(),
-                renderer: spec.name.clone(),
-                composition: spec.composition().cloned(),
-                sites: spec.sites(),
-                graph: spec.graph.clone().filter(|_| spec.shorthand_form().is_none()),
+                renderer: spec.pipeline().map_or_else(|| spec.name.clone(), |g| g.runs_on().to_string()),
                 graph_key: spec.pipeline().and_then(|g| g.key().ok()),
+                graph: spec.pipeline(),
                 options: spec.options.clone(),
                 view_radius: spec.view_radius(run),
                 link: spec.link(),
