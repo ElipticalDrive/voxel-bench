@@ -10,7 +10,7 @@
 //! points and their buffers.
 
 use glam::IVec3;
-use mr_components::geometry::points::{Point, Points};
+use mr_components::geometry::points::Points;
 use mr_components::graph::{self, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state::{self as shade_state, ShadeState};
@@ -100,8 +100,9 @@ pub(crate) struct Splat {
     /// The large points' list (a count, then up to one id per point).
     big_buf: wgpu::Buffer,
     bind0: wgpu::BindGroup,
-    /// The geometry node's state: every chunk's points.
+    /// The geometry node's state: every chunk's points, in slots as the buffer holds them.
     points: Points,
+    /// Entries in the buffer (points and holes).
     count: u32,
     max_splat: u32,
     /// This frame's world bind group and storages' bind groups.
@@ -177,17 +178,23 @@ impl Splat {
         Ok((core, splat))
     }
 
-    /// The points' transfer: every chunk's points into one GPU buffer (rebuilt after any
-    /// change).
-    fn upload(&mut self, core: &Core, all: Vec<Point>) {
-        self.count = all.len() as u32;
-        if (all.len() as u64) * 16 > self.points_buf.size() {
-            self.points_buf = points_buffer(&core.gpu, all.len() as u64 * 3 / 2);
+    /// The points' transfer: the slots that changed (all of them into a larger buffer when
+    /// the array outgrew it).
+    fn upload(&mut self, core: &Core) {
+        let Some(ch) = self.points.changes() else { return };
+        self.count = ch.all.len() as u32;
+        let queue = &core.gpu.queue;
+        if (ch.all.len() as u64) * 16 > self.points_buf.size() {
+            self.points_buf = points_buffer(&core.gpu, ch.all.len() as u64 * 3 / 2);
             self.big_buf = big_buffer(&core.gpu, self.points_buf.size());
             self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.big_buf);
+            queue.write_buffer(&self.points_buf, 0, bytemuck::cast_slice(ch.all));
+            let rest = ch.all.len() as u64 - ch.ranges.iter().map(|r| r.len() as u64).sum::<u64>();
+            self.points.uploaded += rest;
+            return;
         }
-        if !all.is_empty() {
-            core.gpu.queue.write_buffer(&self.points_buf, 0, bytemuck::cast_slice(&all));
+        for r in ch.ranges {
+            queue.write_buffer(&self.points_buf, r.start as u64 * 16, bytemuck::cast_slice(&ch.all[r]));
         }
     }
 }
@@ -213,7 +220,7 @@ fn program(g: &graph::Checked, shading: &str) -> anyhow::Result<(Walks, mr_gpu::
     let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("splat-gpu: shadow rays are not bound"))?, &[2, 3, 4], false);
     let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, &[2, 3, 4], false));
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
-    let own = format!("{}\n{}\n{shade}\n{}", splat::GPU_WGSL, ShadeState::wgsl(0, crate::STATE_BINDING), mr_components::shading::DEFERRED_WGSL);
+    let own = format!("{}\n{}\n{shade}\n{}", splat::gpu_wgsl(), ShadeState::wgsl(0, crate::STATE_BINDING), mr_components::shading::DEFERRED_WGSL);
     let (program, deps) = mr_components::shaders::sites_program(&walks, None, 0, bounce);
     Ok((walks, program, own, deps))
 }
@@ -245,9 +252,7 @@ impl State for Splat {
 impl Region for Splat {
     /// The points' transfer when the world changed them.
     fn compile(&mut self, core: &mut Core, _req: &FrameRequest) -> anyhow::Result<()> {
-        if let Some(all) = self.points.changed() {
-            self.upload(core, all);
-        }
+        self.upload(core);
         Ok(())
     }
 
@@ -261,7 +266,7 @@ impl Region for Splat {
 
     fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
         let (accel, stages) = core.accel_stats();
-        let counters = [("points".into(), self.count as f64)].into_iter().chain(accel).chain(core.accum.counter(req.mode)).collect();
+        let counters = [("points".into(), self.points.live() as f64), ("point_slots".into(), self.count as f64), ("points_uploaded".into(), self.points.uploaded as f64)].into_iter().chain(accel).chain(core.accum.counter(req.mode)).collect();
         (counters, None, stages)
     }
 

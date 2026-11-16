@@ -1,9 +1,10 @@
 // Visibility `splat` on the GPU (the root of splat-gpu's program): software point
 // rasterisation. Each point of geometry `points` is a face-exposed block; passes: clear,
 // depth splat (atomicMin of the depth where each pixel's ray enters the block), the same for
-// points larger than `max_splat` (a workgroup each), id splat (atomicMax where depth
-// matches), the same for the large points, then the common deferred pass over the ids (the
-// resolve).
+// points larger than `max_splat` (a workgroup each), id splat (where depth matches, the
+// point last in position order wins: `after`), the same for the large points, then the common
+// deferred pass over the ids (the resolve). The points' array may hold holes (no face
+// exposed: skipped) and is in no particular order.
 
 struct Camera {
     forward: vec3<f32>, tan_half_fov: f32,
@@ -40,12 +41,13 @@ struct Big { n: atomic<u32>, ids: array<u32> }
 
 // A point's footprint: the screen rectangle of its block's eight corners (the whole screen
 // if a corner is behind the camera), and its centre's view depth.
-struct Splat { ok: bool, big: bool, tiny: bool, x0: i32, y0: i32, x1: i32, y1: i32, z: f32, bmin: vec3<f32> }
+struct Splat { ok: bool, big: bool, tiny: bool, x0: i32, y0: i32, x1: i32, y1: i32, z: f32, bmin: vec3<f32>, pos: vec3<i32> }
 
 fn project(id: u32) -> Splat {
     var s: Splat;
     s.ok = false;
     let pt = points[id];
+    s.pos = pt.pos;
     s.bmin = vec3<f32>(pt.pos - vp.cam_block);
     let c = s.bmin + vec3<f32>(0.5) - cam.origin;
     let z = dot(c, cam.forward);
@@ -114,10 +116,32 @@ fn depth_px(s: Splat, x: i32, y: i32) {
     if (z != NONE) { atomicMin(&zbuf[u32(y) * cam.width + u32(x)], z); }
 }
 
+// Whether block `a` comes after block `b` in position order: by chunk (x, then y, then z),
+// then inside the chunk by y, z, x. Equal depths go to the later block, whatever the points'
+// order in the array.
+fn after(a: vec3<i32>, b: vec3<i32>) -> bool {
+    let ca = a >> vec3<u32>(CHUNK_BITS);
+    let cb = b >> vec3<u32>(CHUNK_BITS);
+    if (ca.x != cb.x) { return ca.x > cb.x; }
+    if (ca.y != cb.y) { return ca.y > cb.y; }
+    if (ca.z != cb.z) { return ca.z > cb.z; }
+    if (a.y != b.y) { return a.y > b.y; }
+    if (a.z != b.z) { return a.z > b.z; }
+    return a.x > b.x;
+}
+
 fn id_px(s: Splat, id: u32, x: i32, y: i32) {
     let i = u32(y) * cam.width + u32(x);
     let z = depth_at(s, x, y);
-    if (z != NONE && atomicLoad(&zbuf[i]) == z) { atomicMax(&idbuf[i], id + 1u); }
+    if (z == NONE || atomicLoad(&zbuf[i]) != z) { return; }
+    // Expecting the pixel empty: one atomic where no other point ties (most pixels).
+    var cur = 0u;
+    loop {
+        if (cur != 0u && !after(s.pos, points[cur - 1u].pos)) { return; }
+        let r = atomicCompareExchangeWeak(&idbuf[i], cur, id + 1u);
+        if (r.exchanged) { return; }
+        cur = r.old_value;
+    }
 }
 
 @compute @workgroup_size(64)

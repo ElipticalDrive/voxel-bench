@@ -2,7 +2,8 @@
 //! point of geometry `points` (`crate::geometry::points`) is projected and, over the screen
 //! rectangle of its block, `atomicMin`s the view depth where each pixel's ray enters the
 //! block (a point under 2 px also covers the pixels it misses, at its centre's depth); a
-//! second pass writes the winning point id, and the common deferred pass is the resolve: it
+//! second pass writes the winning point id (equal depths: the block last in position
+//! order, so the points' array may be in any order and hold holes), and the common deferred pass is the resolve: it
 //! decodes the id (ray-boxes the pixel against the winning block) and shades. One thread
 //! splats a point up to `max_splat` px on a side; larger ones go to a list that a workgroup
 //! per point splats. GPU only: [`GPU_WGSL`] (the root: entries `clear`, `splat_depth`,
@@ -12,6 +13,11 @@
 //! (points, depth, ids, the large points' list: a count, then ids).
 
 pub const GPU_WGSL: &str = include_str!("gpu.wgsl");
+
+/// [`GPU_WGSL`] with the constants it reads (`CHUNK_BITS`).
+pub fn gpu_wgsl() -> String {
+    format!("const CHUNK_BITS: u32 = {}u;\n{GPU_WGSL}", mr_core::chunk::CHUNK_BITS)
+}
 
 /// The entry points in dispatch order: clear (per pixel), the depth splats (per point, then
 /// per large point), the id splats (the same), the resolve (per pixel).
