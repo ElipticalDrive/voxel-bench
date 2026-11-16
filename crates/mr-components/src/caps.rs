@@ -17,7 +17,7 @@
 //! the walks', exposure tests' and prepasses' core) and `Heights` (a heightmap's columns,
 //! the column march's). No adapter turns one into the other yet.
 
-use crate::{Composition, Kind, Slot, component, components};
+use crate::{Kind, Slot, component};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Cap {
@@ -118,77 +118,6 @@ pub fn provides(kind: Kind, slot: Slot, name: &str, cap: Cap) -> bool {
 /// Whether component `name` in `role` provides `cap` natively on device kind `kind`.
 pub fn role_provides(kind: Kind, role: crate::graph::Role, name: &str, cap: Cap) -> bool {
     role.slot().is_some_and(|slot| provides(kind, slot, name, cap))
-}
-
-/// The device kind `c`'s preset runs `slot` on (GPU if the preset is unknown).
-fn kind_of(c: &Composition, slot: Slot) -> Kind {
-    c.region().map_or(Kind::Gpu, |b| b.place(slot).kind)
-}
-
-/// How a composition meets one need.
-pub enum Met {
-    /// The component in the slot provides it.
-    Native,
-    /// Through an adapter (correct, slower than a native implementation).
-    Adapter(&'static Adapter),
-    /// The preset has no such stage, so nothing there lacks it.
-    NoStage,
-}
-
-/// How `c` meets need `(slot, cap)`, or why it can't.
-pub fn meet(c: &Composition, slot: Slot, cap: Cap) -> Result<Met, String> {
-    let name = c.resolved(slot);
-    if name.is_empty() {
-        return Ok(Met::NoStage);
-    }
-    let kind = kind_of(c, slot);
-    if provides(kind, slot, name, cap) {
-        return Ok(Met::Native);
-    }
-    if let Some(a) = adapter(slot.source(), cap) {
-        return Ok(Met::Adapter(a));
-    }
-    let have: Vec<&str> = components(slot.source()).filter(|x| x.on(kind).is_some_and(|i| i.provides.contains(&cap))).map(|x| x.name).collect();
-    Err(format!("{} `{name}` lacks {} (have it: {})", slot.name(), cap.name(), if have.is_empty() { "none".into() } else { have.join(", ") }))
-}
-
-/// Why `c` cannot meet `needs`, if it can't (every unmet need).
-pub fn lacks(c: &Composition, needs: &[(Slot, Cap)]) -> Option<String> {
-    let why: Vec<String> = needs.iter().filter_map(|&(s, cap)| meet(c, s, cap).err()).collect();
-    (!why.is_empty()).then(|| why.join("; "))
-}
-
-/// The needs of the component in effect in `slot`, as slots of `c`: a kernel walking the
-/// shadow rays needs its storage capabilities from the shadow storage.
-fn needs_of(c: &Composition, slot: Slot) -> Option<(&'static crate::ComponentInfo, Vec<(Slot, Cap)>)> {
-    let x = component(slot.source(), c.resolved(slot))?;
-    let to = |s: Slot| if slot == Slot::ShadowTraversal && s == Slot::Storage { Slot::ShadowStorage } else { s };
-    Some((x, x.needs.iter().map(|&(s, cap)| (to(s), cap)).collect()))
-}
-
-/// Why `c`'s components' needs cannot be met, if they can't.
-pub fn unmet(c: &Composition) -> Option<String> {
-    let why: Vec<String> = c
-        .slots()
-        .filter_map(|s| needs_of(c, s))
-        .filter_map(|(x, needs)| lacks(c, &needs).map(|w| format!("`{}` needs it: {w}", x.name)))
-        .collect();
-    (!why.is_empty()).then(|| why.join("; "))
-}
-
-/// Advisory note for the needs of `c`'s components met through adapters.
-pub fn adapter_note(c: &Composition) -> Option<String> {
-    let mut notes: Vec<String> = c
-        .slots()
-        .filter_map(|s| needs_of(c, s))
-        .flat_map(|(x, needs)| needs.into_iter().map(move |n| (x, n)))
-        .filter_map(|(x, (s, cap))| match meet(c, s, cap) {
-            Ok(Met::Adapter(a)) => Some(format!("`{}` answers {} for `{}` through an adapter ({}): correct, but slower than a {} with it built in", c.resolved(s), cap.name(), x.name, a.description, s.source().name())),
-            _ => None,
-        })
-        .collect();
-    notes.dedup();
-    (!notes.is_empty()).then(|| notes.join("\n"))
 }
 
 #[cfg(test)]

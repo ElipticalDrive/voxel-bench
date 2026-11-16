@@ -85,5 +85,6 @@ controller path could also serve as a camera path for benchmarks.
 ## A concise text form for graphs
 
 A small scripting language that writes the same graph as the canvas editor, for users who
-prefer conciseness: same graph, same diagnostics, convertible both ways. The sites form and
-compose form in plans are partial versions today; this one would express any graph.
+prefer conciseness: same graph, same diagnostics, convertible both ways. Plans' edit lists
+(`graph` + `edits`) and the CLI's short edit spellings are partial versions today; this one
+would express any graph.

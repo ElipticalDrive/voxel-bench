@@ -602,7 +602,6 @@ pub fn shipped(name: &str) -> Option<Graph> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Composition;
     use crate::graph::REGIONS;
 
     /// The knobs of the shading node are owned by the shadings its region declares
@@ -671,18 +670,20 @@ mod tests {
         toml::from_str::<One>(&format!("e = {s}")).map(|o| o.e).map_err(|e| e.message().to_string())
     }
 
-    /// Every shipped file is a region's default pipeline, key for key, and every region's
-    /// default pipeline is shipped; the directory holds no file the binary lacks.
+    /// Every region has one shipped file, whose graph it builds; the files' keys are pinned
+    /// (the files are the source: a changed key is a changed default); the directory holds no
+    /// file the binary lacks.
     #[test]
-    fn shipped_files_are_the_default_pipelines() {
+    fn shipped_files_are_the_regions() {
         assert_eq!(SHIPPED.len(), REGIONS.len());
+        let mut keys = vec![];
         for b in REGIONS {
             let g = shipped(b.name).unwrap_or_else(|| panic!("no pipelines/{}.toml", b.name));
             g.accept().unwrap_or_else(|e| panic!("{}: {e}", b.name));
-            let d = Graph::from_composition(&Composition::new(b.name)).unwrap();
-            assert_eq!(g.key().unwrap(), d.key().unwrap(), "{}", b.name);
-            assert_eq!(g, d, "{}", b.name);
+            assert_eq!(g.region().map(|r| r.id), Some(b.id), "{}", b.name);
+            keys.push(format!("{} {}", b.name, g.key().unwrap()));
         }
+        assert_eq!(keys, KEYS);
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pipelines");
         let mut files: Vec<String> = std::fs::read_dir(dir).unwrap().map(|f| f.unwrap().file_name().into_string().unwrap()).collect();
         files.sort();
@@ -691,19 +692,7 @@ mod tests {
         assert_eq!(files, want);
     }
 
-    /// Writes the shipped files from the default compositions (run by hand:
-    /// `cargo test -p mr-components write_shipped -- --ignored`).
-    #[test]
-    #[ignore]
-    fn write_shipped() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pipelines");
-        std::fs::create_dir_all(&dir).unwrap();
-        for b in REGIONS {
-            let g = Graph::from_composition(&Composition::new(b.name)).unwrap();
-            let text = format!("# {}\n# A pipeline graph: start a renderer from it with `graph = \"{}\"` and `edits`.\n\n{}", b.description, b.name, toml::to_string(&g).unwrap());
-            std::fs::write(dir.join(format!("{}.toml", b.name)), text).unwrap();
-        }
-    }
+    const KEYS: [&str; 10] = ["raycast-gpu 31c0d9f23d30a0a2", "raycast-cpu 6a27bbb361b1e383", "raster-gpu 0613a802bbaa05be", "rayquery-gpu c3c02c32f259aeb4", "discover-gpu 4a2e30e5e55b6985", "discover-cpu c694a54614af8399", "splat-gpu 9f38ca5f589d987a", "columns-gpu 843d142449bc32b1", "columns-cpu f1107fab9298a785", "raster-cpu 37026477bb2a9901"];
 
     /// Every kind of edit reads from TOML, writes back as it was read, and is refused with
     /// what is wrong.
@@ -757,7 +746,6 @@ mod tests {
         let mut want = g.clone();
         want.nodes.get_mut("storage").unwrap().component = "tree64".into();
         assert_eq!(h, want);
-        assert_eq!(h.key().unwrap(), Graph::from_composition(&Composition { storage: "tree64".into(), ..Composition::new("raycast-gpu") }).unwrap().key().unwrap());
         // A new node bound, then removed: the input is left unbound.
         let new = r#"{ node = "shading", input = "shadow", from = { role = "traversal", component = "sphere" } }"#;
         let bound = g.with_edits(&[change(new).unwrap()]).unwrap();

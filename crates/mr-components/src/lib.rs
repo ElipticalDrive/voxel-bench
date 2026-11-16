@@ -1,38 +1,24 @@
-//! Renderer components: instead of choosing a monolithic renderer, a renderer is
-//! assembled from one component per slot and run on a preset:
-//!
-//! `preset` × `storage` × `geometry` × `prepass` × `visibility` × `draw` × `traversal` × `shading` × `meshes`
-//!
-//! Not every slot applies to every preset: `geometry` (storage turned into drawable faces)
-//! exists only on rasterising presets, `prepass` (a stage before the walk, e.g. beams)
-//! only on raycast-gpu, `meshes` (how polygon meshes join the voxel image) only where a
-//! preset can draw them; slots a preset lacks are left empty. `visibility` is the
-//! strategy that organises primary visibility (ray casting, raster, discovery, splat,
-//! columns); `draw` turns the faces a strategy hands on into the image (raster, visibility
-//! buffer, G-buffer); `traversal` is the kernel that answers ray queries against the storage
-//! (primary rays where the strategy casts them, shadow and bounce rays everywhere).
+//! Renderer components: a renderer is a pipeline graph ([`graph`]) whose nodes are
+//! component instances, each filling a role: `storage`, `geometry` (storage turned into
+//! drawable faces), `prepass` (a stage before the walk, e.g. beams), `visibility` (the
+//! strategy that organises primary visibility: ray casting, raster, discovery, splat,
+//! columns), `holes`, `draw` (the faces a strategy hands on turned into the image: raster,
+//! visibility buffer, G-buffer), `traversal` (the kernel that answers ray queries against a
+//! storage, wherever rays are cast), `shading`, `meshes`, and the world's side around them.
 //!
 //! Lighting and meshes are stages *around* the walk, so storages and walks stay unaware of
 //! them: the pass mode (lit / unlit, meshes on / off) is what the scene asks for, the
 //! shading component realises lit and unlit (with the lighting knobs, e.g. `shadows`), and
-//! the meshes component decides how meshes are drawn, or that they are not (`none`).
+//! the meshes component decides how meshes are drawn.
 //!
 //! This crate is the single source of truth for what exists and what combines: component
-//! metadata, compatibility (used by the GUI to forbid unsupported combinations, by plan
-//! loading and by the presets), and the component implementations themselves, one
-//! directory per piece (`storage/prefix/gpu.wgsl`, ...). The executors (`crates/mr-exec-*`) assemble a
-//! working renderer from a [`Composition`].
-//!
-//! Compatibility rule: a component combines with a preset if the preset has its slot and
-//! the component has an implementation for it, and with the other components if each of its
-//! needs is met, natively or through an adapter ([`caps`]). Today every need has an adapter,
-//! so within a preset every component pairs with every other.
-
-use serde::{Deserialize, Serialize};
+//! metadata ([`COMPONENTS`]), capabilities and adapters ([`caps`]), the graph model with
+//! its validation and what each executor builds ([`graph`]), and the component
+//! implementations themselves, one directory per piece (`storage/prefix/gpu.wgsl`, ...). The
+//! executors (`crates/mr-exec-*`) assemble a working renderer from an accepted graph.
 
 pub use caps::Cap;
 pub use impls::{Api, ApiChoice, Impl, Kind, Place};
-use graph::{REGIONS, region_named};
 use impls::{ISAS, SHADER};
 use storage::cpu::Repr;
 use traversal::cpu::Kernel;
@@ -206,236 +192,13 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo { slot: Slot::Meshes, name: "depth", description: "Meshes drawn into the same depth buffer as the voxel faces: shaded forward with `raster`, written into the ids or records with `visibility` / `gbuffer` and shaded by the deferred pass (voxels shadow meshes). Exact (mr_gpu::meshes::GpuMeshes).", impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[] }], needs: &[] },
 ];
 
-/// A renderer as an assembly of components. Slots left out (empty) take the preset's
-/// default; slots the preset doesn't have stay empty.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Composition {
-    #[serde(default = "default_preset")]
-    pub preset: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub storage: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub geometry: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub prepass: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub visibility: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub holes: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub draw: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub traversal: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub shadow_storage: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub shadow_traversal: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub shading: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub meshes: String,
-}
-
-fn default_preset() -> String {
-    "raycast-gpu".into()
-}
-
-/// `raycast-gpu: bricks + refloor + direct`.
-impl Default for Composition {
-    fn default() -> Self {
-        Self::new("raycast-gpu")
-    }
-}
-
-impl Composition {
-    /// The preset's default composition (empty slots if the preset is unknown).
-    pub fn new(preset: &str) -> Self {
-        let mut c = Self { preset: preset.into(), storage: String::new(), geometry: String::new(), prepass: String::new(), visibility: String::new(), holes: String::new(), draw: String::new(), traversal: String::new(), shadow_storage: String::new(), shadow_traversal: String::new(), shading: String::new(), meshes: String::new() };
-        c.fill_defaults();
-        c
-    }
-
-    pub fn get(&self, slot: Slot) -> &str {
-        match slot {
-            Slot::Storage => &self.storage,
-            Slot::Geometry => &self.geometry,
-            Slot::Prepass => &self.prepass,
-            Slot::Visibility => &self.visibility,
-            Slot::Holes => &self.holes,
-            Slot::Draw => &self.draw,
-            Slot::Traversal => &self.traversal,
-            Slot::ShadowStorage => &self.shadow_storage,
-            Slot::ShadowTraversal => &self.shadow_traversal,
-            Slot::Shading => &self.shading,
-            Slot::Meshes => &self.meshes,
-        }
-    }
-
-    /// The component in effect in `slot`: a secondary-ray stage at `same` is its source
-    /// slot's component.
-    pub fn resolved(&self, slot: Slot) -> &str {
-        match self.get(slot) {
-            "same" if slot.secondary() => self.get(slot.source()),
-            n => n,
-        }
-    }
-
-    pub fn set(&mut self, slot: Slot, name: &str) {
-        let v = match slot {
-            Slot::Storage => &mut self.storage,
-            Slot::Geometry => &mut self.geometry,
-            Slot::Prepass => &mut self.prepass,
-            Slot::Visibility => &mut self.visibility,
-            Slot::Holes => &mut self.holes,
-            Slot::Draw => &mut self.draw,
-            Slot::Traversal => &mut self.traversal,
-            Slot::ShadowStorage => &mut self.shadow_storage,
-            Slot::ShadowTraversal => &mut self.shadow_traversal,
-            Slot::Shading => &mut self.shading,
-            Slot::Meshes => &mut self.meshes,
-        };
-        *v = name.to_string();
-    }
-
-    /// The region its `preset` names (what its empty slots, labels and places come from).
-    pub fn region(&self) -> Option<&'static graph::Builds> {
-        region_named(&self.preset)
-    }
-
-    /// The slots of this composition's preset (none if it is unknown).
-    pub fn slots(&self) -> impl Iterator<Item = Slot> + use<> {
-        let b = self.region();
-        Slot::ALL.into_iter().filter(move |&s| b.is_some_and(|b| b.has(s)))
-    }
-
-    /// Fills empty slots the preset has with its defaults.
-    pub fn fill_defaults(&mut self) {
-        let Some(b) = self.region() else { return };
-        for &(slot, d) in b.base {
-            if self.get(slot).is_empty() {
-                self.set(slot, d);
-            }
-        }
-    }
-
-    /// After a preset change: keeps the components that exist there, defaults the other
-    /// slots it has and clears the slots it lacks.
-    pub fn adapt_to_preset(&mut self) {
-        let Some(b) = self.region() else { return };
-        for slot in Slot::ALL {
-            if !b.has(slot) {
-                self.set(slot, "");
-            } else if b.unavailable(slot, self.get(slot)).is_some() {
-                self.set(slot, b.default_for(slot).unwrap());
-            }
-        }
-    }
-
-    /// Short label: the preset's slots in order, optional slots at their default left
-    /// out, e.g. `raycast-gpu: prefix + incremental` or `raster-gpu: bricks + greedy + raster`.
-    pub fn label(&self) -> String {
-        let b = self.region();
-        let parts: Vec<String> = self
-            .slots()
-            .filter(|&s| !(b.is_some_and(|b| b.is_quiet(s)) && b.and_then(|b| b.default_for(s)) == Some(self.get(s))))
-            .map(|s| match s {
-                Slot::Meshes if self.get(s) == "none" => "no meshes".to_string(),
-                s if s.secondary() => format!("shadow {}", self.get(s)),
-                s => self.get(s).to_string(),
-            })
-            .collect();
-        format!("{}: {}", self.preset, parts.join(" + "))
-    }
-
-    /// The renderer entry to run (fills defaults first).
-    pub fn resolve(&mut self) -> Result<&'static str, String> {
-        self.fill_defaults();
-        self.validate()?;
-        Ok(self.region().unwrap().name)
-    }
-
-    /// Whether this composition draws passes of mode `m`: meshes need a meshes stage that
-    /// draws them. (Every shading component renders lit and unlit.)
-    pub fn supports(&self, m: mr_core::PassMode) -> bool {
-        !m.meshes || !matches!(self.get(Slot::Meshes), "" | "none")
-    }
-
-    /// The composition as far as a pass of mode `m` can tell: stages that cannot affect
-    /// it are reset to the preset's default (shading in unlit mode: every shading
-    /// component shows the texel; meshes without meshes; the preset's `lit_only`
-    /// slots in unlit mode). Sweeps run one composition per distinct result.
-    pub fn effective(&self, m: mr_core::PassMode) -> Composition {
-        let mut c = self.clone();
-        let Some(b) = self.region() else { return c };
-        let unlit = m.lighting == mr_core::RenderMode::Unlit;
-        for &(slot, default) in b.base {
-            let moot = match slot {
-                Slot::Shading => unlit,
-                Slot::Meshes => !m.meshes,
-                _ => unlit && b.lit_only.contains(&slot),
-            };
-            if moot {
-                c.set(slot, default);
-            }
-        }
-        c
-    }
-
-    /// Why this composition cannot run, if it can't: [`Self::check_slots`], then the graph
-    /// it stands for, which its preset's executor must build (and as this preset).
-    pub fn validate(&self) -> Result<(), String> {
-        self.check_slots()?;
-        let g = graph::Graph::from_composition(self)?;
-        g.accept()?;
-        match g.region() {
-            Some(r) if self.region().is_some_and(|b| b.id == r.id) => Ok(()),
-            r => Err(format!("its graph is a {} pipeline, not `{}`", r.map_or("no preset's", |r| r.name), self.preset)),
-        }
-    }
-
-    /// Its slots and components alone: the preset has each slot it sets, each component
-    /// is implemented where the preset runs its slot, and their needs are met.
-    pub fn check_slots(&self) -> Result<(), String> {
-        let b = self.region().ok_or_else(|| format!("unknown preset `{}` (have: {})", self.preset, REGIONS.iter().map(|b| b.name).collect::<Vec<_>>().join(", ")))?;
-        for slot in Slot::ALL {
-            if !b.has(slot) {
-                if !self.get(slot).is_empty() {
-                    return Err(format!("preset `{}` has no {} slot (`{}` does not apply)", self.preset, slot.name(), self.get(slot)));
-                }
-            } else if let Some(why) = b.unimplemented(slot, self.get(slot)) {
-                return Err(why);
-            }
-        }
-        for slot in Slot::ALL.into_iter().filter(|s| s.secondary() && b.has(*s) && self.get(*s) == "same") {
-            if let Some(why) = unimplemented_at(&b.place(slot), slot.source(), self.get(slot.source())) {
-                return Err(format!("{} `same`: the {} {why}", slot.name(), slot.source().name()));
-            }
-        }
-        caps::unmet(self).map_or(Ok(()), Err)
-    }
-}
-
-/// `same` in the secondary-ray stages: walk what the primary rays walk (a binding, not code:
-/// no implementations of its own; it exists where the preset has the stage).
-const SAME: &[ComponentInfo] = &[
-    ComponentInfo { slot: Slot::ShadowStorage, name: "same", description: "Shadow and bounce rays walk the primary storage.", impls: &[], needs: &[] },
-    ComponentInfo { slot: Slot::ShadowTraversal, name: "same", description: "Shadow and bounce rays use the primary traversal kernel.", impls: &[], needs: &[] },
-];
-
-/// A component of `slot` (secondary-ray stages: `same` or a component of their source slot).
+/// A component of `slot`.
 pub fn component(slot: Slot, name: &str) -> Option<&'static ComponentInfo> {
-    SAME.iter().find(|c| c.slot == slot && c.name == name).or_else(|| COMPONENTS.iter().find(|c| c.slot == slot.source() && c.name == name))
+    COMPONENTS.iter().find(|c| c.slot == slot && c.name == name)
 }
 
 pub fn components(slot: Slot) -> impl Iterator<Item = &'static ComponentInfo> {
-    SAME.iter().filter(move |c| c.slot == slot).chain(COMPONENTS.iter().filter(move |c| c.slot == slot.source()))
-}
-
-/// Why `slot` component `name` has no implementation that runs at `p`, if it has none.
-pub fn unimplemented_at(p: &Place, slot: Slot, name: &str) -> Option<String> {
-    let c = component(slot.source(), name)?;
-    c.at(p).is_none().then(|| format!("`{name}` has no {} implementation yet (has: {})", p.label(), if c.impls.is_empty() { "none".into() } else { c.impls_label() }))
+    COMPONENTS.iter().filter(move |c| c.slot == slot)
 }
 
 /// Parses a placement value: `true` for deferred.
@@ -447,181 +210,83 @@ pub fn parse_placement(s: &str) -> anyhow::Result<bool> {
     }
 }
 
-/// Why `name` cannot fill `slot` in `c` (the rest of `c` kept), if it can't: the preset
-/// lacks it, or a need between it and the other components is unmet.
-pub fn conflict(c: &Composition, slot: Slot, name: &str) -> Option<String> {
-    c.region().map_or_else(|| Some(format!("unknown preset `{}`", c.preset)), |b| b.unavailable(slot, name)).or_else(|| {
-        let mut c = c.clone();
-        c.set(slot, name);
-        caps::unmet(&c)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Metadata and implementations agree: every component listed for raycast-gpu has GPU
-    /// code, every storage's `provides` matches its implementation, and every pairing on a
-    /// preset validates.
+    /// Metadata and implementations agree: every component a node of a shipped graph may be
+    /// (`Graph::choices`) has code where that graph's executor runs it, every storage's
+    /// `provides` matches its implementation, and every component runs in some graph.
     #[test]
     fn registry_is_consistent() {
-        for c in COMPONENTS.iter().filter(|c| region_named("raycast-gpu").unwrap().unavailable(c.slot, c.name).is_none()) {
-            let ok = match c.slot {
-                Slot::Storage => storage::gpu(c.name).is_some_and(|g| g.has_lod() == matches!(g.kind, storage::Kind::Pool { .. })),
-                Slot::Visibility => c.name == "raycast",
-                Slot::Traversal => traversal::gpu_wgsl(c.name).is_some(),
-                Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
-                Slot::Prepass => prepass::gpu_wgsl(c.name).is_some(),
-                Slot::Meshes => ["none", "composite"].contains(&c.name),
-                Slot::Geometry | Slot::Draw | Slot::Holes | Slot::ShadowStorage | Slot::ShadowTraversal => false,
-            };
-            assert!(ok, "{} `{}`", c.slot.name(), c.name);
+        use graph::{Role, SHIPPED, shipped};
+        let mut seen = std::collections::BTreeSet::new();
+        let mut checked = 0;
+        for (file, _) in SHIPPED {
+            let g = shipped(file).unwrap();
+            let region = g.region().unwrap().id;
+            let ck = g.check().unwrap();
+            for (id, n) in g.nodes.iter().filter(|(_, n)| n.role.slot().is_some()) {
+                let choices = g.choices(id);
+                assert!(choices.contains(&n.component.as_str()), "{file} `{id}`: may be what it is");
+                let gpu = ck.devices[id.as_str()].kind() == Kind::Gpu;
+                for c in choices {
+                    seen.insert((n.role, c));
+                    checked += 1;
+                    use graph::RegionId::*;
+                    let ok = match (region, n.role) {
+                        (GpuWalk, Role::Storage) => storage::gpu(c).is_some_and(|g| g.has_lod() == matches!(g.kind, storage::Kind::Pool { .. })),
+                        (GpuWalk | GpuRayQuery, Role::Visibility) => c == "raycast",
+                        (GpuWalk, Role::Traversal) | (GpuMeshing | GpuSampler, Role::Traversal) => traversal::gpu_wgsl(c).is_some(),
+                        (GpuWalk, Role::Prepass) => prepass::gpu_wgsl(c).is_some(),
+                        (GpuWalk, Role::Meshes) => c == "composite",
+                        (GpuMeshing, Role::Meshes) => c == "depth",
+                        (GpuMeshing | GpuSampler, Role::Storage) => storage::gpu(c).is_some(),
+                        (GpuMeshing, Role::Geometry) => geometry::gpu(c).is_some(),
+                        (GpuMeshing | CpuRaster, Role::Visibility) => c == "faces",
+                        (GpuMeshing | GpuSampler | CpuSampler, Role::Draw) => draw::gpu_wgsl(c).is_some(),
+                        (GpuSampler, Role::Visibility) => c == "quadtree",
+                        (GpuSampler, Role::Holes) => c == "coverage",
+                        // Every CPU storage (checked by `grid::CpuWorld::new`); its discovery rays walk with refloor.
+                        (CpuSampler, Role::Storage) => gpu && storage::gpu(c).is_some() || !gpu,
+                        (CpuSampler, Role::Traversal) if gpu => traversal::gpu_wgsl(c).is_some() || traversal::rt_wgsl(c).is_some(),
+                        (CpuSampler, Role::Visibility) => ["quadtree", "cluster"].contains(&c),
+                        (CpuSampler, Role::Traversal) => c == "refloor",
+                        (CpuRaster, Role::Geometry) => geometry::gpu(c).is_some_and(|g| g.per_face),
+                        (CpuRaster, Role::Draw) => c == "raster",
+                        (CpuRaster | CpuRaycast | CpuColumns, Role::Shading) => c == "direct",
+                        (GpuRayQuery, Role::Geometry) => geometry::rt(c).is_some(),
+                        (GpuRayQuery, Role::Traversal) => traversal::rt_wgsl(c).is_some(),
+                        (_, Role::Shading) => shading::gpu_wgsl(c).is_some(),
+                        (CpuRaycast, Role::Storage) => component(Slot::Storage, c).and_then(|x| x.on(Kind::Cpu)).is_some(),
+                        (CpuRaycast, Role::Traversal) => ["refloor", "incremental"].contains(&c),
+                        (CpuRaycast, Role::Visibility) => c == "raycast",
+                        (GpuSplat, Role::Geometry) => c == "points",
+                        (GpuSplat, Role::Visibility) => c == "splat",
+                        (GpuSplat, Role::Storage) => storage::gpu(c).is_some(),
+                        (GpuSplat, Role::Traversal) => traversal::gpu_wgsl(c).is_some(),
+                        (GpuColumns | CpuColumns, Role::Storage) => c == "heightmap",
+                        (GpuColumns | CpuColumns, Role::Traversal) => c == "heightfield",
+                        (GpuColumns | CpuColumns, Role::Visibility) => c == "columns",
+                        _ => false,
+                    };
+                    assert!(ok, "{file} `{id}` ({}) `{c}`", n.role.name());
+                }
+            }
         }
-        for c in COMPONENTS.iter().filter(|c| region_named("raster-gpu").unwrap().unavailable(c.slot, c.name).is_none()) {
-            let ok = match c.slot {
-                Slot::Storage => storage::gpu(c.name).is_some(),
-                Slot::Geometry => geometry::gpu(c.name).is_some(),
-                Slot::Visibility => c.name == "faces",
-                Slot::Draw => draw::gpu_wgsl(c.name).is_some(),
-                Slot::Traversal => traversal::gpu_wgsl(c.name).is_some(),
-                Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
-                Slot::Meshes => ["none", "depth"].contains(&c.name),
-                Slot::Prepass | Slot::Holes | Slot::ShadowStorage | Slot::ShadowTraversal => false,
-            };
-            assert!(ok, "raster-gpu {} `{}`", c.slot.name(), c.name);
-        }
-        // Every component runs on some preset, and declares implementations (`same` aside).
-        for c in COMPONENTS {
-            assert!(!c.impls.is_empty() && REGIONS.iter().any(|b| b.unavailable(c.slot, c.name).is_none()), "{}", c.name);
+        assert!(checked > 100, "{checked}");
+        // Every component runs in some shipped graph's node, and declares implementations;
+        // prepass and holes are nodes the files leave out (`none` = no node).
+        for c in COMPONENTS.iter().filter(|c| c.name != "none" && !matches!(c.slot, Slot::Prepass | Slot::Holes)) {
+            let role = Role::ALL.into_iter().find(|r| r.slot() == Some(c.slot)).unwrap();
+            assert!(!c.impls.is_empty() && seen.contains(&(role, c.name)), "{} `{}`", c.slot.name(), c.name);
         }
         // CPU implementations' capabilities are their associated consts.
         assert_eq!(component(Slot::Storage, "prefix").unwrap().on(Kind::Cpu).unwrap().provides, <storage::prefix::cpu::Prefix as Repr>::CAPS);
         assert_eq!(component(Slot::Traversal, "refloor").unwrap().on(Kind::Cpu).unwrap().provides, &[Cap::Steps]);
         assert!(!caps::provides(Kind::Cpu, Slot::Storage, "bricks", Cap::Lod) && caps::provides(Kind::Gpu, Slot::Storage, "bricks", Cap::Lod), "LOD is the GPU implementation's");
-        // Within a preset, every component pairs with every other.
-        for b in REGIONS {
-            let mut combos = vec![Composition::new(b.name)];
-            assert!(combos[0].validate().is_ok(), "{}", b.name);
-            for slot in Slot::ALL.into_iter().filter(|&s| b.has(s)) {
-                combos = combos
-                    .iter()
-                    .flat_map(|c| {
-                        b.names(slot).into_iter().map(move |x| {
-                            let mut c = c.clone();
-                            c.set(slot, x);
-                            c
-                        })
-                    })
-                    .collect();
-            }
-            for comp in combos {
-                // Except `same` shadow rays where the primary storage has no implementation
-                // on the shadow rays' device (discover-cpu: CPU-only storages).
-                if let Err(e) = comp.validate() {
-                    let apart = b.place(Slot::ShadowStorage).kind != b.place(Slot::Storage).kind;
-                    assert!(e.starts_with("shadow_storage `same`") && apart, "{comp:?}: {e}");
-                }
-            }
-        }
-        assert!(Composition { preset: "raycast-cpu".into(), storage: "distance".into(), ..Default::default() }.validate().is_err());
-        assert!(Composition { geometry: "greedy".into(), ..Default::default() }.validate().is_err());
-        assert!(Composition { visibility: "raster".into(), ..Default::default() }.validate().is_err());
-        assert!(Composition { preset: "rayquery-gpu".into(), ..Default::default() }.validate().is_err(), "storage does not apply on rayquery-gpu");
-        for c in COMPONENTS.iter().filter(|c| region_named("discover-cpu").unwrap().unavailable(c.slot, c.name).is_none()) {
-            let ok = match c.slot {
-                Slot::Storage => true, // every CPU storage (checked by `grid::CpuWorld::new`)
-                Slot::Visibility => ["quadtree", "cluster"].contains(&c.name),
-                Slot::Draw => draw::gpu_wgsl(c.name).is_some(),
-                // Discovery rays (CPU) and shadow rays (GPU) both walk with refloor.
-                Slot::Traversal => c.name == "refloor",
-                // Shading runs on its GPU side.
-                Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
-                _ => false,
-            };
-            assert!(ok, "discover-cpu {} `{}`", c.slot.name(), c.name);
-        }
-        for c in COMPONENTS.iter().filter(|c| region_named("discover-gpu").unwrap().unavailable(c.slot, c.name).is_none()) {
-            let ok = match c.slot {
-                Slot::Storage => storage::gpu(c.name).is_some(),
-                Slot::Visibility => c.name == "quadtree",
-                Slot::Holes => ["none", "coverage"].contains(&c.name),
-                Slot::Draw => draw::gpu_wgsl(c.name).is_some(),
-                Slot::Traversal => traversal::gpu_wgsl(c.name).is_some(),
-                Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
-                _ => false,
-            };
-            assert!(ok, "discover-gpu {} `{}`", c.slot.name(), c.name);
-        }
-        for c in COMPONENTS.iter().filter(|c| region_named("raster-cpu").unwrap().unavailable(c.slot, c.name).is_none()) {
-            let ok = match c.slot {
-                Slot::Geometry => geometry::gpu(c.name).is_some_and(|g| g.per_face),
-                Slot::Visibility => c.name == "faces",
-                Slot::Draw => c.name == "raster",
-                Slot::Shading => c.name == "direct",
-                _ => false,
-            };
-            assert!(ok, "raster-cpu {} `{}`", c.slot.name(), c.name);
-        }
-        for c in COMPONENTS.iter().filter(|c| region_named("rayquery-gpu").unwrap().unavailable(c.slot, c.name).is_none()) {
-            let ok = match c.slot {
-                Slot::Geometry => geometry::rt(c.name).is_some(),
-                Slot::Visibility => c.name == "raycast",
-                Slot::Traversal => traversal::rt_wgsl(c.name).is_some(),
-                Slot::Shading => shading::gpu_wgsl(c.name).is_some(),
-                _ => false,
-            };
-            assert!(ok, "rayquery-gpu {} `{}`", c.slot.name(), c.name);
-        }
-        let mut raster = Composition { geometry: "cubes".into(), ..Composition::new("raster-gpu") };
-        assert_eq!(raster.resolve().unwrap(), "raster-gpu");
-        assert_eq!(raster.label(), "raster-gpu: bricks + cubes + raster");
-        let vb = Composition { draw: "visbuffer".into(), ..Composition::new("raster-gpu") };
-        assert_eq!(vb.label(), "raster-gpu: bricks + greedy + visbuffer", "labels as before the draw stage");
-        assert_eq!(Composition { draw: "visbuffer".into(), ..Composition::new("discover-gpu") }.label(), "discover-gpu: bricks + quadtree + visbuffer");
-        assert_eq!(Composition::new("raster-cpu").label(), "raster-cpu: greedy + raster");
-        let mut moved = Composition { storage: "rows".into(), traversal: "rowrun".into(), ..Default::default() };
-        moved.preset = "raster-gpu".into();
-        moved.adapt_to_preset();
-        assert_eq!(moved, Composition { storage: "rows".into(), traversal: "rowrun".into(), ..Composition::new("raster-gpu") });
-        assert_eq!(moved.label(), "raster-gpu: rows + greedy + raster + rowrun", "a quiet slot shows once off its default");
-        moved.preset = "rayquery-gpu".into();
-        moved.adapt_to_preset();
-        assert_eq!(moved, Composition::new("rayquery-gpu"));
-        assert_eq!(moved.label(), "rayquery-gpu: greedy + rayquery");
-        let sparse: Composition = toml::from_str("preset = \"rayquery-gpu\"\ntraversal = \"rayquery\"").unwrap();
-        let mut filled = sparse.clone();
-        filled.fill_defaults();
-        assert_eq!(filled, Composition::new("rayquery-gpu"));
-        // Mesh passes: only compositions whose meshes stage draws them.
-        let lit_meshes = mr_core::PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
-        assert!(Composition::default().supports(lit_meshes));
-        assert!(!Composition { meshes: "none".into(), ..Default::default() }.supports(lit_meshes));
-        assert!(!Composition::new("raycast-cpu").supports(lit_meshes) && Composition::new("raycast-cpu").supports(mr_core::PassMode::LIT));
-        assert_eq!(Composition { meshes: "none".into(), ..Default::default() }.label(), "raycast-gpu: bricks + refloor + no meshes");
-        // What a pass can tell apart.
-        let pt = Composition { shading: "pathtrace".into(), meshes: "none".into(), ..Default::default() };
-        assert_eq!(pt.effective(mr_core::PassMode::UNLIT), Composition::default());
-        assert_eq!(pt.effective(mr_core::PassMode::LIT).shading, "pathtrace");
-        assert_eq!(pt.effective(lit_meshes), pt);
-        let raster = Composition { storage: "prefix".into(), ..Composition::new("raster-gpu") };
-        assert_eq!(raster.effective(mr_core::PassMode::UNLIT).storage, "bricks");
-        assert_eq!(raster.effective(mr_core::PassMode::LIT).storage, "prefix");
-        let disc = Composition { storage: "prefix".into(), ..Composition::new("discover-gpu") };
-        assert_eq!(disc.effective(mr_core::PassMode::UNLIT).storage, "prefix", "discovery rays walk the storage");
-        assert_eq!(Composition { prepass: "beam".into(), ..Default::default() }.label(), "raycast-gpu: bricks + beam + refloor");
-        assert!(Composition { storage: "nope".into(), ..Default::default() }.validate().is_err());
-        assert!(caps::adapter_note(&Composition { storage: "bricks".into(), traversal: "sphere".into(), ..Default::default() }).is_some());
-        assert!(caps::adapter_note(&Composition { storage: "distance".into(), traversal: "sphere".into(), ..Default::default() }).is_none());
-        assert!(caps::adapter_note(&Composition { storage: "bricks".into(), traversal: "sphere".into(), ..Composition::new("raster-gpu") }).is_some(), "shadow rays too");
-        // LOD (raycast-gpu) needs every stage on the primary walk to handle it.
-        let lod = [(Slot::Storage, Cap::Lod), (Slot::Traversal, Cap::Lod), (Slot::Prepass, Cap::Lod)];
-        assert!(caps::lacks(&Composition::default(), &lod).is_none());
-        let why = caps::lacks(&Composition { storage: "tree64".into(), prepass: "beam".into(), ..Default::default() }, &lod).unwrap();
-        assert!(why.contains("storage `tree64` lacks lod") && why.contains("prepass `beam` lacks lod"), "{why}");
-        assert!(conflict(&Composition::default(), Slot::Storage, "tree64").is_none());
-        // Hit record fields: every raycast-gpu walk counts steps; rayquery does not.
-        for v in graph::GPU_WALK.names(Slot::Traversal) {
+        // Hit record fields: every walk counts steps; ray queries do not.
+        for v in graph::GPU_WALK.declared(Role::Traversal).into_iter().filter(|k| *k != "rayquery") {
             assert!(caps::provides(Kind::Gpu, Slot::Traversal, v, Cap::Steps), "{v}");
         }
         assert!(!caps::provides(Kind::Gpu, Slot::Traversal, "rayquery", Cap::Steps));

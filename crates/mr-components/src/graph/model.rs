@@ -310,11 +310,11 @@ impl When {
 }
 
 /// The client's components (`mr_core::client::Levels`): `pick` takes the server's LOD
-/// levels, `derive` builds them on the client from LOD 0. The sites form writes a client
-/// other than `pick` as `client = "derive"`.
+/// levels, `derive` builds them on the client from LOD 0.
 pub const CLIENTS: &[&str] = &["pick", "derive"];
 
-/// The sites form's key for the client's component.
+/// The id of the client node a graph gets when one is added to it (by the host, setting a
+/// client knob).
 pub const CLIENT: &str = "client";
 
 /// The client's knobs: its region, the chunks around the camera and the
@@ -323,28 +323,16 @@ pub const CLIENT: &str = "client";
 pub const CLIENT_KNOBS: &[&str] = &["radius", "max_lod"];
 
 /// The link's components: `free`, or `net` with `mr_core::link::LinkSpec`'s fields as its
-/// knobs. The sites form writes a link other than `free` as `link = "net(latency_ms=30,
-/// loss=0.01)"`.
+/// knobs.
 pub const LINKS: &[&str] = &["free", "net"];
-
-/// The sites form's key for the link.
-pub const LINK: &str = "link";
 
 /// The generator's components: `procedural`, the world's generator built
 /// from its spec (the run's world: terrain, menger, ...).
 pub const GENERATORS: &[&str] = &["procedural"];
 
-/// The sites form's key for the generator: its device, `server` (streamed, the default) or
-/// `cpu` (on the client: `generator = "cpu"`).
-pub const GENERATOR: &str = "generator";
-
 /// The post's components: the tone mappers (`crate::post::Tone`), `clamp`
 /// (no tone mapping) the default, and `hdr` (no limit: a float output for HDR displays).
-/// The sites form writes another as `post = "aces"`.
 pub const POSTS: &[&str] = &["clamp", "reinhard", "aces", "hdr"];
-
-/// The sites form's key for the post.
-pub const POST: &str = "post";
 
 
 /// The components that can fill `role` (the world has none to choose; "none" means the
@@ -396,19 +384,6 @@ pub(super) fn default_device(executor: &str, role: Role, component: &str) -> Dev
     }
 }
 
-/// Where region `b`'s composition runs a node (its [`crate::Place`] for the role,
-/// GPU slot 0; for a stage it has not, where the component runs if on one kind of device only):
-/// what [`Graph::from_composition`] pins where the executor's default differs.
-pub(super) fn placed_on(b: &super::Builds, role: Role, component: &str) -> Device {
-    let only = || role.slot().and_then(|s| crate::component(s, component)).and_then(|c| c.impls.iter().all(|i| i.kind == Kind::Cpu).then_some(Device::Cpu));
-    match role.slot() {
-        Some(slot) if b.has(slot.source()) && b.place(slot).kind == Kind::Gpu => Device::Gpu(0),
-        Some(slot) if b.has(slot.source()) => Device::Cpu,
-        Some(_) => only().unwrap_or(Device::Gpu(0)),
-        None => Device::Cpu,
-    }
-}
-
 
 /// One component instance.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -439,6 +414,7 @@ impl Node {
         Self { role, component: component.into(), device: None, api: None, inputs: BTreeMap::new(), timing: BTreeMap::new(), knobs: toml::Table::new() }
     }
 
+    #[cfg(test)]
     pub(super) fn with(mut self, inputs: &[(&str, &str)]) -> Self {
         self.inputs.extend(inputs.iter().map(|&(p, n)| (p.to_string(), n.to_string())));
         self

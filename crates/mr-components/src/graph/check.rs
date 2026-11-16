@@ -403,8 +403,7 @@ impl Checked {
     }
 
     /// The ids of the nodes of `roles`, in that order: what a timed stage runs (callers only, the storages and kernels fused into them are timed with them).
-    /// A role without a node (added live, e.g. a prepass switched on) is named as
-    /// [`Graph::from_composition`] names it: by the role.
+    /// A role without a node (added live, e.g. a prepass switched on) is named by the role.
     pub fn ids(&self, roles: &[Role]) -> Vec<String> {
         roles.iter().map(|&r| self.find(r).unwrap_or(r.name()).to_string()).collect()
     }
