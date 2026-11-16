@@ -76,7 +76,7 @@ impl Graph {
     pub fn preset_options(&self) -> Result<toml::Table, String> {
         let mut t = toml::Table::new();
         if let Some((b, ch)) = self.region().and_then(|b| b.api_choice.map(|ch| (b, ch)))
-            && let Some(v) = self.nodes.values().filter(|n| n.role.slot().is_some_and(|sl| b.chooses(sl))).find_map(|n| n.api).and_then(|a| ch.value(a)) {
+            && let Some(v) = self.nodes.values().filter(|n| b.chooses(n.role)).find_map(|n| n.api).and_then(|a| ch.value(a)) {
             t.insert(ch.knob.into(), v.into());
         }
         for (k, v) in self.normalised()?.timing_options() {
@@ -132,7 +132,7 @@ impl Graph {
         let g = self.normalised()?;
         let stages = g.stage_nodes();
         let mut t = toml::Table::new();
-        for (_, n) in g.nodes.iter().filter(|(id, n)| stages.contains(*id) && n.role.slot().is_some()) {
+        for (_, n) in g.nodes.iter().filter(|(id, n)| stages.contains(*id) && n.role.registered()) {
             for (k, v) in &n.knobs {
                 t.entry(k.clone()).or_insert_with(|| v.clone());
             }

@@ -129,7 +129,7 @@ fn api_blocker(ck: &Checked) -> Option<String> {
         for st in stages {
             let role = g.nodes[st].role;
             let Some(place) = builds.nodes.iter().find(|d| d.role == role && d.at.kind == ck.devices[st].kind()).map(|d| d.at) else { continue };
-            let chosen = role.slot().is_some_and(|sl| b.chooses(sl));
+            let chosen = b.chooses(role);
             let at = if st == id { format!("`{id}`") } else { format!("`{id}` (in `{st}`)") };
             let fixed = match place.apis {
                 [x] => Some(*x),
@@ -144,11 +144,11 @@ fn api_blocker(ck: &Checked) -> Option<String> {
         }
     }
     if let Some(ch) = b.api_choice {
-        let mut set: Vec<Api> = ck.apis.iter().filter(|(id, _)| g.nodes[*id].role.slot().is_some_and(|sl| b.chooses(sl))).map(|(_, a)| *a).collect();
+        let mut set: Vec<Api> = ck.apis.iter().filter(|(id, _)| b.chooses(g.nodes[*id].role)).map(|(_, a)| *a).collect();
         set.sort();
         set.dedup();
         if set.len() > 1 {
-            why.push(format!("`{name}` runs its {} with one api, its `{}` (have: {})", ch.slots.iter().map(|s| s.name()).collect::<Vec<_>>().join(", "), ch.knob, set.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")));
+            why.push(format!("`{name}` runs its {} with one api, its `{}` (have: {})", ch.roles.iter().map(|s| s.name()).collect::<Vec<_>>().join(", "), ch.knob, set.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")));
         }
     }
     (!why.is_empty()).then(|| why.join("; "))

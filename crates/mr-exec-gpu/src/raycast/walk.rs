@@ -280,11 +280,11 @@ impl Composition {
 /// (none; the beam reads level 0); `view = "steps"` a primary walk that counts its steps.
 fn feature_blocker(c: &Composition) -> Option<String> {
     let lod = c.lod.then(|| lod_blocker(c).map(|w| format!("this run streams LOD chunks: {w}"))).flatten();
-    lod.or_else(|| (c.view == View::Steps && !caps::role_provides(mr_components::Kind::Gpu, Role::Traversal, &c.primary().component, Cap::Steps)).then(|| format!("view = steps: traversal `{}` lacks steps", c.primary().component)))
+    lod.or_else(|| (c.view == View::Steps && !caps::provides(mr_components::Kind::Gpu, Role::Traversal, &c.primary().component, Cap::Steps)).then(|| format!("view = steps: traversal `{}` lacks steps", c.primary().component)))
 }
 
 fn lod_blocker(c: &Composition) -> Option<String> {
-    let pre = (!caps::role_provides(mr_components::Kind::Gpu, Role::Prepass, c.prepass(), Cap::Lod)).then(|| format!("prepass `{}` lacks lod", c.prepass()));
+    let pre = (!caps::provides(mr_components::Kind::Gpu, Role::Prepass, c.prepass(), Cap::Lod)).then(|| format!("prepass `{}` lacks lod", c.prepass()));
     let why: Vec<String> = c.walks.lod_blocker().into_iter().chain(pre).collect();
     (!why.is_empty()).then(|| why.join("; "))
 }

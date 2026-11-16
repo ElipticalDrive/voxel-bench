@@ -89,7 +89,7 @@ fn choices(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, selected: &s
 }
 
 fn description(role: Role, component: &str) -> String {
-    match role.slot().and_then(|s| mr_components::component(s, component)) {
+    match mr_components::component(role, component) {
         Some(c) => c.description.to_string(),
         None => match (role, component) {
             (Role::World, _) => "The authoritative world on the server: chunks and their change log".into(),
@@ -136,7 +136,7 @@ fn device_options(g: &Graph, id: &str, run: &RunSpec, resolved: Option<Device>) 
 fn api_options(g: &Graph, id: &str, kind: Kind) -> Vec<(String, Change, bool, String)> {
     let n = &g.nodes[id];
     let mut v = vec![("default".to_string(), Change::Api(id.into(), None), n.api.is_none(), "As its executor chooses".to_string())];
-    if let Some(c) = n.role.slot().and_then(|s| mr_components::component(s, &n.component)) {
+    if let Some(c) = mr_components::component(n.role, &n.component) {
         for i in c.impls.iter().filter(|i| i.kind == kind) {
             for a in i.apis {
                 v.push((a.name().to_string(), Change::Api(id.into(), Some(*a)), n.api == Some(*a), format!("Run it with {}", a.name())));
@@ -497,7 +497,7 @@ fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, Para
             pick(choices(ui, (&id, "d"), &cur, "Where it runs", device_options(g, &id, run, devs.get(&id).copied()), trial, infos));
         }
         ui.end_row();
-        if !fused && n.role.slot().is_some() {
+        if !fused && n.role.registered() {
             let kind = devs.get(&id).map_or(Kind::Gpu, |d| d.kind());
             ui.label("API");
             let cur = n.api.map_or("default".to_string(), |a: Api| a.name().to_string());
@@ -552,9 +552,9 @@ fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, Para
         ui.add_space(6.0);
         ui.label(RichText::new("Knobs").strong());
         edits.extend(node_grid(ui, "inspector", g, Some(&id), knobs, marks, None, run, trial, infos));
-    } else if n.role.slot().is_some() && !g.nodes.iter().any(|(k, m)| *k != id && m.role == n.role && m.component == n.component) {
+    } else if n.role.registered() && !g.nodes.iter().any(|(k, m)| *k != id && m.role == n.role && m.component == n.component) {
         // Nothing to show.
-    } else if n.role.slot().is_some() {
+    } else if n.role.registered() {
         ui.weak("A second instance's knobs are set in the plan's graph form (TOML tab)");
     }
     edits
@@ -606,7 +606,7 @@ pub fn node_knob_changes(old: &Graph, new: &Graph, params: &[ParamSpec]) -> Vec<
     let value = |p: &ParamSpec, n: &mr_components::graph::Node| knobs::option_value(p, &n.knobs);
     let owns = |p: &ParamSpec, n: &mr_components::graph::Node| p.owner.as_ref().is_some_and(|(role, comps)| n.role.name() == role && comps.contains(&n.component));
     let mut v = vec![];
-    for (id, b) in new.nodes.iter().filter(|(_, n)| n.role.slot().is_some()) {
+    for (id, b) in new.nodes.iter().filter(|(_, n)| n.role.registered()) {
         match old.nodes.get(id).filter(|a| a.role == b.role && a.component == b.component) {
             Some(a) => v.extend(params.iter().filter(|p| owns(p, b) && value(p, a) != value(p, b)).map(|p| (p.name.clone(), value(p, b)))),
             None => v.extend(params.iter().filter(|p| owns(p, b)).map(|p| (p.name.clone(), value(p, b)))),

@@ -168,7 +168,7 @@ impl Graph {
                     Role::Link => LINKS.to_vec(),
                     Role::Generator => GENERATORS.to_vec(),
                     Role::Post => POSTS.to_vec(),
-                    r => r.slot().map(|s| crate::components(s).map(|c| c.name).collect()).unwrap_or_default(),
+                    r => crate::components(r).map(|c| c.name).collect(),
                 };
                 why.push(format!("`{id}`: unknown {} component `{}` (have: {})", n.role.name(), n.component, have.join(", ")));
                 continue;
@@ -306,12 +306,12 @@ impl Graph {
         // Capability needs on what each port reads (on the reader's device): met natively,
         // by an adapter, or not at all.
         for (id, n) in &g.nodes {
-            let needs = n.role.slot().and_then(|sl| component(sl, &n.component)).map_or(&[][..], |c| c.needs);
+            let needs = component(n.role, &n.component).map_or(&[][..], |c| c.needs);
             for src in n.inputs.values() {
                 let s = &g.nodes[src];
-                for &(slot, cap) in needs.iter().filter(|(slot, _)| s.role.slot() == Some(*slot)) {
-                    if !caps::provides(devices[src].kind(), slot, &s.component, cap) && caps::adapter(slot, cap).is_none() {
-                        why.push(format!("`{id}` ({}) needs {} from `{src}`: {} `{}` lacks it on the {} and no adapter gives it", n.component, cap.name(), slot.name(), s.component, devices[src].kind().name()));
+                for &(role, cap) in needs.iter().filter(|(role, _)| s.role == *role) {
+                    if !caps::provides(devices[src].kind(), role, &s.component, cap) && caps::adapter(role, cap).is_none() {
+                        why.push(format!("`{id}` ({}) needs {} from `{src}`: {} `{}` lacks it on the {} and no adapter gives it", n.component, cap.name(), role.name(), s.component, devices[src].kind().name()));
                     }
                 }
             }
@@ -319,7 +319,7 @@ impl Graph {
         // Every component node has an implementation on its device's kind (its API is checked
         // below when set).
         for (id, n) in &g.nodes {
-            if let Some(c) = n.role.slot().and_then(|sl| component(sl, &n.component)).filter(|c| !c.impls.iter().any(|i| i.kind == devices[id].kind())) {
+            if let Some(c) = component(n.role, &n.component).filter(|c| !c.impls.iter().any(|i| i.kind == devices[id].kind())) {
                 why.push(format!("`{id}`: {} `{}` has no {} implementation (has: {})", n.role.name(), c.name, devices[id].kind().name(), c.impls_label()));
             }
         }
@@ -339,7 +339,7 @@ impl Graph {
                 Some(a) => {
                     if a.kind() != devices[id].kind() {
                         why.push(format!("`{id}`: api {} runs on a {}, the node is on {}", a.name(), a.kind().name(), devices[id]));
-                    } else if let Some(c) = n.role.slot().and_then(|sl| component(sl, &n.component)).filter(|c| !c.impls.iter().any(|i| i.kind == a.kind() && i.apis.contains(&a))) {
+                    } else if let Some(c) = component(n.role, &n.component).filter(|c| !c.impls.iter().any(|i| i.kind == a.kind() && i.apis.contains(&a))) {
                         why.push(format!("`{id}`: {} `{}` has no {} implementation (has: {})", n.role.name(), c.name, a.name(), c.impls_label()));
                     }
                     if let Some(ca) = inherited().filter(|ca| fused && *ca != a) {
@@ -389,7 +389,7 @@ impl Checked {
         self.apis.get(id).copied().or_else(|| {
             let n = self.node(id);
             let kind = self.devices[id].kind();
-            let apis: Vec<Api> = component(n.role.slot()?, &n.component)?.impls.iter().filter(|i| i.kind == kind).flat_map(|i| i.apis.iter().copied()).collect();
+            let apis: Vec<Api> = component(n.role, &n.component)?.impls.iter().filter(|i| i.kind == kind).flat_map(|i| i.apis.iter().copied()).collect();
             match apis[..] {
                 [a] => Some(a),
                 _ => None,

@@ -5,8 +5,8 @@
 //! queries; on the CPU a hot loop compiled for the base x86-64 target (`scalar`) or for
 //! AVX2 / AVX-512.
 //!
-//! An executor (each back end, formerly) declares where it runs each slot ([`Place`]: one
-//! device kind and the APIs it may run that slot with); a component fills the slot if it
+//! An executor (each back end, formerly) declares where it runs each role ([`Place`]: one
+//! device kind and the APIs it may run that role with); a component fills the role if it
 //! has an implementation of that kind covering every one of those APIs. Graph nodes carry an
 //! optional `api` beside `device` (unset: the executor's choice), checked against both.
 
@@ -98,7 +98,7 @@ impl Impl {
     }
 }
 
-/// Where an executor runs a slot: a device kind and the APIs it may use there.
+/// Where an executor runs a role: a device kind and the APIs it may use there.
 #[derive(Copy, Clone, Debug)]
 pub struct Place {
     pub kind: Kind,
@@ -139,7 +139,7 @@ pub const CPU_SCALAR: Place = Place { kind: Kind::Cpu, apis: &[Api::Scalar] };
 #[derive(Copy, Clone, Debug)]
 pub struct ApiChoice {
     pub knob: &'static str,
-    pub slots: &'static [crate::Slot],
+    pub roles: &'static [crate::Role],
     pub values: &'static [(Api, &'static str)],
     /// The API the option's default runs (`None`: chosen at run time, e.g. the best ISA).
     pub default: Option<Api>,

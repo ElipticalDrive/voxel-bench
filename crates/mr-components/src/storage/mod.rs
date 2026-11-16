@@ -120,7 +120,7 @@ pub fn gpu(name: &str) -> Option<GpuStorage> {
         "tree64" => (tree64::GPU_WGSL, Kind::Region { shift: 6, build: tree64::build }),
         _ => return None,
     };
-    let provides = crate::component(crate::Slot::Storage, name).and_then(|c| c.on(crate::Kind::Gpu)).map_or(&[][..], |i| i.provides);
+    let provides = crate::component(crate::Role::Storage, name).and_then(|c| c.on(crate::Kind::Gpu)).map_or(&[][..], |i| i.provides);
     Some(GpuStorage { wgsl, provides, kind })
 }
 
@@ -138,7 +138,7 @@ const BLOCK_AT: &str = "fn s_block_at(a: vec3<i32>) -> u32 {
 pub fn adapters(provides: &[Cap]) -> String {
     let src = include_str!("adapters.wgsl");
     let mut out = String::new();
-    for a in crate::caps::ADAPTERS.iter().filter(|a| a.slot == crate::Slot::Storage && !provides.contains(&a.cap)) {
+    for a in crate::caps::ADAPTERS.iter().filter(|a| a.role == crate::Role::Storage && !provides.contains(&a.cap)) {
         let q = a.cap.name();
         let start = src.find(&format!("//@{q}\n")).expect("adapter missing");
         let rest = &src[start..];

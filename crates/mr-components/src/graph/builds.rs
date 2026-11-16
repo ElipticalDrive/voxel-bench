@@ -5,7 +5,7 @@
 
 use super::{Checked, Graph, Node, Role, When, inputs, output, role_components};
 use crate::impls::{self, ApiChoice, Place};
-use crate::{Api, Kind, Slot};
+use crate::{Api, Kind};
 
 /// Nodes of one role an executor builds.
 #[derive(Copy, Clone, Debug)]
@@ -143,9 +143,9 @@ impl Builds {
         self.live.iter().any(|l| l.role == n.role && l.at.is_none_or(|(reader, port)| g.nodes.values().any(|r| r.role == reader && r.inputs.get(port).is_some_and(|s| s == id))))
     }
 
-    /// Whether its API choice sets `slot` (the secondary-ray stages: with their source).
-    pub fn chooses(&self, slot: Slot) -> bool {
-        self.api_choice.is_some_and(|ch| ch.slots.contains(&slot.source()))
+    /// Whether its API choice sets the nodes of `role`.
+    pub fn chooses(&self, role: Role) -> bool {
+        self.api_choice.is_some_and(|ch| ch.roles.contains(&role))
     }
 
     /// The components it declares for `role`, on any device (a graph it builds may need other
@@ -206,7 +206,7 @@ pub fn region_named(name: &str) -> Option<&'static Builds> {
 }
 
 /// The stages one API choice sets, and hit records shaded now or a frame late on a second GPU.
-const CAST_SLOTS: &[Slot] = &[Slot::Storage, Slot::Visibility, Slot::Traversal, Slot::Shading];
+const CAST_ROLES: &[Role] = &[Role::Storage, Role::Visibility, Role::Traversal, Role::Shading];
 const HITS_LATE: &[(Role, &str, &[When])] = &[(Role::Shading, "hits", &[When::Now, When::Prev])];
 
 /// The GPU storages and walking kernels, the geometries ray queries trace, the face drawers.
@@ -234,7 +234,7 @@ pub const CPU_RAYCAST: Builds = Builds {
     ],
     same: &[],
     only: &[],
-    api_choice: Some(ApiChoice { knob: "isa", slots: CAST_SLOTS, values: &[(Api::Scalar, "scalar"), (Api::Avx2, "avx2"), (Api::Avx512, "avx512")], default: None }),
+    api_choice: Some(ApiChoice { knob: "isa", roles: CAST_ROLES, values: &[(Api::Scalar, "scalar"), (Api::Avx2, "avx2"), (Api::Avx512, "avx512")], default: None }),
     description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops",
     ..Builds::plain(RegionId::CpuRaycast, "raycast-cpu")
 };
@@ -286,7 +286,7 @@ pub const GPU_WALK: Builds = Builds {
     only: &[],
     free: HITS_LATE,
     split: true,
-    api_choice: Some(ApiChoice { knob: "dispatch", slots: CAST_SLOTS, values: &[(Api::Compute, "compute"), (Api::Raster, "fragment")], default: Some(Api::Compute) }),
+    api_choice: Some(ApiChoice { knob: "dispatch", roles: CAST_ROLES, values: &[(Api::Compute, "compute"), (Api::Raster, "fragment")], default: Some(Api::Compute) }),
     description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility",
     live: &[Live::of(Role::Traversal).read_by(Role::Visibility, "primary"), Live::of(Role::Shading), Live::of(Role::Prepass), Live::of(Role::Meshes)],
     ..Builds::plain(RegionId::GpuWalk, "raycast-gpu")

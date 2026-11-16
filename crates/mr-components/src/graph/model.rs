@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Api, Kind, Slot, component};
+use crate::{Api, Kind, component};
 
 
 /// What a node does: the roles of the pipeline's pieces that exist so far.
@@ -51,25 +51,22 @@ impl Role {
             Role::Link => "link",
             Role::Client => "client",
             Role::Post => "post",
-            r => r.slot().unwrap().name(),
+            Role::Storage => "storage",
+            Role::Geometry => "geometry",
+            Role::Prepass => "prepass",
+            Role::Traversal => "traversal",
+            Role::Visibility => "visibility",
+            Role::Holes => "holes",
+            Role::Draw => "draw",
+            Role::Shading => "shading",
+            Role::Meshes => "meshes",
         }
     }
 
-    /// The registry slot whose components fill this role (none for the world, its generator,
-    /// the link, the client and the post).
-    pub fn slot(self) -> Option<Slot> {
-        Some(match self {
-            Role::World | Role::Generator | Role::Link | Role::Client | Role::Post => return None,
-            Role::Storage => Slot::Storage,
-            Role::Geometry => Slot::Geometry,
-            Role::Prepass => Slot::Prepass,
-            Role::Traversal => Slot::Traversal,
-            Role::Visibility => Slot::Visibility,
-            Role::Holes => Slot::Holes,
-            Role::Draw => Slot::Draw,
-            Role::Shading => Slot::Shading,
-            Role::Meshes => Slot::Meshes,
-        })
+    /// Whether the registry ([`crate::COMPONENTS`]) holds this role's components (not the
+    /// world, its generator, the link, the client and the post: their lists are here).
+    pub fn registered(self) -> bool {
+        !matches!(self, Role::World | Role::Generator | Role::Link | Role::Client | Role::Post)
     }
 }
 
@@ -338,31 +335,24 @@ pub const POSTS: &[&str] = &["clamp", "reinhard", "aces", "hdr"];
 /// The components that can fill `role` (the world has none to choose; "none" means the
 /// optional input it would feed is left unbound).
 pub fn role_components(role: Role) -> Vec<&'static str> {
-    match role.slot() {
-        None if role == Role::Client => CLIENTS.to_vec(),
-        None if role == Role::Link => LINKS.to_vec(),
-        None if role == Role::Generator => GENERATORS.to_vec(),
-        None if role == Role::Post => POSTS.to_vec(),
-        None => vec![],
-        Some(s) => crate::components(s).map(|c| c.name).filter(|n| *n != "none").collect(),
+    match role {
+        Role::Client => CLIENTS.to_vec(),
+        Role::Link => LINKS.to_vec(),
+        Role::Generator => GENERATORS.to_vec(),
+        Role::Post => POSTS.to_vec(),
+        r => crate::components(r).map(|c| c.name).filter(|n| *n != "none").collect(),
     }
-}
-
-/// What the registry says of `role` component `name`: its description and where it is
-/// implemented (none for the roles it does not hold: the world's side and the post).
-pub fn role_info(role: Role, name: &str) -> Option<&'static crate::ComponentInfo> {
-    role.slot().and_then(|s| crate::component(s, name))
 }
 
 /// Whether `role` component `name` exists.
 pub(super) fn known(role: Role, name: &str) -> bool {
-    match role.slot() {
-        None if role == Role::Client => CLIENTS.contains(&name),
-        None if role == Role::Link => LINKS.contains(&name),
-        None if role == Role::Generator => GENERATORS.contains(&name),
-        None if role == Role::Post => POSTS.contains(&name),
-        None => name == "world",
-        Some(s) => component(s, name).is_some(),
+    match role {
+        Role::Client => CLIENTS.contains(&name),
+        Role::Link => LINKS.contains(&name),
+        Role::Generator => GENERATORS.contains(&name),
+        Role::Post => POSTS.contains(&name),
+        Role::World => name == "world",
+        r => component(r, name).is_some(),
     }
 }
 
@@ -378,7 +368,7 @@ pub(super) fn default_device(executor: &str, role: Role, component: &str) -> Dev
     }
     let want = if executor == "cpu" { Kind::Cpu } else { Kind::Gpu };
     let on = |k: Kind| if k == Kind::Cpu { Device::Cpu } else { Device::Gpu(0) };
-    match role.slot().and_then(|s| crate::component(s, component)) {
+    match crate::component(role, component) {
         Some(c) if !c.impls.iter().any(|i| i.kind == want) => c.impls.first().map_or(on(want), |i| on(i.kind)),
         _ => on(want),
     }

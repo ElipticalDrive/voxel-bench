@@ -1,8 +1,8 @@
 //! Capabilities: every interface between stages has a required
 //! core, which each component implements, plus optional capabilities. A component declares
-//! the capabilities it provides and the ones it needs from other stages (`(slot, cap)`); a
+//! the capabilities it provides and the ones it needs from other stages (`(role, cap)`); a
 //! feature (a knob such as LOD) can need capabilities too. A need is met by the component in
-//! that slot, or by an *adapter*: compile-time code that gives the component the capability
+//! that role, or by an *adapter*: compile-time code that gives the component the capability
 //! from its core, slower. A need met by neither makes the combination invalid, with the
 //! reason; nothing substitutes silently. Adapters are compiled in only where the chosen
 //! component lacks the capability, so capabilities nobody needs cost nothing.
@@ -17,7 +17,7 @@
 //! the walks', exposure tests' and prepasses' core) and `Heights` (a heightmap's columns,
 //! the column march's). No adapter turns one into the other yet.
 
-use crate::{Kind, Slot, component};
+use crate::{Kind, Role, component};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Cap {
@@ -92,9 +92,9 @@ pub const RECORD_CAPS: &[RecordCap] = &[
     },
 ];
 
-/// Compile-time code that gives a `slot` component lacking `cap` the capability.
+/// Compile-time code that gives a component lacking `cap` the capability.
 pub struct Adapter {
-    pub slot: Slot,
+    pub role: Role,
     pub cap: Cap,
     pub description: &'static str,
 }
@@ -102,22 +102,17 @@ pub struct Adapter {
 /// Every adapter. Storage adapters are WGSL sections of `storage/adapters.wgsl`, named by
 /// the capability (`//@s_dist`), appended in this order.
 pub const ADAPTERS: &[Adapter] = &[
-    Adapter { slot: Slot::Storage, cap: Cap::Dist, description: "`s_dist` from `s_probe`: the distance to the boundary of the empty aligned cube the storage reports" },
-    Adapter { slot: Slot::Storage, cap: Cap::Row, description: "`s_row` from 32 voxel-level `s_occupied` queries" },
+    Adapter { role: Role::Storage, cap: Cap::Dist, description: "`s_dist` from `s_probe`: the distance to the boundary of the empty aligned cube the storage reports" },
+    Adapter { role: Role::Storage, cap: Cap::Row, description: "`s_row` from 32 voxel-level `s_occupied` queries" },
 ];
 
-pub fn adapter(slot: Slot, cap: Cap) -> Option<&'static Adapter> {
-    ADAPTERS.iter().find(|a| a.slot == slot && a.cap == cap)
-}
-
-/// Whether `slot` component `name` provides `cap` natively on device kind `kind`.
-pub fn provides(kind: Kind, slot: Slot, name: &str, cap: Cap) -> bool {
-    component(slot, name).and_then(|c| c.on(kind)).is_some_and(|i| i.provides.contains(&cap))
+pub fn adapter(role: Role, cap: Cap) -> Option<&'static Adapter> {
+    ADAPTERS.iter().find(|a| a.role == role && a.cap == cap)
 }
 
 /// Whether component `name` in `role` provides `cap` natively on device kind `kind`.
-pub fn role_provides(kind: Kind, role: crate::graph::Role, name: &str, cap: Cap) -> bool {
-    role.slot().is_some_and(|slot| provides(kind, slot, name, cap))
+pub fn provides(kind: Kind, role: Role, name: &str, cap: Cap) -> bool {
+    component(role, name).and_then(|c| c.on(kind)).is_some_and(|i| i.provides.contains(&cap))
 }
 
 #[cfg(test)]

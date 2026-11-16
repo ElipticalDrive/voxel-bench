@@ -174,7 +174,7 @@ fn main() -> anyhow::Result<()> {
                 for c in names {
                     let on: Vec<&str> = files.iter().zip(&choices).filter(|(_, ch)| ch.iter().any(|(r, of)| *r == role && of.contains(&c))).map(|((name, ..), _)| *name).collect();
                     let on = if on.is_empty() { String::new() } else { format!(" (in {})", on.join(",")) };
-                    match mr_components::graph::role_info(role, c) {
+                    match mr_components::component(role, c) {
                         Some(i) => println!("  {c:<12} [{}]{on} {}", i.impls_label(), i.description),
                         None => println!("{}", format!("  {c:<12}{on}").trim_end()),
                     }

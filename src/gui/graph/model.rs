@@ -137,7 +137,7 @@ pub fn world_knobs(role: Role, component: &str, run: &crate::plan::RunSpec) -> V
 /// The node whose flat knobs (the executor's parameters owned by its role and component)
 /// it shows: the first such node (a second instance's knobs are the graph form's).
 pub fn knob_owner(g: &Graph, slot: &str, component: &str) -> Option<String> {
-    let mut v: Vec<&String> = g.nodes.iter().filter(|(_, n)| n.role.slot().is_some_and(|s| s.name() == slot) && n.component == component).map(|(k, _)| k).collect();
+    let mut v: Vec<&String> = g.nodes.iter().filter(|(_, n)| n.role.registered() && n.role.name() == slot && n.component == component).map(|(k, _)| k).collect();
     v.sort_by_key(|k| (k.as_str() != slot, k.len(), k.to_string()));
     v.first().map(|k| k.to_string())
 }
