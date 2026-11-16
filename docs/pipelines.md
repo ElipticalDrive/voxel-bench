@@ -3,7 +3,8 @@
 A renderer is a **pipeline graph**: nodes, each one a component in a role, connected from
 the world to the image. No fixed list of stages exists. Any valid path from input to output
 is a pipeline, and pipelines need not use the same kinds of component. `multirenderer list`
-prints every preset and every component (with the devices and APIs it is implemented for),
+prints every shipped graph file with its label and every component by the role of the node it
+fills (with the devices and APIs it is implemented for, and the files whose nodes may be it),
 and `multirenderer graph <renderer>` prints a renderer as its graph.
 
 ## Nodes
@@ -59,7 +60,7 @@ stands alone, on purpose.
 ## Writing a pipeline
 
 A pipeline is written as a graph: a graph file and the edits made to it (in a plan, or on
-the command line), or the graph itself. An older flat form still reads.
+the command line), or the graph itself.
 
 **A graph file and edits**: the graph of a file, changed step by step. The file is one
 shipped with the bench, by name (`pipelines/*.toml`, built into the binary: one default

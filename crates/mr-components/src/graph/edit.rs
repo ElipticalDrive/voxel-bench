@@ -587,6 +587,12 @@ impl Graph {
     }
 }
 
+/// The graph files a renderer can be started from (the shipped ones), each with what its
+/// file says of it (its first comment line).
+pub fn start_files() -> impl Iterator<Item = (&'static str, &'static str)> {
+    SHIPPED.iter().map(|(name, text)| (*name, text.lines().next().unwrap_or_default().trim_start_matches('#').trim()))
+}
+
 /// The shipped graph file `name`, if there is one.
 pub fn shipped(name: &str) -> Option<Graph> {
     let (_, text) = SHIPPED.iter().find(|(n, _)| *n == name)?;

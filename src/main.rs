@@ -139,7 +139,7 @@ fn main() -> anyhow::Result<()> {
                 if line.trim().is_empty() {
                     continue;
                 }
-                let g = serde_json::from_str::<observe::Observation>(&line).ok().and_then(|o| o.pipeline());
+                let g = observe::Observation::parse(&line).ok().flatten().and_then(|o| o.pipeline());
                 let key = g.as_ref().and_then(|g| g.key().ok());
                 println!("{}\t{}", key.as_deref().unwrap_or("-"), g.and_then(|g| g.label().ok()).unwrap_or_default());
             }
@@ -158,17 +158,26 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::List => {
-            println!("A renderer is a pipeline graph: a graph file and the edits made to it.\n  plan: graph = \"raycast-gpu\", edits = [{{ node = \"storage\", component = \"tree64\" }}] (`vary` sweeps them; docs/plans.md)\n  CLI:  -r <graph>[,<edit>,...] with <graph> a shipped file's name or a path, and an edit one of\n          node=component          -r raycast-gpu,storage=prefix,kernel=incremental\n          node.input=source       an existing node, or a new one as role:component (its id: the role's name); empty: unbound\n                                  -r raycast-gpu,shading=pathtrace,shading.bounce=traversal:sphere,traversal.storage=storage\n          node.knob=value         -r raycast-gpu,shading=pathtrace,shading.bounces=2\n          node@device             -r raycast-gpu,shading@gpu1\n          -node                   -r raycast-gpu,-meshes\n          {{...}}                   any edit as the plan's inline table: -r 'raycast-gpu,{{node=\"kernel\",api=\"rayquery\"}}'\n  `multirenderer graph <renderer>` prints the graph, its label, key and schedule.\n\nShipped graph files (pipelines/*.toml; starting points: the pipeline is the graph, which may take any valid shape):");
-            for b in mr_components::graph::REGIONS {
-                let slots: Vec<String> = b.base.iter().map(|(s, d)| format!("{}={d}", s.name())).collect();
-                let at: Vec<String> = b.base.iter().map(|(s, _)| format!("{} {}", s.name(), b.place(*s).label())).collect();
-                println!("  {:<12} {}\n               slots: {}\n               runs: {}", b.name, b.description, slots.join(", "), at.join(", "));
+            println!("A renderer is a pipeline graph: a graph file and the edits made to it.\n  plan: graph = \"raycast-gpu\", edits = [{{ node = \"storage\", component = \"tree64\" }}] (`vary` sweeps them; docs/plans.md)\n  CLI:  -r <graph>[,<edit>,...] with <graph> a shipped file's name or a path, and an edit one of\n          node=component          -r raycast-gpu,storage=prefix,kernel=incremental\n          node.input=source       an existing node, or a new one as role:component (its id: the role's name); empty: unbound\n                                  -r raycast-gpu,shading=pathtrace,shading.bounce=traversal:sphere,traversal.storage=storage\n          node.knob=value         -r raycast-gpu,shading=pathtrace,shading.bounces=2\n          node@device             -r raycast-gpu,shading@gpu1\n          -node                   -r raycast-gpu,-meshes\n          {{...}}                   any edit as the plan's inline table: -r 'raycast-gpu,{{node=\"kernel\",api=\"rayquery\"}}'\n  `multirenderer graph <renderer>` prints the graph, its label, key and schedule.\n\nShipped graph files (pipelines/*.toml; starting points: the pipeline is the graph, which may take any valid shape), each with its label:");
+            // Each file's graph and, per node, what the node may be instead.
+            let files: Vec<_> = mr_components::graph::start_files().map(|(name, about)| (name, about, mr_components::graph::shipped(name).expect("a shipped file"))).collect();
+            let choices: Vec<Vec<(mr_components::graph::Role, Vec<&str>)>> = files.iter().map(|(.., g)| g.nodes.iter().map(|(id, n)| (n.role, g.choices(id))).collect()).collect();
+            for (name, about, g) in &files {
+                println!("  {name:<12} {about}\n               {}", g.label().map_err(anyhow::Error::msg)?);
             }
-            for slot in mr_components::Slot::ALL {
-                println!("\n{}:", slot.name());
-                for c in mr_components::components(slot) {
-                    let on: Vec<&str> = mr_components::graph::REGIONS.iter().filter(|b| b.unavailable(slot, c.name).is_none()).map(|b| b.name).collect();
-                    println!("  {:<12} [{}] (on {}) {}", c.name, c.impls_label(), on.join(","), c.description);
+            println!("\nComponents, by the role of the node they fill (in: the shipped files with a node that may be it; others take it by an edit that adds the node):");
+            for role in mr_components::graph::Role::ALL {
+                let names = mr_components::graph::role_components(role);
+                if !names.is_empty() {
+                    println!("\n{}:", role.name());
+                }
+                for c in names {
+                    let on: Vec<&str> = files.iter().zip(&choices).filter(|(_, ch)| ch.iter().any(|(r, of)| *r == role && of.contains(&c))).map(|((name, ..), _)| *name).collect();
+                    let on = if on.is_empty() { String::new() } else { format!(" (in {})", on.join(",")) };
+                    match mr_components::graph::role_info(role, c) {
+                        Some(i) => println!("  {c:<12} [{}]{on} {}", i.impls_label(), i.description),
+                        None => println!("{}", format!("  {c:<12}{on}").trim_end()),
+                    }
                 }
             }
             println!("\nStandalone renderers (-r name; cpu-reference defines the reference images):");

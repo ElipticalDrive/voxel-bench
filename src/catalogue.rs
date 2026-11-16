@@ -516,27 +516,44 @@ mod tests {
         assert_eq!(places, ["image > hits > meshes > shadow > storage; image > shadow > storage", PRIMARY]);
     }
 
-    /// Records from before a pipeline was its graph load as this version writes them, under
-    /// the label a new record of the same pipeline has.
+    /// Records of pipelines from before a pipeline was its graph are left out and counted;
+    /// a standalone renderer's older record reads, as does anything of this version.
     #[test]
     fn older_records() {
         let new = obs("terrain", with("prefix"), 100.0, None);
-        let old = |label: &str| {
+        let line = |f: &dyn Fn(&mut serde_json::Map<String, serde_json::Value>)| {
             let mut v = serde_json::to_value(&new).unwrap();
-            let m = v.as_object_mut().unwrap();
+            f(v.as_object_mut().unwrap());
+            v.to_string()
+        };
+        let flat = line(&|m| {
             m.remove("graph");
             m.insert("version".into(), 5.into());
-            m.insert("label".into(), label.into());
-            m.insert("renderer".into(), "raycast-gpu".into());
-            m.insert("composition".into(), serde_json::to_value(mr_components::Composition { storage: "prefix".into(), ..Default::default() }).unwrap());
-            serde_json::from_value::<Observation>(v).unwrap().upgraded()
-        };
-        let o = old("raycast-gpu: prefix + refloor");
-        assert_eq!((o.label.as_str(), o.renderer.as_str(), o.graph.as_ref().and_then(|g| g.key().ok())), (new.label.as_str(), "gpu", new.graph_key.clone()));
-        assert!(o.composition.is_none() && !serde_json::to_string(&o).unwrap().contains("composition"));
-        assert_eq!(old("raycast-gpu: prefix + refloor [native]").label, format!("{} [native]", new.label));
-        assert_eq!(old("mine").label, "mine", "a label the plan gave stays");
-        assert_eq!(Catalogue::build(&[new.clone(), o], 35.0).scenarios[0].entries.len(), 1, "one pipeline, one entry");
+            m.insert("composition".into(), serde_json::json!({ "storage": "prefix" }));
+        });
+        let old_graph = line(&|m| drop(m.insert("version".into(), 5.into())));
+        let unparsed = line(&|m| {
+            m.insert("version".into(), 2.into());
+            m.insert("fps".into(), "fast".into());
+        });
+        let standalone = line(&|m| {
+            m.remove("graph");
+            m.insert("version".into(), 5.into());
+            m.insert("renderer".into(), "cpu-reference".into());
+        });
+        let now = line(&|_| ());
+        let parse = |l: &str| Observation::parse(l).unwrap();
+        assert!(parse(&flat).is_none() && parse(&old_graph).is_none() && parse(&unparsed).is_none());
+        assert!(parse(&standalone).is_some_and(|o| o.pipeline().is_none() && o.renderer == "cpu-reference"));
+        assert_eq!(parse(&now).and_then(|o| o.pipeline()).and_then(|g| g.key().ok()), new.graph_key);
+        assert!(Observation::parse(&line(&|m| drop(m.insert("fps".into(), "fast".into())))).is_err(), "a record of this version that does not read is an error");
+        let dir = std::env::temp_dir().join(format!("mr-older-records-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("observations.jsonl");
+        std::fs::write(&file, [flat, old_graph, unparsed, standalone, now].join("\n")).unwrap();
+        let (read, left_out) = crate::observe::read(&[file]).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!((read.len(), left_out), (2, 3));
     }
 
     /// A pipeline with an edge a frame late is held to the floor on its settled frames: late

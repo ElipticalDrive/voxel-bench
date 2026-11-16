@@ -1,8 +1,8 @@
 # sweepcmp.py BASE_SWEEP NEW_SWEEP (two directories of runs, e.g. target/sweep/<time>; the baseline of 2026-10-11 names its pipelines in a form no longer read): compares two sweeps per (plan, mode, pipeline, options): GPU ms, fps, PSNR.
 # Pipelines are keyed by their canonical graph (`graph_key`) and shown by their graph's label, both recomputed for
 # every record by `multirenderer graph --keys` (MR_BIN, default target/release/multirenderer), so records written
-# before they carried a graph (the flat `composition` of observations before version 6), or under an older canonical
-# form (geometry later placed on the CPU), compare by one key.
+# under an older canonical form (geometry later placed on the CPU) compare by one key. Records of pipelines from
+# before version 6 (the flat `composition`) are not read by the binary: left out and counted.
 import sys, json, glob, gzip, os, subprocess, statistics as st, collections
 def graph_keys(records):
     """Graph keys and labels for every record, computed by the binary (one call for all; a stored key

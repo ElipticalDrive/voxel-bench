@@ -110,11 +110,10 @@ for a new renderer).
 Every choice is tried before it is offered. A change is made exactly as picked: a new node comes
 unbound, nothing is filled in and nothing is dropped. If the resulting graph cannot run, the
 choice is orange with ✱ and hovering over it gives the reason; picking it anyway makes a draft
-(shown with the reason, while the renderer keeps its last graph) to edit on from. A choice that
-moves the graph to another preset says so (`➡ discover-gpu`). In the live session an edit applies in place
+(shown with the reason, while the renderer keeps its last graph) to edit on from. In the live session an edit applies in place
 when it changes only nodes the lane's executor replaces while running (the worker is sent the graph's
 edits), and otherwise as a hot swap. Trying the choices is cheap: every
-choice the editor lists on every preset (1,110) is answered in 0.07 ms each.
+choice the editor lists on every shipped graph file (1,110) is answered in 0.07 ms each.
 
 ## Knobs and hot swaps
 

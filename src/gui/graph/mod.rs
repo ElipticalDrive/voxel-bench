@@ -230,11 +230,7 @@ fn devices(g: &Graph) -> HashMap<String, Device> {
     g.check().map(|c| c.devices).unwrap_or_default()
 }
 
-/// The graph files a renderer can be started from (the shipped ones), each with what its
-/// file says of it (its first comment line).
-pub fn start_files() -> impl Iterator<Item = (&'static str, &'static str)> {
-    mr_components::graph::SHIPPED.iter().map(|(name, text)| (*name, text.lines().next().unwrap_or_default().trim_start_matches('#').trim()))
-}
+pub use mr_components::graph::start_files;
 
 /// The compact form for a side panel: its executor, then per node its component
 /// and its knobs. `marks` labels restart-only knobs; `lock` adds the tuner's lock column.

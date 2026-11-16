@@ -39,7 +39,7 @@ shader compiler is linked into the binary.
 
 ```sh
 multirenderer                                    # the GUI (or: gui plans/terrain.toml)
-multirenderer list                               # presets, their slots and the components
+multirenderer list                               # the shipped graph files and the components by role
 multirenderer run plans/terrain.toml             # benchmark, compare with the reference, report
 multirenderer view plans/terrain.toml -r raycast-gpu,storage=prefix,kernel=incremental -r raster-gpu
 multirenderer graph raycast-gpu,storage=prefix,kernel=incremental   # a pipeline as a graph

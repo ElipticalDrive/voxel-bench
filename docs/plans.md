@@ -176,7 +176,8 @@ rays it casts make no difference; without meshes: the meshes node and its shadow
   fraction and hit distances from a grid of rays, edits per frame, lights and mesh triangles;
 - what rendered it: the label, the executor (`renderer`: `cpu`, `gpu`; a standalone
   renderer's name), the pipeline (`graph`, always, and `graph_key`) and its knobs (`options`);
-  records before version 6 carried a flat `composition` instead and still read (as their graphs);
+  records of pipelines from before version 6 (a flat `composition`) are no longer read: `catalogue`
+  leaves them out and says how many;
 - the results: fps, frame interval (mean, p50, p99), GPU and CPU ms, latency, init and load
   time, memory, PSNR (mean and minimum), bad pixels, the same against the like reference
   (`like`, `psnr_like`, `bad_pct_like`) and settled (`late`, `psnr_settled`,

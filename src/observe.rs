@@ -15,7 +15,8 @@ use crate::report::PassReport;
 
 /// Bumped when fields change meaning or are added (2: `features`; 3: `sites`, `graph`,
 /// `graph_key`; 4: `stages`; 5: `stream`; 6: a pipeline is its `graph`, always, and
-/// `renderer` the executor that ran it: no `composition`, no `sites`).
+/// `renderer` the executor that ran it). Records of pipelines from before version 6 are not
+/// read (`parse`).
 pub const VERSION: u32 = 6;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -80,14 +81,8 @@ pub struct Observation {
     pub renderer: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<mr_components::graph::Graph>,
-    /// Records before version 6 only (read, never written; `upgraded` makes the graph of
-    /// them): the pipeline in the older flat form, and its sites bound otherwise.
-    #[serde(default, skip_serializing)]
-    pub composition: Option<mr_components::Composition>,
-    #[serde(default, skip_serializing)]
-    pub sites: BTreeMap<String, String>,
-    /// The canonical graph's key: records of one pipeline share it (version 3; older
-    /// records: `pipeline()`'s key, or `multirenderer graph --keys`).
+    /// The canonical graph's key when it was written: records of one pipeline share it
+    /// (`pipeline()`'s key, or `multirenderer graph --keys`, give today's).
     #[serde(default)]
     pub graph_key: Option<String>,
     pub options: serde_json::Value,
@@ -202,8 +197,6 @@ impl Observation {
             label: r.label.clone(),
             renderer: r.renderer.clone(),
             graph: r.graph.clone(),
-            composition: None,
-            sites: BTreeMap::new(),
             graph_key: r.graph_key.clone(),
             options: serde_json::to_value(&r.options).unwrap_or_default(),
             repeat: r.repeat,
@@ -266,38 +259,28 @@ impl Observation {
 }
 
 impl Observation {
-    /// The pipeline it measured (`None` for standalone renderers): its graph; for records
-    /// before version 6 without one, the graph of their flat form.
+    /// The pipeline it measured (`None` for standalone renderers).
     pub fn pipeline(&self) -> Option<mr_components::graph::Graph> {
         // Records keep the knobs that spell timings (discover-cpu `pipelined`): they load as the
         // graphs they ran.
         let options: toml::Table = serde_json::from_value(self.options.clone()).unwrap_or_default();
-        if let Some(g) = &self.graph {
-            return Some(g.clone().with_options(&options));
-        }
-        let c = self.composition.clone()?;
-        mr_components::graph::Graph::from_composition(&c).and_then(|g| g.with_sites(&self.sites)).ok().map(|g| g.with_options(&options))
+        self.graph.clone().map(|g| g.with_options(&options))
     }
 
-    /// The record as this version writes it. An older pipeline's gets its graph, the
-    /// executor as `renderer` and, where its label was the flat form's own, the graph's
-    /// label (a label the plan gave stays; so does a build's ` [native]`), so records of
-    /// one pipeline from before and after meet under one label.
-    pub fn upgraded(mut self) -> Self {
-        if self.version >= 6 {
-            return self;
+    /// The record in `line`; `None` for one this build no longer reads: a pipeline's from
+    /// before version 6 (named in a form since removed). A standalone renderer's reads at
+    /// any version.
+    pub fn parse(line: &str) -> serde_json::Result<Option<Self>> {
+        let older = |v: &serde_json::Value| v["version"].as_u64().is_some_and(|n| n < VERSION as u64);
+        match serde_json::from_str::<Self>(line) {
+            Ok(o) if o.version >= VERSION => Ok(Some(o)),
+            Ok(o) => {
+                let v: serde_json::Value = serde_json::from_str(line)?;
+                Ok((v["graph"].is_null() && v["composition"].is_null()).then_some(o))
+            }
+            Err(_) if serde_json::from_str::<serde_json::Value>(line).is_ok_and(|v| older(&v)) => Ok(None),
+            Err(e) => Err(e),
         }
-        let Some(g) = self.pipeline() else { return self };
-        if let (Some(c), Ok(label)) = (&self.composition, g.label())
-            && let Some(rest) = self.label.strip_prefix(&c.label())
-        {
-            let build = rest.rfind(" [").filter(|_| rest.ends_with(']')).map_or("", |i| &rest[i..]);
-            self.label = format!("{label}{build}");
-        }
-        self.renderer = g.runs_on().to_string();
-        (self.graph, self.composition) = (Some(g), None);
-        self.sites.clear();
-        self
     }
 }
 
@@ -335,17 +318,16 @@ pub fn find(paths: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
-/// The records of `files`, older ones as this version writes them (`Observation::upgraded`),
-/// and how many were left out: records of an older version this build no longer reads
-/// (pipelines named in a form since removed). Anything else unreadable is an error.
+/// The records of `files`, and how many were left out: those this build no longer reads
+/// (`Observation::parse`). Anything else unreadable is an error.
 pub fn read(files: &[PathBuf]) -> anyhow::Result<(Vec<Observation>, usize)> {
     let (mut out, mut left_out) = (vec![], 0);
     for f in files {
         let text = std::fs::read_to_string(f)?;
         for (i, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
-            match serde_json::from_str::<Observation>(line) {
-                Ok(o) => out.push(o.upgraded()),
-                Err(_) if serde_json::from_str::<serde_json::Value>(line).is_ok_and(|v| v["version"].as_u64().is_some_and(|n| n < VERSION as u64)) => left_out += 1,
+            match Observation::parse(line) {
+                Ok(Some(o)) => out.push(o),
+                Ok(None) => left_out += 1,
                 Err(e) => anyhow::bail!("{}:{}: {e}", f.display(), i + 1),
             }
         }

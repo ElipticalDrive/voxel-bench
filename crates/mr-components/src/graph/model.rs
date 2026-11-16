@@ -360,6 +360,12 @@ pub fn role_components(role: Role) -> Vec<&'static str> {
     }
 }
 
+/// What the registry says of `role` component `name`: its description and where it is
+/// implemented (none for the roles it does not hold: the world's side and the post).
+pub fn role_info(role: Role, name: &str) -> Option<&'static crate::ComponentInfo> {
+    role.slot().and_then(|s| crate::component(s, name))
+}
+
 /// Whether `role` component `name` exists.
 pub(super) fn known(role: Role, name: &str) -> bool {
     match role.slot() {
