@@ -310,7 +310,7 @@ impl When {
 }
 
 /// When a discovery preset's drawer gets its faces: discover-cpu discovers one frame
-/// ahead (`prev`; its `pipelined` knob, see [`Graph::with_options`]); with hole detection
+/// ahead (`prev`; its `pipelined` knob, see [`Builds::timing_knobs`]); with hole detection
 /// the faces iterate twice within the frame.
 pub(super) fn faces_timing(executor: &str, holes: bool) -> Option<When> {
     match (executor, holes) {
@@ -319,25 +319,6 @@ pub(super) fn faces_timing(executor: &str, holes: bool) -> Option<When> {
         _ => None,
     }
 }
-
-/// Edge timings a preset lets a graph choose, with the values it runs (the rest are its
-/// composition's): discover-cpu's faces now or a frame late; ray casting's shading on a
-/// second GPU shading this frame's hit records or the last frame's (the GPUs
-/// then overlap; `device_blocker` says why not on one GPU).
-pub(super) const FREE_TIMINGS: &[(&str, Role, &str, &[When])] = &[
-    ("discover-cpu", Role::Draw, "faces", &[When::Now, When::Prev]),
-    // Hole detection closes a cycle through the drawer, which draws twice a frame, and reads
-    // the last frame's sky mask.
-    ("discover-gpu", Role::Draw, "faces", &[When::Now, When::Iterate(2)]),
-    ("discover-gpu", Role::Holes, "sky", &[When::Prev]),
-    ("raycast-gpu", Role::Shading, "hits", &[When::Now, When::Prev]),
-    ("rayquery-gpu", Role::Shading, "hits", &[When::Now, When::Prev]),
-];
-
-/// Knobs that spell an edge timing (the graph says it; the knob is how plans, the CLI and
-/// the GUI write it): preset, knob, the edge's role and port, the timing when the knob
-/// is true, when false.
-pub(super) const TIMING_KNOBS: &[(&str, &str, Role, &str, When, When)] = &[("discover-cpu", "pipelined", Role::Draw, "faces", When::Prev, When::Now)];
 
 /// The client's components (`mr_core::client::Levels`): `pick` takes the server's LOD
 /// levels, `derive` builds them on the client from LOD 0. The sites form writes a client
@@ -509,6 +490,13 @@ pub struct Checked {
     /// the others run as the executor chooses.
     pub apis: HashMap<String, Api>,
     pub output: String,
-    /// The preset its shape names ([`Graph::preset`]): the region that builds it.
-    pub preset: Option<&'static str>,
+    /// The region its shape names ([`Graph::region`]), which builds it.
+    pub region: Option<&'static super::Builds>,
+}
+
+impl Checked {
+    /// The name of its region.
+    pub fn preset(&self) -> Option<&'static str> {
+        self.region.map(|b| b.name)
+    }
 }

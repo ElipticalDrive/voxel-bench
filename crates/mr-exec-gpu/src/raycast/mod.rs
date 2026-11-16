@@ -585,7 +585,7 @@ mod tests {
     fn casters_build_what_they_declare() {
         let (mut built, mut refused) = (0, 0);
         for ck in graph::near(&[super::walk::PRESET, super::rayquery::PRESET]) {
-            let e = ck.preset.unwrap();
+            let e = ck.preset().unwrap();
             let key = ck.graph.canonical().unwrap();
             match (ck.built(), ck.graph.accept()) {
                 (Ok(()), Ok(_)) => built += 1,

@@ -1,6 +1,6 @@
 //! Acceptance by the executors (validity, timings, declarations, device and API blockers).
 
-use crate::{Api, preset_info};
+use crate::Api;
 
 use super::*;
 
@@ -37,13 +37,14 @@ impl Graph {
     /// declares: [`Checked::builder`], its GPUs and the APIs it declares). Fails with the reason.
     pub fn accept(&self) -> Result<(), String> {
         let ck = self.check()?;
-        let preset = ck.preset.ok_or_else(|| ck.built().err().unwrap_or_else(|| "no preset has this shape".into()))?;
-        // Timings an executor lets the graph choose; every other edge runs now.
-        let free = |n: &Node, p: &str| FREE_TIMINGS.iter().find(|(e, r, port, _)| *e == preset && *r == n.role && *port == p).map(|f| f.3);
+        let region = ck.region.ok_or_else(|| ck.built().err().unwrap_or_else(|| "no region builds this shape".into()))?;
+        let preset = region.name;
+        // Timings a region lets the graph choose; every other edge runs now.
+        let free = |n: &Node, p: &str| region.free_at(n.role, p);
         for (id, n) in &ck.graph.nodes {
             for p in n.inputs.keys() {
                 let w = &n.when(p);
-                if let Some(ok) = free(n, p).or(Some(&[When::Now])).filter(|ok| !ok.contains(w)) {
+                if let Some(ok) = free(n, p).or(Some(&[When::Now][..])).filter(|ok| !ok.contains(w)) {
                     return Err(format!("`{id}`.{p}: `{preset}` runs this edge {}, not {}", ok.iter().map(|w| w.label()).collect::<Vec<_>>().join(" or "), w.label()));
                 }
             }
@@ -82,8 +83,8 @@ fn device_blocker(ck: &Checked) -> Option<String> {
         v.iter().map(|id| format!("`{id}`")).collect::<Vec<_>>().join(", ")
     };
     let used = slots.iter().map(|&i| format!("{} ({})", Device::Gpu(i), on(Device::Gpu(i)))).collect::<Vec<_>>().join("; ");
-    if !matches!(ck.preset, Some("raycast-gpu" | "rayquery-gpu")) {
-        return Some(format!("`{}` runs on one GPU (here: {used}); a pipeline over two GPUs is split at the hit records, ray casting's deferred shading on the second", ck.preset.unwrap_or("this pipeline")));
+    if !ck.region.is_some_and(|b| b.split) {
+        return Some(format!("`{}` runs on one GPU (here: {used}); a pipeline over two GPUs is split at the hit records, ray casting's deferred shading on the second", ck.preset().unwrap_or("this pipeline")));
     }
     let (Some(vis), Some(shading)) = (g.nodes.iter().find(|(_, n)| n.role == Role::Visibility), g.nodes.iter().find(|(_, n)| n.role == Role::Shading)) else {
         return Some(format!("a pipeline over two GPUs is split between its visibility and shading nodes (here: {used})"));
@@ -113,7 +114,7 @@ fn device_blocker(ck: &Checked) -> Option<String> {
 fn api_blocker(ck: &Checked) -> Option<String> {
     let g = &ck.graph;
     let (name, builds) = ck.builder()?;
-    let b = preset_info(name)?;
+    let b = builds;
     let drawer = ck.find(Role::Draw).map(|d| g.nodes[d].component.as_str());
     let mut why = Vec::new();
     for (id, &a) in ck.apis.iter().filter(|(id, _)| g.nodes[*id].api.is_some()) {
@@ -159,7 +160,7 @@ pub fn of_init(kind: &str, p: &mr_core::InitParams) -> anyhow::Result<Checked> {
     anyhow::ensure!(!p.graph_json.trim().is_empty(), "the {kind} executor runs a graph; none was given");
     let g: Graph = serde_json::from_str(&p.graph_json)?;
     anyhow::ensure!(g.runs_on() == kind, "a graph for the {} executor handed to the {kind} executor", g.runs_on());
-    anyhow::ensure!(g.preset().is_some(), "the {kind} executor builds no pipeline of this shape");
+    anyhow::ensure!(g.region().is_some(), "the {kind} executor builds no pipeline of this shape");
     g.validate().map_err(anyhow::Error::msg)?;
     g.check().map_err(anyhow::Error::msg)
 }

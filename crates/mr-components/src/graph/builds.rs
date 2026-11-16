@@ -3,8 +3,9 @@
 //! (`Graph::check`) on a node executor exactly when it has no other node, else refuses it with
 //! the reason; it is never built half-way.
 
-use super::{Checked, Graph, Node, Role, executor_of, inputs, output, role_components};
-use crate::impls::{self, Place};
+use super::{Checked, Graph, Node, Role, When, inputs, output, role_components};
+use crate::impls::{self, ApiChoice, Place};
+use crate::{Api, Kind, Slot};
 
 /// Nodes of one role an executor builds.
 #[derive(Copy, Clone, Debug)]
@@ -50,14 +51,57 @@ pub struct Only {
     pub bound: bool,
 }
 
-/// What an executor builds: its nodes, the inputs that must be one node and what it reads
-/// from some inputs.
+/// What a region of an executor builds: its nodes, the inputs that must be one node, what it
+/// reads from some inputs, and the choices it leaves to the graph (edge timings, a second GPU,
+/// an API).
 #[derive(Copy, Clone, Debug)]
 pub struct Builds {
+    /// The name its messages use.
+    pub name: &'static str,
     pub nodes: &'static [Build],
     pub same: &'static [Same],
     pub only: &'static [Only],
+    /// Edge timings it lets a graph choose (the edge's role and port, the timings it runs);
+    /// every other edge runs now.
+    pub free: &'static [(Role, &'static str, &'static [When])],
+    /// Knobs that spell an edge timing (the graph says it; the knob is how plans, the CLI and
+    /// the GUI write it): the knob, the edge's role and port, the timing when the knob is
+    /// true, when false.
+    pub timing_knobs: &'static [(&'static str, Role, &'static str, When, When)],
+    /// Whether it runs over two GPUs, split at the hit records (the shading on the second).
+    pub split: bool,
+    /// The choice of API it offers, if any (the CPU ray caster: `isa`, its one hot loop; the
+    /// GPU walk: `dispatch`, in a compute or fragment shader).
+    pub api_choice: Option<ApiChoice>,
 }
+
+impl Builds {
+    /// Nothing built and no choices: the base the declarations fill in.
+    const NONE: Builds = Builds { name: "", nodes: &[], same: &[], only: &[], free: &[], timing_knobs: &[], split: false, api_choice: None };
+
+    /// The timings it runs the edge into `port` of a `role` node with, if the graph may choose.
+    pub fn free_at(&self, role: Role, port: &str) -> Option<&'static [When]> {
+        self.free.iter().find(|(r, p, _)| *r == role && *p == port).map(|f| f.2)
+    }
+
+    /// Whether its API choice sets `slot` (the secondary-ray stages: with their source).
+    pub fn chooses(&self, slot: Slot) -> bool {
+        self.api_choice.is_some_and(|ch| ch.slots.contains(&slot.source()))
+    }
+
+    /// The executor (device kind: `cpu`, `gpu`) it is a region of: where its image is made,
+    /// its shading's device.
+    pub fn executor(&self) -> &'static str {
+        match self.nodes.iter().find(|b| b.role == Role::Shading).map(|b| b.at.kind) {
+            Some(Kind::Cpu) => "cpu",
+            _ => "gpu",
+        }
+    }
+}
+
+/// The stages one API choice sets, and hit records shaded now or a frame late on a second GPU.
+const CAST_SLOTS: &[Slot] = &[Slot::Storage, Slot::Visibility, Slot::Traversal, Slot::Shading];
+const HITS_LATE: &[(Role, &str, &[When])] = &[(Role::Shading, "hits", &[When::Now, When::Prev])];
 
 /// The GPU storages and walking kernels, the geometries ray queries trace, the face drawers.
 const GPU_STORAGES: &[&str] = &["bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap"];
@@ -76,6 +120,7 @@ const SHADOW_BOUND: Only = Only { role: Role::Shading, of: &[], port: "shadow", 
 /// `raycast-cpu`: one storage (one monomorphised instance; the shadow rays walk it too),
 /// its primary and shadow kernels, the ray caster and the shading.
 pub const CPU_RAYCAST: Builds = Builds {
+    name: "raycast-cpu",
     nodes: &[
         Build::one(Role::Storage, CPU_STORAGES, impls::CPU_ISAS),
         Build::one(Role::Traversal, &["refloor", "incremental"], impls::CPU_ISAS).count(1, 2),
@@ -84,10 +129,13 @@ pub const CPU_RAYCAST: Builds = Builds {
     ],
     same: &[],
     only: &[],
+    api_choice: Some(ApiChoice { knob: "isa", slots: CAST_SLOTS, values: &[(Api::Scalar, "scalar"), (Api::Avx2, "avx2"), (Api::Avx512, "avx512")], default: None }),
+    ..Builds::NONE
 };
 
 /// `raster-cpu`: the geometry's quads, their culling, the rasteriser and the shading.
 pub const CPU_RASTER: Builds = Builds {
+    name: "raster-cpu",
     nodes: &[
         Build::one(Role::Geometry, &["greedy", "naive"], impls::CPU_SCALAR),
         Build::one(Role::Visibility, &["faces"], impls::CPU_SCALAR),
@@ -96,10 +144,12 @@ pub const CPU_RASTER: Builds = Builds {
     ],
     same: &[],
     only: &[],
+    ..Builds::NONE
 };
 
 /// `columns-cpu`: the heightmap, its own ray march (the shadow rays), the column march and the shading.
 pub const CPU_COLUMNS: Builds = Builds {
+    name: "columns-cpu",
     nodes: &[
         Build::one(Role::Storage, &["heightmap"], impls::CPU_SCALAR),
         Build::one(Role::Traversal, &["heightfield"], impls::CPU_SCALAR),
@@ -108,6 +158,7 @@ pub const CPU_COLUMNS: Builds = Builds {
     ],
     same: &[],
     only: &[],
+    ..Builds::NONE
 };
 
 /// The GPU walk (`raycast-gpu`): a storage and kernel per walk (primary, shadow, bounce and
@@ -115,6 +166,7 @@ pub const CPU_COLUMNS: Builds = Builds {
 /// beam prepass (over the primary rays' storage, which its shader reads), the walk and the
 /// shading (on this GPU or another).
 pub const GPU_WALK: Builds = Builds {
+    name: "raycast-gpu",
     nodes: &[
         Build::one(Role::Storage, GPU_STORAGES, impls::GPU_DISPATCH).count(0, 4),
         Build::one(Role::Traversal, GPU_KERNELS, impls::GPU_DISPATCH).count(1, 4),
@@ -126,12 +178,17 @@ pub const GPU_WALK: Builds = Builds {
     ],
     same: &[Same { a: (Role::Prepass, &["storage"]), b: (Role::Visibility, &["primary", "storage"]) }],
     only: &[],
+    free: HITS_LATE,
+    split: true,
+    api_choice: Some(ApiChoice { knob: "dispatch", slots: CAST_SLOTS, values: &[(Api::Compute, "compute"), (Api::Raster, "fragment")], default: Some(Api::Compute) }),
+    ..Builds::NONE
 };
 
 /// GPU ray queries (`rayquery-gpu`): the geometry of the acceleration structures (on the CPU), the
 /// primary ray queries, storages and kernels for walked shadow and bounce rays, the visibility
 /// and the shading (on this GPU or another). No meshes and no prepass.
 pub const GPU_RAYQUERY: Builds = Builds {
+    name: "rayquery-gpu",
     nodes: &[
         Build::one(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR),
         Build::one(Role::Storage, GPU_STORAGES, impls::GPU_RAYQUERY).count(0, 2),
@@ -141,12 +198,16 @@ pub const GPU_RAYQUERY: Builds = Builds {
     ],
     same: &[],
     only: &[],
+    free: HITS_LATE,
+    split: true,
+    ..Builds::NONE
 };
 
 /// Faces with the meshing source (`raster-gpu`): the geometry the drawer draws (and one for
 /// ray-queried bounce rays), its culling, the drawer, meshes into the depth buffer lit through
 /// walks, and the shading, whose shadow rays (and the meshes') are walks.
 pub const GPU_MESHING: Builds = Builds {
+    name: "raster-gpu",
     nodes: &[
         Build::one(Role::Geometry, &["greedy", "naive", "cubes", "boxes"], impls::CPU_SCALAR).count(1, 2),
         Build::one(Role::Visibility, &["faces"], impls::GPU_RASTER),
@@ -164,12 +225,14 @@ pub const GPU_MESHING: Builds = Builds {
         SHADOW_WALKED,
         RT,
     ],
+    ..Builds::NONE
 };
 
 /// GPU discovery (`discover-gpu`): the sampler (its rays and exposure tests over any GPU
 /// storage), its hole detection, the drawer of the face set, the shading (any rays, a
 /// ray-query geometry on the CPU).
 pub const GPU_SAMPLER: Builds = Builds {
+    name: "discover-gpu",
     nodes: &[
         Build::one(Role::Storage, GPU_STORAGES, impls::GPU_DRAWN).count(1, 4),
         Build::one(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(1, 3),
@@ -186,12 +249,17 @@ pub const GPU_SAMPLER: Builds = Builds {
         SHADOW_BOUND,
         RT,
     ],
+    // Hole detection closes a cycle through the drawer, which draws twice a frame, and reads
+    // the last frame's sky mask.
+    free: &[(Role::Draw, "faces", &[When::Now, When::Iterate(2)]), (Role::Holes, "sky", &[When::Prev])],
+    ..Builds::NONE
 };
 
 /// CPU discovery (`discover-cpu`): the sampler over a CPU storage (exposure tests over the one
 /// its rays walk), the face set drawn on the GPU, the shading there (any GPU rays, a ray-query
 /// geometry on the CPU).
 pub const CPU_SAMPLER: Builds = Builds {
+    name: "discover-cpu",
     nodes: &[
         Build::one(Role::Storage, CPU_STORAGES, impls::CPU_SCALAR),
         Build::one(Role::Traversal, &["refloor"], impls::CPU_SCALAR),
@@ -204,11 +272,16 @@ pub const CPU_SAMPLER: Builds = Builds {
     ],
     same: &[Same { a: (Role::Visibility, &["exposure"]), b: (Role::Visibility, &["rays", "storage"]) }],
     only: &[Only { role: Role::Draw, of: &[], port: "faces", components: &["quadtree", "cluster"], bound: true }, SHADOW_BOUND, RT],
+    // Discovery a frame ahead of the drawer, or within its frame.
+    free: &[(Role::Draw, "faces", &[When::Now, When::Prev])],
+    timing_knobs: &[("pipelined", Role::Draw, "faces", When::Prev, When::Now)],
+    ..Builds::NONE
 };
 
 /// Point splatting (`splat-gpu`): the points (and a geometry for ray-queried bounce rays), the
 /// splat passes, the shading (its shadow rays walked).
 pub const GPU_SPLAT: Builds = Builds {
+    name: "splat-gpu",
     nodes: &[
         Build::one(Role::Geometry, &["points", "greedy", "naive", "boxes"], impls::CPU_SCALAR).count(1, 2),
         Build::one(Role::Visibility, &["splat"], impls::GPU_COMPUTE),
@@ -218,11 +291,13 @@ pub const GPU_SPLAT: Builds = Builds {
     ],
     same: &[],
     only: &[Only { role: Role::Visibility, of: &[], port: "points", components: &["points"], bound: true }, SHADOW_WALKED, RT],
+    ..Builds::NONE
 };
 
 /// Voxel Space on the GPU (`columns-gpu`): the heightmap, its own ray march (the shadow and
 /// bounce rays), the column march, the shading.
 pub const GPU_COLUMNS: Builds = Builds {
+    name: "columns-gpu",
     nodes: &[
         Build::one(Role::Storage, &["heightmap"], impls::GPU_COMPUTE),
         Build::one(Role::Traversal, &["heightfield"], impls::GPU_COMPUTE),
@@ -231,6 +306,7 @@ pub const GPU_COLUMNS: Builds = Builds {
     ],
     same: &[],
     only: &[],
+    ..Builds::NONE
 };
 
 /// The roles the worker runs in front of every executor (the world's side), and the post every
@@ -243,29 +319,14 @@ impl Checked {
     /// region has, or one another device's executor runs. GPU ray casting runs on the
     /// ray-query caster when the primary rays' kernel is a ray query, else on the walk.
     pub fn builder(&self) -> Option<(&'static str, Builds)> {
-        let preset = self.preset?;
-        if executor_of(preset) != self.graph.runs_on() {
-            return None;
-        }
-        Some(match preset {
-            "raycast-cpu" => ("raycast-cpu", CPU_RAYCAST),
-            "raster-cpu" => ("raster-cpu", CPU_RASTER),
-            "columns-cpu" => ("columns-cpu", CPU_COLUMNS),
-            "rayquery-gpu" => ("rayquery-gpu", GPU_RAYQUERY),
-            "raycast-gpu" => ("raycast-gpu", GPU_WALK),
-            "raster-gpu" => ("raster-gpu", GPU_MESHING),
-            "discover-gpu" => ("discover-gpu", GPU_SAMPLER),
-            "discover-cpu" => ("discover-cpu", CPU_SAMPLER),
-            "splat-gpu" => ("splat-gpu", GPU_SPLAT),
-            "columns-gpu" => ("columns-gpu", GPU_COLUMNS),
-            _ => return None,
-        })
+        let b = self.region.filter(|b| b.executor() == self.graph.runs_on())?;
+        Some((b.name, *b))
     }
 
     /// Whether the node executor running this graph builds it (see [`Self::built_by`]).
     pub fn built(&self) -> Result<(), String> {
-        let (e, b) = self.builder().ok_or_else(|| match self.preset {
-            Some(p) => format!("the {} executor builds no `{p}` pipeline (the {} executor's)", self.graph.runs_on(), executor_of(p)),
+        let (e, b) = self.builder().ok_or_else(|| match self.region {
+            Some(r) => format!("the {} executor builds no `{}` pipeline (the {} executor's)", self.graph.runs_on(), r.name, r.executor()),
             None => format!("no region of the {} executor builds this shape (an image from a shading over hits from a visibility node or a drawer)", self.graph.runs_on()),
         })?;
         self.built_by(e, b)
@@ -274,7 +335,7 @@ impl Checked {
     /// Whether `executor`, building `builds`, builds this graph; else the first node (or role)
     /// it cannot, with the reason.
     pub fn built_by(&self, executor: &str, builds: Builds) -> Result<(), String> {
-        let Builds { nodes: builds, same, only } = builds;
+        let Builds { nodes: builds, same, only, .. } = builds;
         let list = |v: &[&str]| v.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ");
         for (id, n) in self.graph.nodes.iter().filter(|(_, n)| !AROUND.contains(&n.role)) {
             let of_role: Vec<&Build> = builds.iter().filter(|b| b.role == n.role).collect();
@@ -394,7 +455,7 @@ pub fn near(executors: &[&str]) -> Vec<Checked> {
             let two: Vec<Graph> = edits(&h).into_iter().map(Graph::pruned).collect();
             for x in std::iter::once(h).chain(two) {
                 let Ok(ck) = x.check() else { continue };
-                if ck.preset.is_some_and(|p| executors.contains(&p)) && seen.insert(ck.graph.canonical().unwrap_or_default()) {
+                if ck.preset().is_some_and(|p| executors.contains(&p)) && seen.insert(ck.graph.canonical().unwrap_or_default()) {
                     v.push(ck);
                 }
             }

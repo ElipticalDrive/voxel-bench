@@ -393,7 +393,7 @@ impl Graph {
     /// back, or a site's own nodes have knobs.
     pub fn shorthand(&self) -> Result<Shorthand, String> {
         let ck = self.normalised()?.pruned().check()?;
-        let preset = ck.preset.ok_or_else(|| ck.built().err().unwrap_or_else(|| "no preset has this shape".into()))?;
+        let preset = ck.preset().ok_or_else(|| ck.built().err().unwrap_or_else(|| "no region builds this shape".into()))?;
         let g = &ck.graph;
         let target = g.bare(preset)?;
         let compose = g.stages(&ck, preset);
@@ -465,16 +465,17 @@ impl Graph {
     }
 
     /// The canonical form without what the shorthand leaves to knobs: stage knobs, APIs
-    /// (`raycast-cpu` reads its API as `isa`), free timings (as `prev`; see `TIMING_KNOBS`).
+    /// (`raycast-cpu` reads its API as `isa`), free timings (as `prev`; see `Builds::free`).
     fn bare(&self, preset: &str) -> Result<String, String> {
         let mut g = self.clone();
+        let free = self.region().filter(|b| b.name == preset).map_or(&[][..], |b| b.free);
         for n in g.nodes.values_mut() {
             if n.role.slot().is_some() {
                 n.knobs.clear();
             }
             n.api = None;
             let role = n.role;
-            for (_, _, port, _) in FREE_TIMINGS.iter().filter(|(e, r, _, _)| *e == preset && *r == role) {
+            for (_, port, _) in free.iter().filter(|(r, _, _)| *r == role) {
                 if n.inputs.contains_key(*port) {
                     n.timing.insert(port.to_string(), When::Prev);
                 }

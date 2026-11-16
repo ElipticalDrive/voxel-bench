@@ -138,9 +138,6 @@ pub struct PresetInfo {
     /// secondary-ray stages run where `at` says, else with the storage and kernel.
     pub runs: Place,
     pub at: &'static [(Slot, Place)],
-    /// The choice of API it offers, if any (`raycast-cpu`: `isa`, its one hot loop; raycast-gpu:
-    /// `dispatch`, its walk in a compute or fragment shader).
-    pub api_choice: Option<ApiChoice>,
 }
 
 impl PresetInfo {
@@ -163,11 +160,6 @@ impl PresetInfo {
         let of = |s: Slot| self.at.iter().find(|(x, _)| *x == s).map(|&(_, p)| p);
         of(slot).or_else(|| of(slot.source())).unwrap_or(self.runs)
     }
-
-    /// Whether its API choice sets `slot` (the secondary-ray stages: with their source).
-    pub fn chooses(&self, slot: Slot) -> bool {
-        self.api_choice.is_some_and(|ch| ch.slots.contains(&slot.source()))
-    }
 }
 
 const RAY_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Visibility, "raycast"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")];
@@ -183,13 +175,11 @@ pub const PRESETS: &[PresetInfo] = &[
         name: "raycast-gpu", description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility", renderer: Some("raycast-gpu"),
         slots: COMPUTE_SLOTS, lit_only: &[Slot::ShadowStorage, Slot::ShadowTraversal], quiet: &[Slot::Visibility, Slot::ShadowStorage, Slot::ShadowTraversal],
         runs: impls::GPU_DISPATCH, at: &[(Slot::Prepass, impls::GPU_COMPUTE), (Slot::Meshes, impls::GPU_RASTER)],
-        api_choice: Some(ApiChoice { knob: "dispatch", slots: &[Slot::Storage, Slot::Visibility, Slot::Traversal, Slot::Shading], values: &[(Api::Compute, "compute"), (Api::Raster, "fragment")], default: Some(Api::Compute) }),
     },
     PresetInfo {
         name: "raycast-cpu", description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops", renderer: Some("raycast-cpu"),
         slots: RAY_SLOTS, lit_only: &[], quiet: &[Slot::Visibility],
         runs: impls::CPU_ISAS, at: NONE,
-        api_choice: Some(ApiChoice { knob: "isa", slots: &[Slot::Storage, Slot::Visibility, Slot::Traversal, Slot::Shading], values: &[(Api::Scalar, "scalar"), (Api::Avx2, "avx2"), (Api::Avx512, "avx512")], default: None }),
     },
     PresetInfo {
         name: "raster-gpu",
@@ -200,7 +190,6 @@ pub const PRESETS: &[PresetInfo] = &[
         quiet: &[Slot::Visibility, Slot::Traversal],
         runs: impls::GPU_RASTER,
         at: &[(Slot::Geometry, impls::CPU_SCALAR), (Slot::Storage, impls::GPU_DRAWN), (Slot::Traversal, impls::GPU_DRAWN), (Slot::Shading, impls::GPU_DRAWN)],
-        api_choice: None,
     },
     PresetInfo {
         name: "rayquery-gpu",
@@ -208,14 +197,13 @@ pub const PRESETS: &[PresetInfo] = &[
         renderer: Some("rayquery-gpu"),
         slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raycast"), (Slot::Traversal, "rayquery"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Visibility],
         runs: impls::GPU_RAYQUERY, at: &[(Slot::Geometry, impls::CPU_SCALAR)],
-        api_choice: None,
     },
     PresetInfo {
         name: "discover-gpu",
         description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
         renderer: Some("discover-gpu"),
         slots: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Holes, "none"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Draw, Slot::Traversal],
-        runs: impls::GPU_COMPUTE, at: DRAWN, api_choice: None,
+        runs: impls::GPU_COMPUTE, at: DRAWN,
     },
     PresetInfo {
         name: "discover-cpu",
@@ -226,7 +214,6 @@ pub const PRESETS: &[PresetInfo] = &[
         quiet: &[Slot::Draw, Slot::Traversal, Slot::ShadowStorage, Slot::ShadowTraversal],
         runs: impls::CPU_SCALAR,
         at: &[(Slot::Draw, impls::GPU_RASTER), (Slot::Shading, impls::GPU_DRAWN), (Slot::ShadowStorage, impls::GPU_DRAWN), (Slot::ShadowTraversal, impls::GPU_DRAWN)],
-        api_choice: None,
     },
     PresetInfo {
         name: "splat-gpu",
@@ -235,28 +222,28 @@ pub const PRESETS: &[PresetInfo] = &[
         slots: &[(Slot::Storage, "bricks"), (Slot::Geometry, "points"), (Slot::Visibility, "splat"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")],
         lit_only: &[Slot::Storage, Slot::Traversal],
         quiet: &[Slot::Traversal],
-        runs: impls::GPU_COMPUTE, at: &[(Slot::Geometry, impls::CPU_SCALAR)], api_choice: None,
+        runs: impls::GPU_COMPUTE, at: &[(Slot::Geometry, impls::CPU_SCALAR)],
     },
     PresetInfo {
         name: "columns-gpu",
         description: "Comanche-style Voxel Space (2.5D, no overhangs) in a compute shader: one thread per screen column marches a heightmap front to back with a y-buffer",
         renderer: Some("columns-gpu"),
         slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Traversal, "heightfield"), (Slot::Shading, "direct")], lit_only: &[Slot::Traversal], quiet: &[Slot::Traversal],
-        runs: impls::GPU_COMPUTE, at: NONE, api_choice: None,
+        runs: impls::GPU_COMPUTE, at: NONE,
     },
     PresetInfo {
         name: "columns-cpu",
         description: "Comanche-style Voxel Space (2.5D) on the CPU, rayon-parallel over screen columns",
         renderer: Some("columns-cpu"),
         slots: &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Traversal, "heightfield"), (Slot::Shading, "direct")], lit_only: &[Slot::Traversal], quiet: &[Slot::Traversal],
-        runs: impls::CPU_SCALAR, at: NONE, api_choice: None,
+        runs: impls::CPU_SCALAR, at: NONE,
     },
     PresetInfo {
         name: "raster-cpu",
         description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
         renderer: Some("raster-cpu"),
         slots: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "faces"), (Slot::Draw, "raster"), (Slot::Shading, "direct")], lit_only: &[], quiet: &[Slot::Visibility],
-        runs: impls::CPU_SCALAR, at: NONE, api_choice: None,
+        runs: impls::CPU_SCALAR, at: NONE,
     },
 ];
 

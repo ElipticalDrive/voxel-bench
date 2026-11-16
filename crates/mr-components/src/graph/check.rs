@@ -158,7 +158,7 @@ impl Graph {
         if !matches!(self.executor.as_str(), "" | "cpu" | "gpu") {
             return Err(format!("unknown executor `{}` (`cpu` or `gpu`)", self.executor));
         }
-        let preset = self.preset();
+        let region = self.region();
         let g = self.normalised()?;
         let mut why = Vec::new();
         for (id, n) in &g.nodes {
@@ -357,10 +357,10 @@ impl Graph {
         if !why.is_empty() {
             return Err(why.join("; "));
         }
-        if let Some(b) = preset.and_then(preset_info).filter(|b| b.renderer.is_none()) {
+        if let Some(b) = region.and_then(|r| preset_info(r.name)).filter(|b| b.renderer.is_none()) {
             return Err(format!("`{}` is not available yet", b.name));
         }
-        Ok(Checked { graph: g, devices, apis, output: out, preset })
+        Ok(Checked { graph: g, devices, apis, output: out, region })
     }
 }
 

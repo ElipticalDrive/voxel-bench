@@ -95,7 +95,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
         })
     })?;
     let region = Shade {
-        preset: g.preset.expect("of_init: a preset"),
+        preset: g.preset().expect("of_init: a region"),
         shading: spec.shading.to_string(),
         built_shading: spec.shading.to_string(),
         bind0: None,

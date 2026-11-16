@@ -110,14 +110,12 @@ impl Graph {
         Ok(Graph { executor: executor.into(), nodes })
     }
 
-    /// The preset this graph's shape and devices name (the region of its executor that
-    /// builds it, and the tables keyed by the presets' names): the face drawer's
-    /// source (meshing: `raster-gpu` / `raster-cpu` by the drawer's device; discovery:
-    /// `discover-gpu` / `discover-cpu` by the sampler's), else the visibility node's
-    /// component and device (ray casting: `raycast-cpu`, `rayquery-gpu` when its primary rays are ray
-    /// queries (the kernel's component or API), else `raycast-gpu`; `columns`; `splat`). `None` for a
-    /// shape no preset has.
-    pub fn preset(&self) -> Option<&'static str> {
+    /// The region of an executor this graph's shape and devices name (what builds it:
+    /// [`Builds`]): the face drawer's source (meshing, by the drawer's device; discovery, by
+    /// the sampler's), else the visibility node's component and device (ray casting: on the
+    /// CPU, by ray queries when its primary rays are ray queries (the kernel's component or
+    /// API), else the GPU walk; columns; splats). `None` for a shape no region has.
+    pub fn region(&self) -> Option<&'static Builds> {
         let dev = |n: &Node| n.device.unwrap_or_else(|| default_device(&self.executor, n.role, &n.component)).kind();
         let shading = self.nodes.values().find(|n| n.role == Role::Shading)?;
         let hits = self.nodes.get(shading.inputs.get("hits")?)?;
@@ -125,8 +123,8 @@ impl Graph {
         if hits.role == Role::Draw {
             let src = self.nodes.get(hits.inputs.get("faces")?)?;
             return match (src.role, src.component.as_str()) {
-                (Role::Visibility, "quadtree" | "cluster") if gpu(hits) => Some(if gpu(src) { "discover-gpu" } else { "discover-cpu" }),
-                (Role::Visibility, "faces") => Some(if gpu(hits) { "raster-gpu" } else { "raster-cpu" }),
+                (Role::Visibility, "quadtree" | "cluster") if gpu(hits) => Some(if gpu(src) { &GPU_SAMPLER } else { &CPU_SAMPLER }),
+                (Role::Visibility, "faces") => Some(if gpu(hits) { &GPU_MESHING } else { &CPU_RASTER }),
                 _ => None,
             };
         }
@@ -134,24 +132,29 @@ impl Graph {
             return None;
         }
         match (hits.component.as_str(), gpu(hits)) {
-            ("columns", g) => Some(if g { "columns-gpu" } else { "columns-cpu" }),
-            ("splat", true) => Some("splat-gpu"),
-            ("raycast", false) => Some("raycast-cpu"),
+            ("columns", g) => Some(if g { &GPU_COLUMNS } else { &CPU_COLUMNS }),
+            ("splat", true) => Some(&GPU_SPLAT),
+            ("raycast", false) => Some(&CPU_RAYCAST),
             ("raycast", true) => {
                 let rq = hits.inputs.get("primary").and_then(|k| self.nodes.get(k)).is_some_and(|k| k.component == "rayquery" || k.api == Some(crate::Api::RayQuery));
-                Some(if rq { "rayquery-gpu" } else { "raycast-gpu" })
+                Some(if rq { &GPU_RAYQUERY } else { &GPU_WALK })
             }
             _ => None,
         }
     }
 
-    /// The graph with the edge timings its knobs spell set (`TIMING_KNOBS`: discover-cpu's
+    /// The name of this graph's region ([`Self::region`]).
+    pub fn preset(&self) -> Option<&'static str> {
+        self.region().map(|b| b.name)
+    }
+
+    /// The graph with the edge timings its knobs spell set ([`Builds::timing_knobs`]: discover-cpu's
     /// `pipelined = false` makes the drawer's faces arrive `now`). Knobs not given keep the
     /// graph's timing.
     pub fn with_options(self, options: &toml::Table) -> Graph {
         let mut g = self;
-        let preset = g.preset();
-        for &(_, knob, role, port, on, off) in TIMING_KNOBS.iter().filter(|k| Some(k.0) == preset) {
+        let knobs = g.region().map_or(&[][..], |b| b.timing_knobs);
+        for &(knob, role, port, on, off) in knobs {
             let Some(v) = options.get(knob).and_then(|v| v.as_bool()) else { continue };
             for n in g.nodes.values_mut().filter(|n| n.role == role && n.inputs.contains_key(port)) {
                 n.timing.insert(port.into(), if v { on } else { off });
@@ -164,9 +167,8 @@ impl Graph {
     /// The knobs spelling this graph's timings, as `with_options` reads them.
     pub fn timing_options(&self) -> Vec<(&'static str, bool)> {
         let g = self;
-        let preset = g.preset();
         let mut v = Vec::new();
-        for &(_, knob, role, port, on, _) in TIMING_KNOBS.iter().filter(|k| Some(k.0) == preset) {
+        for &(knob, role, port, on, _) in g.region().map_or(&[][..], |b| b.timing_knobs) {
             if let Some(n) = g.nodes.values().find(|n| n.role == role && n.inputs.contains_key(port)) {
                 v.push((knob, n.when(port) == on));
             }
@@ -174,12 +176,11 @@ impl Graph {
         v
     }
 
-    /// The preset's own knobs this graph spells (not node knobs, which the executors read
+    /// The region's own knobs this graph spells (not node knobs, which the executors read
     /// from the nodes): the API choice (`isa`, `dispatch`) and the timings (`pipelined`).
     pub fn preset_options(&self) -> Result<toml::Table, String> {
-        let preset = self.preset().unwrap_or_default();
         let mut t = toml::Table::new();
-        if let Some((b, ch)) = preset_info(preset).and_then(|b| b.api_choice.map(|ch| (b, ch)))
+        if let Some((b, ch)) = self.region().and_then(|b| b.api_choice.map(|ch| (b, ch)))
             && let Some(v) = self.nodes.values().filter(|n| n.role.slot().is_some_and(|sl| b.chooses(sl))).find_map(|n| n.api).and_then(|a| ch.value(a)) {
             t.insert(ch.knob.into(), v.into());
         }

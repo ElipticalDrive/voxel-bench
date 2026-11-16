@@ -75,7 +75,7 @@ fn fixed<T: PartialEq + std::fmt::Debug>(what: &str, baked: Option<T>, actual: T
 
 /// The CPU executor: the pipeline its graph picks.
 pub fn entry() -> RendererEntry {
-    RendererEntry { name: "cpu", info: |p| Ok(info(graph::of_init("cpu", p)?.preset.expect("of_init: a preset"))), create: |p, _, _| create(p) }
+    RendererEntry { name: "cpu", info: |p| Ok(info(graph::of_init("cpu", p)?.preset().expect("of_init: a region"))), create: |p, _, _| create(p) }
 }
 
 /// The knobs of every pipeline, by preset.
@@ -179,7 +179,7 @@ mod tests {
     fn executors_build_what_they_declare() {
         let (mut built, mut refused) = (0, 0);
         for ck in graph::near(&[raycast::PRESET, raster::PRESET, columns::PRESET]) {
-            let e = ck.preset.unwrap();
+            let e = ck.preset().unwrap();
             let key = ck.graph.canonical().unwrap();
             if let Err(why) = ck.built() {
                 assert!(ck.graph.accept().is_err(), "`{e}` refuses a graph `accept` takes ({why}): {key}");

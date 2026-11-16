@@ -76,7 +76,7 @@ pub fn entry() -> RendererEntry {
 /// What the pipeline of `p`'s graph supports: its region's, less what its components lack.
 fn info_of(p: &InitParams) -> anyhow::Result<RendererInfo> {
     let g = graph::of_init("gpu", p)?;
-    match g.preset.expect("of_init: a preset") {
+    match g.preset().expect("of_init: a region") {
         raycast::walk::PRESET => raycast::walk::info_of(&g, p),
         preset => Ok(info(preset)),
     }
@@ -159,7 +159,7 @@ impl Renderer for Compiled {
 /// pipeline names one.
 fn create_with(p: InitParams, devices: &Devices, waker: Waker, cpu_world: Option<fn() -> CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
     let g = graph::of_init("gpu", &p)?;
-    let preset = g.preset.expect("of_init: a preset");
+    let preset = g.preset().expect("of_init: a region");
     if g.find(Role::Draw).is_some() {
         return faces::create(preset, &p, devices, waker, &g, cpu_world);
     }
