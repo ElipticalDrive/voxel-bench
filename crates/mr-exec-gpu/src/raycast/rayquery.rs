@@ -292,12 +292,16 @@ mod tests {
     /// needed).
     #[test]
     fn programs_compose() {
-        use mr_components::graph::Graph;
-        for geometry in REGION.names(Slot::Geometry) {
-            for shading in REGION.names(Slot::Shading) {
+        use mr_components::graph::{Change, shipped};
+        let base = shipped("rayquery-gpu").unwrap();
+        let (geometries, shadings) = (base.choices("geometry"), base.choices("shading"));
+        assert!(geometries.len() > 1 && shadings.len() > 1, "{geometries:?} {shadings:?}");
+        for geometry in geometries {
+            for &shading in &shadings {
                 for deferred in [false, true] {
-                    let c = mr_components::Composition { geometry: geometry.into(), shading: shading.into(), ..mr_components::Composition::new(NAME) };
-                    let ck = Graph::from_composition(&c).unwrap().check().unwrap();
+                    let bounce = (shading == "pathtrace").then(|| Change::bind("shading", "bounce", "kernel"));
+                    let edits: Vec<Change> = [Change::component("geometry", geometry), Change::component("shading", shading)].into_iter().chain(bounce).collect();
+                    let ck = base.with_edits(&edits).unwrap().check().unwrap();
                     let mut walks = Walks::of(&ck);
                     walks.site(&ck, ck.site(Role::Visibility, "primary").unwrap(), STORAGE_GROUPS, false);
                     let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), STORAGE_GROUPS, false);

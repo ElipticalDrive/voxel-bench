@@ -615,27 +615,45 @@ pub fn edits(g: &Graph) -> Vec<Graph> {
     v
 }
 
-/// The valid graphs one or two [`edits`] from the default graphs of `regions` (and their
-/// path-tracing ones), checked, with the region each lands on among them; each once.
+/// The valid graphs one or two [`edits`] from the shipped graph files `regions` build (and
+/// from those with each other shading their shading node may be), checked, with the region
+/// each lands on among them; each once.
 pub fn near(regions: &[&Builds]) -> Vec<Checked> {
+    let ours = |g: &Graph| g.region().is_some_and(|b| regions.iter().any(|r| r.id == b.id));
     let mut bases = vec![];
-    for r in regions {
-        let mut c = crate::Composition::new(r.name);
-        bases.push(c.clone());
-        if r.names(Slot::Shading).contains(&"pathtrace") {
-            c.shading = "pathtrace".into();
-            bases.push(c);
+    for (name, _) in super::SHIPPED {
+        let g = super::shipped(name).expect("a shipped file");
+        if !ours(&g) {
+            continue;
         }
+        let shading = g.check().expect("a shipped graph is valid").shading().to_string();
+        let others = g.choices(&shading).into_iter().filter(|c| *c != g.nodes[&shading].component);
+        // An input only the other shading has (path tracing's bounce rays) reads what the
+        // node's input of the same type reads.
+        let others: Vec<Graph> = others
+            .map(|c| {
+                let mut h = g.edit(&super::Change::Component(shading.clone(), c.into())).expect("a choice");
+                let n = h.nodes.get_mut(&shading).expect("the shading");
+                for p in inputs(n.role, c) {
+                    let like = inputs(n.role, c).iter().find(|q| q.data == p.data && n.inputs.contains_key(q.name)).map(|q| n.inputs[q.name].clone());
+                    if let Some(src) = like.filter(|_| !n.inputs.contains_key(p.name)) {
+                        n.inputs.insert(p.name.into(), src);
+                    }
+                }
+                h
+            })
+            .collect();
+        bases.push(g);
+        bases.extend(others);
     }
     let mut seen = std::collections::HashSet::new();
     let mut v = vec![];
-    for c in &bases {
-        let g = Graph::from_composition(c).expect("a default composition is a graph");
-        for h in edits(&g).into_iter().map(Graph::pruned) {
+    for g in &bases {
+        for h in edits(g).into_iter().map(Graph::pruned) {
             let two: Vec<Graph> = edits(&h).into_iter().map(Graph::pruned).collect();
             for x in std::iter::once(h).chain(two) {
                 let Ok(ck) = x.check() else { continue };
-                if ck.region.is_some_and(|b| regions.iter().any(|r| r.id == b.id)) && seen.insert(ck.graph.canonical().unwrap_or_default()) {
+                if ours(&ck.graph) && seen.insert(ck.graph.canonical().unwrap_or_default()) {
                     v.push(ck);
                 }
             }

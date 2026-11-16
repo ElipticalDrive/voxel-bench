@@ -342,12 +342,15 @@ mod tests {
     #[test]
     fn programs_compose() {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+        use mr_components::graph::Change;
+        let base = mr_components::graph::shipped("splat-gpu").unwrap();
         let mut n = 0;
-        for st in REGION.names(Slot::Storage) {
-            for k in REGION.names(Slot::Traversal) {
-                for shading in REGION.names(Slot::Shading) {
-                    let flat = mr_components::Composition { storage: st.into(), traversal: k.into(), shading: shading.into(), ..mr_components::Composition::new(NAME) };
-                    let Ok(gr) = mr_components::graph::Graph::from_composition(&flat) else { continue };
+        for st in base.choices("storage") {
+            for k in base.choices("kernel") {
+                for shading in base.choices("shading") {
+                    let bounce = (shading == "pathtrace").then(|| Change::bind("shading", "bounce", "kernel"));
+                    let flat: Vec<Change> = [("storage", st), ("kernel", k), ("shading", shading)].into_iter().map(|(n, c)| Change::component(n, c)).chain(bounce).collect();
+                    let Ok(gr) = base.with_edits(&flat) else { continue };
                     if gr.validate().is_err() {
                         continue;
                     }

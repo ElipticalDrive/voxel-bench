@@ -617,17 +617,35 @@ mod tests {
     /// on and off.
     #[test]
     fn programs_compose() {
-        use mr_components::graph::{Graph, Node};
-        let storages = REGION.names(Slot::Storage);
-        let kernels = REGION.names(Slot::Traversal);
+        use mr_components::graph::{Change, Node, shipped};
+        let base = shipped("raycast-gpu").unwrap();
+        let storages = base.choices("storage");
+        let kernels = base.choices("kernel");
         let mut n = 0;
         for st in &storages {
             for k in &kernels {
                 for (ss, sk) in [("same", "same"), ("tree64", "same"), ("same", "sphere"), ("distance", "incremental")] {
-                    for shading in REGION.names(Slot::Shading) {
+                    for shading in base.choices("shading") {
                         for (prepass, tile) in [("none", 1), ("beam", 8)] {
-                            let c = mr_components::Composition { storage: st.to_string(), traversal: k.to_string(), shadow_storage: ss.into(), shadow_traversal: sk.into(), shading: shading.to_string(), prepass: prepass.into(), ..Default::default() };
-                            let mut graphs = vec![Graph::from_composition(&c).unwrap()];
+                            let mut edits = vec![Change::component("storage", st), Change::component("kernel", k), Change::component("shading", shading)];
+                            // Shadow and bounce rays through a walk of their own: another
+                            // kernel, over the primary rays' storage or another.
+                            let own = (ss, sk) != ("same", "same");
+                            if own {
+                                edits.push(Change::add("shadow.kernel", Role::Traversal, if sk == "same" { k } else { sk }));
+                                if ss != "same" {
+                                    edits.extend([Change::add("shadow.storage", Role::Storage, ss), Change::bind("shadow.storage", "changes", "world")]);
+                                }
+                                edits.push(Change::bind("shadow.kernel", "storage", if ss == "same" { "storage" } else { "shadow.storage" }));
+                                edits.extend([Change::bind("meshes", "shadow", "shadow.kernel"), Change::bind("shading", "shadow", "shadow.kernel")]);
+                            }
+                            if shading == "pathtrace" {
+                                edits.push(Change::bind("shading", "bounce", if own { "shadow.kernel" } else { "kernel" }));
+                            }
+                            if prepass == "beam" {
+                                edits.extend([Change::add("prepass", Role::Prepass, "beam"), Change::bind("prepass", "storage", "storage"), Change::bind("visibility", "start", "prepass")]);
+                            }
+                            let mut graphs = vec![base.with_edits(&edits).unwrap()];
                             // Bounces and mesh shadows through walks of their own.
                             if shading == "pathtrace" && *k == "refloor" {
                                 let mut g = graphs[0].clone();

@@ -276,7 +276,9 @@ mod tests {
     fn program_composes() {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         for (st, k) in [("bricks", "refloor"), ("tree64", "sphere"), ("distance", "incremental")] {
-            for shading in mr_components::graph::GPU_WALK.names(mr_components::Slot::Shading) {
+            let shadings = mr_components::graph::shipped("raycast-gpu").unwrap().choices("shading");
+            assert!(shadings.len() > 1, "{shadings:?}");
+            for shading in shadings {
                 let g = split(st, k, shading);
                 let ck = g.check().unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));
                 g.accept().unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));

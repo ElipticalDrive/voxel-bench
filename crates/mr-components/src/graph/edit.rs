@@ -54,6 +54,23 @@ pub enum Change {
     Knobs(String, toml::Table),
 }
 
+impl Change {
+    /// Node `node` is component `component`.
+    pub fn component(node: &str, component: &str) -> Change {
+        Change::Component(node.into(), component.into())
+    }
+
+    /// Input `input` of `node` reads node `from`.
+    pub fn bind(node: &str, input: &str, from: &str) -> Change {
+        Change::Bind(node.into(), input.into(), Target::Node(from.into()))
+    }
+
+    /// A new node `id`, unbound.
+    pub fn add(id: &str, role: Role, component: &str) -> Change {
+        Change::Add(id.into(), role, component.into())
+    }
+}
+
 const DEFAULT: &str = "default";
 
 fn text(t: &mut toml::Table, k: &str) -> Result<Option<String>, String> {
@@ -486,6 +503,15 @@ pub const SHIPPED: &[(&str, &str)] = &[
     ("columns-gpu", include_str!("../../../../pipelines/columns-gpu.toml")),
     ("columns-cpu", include_str!("../../../../pipelines/columns-cpu.toml")),
 ];
+
+impl Graph {
+    /// The components node `id` may be instead, each leaving a pipeline its executor builds
+    /// (`accept`); its own among them when the graph is one. Empty: no such node.
+    pub fn choices(&self, id: &str) -> Vec<&'static str> {
+        let Some(n) = self.nodes.get(id) else { return vec![] };
+        super::role_components(n.role).into_iter().filter(|c| self.edit(&Change::Component(id.into(), c.to_string())).is_ok_and(|g| g.accept().is_ok())).collect()
+    }
+}
 
 /// The shipped graph file `name`, if there is one.
 pub fn shipped(name: &str) -> Option<Graph> {

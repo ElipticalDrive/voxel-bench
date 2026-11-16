@@ -786,13 +786,16 @@ mod tests {
     /// Every composition's shader composes from its modules and validates (no GPU needed).
     #[test]
     fn programs_compose() {
+        use mr_components::graph::Change;
+        let base = mr_components::graph::shipped("raster-gpu").unwrap();
         let mut n = 0;
-        for st in REGION.names(Slot::Storage) {
-            for k in REGION.names(Slot::Traversal) {
-                for g in REGION.names(Slot::Geometry) {
-                    for shading in REGION.names(Slot::Shading) {
-                        let flat = mr_components::Composition { storage: st.into(), geometry: g.into(), traversal: k.into(), shading: shading.into(), ..mr_components::Composition::new(NAME) };
-                        let mut graphs = vec![mr_components::graph::Graph::from_composition(&flat).unwrap()];
+        for st in base.choices("storage") {
+            for k in base.choices("kernel") {
+                for g in base.choices("geometry") {
+                    for shading in base.choices("shading") {
+                        let bounce = (shading == "pathtrace").then(|| Change::bind("shading", "bounce", "kernel"));
+                        let edits: Vec<Change> = [("storage", st), ("kernel", k), ("geometry", g), ("shading", shading)].into_iter().map(|(n, c)| Change::component(n, c)).chain(bounce).collect();
+                        let mut graphs = vec![base.with_edits(&edits).unwrap()];
                         // Bounces and mesh shadows through walks of their own.
                         if shading == "pathtrace" && g == "greedy" {
                             let mut gr = graphs[0].clone();
@@ -811,12 +814,12 @@ mod tests {
                         for gr in graphs {
                             let ck = gr.check().unwrap();
                             gr.validate().unwrap_or_else(|e| panic!("{gr:?}: {e}"));
-                            let what = format!("{st} {k} {g} {shading}");
+                            let what = format!("raster-gpu {st} {k} {g} {shading}");
                             let (walks, shadow, bounce, mesh_shadow) = walks(&ck).unwrap();
                             // The drawer (with mesh records for deferred drawers, and without).
                             let (program, deps, meshed) = crate::faces::programs(&walks, None, [shadow, bounce], Some(mesh_shadow), shading);
                             let draw_src = crate::faces::draw_src(&source_wgsl(g), false);
-                            crate::faces::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, REGION);
+                            crate::faces::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, &base.choices("draw"));
                             n += 1;
                         }
                     }

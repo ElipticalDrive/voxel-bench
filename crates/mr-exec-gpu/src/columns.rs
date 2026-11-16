@@ -278,7 +278,9 @@ mod tests {
     #[test]
     fn programs_compose() {
         use mr_gpu::wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
-        for shading in mr_components::graph::GPU_COLUMNS.names(mr_components::Slot::Shading) {
+        let shadings = mr_components::graph::shipped("columns-gpu").unwrap().choices("shading");
+        assert!(shadings.len() > 1, "{shadings:?}");
+        for shading in shadings {
             for deferred in [false, true] {
                 let (p, root, deps) = super::program(shading, deferred, mr_components::post::Tone::Aces);
                 let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{shading} {deferred}: {e}"));

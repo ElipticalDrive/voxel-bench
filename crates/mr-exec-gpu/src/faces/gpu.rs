@@ -1935,11 +1935,13 @@ mod tests {
             let m = p.naga(root, &deps).unwrap_or_else(|e| panic!("{what}: {e}"));
             Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));
         };
-        use mr_components::graph::{Graph, Node};
-        for st in REGION.names(Slot::Storage) {
-            for k in REGION.names(Slot::Traversal) {
-                let flat = mr_components::Composition { storage: st.into(), traversal: k.into(), shading: "pathtrace".into(), ..mr_components::Composition::new(NAME) };
-                let mut graphs = vec![Graph::from_composition(&flat).unwrap()];
+        use mr_components::graph::{Change, Node, shipped};
+        let base = shipped("discover-gpu").unwrap();
+        let (storages, kernels) = (base.choices("storage"), base.choices("kernel"));
+        assert!(storages.len() > 1 && kernels.len() > 1, "{storages:?} {kernels:?}");
+        for st in storages {
+            for &k in &kernels {
+                let mut graphs = vec![base.with_edits(&[Change::component("storage", st), Change::component("kernel", k), Change::component("shading", "pathtrace"), Change::bind("shading", "bounce", "kernel")]).unwrap()];
                 // Exposure, shadow and bounce rays through storages and kernels of their own.
                 if k == "refloor" {
                     let mut g = graphs[0].clone();
@@ -1969,7 +1971,7 @@ mod tests {
                     let bounce = with_bounce.site(&ck, ck.site(Role::Shading, "bounce").unwrap(), STORAGE_GROUPS, false);
                     for (walks, bounce, shading) in [(walks, shadow, "direct"), (with_bounce, bounce, "pathtrace")] {
                         let (mut program, deps, _) = crate::faces::programs(&walks, Some((rays, exposure)), [shadow, bounce], None, shading);
-                        crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("set_faces.wgsl"), true), shading, &format!("{st} {k} {shading}"), REGION);
+                        crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("set_faces.wgsl"), true), shading, &format!("discover-gpu {st} {k} {shading}"), &base.choices("draw"));
                         // Discovery's pieces: the sampler and hole detection over the shared set.
                         program.add(quadtree::SET, quadtree::SET_WGSL, &deps.iter().map(String::as_str).collect::<Vec<_>>());
                         let disc_deps: Vec<String> = std::iter::once(quadtree::SET.to_string()).chain(deps.iter().cloned()).collect();

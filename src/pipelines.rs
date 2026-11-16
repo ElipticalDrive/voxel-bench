@@ -723,8 +723,11 @@ mod tests {
     /// ones its generated code folds.
     #[test]
     fn every_cpu_graph_has_a_source() {
-        for st in mr_components::graph::CPU_RAYCAST.names(mr_components::Slot::Storage) {
-            for k in mr_components::graph::CPU_RAYCAST.names(mr_components::Slot::Traversal) {
+        let base = mr_components::graph::shipped("raycast-cpu").unwrap();
+        let (storages, kernels) = (base.choices("storage"), base.choices("kernel"));
+        assert!(storages.len() > 1 && kernels.len() > 1, "{storages:?} {kernels:?}");
+        for st in storages {
+            for &k in &kernels {
                 let b = bake(&spec(&format!("raycast-cpu,storage={st},kernel={k}"), &[("packet", "4".into())])).unwrap().unwrap();
                 let s = source(&b).unwrap();
                 assert!(s.contains("NATIVE: bool = true") && s.contains(&format!("raycast_entry::<{}, Baked, [u8; 4]>", mr_exec_cpu::storage_type(st).unwrap())), "{s}");
@@ -770,7 +773,7 @@ mod tests {
             }
             assert_eq!(s.contains("CPU_WORLD"), b == "discover-cpu", "{s}");
         }
-        let prefix = RendererSpec::composed(mr_components::Composition { storage: "prefix".into(), ..mr_components::Composition::new("discover-cpu") });
+        let prefix = spec("discover-cpu,storage=prefix", &[]);
         let s = source(&bake(&prefix).unwrap().unwrap()).unwrap();
         assert!(s.contains("CpuWorld::of::<mr_components::storage::prefix::cpu::Prefix>") && s.contains("(\"storage\", \"\\\"prefix\\\"\")"), "{s}");
         let m = manifest(repo(), Executor::Gpu);
