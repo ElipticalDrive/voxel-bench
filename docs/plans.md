@@ -53,7 +53,7 @@ compare = { reference = "cpu-reference", every = 100, settle = 2 }
 dir = "runs"
 ```
 
-The ways of writing a renderer (`graph` as a file or inline with `edits`, the older `compose` and `sites`, the command line's `-r`) are in
+The ways of writing a renderer (`graph` as a file or inline with `edits`, the command line's `-r`) are in
 [pipelines.md](pipelines.md).
 
 Two scores come out of `compare`. Every renderer is scored against the reference rendering
@@ -160,9 +160,9 @@ The full sweep the scripts run (`sweep.py`, `ab/wgsl.py`) is `scripts/full-sweep
 shipped graph with each node given every component it takes and its optional nodes present
 and absent. `plans/stream.toml` sweeps the link, the generator's place and the client.
 
-The older `compose` / `sites` form is not swept any more (a `"*"` or a list there is refused):
-write the sweep as a graph file, `edits` and `vary`. A component is never an option: `options`
-holds knobs only.
+A component is never an option: `options` holds knobs only. In each pass, of the swept
+pipelines the pass cannot tell apart the first runs (unlit: the shading's component and the
+rays it casts make no difference; without meshes: the meshes node and its shadow rays).
 
 ## Observations and the catalogue
 

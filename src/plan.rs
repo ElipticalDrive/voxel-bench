@@ -8,9 +8,8 @@
 //! combination that can be made and that `accept` takes, each distinct pipeline once
 //! (`RendererSpec::swept`); the entry's `options` go to each pipeline whose executor
 //! declares them. In each pass, swept combinations that the pass
-//! mode cannot tell apart run once (`Composition::effective`).
+//! mode cannot tell apart run once (`RendererSpec::told_apart`).
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, bail};
@@ -172,17 +171,16 @@ pub fn component_knob(name: &str) -> Option<&str> {
     name.strip_suffix(COMPONENT_KNOB)
 }
 
-/// One renderer of a plan: a pipeline graph (written `compose` + `sites`, its shorthand, or
-/// `graph`), or a standalone renderer (cpu-reference) by `name`.
+/// One renderer of a plan: a pipeline graph (written `graph`: a graph file, or the graph
+/// itself, with `edits`), or a standalone renderer (cpu-reference) by `name`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "Written", into = "Written")]
 pub struct RendererSpec {
-    /// Renderer entry to run. For pipelines this is derived (the preset's renderer).
+    /// Renderer entry to run: a standalone renderer's name; for pipelines derived (the
+    /// entry of the region the graph's shape names, `Graph::region`).
     pub name: String,
-    /// The pipeline (`mr_components::graph`; `None` for standalone renderers). Plans write
-    /// it in its shorthand (`Graph::shorthand`: composition and sites) where that says it
-    /// exactly and its stages carry no knobs, else as the graph; one written in the
-    /// shorthand runs as the shorthand's graph.
+    /// The pipeline (`mr_components::graph`; `None` for standalone renderers), run as it
+    /// is written.
     pub graph: Option<mr_components::graph::Graph>,
     /// Display label, to run the same renderer twice with different options.
     pub label: Option<String>,
@@ -199,8 +197,6 @@ pub struct RendererSpec {
     /// The graph file and the edits it was written as (`graph = "<file>"`, `edits`); it is
     /// written so again while they still give its graph.
     start: Option<(String, Vec<mr_components::graph::Change>)>,
-    /// The graph's shorthand (derived by `resolve`).
-    shorthand: Option<mr_components::graph::Shorthand>,
     /// Cache of the label (derived).
     compose_label: std::sync::OnceLock<String>,
 }
@@ -258,18 +254,10 @@ impl std::fmt::Display for Like {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Written {
+    /// A standalone renderer (`name = "cpu-reference"`); a pipeline has `graph` instead.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// The components it is assembled from.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compose: Option<mr_components::Composition>,
-    /// Sites of the composition bound otherwise (the sites form of
-    /// `mr_components::graph`): site → `<site>`, `<kernel>`, `<storage>/<kernel>` or
-    /// `<site>/<kernel>` (exposure tests: `<storage>` or `<site>`), e.g.
-    /// `sites = { bounce = "tree64/sphere" }`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub sites: BTreeMap<String, String>,
-    /// The pipeline as a graph, instead of `compose`: a graph file (a shipped one's name,
+    /// The pipeline: a graph file (a shipped one's name,
     /// `graph = "raycast-gpu"`, or a path) or the graph itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<GraphRef>,
@@ -312,8 +300,8 @@ impl TryFrom<Written> for RendererSpec {
     type Error = anyhow::Error;
 
     fn try_from(w: Written) -> anyhow::Result<Self> {
-        if w.graph.is_some() && (w.compose.is_some() || !w.sites.is_empty()) {
-            bail!("a renderer has `graph` or `compose` (with `sites`), not both");
+        if w.graph.is_some() && !w.name.is_empty() {
+            bail!("a renderer has `graph` (a pipeline) or `name` (a standalone renderer), not both");
         }
         if !w.edits.is_empty() && w.graph.is_none() {
             bail!("`edits` change a `graph` (a file's name or the graph itself); this renderer has none");
@@ -330,17 +318,7 @@ impl TryFrom<Written> for RendererSpec {
             }
         };
         let mut s = Self { graph, start, label: w.label, options: w.options, devices: w.devices, compile: w.compile, swept: w.swept, ..Self::new(w.name) };
-        match w.compose {
-            Some(c) => {
-                s.graph = Some(s.graph_of(c, &w.sites)?);
-                s.resolve()?;
-            }
-            None if !w.sites.is_empty() => {
-                s.resolve()?;
-                s.set_sites(w.sites)?;
-            }
-            None => s.resolve()?,
-        }
+        s.resolve()?;
         Ok(s)
     }
 }
@@ -351,51 +329,36 @@ impl From<RendererSpec> for Written {
     }
 }
 
-/// Whether a graph's stages carry knobs (such a graph is written as a graph).
-fn stage_knobs(g: &mr_components::graph::Graph) -> bool {
-    g.nodes.values().any(|n| n.role.slot().is_some() && !n.knobs.is_empty())
-}
-
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), graph: None, label: None, options: Default::default(), devices: None, compile: None, swept: false, like: None, start: None, shorthand: None, compose_label: Default::default() }
+        Self { name: name.into(), graph: None, label: None, options: Default::default(), devices: None, compile: None, swept: false, like: None, start: None, compose_label: Default::default() }
     }
 
-    /// A renderer assembled from components.
-    pub fn composed(c: mr_components::Composition) -> Self {
-        let mut s = Self::new("");
-        s.set_pipeline(c, &BTreeMap::new()).expect("valid composition");
-        s
+    /// The pipeline of graph file `file` (a shipped one's name or a path, as a plan's `graph`).
+    pub fn from_file(file: &str) -> anyhow::Result<Self> {
+        Self::try_from(Written { graph: Some(GraphRef::File(file.into())), ..Default::default() })
     }
 
-    /// Checks the pipeline and derives what follows from it: `name` (the preset's renderer;
-    /// a bare preset name gets the preset's default pipeline), options naming a stage's
-    /// component move into the pipeline, the knobs the graph spells (API choice, timings)
-    /// into the options, the shorthand.
+    /// Checks the pipeline and derives what follows from it: `name` (the entry of the region
+    /// the graph's shape names) and, into the options, the knobs the graph spells (the API
+    /// choice, timings) where they are not the knob's default.
     pub fn resolve(&mut self) -> anyhow::Result<()> {
-        self.shorthand = None;
         self.compose_label = Default::default();
-        // `name = "<preset's renderer>"` (the CLI, the GUI's presets): the preset's
-        // default composition.
-        if self.graph.is_none()
-            && let Some(b) = mr_components::graph::region_named(&self.name) {
-            self.graph = Some(self.graph_of(mr_components::Composition::new(b.name), &BTreeMap::new())?);
-        }
-        if self.graph.is_none() {
+        let Some(g) = &self.graph else {
             if self.name.is_empty() {
-                bail!("a renderer needs `compose = {{ ... }}` or a `name`");
+                bail!("a renderer needs a `graph` (a pipeline: a graph file's name or the graph itself) or a `name` (a standalone renderer)");
+            }
+            if mr_components::graph::shipped(&self.name).is_some() {
+                bail!("`{0}` is a graph file: write `graph = \"{0}\"`, not `name`", self.name);
             }
             return Ok(());
-        }
-        let g = self.graph.as_ref().unwrap();
+        };
         g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
-        let sh = g.shorthand().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
-        // The knobs the graph spells (API choice, timings) where its composition's graph
-        // spells them otherwise: options, as plans write them.
-        let spelled = |g: &mr_components::graph::Graph| g.preset_options().map_err(|e| anyhow::anyhow!("renderer graph: {e}"));
-        let defaults = spelled(&mr_components::graph::Graph::from_composition(&sh.compose).map_err(anyhow::Error::msg)?)?;
-        for (k, v) in spelled(g)? {
-            if defaults.get(&k) == Some(&v) {
+        let region = g.region().context("renderer graph: no executor builds a graph of this shape")?;
+        let params = crate::pipelines::executor_of(g).map(|(_, p)| p).unwrap_or_default();
+        for (k, v) in g.preset_options().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
+            let default = params.iter().find(|p| p.name == k).and_then(|p| toml::Value::try_from(p.default.to_json()).ok());
+            if default.as_ref() == Some(&v) {
                 continue;
             }
             if self.options.get(&k).is_some_and(|o| *o != v) {
@@ -403,44 +366,8 @@ impl RendererSpec {
             }
             self.options.insert(k, v);
         }
-        self.name = sh.compose.region().map(|b| b.name).with_context(|| format!("renderer graph: `{}` runs on no renderer", sh.compose.preset))?.to_string();
-        // One form per pipeline: written in its shorthand, it runs as the shorthand's graph.
-        if sh.exact && !stage_knobs(g) {
-            let c = sh.compose.clone();
-            self.graph = Some(self.graph_of(c, &sh.sites)?);
-        }
-        self.shorthand = Some(sh);
+        self.name = region.name.to_string();
         Ok(())
-    }
-
-    /// The graph of composition `c` with `sites` bound otherwise.
-    fn graph_of(&self, mut c: mr_components::Composition, sites: &BTreeMap<String, String>) -> anyhow::Result<mr_components::graph::Graph> {
-        c.resolve().map_err(|e| anyhow::anyhow!("renderer {}: {e}", c.label()))?;
-        mr_components::graph::Graph::from_composition(&c).and_then(|g| g.with_sites(sites)).and_then(|g| g.accept().map(|_| g)).map_err(|e| anyhow::anyhow!("renderer {}: sites: {e}", c.label()))
-    }
-
-    /// Runs composition `c` with `sites` bound otherwise (on failure nothing changes).
-    pub fn set_pipeline(&mut self, c: mr_components::Composition, sites: &BTreeMap<String, String>) -> anyhow::Result<()> {
-        let old = (self.graph.clone(), self.options.clone());
-        let r = self.graph_of(c, sites).and_then(|g| {
-            self.graph = Some(g);
-            self.resolve()
-        });
-        if r.is_err() {
-            (self.graph, self.options) = old;
-            let _ = self.resolve();
-        }
-        r
-    }
-
-    /// The shorthand when the plan writes the pipeline so (`None`: written as a graph, or standalone).
-    pub fn shorthand_form(&self) -> Option<&mr_components::graph::Shorthand> {
-        self.shorthand.as_ref().filter(|sh| sh.exact && !self.graph.as_ref().is_some_and(stage_knobs))
-    }
-
-    /// The composition of its shorthand (the nearest one for a graph it does not say).
-    pub fn composition(&self) -> Option<&mr_components::Composition> {
-        self.shorthand.as_ref().map(|sh| &sh.compose)
     }
 
     /// The components its nodes may be instead, as knobs of the host's (`<node>.component`;
@@ -475,12 +402,6 @@ impl RendererSpec {
         r
     }
 
-    /// The sites its shorthand binds otherwise (none when written as a graph).
-    #[cfg(test)]
-    pub fn sites(&self) -> BTreeMap<String, String> {
-        self.shorthand_form().map(|sh| sh.sites.clone()).unwrap_or_default()
-    }
-
     /// Written as it was read, a graph file and edits, if reading that back gives this
     /// renderer still (its graph was not changed since).
     fn start_form(&self) -> Option<Written> {
@@ -491,24 +412,21 @@ impl RendererSpec {
     }
 
     /// As plans write it: the graph file and edits it was read from while they still say
-    /// it; else the shorthand where it says the pipeline (the renderer name
-    /// derived, left out), else the graph (with the knobs it spells left out of the options).
+    /// it, else the graph itself (the knobs it spells left out of the options); a
+    /// standalone renderer by its name.
     pub fn written(&self) -> Written {
         if let Some(w) = self.start_form() {
             return w;
         }
-        let mut w = Written { name: self.name.clone(), label: self.label.clone(), options: self.options.clone(), devices: self.devices.clone(), compile: self.compile, swept: self.swept, ..Default::default() };
-        if let Some(g) = &self.graph {
-            w.name.clear();
-            match self.shorthand_form() {
-                Some(sh) => (w.compose, w.sites) = (Some(sh.compose.clone()), sh.sites.clone()),
-                None => {
-                    for k in g.preset_options().unwrap_or_default().keys() {
-                        w.options.remove(k);
-                    }
-                    w.graph = Some(GraphRef::Inline(Box::new(g.clone())));
+        let mut w = Written { label: self.label.clone(), options: self.options.clone(), devices: self.devices.clone(), compile: self.compile, swept: self.swept, ..Default::default() };
+        match &self.graph {
+            Some(g) => {
+                for k in g.preset_options().unwrap_or_default().keys() {
+                    w.options.remove(k);
                 }
+                w.graph = Some(GraphRef::Inline(Box::new(g.clone())));
             }
+            None => w.name = self.name.clone(),
         }
         w
     }
@@ -538,24 +456,12 @@ impl RendererSpec {
         Self::try_from(Written { graph: Some(GraphRef::File(file.into())), edits, ..Default::default() }).with_context(|| format!("`{s}`"))
     }
 
-    /// Replaces the sites bound otherwise and re-resolves (on failure the old ones stay;
-    /// the result in its shorthand).
-    pub fn set_sites(&mut self, sites: BTreeMap<String, String>) -> anyhow::Result<()> {
-        let c = self.composition().with_context(|| format!("`{}` has no sites (not a pipeline)", self.label()))?.clone();
-        self.set_pipeline(c, &sites)
-    }
-
-    /// The renderer as far as a pass of mode `m` can tell (`Composition::effective` of its
-    /// shorthand; sites only lit passes cast rays at, or mesh passes, dropped). Graphs
-    /// written as graphs stay as they are.
-    pub fn effective(&self, m: PassMode) -> anyhow::Result<Self> {
-        let Some(sh) = self.shorthand_form() else { return Ok(self.clone()) };
-        let mut e = self.clone();
-        let unlit = m.lighting == mr_core::RenderMode::Unlit;
-        let mut sites = sh.sites.clone();
-        sites.retain(|k, _| !(unlit && matches!(k.as_str(), "shadow" | "bounce" | "meshes-shadow")) && (m.meshes || k != "meshes-shadow"));
-        e.set_pipeline(sh.compose.effective(m), &sites)?;
-        Ok(e)
+    /// What a pass of mode `m` can tell of this renderer (`Graph::told_apart` and its
+    /// options): renderers equal here draw the same frames in such a pass, so a sweep runs
+    /// one of them.
+    pub fn told_apart(&self, m: PassMode) -> String {
+        let g = self.graph.as_ref().map(|g| serde_json::to_string(&g.told_apart(m)).unwrap_or_default());
+        format!("{}\n{}\n{}", self.name, g.unwrap_or_default(), toml::to_string(&self.options).unwrap_or_default())
     }
 
     /// The graph it runs (`None` for standalone renderers).
@@ -591,8 +497,8 @@ impl RendererSpec {
         Some(self.compile.unwrap_or(run.compile)).filter(|&c| c != Compile::Off && matches!(crate::pipelines::bake(self), Ok(Some(_))))
     }
 
-    /// Display label: the explicit one, else the graph's (its shorthand, or the nearest
-    /// composition marked as a graph), else the renderer name.
+    /// Display label: the explicit one, else the graph's (`Graph::label`), else the
+    /// renderer name.
     pub fn label(&self) -> &str {
         if let Some(l) = &self.label {
             return l;
@@ -657,15 +563,23 @@ impl RendererSpec {
     /// Sets (or with `None` clears) its client's knob `name` and re-resolves (on failure
     /// nothing changes).
     pub fn set_client_knob(&mut self, name: &str, value: Option<i64>) -> anyhow::Result<()> {
-        use mr_components::graph::{CLIENT, parse_site_knobs, site_with_knobs};
+        use mr_components::graph::{CLIENT, Change, Role};
         let g = self.graph.clone().with_context(|| format!("`{}` has no client (not a pipeline)", self.label()))?;
-        let (client, mut knobs) = parse_site_knobs(&g.sites_value(CLIENT)).map_err(anyhow::Error::msg)?;
-        match value {
-            Some(v) => drop(knobs.insert(name.into(), v.into())),
-            None => drop(knobs.remove(name)),
-        }
-        let entry: BTreeMap<String, String> = [(CLIENT.to_string(), site_with_knobs(&client, &knobs))].into();
-        self.graph = Some(g.with_sites(&entry).map_err(anyhow::Error::msg)?);
+        // The edits: the knob on its client node, the node added first where the graph
+        // leaves it to be filled in (then nothing is unset on it).
+        let mut edits = vec![];
+        let id = match g.nodes.iter().find(|(_, n)| n.role == Role::Client) {
+            Some((id, _)) => id.clone(),
+            None if value.is_none() => return Ok(()),
+            None => {
+                let filled = g.check().map_err(anyhow::Error::msg)?.graph;
+                let component = filled.nodes.values().find(|n| n.role == Role::Client).map(|n| n.component.clone()).context("no client in the checked graph")?;
+                edits.push(Change::add(CLIENT, Role::Client, &component));
+                CLIENT.to_string()
+            }
+        };
+        edits.push(Change::Knob(id, name.into(), value.map(Into::into)));
+        self.graph = Some(g.with_edits(&edits).map_err(anyhow::Error::msg)?);
         if let Err(e) = self.resolve() {
             self.graph = Some(g);
             let _ = self.resolve();
@@ -844,9 +758,6 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
 /// error, with the first reason.
 fn expand_varied(e: &toml::Table, infos: &[mr_core::RendererInfo]) -> anyhow::Result<Vec<toml::Value>> {
     use mr_components::graph::{CLIENT_KNOBS, Change, varied};
-    if e.contains_key("compose") || e.contains_key("sites") {
-        bail!("`vary` sweeps the edits of a `graph`; this renderer has `compose` / `sites` (write it as a graph: a file's name and `edits`)");
-    }
     let graph: GraphRef = e.get("graph").cloned().context("`vary` sweeps the edits of a `graph` (a file's name or the graph itself); this renderer has none")?.try_into()?;
     let edits: Vec<Change> = e.get("edits").cloned().map(|v| v.try_into()).transpose()?.unwrap_or_default();
     let base = match graph {
@@ -1005,8 +916,7 @@ mod tests {
         assert_eq!(SHIPPED.len(), REGIONS.len());
         for (name, _) in SHIPPED {
             let r = renderer(&format!("graph = \"{name}\"")).unwrap();
-            let mut d = RendererSpec::new(*name);
-            d.resolve().unwrap();
+            let d = RendererSpec::from_cli(name).unwrap();
             assert_eq!(key(&r), key(&d), "{name}");
             assert_eq!((r.name.as_str(), r.label()), (d.name.as_str(), d.label()), "{name}");
             assert_eq!(toml::to_string(&r).unwrap().trim(), format!("graph = \"{name}\"\n\n[options]"), "{name}");
@@ -1049,7 +959,12 @@ mod tests {
             ("graph = \"raycast-gpu\"\nedits = [{ node = \"nowhere\", component = \"tree64\" }]", "edit 1 (`"),
             ("graph = \"raycast-gpu\"\nedits = [{ node = \"storage\", component = \"heightmap\" }]", "renderer graph: "),
             ("name = \"cpu-reference\"\nedits = [{ remove = \"storage\" }]", "`edits` change a `graph`"),
-            ("graph = \"raycast-gpu\"\ncompose = { preset = \"raycast-gpu\" }", "not both"),
+            ("graph = \"raycast-gpu\"\nname = \"cpu-reference\"", "not both"),
+            // The flat form is gone, and a graph file is not a renderer's name.
+            ("compose = { preset = \"raycast-gpu\" }", "unknown field `compose`"),
+            ("graph = \"raycast-gpu\"\nsites = { shadow = \"incremental\" }", "unknown field `sites`"),
+            ("name = \"raycast-gpu\"", "write `graph = \"raycast-gpu\"`"),
+            ("label = \"nothing\"", "needs a `graph`"),
         ] {
             let e = format!("{:#}", renderer(text).unwrap_err());
             assert!(e.contains(why), "{text}: {e}");
@@ -1062,7 +977,7 @@ mod tests {
     /// read them; the preset's own (`threads`) stay options.
     #[test]
     fn node_knobs_reach_the_worker_graph() {
-        let mut r = RendererSpec::new("columns-cpu");
+        let mut r = RendererSpec::from_file("columns-cpu").unwrap();
         r.options.insert("shadows".into(), "sun".into());
         r.options.insert("threads".into(), 2.into());
         r.resolve().unwrap();
@@ -1114,7 +1029,11 @@ mod tests {
         s.set_client_knob("max_lod", Some(2)).unwrap();
         assert_eq!((s.max_lod(&new.run, 8), s.client_knob("max_lod"), s.levels()), (2, Some(2), mr_core::client::Levels::Pick));
         s.set_client_knob("max_lod", None).unwrap();
-        assert_eq!((s.client_knob("max_lod"), s.pipeline()), (None, free.pipeline()));
+        // The client the setter added stays, without the knob: the same pipeline by its key.
+        assert_eq!((s.client_knob("max_lod"), key(&s)), (None, key(free)));
+        let mut none = free.clone();
+        none.set_client_knob("max_lod", None).unwrap();
+        assert_eq!(none.graph, free.graph, "nothing to unset: nothing added");
     }
 
     #[test]
@@ -1203,12 +1122,13 @@ mod tests {
             let e = format!("{:#}", RendererSpec::from_cli(bad).unwrap_err());
             assert!(e.contains(why), "{bad}: {e}");
         }
-        // Naming a preset's renderer gives its default composition.
+        // A graph file is named as the graph, not as the renderer.
         let named = text.replace("graph = \"raycast-gpu\"", "name = \"discover-gpu\"").replace("edits = [{ node = \"storage\", component = \"prefix\" }, { node = \"kernel\", component = \"incremental\" }]\n", "").replace("options = { exact = false }", "");
         assert!(named.contains("name = \"discover-gpu\"") && !named.contains("edits") && !named.contains("exact"), "{named}");
-        let r = &Plan::parse(&named, &[]).unwrap().renderers[0];
+        let e = format!("{:#}", Plan::parse(&named, &[]).unwrap_err());
+        assert!(e.contains("write `graph = \"discover-gpu\"`"), "{e}");
+        let r = &Plan::parse(&named.replace("name = \"discover-gpu\"", "graph = \"discover-gpu\""), &[]).unwrap().renderers[0];
         assert_eq!(r.label(), "gpu: bricks + refloor + quadtree + raster + direct");
-        assert!(Plan::parse(&named, &[]).unwrap().to_toml().unwrap().contains("compose"));
     }
 
     /// The command line: a graph file, then edits in their short spellings or as tables.
@@ -1295,11 +1215,13 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let (g, c) = (&g.renderers[0], &c);
         assert_eq!(g.name, c.name);
         assert_eq!((g.label(), c.label()), ("gpu: prefix + incremental(exact=false) + raycast + direct", "gpu: prefix + incremental + raycast + direct"), "a node's knob is in the label, an option is not");
-        assert!(g.shorthand_form().is_none() && g.options.is_empty());
+        assert!(g.options.is_empty());
+        // It runs as it is written: its nodes keep their ids.
+        assert_eq!(g.graph.as_ref().unwrap().nodes.keys().map(String::as_str).collect::<Vec<_>>(), ["k", "out", "s", "v"]);
         assert_eq!(g.worker_graph().unwrap().unwrap().key(), c.worker_graph().unwrap().unwrap().key(), "the same pipeline to the worker");
         assert_eq!(g.knob_values().get("exact"), c.knob_values().get("exact"));
         let bare = Plan::parse(&format!("{base}{}", graph.replace(", knobs = { exact = false }", "")), &[]).unwrap();
-        assert!(bare.renderers[0].shorthand_form().is_some() && key(&bare.renderers[0]) == key(c));
+        assert_eq!(key(&bare.renderers[0]), key(c));
         let bad = graph.replace("primary = \"k\"", "primary = \"s\"");
         let e = Plan::parse(&format!("{base}{bad}"), &[]).unwrap_err().to_string();
         assert!(e.contains("takes ray queries"), "{e}");
@@ -1318,41 +1240,46 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let again = Plan::parse(&saved, &[]).unwrap();
         assert_eq!(again.renderers[0].pipeline().unwrap().key(), r.pipeline().unwrap().key());
         assert_eq!(again.renderers[0].label(), r.label());
-        // Without knobs on its kernels, the same graph has a sites form and is kept so.
+        // Without knobs on its kernels the same graph is saved as the graph too (no other form).
         let plain = own.replace(", knobs = { exact = true, skip8 = false }", "").replace(", knobs = { exact = false }", "");
         let p = Plan::parse(&format!("{base}{plain}"), &[]).unwrap();
         let r = &p.renderers[0];
-        assert!(r.shorthand_form().is_some() && r.sites().get("shadow").map(String::as_str) == Some("incremental"), "{:?}", r.sites());
         assert_eq!(r.label(), "gpu: prefix + incremental + raycast + incremental + direct");
-        assert!(p.to_toml().unwrap().contains("[renderer.sites]"));
-        let both = graph.replace("[[renderer]]\n", "[[renderer]]\nsites = { bounce = \"rows/rowrun\" }\n");
+        let saved = p.to_toml().unwrap();
+        assert!(saved.contains("[renderer.graph]") && !saved.contains("sites") && !saved.contains("compose"), "{saved}");
+        assert_eq!(key(&Plan::parse(&saved, &[]).unwrap().renderers[0]), key(r));
+        let both = graph.replace("[[renderer]]\n", "[[renderer]]\nname = \"cpu-reference\"\n");
         assert!(Plan::parse(&format!("{base}{both}"), &[]).unwrap_err().to_string().contains("not both"));
     }
 
-    /// Sites in plans, run as graphs.
+    /// What a pass can tell apart, read off the graph: unlit, the shading's component and
+    /// the rays it casts are moot; without meshes, the meshes node and its shadow rays.
     #[test]
-    fn sites() {
-        let flat = |c: &str, sites: &str| renderer(&format!("compose = {{ preset = {c} }}\nsites = {{ {sites} }}")).map_err(|e| format!("{e:#}"));
-        let r = flat("\"raycast-gpu\", shading = \"pathtrace\"", "bounce = \"tree64/sphere\"").unwrap();
-        assert_eq!(r.label(), "gpu: bricks + refloor + composite + raycast + tree64 + sphere + pathtrace");
-        let g = r.pipeline().unwrap();
-        assert!(g.nodes.values().any(|n| n.component == "tree64"));
-        // Effective in unlit passes: the bounces are moot, so is the shading.
-        let u = r.effective(PassMode::UNLIT).unwrap();
-        assert!(u.sites().is_empty() && u.label() == "gpu: bricks + refloor + composite + raycast + direct", "{}", u.label());
-        assert_eq!(r.effective(PassMode::LIT).unwrap().label(), r.label());
-        // Errors say why.
-        let e = flat("\"raycast-gpu\"", "bounce = \"tree64/sphere\"").unwrap_err();
-        assert!(e.contains("no site `bounce`"), "{e}");
-        let e = flat("\"rayquery-gpu\"", "bounce = \"bricks/refloor\"").unwrap_err();
-        assert!(e.contains("no site `bounce`") || e.contains("through its primary kernel"), "{e}");
-        let e = flat("\"raycast-cpu\"", "shadow = \"hier/refloor\"").unwrap_err();
-        assert!(e.contains("`raycast-cpu` builds 1 storage node"), "{e}");
-        assert!(flat("\"raycast-cpu\"", "shadow = \"incremental\"").is_ok());
-        // set_sites keeps the old ones when the new ones cannot run.
-        let mut r = r;
-        assert!(r.set_sites(BTreeMap::from([("bounce".into(), "x/y".into())])).is_err());
-        assert_eq!(r.sites().get("bounce").map(String::as_str), Some("tree64/sphere"));
+    fn passes_tell_apart() {
+        let modes = [PassMode { lighting: mr_core::RenderMode::Unlit, meshes: false }, PassMode { lighting: mr_core::RenderMode::Unlit, meshes: true }, PassMode { lighting: mr_core::RenderMode::Lit, meshes: false }, PassMode { lighting: mr_core::RenderMode::Lit, meshes: true }];
+        let [unlit, unlit_meshes, lit, lit_meshes] = modes;
+        let cli = |s: &str| RendererSpec::from_cli(s).unwrap_or_else(|e| panic!("{s}: {e:#}"));
+        let same = |a: &str, b: &str, m: PassMode| cli(a).told_apart(m) == cli(b).told_apart(m);
+        // Path tracing with bounce rays of its own against the plain pipeline.
+        let (plain, pt) = ("raycast-gpu", "raycast-gpu,shading=pathtrace,shading.bounce=traversal:sphere,traversal.storage=storage:tree64");
+        assert!(cli(pt).pipeline().unwrap().nodes.values().any(|n| n.component == "tree64"));
+        assert!(same(plain, pt, unlit) && same(plain, pt, unlit_meshes) && !same(plain, pt, lit) && !same(plain, pt, lit_meshes));
+        // What primary rays walk is told apart in every pass.
+        assert!(modes.iter().all(|&m| !same(plain, "raycast-gpu,storage=tree64", m)));
+        // The rasteriser's storage serves shadow rays alone (the shading's and the mesh pass's).
+        let (raster, other) = ("raster-gpu", "raster-gpu,storage=tree64");
+        assert!(same(raster, other, unlit) && same(raster, other, unlit_meshes) && !same(raster, other, lit) && !same(raster, other, lit_meshes));
+        // The meshes node and what it alone reads: told apart only by passes with meshes.
+        let no_meshes = "raster-gpu,draw.meshes=,-meshes";
+        assert!(cli(no_meshes).pipeline().unwrap().nodes.values().all(|n| n.role != mr_components::graph::Role::Meshes));
+        assert!(same(raster, no_meshes, unlit) && same(raster, no_meshes, lit) && !same(raster, no_meshes, unlit_meshes) && !same(raster, no_meshes, lit_meshes));
+        // An option is told apart always; a renderer from itself never.
+        let mut o = cli(plain);
+        o.options.insert("exact".into(), false.into());
+        assert!(modes.iter().all(|&m| o.told_apart(m) != cli(plain).told_apart(m) && cli(pt).told_apart(m) == cli(pt).told_apart(m)));
+        // Nothing is left out of a lit pass with meshes: the graph as it is.
+        let g = cli(pt).graph.unwrap();
+        assert_eq!(g.told_apart(lit_meshes), g);
     }
 
     /// The scoring class takes the lighting model: path tracing in lit passes, with its
@@ -1439,16 +1366,11 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         // Refused with the reason.
         for (r, why) in [
             ("vary = [{ node = \"storage\", component = \"*\" }]", "this renderer has none"),
-            ("compose = { preset = \"raycast-gpu\" }\nvary = [{ node = \"storage\", component = \"*\" }]", "sweeps the edits of a `graph`"),
             ("graph = \"raycast-gpu\"\nvary = [{ node = \"nowhere\", component = \"*\" }]", "no node `nowhere` to vary"),
             ("graph = \"raycast-gpu\"\nvary = [{ node = \"nowhere\", component = [\"tree64\"] }]", "gives no pipeline (the first combination: edit 1"),
             ("graph = \"raycast-gpu\"\nvary = [{ node = \"storage\", component = [\"heightmap\"] }]", "gives no pipeline (the first combination: "),
             ("graph = \"raycast-gpu\"\nvary = [{ node = \"shading\", knob = \"bounces\", value = \"*\" }]", "give the values as a list"),
             ("graph = \"raycast-gpu\"\nvary = [{ any = [[]], node = \"storage\" }]", "`any` stands alone"),
-            // The swept flat form is gone: a `*` or a list there is no component's name.
-            ("compose = { storage = \"*\" }", ""),
-            ("compose = { storage = [\"bricks\", \"tree64\"] }", ""),
-            ("sites = { post = \"*\" }", ""),
         ] {
             let e = format!("{:#}", plan(r).unwrap_err());
             assert!(e.contains(why), "{r}: {e}");
@@ -1470,5 +1392,4 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         }
         assert!(n >= 10);
     }
-
 }

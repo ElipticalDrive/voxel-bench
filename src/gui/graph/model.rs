@@ -58,10 +58,6 @@ impl Trial {
         self.draft.as_ref().map_or(&self.graph, |d| &d.0)
     }
 
-    pub fn base(&self) -> &RendererSpec {
-        &self.base
-    }
-
     /// Why the draft does not run, if there is one.
     pub fn draft(&self) -> Option<&str> {
         self.draft.as_ref().map(|d| d.1.as_str())
@@ -177,7 +173,7 @@ pub fn order(g: &Graph) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mr_components::graph::REGIONS;
+    use mr_components::graph::SHIPPED;
 
     fn spec(c: &str) -> RendererSpec {
         let mut s = RendererSpec::from_cli(c).unwrap();
@@ -185,14 +181,15 @@ mod tests {
         s
     }
 
-    /// Every preset's graph, written back as a graph, loads as the same pipeline.
+    /// Every shipped file's graph, written back as a graph, loads as the same pipeline.
     #[test]
-    fn presets_load_as_their_graphs() {
-        for b in REGIONS {
-            let s = spec(b.name);
-            let g = graph_of(&s).unwrap_or_else(|| panic!("{}: no graph", b.name));
-            let l = load(&s, &g, &[]).unwrap_or_else(|e| panic!("{}: {e}", b.name));
-            assert_eq!(l.pipeline().unwrap().key().unwrap(), s.pipeline().unwrap().key().unwrap(), "{}", b.name);
+    fn files_load_as_their_graphs() {
+        assert!(SHIPPED.len() >= 10);
+        for (name, _) in SHIPPED {
+            let s = spec(name);
+            let g = graph_of(&s).unwrap_or_else(|| panic!("{name}: no graph"));
+            let l = load(&s, &g, &[]).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(l.pipeline().unwrap().key().unwrap(), s.pipeline().unwrap().key().unwrap(), "{name}");
             assert_eq!(l.name, s.name);
         }
     }

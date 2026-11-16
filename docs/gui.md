@@ -92,8 +92,7 @@ reopens the windows.
 ## The pipeline editor
 
 A renderer is its pipeline graph (see [pipelines.md](pipelines.md)). The plan editor and the
-Metrics tab show it in compact form: the preset it runs as (derived from the graph, never
-chosen directly), then one row per node with its component and that component's knobs.
+Metrics tab show it in compact form: its executor, then one row per node with its component and that component's knobs.
 
 **✏ graph** opens the editor in its pane (an OS window of its own to start with; a dock or the
 middle, see [Docks](#docks)). The graph is laid out from the world (left) to the image
@@ -105,7 +104,8 @@ Dragging from an output onto an input rebinds the input. Dragging a node moves i
 the background pans and the wheel zooms about the pointer; the view fits the graph until then,
 and a double click on the background fits it again (with **auto-frame** on, so does
 releasing a dragged node). Undo and redo are available, and
-"start from…" loads a preset's default pipeline.
+"start from…" loads a shipped graph file's pipeline (as "+ renderer" in the plan editor does
+for a new renderer).
 
 Every choice is tried before it is offered. A change is made exactly as picked: a new node comes
 unbound, nothing is filled in and nothing is dropped. If the resulting graph cannot run, the

@@ -337,7 +337,7 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
             painter.add(Shape::line(bezier(out_pos(&src), end, s), Stroke::new(2.5, color)));
             if let Some(v) = &verdict {
                 let text = match v {
-                    Ok((_, Ok(spec))) => format!("runs as {}: {}", spec.name, spec.label()),
+                    Ok((_, Ok(spec))) => format!("gives: {}", spec.label()),
                     Ok((_, Err(e))) => format!("does not run: {e}\n(drop it to keep editing: a draft)"),
                     Err(e) => format!("cannot run: {e}"),
                 };

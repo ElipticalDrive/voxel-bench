@@ -203,7 +203,7 @@ speed within noise; `scripts/ab/`):
    edits exactly, with drafts.
 5. The ten named back ends retired: a graph names its executor by device kind (`executor =
    "cpu"` or `"gpu"`), executors read their nodes' knobs from the graph (a live slot switch is a
-   graph edit), plans and labels are read off the graph (`compose` + `sites` an input shorthand),
+   graph edit), plans and labels are read off the graph (written as a graph file and edits, or the graph),
    `RendererSpec` holds the graph, and the compiled pipelines are keyed by the graph and its
    executor alone (the knobs each component declares specialisable).
 

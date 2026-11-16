@@ -509,7 +509,7 @@ fn is_preset_renderer(name: &str) -> bool {
     mr_components::graph::region_named(name).is_some()
 }
 
-/// A composed renderer's summary (`graph::summary`): edits go into it. Returns whether
+/// A pipeline's summary (`graph::summary`): edits go into it. Returns whether
 /// anything changed.
 fn composition(ui: &mut Ui, i: usize, r: &mut RendererSpec, run: &crate::plan::RunSpec, ctx: &mut EditorCtx) -> Changed {
     use super::graph::{self, Of};
@@ -580,11 +580,22 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
         c = true;
     }
     ui.horizontal(|ui| {
-        if ui.button("+ renderer").on_hover_text("Add a renderer (raycast-gpu's default pipeline; then change its graph: ✏ graph)").clicked() {
-            plan.renderers.push(RendererSpec::composed(Default::default()));
-            ctx.option_text.push(String::new());
-            c = true;
-        }
+        ui.menu_button("+ renderer", |ui| {
+            ui.weak("A pipeline, started from a graph file (then change its graph: ✏ graph)");
+            for (file, about) in super::graph::start_files() {
+                if ui.button(file).on_hover_text(about).clicked() {
+                    match RendererSpec::from_file(file) {
+                        Ok(r) => {
+                            plan.renderers.push(r);
+                            ctx.option_text.push(String::new());
+                            c = true;
+                        }
+                        Err(e) => tracing::warn!("graph file `{file}`: {e:#}"),
+                    }
+                    ui.close();
+                }
+            }
+        });
         for info in ctx.infos.iter().filter(|x| !is_preset_renderer(&x.name)) {
             if ui.button(format!("+ {}", info.name)).on_hover_text(format!("Add the standalone renderer: {}", info.description)).clicked() {
                 plan.renderers.push(RendererSpec::new(info.name.clone()));

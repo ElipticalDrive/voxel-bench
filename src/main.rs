@@ -516,7 +516,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
             out.references.retain(|k, _| k.1 != mode);
             reports.extend(ctx.reference(None, mode, &base, &mut out)?);
         }
-        // Swept compositions run as what this mode can tell apart, once each.
+        // Of the swept pipelines this mode cannot tell apart, the first runs.
         let mut seen = std::collections::HashSet::new();
         let mut moot = 0;
         let specs: Vec<RendererSpec> = plan
@@ -533,9 +533,8 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
                 if !s.swept {
                     return Some(s.clone());
                 }
-                let e = s.effective(mode).ok()?;
-                if seen.insert((e.label().to_string(), toml::to_string(&e.options).unwrap_or_default())) {
-                    Some(e)
+                if seen.insert(s.told_apart(mode)) {
+                    Some(s.clone())
                 } else {
                     moot += 1;
                     None
@@ -543,7 +542,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
             })
             .collect();
         if moot > 0 {
-            tracing::info!("{} mode: {} swept compositions run, {moot} more are the same in this mode", mode.name(), specs.iter().filter(|s| s.swept).count());
+            tracing::info!("{} mode: {} swept pipelines run, {moot} more are the same in this mode", mode.name(), specs.iter().filter(|s| s.swept).count());
         }
         // Repeats go round-robin (A B C A B C ...) so slow drifts in clocks and
         // temperature spread over all renderers instead of favouring whichever ran first.

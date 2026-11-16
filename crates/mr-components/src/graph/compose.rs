@@ -196,6 +196,45 @@ impl Graph {
         }
         Ok(t)
     }
+
+    /// The graph as far as a pass of mode `m` can tell it from another: what the pass does
+    /// not evaluate is left out. Unlit, a shading node shows the texel of its hits, whatever
+    /// its component, and casts no rays (its other inputs go, and the mesh pass's shadow
+    /// rays); without meshes nothing reads a meshes node. The nodes nothing reads any more
+    /// go too. Two graphs equal here render the same frames in such a pass (a sweep runs one
+    /// of them); the result is for comparing, not for running.
+    pub fn told_apart(&self, m: mr_core::PassMode) -> Graph {
+        let unlit = m.lighting == mr_core::RenderMode::Unlit;
+        let read = |g: &Graph| g.nodes.values().flat_map(|n| n.inputs.values().cloned()).collect::<std::collections::HashSet<_>>();
+        // What nothing reads in the graph as it is stays (the output, an unread world).
+        let ends: Vec<String> = self.nodes.keys().filter(|k| !read(self).contains(*k)).cloned().collect();
+        let mut g = self.clone();
+        let meshes: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == Role::Meshes).map(|(k, _)| k.clone()).collect();
+        for n in g.nodes.values_mut() {
+            if unlit && n.role == Role::Shading {
+                n.inputs.retain(|p, _| p == "hits");
+                n.component.clear();
+            }
+            if unlit && n.role == Role::Meshes {
+                n.inputs.remove("shadow");
+            }
+            if !m.meshes {
+                n.inputs.retain(|_, from| !meshes.contains(from));
+            }
+            let Node { inputs, timing, .. } = n;
+            timing.retain(|p, _| inputs.contains_key(p));
+        }
+        let mut kept = std::collections::HashSet::new();
+        let mut todo = ends;
+        while let Some(k) = todo.pop() {
+            if let Some(n) = g.nodes.get(&k)
+                && kept.insert(k) {
+                todo.extend(n.inputs.values().cloned());
+            }
+        }
+        g.nodes.retain(|k, _| kept.contains(k));
+        g
+    }
 }
 
 impl Graph {

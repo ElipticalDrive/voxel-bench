@@ -3,8 +3,8 @@
 //! editor window draws it (`canvas`) with an inspector for the selected node. Every choice
 //! is listed; one whose graph cannot run is greyed and says why (`model::Trial`), or, on a
 //! graph a node executor runs, can still be made: a draft, shown with why it does not run
-//! while the renderer keeps its last graph. No preset is chosen: it is the one the
-//! graph's shape names, shown as a label.
+//! while the renderer keeps its last graph. A renderer is started from a graph file
+//! (`start_files`).
 
 mod canvas;
 pub mod model;
@@ -13,7 +13,6 @@ use std::collections::HashMap;
 
 use egui::{ComboBox, RichText, Ui};
 use mr_components::graph::{Data, Device, Graph, Role, When, inputs, output, role_components, state};
-use mr_components::graph::REGIONS;
 use mr_components::{Api, Kind};
 use mr_core::{ParamSpec, ParamValue, RendererInfo};
 
@@ -71,8 +70,7 @@ fn choices(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, selected: &s
                 }
                 match trial.try_change(&change, infos) {
                     Ok((_, spec)) => {
-                        let label = if spec.name != trial.base().name { format!("{text}  ➡ {}", spec.name) } else { text };
-                        if ui.add(egui::Button::selectable(false, label)).on_hover_text(format!("{hover}\n\nRuns as `{}`: {}", spec.name, spec.label())).clicked() {
+                        if ui.add(egui::Button::selectable(false, text)).on_hover_text(format!("{hover}\n\nGives: {}", spec.label())).clicked() {
                             trial.drop_draft();
                             pick = Some(spec);
                         }
@@ -232,7 +230,13 @@ fn devices(g: &Graph) -> HashMap<String, Device> {
     g.check().map(|c| c.devices).unwrap_or_default()
 }
 
-/// The compact form for a side panel: the preset it runs as, then per node its component
+/// The graph files a renderer can be started from (the shipped ones), each with what its
+/// file says of it (its first comment line).
+pub fn start_files() -> impl Iterator<Item = (&'static str, &'static str)> {
+    mr_components::graph::SHIPPED.iter().map(|(name, text)| (*name, text.lines().next().unwrap_or_default().trim_start_matches('#').trim()))
+}
+
+/// The compact form for a side panel: its executor, then per node its component
 /// and its knobs. `marks` labels restart-only knobs; `lock` adds the tuner's lock column.
 pub fn summary<'l>(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamSpec, ParamValue)], marks: bool, mut lock: Option<&mut (dyn FnMut(&mut Ui, &ParamSpec) + 'l)>, trials: &mut Trials, infos: &[RendererInfo], run: &RunSpec) -> Vec<Edit> {
     let mut edits = vec![];
@@ -250,7 +254,7 @@ pub fn summary<'l>(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamS
         if ui.button("✏ graph").on_hover_text("Open the pipeline editor: the graph drawn, every node's component, device, API, inputs and knobs").clicked() {
             edits.push(Edit::Open(None));
         }
-        ui.label(RichText::new(format!("runs as {}", spec.name)).strong()).on_hover_text("The preset this graph's shape names (its executor): derived from the graph, not chosen");
+        ui.label(RichText::new(format!("{} executor", g.runs_on())).strong()).on_hover_text("The executor that builds this graph: where its image is made");
         if let Some(why) = trial.draft() {
             ui.label(RichText::new("✱ draft").color(DRAFT)).on_hover_text(format!("The graph shown does not run: {why}\nThe renderer keeps running its last graph"));
         }
@@ -346,7 +350,7 @@ fn editor(ui: &mut Ui, win: &mut Window, title: &str, spec: &RendererSpec, knobs
     ui.horizontal_wrapped(|ui| {
         ui.strong(title);
         ui.separator();
-        ui.label(RichText::new(format!("runs as {}", spec.name)).strong()).on_hover_text("The preset this graph's shape and devices name: the executor that runs it (derived, never chosen)");
+        ui.label(RichText::new(format!("{} executor", g.runs_on())).strong()).on_hover_text("The executor that builds this graph: where its image is made");
         ui.weak(spec.label());
         if let Ok(k) = g.key() {
             ui.weak(format!("key {}", &k[..8.min(k.len())])).on_hover_text(format!("The graph's cache key (compiled pipelines are kept per key): {k}"));
@@ -364,16 +368,18 @@ fn editor(ui: &mut Ui, win: &mut Window, title: &str, spec: &RendererSpec, knobs
             return edits.push(Edit::Spec(next));
         }
         ui.menu_button("start from…", |ui| {
-            ui.weak("A preset's default pipeline (then change anything)");
-            for b in REGIONS {
-                if ui.button(b.name).on_hover_text(b.description).clicked() {
-                    let mut s = RendererSpec::new(b.name);
-                    s.label = spec.label.clone();
-                    s.devices = spec.devices.clone();
-                    s.compile = spec.compile;
-                    if s.resolve().is_ok() {
-                        win.undo.push(spec.clone());
-                        edits.push(Edit::Spec(s));
+            ui.weak("A graph file's pipeline (then change anything)");
+            for (file, about) in start_files() {
+                if ui.button(file).on_hover_text(about).clicked() {
+                    match RendererSpec::from_file(file) {
+                        Ok(mut s) => {
+                            s.label = spec.label.clone();
+                            s.devices = spec.devices.clone();
+                            s.compile = spec.compile;
+                            win.undo.push(spec.clone());
+                            edits.push(Edit::Spec(s));
+                        }
+                        Err(e) => tracing::warn!("graph file `{file}`: {e:#}"),
                     }
                     ui.close();
                 }
@@ -659,9 +665,9 @@ mod tests {
         let run = crate::plan::Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/terrain.toml")), &[]).unwrap().run;
         let (mut ok, mut no) = (0, 0);
         let start = std::time::Instant::now();
-        for b in REGIONS {
-            let mut s = RendererSpec::new(b.name);
-            s.resolve().unwrap();
+        assert!(start_files().count() >= 10 && start_files().all(|(_, about)| about.len() > 20), "every file says what it is");
+        for (file, _) in start_files() {
+            let s = RendererSpec::from_file(file).unwrap();
             let g = model::graph_of(&s).unwrap();
             let mut t = Trial::new(s, g.clone());
             let devs = devices(&g);
@@ -680,9 +686,9 @@ mod tests {
                     match t.try_change(&change, &[]) {
                         Ok(_) => ok += 1,
                         Err(e) => {
-                            assert!(!e.is_empty(), "{}: {id} {text}: an empty reason", b.name);
+                            assert!(!e.is_empty(), "{file}: {id} {text}: an empty reason");
                             if std::env::var("MR_SHOW_REFUSED").is_ok() {
-                                println!("{} {id}: {text}: {e}", b.name);
+                                println!("{file} {id}: {text}: {e}");
                             }
                             no += 1;
                         }

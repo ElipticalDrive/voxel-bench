@@ -52,8 +52,8 @@ A graph runs on the executor of one device kind: `executor = "gpu"` (the default
 that executor that builds it: `raycast-gpu`, `raster-gpu`, `rayquery-gpu`, `discover-gpu`,
 `discover-cpu` (discovery on the CPU, drawn on the GPU), `splat-gpu`, `columns-gpu` on the GPU,
 `raycast-cpu`, `raster-cpu`, `columns-cpu` on the CPU. A preset is named by technique and device. It is derived from the graph and never
-chosen directly, except as a starting point: each has a default pipeline, and the GUI's "start from…" begins
-from one. `cpu-reference`, which defines the reference images, is the one renderer that
+chosen. A renderer is started from a graph file: one is shipped per region (`pipelines/*.toml`,
+named alike), and the GUI's "+ renderer" and "start from…" list them. `cpu-reference`, which defines the reference images, is the one renderer that
 stands alone, on purpose.
 
 ## Writing a pipeline
@@ -148,19 +148,8 @@ share a label (their keys differ: give one a `label`). Labels are for reading, n
 writing a pipeline: reports of older runs keep the labels they were written with
 (`raycast-gpu: prefix + incremental`).
 
-**The older flat form** (`compose` and `sites`; it goes away, write graphs; it is no longer
-swept, and a component named in `options` is no longer read as one): one field per
-slot of a named starting point, slots left out at its default:
-
-```toml
-[[renderer]]
-compose = { preset = "raycast-gpu", storage = "prefix", traversal = "incremental", shading = "direct" }
-sites = { shadow = "distance/sphere", link = "net(latency_ms=30, bandwidth_mbps=200)" }
-options = { shadows = "sun" }
-```
-
-A site's value is another site (shared), a kernel (over the lead storage),
-`<storage>/<kernel>`, or `<site>/<kernel>`.
+The flat form of older plans (`compose`, `sites`, a pipeline by `name`) is no longer read: a
+pipeline is `graph` (and `edits`); `name` is for standalone renderers (`cpu-reference`).
 
 The nodes every pipeline has without writing them (the client, the link, the generator, the
 post) are changed by adding them: `{ add = "client", role = "client", component = "pick" }`
