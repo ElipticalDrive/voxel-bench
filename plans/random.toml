@@ -13,28 +13,34 @@ modes = ["unlit"]
 view_radius = 6
 
 [[renderer]]
-compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
+graph = "raycast-gpu"
 
 [[renderer]]
-compose = { preset = "raster-gpu", storage = "bricks", geometry = "greedy", draw = "raster" }
+graph = "raster-gpu"
 
 [[renderer]]
-compose = { preset = "raster-cpu", geometry = "greedy", draw = "raster" }
+graph = "raster-cpu"
 
 [[renderer]]
-compose = { preset = "rayquery-gpu", geometry = "greedy", traversal = "rayquery" }
+graph = "rayquery-gpu"
 
 [[renderer]]
-compose = { preset = "rayquery-gpu", geometry = "boxes", traversal = "rayquery" }
+graph = "rayquery-gpu"
+edits = [{ node = "geometry", component = "boxes" }]
 
 [[renderer]]
-compose = { preset = "raycast-gpu", storage = "tree64", traversal = "refloor" }
+graph = "raycast-gpu"
+edits = [{ node = "storage", component = "tree64" }]
 
 [[renderer]]
-compose = { preset = "raycast-cpu", storage = "bricks", traversal = "refloor" }
+graph = "raycast-cpu"
 
 [[renderer]]
-compose = { preset = "raycast-gpu", storage = "distance", traversal = "sphere" }
+graph = "raycast-gpu"
+edits = [
+    { node = "kernel", component = "sphere" },
+    { node = "storage", component = "distance" },
+]
 
 [output]
 compare = { every = 100 }

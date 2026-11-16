@@ -2,13 +2,14 @@
 //! See `plans/` for examples. Any value can be overridden from the command line with
 //! `-s dotted.path=value` (value parsed as TOML, falling back to a string).
 //!
-//! **Sweeps:** a `compose` field may be `"*"` (every component the preset has for that
-//! stage; for `preset`, every preset) or a list; the renderer then expands into one
-//! renderer per valid combination (`RendererSpec::swept`). Stages left out keep their
-//! defaults, `"*"` on a stage a preset lacks is ignored (a named component there skips
-//! that preset), and the entry's `options` go to each
-//! combination whose preset declares them. In each pass, swept combinations that the
-//! pass mode cannot tell apart run once (`Composition::effective`).
+//! **Sweeps:** a renderer written as a graph may `vary` its edits: a list of edits whose
+//! values are lists, or `"*"` for everything the graph offers there, or a choice between
+//! lists of edits (`mr_components::graph::varied`). It expands into one renderer per
+//! combination that can be made and that `accept` takes, each distinct pipeline once
+//! (`RendererSpec::swept`); the entry's `options` go to each pipeline whose executor
+//! declares them. The older form does the same over a composition: a `compose` field or a
+//! `sites` value may be `"*"` or a list. In each pass, swept combinations that the pass
+//! mode cannot tell apart run once (`Composition::effective`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -914,7 +915,7 @@ impl Pick {
 fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
     let Some(toml::Value::Array(entries)) = table.get_mut("renderer") else { return Ok(()) };
     let picks = |t: Option<&toml::Value>| t.and_then(|c| c.as_table()).is_some_and(|c| c.values().any(|v| v.is_array() || v.as_str() == Some("*")));
-    let swept = |e: &toml::Value| picks(e.get("compose")) || picks(e.get("sites"));
+    let swept = |e: &toml::Value| e.get("vary").is_some() || picks(e.get("compose")) || picks(e.get("sites"));
     if !entries.iter().any(swept) {
         return Ok(());
     }
@@ -923,6 +924,10 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
     for e in entries.drain(..) {
         if !swept(&e) {
             out.push(e);
+            continue;
+        }
+        if e.get("vary").is_some() {
+            out.extend(expand_varied(e.as_table().unwrap(), &infos)?);
             continue;
         }
         let compose = e.get("compose").and_then(|c| c.as_table()).cloned().unwrap_or_default();
@@ -995,6 +1000,58 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
     }
     *entries = out;
     Ok(())
+}
+
+/// The renderers a swept entry stands for (`vary`, after `graph` and `edits`): one per
+/// combination of its choices (`mr_components::graph::varied`) that can be made and that
+/// `accept` takes, each distinct pipeline once, written as the entry with the combination's
+/// edits after its own. A combination that is no pipeline does not exist; none at all is an
+/// error, with the first reason.
+fn expand_varied(e: &toml::Table, infos: &[mr_core::RendererInfo]) -> anyhow::Result<Vec<toml::Value>> {
+    use mr_components::graph::{CLIENT_KNOBS, Change, varied};
+    if e.contains_key("compose") || e.contains_key("sites") {
+        bail!("`vary` sweeps the edits of a `graph`; this renderer has `compose` / `sites` (sweep those with lists in them, or write it as a graph)");
+    }
+    let graph: GraphRef = e.get("graph").cloned().context("`vary` sweeps the edits of a `graph` (a file's name or the graph itself); this renderer has none")?.try_into()?;
+    let edits: Vec<Change> = e.get("edits").cloned().map(|v| v.try_into()).transpose()?.unwrap_or_default();
+    let base = match graph {
+        GraphRef::File(f) => graph_file(&f)?,
+        GraphRef::Inline(g) => *g,
+    };
+    let base = base.with_edits(&edits).map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
+    let vary = e["vary"].as_array().context("`vary` is a list of edits whose values are lists")?;
+    let given = e.get("options").and_then(|o| o.as_table()).cloned().unwrap_or_default();
+    let mut keys = std::collections::HashSet::new();
+    let (mut out, mut first) = (vec![], None);
+    for combo in varied(&base, vary).map_err(|e| anyhow::anyhow!("vary: {e}"))? {
+        let g = match base.with_edits(&combo).and_then(|g| g.accept().map(|_| g)) {
+            Ok(g) => g,
+            Err(why) => {
+                first.get_or_insert(why);
+                continue;
+            }
+        };
+        // The options this pipeline's executor declares.
+        let known = g.preset().and_then(|name| infos.iter().find(|i| i.name == name));
+        let options: toml::Table = given.iter().filter(|(k, _)| known.is_some_and(|i| i.params.iter().any(|p| p.name == **k))).map(|(k, v)| (k.clone(), v.clone())).collect();
+        // The client's region is the workload, not in the key, but a pass of its own.
+        let region: Vec<Option<i64>> = CLIENT_KNOBS.iter().map(|k| g.client_knob(k)).collect();
+        if !keys.insert((g.with_options(&options).key().map_err(anyhow::Error::msg)?, region)) {
+            continue;
+        }
+        let mut entry = e.clone();
+        entry.remove("vary");
+        entry.remove("label");
+        let all: Vec<Change> = edits.iter().chain(&combo).cloned().collect();
+        entry.insert("edits".into(), toml::Value::try_from(&all)?);
+        entry.insert("options".into(), toml::Value::Table(options));
+        entry.insert("swept".into(), toml::Value::Boolean(true));
+        out.push(toml::Value::Table(entry));
+    }
+    if out.is_empty() {
+        bail!("the sweep `vary = {}` gives no pipeline{}", e["vary"], first.map(|w| format!(" (the first combination: {w})")).unwrap_or_default());
+    }
+    Ok(out)
 }
 
 /// Most pipelines one swept entry may expand into per composition (sweeps are bounded).
@@ -1509,6 +1566,64 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert_eq!(p.renderers.iter().map(|r| r.pipeline().unwrap().tone().name()).collect::<Vec<_>>(), ["clamp", "reinhard", "aces", "hdr"]);
     }
 
+    /// Sweeps as edits (`vary`): the pipelines the swept `compose` / `sites` forms give, and
+    /// what is refused.
+    #[test]
+    fn varied_sweeps() {
+        use std::collections::BTreeSet;
+        let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
+        let plan = |r: &str| Plan::parse(&format!("{base}[[renderer]]\n{r}\n"), &[]);
+        // What a renderer is to a run: its pipeline, its region, its link, where its world is made.
+        let set = |p: &Plan| p.renderers.iter().map(|r| (key(r), r.label().to_string(), r.view_radius(&p.run), r.max_lod(&p.run, 8), format!("{:?}", r.link()), r.generates())).collect::<BTreeSet<_>>();
+        let same = |a: &Plan, b: &Plan, what: &str| {
+            assert_eq!(a.renderers.len(), b.renderers.len(), "{what}");
+            assert_eq!(set(a).len(), a.renderers.len(), "{what}: each once");
+            assert!(set(a) == set(b), "{what}: {:?}", set(a).symmetric_difference(&set(b)).take(4).collect::<Vec<_>>());
+        };
+        // Lists and `*` (every component the graph takes there); options as before.
+        let new = plan("graph = \"raycast-gpu\"\nlabel = \"gone\"\nvary = [{ node = \"storage\", component = \"*\" }, { node = \"kernel\", component = [\"refloor\", \"sphere\"] }]\noptions = { exact = false, merge = \"rows\" }").unwrap();
+        let old = plan("compose = { storage = \"*\", traversal = [\"refloor\", \"sphere\"] }\noptions = { exact = false, merge = \"rows\" }").unwrap();
+        same(&new, &old, "storages x two kernels");
+        assert!(new.renderers.iter().all(|r| r.swept && r.name == "raycast-gpu" && r.label != Some("gone".into()) && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
+        // Each is written as its file and edits (the entry's own first), and reads back.
+        let r = new.renderers.iter().find(|r| r.label().contains("tree64") && r.label().contains("sphere")).unwrap();
+        let w = toml::to_string(r).unwrap();
+        assert!(w.starts_with("graph = \"raycast-gpu\"\n") && w.contains("[[edits]]") && !w.contains("vary"), "{w}");
+        assert_eq!(key(&renderer(&w).unwrap()), key(r));
+        // The full sweep the scripts run is the one the swept compositions gave.
+        let full = include_str!("../scripts/full-sweep.toml").split_once("renderer = ").unwrap().1;
+        let new = Plan::parse(base, &[format!("renderer={full}")]).unwrap();
+        let old = Plan::parse(base, &["renderer=[{compose={preset=\"*\",storage=\"*\",geometry=\"*\",prepass=\"*\",visibility=\"*\",draw=\"*\",traversal=\"*\",shading=\"*\",meshes=\"*\"}}]".into()]).unwrap();
+        same(&new, &old, "the full sweep");
+        assert!(new.renderers.len() > 1700);
+        // `plans/stream.toml`: the link, the generator's place and the client, as its `sites` sweep gave them.
+        let new = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/stream.toml")), &[]).unwrap();
+        let sites = "compose = { preset = \"raycast-gpu\", storage = \"bricks\", traversal = \"refloor\" }\nsites = { link = [\"free\", \"net(latency_ms=1, bandwidth_mbps=1000)\", \"net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)\", \"net(latency_ms=150, jitter_ms=80, bandwidth_mbps=50, loss=0.05, reorder=true)\"], generator = \"*\", client = [\"pick\", \"pick(radius=3, max_lod=2)\", \"derive(radius=3, max_lod=2)\"] }";
+        let old = Plan::parse(&format!("{base}[run]\nview_radius = {}\n[[renderer]]\n{sites}\n", new.run.view_radius), &[]).unwrap();
+        same(&new, &old, "stream");
+        assert_eq!(new.renderers.len(), 4 * 2 * 3);
+        // A knob's values; the client's region is no part of the key but a pass of its own.
+        let p = plan("graph = \"raycast-gpu\"\nedits = [{ add = \"client\", role = \"client\", component = \"pick\" }]\nvary = [{ node = \"client\", knob = \"radius\", value = [3, 6] }]").unwrap();
+        assert_eq!(p.renderers.iter().map(|r| r.view_radius(&p.run)).collect::<Vec<_>>(), [3, 6]);
+        assert_eq!(key(&p.renderers[0]), key(&p.renderers[1]));
+        // What the bounce rays may read: asked of the graph, kept where `accept` takes it.
+        let p = plan("graph = \"raycast-gpu\"\nedits = [{ node = \"shading\", component = \"pathtrace\" }]\nvary = [{ node = \"shading\", input = \"bounce\", from = \"*\" }]").unwrap();
+        assert!(!p.renderers.is_empty() && p.renderers.iter().all(|r| r.pipeline().unwrap().accept().is_ok()));
+        // Refused with the reason.
+        for (r, why) in [
+            ("vary = [{ node = \"storage\", component = \"*\" }]", "this renderer has none"),
+            ("compose = { preset = \"raycast-gpu\" }\nvary = [{ node = \"storage\", component = \"*\" }]", "sweeps the edits of a `graph`"),
+            ("graph = \"raycast-gpu\"\nvary = [{ node = \"nowhere\", component = \"*\" }]", "no node `nowhere` to vary"),
+            ("graph = \"raycast-gpu\"\nvary = [{ node = \"nowhere\", component = [\"tree64\"] }]", "gives no pipeline (the first combination: edit 1"),
+            ("graph = \"raycast-gpu\"\nvary = [{ node = \"storage\", component = [\"heightmap\"] }]", "gives no pipeline (the first combination: "),
+            ("graph = \"raycast-gpu\"\nvary = [{ node = \"shading\", knob = \"bounces\", value = \"*\" }]", "give the values as a list"),
+            ("graph = \"raycast-gpu\"\nvary = [{ any = [[]], node = \"storage\" }]", "`any` stands alone"),
+        ] {
+            let e = format!("{:#}", plan(r).unwrap_err());
+            assert!(e.contains(why), "{r}: {e}");
+        }
+    }
+
     /// Every shipped plan parses, and its compositions validate and resolve.
     #[test]
     fn shipped_plans_load() {
@@ -1524,4 +1639,5 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         }
         assert!(n >= 10);
     }
+
 }

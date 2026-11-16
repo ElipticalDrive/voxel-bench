@@ -112,6 +112,7 @@ The edits are the pipeline editor's own changes, made in order, each exactly as 
 | `{ node, api }` | how it runs there (`compute`, `rayquery`, `avx2`, ...; `"default"`: unset) |
 | `{ node, input, when }` | when the input's value arrives: `"now"`, `"prev"`, `{ iterate = 2 }` |
 | `{ node, knob, value }` | a knob on that node (no `value`: unset) |
+| `{ node, knobs = { ... } }` | the node's knobs are these and no others |
 | `{ add = "<id>", role, component }` | a new node under that id, unbound |
 | `{ remove = "<id>" }` | the node gone, the inputs reading it unbound |
 
@@ -120,6 +121,15 @@ list; whether the edited graph is a pipeline is decided as for any graph. A rend
 this way is saved this way while its graph is still what the file and the edits give
 (after a change in the editor it is saved by what it is). `edits` also follow an inline
 `graph`.
+
+The nodes every pipeline has without writing them (the client, the link, the generator, the
+post) are changed by adding them: `{ add = "client", role = "client", component = "pick" }`
+then `{ node = "client", knobs = { radius = 4, max_lod = 2 } }`; a `link` node with component
+`net` and its knobs; a `generator` node (`procedural`) with `device = "cpu"` to make the world
+on the client. The shipped plans (`plans/*.toml`) are written this way.
+
+**Sweeps** are edits whose values are lists: `vary = [...]` after `graph` and `edits`
+([plans.md](plans.md#sweeps)).
 
 **Graph form**, for anything the others cannot express:
 

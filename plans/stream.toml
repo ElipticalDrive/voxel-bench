@@ -23,13 +23,24 @@ modes = ["unlit"]
 view_radius = 6
 
 [[renderer]]
-compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
-sites = { link = [
-    "free",
-    "net(latency_ms=1, bandwidth_mbps=1000)",
-    "net(latency_ms=30, jitter_ms=10, bandwidth_mbps=200, loss=0.01, reorder=true)",
-    "net(latency_ms=150, jitter_ms=80, bandwidth_mbps=50, loss=0.05, reorder=true)",
-], generator = "*", client = ["pick", "pick(radius=3, max_lod=2)", "derive(radius=3, max_lod=2)"] }
+graph = "raycast-gpu"
+vary = [
+    # How the client gets its LOD levels (picked from the stream, or derived from level 0).
+    { any = [
+        [],
+        [{ add = "client", role = "client", component = "pick" }, { node = "client", knobs = { radius = 3, max_lod = 2 } }],
+        [{ add = "client", role = "client", component = "derive" }, { node = "client", knobs = { radius = 3, max_lod = 2 } }],
+    ] },
+    # The generator on the server (chunks streamed) or on the client (only edits cross the link).
+    { any = [[], [{ add = "generator", role = "generator", component = "procedural" }, { node = "generator", device = "cpu" }]] },
+    # The link: free, a LAN, a home connection, a bad one.
+    { any = [
+        [],
+        [{ add = "link", role = "link", component = "net" }, { node = "link", knobs = { latency_ms = 1.0, bandwidth_mbps = 1000.0 } }],
+        [{ add = "link", role = "link", component = "net" }, { node = "link", knobs = { latency_ms = 30.0, jitter_ms = 10.0, bandwidth_mbps = 200.0, loss = 0.01, reorder = true } }],
+        [{ add = "link", role = "link", component = "net" }, { node = "link", knobs = { latency_ms = 150.0, jitter_ms = 80.0, bandwidth_mbps = 50.0, loss = 0.05, reorder = true } }],
+    ] },
+]
 
 [output]
 compare = { every = 50 }

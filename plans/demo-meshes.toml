@@ -23,7 +23,7 @@ modes = ["lit+meshes"]
 view_radius = 4
 
 [[renderer]]
-compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
+graph = "raycast-gpu"
 
 [[renderer]]
-compose = { preset = "raster-gpu", storage = "bricks", geometry = "greedy", draw = "raster" }
+graph = "raster-gpu"

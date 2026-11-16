@@ -14,7 +14,17 @@ modes = ["lit"]
 view_radius = 8
 
 [[renderer]]
-compose = { preset = "discover-gpu", visibility = "quadtree", holes = "coverage", shading = "pathtrace" }
+graph = "discover-gpu"
+edits = [
+    { add = "holes", role = "holes", component = "coverage" },
+    { node = "shading", component = "pathtrace" },
+    { node = "draw", input = "faces", when = { iterate = 2 } },
+    { node = "holes", input = "covered", from = "draw" },
+    { node = "holes", input = "sky", from = "draw" },
+    { node = "holes", input = "sky", when = "prev" },
+    { node = "visibility", input = "where", from = "holes" },
+]
 
 [[renderer]]
-compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor", shading = "pathtrace" }
+graph = "raycast-gpu"
+edits = [{ node = "shading", component = "pathtrace" }]

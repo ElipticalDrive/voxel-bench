@@ -40,10 +40,10 @@ stage_times = true      # time every stage (GPU: +0.1–0.6%)
 clock_fps = 60          # the simulated clock of scripted runs
 
 [[renderer]]
-compose = { preset = "raster-gpu", geometry = "greedy", draw = "raster" }  # or graph (+ edits), or name = "cpu-reference"
+graph = "raster-gpu"          # a graph file (shipped: by name) or the graph itself; or name = "cpu-reference"
+edits = [{ node = "geometry", component = "naive" }]   # changes to it, in order; `vary`: sweeps (below)
 label = "raster-sunshadow"    # optional; lets one pipeline run with several option sets
 options = { shadows = "sun" } # the components' knobs
-sites = { shadow = "distance/sphere", client = "pick(radius=8, max_lod=2)" }
 
 [output]
 window = false
@@ -53,7 +53,7 @@ compare = { reference = "cpu-reference", every = 100, settle = 2 }
 dir = "runs"
 ```
 
-The ways of writing a renderer (`compose`, `graph` as a file or inline with `edits`, the command line's `-r`) are in
+The ways of writing a renderer (`graph` as a file or inline with `edits`, the older `compose` and `sites`, the command line's `-r`) are in
 [pipelines.md](pipelines.md).
 
 Two scores come out of `compare`. Every renderer is scored against the reference rendering
@@ -122,23 +122,46 @@ Each run writes `runs/<timestamp>-<name>/`: `plan.toml` (with the overrides appl
 
 ## Sweeps
 
-A `compose` field may be `"*"` (every component the preset has for that slot; for
-`preset`, every preset) or a list. The renderer then expands into one renderer per valid
-combination:
+A renderer written as a graph may `vary` its edits. It then expands into one renderer per
+combination that can be made and is a pipeline, each distinct pipeline once:
 
 ```toml
 [[renderer]]
-compose = { preset = "*", storage = "*", geometry = "*", visibility = "*", draw = "*", traversal = "*", shading = "*" }
+graph = "raycast-gpu"
+edits = [{ node = "shading", component = "pathtrace" }]   # the same in every combination
+vary = [
+    { node = "storage", component = "*" },                  # everything the graph takes there
+    { node = "kernel", component = ["refloor", "sphere"] }, # a list of values
+    { any = [[], [{ remove = "meshes" }]] },                # a choice between lists of edits
+]
 ```
 
-- Slots left out keep their default. `"*"` on a slot that a preset lacks is ignored. A
-  *named* component on such a slot skips that preset: `preset = "*", storage = "palette"`
-  runs only the presets that have a `palette` storage.
-- `sites` values may be swept the same way (`link`, `client`, `generator`, ...).
-- The entry's `options` go to every combination whose components declare them.
+- An entry of `vary` is an edit ([pipelines.md](pipelines.md#writing-a-pipeline)) whose value
+  is a list: `component`, `from`, `when`, `device`, `api`, or a knob's `value`. `"*"` stands
+  for everything the graph offers there: the components of the node's role, the APIs, `now`
+  and `prev`, the other nodes (for `from`). Devices and knob values have no such list; name
+  them.
+- `{ any = [[...], [...]] }` chooses between lists of edits, for what one edit cannot say (a
+  node added and bound, a node removed, several knobs together). An empty list changes
+  nothing. The edits inside may hold lists themselves.
+- The combinations are every choice of one value per entry, the first entry varying slowest,
+  each made after the entry's `edits`. A combination that cannot be made (an edit names what
+  the graph lacks) or that is no pipeline does not exist; a sweep that leaves none is an
+  error, with the first reason. At most 100 000 combinations per entry.
+- Nothing is asked of a table: what `"*"` keeps is what the pipeline check accepts for that
+  graph.
+- The entry's `options` go to every pipeline whose executor declares them; its `label` is
+  dropped (each pipeline has its own).
 - In each pass, combinations that the pass mode cannot tell apart run only once: shading in
   unlit passes, the meshes stage without meshes, and a rasteriser's storage (which only its
   shadow rays walk) in unlit passes.
+
+The full sweep the scripts run (`sweep.py`, `ab/wgsl.py`) is `scripts/full-sweep.toml`: every
+shipped graph with each node given every component it takes and its optional nodes present
+and absent. `plans/stream.toml` sweeps the link, the generator's place and the client.
+
+The older form still reads: a `compose` field or a `sites` value may be `"*"` or a list
+(`compose = { preset = "*", storage = "*" }`: every preset, every storage each has).
 
 ## Observations and the catalogue
 

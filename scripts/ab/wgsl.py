@@ -15,14 +15,14 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from mr import ROOT, before, fresh, release, run_logged
+from mr import ROOT, before, fresh, full_sweep, release, run_logged
 
 plans = sys.argv[1:] or ["terrain", "meshes"]
 t = fresh(ROOT / "target" / "ab" / "wgsl")
 # A copy, so rebuilding during the (long) run does not pull the binary from under it.
 after = t / ("multirenderer-after" + release().suffix)
 shutil.copy2(release(), after)
-sweep = os.environ.get("SWEEP") or 'renderer=[{compose={preset="*",storage="*",geometry="*",prepass="*",visibility="*",draw="*",traversal="*",shading="*",meshes="*"}}]'
+sweep = os.environ.get("SWEEP") or full_sweep()
 for side, exe, s in (("before", before(), os.environ.get("SWEEP_BEFORE") or sweep), ("after", after, sweep)):
     for p in plans:
         args = [exe, "run", f"plans/{p}.toml", "-s", s, "-s", "run.frames=3", "-s", "run.warmup=1", "-s", "run.repeats=1", "-s", "run.parallel=false",

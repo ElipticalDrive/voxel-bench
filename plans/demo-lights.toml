@@ -16,10 +16,11 @@ view_radius = 10
 streaming = { budget = 512 }
 
 [[renderer]]
-compose = { preset = "raycast-gpu", storage = "bricks", traversal = "refloor" }
+graph = "raycast-gpu"
 
 [[renderer]]
-compose = { preset = "raycast-gpu", storage = "prefix", traversal = "refloor" }
+graph = "raycast-gpu"
+edits = [{ node = "storage", component = "prefix" }]
 
 [[renderer]]
-compose = { preset = "raster-gpu", storage = "bricks", geometry = "greedy", draw = "raster" }
+graph = "raster-gpu"

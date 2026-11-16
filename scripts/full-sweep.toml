@@ -1,0 +1,33 @@
+# The full sweep: every shipped pipeline graph with each of its nodes given every component
+# the graph takes there, and its optional nodes present and absent. Read by `sweep.py` and
+# `ab/wgsl.py`, which pass it as `-s renderer=[...]` over the scenario plans.
+renderer = [
+    { graph = "raycast-gpu", vary = [
+        { node = "storage", component = "*" },
+        { any = [[], [{ add = "prepass", role = "prepass", component = "beam" }, { node = "prepass", input = "storage", from = "storage" }, { node = "visibility", input = "start", from = "prepass" }]] },
+        { node = "kernel", component = "*" },
+        { node = "shading", component = "*" },
+        { any = [[], [{ remove = "meshes" }]] },
+    ] },
+    { graph = "raycast-cpu", vary = [{ node = "storage", component = "*" }, { node = "kernel", component = "*" }, { node = "shading", component = "*" }] },
+    { graph = "rayquery-gpu", vary = [{ node = "geometry", component = "*" }, { node = "shading", component = "*" }] },
+    { graph = "raster-gpu", vary = [
+        { node = "storage", component = "*" },
+        { node = "geometry", component = "*" },
+        { node = "draw", component = "*" },
+        { node = "kernel", component = "*" },
+        { node = "shading", component = "*" },
+        { any = [[], [{ remove = "meshes" }]] },
+    ] },
+    { graph = "raster-cpu", vary = [{ node = "geometry", component = "*" }, { node = "draw", component = "*" }, { node = "shading", component = "*" }] },
+    { graph = "discover-gpu", vary = [{ node = "storage", component = "*" }, { node = "draw", component = "*" }, { node = "kernel", component = "*" }, { node = "shading", component = "*" }] },
+    { graph = "discover-cpu", vary = [
+        { node = "storage", component = "*" },
+        { any = [[], [{ node = "visibility", component = "cluster" }, { node = "visibility", device = "default" }]] },
+        { node = "draw", component = "*" },
+        { node = "shading", component = "*" },
+    ] },
+    { graph = "splat-gpu", vary = [{ node = "storage", component = "*" }, { node = "kernel", component = "*" }, { node = "shading", component = "*" }] },
+    { graph = "columns-gpu", vary = [{ node = "shading", component = "*" }] },
+    { graph = "columns-cpu", vary = [{ node = "shading", component = "*" }] },
+]

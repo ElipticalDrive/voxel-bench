@@ -33,6 +33,7 @@ pub enum Target {
 /// { node = "kernel", api = "rayquery" }                        # or "default"
 /// { node = "draw", input = "faces", when = "prev" }            # "now", { iterate = 2 }
 /// { node = "shading", knob = "bounces", value = 2 }            # no value: unset
+/// { node = "link", knobs = { latency_ms = 30, loss = 0.01 } }  # all its knobs: these
 /// { add = "far", role = "storage", component = "tree64" }
 /// { remove = "prepass" }
 /// ```
@@ -49,6 +50,8 @@ pub enum Change {
     Api(String, Option<Api>),
     Timing(String, String, When),
     Knob(String, String, Option<toml::Value>),
+    /// The node's knobs are these and no others.
+    Knobs(String, toml::Table),
 }
 
 const DEFAULT: &str = "default";
@@ -107,6 +110,8 @@ impl TryFrom<toml::Table> for Change {
                 Ok(Change::Api(id, or_default("api", v)?))
             } else if let Some(k) = text(&mut t, "knob")? {
                 Ok(Change::Knob(id, k, t.remove("value")))
+            } else if let Some(k) = t.remove("knobs") {
+                Ok(Change::Knobs(id, typed("knobs", k)?))
             } else if let Some(p) = text(&mut t, "input")? {
                 if let Some(w) = t.remove("when") {
                     return Ok(Change::Timing(id, p, typed("when", w)?));
@@ -122,7 +127,7 @@ impl TryFrom<toml::Table> for Change {
                     None => Err("`input` needs `from` (what it is bound to) or `when` (its timing)".into()),
                 }
             } else {
-                Err("what changes on the node: `component`, `input`, `unbind`, `device`, `api` or `knob`".into())
+                Err("what changes on the node: `component`, `input`, `unbind`, `device`, `api`, `knob` or `knobs`".into())
             }
         };
         read().and_then(|c| rest(&t).map(|_| c)).map_err(|e| format!("edit `{whole}`: {e}"))
@@ -184,9 +189,130 @@ impl From<Change> for toml::Table {
                     set("value", v);
                 }
             }
+            Change::Knobs(id, knobs) => {
+                set("node", id.into());
+                set("knobs", knobs.into());
+            }
         }
         t
     }
+}
+
+/// As plans write an edit: an inline table, its keys in reading order.
+impl std::fmt::Display for Change {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const ORDER: [&str; 14] = ["add", "remove", "node", "role", "component", "input", "unbind", "from", "when", "device", "api", "knob", "value", "knobs"];
+        let t: toml::Table = self.clone().into();
+        let parts: Vec<String> = ORDER.iter().filter_map(|k| t.get(*k).map(|v| format!("{k} = {v}"))).collect();
+        write!(f, "{{ {} }}", parts.join(", "))
+    }
+}
+
+/// Most combinations one `vary` may expand into (sweeps are bounded).
+pub const MAX_VARIED: usize = 100_000;
+
+/// The keys of an edit that hold what it sets, any of which a sweep may give as a list.
+const VALUES: [&str; 6] = ["component", "from", "when", "device", "api", "value"];
+
+/// The nodes `vary` adds, with their roles (so `*` can ask what a new node may be).
+fn added(v: &toml::Value, out: &mut Vec<(String, Role)>) {
+    match v {
+        toml::Value::Array(a) => a.iter().for_each(|x| added(x, out)),
+        toml::Value::Table(t) => {
+            if let (Some(id), Some(role)) = (t.get("add").and_then(|x| x.as_str()), t.get("role").and_then(|r| typed::<Role>("role", r.clone()).ok())) {
+                out.push((id.to_string(), role));
+            }
+            t.get("any").into_iter().for_each(|x| added(x, out));
+        }
+        _ => {}
+    }
+}
+
+/// Every value key `k` of edit `t` may be given: what the graph has to offer there
+/// (whether a pipeline takes it is `accept`'s to say, per combination).
+fn every(base: &Graph, new: &[(String, Role)], t: &toml::Table, k: &str) -> Result<Vec<toml::Value>, String> {
+    let node = t.get("node").or(t.get("add")).and_then(|x| x.as_str()).unwrap_or_default();
+    let names = |v: Vec<&str>| Ok(v.into_iter().map(toml::Value::from).collect());
+    match k {
+        "component" => {
+            let role = match t.get("role") {
+                Some(r) => typed::<Role>("role", r.clone())?,
+                None => base.nodes.get(node).map(|n| n.role).or_else(|| new.iter().find(|(id, _)| id == node).map(|(_, r)| *r)).ok_or_else(|| format!("no node `{node}` to vary (the graph has {})", base.nodes.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")))?,
+            };
+            names(super::role_components(role))
+        }
+        "api" => names(Api::ALL.map(|a| a.name()).to_vec()),
+        "when" => names(vec!["now", "prev"]),
+        "from" => Ok(base.nodes.keys().map(String::as_str).chain(new.iter().map(|(id, _)| id.as_str())).filter(|id| *id != node).map(toml::Value::from).collect()),
+        _ => Err(format!("`{k} = \"*\"`: there is no list of every {k} to ask for; give the values as a list")),
+    }
+}
+
+/// The edits one varied edit stands for: one per value of the key given as a list or `*`.
+fn alternatives(base: &Graph, new: &[(String, Role)], v: &toml::Value) -> Result<Vec<Change>, String> {
+    let t = v.as_table().ok_or_else(|| format!("an edit is a table, not `{v}`"))?;
+    let list = |x: &toml::Value| x.is_array() || x.as_str() == Some("*");
+    let Some(k) = VALUES.into_iter().find(|k| t.get(*k).is_some_and(list)) else { return Change::try_from(t.clone()).map(|c| vec![c]) };
+    let values = match &t[k] {
+        toml::Value::Array(a) => a.clone(),
+        _ => every(base, new, t, k).map_err(|e| format!("edit `{v}`: {e}"))?,
+    };
+    values.into_iter().map(|x| {
+        let mut t = t.clone();
+        t.insert(k.into(), x);
+        Change::try_from(t)
+    }).collect()
+}
+
+/// Every way of taking one entry of each list, the first list varying slowest.
+fn product(lists: Vec<Vec<Vec<Change>>>) -> Result<Vec<Vec<Change>>, String> {
+    let n = lists.iter().map(Vec::len).try_fold(1usize, |a, b| a.checked_mul(b)).filter(|n| *n <= MAX_VARIED);
+    if n.is_none() {
+        return Err(format!("more than {MAX_VARIED} combinations ({}); vary less at once", lists.iter().map(|l| l.len().to_string()).collect::<Vec<_>>().join(" x ")));
+    }
+    let mut out = vec![vec![]];
+    for list in &lists {
+        out = out.iter().flat_map(|c: &Vec<Change>| list.iter().map(move |x| c.iter().chain(x).cloned().collect())).collect();
+    }
+    Ok(out)
+}
+
+/// The edit lists a sweep stands for (`vary = [...]` after `graph` and `edits`): every
+/// combination of one choice per entry. An entry is an edit whose value (`component`,
+/// `from`, `when`, `device`, `api`, a knob's `value`) is a list, or `"*"` for everything
+/// the graph offers there (a role's components, the APIs, `now` and `prev`, the other
+/// nodes); or `{ any = [[edits...], ...] }`, a choice between lists of edits (an empty
+/// list: nothing changes), whose edits may hold lists themselves. Whether a combination
+/// can be made and is a pipeline is for the caller to ask (`Graph::with_edits`, `accept`).
+///
+/// ```toml
+/// vary = [
+///     { node = "storage", component = "*" },
+///     { node = "kernel", component = ["refloor", "sphere"] },
+///     { any = [[], [{ remove = "meshes" }]] },
+/// ]
+/// ```
+pub fn varied(base: &Graph, vary: &[toml::Value]) -> Result<Vec<Vec<Change>>, String> {
+    let mut new = vec![];
+    vary.iter().for_each(|v| added(v, &mut new));
+    let one = |v: &toml::Value| alternatives(base, &new, v).map(|a| a.into_iter().map(|c| vec![c]).collect::<Vec<_>>());
+    let mut axes = vec![];
+    for v in vary {
+        let Some(any) = v.get("any") else {
+            axes.push(one(v)?);
+            continue;
+        };
+        if v.as_table().is_some_and(|t| t.len() != 1) {
+            return Err(format!("`{v}`: `any` stands alone (a choice between lists of edits)"));
+        }
+        let mut axis = vec![];
+        for alt in any.as_array().ok_or_else(|| format!("`{v}`: `any` is a list of alternatives, each a list of edits"))? {
+            let edits = alt.as_array().ok_or_else(|| format!("`{v}`: each alternative of `any` is a list of edits, not `{alt}`"))?;
+            axis.extend(product(edits.iter().map(one).collect::<Result<_, _>>()?)?);
+        }
+        axes.push(axis);
+    }
+    product(axes)
 }
 
 fn fresh_id(g: &Graph, want: &str) -> String {
@@ -285,6 +411,7 @@ impl Graph {
                     None => drop(n.knobs.remove(k)),
                 }
             }
+            Change::Knobs(id, knobs) => g.node_mut(id)?.knobs = knobs.clone(),
         }
         Ok(g)
     }
@@ -294,9 +421,54 @@ impl Graph {
     pub fn with_edits(&self, edits: &[Change]) -> Result<Graph, String> {
         let mut g = self.clone();
         for (i, c) in edits.iter().enumerate() {
-            g = g.edit(c).map_err(|e| format!("edit {} (`{}`): {e}", i + 1, toml::Value::Table(c.clone().into())))?;
+            g = g.edit(c).map_err(|e| format!("edit {} (`{c}`): {e}", i + 1))?;
         }
         Ok(g)
+    }
+
+    /// The edits that make this graph `to` (`self.with_edits(..) == to`): nodes gone, nodes
+    /// new, then per node what differs. `None` when no edits can: another executor, or an
+    /// input `to` binds that its node's component does not have.
+    pub fn diff(&self, to: &Graph) -> Option<Vec<Change>> {
+        if self.executor != to.executor {
+            return None;
+        }
+        let mut v = vec![];
+        for (id, n) in &self.nodes {
+            if to.nodes.get(id).is_none_or(|t| t.role != n.role) {
+                v.push(Change::Remove(id.clone()));
+            }
+        }
+        for (id, t) in &to.nodes {
+            match self.nodes.get(id).filter(|n| n.role == t.role) {
+                None => v.push(Change::Add(id.clone(), t.role, t.component.clone())),
+                Some(n) if n.component != t.component => v.push(Change::Component(id.clone(), t.component.clone())),
+                Some(_) => {}
+            }
+        }
+        let g = self.with_edits(&v).ok()?;
+        for (id, t) in &to.nodes {
+            let n = &g.nodes[id];
+            let id = || id.clone();
+            v.extend(n.inputs.keys().filter(|p| !t.inputs.contains_key(*p)).map(|p| Change::Bind(id(), p.clone(), Target::Unbound)));
+            v.extend(t.inputs.iter().filter(|(p, s)| n.inputs.get(*p) != Some(s)).map(|(p, s)| Change::Bind(id(), p.clone(), Target::Node(s.clone()))));
+            if n.device != t.device {
+                v.push(Change::Device(id(), t.device));
+            }
+            if n.api != t.api {
+                v.push(Change::Api(id(), t.api));
+            }
+            v.extend(n.timing.keys().filter(|p| !t.timing.contains_key(*p)).map(|p| Change::Timing(id(), p.clone(), When::Now)));
+            v.extend(t.timing.iter().filter(|(p, w)| n.timing.get(*p) != Some(w)).map(|(p, w)| Change::Timing(id(), p.clone(), *w)));
+            let knobs: Vec<Change> = n.knobs.keys().filter(|k| !t.knobs.contains_key(*k)).map(|k| Change::Knob(id(), k.clone(), None)).chain(t.knobs.iter().filter(|(k, x)| n.knobs.get(*k) != Some(x)).map(|(k, x)| Change::Knob(id(), k.clone(), Some(x.clone())))).collect();
+            match knobs.len() {
+                0 | 1 => v.extend(knobs),
+                _ => v.push(Change::Knobs(id(), t.knobs.clone())),
+            }
+        }
+        let made = self.with_edits(&v).ok()?;
+        debug_assert!(made == *to);
+        Some(v)
     }
 }
 
@@ -386,6 +558,7 @@ mod tests {
             r#"{ node = "draw", input = "faces", when = { iterate = 2 } }"#,
             r#"{ node = "shading", knob = "bounces", value = 2 }"#,
             r#"{ node = "shading", knob = "bounces" }"#,
+            r#"{ node = "link", knobs = { latency_ms = 30, loss = 0.01 } }"#,
             r#"{ add = "far", role = "storage", component = "tree64" }"#,
             r#"{ remove = "prepass" }"#,
         ];
@@ -396,7 +569,7 @@ mod tests {
             let back = toml::Value::Table(c.clone().into());
             assert_eq!(change(&back.to_string()).unwrap(), c, "{s} -> {back}");
         }
-        assert_eq!(kinds.len(), 8);
+        assert_eq!(kinds.len(), 9);
         assert_eq!(change(r#"{ node = "kernel", api = "rayquery" }"#).unwrap(), Change::Api("kernel".into(), Some(Api::RayQuery)));
         for (s, why) in [
             (r#"{ component = "tree64" }"#, "names its `node`"),
@@ -442,6 +615,77 @@ mod tests {
             (r#"{ add = "storage", role = "storage", component = "tree64" }"#, "already"),
         ] {
             let e = g.with_edits(&[Change::Knob("shading".into(), "bounces".into(), None), change(s).unwrap()]).unwrap_err();
+            assert!(e.contains(why), "{s}: {e}");
+        }
+    }
+
+    /// `diff` gives the edits that make one graph another: every shipped graph into every
+    /// graph one change away, and into every other shipped graph of its executor.
+    #[test]
+    fn diff_gives_the_edits() {
+        let mut n = 0;
+        for (name, _) in SHIPPED {
+            let g = shipped(name).unwrap();
+            assert_eq!(g.diff(&g), Some(vec![]));
+            let others = SHIPPED.iter().map(|(o, _)| shipped(o).unwrap());
+            for h in crate::graph::edits(&g).into_iter().chain(others) {
+                match g.diff(&h) {
+                    Some(d) => {
+                        assert_eq!(g.with_edits(&d).unwrap_or_else(|e| panic!("{name}: {e}")), h, "{name}: {}", d.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", "));
+                        n += 1;
+                    }
+                    None => assert!(g.executor != h.executor || h.nodes.values().any(|x| x.inputs.keys().any(|p| !inputs(x.role, &x.component).iter().any(|i| i.name == p)))),
+                }
+            }
+        }
+        assert!(n > 500, "{n}");
+        // Several knobs of a node are one edit; an edit prints as plans write it.
+        let g = shipped("raycast-gpu").unwrap();
+        let mut h = g.clone();
+        h.nodes.get_mut("shading").unwrap().knobs = toml::toml! { bounces = 2 paths = 4 };
+        let d = g.diff(&h).unwrap();
+        assert_eq!(d.iter().map(|c| c.to_string()).collect::<Vec<_>>(), [r#"{ node = "shading", knobs = { bounces = 2, paths = 4 } }"#]);
+        assert_eq!(Change::Add("far".into(), Role::Storage, "tree64".into()).to_string(), r#"{ add = "far", role = "storage", component = "tree64" }"#);
+    }
+
+    /// A sweep's edit lists: one choice per entry, the first entry varying slowest.
+    #[test]
+    fn varied_edits() {
+        let g = shipped("raycast-gpu").unwrap();
+        let vary = |s: &str| {
+            let t: toml::Table = toml::from_str(&format!("v = {s}")).unwrap();
+            varied(&g, t["v"].as_array().unwrap()).map(|v| v.into_iter().map(|c| c.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>())
+        };
+        assert_eq!(vary("[]").unwrap(), [""]);
+        assert_eq!(
+            vary(r#"[{ node = "storage", component = ["tree64", "rows"] }, { node = "kernel", api = "default" }, { any = [[], [{ remove = "meshes" }]] }]"#).unwrap(),
+            [
+                r#"{ node = "storage", component = "tree64" } { node = "kernel", api = "default" }"#,
+                r#"{ node = "storage", component = "tree64" } { node = "kernel", api = "default" } { remove = "meshes" }"#,
+                r#"{ node = "storage", component = "rows" } { node = "kernel", api = "default" }"#,
+                r#"{ node = "storage", component = "rows" } { node = "kernel", api = "default" } { remove = "meshes" }"#,
+            ]
+        );
+        // `*`: what the graph offers there, for a node it has, one the sweep adds, and each kind of value.
+        let storages = crate::graph::role_components(Role::Storage).len();
+        assert_eq!(vary(r#"[{ node = "storage", component = "*" }]"#).unwrap().len(), storages);
+        assert_eq!(vary(r#"[{ any = [[{ add = "far", role = "storage", component = "*" }, { node = "far", component = "*" }]] }]"#).unwrap().len(), storages * storages);
+        assert_eq!(vary(r#"[{ node = "kernel", api = "*" }]"#).unwrap().len(), Api::ALL.len());
+        assert_eq!(vary(r#"[{ node = "shading", input = "hits", when = "*" }]"#).unwrap().len(), 2);
+        assert_eq!(vary(r#"[{ node = "shading", input = "shadow", from = "*" }]"#).unwrap().len(), g.nodes.len() - 1);
+        assert_eq!(vary(r#"[{ node = "shading", device = ["gpu", "gpu1"] }, { node = "shading", knob = "bounces", value = [1, 2, 3] }]"#).unwrap().len(), 6);
+        // Alternatives hold lists themselves.
+        assert_eq!(vary(r#"[{ any = [[], [{ node = "storage", component = ["tree64", "rows"] }, { node = "kernel", component = ["sphere", "rowrun"] }]] }]"#).unwrap().len(), 5);
+        for (s, why) in [
+            (r#"[{ node = "nowhere", component = "*" }]"#, "no node `nowhere` to vary"),
+            (r#"[{ node = "shading", device = "*" }]"#, "give the values as a list"),
+            (r#"[{ node = "storage", component = ["tree64"], device = "gpu" }]"#, "`device` does not belong"),
+            (r#"[{ any = [{ remove = "meshes" }] }]"#, "each alternative of `any` is a list of edits"),
+            (r#"[{ any = [[]], remove = "meshes" }]"#, "`any` stands alone"),
+            (r#"[3]"#, "an edit is a table"),
+            (r#"[{ add = "a", role = "storage", component = "*" }, { add = "b", role = "storage", component = "*" }, { add = "c", role = "storage", component = "*" }, { add = "d", role = "storage", component = "*" }, { add = "e", role = "storage", component = "*" }]"#, "more than 100000 combinations"),
+        ] {
+            let e = vary(s).unwrap_err();
             assert!(e.contains(why), "{s}: {e}");
         }
     }

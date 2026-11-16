@@ -35,3 +35,8 @@ def fresh(d):
     shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True)
     return d
+
+
+def full_sweep():
+    """The `-s` override that replaces a plan's renderers by the full sweep (`scripts/full-sweep.toml`)."""
+    return "renderer=" + (ROOT / "scripts" / "full-sweep.toml").read_text().split("renderer = ", 1)[1].strip()
