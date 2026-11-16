@@ -11,17 +11,6 @@ use crate::{present, tune};
 
 use super::*;
 
-/// A component knob changed in the options: carry it into the composition (an option it is
-/// not), so restarts and the plan keep it.
-fn sync_compose(spec: &mut RendererSpec, knob: &str) {
-    let Some(slot) = mr_components::Slot::ALL.into_iter().find(|s| s.name() == knob) else { return };
-    let Some(v) = spec.options.remove(knob).and_then(|v| v.as_str().map(String::from)) else { return };
-    if let Some(mut c) = spec.composition().cloned() {
-        c.set(slot, &v);
-        let _ = spec.set_compose(c);
-    }
-}
-
 fn spawn_async(run: &RunSpec, spec: &RendererSpec, world: &mr_world::GenSpec, blocks: Arc<BlockRegistry>, res: [u32; 2]) -> Spawn {
     let (tx, rx) = crossbeam_channel::bounded(1);
     let (run, spec, world) = (run.clone(), spec.clone(), world.clone());
@@ -187,8 +176,8 @@ impl Session {
         self.shared.lock().unwrap().log(s);
     }
 
-    /// All knobs of a lane: host ones, the renderer's, then its components as the flat form
-    /// names them (the host's own list: the tuner's way to another component).
+    /// All knobs of a lane: host ones, the renderer's, then its nodes' components as its
+    /// graph says they may be (the tuner's way to another component).
     fn specs(&self, i: usize) -> Vec<ParamSpec> {
         let radius = self.lanes.get(i).map_or(self.plan.run.view_radius, |l| l.given.view_radius(&self.plan.run));
         let mut v = tune::host_params(radius);
@@ -305,14 +294,25 @@ impl Session {
                 let back_end = lane.run.spec.name.clone();
                 for run in std::iter::once(&mut lane.run).chain(lane.standby.as_mut().filter(|s| s.spec.name == back_end)) {
                     run.spec.options.insert(name.into(), crate::gui::param_to_toml(&value));
-                    sync_compose(&mut run.spec, name);
                     run.pending_params.push((name.to_string(), value.clone()));
                 }
+            }
+            _ if let Some(node) = crate::plan::component_knob(name) => {
+                // A node's component: the graph edit, live where its executor takes it.
+                let mut new = lane.latest().clone();
+                if let Err(e) = new.set_component(node, value.as_str().unwrap_or_default()) {
+                    if let Some(now) = new.graph.as_ref().and_then(|g| g.nodes.get(node)) {
+                        lane.values.insert(name.to_string(), ParamValue::Choice(now.component.clone()));
+                    }
+                    self.log(format!("lane {i}: {name}: {e:#}"));
+                    self.publish_params(i);
+                    return;
+                }
+                return self.edit(i, new, vec![]);
             }
             _ => {
                 let mut new = lane.latest().clone();
                 new.options.insert(name.into(), crate::gui::param_to_toml(&value));
-                sync_compose(&mut new, name);
                 self.hot_swap(i, new);
             }
         }

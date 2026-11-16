@@ -178,7 +178,7 @@ Each lane can tune its unlocked knobs (🔒 locks one) towards a goal:
     can follow a changing scene, and re-checks the best configuration every few trials.
 - **Measurement:** fps is the throughput over a window that starts after a settle time.
   Quality comes from probes that the tuner requests. Measurement pauses during hot swaps and
-  resizes. "May change ↻ knobs" allows the tuner to hot-swap.
+  resizes. "May change ↻ knobs" allows the tuner to hot-swap, and to change a node's component (the knobs `<node>.component`: what the graph says the node may be; a graph edit, without a restart where the executor replaces that node while running).
 - **Noise:** each window is split into three parts to estimate the standard error of the
   fps. A change counts as an improvement only if it beats both the goal's margin and two
   standard errors of the difference.

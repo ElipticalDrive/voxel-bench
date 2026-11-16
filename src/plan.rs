@@ -165,6 +165,14 @@ pub enum Isolation {
     Thread,
 }
 
+/// The suffix of the host's knob for a node's component (`RendererSpec::component_knobs`).
+const COMPONENT_KNOB: &str = ".component";
+
+/// The node whose component the knob `name` is, if it is such a knob.
+pub fn component_knob(name: &str) -> Option<&str> {
+    name.strip_suffix(COMPONENT_KNOB)
+}
+
 /// One renderer of a plan: a pipeline graph (written `compose` + `sites`, its shorthand, or
 /// `graph`), or a standalone renderer (cpu-reference) by `name`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -450,17 +458,40 @@ impl RendererSpec {
         self.shorthand.as_ref().map(|sh| &sh.compose)
     }
 
-    /// The flat form's component knobs: one choice per slot of its composition (what its
-    /// region builds there, the other slots at their defaults), none live. The executors list
-    /// no such knob (a node's component is the graph's); the host keeps them while it has the
-    /// flat form, for the tuner (which may restart into another component) and for options
-    /// that name a component.
+    /// The components its nodes may be instead, as knobs of the host's (`<node>.component`;
+    /// the executors list none: a node's component is the graph's): for each node of its
+    /// stages with more than one answer, what the graph says it may be (`Graph::choices`),
+    /// starting from what it is. None is live as a knob; setting one is a graph edit
+    /// (`set_component`), which the session sends live where the executor takes it.
     pub fn component_knobs(&self) -> Vec<mr_core::ParamSpec> {
-        let Some((c, b)) = self.composition().and_then(|c| Some((c, c.region()?))) else { return vec![] };
-        c.slots().map(|s| mr_core::ParamSpec::choice(s.name(), &format!("The {} component (restart)", s.label()), &b.names(s), b.default_for(s).unwrap_or_default(), false)).collect()
+        use mr_components::graph::Role;
+        let Some(g) = &self.graph else { return vec![] };
+        let mut v = vec![];
+        for (id, n) in g.nodes.iter().filter(|(_, n)| !matches!(n.role, Role::World | Role::Generator | Role::Link | Role::Client | Role::Post)) {
+            let choices = g.choices(id);
+            if choices.len() > 1 {
+                v.push(mr_core::ParamSpec::choice(&format!("{id}{COMPONENT_KNOB}"), &format!("The component of node `{id}` ({}): an edit of the graph (restart where its executor cannot replace the node while running)", n.role.name()), &choices, &n.component, false));
+            }
+        }
+        v
+    }
+
+    /// Node `node` runs `component` (the graph edit; on failure nothing changes).
+    pub fn set_component(&mut self, node: &str, component: &str) -> anyhow::Result<()> {
+        let old = self.clone();
+        let g = self.graph.as_ref().with_context(|| format!("`{}` is not a pipeline", self.label()))?;
+        let r = g.edit(&mr_components::graph::Change::component(node, component)).map_err(anyhow::Error::msg).and_then(|g| {
+            self.graph = Some(g);
+            self.resolve()
+        });
+        if r.is_err() {
+            *self = old;
+        }
+        r
     }
 
     /// The sites its shorthand binds otherwise (none when written as a graph).
+    #[cfg(test)]
     pub fn sites(&self) -> BTreeMap<String, String> {
         self.shorthand_form().map(|sh| sh.sites.clone()).unwrap_or_default()
     }
@@ -524,6 +555,7 @@ impl RendererSpec {
 
     /// Replaces the composition (the sites its shorthand binds otherwise stay) and
     /// re-resolves (on failure nothing changes).
+    #[cfg(test)]
     pub fn set_compose(&mut self, c: mr_components::Composition) -> anyhow::Result<()> {
         let sites = self.sites();
         self.set_pipeline(c, &sites)
@@ -566,12 +598,12 @@ impl RendererSpec {
     }
 
     /// The knob values it runs with as far as they are set: its stages' node knobs, its
-    /// shorthand's components (the slot knobs), then its options (which win, as
+    /// nodes' components (`component_knobs`), then its options (which win, as
     /// `worker_graph` places them).
     pub fn knob_values(&self) -> toml::Table {
         let mut t = self.graph.as_ref().and_then(|g| g.stage_knobs().ok()).unwrap_or_default();
-        if let Some(c) = self.composition() {
-            t.extend(c.slots().map(|s| (s.name().to_string(), c.get(s).into())));
+        if let Some(g) = &self.graph {
+            t.extend(g.nodes.iter().map(|(id, n)| (format!("{id}{COMPONENT_KNOB}"), n.component.clone().into())));
         }
         t.extend(self.options.clone());
         t
@@ -1304,10 +1336,30 @@ mod tests {
         assert_eq!((c.storage.as_str(), c.traversal.as_str(), c.visibility.as_str()), ("prefix", "incremental", "raycast"));
         // The host's own list of what each slot may be (the executors list no component).
         let knobs = r.component_knobs();
-        let storage = knobs.iter().find(|k| k.name == "storage").expect("a storage choice");
-        assert!(!storage.live && matches!(&storage.kind, mr_core::ParamKind::Choice(c) if c.iter().any(|x| x == "tree64") && c.len() > 4), "{:?}", storage.kind);
+        let storage = knobs.iter().find(|k| k.name == "storage.component").expect("a storage choice");
+        assert!(!storage.live && storage.default.as_str() == Some("prefix") && matches!(&storage.kind, mr_core::ParamKind::Choice(c) if c.iter().any(|x| x == "tree64") && c.len() > 4), "{:?}", storage.kind);
+        assert!(knobs.iter().all(|k| component_knob(&k.name).is_some_and(|id| !matches!(id, "world" | "client" | "link" | "post"))), "{:?}", knobs.iter().map(|k| &k.name).collect::<Vec<_>>());
         assert!(crate::pipelines::executor_of(&r.pipeline().unwrap()).unwrap().1.iter().all(|k| knobs.iter().all(|c| c.name != k.name)), "no knob twice");
-        assert!(r.options.get("storage").is_none() && r.knob_values().get("storage").and_then(|v| v.as_str()) == Some("prefix"));
+        assert!(r.options.get("storage").is_none() && r.knob_values().get("storage.component").and_then(|v| v.as_str()) == Some("prefix"));
+        // Setting one is the graph edit; every listed choice is one the graph takes, and a
+        // refused one changes nothing.
+        for k in &knobs {
+            let mr_core::ParamKind::Choice(cs) = &k.kind else { panic!("{k:?}") };
+            for c in cs {
+                let mut e = r.clone();
+                e.set_component(component_knob(&k.name).unwrap(), c).unwrap_or_else(|err| panic!("{} = {c}: {err:#}", k.name));
+                assert_eq!(e.knob_values().get(&k.name).and_then(|v| v.as_str()), Some(c.as_str()));
+            }
+        }
+        // Asked on every publish of a lane's knobs: quick enough for that.
+        let t = std::time::Instant::now();
+        for f in mr_components::graph::SHIPPED {
+            RendererSpec::from_cli(f.0).unwrap().component_knobs();
+        }
+        assert!(t.elapsed().as_millis() < 500, "{:?} for the ten shipped graphs", t.elapsed());
+        let mut e = r.clone();
+        assert!(e.set_component("storage", "heightmap").is_err() && e.set_component("nope", "bricks").is_err());
+        assert_eq!((e.graph.as_ref(), &e.options, e.label()), (r.graph.as_ref(), &r.options, r.label()));
         assert_eq!(r.label(), "gpu: prefix + incremental + composite + raycast + direct");
         let opt = Plan::parse(&text.replace("{ exact = false }", "{ exact = false, traversal = \"sphere\" }"), &[]).unwrap();
         assert_eq!((opt.renderers[0].composition().unwrap().traversal.as_str(), opt.renderers[0].options.get("traversal")), ("sphere", None));

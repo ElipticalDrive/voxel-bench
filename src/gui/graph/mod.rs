@@ -185,7 +185,7 @@ fn node_knobs<'a>(g: &Graph, id: Option<&str>, knobs: &'a [(ParamSpec, ParamValu
     let client = |s: &ParamSpec| CLIENT_HOST.iter().any(|(h, _)| *h == s.name) && g.nodes.values().any(|n| n.role == Role::Client);
     knobs
         .iter()
-        .filter(|(s, _)| !mr_components::Slot::ALL.iter().any(|sl| sl.name() == s.name))
+        .filter(|(s, _)| crate::plan::component_knob(&s.name).is_none())
         .filter(|(s, _)| match (&s.owner, id) {
             (None, None) => !client(s),
             (None, Some(id)) => client(s) && g.nodes[id].role == Role::Client,

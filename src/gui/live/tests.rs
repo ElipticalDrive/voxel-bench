@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 use crate::tune;
-use mr_components::Slot;
 
 use super::*;
 
@@ -82,19 +81,23 @@ fn live_session_end_to_end() {
 
     // Live component switches as graph edits (lane 1, raster-gpu): the drawer is rebuilt at
     // the next frame.
-    for (slot, value) in [(Slot::Geometry, "naive"), (Slot::Draw, "visbuffer"), (Slot::Geometry, "greedy"), (Slot::Draw, "raster")] {
+    for (node, value) in [("geometry", "naive"), ("draw", "visbuffer"), ("geometry", "greedy"), ("draw", "raster")] {
         let (frames, spec, params) = {
             let sh = live.shared.lock().unwrap();
             (sh.lanes[1].frames, sh.lanes[1].spec.clone(), sh.lanes[1].params.clone())
         };
         let mut new = spec.clone();
-        let mut c = new.composition().unwrap().clone();
-        c.set(slot, value);
-        new.set_compose(c).unwrap();
-        let knobs = crate::gui::graph::live_edits(&spec, &new, &params).unwrap_or_else(|| panic!("{slot:?} = {value} live"));
+        new.set_component(node, value).unwrap();
+        let knobs = crate::gui::graph::live_edits(&spec, &new, &params).unwrap_or_else(|| panic!("{node} = {value} live"));
         live.send(Cmd::Edits { lane: 1, spec: new, knobs });
-        wait(&live.shared, &format!("{slot:?} = {value}"), 20, |s| s.lanes[1].frames > frames + 3 && s.lanes[1].status == LaneStatus::Running && s.lanes[1].spec.composition().is_some_and(|c| c.get(slot) == value));
+        wait(&live.shared, &format!("{node} = {value}"), 20, |s| s.lanes[1].frames > frames + 3 && s.lanes[1].status == LaneStatus::Running && s.lanes[1].spec.graph.as_ref().is_some_and(|g| g.nodes[node].component == value));
     }
+    // The same through the host's knob for a node's component (the tuner's way): live here,
+    // no hot swap.
+    let frames = live.shared.lock().unwrap().lanes[1].frames;
+    live.send(Cmd::SetParam { lane: 1, name: "geometry.component".into(), value: ParamValue::Choice("naive".into()) });
+    wait(&live.shared, "geometry.component = naive", 20, |s| s.lanes[1].frames > frames + 3 && s.lanes[1].status == LaneStatus::Running && s.lanes[1].spec.graph.as_ref().is_some_and(|g| g.nodes["geometry"].component == "naive") && s.lanes[1].params.iter().any(|(p, v)| p.name == "geometry.component" && v.as_str() == Some("naive")));
+    assert!(live.shared.lock().unwrap().lanes[1].events.iter().all(|(_, e)| !e.starts_with("hot swap")), "a live edit, not a swap");
     // The worker took every edit (a refusal is an event of the lane, not an error).
     let refused: Vec<String> = live.shared.lock().unwrap().lanes[1].events.iter().filter(|(_, e)| e.starts_with("refused")).map(|(_, e)| e.clone()).collect();
     assert!(refused.is_empty(), "{refused:?}");
