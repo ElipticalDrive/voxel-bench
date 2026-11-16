@@ -240,6 +240,11 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 renderer.resize(width, height)?;
                 new_shm = Some(spec);
             }
+            HostMsg::Edit(edits) => {
+                if let Err(e) = renderer.edit(&edits) {
+                    sink.out.send(&WorkerMsg::ParamError { name: "edit".into(), error: format!("{e:#}") })?;
+                }
+            }
             HostMsg::SetParams(ps) => {
                 for (name, value) in ps {
                     // The client's region (the host's `view_radius`, `max_lod`).

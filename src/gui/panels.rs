@@ -389,7 +389,7 @@ impl App {
                             }
                         }
                         graph::Edit::Spec(new) => match graph::live_edits(&spec, &new, &knobs) {
-                            Some(edits) => self.send(Cmd::Edits { lane: i, edits }),
+                            Some(knobs) => self.send(Cmd::Edits { lane: i, spec: new, knobs }),
                             None => self.send(Cmd::Swap { lane: i, spec: new }),
                         },
                         graph::Edit::Open(_) => {}

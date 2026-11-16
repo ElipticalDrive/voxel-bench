@@ -120,6 +120,7 @@ impl Session {
             } else {
                 vec![MeshUpdate::Meshes(self.mesh_data.clone()), MeshUpdate::Instances(self.instances.clone())]
             },
+            pending_edits: vec![],
             pending_params: vec![],
             in_flight: VecDeque::new(),
             next_id: 0,
@@ -316,6 +317,32 @@ impl Session {
         self.publish_params(i);
     }
 
+    /// Lane `i` goes on as `spec` without a restart: its worker (and the replacement a hot
+    /// swap is loading) is sent the edits from the graph it runs, then `knobs`. A restart
+    /// after all when the edits are not ones its executor takes while running.
+    fn edit(&mut self, i: usize, spec: RendererSpec, knobs: Vec<(String, ParamValue)>) {
+        let Some(lane) = self.lanes.get_mut(i) else { return };
+        let to = spec.worker_graph().ok().flatten();
+        let last = lane.standby.is_some() as usize;
+        let mut taken = false;
+        for (k, run) in std::iter::once(&mut lane.run).chain(lane.standby.as_mut()).enumerate() {
+            let from = run.spec.worker_graph().ok().flatten();
+            let Some((edits, _)) = from.zip(to.as_ref()).and_then(|(from, to)| from.live_edits(to).ok()) else { continue };
+            if !edits.is_empty() {
+                run.pending_edits.push(mr_components::graph::edits_text(&edits));
+            }
+            run.spec = spec.clone();
+            taken |= k == last;
+        }
+        if !taken {
+            return self.hot_swap(i, spec);
+        }
+        for (name, value) in knobs {
+            self.set_knob(i, &name, value, true);
+        }
+        self.publish_params(i);
+    }
+
     fn hot_swap(&mut self, i: usize, spec: RendererSpec) {
         let radius = self.lanes[i].run.region.radius;
         let res = self.lanes[i].run.res;
@@ -357,11 +384,7 @@ impl Session {
                 self.fan_out(WorldUpdate::LightRemove(ids));
             }
             Cmd::SetParam { lane, name, value } => self.set_param(lane, &name, value),
-            Cmd::Edits { lane, edits } => {
-                for (name, value) in edits {
-                    self.set_knob(lane, &name, value, true);
-                }
-            }
+            Cmd::Edits { lane, spec, knobs } => self.edit(lane, spec, knobs),
             Cmd::Restart { lane, spec } => {
                 if let Some(l) = self.lanes.get_mut(lane) {
                     let kept = keep_knobs(&l.given, l.latest(), spec.clone());

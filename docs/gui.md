@@ -112,7 +112,8 @@ unbound, nothing is filled in and nothing is dropped. If the resulting graph can
 choice is orange with ✱ and hovering over it gives the reason; picking it anyway makes a draft
 (shown with the reason, while the renderer keeps its last graph) to edit on from. A choice that
 moves the graph to another preset says so (`➡ discover-gpu`). In the live session an edit applies in place
-when the executor can change that knob live, and otherwise as a hot swap. Trying the choices is cheap: every
+when it changes only nodes the lane's executor replaces while running (the worker is sent the graph's
+edits), and otherwise as a hot swap. Trying the choices is cheap: every
 choice the editor lists on every preset (1,110) is answered in 0.07 ms each.
 
 ## Knobs and hot swaps

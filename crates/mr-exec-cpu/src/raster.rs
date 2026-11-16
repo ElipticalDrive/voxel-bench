@@ -105,7 +105,7 @@ pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::
 
 fn params() -> Vec<ParamSpec> {
     let mut p = mr_reference::cpu_params();
-    p.push(ParamSpec::choice("geometry", "Geometry component (quads meshed on the CPU)", &REGION.names(Slot::Geometry), "greedy", true));
+    p.push(ParamSpec::choice("geometry", "Geometry component (quads meshed on the CPU)", &REGION.names(Slot::Geometry), "greedy", false));
     p.push(ParamSpec::choice("visibility", "Visibility strategy", &REGION.names(Slot::Visibility), "faces", false));
     p.push(ParamSpec::choice("draw", "Draw component: `raster` here is edge functions into a visibility buffer, then deferred shading", &REGION.names(Slot::Draw), "raster", false));
     p.push(ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", false));
@@ -200,12 +200,15 @@ impl Node for Geometry {
         report.stages.push(StageTime::cpu("geometry", &self.nodes, t as f32));
         report.counters.extend([("remeshed".into(), remeshed as f64), ("mesh_ms".into(), t)]);
     }
+    /// The mesher replaced: every chunk is meshed again.
+    fn switch(&mut self, out: &mut Res, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+        let c = s.component.as_ref().filter(|_| s.role == Role::Geometry)?;
+        self.mesh = mesh_fn(c);
+        self.dirty.extend(meshes(out).meshes.keys().copied());
+        Some(Ok(()))
+    }
     fn set_param(&mut self, out: &mut Res, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         match name {
-            "geometry" => match REGION.require(Slot::Geometry, value.as_str().unwrap_or("")) {
-                Ok(g) => self.mesh = mesh_fn(&g),
-                Err(e) => return Some(Err(e)),
-            },
             "cull" => self.knobs.cull = value.as_bool().unwrap_or(true),
             _ => return None,
         }

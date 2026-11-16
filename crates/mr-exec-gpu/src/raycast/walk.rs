@@ -67,12 +67,12 @@ fn params() -> Vec<ParamSpec> {
     let mut p = vec![
         ParamSpec::choice("storage", &format!("Storage component. {}", describe(Slot::Storage)), &REGION.names(Slot::Storage), "bricks", false),
         ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &REGION.names(Slot::Visibility), "raycast", false),
-        ParamSpec::choice("traversal", &format!("Traversal kernel (any storage works with any; missing fast paths come from adapters). {}", describe(Slot::Traversal)), &REGION.names(Slot::Traversal), "refloor", true),
+        ParamSpec::choice("traversal", &format!("Traversal kernel (any storage works with any; missing fast paths come from adapters). {}", describe(Slot::Traversal)), &REGION.names(Slot::Traversal), "refloor", false),
         ParamSpec::choice("shadow_storage", "What shadow and bounce rays walk: `same` (the primary storage) or another storage (its data is kept as well)", &REGION.names(Slot::ShadowStorage), "same", false),
         ParamSpec::choice("shadow_traversal", "The kernel of shadow and bounce rays: `same` (the primary kernel) or another", &REGION.names(Slot::ShadowTraversal), "same", false),
-        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &REGION.names(Slot::Shading), "direct", true),
-        ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &REGION.names(Slot::Prepass), "none", true),
-        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &REGION.names(Slot::Meshes), "composite", true),
+        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &REGION.names(Slot::Shading), "direct", false),
+        ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &REGION.names(Slot::Prepass), "none", false),
+        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &REGION.names(Slot::Meshes), "composite", false),
         ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
     ];
     p.extend(shade_state::params());
@@ -501,13 +501,29 @@ impl Cast for Walk {
         }
     }
 
+    /// The primary kernel, the prepass and the mesh records: compiled into the walk's
+    /// program, which is rebuilt at the next frame.
+    fn switch(&mut self, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+        let mut c = self.comp.clone();
+        match s.role {
+            Role::Traversal => c.walks.kernels[0].component = s.component.clone()?,
+            Role::Prepass => c.prepass = s.component.clone().unwrap_or_else(|| "none".into()),
+            Role::Meshes => c.meshes = s.component.is_some(),
+            _ => return None,
+        }
+        Some(match feature_blocker(&c) {
+            Some(why) => Err(anyhow::anyhow!(why)),
+            None => {
+                self.comp = c;
+                Ok(())
+            }
+        })
+    }
+
     fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         let set = |c: &mut Composition| -> anyhow::Result<()> {
             match name {
-                "prepass" => c.prepass = REGION.require(Slot::Prepass, value.as_str().unwrap_or(""))?,
                 "tile" => c.tile = value.as_i64().unwrap_or(8).clamp(1, 64) as u32,
-                "visibility" => drop(REGION.require(Slot::Visibility, value.as_str().unwrap_or(""))?),
-                "traversal" => c.walks.kernels[0].component = REGION.require(Slot::Traversal, value.as_str().unwrap_or(""))?,
                 _ => c.view = View::parse(value.as_str().unwrap_or(""))?,
             }
             match feature_blocker(c) {
@@ -516,11 +532,10 @@ impl Cast for Walk {
             }
         };
         Some(match name {
-            "visibility" | "traversal" | "prepass" | "tile" | "view" => {
+            "tile" | "view" => {
                 let mut c = self.comp.clone();
                 set(&mut c).map(|_| self.comp = c)
             }
-            "meshes" => REGION.require(Slot::Meshes, value.as_str().unwrap_or("")).map(|m| self.comp.meshes = m != "none"),
             "view_max" => {
                 self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32;
                 Ok(())

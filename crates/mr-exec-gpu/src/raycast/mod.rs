@@ -173,6 +173,10 @@ trait Cast: Sized {
     fn submitted(&mut self) {}
     /// Its knobs; `None` if `name` is not one.
     fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>>;
+    /// A node of its own to replace while running; `None` if it replaces no such node.
+    fn switch(&mut self, _s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+        None
+    }
     fn resize(&mut self, core: &Core);
     /// GPU bytes beyond the core's.
     fn memory_bytes(&self) -> u64;
@@ -487,10 +491,18 @@ impl<C: Cast> State for Raycast<C> {
     }
 
     fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        if name == "shading" {
-            return Some(C::REGION.require(mr_components::Slot::Shading, value.as_str().unwrap_or("")).map(|s| self.shading = s));
-        }
         self.cast.set_param(name, value)
+    }
+
+    /// The shading (compiled into the caster's program or the shade pass), else the caster's nodes.
+    fn switch(&mut self, _core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+        match (s.role, &s.component) {
+            (Role::Shading, Some(c)) => {
+                self.shading = c.clone();
+                Some(Ok(()))
+            }
+            _ => self.cast.switch(s),
+        }
     }
 
     fn resize(&mut self, core: &Core) {

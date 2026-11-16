@@ -251,6 +251,12 @@ pub trait Renderer {
         anyhow::bail!("parameter `{name}` cannot change while running")
     }
 
+    /// Edits to the pipeline graph it runs, taken between frames: the nodes its executor
+    /// replaces while running (the text is the executor's: its graph crate's edits).
+    fn edit(&mut self, _edits: &str) -> anyhow::Result<()> {
+        anyhow::bail!("its pipeline cannot change while running")
+    }
+
     /// Complete any finished frames without blocking.
     fn poll(&mut self, _sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         Ok(())

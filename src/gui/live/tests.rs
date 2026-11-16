@@ -91,10 +91,13 @@ fn live_session_end_to_end() {
         let mut c = new.composition().unwrap().clone();
         c.set(slot, value);
         new.set_compose(c).unwrap();
-        let edits = crate::gui::graph::live_edits(&spec, &new, &params).unwrap_or_else(|| panic!("{slot:?} = {value} live"));
-        live.send(Cmd::Edits { lane: 1, edits });
+        let knobs = crate::gui::graph::live_edits(&spec, &new, &params).unwrap_or_else(|| panic!("{slot:?} = {value} live"));
+        live.send(Cmd::Edits { lane: 1, spec: new, knobs });
         wait(&live.shared, &format!("{slot:?} = {value}"), 20, |s| s.lanes[1].frames > frames + 3 && s.lanes[1].status == LaneStatus::Running && s.lanes[1].spec.composition().is_some_and(|c| c.get(slot) == value));
     }
+    // The worker took every edit (a refusal is an event of the lane, not an error).
+    let refused: Vec<String> = live.shared.lock().unwrap().lanes[1].events.iter().filter(|(_, e)| e.starts_with("refused")).map(|(_, e)| e.clone()).collect();
+    assert!(refused.is_empty(), "{refused:?}");
 
     // Hot swap (restart-only knob): lane 1 must keep producing frames throughout.
     let frames_before = live.shared.lock().unwrap().lanes[1].frames;

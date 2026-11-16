@@ -62,12 +62,12 @@ fn describe(slot: Slot) -> String {
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
         ParamSpec::choice("storage", &format!("Storage component the lit-mode shadow rays walk (with the traversal kernel). {}", describe(Slot::Storage)), &REGION.names(Slot::Storage), "bricks", false),
-        ParamSpec::choice("geometry", &format!("Geometry component. {}", describe(Slot::Geometry)), &REGION.names(Slot::Geometry), "greedy", true),
+        ParamSpec::choice("geometry", &format!("Geometry component. {}", describe(Slot::Geometry)), &REGION.names(Slot::Geometry), "greedy", false),
         ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &REGION.names(Slot::Visibility), "faces", false),
-        ParamSpec::choice("draw", &format!("Draw component. {}", describe(Slot::Draw)), &REGION.names(Slot::Draw), "raster", true),
+        ParamSpec::choice("draw", &format!("Draw component. {}", describe(Slot::Draw)), &REGION.names(Slot::Draw), "raster", false),
         ParamSpec::choice("traversal", &format!("Traversal kernel of the lit-mode shadow rays. {}", describe(Slot::Traversal)), &REGION.names(Slot::Traversal), "refloor", false),
-        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &REGION.names(Slot::Shading), "direct", true),
-        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &REGION.names(Slot::Meshes), "depth", true),
+        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &REGION.names(Slot::Shading), "direct", false),
+        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &REGION.names(Slot::Meshes), "depth", false),
         ParamSpec::choice("merge", "greedy: merge faces of the same block only (`block`), or any exposed coplanar faces with a per-pixel block lookup (`exposure`)", &["block", "exposure"], "block", true).of("geometry", &["greedy"]),
         ParamSpec::bool("cull", "naive / cubes: skip faces (blocks) hidden by solid neighbours (false = every face of every solid block)", true, true).of("geometry", &["naive", "cubes"]),
         ParamSpec::bool("depth_prepass", "raster, lit mode: depth pre-pass so lighting runs once per pixel", true, true).of("draw", &["raster"]),
@@ -608,6 +608,25 @@ impl State for Meshing {
         self.set_knob(name, value).or_else(|| self.drawing.set_param(core, name, value))
     }
 
+    /// The geometry the drawer draws, the shading and the meshes are compiled in (rebuilt at
+    /// the next frame); the drawer is the drawing's.
+    fn switch(&mut self, core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+        let field = match s.role {
+            Role::Geometry => &mut self.live.geometry,
+            Role::Shading => &mut self.live.shading,
+            Role::Meshes => &mut self.live.meshes,
+            _ => return self.drawing.switch(core, s),
+        };
+        let v = match (&s.component, s.role) {
+            (Some(c), _) => c.clone(),
+            (None, Role::Meshes) => "none".into(),
+            (None, _) => return None,
+        };
+        self.stale |= *field != v;
+        *field = v;
+        Some(Ok(()))
+    }
+
     fn resize(&mut self, core: &Core) {
         self.drawing.resize(core);
         self.bind0 = None;
@@ -622,23 +641,11 @@ impl Meshing {
     /// Its own knobs; `None` if `name` is not one.
     fn set_knob(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         let s = value.as_str().unwrap_or("").to_string();
-        let r = |slot| REGION.require(slot, &s);
-        let stale = &mut self.stale;
-        let mut compiled = |slot, field: &mut String| {
-            r(slot).map(|v| {
-                *stale |= *field != v;
-                *field = v;
-            })
-        };
         Some(match name {
             "mesh_budget" => {
                 self.opts.mesh_budget = value.as_i64().unwrap_or(0) as usize;
                 Ok(())
             }
-            "geometry" => compiled(Slot::Geometry, &mut self.live.geometry),
-            "shading" => compiled(Slot::Shading, &mut self.live.shading),
-            "meshes" => compiled(Slot::Meshes, &mut self.live.meshes),
-            "visibility" => r(Slot::Visibility).map(drop),
             "merge" => parse_merge(&s).map(|m| {
                 if m != self.live.knobs.merge {
                     self.live.knobs.merge = m;

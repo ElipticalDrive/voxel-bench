@@ -585,46 +585,29 @@ pub fn apply_to_plan(r: &mut RendererSpec, edits: Vec<Edit>) -> (bool, Option<Op
     (changed, open)
 }
 
-/// The graph edit `new` makes on `old` as the knob changes a running renderer takes live,
-/// if it takes them all live: `new` switches one component, and the worker's graphs then
-/// differ in that node (see [`graph_edits`]).
+/// Whether a lane running `old` goes on as `new` without a restart, and the knobs it is then
+/// sent: the graph's edits are ones its executor takes while running
+/// (`Graph::live_edits`: the session sends those), and every knob to set is live.
 pub fn live_edits(old: &RendererSpec, new: &RendererSpec, params: &[(ParamSpec, ParamValue)]) -> Option<Vec<(String, ParamValue)>> {
-    let (Some(a), Some(b)) = (old.shorthand_form(), new.shorthand_form()) else { return None };
-    if old.name != new.name || !a.sites.is_empty() || !b.sites.is_empty() {
-        return None;
-    }
-    let (a, b) = (&a.compose, &b.compose);
-    if mr_components::Slot::ALL.into_iter().filter(|s| a.get(*s) != b.get(*s)).count() != 1 {
-        return None;
-    }
     let (Ok(Some(g0)), Ok(Some(g1))) = (old.worker_graph(), new.worker_graph()) else { return None };
+    g0.live_edits(&g1).ok()?;
     let specs: Vec<ParamSpec> = params.iter().map(|(p, _)| p.clone()).collect();
-    let edits = graph_edits(&g0, &g1, &specs);
-    edits.iter().all(|(k, _)| params.iter().any(|(p, _)| p.name == *k && p.live)).then_some(edits)
+    let knobs = node_knob_changes(&g0, &g1, &specs);
+    knobs.iter().all(|(k, _)| params.iter().any(|(p, _)| p.name == *k && p.live)).then_some(knobs)
 }
 
 /// The knob changes that take a renderer running graph `old` to `new`, node by node (by
-/// id): a node whose component changed (or that came or went: to or from `none`) is its
-/// slot's switch, then every knob its new component owns (the node's value, else the
-/// default: nothing of the old component's state carries over); a node that kept its
-/// component, the knobs that changed (one removed back to its default).
-pub fn graph_edits(old: &Graph, new: &Graph, params: &[ParamSpec]) -> Vec<(String, ParamValue)> {
+/// id): of a node whose component changed or that is new, every knob its component owns (the
+/// node's value, else the default: nothing of the old component's state carries over); of a
+/// node that kept its component, the knobs that changed (one removed back to its default).
+pub fn node_knob_changes(old: &Graph, new: &Graph, params: &[ParamSpec]) -> Vec<(String, ParamValue)> {
     let value = |p: &ParamSpec, n: &mr_components::graph::Node| knobs::option_value(p, &n.knobs);
     let owns = |p: &ParamSpec, n: &mr_components::graph::Node| p.owner.as_ref().is_some_and(|(role, comps)| n.role.name() == role && comps.contains(&n.component));
     let mut v = vec![];
-    for id in old.nodes.keys().chain(new.nodes.keys().filter(|id| !old.nodes.contains_key(*id))) {
-        let (a, b) = (old.nodes.get(id), new.nodes.get(id));
-        let Some(slot) = a.or(b).and_then(|n| n.role.slot()) else { continue };
-        match (a, b) {
-            (Some(a), Some(b)) if a.component == b.component => {
-                v.extend(params.iter().filter(|p| owns(p, b) && value(p, a) != value(p, b)).map(|p| (p.name.clone(), value(p, b))));
-            }
-            (_, Some(b)) => {
-                v.push((slot.name().to_string(), ParamValue::Choice(b.component.clone())));
-                v.extend(params.iter().filter(|p| owns(p, b)).map(|p| (p.name.clone(), value(p, b))));
-            }
-            (Some(_), None) => v.push((slot.name().to_string(), ParamValue::Choice("none".into()))),
-            (None, None) => {}
+    for (id, b) in new.nodes.iter().filter(|(_, n)| n.role.slot().is_some()) {
+        match old.nodes.get(id).filter(|a| a.role == b.role && a.component == b.component) {
+            Some(a) => v.extend(params.iter().filter(|p| owns(p, b) && value(p, a) != value(p, b)).map(|p| (p.name.clone(), value(p, b)))),
+            None => v.extend(params.iter().filter(|p| owns(p, b)).map(|p| (p.name.clone(), value(p, b)))),
         }
     }
     v
@@ -650,12 +633,22 @@ mod tests {
         let old = spec(mr_components::Slot::Holes, "none");
         let (_, params) = crate::pipelines::executor_of(&old.pipeline().unwrap()).unwrap();
         let knobs: Vec<_> = params.iter().map(|p| (p.clone(), knobs::option_value(p, &old.knob_values()))).collect();
-        let edits = live_edits(&old, &spec(mr_components::Slot::Holes, "coverage"), &knobs).unwrap();
-        assert_eq!(edits[0], ("holes".into(), ParamValue::Choice("coverage".into())));
+        let new = spec(mr_components::Slot::Holes, "coverage");
+        let edits = live_edits(&old, &new, &knobs).unwrap();
         assert!(edits.contains(&("refresh".into(), ParamValue::Int(4))), "{edits:?}");
         assert!(edits.contains(&("keep_unseen".into(), ParamValue::Int(64))), "{edits:?}");
-        let back = live_edits(&spec(mr_components::Slot::Holes, "coverage"), &old, &knobs).unwrap();
-        assert_eq!(back, vec![("holes".into(), ParamValue::Choice("none".into()))]);
+        // The worker is sent the graph's edits: the node, what reads it, the drawer's second draw.
+        let (g0, g1) = (old.worker_graph().unwrap().unwrap(), new.worker_graph().unwrap().unwrap());
+        let (sent, switches) = g0.live_edits(&g1).unwrap();
+        let shape = |mut g: Graph| {
+            g.nodes.values_mut().for_each(|n| n.knobs.clear());
+            g
+        };
+        assert_eq!(shape(g0.with_edits(&sent).unwrap()), shape(g1.clone()));
+        assert_eq!(switches.iter().map(|s| (s.role, s.component.as_deref())).collect::<Vec<_>>(), [(Role::Holes, Some("coverage"))]);
+        let back = live_edits(&new, &old, &knobs).unwrap();
+        assert_eq!(back, vec![]);
+        assert_eq!(g1.live_edits(&g0).unwrap().1.iter().map(|s| (s.role, s.component.as_deref())).collect::<Vec<_>>(), [(Role::Holes, None)]);
         // Storage is not live on discover-gpu.
         assert!(live_edits(&old, &spec(mr_components::Slot::Storage, "tree64"), &knobs).is_none());
     }

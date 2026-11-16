@@ -87,8 +87,8 @@ fn params() -> Vec<ParamSpec> {
     let mut p = mr_reference::cpu_params();
     p.push(ParamSpec::choice("storage", "Storage component (CPU implementations)", &REGION.names(Slot::Storage), "bricks", false));
     p.push(ParamSpec::choice("visibility", "Visibility strategy", &REGION.names(Slot::Visibility), "raycast", false));
-    p.push(ParamSpec::choice("traversal", "Traversal kernel. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &REGION.names(Slot::Traversal), "refloor", true));
-    p.push(ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", true));
+    p.push(ParamSpec::choice("traversal", "Traversal kernel. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &REGION.names(Slot::Traversal), "refloor", false));
+    p.push(ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", false));
     p.push(REGION.placement_param("inline"));
     p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
     p.push(ParamSpec::choice("packet", "Rays traced together in lockstep (refloor; measured: no gain on Zen 5)", &["1", "4", "8", "16"], "1", true).of("traversal", &["refloor"]));
@@ -932,10 +932,6 @@ impl<S: Spec, P: Pixel> Cast<S, P> {
             "perf" => self.perf = perf::allowed(value.as_bool().unwrap_or(false))?,
             "view" => self.view = parse_view(value.as_str().unwrap_or(""))?,
             "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,
-            "visibility" => drop(REGION.require(Slot::Visibility, value.as_str().unwrap_or(""))?),
-            "shading" => {
-                REGION.require(Slot::Shading, value.as_str().unwrap_or(""))?;
-            }
             "packet" => {
                 self.packet = value.as_str().and_then(|s| s.parse().ok()).unwrap_or(8);
             }

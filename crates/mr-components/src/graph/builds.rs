@@ -51,6 +51,33 @@ pub struct Only {
     pub bound: bool,
 }
 
+/// A node a region replaces while it runs: the node of `role` (the one the `at` node's input
+/// reads, where the region builds several of the role), its component changed, or the node
+/// added or removed. `with`: edge timings that change along with it.
+#[derive(Copy, Clone, Debug)]
+pub struct Live {
+    pub role: Role,
+    pub at: Option<(Role, &'static str)>,
+    pub with: &'static [(Role, &'static str)],
+}
+
+impl Live {
+    /// Any node of `role`.
+    pub const fn of(role: Role) -> Live {
+        Live { role, at: None, with: &[] }
+    }
+
+    /// The node of the role that input `port` of the `reader` node reads.
+    pub const fn read_by(self, reader: Role, port: &'static str) -> Live {
+        Live { at: Some((reader, port)), ..self }
+    }
+
+    /// The timings of these edges (a role's input) change with it.
+    pub const fn with(self, with: &'static [(Role, &'static str)]) -> Live {
+        Live { with, ..self }
+    }
+}
+
 /// The regions of the executors: the parts of each that build one shape of pipeline (the CPU
 /// executor's ray caster, rasteriser and column march; the GPU executor's walk, ray queries,
 /// meshed faces, the two discovery samplers, splats and column march). An executor picks its
@@ -92,6 +119,9 @@ pub struct Builds {
     /// The choice of API it offers, if any (the CPU ray caster: `isa`, its one hot loop; the
     /// GPU walk: `dispatch`, in a compute or fragment shader).
     pub api_choice: Option<ApiChoice>,
+    /// The nodes it replaces while running ([`Graph::live_edits`]); any other change to the
+    /// graph's shape is a new renderer.
+    pub live: &'static [Live],
     /// What it is, for listings.
     pub description: &'static str,
     /// Its default pipeline in the flat form: the slots it has, each with its default
@@ -110,12 +140,18 @@ pub struct Builds {
 impl Builds {
     /// Region `id` with nothing built and no choices: the base the declarations fill in.
     const fn plain(id: RegionId, name: &'static str) -> Builds {
-        Builds { id, name, nodes: &[], same: &[], only: &[], free: &[], timing_knobs: &[], split: false, api_choice: None, description: "", base: &[], late: &[], lit_only: &[], quiet: &[] }
+        Builds { id, name, nodes: &[], same: &[], only: &[], free: &[], timing_knobs: &[], split: false, api_choice: None, live: &[], description: "", base: &[], late: &[], lit_only: &[], quiet: &[] }
     }
 
     /// The timings it runs the edge into `port` of a `role` node with, if the graph may choose.
     pub fn free_at(&self, role: Role, port: &str) -> Option<&'static [When]> {
         self.free.iter().find(|(r, p, _)| *r == role && *p == port).map(|f| f.2)
+    }
+
+    /// Whether it replaces node `id` of graph `g` while running.
+    pub fn replaces(&self, g: &Graph, id: &str) -> bool {
+        let Some(n) = g.nodes.get(id) else { return false };
+        self.live.iter().any(|l| l.role == n.role && l.at.is_none_or(|(reader, port)| g.nodes.values().any(|r| r.role == reader && r.inputs.get(port).is_some_and(|s| s == id))))
     }
 
     /// Whether its API choice sets `slot` (the secondary-ray stages: with their source).
@@ -302,6 +338,7 @@ pub const CPU_RASTER: Builds = Builds {
     description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
     base: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "faces"), (Slot::Draw, "raster"), (Slot::Shading, "direct")],
     quiet: &[Slot::Visibility],
+    live: &[Live::of(Role::Geometry)],
     ..Builds::plain(RegionId::CpuRaster, "raster-cpu")
 };
 
@@ -345,6 +382,7 @@ pub const GPU_WALK: Builds = Builds {
     base: &[(Slot::Storage, "bricks"), (Slot::Prepass, "none"), (Slot::Visibility, "raycast"), (Slot::Traversal, "refloor"), (Slot::ShadowStorage, "same"), (Slot::ShadowTraversal, "same"), (Slot::Shading, "direct"), (Slot::Meshes, "composite")],
     lit_only: &[Slot::ShadowStorage, Slot::ShadowTraversal],
     quiet: &[Slot::Visibility, Slot::ShadowStorage, Slot::ShadowTraversal],
+    live: &[Live::of(Role::Traversal).read_by(Role::Visibility, "primary"), Live::of(Role::Shading), Live::of(Role::Prepass), Live::of(Role::Meshes)],
     ..Builds::plain(RegionId::GpuWalk, "raycast-gpu")
 };
 
@@ -366,6 +404,7 @@ pub const GPU_RAYQUERY: Builds = Builds {
     description: "GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component, a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries",
     base: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raycast"), (Slot::Traversal, "rayquery"), (Slot::Shading, "direct")],
     quiet: &[Slot::Visibility],
+    live: &[Live::of(Role::Shading)],
     ..Builds::plain(RegionId::GpuRayQuery, "rayquery-gpu")
 };
 
@@ -394,6 +433,7 @@ pub const GPU_MESHING: Builds = Builds {
     base: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "faces"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct"), (Slot::Meshes, "depth")],
     lit_only: &[Slot::Storage, Slot::Traversal],
     quiet: &[Slot::Visibility, Slot::Traversal],
+    live: &[Live::of(Role::Geometry).read_by(Role::Visibility, "faces"), Live::of(Role::Draw), Live::of(Role::Shading), Live::of(Role::Meshes)],
     ..Builds::plain(RegionId::GpuMeshing, "raster-gpu")
 };
 
@@ -423,6 +463,7 @@ pub const GPU_SAMPLER: Builds = Builds {
     description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
     base: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Holes, "none"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")],
     quiet: &[Slot::Draw, Slot::Traversal],
+    live: &[Live::of(Role::Holes).with(&[(Role::Draw, "faces")]), Live::of(Role::Draw)],
     ..Builds::plain(RegionId::GpuSampler, "discover-gpu")
 };
 
@@ -450,6 +491,7 @@ pub const CPU_SAMPLER: Builds = Builds {
     late: &[(Role::Draw, "faces", When::Prev)],
     lit_only: &[Slot::ShadowStorage, Slot::ShadowTraversal],
     quiet: &[Slot::Draw, Slot::Traversal, Slot::ShadowStorage, Slot::ShadowTraversal],
+    live: &[Live::of(Role::Visibility), Live::of(Role::Draw)],
     ..Builds::plain(RegionId::CpuSampler, "discover-cpu")
 };
 

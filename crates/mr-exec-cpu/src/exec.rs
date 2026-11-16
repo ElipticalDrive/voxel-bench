@@ -51,6 +51,10 @@ pub(crate) trait Node: Send {
     fn set_param(&mut self, _out: &mut Res, _name: &str, _value: &ParamValue) -> Option<anyhow::Result<()>> {
         None
     }
+    /// A node to replace while running (an edit to the graph); `None` if it is not this node.
+    fn switch(&mut self, _out: &mut Res, _s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+        None
+    }
     /// After a resize: resizes `out` if its size follows the image's.
     fn resize(&mut self, _out: &mut Res, _width: u32, _height: u32) {}
     /// CPU bytes it keeps beyond its output, and in it.
@@ -73,6 +77,8 @@ pub(crate) struct Executor<P> {
     height: u32,
     passes: Vec<Pass>,
     outs: Vec<Res>,
+    /// The pipeline graph it runs (the host's, then with the edits taken while running).
+    graph: mr_components::graph::Graph,
     /// The knob values a compiled pipeline baked in ([`crate::Spec::KNOBS`]).
     baked: mr_core::baked::Knobs,
     /// Compiled for this machine ([`crate::Spec::NATIVE`]).
@@ -84,7 +90,8 @@ impl<P: Pixel> Executor<P> {
     pub fn new(p: &InitParams, threads: usize, world: World, mut passes: Vec<Pass>) -> anyhow::Result<Self> {
         anyhow::ensure!(passes.iter().enumerate().all(|(i, s)| s.ins.iter().all(|&j| j < i)), "a pass reads a later pass's output");
         let outs = passes.iter_mut().map(|s| s.node.output(p.width, p.height)).collect();
-        Ok(Self { pool: Pool::new(p.devices.cpu_threads(threads))?, world, width: p.width, height: p.height, passes, outs, baked: &[], native: false, _px: std::marker::PhantomData })
+        let graph = mr_components::graph::of_init("cpu", p)?.graph;
+        Ok(Self { graph, pool: Pool::new(p.devices.cpu_threads(threads))?, world, width: p.width, height: p.height, passes, outs, baked: &[], native: false, _px: std::marker::PhantomData })
     }
 
     /// A compiled pipeline's: refuses its `baked` knobs, says when it is `native`.
@@ -126,6 +133,16 @@ impl<P: Pixel> Renderer for Executor<P> {
         }
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: report.counters, legend: report.legend, stages: report.stages };
         sink.complete(CompletedFrame { frame_id: req.frame_id, stats, pixels: Some(bytemuck::cast_slice(self.image())) });
+        Ok(())
+    }
+
+    fn edit(&mut self, edits: &str) -> anyhow::Result<()> {
+        let (g, switches) = mr_components::graph::live(&self.graph, edits)?;
+        for s in &switches {
+            let mut nodes = self.passes.iter_mut().zip(&mut self.outs);
+            nodes.find_map(|(p, out)| p.node.switch(out, s)).unwrap_or_else(|| anyhow::bail!("{} node `{}` cannot change while running", s.role.name(), s.node))?;
+        }
+        self.graph = g.graph;
         Ok(())
     }
 

@@ -208,6 +208,11 @@ pub(crate) trait State {
     fn update_meshes(&mut self, _update: MeshUpdate) {}
     /// Its knobs; `None` if `name` is not one.
     fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>>;
+    /// A node to replace while running (an edit to the graph, which the region builds
+    /// edited): `None` if it is not a node this region replaces.
+    fn switch(&mut self, _core: &mut Core, _s: &graph::Switch) -> Option<anyhow::Result<()>> {
+        None
+    }
     /// After the core's resize.
     fn resize(&mut self, core: &Core);
     /// (CPU, GPU) bytes beyond the core's.
@@ -293,6 +298,22 @@ impl<R: Region> Executor<R> {
         }
         self.core.set_param(name, value)
     }
+
+    /// Node `s` replaced, where it is one of the region's (it rebuilds its pipelines lazily,
+    /// like a knob's).
+    fn replace(&mut self, s: &graph::Switch) -> Option<anyhow::Result<()>> {
+        let r = self.region.switch(&mut self.core, s);
+        self.core.gpu.save_cache();
+        r
+    }
+}
+
+/// Every node of `switches` replaced by the first of `replace` that has it.
+fn switched(switches: &[graph::Switch], mut replace: impl FnMut(&graph::Switch) -> Option<anyhow::Result<()>>) -> anyhow::Result<()> {
+    for s in switches {
+        replace(s).unwrap_or_else(|| anyhow::bail!("{} node `{}` cannot change while running", s.role.name(), s.node))?;
+    }
+    Ok(())
 }
 
 impl<R: Region> Renderer for Executor<R> {
@@ -326,6 +347,13 @@ impl<R: Region> Renderer for Executor<R> {
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
         self.offer(name, value).unwrap_or_else(|| anyhow::bail!("`{name}` cannot change while running"))
+    }
+
+    fn edit(&mut self, edits: &str) -> anyhow::Result<()> {
+        let (g, switches) = graph::live(&self.core.graph, edits)?;
+        switched(&switches, |s| self.replace(s))?;
+        self.core.graph = g.graph;
+        Ok(())
     }
 
     fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
@@ -403,6 +431,19 @@ impl<R: Region, F: Region> Renderer for Split<R, F> {
             (_, Some(r)) | (Some(r), None) => r,
             (None, None) => anyhow::bail!("`{name}` cannot change while running"),
         }
+    }
+
+    /// A replaced node reaches both executors, like a knob.
+    fn edit(&mut self, edits: &str) -> anyhow::Result<()> {
+        let (g, switches) = graph::live(&self.near.core.graph, edits)?;
+        switched(&switches, |s| match (self.far.replace(s), self.near.replace(s)) {
+            (Some(Err(e)), _) => Some(Err(e)),
+            (_, Some(r)) | (Some(r), None) => Some(r),
+            (None, None) => None,
+        })?;
+        self.far.core.graph = g.graph.clone();
+        self.near.core.graph = g.graph;
+        Ok(())
     }
 
     fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {

@@ -112,7 +112,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("closure_box", "Local-closure box size in cells per axis", 1, 8, 2, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("block_faces", "With each discovered face also add its block's other camera-facing exposed faces (closes raster-vs-ray edge cracks)", true, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("jitter", "Shift the tile lattice randomly every frame (temporal coverage)", true, true).of("visibility", &["quadtree"]),
-        ParamSpec::choice("holes", "Hole detection (was `incremental`): none = discover the whole screen every frame (jittered lattice); coverage = rasterise last frame's faces first and only discover tiles with uncovered pixels, parallax-revealable occlusion edges, edited blocks or changed chunks, or their refresh turn (jitter off)", &REGION.names(Slot::Holes), "none", true),
+        ParamSpec::choice("holes", "Hole detection (was `incremental`): none = discover the whole screen every frame (jittered lattice); coverage = rasterise last frame's faces first and only discover tiles with uncovered pixels, parallax-revealable occlusion edges, edited blocks or changed chunks, or their refresh turn (jitter off)", &REGION.names(Slot::Holes), "none", false),
         ParamSpec::int("keep_unseen", "Incremental: frames a face inside the view stays in S without covering a pixel (faces outside the view use keep_frames)", 1, 1000, 64, true).of("holes", &["coverage"]),
         ParamSpec::int("refresh", "Incremental: re-discover every Nth tile each frame regardless (0 = never)", 0, 1024, 16, true).of("holes", &["coverage"]),
         ParamSpec::float("parallax_px", "Incremental: an occlusion edge needs discovery if the camera's translation can reveal more than this many pixels behind it", 0.05, 16.0, false, 0.5, true).of("holes", &["coverage"]),
@@ -126,7 +126,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true).of("visibility", &["quadtree"]),
         shadows_param(),
         ParamSpec::int("max_steps", "DDA step limit (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
-        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment (order and the overdraw view apply); visbuffer = face ids, then one compute pass shades each pixel; gbuffer = the common hit records, then the common deferred pass (no diagnostic tints)", &REGION.names(Slot::Draw), "raster", true),
+        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment (order and the overdraw view apply); visbuffer = face ids, then one compute pass shades each pixel; gbuffer = the common hit records, then the common deferred pass (no diagnostic tints)", &REGION.names(Slot::Draw), "raster", false),
         ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("max_faces", "Capacity of the face set S (faces)", 1 << 16, 1 << 24, 1 << 20, false).of("visibility", &["quadtree"]),
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB); for region storages the limit of their own data", 64, 6144, 1536, false),
@@ -1230,13 +1230,6 @@ impl GpuSampler {
             "closure_box" => self.vis.closure_box = int(2),
             "block_faces" => self.vis.block_faces = value.as_bool().unwrap_or(true),
             "jitter" => self.vis.jitter = value.as_bool().unwrap_or(true),
-            "holes" => {
-                match REGION.require(Slot::Holes, value.as_str().unwrap_or("none")) {
-                    Ok(h) => self.incremental = h == "coverage",
-                    Err(e) => return Some(Err(e)),
-                }
-                self.pending.clear();
-            }
             "refresh" => self.cover.refresh = int(16),
             "keep_unseen" => self.cover.keep_unseen = int(64),
             "parallax_px" => self.cover.parallax_px = value.as_f64().unwrap_or(0.5) as f32,
@@ -1561,6 +1554,16 @@ impl exec::State for GpuSampler {
 
     fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         self.set_knob(name, value).or_else(|| self.drawing.set_param(core, name, value))
+    }
+
+    /// Hole detection comes and goes with its node; the drawer is the drawing's.
+    fn switch(&mut self, core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+        if s.role != Role::Holes {
+            return self.drawing.switch(core, s);
+        }
+        self.incremental = s.component.is_some();
+        self.pending.clear();
+        Some(Ok(()))
     }
 
     fn resize(&mut self, core: &Core) {

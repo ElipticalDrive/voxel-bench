@@ -66,7 +66,7 @@ pub(crate) fn info() -> RendererInfo {
 fn params() -> Vec<ParamSpec> {
     vec![
         ParamSpec::choice("storage", "Storage component: the CPU representation discovery rays walk (refloor)", &REGION.names(Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (was cpu-cluster)", &REGION.names(Slot::Visibility), "quadtree", true),
+        ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (was cpu-cluster)", &REGION.names(Slot::Visibility), "quadtree", false),
         ParamSpec::choice("traversal", "Traversal kernel of the CPU discovery rays and the GPU shadow and bounce rays", &REGION.names(Slot::Traversal), "refloor", false),
         ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", false),
         ParamSpec::choice("shadow_storage", "GPU storage the GPU's shadow and bounce rays walk (`same`: the GPU twin of the storage discovery rays walk, if it has one); the storage slot is the CPU representation discovery rays walk", &REGION.names(Slot::ShadowStorage), "bricks", false),
@@ -88,7 +88,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("threads", "Discovery threads (0 = all cores)", 0, 256, 0, false),
         shadows_param(),
         ParamSpec::int("max_steps", "Shadow-ray DDA step limit (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
-        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment; visbuffer = face ids, then one compute pass shades each pixel; gbuffer = the common hit records, then the common deferred pass (no diagnostic views)", &REGION.names(Slot::Draw), "raster", true),
+        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment; visbuffer = face ids, then one compute pass shades each pixel; gbuffer = the common hit records, then the common deferred pass (no diagnostic views)", &REGION.names(Slot::Draw), "raster", false),
         ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB)", 64, 6144, 1536, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
@@ -360,10 +360,6 @@ impl CpuSampler {
         let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
         match name {
             "tile" => self.vis.tile = int(32),
-            "algorithm" | "visibility" => match REGION.require(Slot::Visibility, value.as_str().unwrap_or("quadtree")) {
-                Ok(v) => self.visibility = v,
-                Err(e) => return Some(Err(e)),
-            },
             "seed_step" => self.vis.seed_step = int(16),
             "sky" => self.vis.sky = value.as_str().unwrap_or("corners").to_string(),
             "view" => self.opts.view = value.as_str().unwrap_or("image").to_string(),
@@ -460,6 +456,17 @@ impl exec::State for CpuSampler {
 
     fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         self.set_knob(name, value).or_else(|| self.drawing.set_param(core, name, value))
+    }
+
+    /// The sampler's algorithm is read every frame; the drawer is the drawing's.
+    fn switch(&mut self, core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+        match (s.role, &s.component) {
+            (Role::Visibility, Some(c)) => {
+                self.visibility = c.clone();
+                Some(Ok(()))
+            }
+            _ => self.drawing.switch(core, s),
+        }
     }
 
     fn resize(&mut self, core: &Core) {

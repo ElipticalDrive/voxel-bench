@@ -141,6 +141,10 @@ impl Renderer for Compiled {
         self.inner.set_param(name, value)
     }
 
+    fn edit(&mut self, edits: &str) -> anyhow::Result<()> {
+        self.inner.edit(edits)
+    }
+
     fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         if self.native { self.inner.flush(&mut Native(sink)) } else { self.inner.flush(sink) }
     }
@@ -231,6 +235,8 @@ struct CoreSpec<'a> {
 
 /// Everything but the region.
 pub(crate) struct Core {
+    /// The pipeline graph it runs (the host's, then with the edits taken while running).
+    graph: graph::Graph,
     gpu: Arc<Gpu>,
     world: VoxelWorld,
     /// The storage instances the GPU's rays walk.
@@ -317,6 +323,7 @@ impl Core {
         }
         let fif = s.frames_in_flight.max(1);
         Ok(Self {
+            graph: g.graph.clone(),
             accum: ShadeState::new(&gpu, p.width, p.height, s.shading, s.bounces, s.spp, s.accumulate),
             camera_buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("camera"), size: size_of::<CameraUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
             edges: exec::Edges::of(&gpu, g, p.width, p.height, s.hits)?,

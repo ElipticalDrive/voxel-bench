@@ -9,7 +9,7 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::{Device, Graph, Node, Role, When, inputs};
+use super::{Checked, Device, Graph, Node, Role, When, inputs};
 use crate::Api;
 
 /// What an input port is bound to after an edit.
@@ -489,6 +489,80 @@ impl Graph {
     }
 }
 
+/// A node a running executor replaces: its role and its new component (`None`: the node is
+/// gone).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Switch {
+    pub node: String,
+    pub role: Role,
+    pub component: Option<String>,
+}
+
+impl Graph {
+    /// The edits from this graph to `to` that its running executor takes, and the nodes they
+    /// replace: every edit changes a node the region replaces while running
+    /// ([`super::Builds::live`]: its component, the node added or removed, its inputs), an
+    /// input that read such a node or reads a new one, or a timing that changes with one.
+    /// Knob values are left out (knobs are set as knobs). Fails with the first edit that
+    /// needs a new renderer, or when `to` is not a pipeline of the same region.
+    pub fn live_edits(&self, to: &Graph) -> Result<(Vec<Change>, Vec<Switch>), String> {
+        let region = self.region().ok_or("no region builds the running graph")?;
+        to.accept()?;
+        if to.region().map(|b| b.id) != Some(region.id) {
+            return Err(format!("the pipeline is no longer one `{}` builds", region.name));
+        }
+        let edits: Vec<Change> = self.diff(to).ok_or("another executor")?.into_iter().filter(|c| !matches!(c, Change::Knob(..) | Change::Knobs(..))).collect();
+        let mut switches: Vec<Switch> = vec![];
+        for c in &edits {
+            match c {
+                Change::Remove(id) if region.replaces(self, id) => switches.push(Switch { node: id.clone(), role: self.nodes[id].role, component: None }),
+                Change::Add(id, role, c) if region.replaces(to, id) => switches.push(Switch { node: id.clone(), role: *role, component: Some(c.clone()) }),
+                Change::Component(id, c) if region.replaces(self, id) && region.replaces(to, id) => switches.push(Switch { node: id.clone(), role: to.nodes[id].role, component: Some(c.clone()) }),
+                Change::Remove(_) | Change::Add(..) | Change::Component(..) => return Err(format!("`{c}` needs a new renderer (`{}` replaces {} while running)", region.name, live_roles(region))),
+                _ => {}
+            }
+        }
+        let replaced = |id: &str| switches.iter().any(|s| s.node == id);
+        let came = |id: &str| replaced(id) && !self.nodes.contains_key(id);
+        for c in &edits {
+            let ok = match c {
+                Change::Remove(_) | Change::Add(..) | Change::Component(..) | Change::Knob(..) | Change::Knobs(..) => true,
+                Change::Bind(id, port, target) => {
+                    let was = self.nodes.get(id).and_then(|n| n.inputs.get(port));
+                    region.replaces(to, id) || was.is_some_and(|s| replaced(s)) || matches!(target, Target::Node(s) if replaced(s))
+                }
+                Change::Timing(id, port, _) => came(id) || to.nodes.get(id).is_some_and(|n| region.live.iter().any(|l| l.with.contains(&(n.role, port.as_str())) && switches.iter().any(|s| s.role == l.role))),
+                Change::Device(id, _) | Change::Api(id, _) => came(id),
+            };
+            if !ok {
+                return Err(format!("`{c}` needs a new renderer"));
+            }
+        }
+        Ok((edits, switches))
+    }
+}
+
+fn live_roles(region: &super::Builds) -> String {
+    match region.live {
+        [] => "no node".into(),
+        live => live.iter().map(|l| l.role.name()).collect::<Vec<_>>().join(", "),
+    }
+}
+
+/// `edits` as the text a host sends its worker ([`mr_core::Renderer::edit`]).
+pub fn edits_text(edits: &[Change]) -> String {
+    serde_json::to_string(edits).expect("edits are tables")
+}
+
+/// For an executor taking `text` ([`edits_text`]) while running graph `g`: the graph it is to
+/// run, checked, and the nodes to replace. Refuses edits that need a new renderer.
+pub fn live(g: &Graph, text: &str) -> anyhow::Result<(Checked, Vec<Switch>)> {
+    let edits: Vec<Change> = serde_json::from_str(text)?;
+    let to = g.with_edits(&edits).map_err(anyhow::Error::msg)?;
+    let (_, switches) = g.live_edits(&to).map_err(anyhow::Error::msg)?;
+    Ok((to.check().map_err(anyhow::Error::msg)?, switches))
+}
+
 /// The graph files shipped with the bench (`pipelines/<name>.toml`), by name: starting
 /// points like any saved graph, built in so an installed copy has them.
 pub const SHIPPED: &[(&str, &str)] = &[
@@ -524,6 +598,48 @@ mod tests {
     use super::*;
     use crate::Composition;
     use crate::graph::REGIONS;
+
+    /// The edits a running executor takes are its region's: another component on exactly
+    /// the nodes it replaces, such a node removed or added back; the edits arrive as text.
+    #[test]
+    fn live_edits_are_the_regions() {
+        let mut replaced = vec![];
+        for (name, _) in SHIPPED {
+            let g = shipped(name).unwrap();
+            let region = g.region().unwrap();
+            for id in g.nodes.keys() {
+                for c in g.choices(id).into_iter().filter(|c| *c != g.nodes[id].component) {
+                    let to = g.edit(&Change::component(id, c)).unwrap();
+                    match g.live_edits(&to) {
+                        Ok((edits, switches)) => {
+                            assert!(region.replaces(&g, id), "{name} {id}={c}");
+                            assert_eq!(switches, [Switch { node: id.clone(), role: g.nodes[id].role, component: Some(c.to_string()) }]);
+                            let (ck, sw) = live(&g, &edits_text(&edits)).unwrap();
+                            assert_eq!((ck.graph.key(), sw), (to.key(), switches));
+                            replaced.push(format!("{name}.{id}"));
+                        }
+                        Err(why) => assert!(!region.replaces(&g, id), "{name} {id}={c}: {why}"),
+                    }
+                }
+            }
+        }
+        replaced.dedup();
+        assert_eq!(
+            replaced,
+            ["raycast-gpu.kernel", "raycast-gpu.shading", "rayquery-gpu.shading", "raster-gpu.draw", "raster-gpu.geometry", "raster-gpu.shading", "raster-cpu.geometry", "discover-gpu.draw", "discover-cpu.draw", "discover-cpu.visibility"]
+        );
+        // A node that comes and goes: the walk's mesh records, with the input that read them.
+        let g = shipped("raycast-gpu").unwrap();
+        let without = g.edit(&Change::Remove("meshes".into())).unwrap();
+        let gone = |s: &[Switch]| s.iter().map(|s| (s.role, s.component.clone())).collect::<Vec<_>>();
+        assert_eq!(gone(&g.live_edits(&without).unwrap().1), [(Role::Meshes, None)]);
+        let (back, switches) = without.live_edits(&g).unwrap();
+        assert_eq!(gone(&switches), [(Role::Meshes, Some("composite".to_string()))]);
+        assert_eq!(without.with_edits(&back).unwrap(), g);
+        // A knob alone is no edit (knobs are set as knobs).
+        let knob = g.edit(&Change::Knob("shading".into(), "bounces".into(), Some(toml::Value::Integer(2)))).unwrap();
+        assert_eq!(g.live_edits(&knob).unwrap().0, vec![]);
+    }
 
     fn change(s: &str) -> Result<Change, String> {
         #[derive(Deserialize)]

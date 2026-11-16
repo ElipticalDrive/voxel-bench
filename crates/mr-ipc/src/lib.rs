@@ -16,7 +16,7 @@ pub use interprocess::local_socket::{Listener, Stream};
 use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {
@@ -52,6 +52,10 @@ pub enum HostMsg {
     Resize { width: u32, height: u32, shm: ShmSpec },
     /// Live parameter changes, applied in order before the next frame.
     SetParams(Vec<(String, ParamValue)>),
+    /// Edits to the pipeline graph the renderer runs (the nodes its executor replaces while
+    /// running), made before the next frame; a refusal comes back as a `ParamError` named
+    /// `edit`.
+    Edit(String),
     Flush,
     QueryMemory,
     Shutdown,

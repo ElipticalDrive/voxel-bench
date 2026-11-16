@@ -94,7 +94,9 @@ New techniques go in as components, not as new renderers:
    `registry_is_consistent` test checks that the registry and the implementations agree.
 3. Declare its knobs (`ParamSpec::int/float/bool/choice`, owned by the component with
    `ParamSpec::of(slot, &[components])`). Knobs marked `live` are applied in
-   `Renderer::set_param`. The GUI and the tuner pick them up automatically.
+   `Renderer::set_param`. The GUI and the tuner pick them up automatically. A node whose component
+   an executor can replace while running is declared in its region (`graph::Builds.live`) and
+   replaced in the region's `switch`: the host sends the graph's edits (`Renderer::edit`), never a knob.
 4. A diagnostic `view` writes its colours through `mr_core::legend` (`ramp_wgsl()` in a
    shader, `Legend::color` on the CPU) and returns the matching `Legend` in
    `FrameStats::legend`, so that the GUI can draw the scale and read values back.

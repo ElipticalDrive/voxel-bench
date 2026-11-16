@@ -63,9 +63,10 @@ pub enum Cmd {
     ClearUserLights,
     /// Change one knob (renderer parameter or `host.*`). Restart-only ones hot-swap.
     SetParam { lane: usize, name: String, value: ParamValue },
-    /// A graph edit the lane takes live, as its knob changes in order (`graph::live_edits`):
-    /// each sent even where the lane has that value already.
-    Edits { lane: usize, edits: Vec<(String, ParamValue)> },
+    /// A graph edit the lane takes while running (`graph::live_edits`): the spec it then
+    /// runs (its worker is sent the graph's edits), and the knobs of the nodes replaced, each
+    /// sent even where the lane has that value already.
+    Edits { lane: usize, spec: RendererSpec, knobs: Vec<(String, ParamValue)> },
     /// Restart a lane with the plan's spec for it (a hot swap), keeping the knob values
     /// changed since that the plan's spec leaves as it was ([`keep_knobs`]).
     Restart { lane: usize, spec: RendererSpec },
@@ -415,6 +416,9 @@ struct Runner {
     chunks_sent: u64,
     /// Mesh mode: geometry and instance updates not yet sent.
     pending_meshes: Vec<MeshUpdate>,
+    /// Edits to its graph not yet sent (each a list, `mr_components::graph::edits_text`);
+    /// they go before the knobs.
+    pending_edits: Vec<String>,
     pending_params: Vec<(String, ParamValue)>,
     in_flight: VecDeque<Flight>,
     next_id: u64,
@@ -443,6 +447,9 @@ impl Runner {
         crate::session::send_stream(w, std::mem::take(&mut self.pending), camera.position, time)?;
         for m in std::mem::take(&mut self.pending_meshes) {
             w.send(HostMsg::Meshes(m))?;
+        }
+        for e in std::mem::take(&mut self.pending_edits) {
+            w.send(HostMsg::Edit(e))?;
         }
         if !self.pending_params.is_empty() {
             w.send(HostMsg::SetParams(std::mem::take(&mut self.pending_params)))?;

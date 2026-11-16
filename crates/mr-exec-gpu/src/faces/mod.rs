@@ -387,25 +387,27 @@ impl Draw {
     }
 
     /// The drawing's knobs; `None` if `name` is not one.
-    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+    fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         Some(match name {
             "depth_prepass" => {
                 self.depth_prepass = value.as_bool().unwrap_or(true);
                 Ok(())
             }
-            "draw" => {
-                // Drawing only: the face set is unaffected.
-                let draw = value.as_str().unwrap_or("raster");
-                // The drawer's target is the hits edge's resource: remade in the new drawer's form.
-                self.drawer(core, draw).and_then(|d| {
-                    core.edges.set_hits(&core.gpu, core.width, core.height, hits_form(draw))?;
-                    self.drawer = d;
-                    self.draw = draw.into();
-                    Ok(())
-                })
-            }
             _ => return None,
         })
+    }
+
+    /// The drawer replaced while running (drawing only: the face set is unaffected); `None`
+    /// if `s` is not the drawer.
+    fn switch(&mut self, core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+        let draw = s.component.as_deref().filter(|_| s.role == Role::Draw)?;
+        // The drawer's target is the hits edge's resource: remade in the new drawer's form.
+        Some(self.drawer(core, draw).and_then(|d| {
+            core.edges.set_hits(&core.gpu, core.width, core.height, hits_form(draw))?;
+            self.drawer = d;
+            self.draw = draw.into();
+            Ok(())
+        }))
     }
 
     fn resize(&mut self, core: &Core) {

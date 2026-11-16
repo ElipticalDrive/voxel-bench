@@ -50,7 +50,7 @@ impl App {
                     self.focus = None;
                 }
                 LaneAction::Set(lane, name, value) => self.send(Cmd::SetParam { lane, name, value }),
-                LaneAction::Edits(lane, edits) => self.send(Cmd::Edits { lane, edits }),
+                LaneAction::Edits(lane, spec, knobs) => self.send(Cmd::Edits { lane, spec, knobs }),
                 LaneAction::Tune(lane, config) => self.send(Cmd::Tune { lane, config }),
                 LaneAction::SaveToPlan(i, spec) => {
                     if let Some(r) = self.plan.renderers.get_mut(i) {
@@ -267,9 +267,9 @@ impl App {
                             self.knob_edits.insert(key, value);
                         }
                     }
-                    // A component the running preset switches live, else a hot swap.
+                    // An edit the lane's executor takes while running, else a hot swap.
                     graph::Edit::Spec(spec) => match graph::live_edits(&l.spec, &spec, &l.params) {
-                        Some(edits) => actions.push(LaneAction::Edits(i, edits)),
+                        Some(knobs) => actions.push(LaneAction::Edits(i, spec, knobs)),
                         None => actions.push(LaneAction::Swap(i, spec)),
                     },
                     graph::Edit::Open(sel) => self.open_graph(ui.ctx(), graph::Of::Lane(i), sel),
@@ -415,7 +415,7 @@ enum LaneAction {
     Remove(usize),
     SaveToPlan(usize, crate::plan::RendererSpec),
     Set(usize, String, mr_core::ParamValue),
-    Edits(usize, Vec<(String, mr_core::ParamValue)>),
+    Edits(usize, crate::plan::RendererSpec, Vec<(String, mr_core::ParamValue)>),
     Tune(usize, Option<tune::TunerConfig>),
 }
 

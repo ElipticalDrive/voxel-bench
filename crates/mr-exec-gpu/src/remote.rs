@@ -34,7 +34,6 @@ pub(crate) type Far = Executor<Shade>;
 /// The region of the shading's nodes on a GPU of their own: the deferred pass's program and
 /// group 0, the shading it was compiled with, the frame's state.
 pub(crate) struct Shade {
-    region: &'static graph::Builds,
     walks: Walks,
     shadow: usize,
     bounce: usize,
@@ -95,7 +94,6 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
         })
     })?;
     let region = Shade {
-        region: g.region.expect("of_init: a region"),
         shading: spec.shading.to_string(),
         built_shading: spec.shading.to_string(),
         bind0: None,
@@ -181,8 +179,14 @@ impl exec::State for Shade {
         Ok(())
     }
 
-    fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        (name == "shading").then(|| self.region.require(mr_components::Slot::Shading, value.as_str().unwrap_or("")).map(|s| self.shading = s))
+    fn set_param(&mut self, _core: &mut Core, _name: &str, _value: &ParamValue) -> Option<anyhow::Result<()>> {
+        None
+    }
+
+    fn switch(&mut self, _core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+        let c = s.component.as_ref().filter(|_| s.role == Role::Shading)?;
+        self.shading = c.clone();
+        Some(Ok(()))
     }
 
     fn resize(&mut self, _core: &Core) {
