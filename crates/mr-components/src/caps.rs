@@ -17,7 +17,7 @@
 //! the walks', exposure tests' and prepasses' core) and `Heights` (a heightmap's columns,
 //! the column march's). No adapter turns one into the other yet.
 
-use crate::{Composition, Kind, Slot, preset_info, component, components};
+use crate::{Composition, Kind, Slot, component, components};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Cap {
@@ -117,7 +117,7 @@ pub fn provides(kind: Kind, slot: Slot, name: &str, cap: Cap) -> bool {
 
 /// The device kind `c`'s preset runs `slot` on (GPU if the preset is unknown).
 fn kind_of(c: &Composition, slot: Slot) -> Kind {
-    preset_info(&c.preset).map_or(Kind::Gpu, |b| b.place(slot).kind)
+    c.region().map_or(Kind::Gpu, |b| b.place(slot).kind)
 }
 
 /// How a composition meets one need.

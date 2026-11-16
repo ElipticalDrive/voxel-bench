@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{Api, preset_info, caps, component};
+use crate::{Api, caps, component};
 
 use super::*;
 
@@ -356,9 +356,6 @@ impl Graph {
         }
         if !why.is_empty() {
             return Err(why.join("; "));
-        }
-        if let Some(b) = region.and_then(|r| preset_info(r.name)).filter(|b| b.renderer.is_none()) {
-            return Err(format!("`{}` is not available yet", b.name));
         }
         Ok(Checked { graph: g, devices, apis, output: out, region })
     }

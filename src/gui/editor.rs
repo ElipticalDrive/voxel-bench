@@ -506,7 +506,7 @@ fn events(ui: &mut Ui, es: &mut Vec<EventSpec>, ctx: &EditorCtx) -> Changed {
 
 /// Whether `name` is a preset's renderer (edited as a pipeline graph).
 fn is_preset_renderer(name: &str) -> bool {
-    mr_components::PRESETS.iter().any(|b| b.renderer == Some(name))
+    mr_components::graph::region_named(name).is_some()
 }
 
 /// A composed renderer's summary (`graph::summary`): edits go into it. Returns whether

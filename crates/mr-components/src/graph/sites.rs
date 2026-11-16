@@ -454,7 +454,7 @@ impl Graph {
                 take(&mut c, st);
             }
         }
-        let b = crate::preset_info(preset).unwrap();
+        let b = region_named(preset).unwrap();
         for (slot, off) in [(Slot::Prepass, "none"), (Slot::Meshes, "none")] {
             if b.has(slot) && c.get(slot).is_empty() {
                 c.set(slot, off);

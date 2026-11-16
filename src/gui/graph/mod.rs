@@ -13,7 +13,8 @@ use std::collections::HashMap;
 
 use egui::{ComboBox, RichText, Ui};
 use mr_components::graph::{Data, Device, Graph, Role, When, inputs, output, role_components, state};
-use mr_components::{Api, PRESETS, Kind};
+use mr_components::graph::REGIONS;
+use mr_components::{Api, Kind};
 use mr_core::{ParamSpec, ParamValue, RendererInfo};
 
 use super::knobs;
@@ -364,7 +365,7 @@ fn editor(ui: &mut Ui, win: &mut Window, title: &str, spec: &RendererSpec, knobs
         }
         ui.menu_button("start from…", |ui| {
             ui.weak("A preset's default pipeline (then change anything)");
-            for b in PRESETS.iter().filter(|b| b.renderer.is_some()) {
+            for b in REGIONS {
                 if ui.button(b.name).on_hover_text(b.description).clicked() {
                     let mut s = RendererSpec::new(b.name);
                     s.label = spec.label.clone();
@@ -666,7 +667,7 @@ mod tests {
         let run = crate::plan::Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/terrain.toml")), &[]).unwrap().run;
         let (mut ok, mut no) = (0, 0);
         let start = std::time::Instant::now();
-        for b in PRESETS.iter().filter(|b| b.renderer.is_some()) {
+        for b in REGIONS {
             let mut s = RendererSpec::new(b.name);
             s.resolve().unwrap();
             let g = model::graph_of(&s).unwrap();

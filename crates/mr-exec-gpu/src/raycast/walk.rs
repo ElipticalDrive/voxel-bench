@@ -60,7 +60,7 @@ pub(crate) fn info() -> RendererInfo {
 }
 
 fn describe(slot: Slot) -> String {
-    components(slot).filter(|c| mr_components::unavailable("raycast-gpu", slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
+    components(slot).filter(|c| REGION.unavailable(slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
 }
 
 fn params() -> Vec<ParamSpec> {

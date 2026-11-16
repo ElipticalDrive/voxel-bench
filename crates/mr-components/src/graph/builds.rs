@@ -55,7 +55,7 @@ pub struct Only {
 /// executor's ray caster, rasteriser and column march; the GPU executor's walk, ray queries,
 /// meshed faces, the two discovery samplers, splats and column march). An executor picks its
 /// code by it.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RegionId {
     CpuRaycast,
     CpuRaster,
@@ -92,12 +92,25 @@ pub struct Builds {
     /// The choice of API it offers, if any (the CPU ray caster: `isa`, its one hot loop; the
     /// GPU walk: `dispatch`, in a compute or fragment shader).
     pub api_choice: Option<ApiChoice>,
+    /// What it is, for listings.
+    pub description: &'static str,
+    /// Its default pipeline in the flat form: the slots it has, each with its default
+    /// component (what a composition's empty slots take).
+    pub base: &'static [(Slot, &'static str)],
+    /// Edges of its default pipeline that do not arrive now (the edge's role and port).
+    pub late: &'static [(Role, &'static str, When)],
+    /// Slots that only matter in lit mode (e.g. the storage of a rasteriser, which only its
+    /// shadow rays walk). Sweeps run one of each such variant in unlit passes.
+    pub lit_only: &'static [Slot],
+    /// Further slots left out of labels while at their default, and optional in the CLI form
+    /// (e.g. ray casting on the GPU walk, the shadow-ray kernel of a rasteriser).
+    pub quiet: &'static [Slot],
 }
 
 impl Builds {
     /// Region `id` with nothing built and no choices: the base the declarations fill in.
     const fn plain(id: RegionId, name: &'static str) -> Builds {
-        Builds { id, name, nodes: &[], same: &[], only: &[], free: &[], timing_knobs: &[], split: false, api_choice: None }
+        Builds { id, name, nodes: &[], same: &[], only: &[], free: &[], timing_knobs: &[], split: false, api_choice: None, description: "", base: &[], late: &[], lit_only: &[], quiet: &[] }
     }
 
     /// The timings it runs the edge into `port` of a `role` node with, if the graph may choose.
@@ -110,14 +123,78 @@ impl Builds {
         self.api_choice.is_some_and(|ch| ch.slots.contains(&slot.source()))
     }
 
-    /// Why component `name` cannot fill `slot` in it (`None` = it can).
+    /// Whether its flat form has `slot`.
+    pub fn has(&self, slot: Slot) -> bool {
+        self.base.iter().any(|&(s, _)| s == slot)
+    }
+
+    /// Left out of labels while at its default: an optional slot or one of `quiet`.
+    pub fn is_quiet(&self, slot: Slot) -> bool {
+        slot.optional() || self.quiet.contains(&slot)
+    }
+
+    pub fn default_for(&self, slot: Slot) -> Option<&'static str> {
+        self.base.iter().find(|&&(s, _)| s == slot).map(|&(_, d)| d)
+    }
+
+    /// Where it runs `slot`: where it builds the slot's role. Where it builds the role on two
+    /// device kinds (the CPU sampler's storages and kernels), the primary stages run with the
+    /// visibility and the secondary-ray stages with the shading. A role it does not build:
+    /// with the shading.
+    pub fn place(&self, slot: Slot) -> Place {
+        let role = match slot.source() {
+            Slot::Storage | Slot::ShadowStorage => Role::Storage,
+            Slot::Geometry => Role::Geometry,
+            Slot::Prepass => Role::Prepass,
+            Slot::Visibility => Role::Visibility,
+            Slot::Holes => Role::Holes,
+            Slot::Draw => Role::Draw,
+            Slot::Traversal | Slot::ShadowTraversal => Role::Traversal,
+            Slot::Shading => Role::Shading,
+            Slot::Meshes => Role::Meshes,
+        };
+        let at = |r: Role| self.nodes.iter().find(|b| b.role == r).map(|b| b.at);
+        let with = at(if slot.secondary() { Role::Shading } else { Role::Visibility });
+        let of_role = || self.nodes.iter().filter(|b| b.role == role);
+        of_role().find(|b| with.is_some_and(|w| w.kind == b.at.kind)).or_else(|| of_role().next()).map(|b| b.at).or(at(Role::Shading)).unwrap_or(impls::GPU_COMPUTE)
+    }
+
+    /// Why component `name` cannot fill `slot` in it (`None` = it can): it lacks the slot, the
+    /// component has no implementation where it runs the slot, or its default composition
+    /// with the component in `slot` is a graph it does not build. (Answers depend on the
+    /// declarations only: remembered.)
     pub fn unavailable(&self, slot: Slot, name: &str) -> Option<String> {
-        crate::unavailable(self.name, slot, name)
+        static SEEN: std::sync::Mutex<std::collections::BTreeMap<(RegionId, &str, String), Option<String>>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+        let key = (self.id, slot.name(), name.to_string());
+        if let Some(why) = SEEN.lock().unwrap().get(&key) {
+            return why.clone();
+        }
+        let why = self.unimplemented(slot, name).or_else(|| {
+            let mut c = crate::Composition::new(self.name);
+            c.set(slot, name);
+            c.validate().err()
+        });
+        SEEN.lock().unwrap().insert(key, why.clone());
+        why
+    }
+
+    /// [`Self::unavailable`] without the graph: the slot, the component and where it runs.
+    pub(crate) fn unimplemented(&self, slot: Slot, name: &str) -> Option<String> {
+        if !self.has(slot) {
+            return Some(format!("`{}` has no {} slot", self.name, slot.name()));
+        }
+        let Some(c) = crate::component(slot, name) else {
+            return Some(format!("unknown {} component `{name}` (have: {})", slot.name(), crate::components(slot).map(|c| c.name).collect::<Vec<_>>().join(", ")));
+        };
+        if c.slot == slot && slot.secondary() {
+            return None; // `same`
+        }
+        crate::unimplemented_at(&self.place(slot), slot, name)
     }
 
     /// The `slot` components it builds (its knobs' choices).
     pub fn names(&self, slot: Slot) -> Vec<&'static str> {
-        crate::names_on(self.name, slot)
+        crate::components(slot).filter(|c| self.unavailable(slot, c.name).is_none()).map(|c| c.name).collect()
     }
 
     /// For an executor checking its options: `name` if it builds it in `slot`, else why not.
@@ -165,6 +242,17 @@ impl Builds {
     }
 }
 
+const RAY_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "bricks"), (Slot::Visibility, "raycast"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")];
+const COLUMN_SLOTS: &[(Slot, &str)] = &[(Slot::Storage, "heightmap"), (Slot::Visibility, "columns"), (Slot::Traversal, "heightfield"), (Slot::Shading, "direct")];
+
+/// Every region, in the order listings and sweeps go through them.
+pub const REGIONS: &[&Builds] = &[&GPU_WALK, &CPU_RAYCAST, &GPU_MESHING, &GPU_RAYQUERY, &GPU_SAMPLER, &CPU_SAMPLER, &GPU_SPLAT, &GPU_COLUMNS, &CPU_COLUMNS, &CPU_RASTER];
+
+/// The region whose messages use `name` (how plans and the CLI still name a composition's base).
+pub fn region_named(name: &str) -> Option<&'static Builds> {
+    REGIONS.iter().copied().find(|b| b.name == name)
+}
+
 /// The stages one API choice sets, and hit records shaded now or a frame late on a second GPU.
 const CAST_SLOTS: &[Slot] = &[Slot::Storage, Slot::Visibility, Slot::Traversal, Slot::Shading];
 const HITS_LATE: &[(Role, &str, &[When])] = &[(Role::Shading, "hits", &[When::Now, When::Prev])];
@@ -195,6 +283,9 @@ pub const CPU_RAYCAST: Builds = Builds {
     same: &[],
     only: &[],
     api_choice: Some(ApiChoice { knob: "isa", slots: CAST_SLOTS, values: &[(Api::Scalar, "scalar"), (Api::Avx2, "avx2"), (Api::Avx512, "avx512")], default: None }),
+    description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops",
+    base: RAY_SLOTS,
+    quiet: &[Slot::Visibility],
     ..Builds::plain(RegionId::CpuRaycast, "raycast-cpu")
 };
 
@@ -208,6 +299,9 @@ pub const CPU_RASTER: Builds = Builds {
     ],
     same: &[],
     only: &[],
+    description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
+    base: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "faces"), (Slot::Draw, "raster"), (Slot::Shading, "direct")],
+    quiet: &[Slot::Visibility],
     ..Builds::plain(RegionId::CpuRaster, "raster-cpu")
 };
 
@@ -221,6 +315,10 @@ pub const CPU_COLUMNS: Builds = Builds {
     ],
     same: &[],
     only: &[],
+    description: "Comanche-style Voxel Space (2.5D) on the CPU, rayon-parallel over screen columns",
+    base: COLUMN_SLOTS,
+    lit_only: &[Slot::Traversal],
+    quiet: &[Slot::Traversal],
     ..Builds::plain(RegionId::CpuColumns, "columns-cpu")
 };
 
@@ -243,6 +341,10 @@ pub const GPU_WALK: Builds = Builds {
     free: HITS_LATE,
     split: true,
     api_choice: Some(ApiChoice { knob: "dispatch", slots: CAST_SLOTS, values: &[(Api::Compute, "compute"), (Api::Raster, "fragment")], default: Some(Api::Compute) }),
+    description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility",
+    base: &[(Slot::Storage, "bricks"), (Slot::Prepass, "none"), (Slot::Visibility, "raycast"), (Slot::Traversal, "refloor"), (Slot::ShadowStorage, "same"), (Slot::ShadowTraversal, "same"), (Slot::Shading, "direct"), (Slot::Meshes, "composite")],
+    lit_only: &[Slot::ShadowStorage, Slot::ShadowTraversal],
+    quiet: &[Slot::Visibility, Slot::ShadowStorage, Slot::ShadowTraversal],
     ..Builds::plain(RegionId::GpuWalk, "raycast-gpu")
 };
 
@@ -261,6 +363,9 @@ pub const GPU_RAYQUERY: Builds = Builds {
     only: &[],
     free: HITS_LATE,
     split: true,
+    description: "GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component, a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries",
+    base: &[(Slot::Geometry, "greedy"), (Slot::Visibility, "raycast"), (Slot::Traversal, "rayquery"), (Slot::Shading, "direct")],
+    quiet: &[Slot::Visibility],
     ..Builds::plain(RegionId::GpuRayQuery, "rayquery-gpu")
 };
 
@@ -285,6 +390,10 @@ pub const GPU_MESHING: Builds = Builds {
         SHADOW_WALKED,
         RT,
     ],
+    description: "GPU rasterisation (wgpu): the geometry component turns chunks into faces on the CPU, drawn with vertex pulling and multi-draw-indirect after chunk and face-direction culling. Storage here is what lit-mode shadow rays walk (refloor)",
+    base: &[(Slot::Storage, "bricks"), (Slot::Geometry, "greedy"), (Slot::Visibility, "faces"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct"), (Slot::Meshes, "depth")],
+    lit_only: &[Slot::Storage, Slot::Traversal],
+    quiet: &[Slot::Visibility, Slot::Traversal],
     ..Builds::plain(RegionId::GpuMeshing, "raster-gpu")
 };
 
@@ -311,6 +420,9 @@ pub const GPU_SAMPLER: Builds = Builds {
     // Hole detection closes a cycle through the drawer, which draws twice a frame, and reads
     // the last frame's sky mask.
     free: &[(Role::Draw, "faces", &[When::Now, When::Iterate(2)]), (Role::Holes, "sky", &[When::Prev])],
+    description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
+    base: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Holes, "none"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")],
+    quiet: &[Slot::Draw, Slot::Traversal],
     ..Builds::plain(RegionId::GpuSampler, "discover-gpu")
 };
 
@@ -333,6 +445,11 @@ pub const CPU_SAMPLER: Builds = Builds {
     // Discovery a frame ahead of the drawer, or within its frame.
     free: &[(Role::Draw, "faces", &[When::Now, When::Prev])],
     timing_knobs: &[("pipelined", Role::Draw, "faces", When::Prev, When::Now)],
+    description: "CPU discovery + GPU raster (the user's idea): CPU rays discover the visible face set (one frame ahead, pipelined), the GPU rasterises only it. Storage: the CPU representation discovery rays walk",
+    base: &[(Slot::Storage, "bricks"), (Slot::Visibility, "quadtree"), (Slot::Draw, "raster"), (Slot::Traversal, "refloor"), (Slot::ShadowStorage, "bricks"), (Slot::ShadowTraversal, "same"), (Slot::Shading, "direct")],
+    late: &[(Role::Draw, "faces", When::Prev)],
+    lit_only: &[Slot::ShadowStorage, Slot::ShadowTraversal],
+    quiet: &[Slot::Draw, Slot::Traversal, Slot::ShadowStorage, Slot::ShadowTraversal],
     ..Builds::plain(RegionId::CpuSampler, "discover-cpu")
 };
 
@@ -348,6 +465,10 @@ pub const GPU_SPLAT: Builds = Builds {
     ],
     same: &[],
     only: &[Only { role: Role::Visibility, of: &[], port: "points", components: &["points"], bound: true }, SHADOW_WALKED, RT],
+    description: "GPU point splatting: one point per exposed block, atomicMin depth + id buffers, ray-box resolve; lit-mode shadow rays walk the composed storage",
+    base: &[(Slot::Storage, "bricks"), (Slot::Geometry, "points"), (Slot::Visibility, "splat"), (Slot::Traversal, "refloor"), (Slot::Shading, "direct")],
+    lit_only: &[Slot::Storage, Slot::Traversal],
+    quiet: &[Slot::Traversal],
     ..Builds::plain(RegionId::GpuSplat, "splat-gpu")
 };
 
@@ -362,6 +483,10 @@ pub const GPU_COLUMNS: Builds = Builds {
     ],
     same: &[],
     only: &[],
+    description: "Comanche-style Voxel Space (2.5D, no overhangs) in a compute shader: one thread per screen column marches a heightmap front to back with a y-buffer",
+    base: COLUMN_SLOTS,
+    lit_only: &[Slot::Traversal],
+    quiet: &[Slot::Traversal],
     ..Builds::plain(RegionId::GpuColumns, "columns-gpu")
 };
 
@@ -496,7 +621,6 @@ pub fn near(regions: &[&Builds]) -> Vec<Checked> {
     let mut bases = vec![];
     for r in regions {
         let mut c = crate::Composition::new(r.name);
-        c.fill_defaults();
         bases.push(c.clone());
         if r.names(Slot::Shading).contains(&"pathtrace") {
             c.shading = "pathtrace".into();

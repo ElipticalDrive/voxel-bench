@@ -43,18 +43,18 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     use super::*;
-    use crate::{Api, PRESETS, Composition, Slot, preset_info, names_on};
+    use crate::{Api, Composition, Slot};
 
     /// Every composition of every preset (each slot through all its components).
     fn every_composition() -> Vec<Composition> {
         let mut all = Vec::new();
-        for b in PRESETS.iter().filter(|b| b.renderer.is_some()) {
+        for b in REGIONS {
             let mut combos = vec![Composition::new(b.name)];
             for slot in Slot::ALL.into_iter().filter(|&s| b.has(s)) {
                 combos = combos
                     .iter()
                     .flat_map(|c| {
-                        names_on(b.name, slot).into_iter().map(move |x| {
+                        b.names(slot).into_iter().map(move |x| {
                             let mut c = c.clone();
                             c.set(slot, x);
                             c
@@ -95,7 +95,7 @@ mod tests {
             let primary = |c: &Composition| {
                 let mut c = c.clone();
                 for s in [Slot::ShadowStorage, Slot::ShadowTraversal] {
-                    let d = preset_info(&c.preset).and_then(|b| b.default_for(s)).unwrap_or("");
+                    let d = c.region().and_then(|b| b.default_for(s)).unwrap_or("");
                     c.set(s, d);
                 }
                 c
@@ -112,7 +112,7 @@ mod tests {
     }
 
     fn b_has(c: &Composition, s: Slot) -> bool {
-        preset_info(&c.preset).is_some_and(|b| b.has(s))
+        c.region().is_some_and(|b| b.has(s))
     }
 
     #[test]
@@ -382,14 +382,14 @@ mod tests {
     #[test]
     fn sites_form_round_trips() {
         let mut bases = Vec::new();
-        for b in PRESETS.iter().filter(|b| b.renderer.is_some()) {
+        for b in REGIONS {
             let mut c = Composition::new(b.name);
             c.fill_defaults();
             bases.push(c.clone());
-            if b.has(Slot::Shading) && names_on(b.name, Slot::Shading).contains(&"pathtrace") {
+            if b.has(Slot::Shading) && b.names(Slot::Shading).contains(&"pathtrace") {
                 c.shading = "pathtrace".into();
-                if b.has(Slot::Meshes) && names_on(b.name, Slot::Meshes).len() > 1 {
-                    c.meshes = names_on(b.name, Slot::Meshes).into_iter().find(|m| *m != "none").unwrap().into();
+                if b.has(Slot::Meshes) && b.names(Slot::Meshes).len() > 1 {
+                    c.meshes = b.names(Slot::Meshes).into_iter().find(|m| *m != "none").unwrap().into();
                 }
                 bases.push(c);
             }

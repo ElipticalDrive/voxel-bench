@@ -309,17 +309,6 @@ impl When {
     }
 }
 
-/// When a discovery preset's drawer gets its faces: discover-cpu discovers one frame
-/// ahead (`prev`; its `pipelined` knob, see [`Builds::timing_knobs`]); with hole detection
-/// the faces iterate twice within the frame.
-pub(super) fn faces_timing(executor: &str, holes: bool) -> Option<When> {
-    match (executor, holes) {
-        (_, true) => Some(When::Iterate(2)),
-        ("discover-cpu", false) => Some(When::Prev),
-        _ => None,
-    }
-}
-
 /// The client's components (`mr_core::client::Levels`): `pick` takes the server's LOD
 /// levels, `derive` builds them on the client from LOD 0. The sites form writes a client
 /// other than `pick` as `client = "derive"`.
@@ -401,27 +390,19 @@ pub(super) fn default_device(executor: &str, role: Role, component: &str) -> Dev
     }
 }
 
-/// Where `preset`'s composition runs a node (its [`crate::Place`] for the role,
+/// Where region `b`'s composition runs a node (its [`crate::Place`] for the role,
 /// GPU slot 0; for a stage it has not, where the component runs if on one kind of device only):
 /// what [`Graph::from_composition`] pins where the executor's default differs.
-pub(super) fn placed_on(preset: &str, role: Role, component: &str) -> Device {
+pub(super) fn placed_on(b: &super::Builds, role: Role, component: &str) -> Device {
     let only = || role.slot().and_then(|s| crate::component(s, component)).and_then(|c| c.impls.iter().all(|i| i.kind == Kind::Cpu).then_some(Device::Cpu));
-    match (crate::preset_info(preset), role.slot()) {
-        (Some(b), Some(slot)) if b.has(slot.source()) && b.place(slot).kind == Kind::Gpu => Device::Gpu(0),
-        (Some(b), Some(slot)) if b.has(slot.source()) => Device::Cpu,
-        (_, Some(_)) => only().unwrap_or(Device::Gpu(0)),
-        (_, None) => Device::Cpu,
+    match role.slot() {
+        Some(slot) if b.has(slot.source()) && b.place(slot).kind == Kind::Gpu => Device::Gpu(0),
+        Some(slot) if b.has(slot.source()) => Device::Cpu,
+        Some(_) => only().unwrap_or(Device::Gpu(0)),
+        None => Device::Cpu,
     }
 }
 
-/// The executor (device kind: `cpu`, `gpu`) that runs `preset`'s pipelines: where its
-/// image is made, its shading's device.
-pub fn executor_of(preset: &str) -> &'static str {
-    match crate::preset_info(preset).map(|b| b.place(Slot::Shading).kind) {
-        Some(Kind::Cpu) => "cpu",
-        _ => "gpu",
-    }
-}
 
 /// One component instance.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

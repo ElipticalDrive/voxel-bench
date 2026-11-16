@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{Composition, Kind, Slot, preset_info};
+use crate::{Composition, Kind, Slot};
 
 use super::*;
 
@@ -13,7 +13,7 @@ impl Graph {
     pub fn from_composition(c: &Composition) -> Result<Graph, String> {
         let mut c = c.clone();
         c.fill_defaults();
-        let b = preset_info(&c.preset).ok_or_else(|| format!("unknown preset `{}`", c.preset))?;
+        let b = c.region().ok_or_else(|| format!("unknown preset `{}`", c.preset))?;
         let has = |s: Slot| b.has(s) && !c.get(s).is_empty();
         let mut nodes = BTreeMap::new();
         let mut add = |id: &str, role: Role, name: &str, inputs: &[(&str, &str)]| {
@@ -90,8 +90,15 @@ impl Graph {
         if holes {
             nodes.get_mut("holes").unwrap().timing.insert("sky".into(), When::Prev);
         }
-        if let (true, Some(w)) = (drawn, faces_timing(&c.preset, holes)) {
-            nodes.get_mut("draw").unwrap().timing.insert("faces".into(), w);
+        // The region's edges that arrive late by default (the CPU sampler discovers a frame
+        // ahead of its drawer); with hole detection the drawer's faces iterate twice a frame.
+        for &(role, port, w) in b.late {
+            for n in nodes.values_mut().filter(|n| n.role == role && n.inputs.contains_key(port)) {
+                n.timing.insert(port.into(), w);
+            }
+        }
+        if drawn && holes {
+            nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Iterate(2));
         }
         // Mesh shadows are the shading's shadow rays.
         if let (true, Some(k)) = (meshes, shadow) {
@@ -100,9 +107,9 @@ impl Graph {
         // Run by the preset's executor; nodes it would place elsewhere than the preset
         // does get their device written (fused ones follow their callers, the rest of the
         // world's side and the post have their own rules).
-        let executor = executor_of(&c.preset);
+        let executor = b.executor();
         for n in nodes.values_mut().filter(|n| n.role.slot().is_some() && known(n.role, &n.component) && !output(n.role, &n.component).fused()) {
-            let at = placed_on(&c.preset, n.role, &n.component);
+            let at = placed_on(b, n.role, &n.component);
             if at != default_device(executor, n.role, &n.component) {
                 n.device = Some(at);
             }

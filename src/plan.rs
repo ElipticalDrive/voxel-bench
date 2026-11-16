@@ -328,7 +328,7 @@ impl RendererSpec {
         // `name = "<preset's renderer>"` (the CLI, the GUI's presets): the preset's
         // default composition.
         if self.graph.is_none()
-            && let Some(b) = mr_components::PRESETS.iter().find(|b| b.renderer == Some(self.name.as_str())) {
+            && let Some(b) = mr_components::graph::region_named(&self.name) {
             self.graph = Some(self.graph_of(mr_components::Composition::new(b.name), &BTreeMap::new())?);
         }
         let Some(g) = &self.graph else {
@@ -361,7 +361,7 @@ impl RendererSpec {
             }
             self.options.insert(k, v);
         }
-        self.name = mr_components::preset_info(&sh.compose.preset).and_then(|b| b.renderer).with_context(|| format!("renderer graph: `{}` runs on no renderer", sh.compose.preset))?.to_string();
+        self.name = sh.compose.region().map(|b| b.name).with_context(|| format!("renderer graph: `{}` runs on no renderer", sh.compose.preset))?.to_string();
         // One form per pipeline: written in its shorthand, it runs as the shorthand's graph.
         if sh.exact && !stage_knobs(g) {
             let c = sh.compose.clone();
@@ -434,7 +434,7 @@ impl RendererSpec {
     /// From the command line: `preset:slot+slot+...` for a composition (a bare preset
     /// name gives its default composition): the preset's
     /// required slots in order, then optionally shading, prepass, meshes and its quiet slots
-    /// (`PresetInfo::quiet`, e.g. `raster-gpu:bricks+greedy+raster+direct+depth+sphere`)
+    /// (`Builds::quiet`, e.g. `raster-gpu:bricks+greedy+raster+direct+depth+sphere`)
     /// (`raycast-gpu:prefix+incremental`, `raycast-gpu:tree64+refloor+direct+beam`,
     /// `raster-gpu:bricks+greedy+visbuffer`); otherwise a renderer name (a preset's, giving its default composition, or a
     /// standalone one). A label as the renderer prints it reads back as the same renderer
@@ -464,7 +464,7 @@ impl RendererSpec {
             return Ok(spec);
         };
         let preset = preset.trim();
-        if mr_components::preset_info(preset).is_none() {
+        if mr_components::graph::region_named(preset).is_none() {
             bail!("composition `{s}`: no preset `{preset}` (`multirenderer list` shows them)");
         }
         let parts: Vec<&str> = rest.split('+').map(str::trim).collect();
@@ -484,7 +484,7 @@ impl RendererSpec {
         use mr_components::Slot;
         let mut c = mr_components::Composition::new(preset);
         let all: Vec<Slot> = c.slots().collect();
-        let b = mr_components::preset_info(preset).unwrap();
+        let b = mr_components::graph::region_named(preset).unwrap();
         let mut order: Vec<Slot> = all.iter().copied().filter(|&s| !b.is_quiet(s)).collect();
         let required = order.len();
         order.extend([Slot::Shading, Slot::Prepass, Slot::Meshes].into_iter().filter(|s| all.contains(s)));
@@ -519,7 +519,7 @@ impl RendererSpec {
             let Some((part, rest)) = parts.split_first() else {
                 return (c.validate().is_ok() && c.label() == target).then(|| c.clone());
             };
-            let b = mr_components::preset_info(&c.preset)?;
+            let b = c.region()?;
             for (i, &slot) in slots.iter().enumerate() {
                 let name = match (slot, part.strip_prefix("shadow ")) {
                     (s, Some(n)) if s.secondary() => Some(n),
@@ -877,10 +877,10 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
         if let Some(k) = compose.keys().find(|k| *k != "preset" && !mr_components::Slot::ALL.iter().any(|s| s.name() == k.as_str())) {
             bail!("compose: unknown field `{k}`");
         }
-        let presets: Vec<&mr_components::PresetInfo> = match Pick::of(compose.get("preset"), "preset")? {
-            Pick::Default => vec![mr_components::preset_info("raycast-gpu").unwrap()],
-            Pick::All => mr_components::PRESETS.iter().filter(|b| b.renderer.is_some()).collect(),
-            Pick::Some(names) => names.iter().map(|n| mr_components::preset_info(n).with_context(|| format!("compose.preset: unknown preset `{n}`"))).collect::<anyhow::Result<_>>()?,
+        let presets: Vec<&'static mr_components::graph::Builds> = match Pick::of(compose.get("preset"), "preset")? {
+            Pick::Default => vec![&mr_components::graph::GPU_WALK],
+            Pick::All => mr_components::graph::REGIONS.to_vec(),
+            Pick::Some(names) => names.iter().map(|n| mr_components::graph::region_named(n).with_context(|| format!("compose.preset: unknown preset `{n}`"))).collect::<anyhow::Result<_>>()?,
         };
         let before = out.len();
         for b in presets {
@@ -891,11 +891,11 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
             }
             // Per slot, the components to combine (an empty list: the preset is skipped).
             let mut axes: Vec<(mr_components::Slot, Vec<String>)> = vec![];
-            for &(slot, default) in b.slots {
+            for &(slot, default) in b.base {
                 let names = match Pick::of(compose.get(slot.name()), slot.name())? {
                     Pick::Default => vec![default.to_string()],
-                    Pick::All => mr_components::names_on(b.name, slot).into_iter().map(String::from).collect(),
-                    Pick::Some(l) => l.into_iter().filter(|n| mr_components::unavailable(b.name, slot, n).is_none()).collect(),
+                    Pick::All => b.names(slot).into_iter().map(String::from).collect(),
+                    Pick::Some(l) => l.into_iter().filter(|n| b.unavailable(slot, n).is_none()).collect(),
                 };
                 axes.push((slot, names));
             }
@@ -908,7 +908,7 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
                 })).collect();
             }
             // Options the preset declares.
-            let known: Vec<String> = infos.iter().find(|i| Some(i.name.as_str()) == b.renderer).map(|i| i.params.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
+            let known: Vec<String> = infos.iter().find(|i| i.name == b.name).map(|i| i.params.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
             let options: toml::Table = e.get("options").and_then(|o| o.as_table()).map(|t| t.iter().filter(|(k, _)| known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
             // Combinations whose components' needs cannot be met do not exist.
             for c in combos.into_iter().filter(|c| c.validate().is_ok()) {
@@ -1233,7 +1233,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
             assert_eq!(key(&back), key(r), "{l} read back as {}", back.label());
         };
         let mut n = 0;
-        for b in mr_components::PRESETS.iter().filter(|b| b.renderer.is_some()) {
+        for b in mr_components::graph::REGIONS {
             let mut r = RendererSpec::new(b.name);
             r.resolve().unwrap();
             check(&r);
