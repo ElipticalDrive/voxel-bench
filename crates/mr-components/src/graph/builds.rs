@@ -110,6 +110,51 @@ impl Builds {
         self.api_choice.is_some_and(|ch| ch.slots.contains(&slot.source()))
     }
 
+    /// Why component `name` cannot fill `slot` in it (`None` = it can).
+    pub fn unavailable(&self, slot: Slot, name: &str) -> Option<String> {
+        crate::unavailable(self.name, slot, name)
+    }
+
+    /// The `slot` components it builds (its knobs' choices).
+    pub fn names(&self, slot: Slot) -> Vec<&'static str> {
+        crate::names_on(self.name, slot)
+    }
+
+    /// For an executor checking its options: `name` if it builds it in `slot`, else why not.
+    pub fn require(&self, slot: Slot, name: &str) -> anyhow::Result<String> {
+        match self.unavailable(slot, name) {
+            None => Ok(name.to_string()),
+            Some(why) => anyhow::bail!(why),
+        }
+    }
+
+    /// Lighting knobs belong to the shading stage (lit mode is the shading component's job):
+    /// marks `shadows` as owned by its shading components, so UIs show it there.
+    pub fn lighting_knobs(&self, mut params: Vec<mr_core::ParamSpec>) -> Vec<mr_core::ParamSpec> {
+        let shading = self.names(Slot::Shading);
+        for p in params.iter_mut().filter(|p| p.name == "shadows" && p.owner.is_none()) {
+            *p = p.clone().of(Slot::Shading.name(), &shading);
+        }
+        params
+    }
+
+    /// The shading node's placement knob, for the regions that offer it: `inline` shades where
+    /// the strategy finds the hit, in the same pass; `deferred` has the strategy write hit
+    /// records and one common pass shade each pixel. Fixed at creation: inline pipelines carry
+    /// nothing of the deferred one (no record buffer, binding or pass). `default`: the
+    /// region's original placement (the CPU rasteriser was deferred).
+    pub fn placement_param(&self, default: &str) -> mr_core::ParamSpec {
+        mr_core::ParamSpec::choice(
+            "placement",
+            "Shading placement: inline = shaded where the surface is found, in the same pass (with rasterisers: every fragment that passes the depth test); deferred = the strategy writes a hit record per pixel, then one common pass shades each pixel",
+            &["inline", "deferred"],
+            default,
+            false,
+        )
+        .of(Slot::Shading.name(), &self.names(Slot::Shading))
+        .baked(false)
+    }
+
     /// The executor (device kind: `cpu`, `gpu`) it is a region of: where its image is made,
     /// its shading's device.
     pub fn executor(&self) -> &'static str {
@@ -445,15 +490,15 @@ pub fn edits(g: &Graph) -> Vec<Graph> {
     v
 }
 
-/// The valid graphs one or two [`edits`] from the default graphs of `executors` (and their
-/// path-tracing ones), checked, with the preset each lands on among them; each once.
-pub fn near(executors: &[&str]) -> Vec<Checked> {
+/// The valid graphs one or two [`edits`] from the default graphs of `regions` (and their
+/// path-tracing ones), checked, with the region each lands on among them; each once.
+pub fn near(regions: &[&Builds]) -> Vec<Checked> {
     let mut bases = vec![];
-    for &e in executors {
-        let mut c = crate::Composition::new(e);
+    for r in regions {
+        let mut c = crate::Composition::new(r.name);
         c.fill_defaults();
         bases.push(c.clone());
-        if crate::names_on(e, crate::Slot::Shading).contains(&"pathtrace") {
+        if r.names(Slot::Shading).contains(&"pathtrace") {
             c.shading = "pathtrace".into();
             bases.push(c);
         }
@@ -466,7 +511,7 @@ pub fn near(executors: &[&str]) -> Vec<Checked> {
             let two: Vec<Graph> = edits(&h).into_iter().map(Graph::pruned).collect();
             for x in std::iter::once(h).chain(two) {
                 let Ok(ck) = x.check() else { continue };
-                if ck.preset().is_some_and(|p| executors.contains(&p)) && seen.insert(ck.graph.canonical().unwrap_or_default()) {
+                if ck.region.is_some_and(|b| regions.iter().any(|r| r.id == b.id)) && seen.insert(ck.graph.canonical().unwrap_or_default()) {
                     v.push(ck);
                 }
             }

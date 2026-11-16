@@ -723,8 +723,8 @@ mod tests {
     /// ones its generated code folds.
     #[test]
     fn every_cpu_graph_has_a_source() {
-        for st in mr_components::names_on("cpu", mr_components::Slot::Storage) {
-            for k in mr_components::names_on("cpu", mr_components::Slot::Traversal) {
+        for st in mr_components::graph::CPU_RAYCAST.names(mr_components::Slot::Storage) {
+            for k in mr_components::graph::CPU_RAYCAST.names(mr_components::Slot::Traversal) {
                 let b = bake(&spec(&format!("raycast-cpu:{st}+{k}"), &[("packet", "4".into())])).unwrap().unwrap();
                 let s = source(&b).unwrap();
                 assert!(s.contains("NATIVE: bool = true") && s.contains(&format!("raycast_entry::<{}, Baked, [u8; 4]>", mr_exec_cpu::storage_type(st).unwrap())), "{s}");

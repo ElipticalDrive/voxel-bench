@@ -44,7 +44,7 @@ pub(crate) fn create(preset: &str, p: &InitParams, devices: &Devices, waker: Wak
 fn run<C: Cast + 'static>((core, cast, shading, far): (Core, C, String, Option<crate::remote::Far>), g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let region = Raycast::new(&core, cast, shading, far.is_some())?;
     let passes = nodes::of::<C>(g)?;
-    tracing::debug!("{}: {} passes", C::PRESET, passes.len());
+    tracing::debug!("{}: {} passes", C::REGION.name, passes.len());
     match far {
         Some(far) => crate::exec::split(g, crate::exec::Executor::new(core, region, passes), far),
         None => crate::exec::run(core, region, passes),
@@ -116,7 +116,7 @@ impl View {
 /// structures, with what each keeps.
 trait Cast: Sized {
     /// The registry's name of this configuration.
-    const PRESET: &'static str;
+    const REGION: &'static mr_components::graph::Builds;
     /// The ray flags of ray queries that are not shadow rays (a WGSL expression; see
     /// `Core::trace_root`).
     const RT_FLAGS: &'static str = "0u";
@@ -327,7 +327,7 @@ struct Raycast<C> {
 impl<C: Cast> Raycast<C> {
     /// `remote`: the shading is a node of another GPU's executor.
     fn new(core: &Core, cast: C, shading: String, remote: bool) -> anyhow::Result<Self> {
-        anyhow::ensure!(!remote || cast.view() == View::Image, "{}: a diagnostic view shades inline, not on the shading's GPU", C::PRESET);
+        anyhow::ensure!(!remote || cast.view() == View::Image, "{}: a diagnostic view shades inline, not on the shading's GPU", C::REGION.name);
         let passes = Passes::new(core, &cast, &shading, remote)?;
         Ok(Self { passes, cast, built_shading: shading.clone(), shading, steps: Steps::default(), world: None })
     }
@@ -488,7 +488,7 @@ impl<C: Cast> State for Raycast<C> {
 
     fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         if name == "shading" {
-            return Some(mr_components::require(C::PRESET, mr_components::Slot::Shading, value.as_str().unwrap_or("")).map(|s| self.shading = s));
+            return Some(C::REGION.require(mr_components::Slot::Shading, value.as_str().unwrap_or("")).map(|s| self.shading = s));
         }
         self.cast.set_param(name, value)
     }
@@ -584,7 +584,7 @@ mod tests {
     #[test]
     fn casters_build_what_they_declare() {
         let (mut built, mut refused) = (0, 0);
-        for ck in graph::near(&[super::walk::PRESET, super::rayquery::PRESET]) {
+        for ck in graph::near(&[super::walk::REGION, super::rayquery::REGION]) {
             let e = ck.preset().unwrap();
             let key = ck.graph.canonical().unwrap();
             match (ck.built(), ck.graph.accept()) {

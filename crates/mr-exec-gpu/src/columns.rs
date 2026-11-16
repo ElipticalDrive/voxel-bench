@@ -30,12 +30,12 @@ pub(crate) fn info() -> RendererInfo {
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         lacks: vec![],
-        params: mr_components::lighting_knobs(PRESET, vec![
-            ParamSpec::choice("storage", "Storage component", &mr_components::names_on(PRESET, mr_components::Slot::Storage), "heightmap", false),
-            ParamSpec::choice("visibility", "Visibility component", &mr_components::names_on(PRESET, mr_components::Slot::Visibility), "columns", false),
-            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &mr_components::names_on(PRESET, mr_components::Slot::Traversal), "heightfield", false),
-            ParamSpec::choice("shading", "Shading component", &mr_components::names_on(PRESET, mr_components::Slot::Shading), "direct", false),
-            mr_components::placement_param(PRESET, "inline"),
+        params: REGION.lighting_knobs(vec![
+            ParamSpec::choice("storage", "Storage component", &REGION.names(mr_components::Slot::Storage), "heightmap", false),
+            ParamSpec::choice("visibility", "Visibility component", &REGION.names(mr_components::Slot::Visibility), "columns", false),
+            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &REGION.names(mr_components::Slot::Traversal), "heightfield", false),
+            ParamSpec::choice("shading", "Shading component", &REGION.names(mr_components::Slot::Shading), "direct", false),
+            REGION.placement_param("inline"),
             shadows_param(),
             ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
         ]
@@ -52,7 +52,7 @@ struct Options {
     frames_in_flight: usize,
 }
 
-pub(crate) const PRESET: &str = "columns-gpu";
+pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_COLUMNS;
 
 impl Default for Options {
     fn default() -> Self {
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn programs_compose() {
         use mr_gpu::wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
-        for shading in mr_components::names_on("columns-gpu", mr_components::Slot::Shading) {
+        for shading in mr_components::graph::GPU_COLUMNS.names(mr_components::Slot::Shading) {
             for deferred in [false, true] {
                 let (p, root, deps) = super::program(shading, deferred, mr_components::post::Tone::Aces);
                 let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{shading} {deferred}: {e}"));

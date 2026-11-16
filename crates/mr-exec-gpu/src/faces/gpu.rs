@@ -63,7 +63,7 @@ use mr_components::storage::gpu_data::Bound;
 use mr_components::shading::state as shade_state;
 use mr_components::draw::{self, drawer::{DrawFrame, DrawNodes}};
 use mr_components::visibility::quadtree;
-use mr_components::{names_on, require, Slot};
+use mr_components::Slot;
 use mr_gpu::voxels::{Shadows, hash3, shadows_param};
 use mr_gpu::{Gpu, wgpu};
 use serde::Deserialize;
@@ -74,13 +74,13 @@ use crate::Core;
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: PRESET.into(),
+        name: NAME.into(),
         description: "discover-gpu preset (storage, quadtree visibility, shading). Self-directed visibility: GPU adaptive quadtree of corner rays discovers the visible block faces (coherent tiles add a whole plane footprint), faces kept in a GPU hash set across frames, then rasterised as one quad per face; no read-back".into(),
         tags: vec!["gpu".into(), "raster".into(), "raytrace".into(), "hybrid".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         lacks: vec![],
-        params: mr_components::lighting_knobs(PRESET, params()),
+        params: REGION.lighting_knobs(params()),
     }
 }
 
@@ -89,16 +89,17 @@ const MAX_LEVELS: usize = 7;
 const MAX_SLOTS: usize = 1 << 14;
 const CHUNK_TABLE: usize = MAX_SLOTS * 4;
 
-pub(crate) const PRESET: &str = "discover-gpu";
+pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_SAMPLER;
+pub(crate) const NAME: &str = REGION.name;
 
 
 
 fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::choice("storage", "Storage component: what discovery rays, exposure tests and shadow rays read (walked with the traversal kernel)", &names_on(PRESET, Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", "Visibility component", &names_on(PRESET, Slot::Visibility), "quadtree", false),
-        ParamSpec::choice("traversal", "Traversal kernel of the discovery, shadow and bounce rays", &names_on(PRESET, Slot::Traversal), "refloor", false),
-        ParamSpec::choice("shading", "Shading component", &names_on(PRESET, Slot::Shading), "direct", false),
+        ParamSpec::choice("storage", "Storage component: what discovery rays, exposure tests and shadow rays read (walked with the traversal kernel)", &REGION.names(Slot::Storage), "bricks", false),
+        ParamSpec::choice("visibility", "Visibility component", &REGION.names(Slot::Visibility), "quadtree", false),
+        ParamSpec::choice("traversal", "Traversal kernel of the discovery, shadow and bounce rays", &REGION.names(Slot::Traversal), "refloor", false),
+        ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", false),
         ParamSpec::int("tile", "Initial tile size in pixels (power of two)", 2, MAX_TILE as i64, 8, true).of("visibility", &["quadtree"]),
         ParamSpec::choice("criterion", "Tile coherence: all corners hit the same face plane, or the very same face", &["plane", "face"], "plane", true).of("visibility", &["quadtree"]),
         ParamSpec::int("sky_tile", "Tiles whose corners all miss are accepted as sky at or below this size (px)", 1, MAX_TILE as i64, 4, true).of("visibility", &["quadtree"]),
@@ -111,7 +112,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("closure_box", "Local-closure box size in cells per axis", 1, 8, 2, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("block_faces", "With each discovered face also add its block's other camera-facing exposed faces (closes raster-vs-ray edge cracks)", true, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("jitter", "Shift the tile lattice randomly every frame (temporal coverage)", true, true).of("visibility", &["quadtree"]),
-        ParamSpec::choice("holes", "Hole detection (was `incremental`): none = discover the whole screen every frame (jittered lattice); coverage = rasterise last frame's faces first and only discover tiles with uncovered pixels, parallax-revealable occlusion edges, edited blocks or changed chunks, or their refresh turn (jitter off)", &names_on(PRESET, Slot::Holes), "none", true),
+        ParamSpec::choice("holes", "Hole detection (was `incremental`): none = discover the whole screen every frame (jittered lattice); coverage = rasterise last frame's faces first and only discover tiles with uncovered pixels, parallax-revealable occlusion edges, edited blocks or changed chunks, or their refresh turn (jitter off)", &REGION.names(Slot::Holes), "none", true),
         ParamSpec::int("keep_unseen", "Incremental: frames a face inside the view stays in S without covering a pixel (faces outside the view use keep_frames)", 1, 1000, 64, true).of("holes", &["coverage"]),
         ParamSpec::int("refresh", "Incremental: re-discover every Nth tile each frame regardless (0 = never)", 0, 1024, 16, true).of("holes", &["coverage"]),
         ParamSpec::float("parallax_px", "Incremental: an occlusion edge needs discovery if the camera's translation can reveal more than this many pixels behind it", 0.05, 16.0, false, 0.5, true).of("holes", &["coverage"]),
@@ -125,7 +126,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true).of("visibility", &["quadtree"]),
         shadows_param(),
         ParamSpec::int("max_steps", "DDA step limit (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
-        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment (order and the overdraw view apply); visbuffer = face ids, then one compute pass shades each pixel; gbuffer = the common hit records, then the common deferred pass (no diagnostic tints)", &names_on(PRESET, Slot::Draw), "raster", true),
+        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment (order and the overdraw view apply); visbuffer = face ids, then one compute pass shades each pixel; gbuffer = the common hit records, then the common deferred pass (no diagnostic tints)", &REGION.names(Slot::Draw), "raster", true),
         ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("max_faces", "Capacity of the face set S (faces)", 1 << 16, 1 << 24, 1 << 20, false).of("visibility", &["quadtree"]),
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB); for region storages the limit of their own data", 64, 6144, 1536, false),
@@ -581,7 +582,7 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
 impl GpuSampler {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
-        let node = |role: Role| g.find(role).ok_or_else(|| anyhow::anyhow!("{PRESET}: no {} node", role.name()));
+        let node = |role: Role| g.find(role).ok_or_else(|| anyhow::anyhow!("{NAME}: no {} node", role.name()));
         let vis: VisibilityKnobs = g.knobs(node(Role::Visibility)?).map_err(anyhow::Error::msg)?;
         let draw_id = node(Role::Draw)?;
         let draw = g.node(draw_id).component.clone();
@@ -594,9 +595,9 @@ impl GpuSampler {
         // The sites' walks: discovery rays (the storage and traversal stages),
         // the storage exposure tests read, shadow and bounce rays; each its own or shared.
         let mut walks = Walks::of(g);
-        let bound = |role, port: &str| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{PRESET}: `{port}` rays are not bound"));
+        let bound = |role, port: &str| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{NAME}: `{port}` rays are not bound"));
         let rays = walks.site(g, bound(Role::Visibility, "rays")?, STORAGE_GROUPS, false);
-        let exposure = walks.storage(g, g.input(Role::Visibility, "exposure").ok_or_else(|| anyhow::anyhow!("{PRESET}: exposure is not bound"))?, STORAGE_GROUPS);
+        let exposure = walks.storage(g, g.input(Role::Visibility, "exposure").ok_or_else(|| anyhow::anyhow!("{NAME}: exposure is not bound"))?, STORAGE_GROUPS);
         let shadow = walks.site(g, bound(Role::Shading, "shadow")?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
@@ -1230,7 +1231,7 @@ impl GpuSampler {
             "block_faces" => self.vis.block_faces = value.as_bool().unwrap_or(true),
             "jitter" => self.vis.jitter = value.as_bool().unwrap_or(true),
             "holes" => {
-                match require(PRESET, Slot::Holes, value.as_str().unwrap_or("none")) {
+                match REGION.require(Slot::Holes, value.as_str().unwrap_or("none")) {
                     Ok(h) => self.incremental = h == "coverage",
                     Err(e) => return Some(Err(e)),
                 }
@@ -1935,9 +1936,9 @@ mod tests {
             Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));
         };
         use mr_components::graph::{Graph, Node};
-        for st in names_on(PRESET, Slot::Storage) {
-            for k in names_on(PRESET, Slot::Traversal) {
-                let flat = mr_components::Composition { storage: st.into(), traversal: k.into(), shading: "pathtrace".into(), ..mr_components::Composition::new(PRESET) };
+        for st in REGION.names(Slot::Storage) {
+            for k in REGION.names(Slot::Traversal) {
+                let flat = mr_components::Composition { storage: st.into(), traversal: k.into(), shading: "pathtrace".into(), ..mr_components::Composition::new(NAME) };
                 let mut graphs = vec![Graph::from_composition(&flat).unwrap()];
                 // Exposure, shadow and bounce rays through storages and kernels of their own.
                 if k == "refloor" {
@@ -1968,7 +1969,7 @@ mod tests {
                     let bounce = with_bounce.site(&ck, ck.site(Role::Shading, "bounce").unwrap(), STORAGE_GROUPS, false);
                     for (walks, bounce, shading) in [(walks, shadow, "direct"), (with_bounce, bounce, "pathtrace")] {
                         let (mut program, deps, _) = crate::faces::programs(&walks, Some((rays, exposure)), [shadow, bounce], None, shading);
-                        crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("set_faces.wgsl"), true), shading, &format!("{st} {k} {shading}"), PRESET);
+                        crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("set_faces.wgsl"), true), shading, &format!("{st} {k} {shading}"), REGION);
                         // Discovery's pieces: the sampler and hole detection over the shared set.
                         program.add(quadtree::SET, quadtree::SET_WGSL, &deps.iter().map(String::as_str).collect::<Vec<_>>());
                         let disc_deps: Vec<String> = std::iter::once(quadtree::SET.to_string()).chain(deps.iter().cloned()).collect();

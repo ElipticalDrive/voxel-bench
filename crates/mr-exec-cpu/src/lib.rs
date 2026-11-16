@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn executors_build_what_they_declare() {
         let (mut built, mut refused) = (0, 0);
-        for ck in graph::near(&[raycast::PRESET, raster::PRESET, columns::PRESET]) {
+        for ck in graph::near(&[raycast::REGION, raster::REGION, columns::REGION]) {
             let e = ck.preset().unwrap();
             let key = ck.graph.canonical().unwrap();
             if let Err(why) = ck.built() {

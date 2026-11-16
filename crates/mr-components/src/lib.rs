@@ -601,45 +601,9 @@ pub fn unimplemented_at(p: &Place, slot: Slot, name: &str) -> Option<String> {
     c.at(p).is_none().then(|| format!("`{name}` has no {} implementation yet (has: {})", p.label(), if c.impls.is_empty() { "none".into() } else { c.impls_label() }))
 }
 
-/// For presets checking their options: `name` if it is a `slot` component of `preset`,
-/// else why not.
-pub fn require(preset: &str, slot: Slot, name: &str) -> anyhow::Result<String> {
-    match unavailable(preset, slot, name) {
-        None => Ok(name.to_string()),
-        Some(why) => anyhow::bail!(why),
-    }
-}
-
 /// The `slot` components `preset` implements (for its parameter choices).
 pub fn names_on(preset: &str, slot: Slot) -> Vec<&'static str> {
     components(slot).filter(|c| unavailable(preset, slot, c.name).is_none()).map(|c| c.name).collect()
-}
-
-/// Lighting knobs belong to the shading stage (lit mode is the shading component's job):
-/// marks `shadows` as owned by `preset`'s shading components, so UIs show it there.
-pub fn lighting_knobs(preset: &str, mut params: Vec<mr_core::ParamSpec>) -> Vec<mr_core::ParamSpec> {
-    let shading = names_on(preset, Slot::Shading);
-    for p in params.iter_mut().filter(|p| p.name == "shadows" && p.owner.is_none()) {
-        *p = p.clone().of(Slot::Shading.name(), &shading);
-    }
-    params
-}
-
-/// The shading node's placement knob for presets that offer it: `inline`
-/// shades where the strategy finds the hit, in the same pass; `deferred` has the strategy
-/// write hit records and one common pass shade each pixel. Fixed at creation: inline
-/// pipelines carry nothing of the deferred one (no record buffer, binding or pass).
-/// `default`: the preset's original placement (raster-cpu was deferred).
-pub fn placement_param(preset: &str, default: &str) -> mr_core::ParamSpec {
-    mr_core::ParamSpec::choice(
-        "placement",
-        "Shading placement: inline = shaded where the surface is found, in the same pass (with rasterisers: every fragment that passes the depth test); deferred = the strategy writes a hit record per pixel, then one common pass shades each pixel",
-        &["inline", "deferred"],
-        default,
-        false,
-    )
-    .of(Slot::Shading.name(), &names_on(preset, Slot::Shading))
-    .baked(false)
 }
 
 /// Parses a placement value: `true` for deferred.

@@ -18,7 +18,7 @@ use mr_components::graph::{self, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
 use mr_components::storage::gpu_data::Bound;
-use mr_components::{Slot, components, names_on, placement_param, traversal};
+use mr_components::{Slot, components, traversal};
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GpuNeeds, wgpu};
@@ -28,31 +28,32 @@ use super::{Cast, CastProgram};
 use crate::accel::AccelSpec;
 use crate::{Core, CoreSpec};
 
-pub(crate) const PRESET: &str = "rayquery-gpu";
+pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_RAYQUERY;
+pub(crate) const NAME: &str = REGION.name;
 
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: PRESET.into(),
+        name: NAME.into(),
         description: "rayquery-gpu preset: hardware ray queries over a TLAS of per-chunk BLASes built from the geometry component (triangles or brick boxes); shading components as elsewhere".into(),
         tags: vec!["gpu".into(), "raytrace".into(), "hardware-rt".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         lacks: vec![],
-        params: mr_components::lighting_knobs(PRESET, params()),
+        params: REGION.lighting_knobs(params()),
     }
 }
 
 fn describe(slot: Slot) -> String {
-    components(slot).filter(|c| mr_components::unavailable(PRESET, slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
+    components(slot).filter(|c| REGION.unavailable(slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
 }
 
 fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::choice("geometry", &format!("Geometry component (what the BLASes hold). {}", describe(Slot::Geometry)), &names_on(PRESET, Slot::Geometry), "greedy", false),
-        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &names_on(PRESET, Slot::Visibility), "raycast", false),
-        ParamSpec::choice("traversal", &format!("Traversal kernel. {}", describe(Slot::Traversal)), &names_on(PRESET, Slot::Traversal), "rayquery", false),
-        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &names_on(PRESET, Slot::Shading), "direct", true),
+        ParamSpec::choice("geometry", &format!("Geometry component (what the BLASes hold). {}", describe(Slot::Geometry)), &REGION.names(Slot::Geometry), "greedy", false),
+        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &REGION.names(Slot::Visibility), "raycast", false),
+        ParamSpec::choice("traversal", &format!("Traversal kernel. {}", describe(Slot::Traversal)), &REGION.names(Slot::Traversal), "rayquery", false),
+        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &REGION.names(Slot::Shading), "direct", true),
         ParamSpec::choice("merge", "greedy: merge faces of the same block only (`exposure` is raster-only)", &["block"], "block", false).of("geometry", &["greedy"]),
         ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours (false = every face of every solid block)", true, false).of("geometry", &["naive"]),
         ParamSpec::choice("cull_faces", "Triangle facing culled for primary rays (triangle geometries)", &["back", "front", "none"], "back", true).of("geometry", &["greedy", "naive"]),
@@ -63,7 +64,7 @@ fn params() -> Vec<ParamSpec> {
     .into_iter()
     .chain(shade_state::params())
     .chain([
-        placement_param(PRESET, "inline"),
+        REGION.placement_param("inline"),
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB; boxes geometry)", 64, 6144, 2048, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ])
@@ -149,15 +150,15 @@ const STORAGE_GROUPS: &[u32] = &[2, 3, 4, 5];
 impl RayQuery {
     pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String, Option<crate::remote::Far>)> {
         let opts: Options = p.options()?;
-        let geometry_id = g.find(Role::Geometry).ok_or_else(|| anyhow::anyhow!("{PRESET}: no geometry node"))?;
+        let geometry_id = g.find(Role::Geometry).ok_or_else(|| anyhow::anyhow!("{NAME}: no geometry node"))?;
         let geometry = g.node(geometry_id).component.clone();
         let gk: GeometryKnobs = g.knobs(geometry_id).map_err(anyhow::Error::msg)?;
         let shading = g.node(g.shading()).component.clone();
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         let mut walks = Walks::of(g);
-        let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{PRESET}: {} `{port}` rays are not bound", role.name()));
+        let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{NAME}: {} `{port}` rays are not bound", role.name()));
         let primary = walks.site(g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
-        anyhow::ensure!(primary == 0 && walks.is_query(0), "{PRESET}: the primary rays are ray queries");
+        anyhow::ensure!(primary == 0 && walks.is_query(0), "{NAME}: the primary rays are ray queries");
         let shadow = match super::shading_site(g, "shadow") {
             Some(_) => walks.site(g, site(Role::Shading, "shadow")?, STORAGE_GROUPS, false),
             None => primary,
@@ -193,7 +194,7 @@ impl RayQuery {
 }
 
 impl Cast for RayQuery {
-    const PRESET: &'static str = PRESET;
+    const REGION: &'static mr_components::graph::Builds = REGION;
     const RT_FLAGS: &'static str = "cam.ray_flags";
 
     fn layout_entries(&self, _stages: wgpu::ShaderStages) -> Vec<wgpu::BindGroupLayoutEntry> {
@@ -292,10 +293,10 @@ mod tests {
     #[test]
     fn programs_compose() {
         use mr_components::graph::Graph;
-        for geometry in names_on(PRESET, Slot::Geometry) {
-            for shading in names_on(PRESET, Slot::Shading) {
+        for geometry in REGION.names(Slot::Geometry) {
+            for shading in REGION.names(Slot::Shading) {
                 for deferred in [false, true] {
-                    let c = mr_components::Composition { geometry: geometry.into(), shading: shading.into(), ..mr_components::Composition::new(PRESET) };
+                    let c = mr_components::Composition { geometry: geometry.into(), shading: shading.into(), ..mr_components::Composition::new(NAME) };
                     let ck = Graph::from_composition(&c).unwrap().check().unwrap();
                     let mut walks = Walks::of(&ck);
                     walks.site(&ck, ck.site(Role::Visibility, "primary").unwrap(), STORAGE_GROUPS, false);

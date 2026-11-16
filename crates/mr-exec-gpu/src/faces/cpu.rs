@@ -38,7 +38,7 @@ use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
 use mr_components::storage::gpu_data::Bound;
 use mr_components::visibility::discover::{Output, Settings, State, grid};
-use mr_components::{names_on, require, Slot};
+use mr_components::Slot;
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{DEVICE_BOUND, GrowableBuffer, wgpu};
@@ -48,28 +48,29 @@ use super::{CoreOpts, Draw, SourceSpec};
 use crate::exec::{self, Cx, Node, Region};
 use crate::Core;
 
-pub(crate) const PRESET: &str = "discover-cpu";
+pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::CPU_SAMPLER;
+pub(crate) const NAME: &str = REGION.name;
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: PRESET.into(),
+        name: NAME.into(),
         description: "discover-cpu preset (CPU storage, quadtree or cluster visibility, shading). Self-directed visibility: CPU rays (adaptive quadtree, or face clusters) discover the visible face set (temporal, pipelined one frame ahead), GPU rasterises only those faces; lit mode adds ray-traced shadows".into(),
         tags: vec!["cpu".into(), "gpu".into(), "raster".into(), "raycast".into(), "hybrid".into(), "discovery".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         lacks: vec![],
-        params: mr_components::lighting_knobs(PRESET, params()),
+        params: REGION.lighting_knobs(params()),
     }
 }
 
 fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::choice("storage", "Storage component: the CPU representation discovery rays walk (refloor)", &names_on(PRESET, Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (was cpu-cluster)", &names_on(PRESET, Slot::Visibility), "quadtree", true),
-        ParamSpec::choice("traversal", "Traversal kernel of the CPU discovery rays and the GPU shadow and bounce rays", &names_on(PRESET, Slot::Traversal), "refloor", false),
-        ParamSpec::choice("shading", "Shading component", &names_on(PRESET, Slot::Shading), "direct", false),
-        ParamSpec::choice("shadow_storage", "GPU storage the GPU's shadow and bounce rays walk (`same`: the GPU twin of the storage discovery rays walk, if it has one); the storage slot is the CPU representation discovery rays walk", &names_on(PRESET, Slot::ShadowStorage), "bricks", false),
-        ParamSpec::choice("shadow_traversal", "GPU kernel of the shadow and bounce rays (`same`: the traversal kernel)", &names_on(PRESET, Slot::ShadowTraversal), "same", false),
+        ParamSpec::choice("storage", "Storage component: the CPU representation discovery rays walk (refloor)", &REGION.names(Slot::Storage), "bricks", false),
+        ParamSpec::choice("visibility", "Visibility component (was `algorithm`). quadtree: adaptive screen-space tiles judged by corner rays. cluster: seeds on a coarse-to-fine lattice, then flood fills over coplanar faces confirmed by corner rays (was cpu-cluster)", &REGION.names(Slot::Visibility), "quadtree", true),
+        ParamSpec::choice("traversal", "Traversal kernel of the CPU discovery rays and the GPU shadow and bounce rays", &REGION.names(Slot::Traversal), "refloor", false),
+        ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", false),
+        ParamSpec::choice("shadow_storage", "GPU storage the GPU's shadow and bounce rays walk (`same`: the GPU twin of the storage discovery rays walk, if it has one); the storage slot is the CPU representation discovery rays walk", &REGION.names(Slot::ShadowStorage), "bricks", false),
+        ParamSpec::choice("shadow_traversal", "GPU kernel of the shadow and bounce rays (`same`: the traversal kernel)", &REGION.names(Slot::ShadowTraversal), "same", false),
         ParamSpec::int("seed_step", "Cluster: coarsest seed lattice spacing (px, rounded to a power of two)", 1, 256, 16, true).of("visibility", &["cluster"]),
         ParamSpec::choice("sky", "Cluster: corners = a lattice cell at spacing <= sky_tile is sky when all four corner seeds miss; sparse = one missed seed covers its cell (cheaper; thin things may take a few frames to appear)", &["corners", "sparse"], "corners", true).of("visibility", &["cluster"]),
         ParamSpec::choice("view", "image: the rendered scene. Cluster discovery only: clusters = one colour per cluster found this pass; kinds = confirmed faces (all corners visible) green, faces with an occluded corner yellow, faces carried over from earlier passes grey", &["image", "clusters", "kinds"], "image", true),
@@ -87,7 +88,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("threads", "Discovery threads (0 = all cores)", 0, 256, 0, false),
         shadows_param(),
         ParamSpec::int("max_steps", "Shadow-ray DDA step limit (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
-        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment; visbuffer = face ids, then one compute pass shades each pixel; gbuffer = the common hit records, then the common deferred pass (no diagnostic views)", &names_on(PRESET, Slot::Draw), "raster", true),
+        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment; visbuffer = face ids, then one compute pass shades each pixel; gbuffer = the common hit records, then the common deferred pass (no diagnostic views)", &REGION.names(Slot::Draw), "raster", true),
         ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB)", 64, 6144, 1536, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
@@ -238,22 +239,22 @@ impl CpuSampler {
     /// `world`: the CPU world of a pipeline compiled for one storage (else the `storage` knob's).
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<(Core, Self)> {
         let mut opts: Options = p.options()?;
-        let site = g.site(Role::Visibility, "rays").ok_or_else(|| anyhow::anyhow!("{PRESET}: discovery rays are not bound"))?;
+        let site = g.site(Role::Visibility, "rays").ok_or_else(|| anyhow::anyhow!("{NAME}: discovery rays are not bound"))?;
         let storage = g.node(site.storage).component.clone();
-        let vis_id = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{PRESET}: no visibility node"))?;
+        let vis_id = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{NAME}: no visibility node"))?;
         let visibility = g.node(vis_id).component.clone();
         let vis: VisibilityKnobs = g.knobs(vis_id).map_err(anyhow::Error::msg)?;
-        let draw = g.node(g.find(Role::Draw).ok_or_else(|| anyhow::anyhow!("{PRESET}: no draw node"))?).component.clone();
+        let draw = g.node(g.find(Role::Draw).ok_or_else(|| anyhow::anyhow!("{NAME}: no draw node"))?).component.clone();
         let shading = g.node(g.shading()).component.clone();
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         // The faces cross from the CPU to the GPU: the schedule's transfer, whose timing is
         // the pipelining (`prev`: drawn a frame after they were discovered).
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
-        let faces = schedule.transfers.iter().find(|e| e.port == "faces" && g.node(&e.to).role == Role::Draw).ok_or_else(|| anyhow::anyhow!("{PRESET}: the faces do not cross from the CPU to the GPU"))?;
+        let faces = schedule.transfers.iter().find(|e| e.port == "faces" && g.node(&e.to).role == Role::Draw).ok_or_else(|| anyhow::anyhow!("{NAME}: the faces do not cross from the CPU to the GPU"))?;
         opts.pipelined = faces.when == mr_components::graph::When::Prev;
         // The GPU sites' walks: shadow rays (the shadow stages), bounces their own or the same.
         let mut walks = Walks::of(g);
-        let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("{PRESET}: GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
+        let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("{NAME}: GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: k.bounces, spp: k.spp, accumulate: k.accumulate, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
@@ -359,7 +360,7 @@ impl CpuSampler {
         let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
         match name {
             "tile" => self.vis.tile = int(32),
-            "algorithm" | "visibility" => match require(PRESET, Slot::Visibility, value.as_str().unwrap_or("quadtree")) {
+            "algorithm" | "visibility" => match REGION.require(Slot::Visibility, value.as_str().unwrap_or("quadtree")) {
                 Ok(v) => self.visibility = v,
                 Err(e) => return Some(Err(e)),
             },

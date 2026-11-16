@@ -16,7 +16,7 @@ use mr_components::shaders::Walks;
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::Bound;
 use mr_components::visibility::splat;
-use mr_components::{Slot, names_on};
+use mr_components::Slot;
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
@@ -33,12 +33,12 @@ pub(crate) fn info() -> RendererInfo {
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         lacks: vec![],
-        params: mr_components::lighting_knobs(PRESET, vec![
-            ParamSpec::choice("storage", "Storage component the lit-mode shadow rays walk (with the traversal kernel)", &names_on(PRESET, Slot::Storage), "bricks", false),
-            ParamSpec::choice("geometry", "Geometry component", &names_on(PRESET, Slot::Geometry), "points", false),
-            ParamSpec::choice("visibility", "Visibility component", &names_on(PRESET, Slot::Visibility), "splat", false),
-            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &names_on(PRESET, Slot::Traversal), "refloor", false),
-            ParamSpec::choice("shading", "Shading component", &names_on(PRESET, Slot::Shading), "direct", false),
+        params: REGION.lighting_knobs(vec![
+            ParamSpec::choice("storage", "Storage component the lit-mode shadow rays walk (with the traversal kernel)", &REGION.names(Slot::Storage), "bricks", false),
+            ParamSpec::choice("geometry", "Geometry component", &REGION.names(Slot::Geometry), "points", false),
+            ParamSpec::choice("visibility", "Visibility component", &REGION.names(Slot::Visibility), "splat", false),
+            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &REGION.names(Slot::Traversal), "refloor", false),
+            ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", false),
             ParamSpec::int("max_splat", "Largest splat side (px) one thread draws; larger points take a workgroup each", 1, 64, 16, true).of("visibility", &["splat"]),
             shadows_param(),
             ParamSpec::int("pool_mb", "Voxel pool limit (MiB)", 64, 6144, 2048, false),
@@ -93,7 +93,8 @@ impl Default for ShadingKnobs {
     }
 }
 
-pub(crate) const PRESET: &str = "splat-gpu";
+pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_SPLAT;
+pub(crate) const NAME: &str = REGION.name;
 
 /// The region the splat's nodes share: the points and their buffers, the program, group 0,
 /// the frame's world and storages. The ids the splat passes write and the resolve shades are
@@ -131,7 +132,7 @@ fn big_buffer(gpu: &Gpu, points_bytes: u64) -> wgpu::Buffer {
 impl Splat {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
-        let visibility = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{PRESET}: no visibility node"))?;
+        let visibility = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{NAME}: no visibility node"))?;
         let v: VisibilityKnobs = g.knobs(visibility).map_err(anyhow::Error::msg)?;
         let shading = &g.node(g.shading()).component;
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
@@ -139,7 +140,7 @@ impl Splat {
         // transfer, its adapter `upload`.
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
         if !schedule.transfers.iter().any(|e| e.port == "points" && g.node(&e.to).role == Role::Visibility) {
-            anyhow::bail!("{PRESET}: the points do not cross from the CPU to the GPU");
+            anyhow::bail!("{NAME}: the points do not cross from the CPU to the GPU");
         }
         // The sites' walks: shadow rays (the storage and traversal stages),
         // bounces their own or the same.
@@ -342,10 +343,10 @@ mod tests {
     fn programs_compose() {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         let mut n = 0;
-        for st in names_on(PRESET, Slot::Storage) {
-            for k in names_on(PRESET, Slot::Traversal) {
-                for shading in names_on(PRESET, Slot::Shading) {
-                    let flat = mr_components::Composition { storage: st.into(), traversal: k.into(), shading: shading.into(), ..mr_components::Composition::new(PRESET) };
+        for st in REGION.names(Slot::Storage) {
+            for k in REGION.names(Slot::Traversal) {
+                for shading in REGION.names(Slot::Shading) {
+                    let flat = mr_components::Composition { storage: st.into(), traversal: k.into(), shading: shading.into(), ..mr_components::Composition::new(NAME) };
                     let Ok(gr) = mr_components::graph::Graph::from_composition(&flat) else { continue };
                     if gr.validate().is_err() {
                         continue;

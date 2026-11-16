@@ -422,29 +422,30 @@ impl Draw {
 #[cfg(test)]
 mod tests {
     use mr_components::draw::drawer::DrawMode;
-    use mr_components::{Slot, names_on};
+    use mr_components::Slot;
+    use mr_components::graph::Builds;
 
-    /// A face source's drawing region (`draw_src`) with every drawer `preset` offers (the
+    /// A face source's drawing region (`draw_src`) with every drawer `region` offers (the
     /// raster's fragment stage with the sampler's own entry points) composes and validates
     /// over `program`, and over the mesh capability's variant where deferred drawers have it;
     /// with meshes, the forward mesh passes too.
-    pub(crate) fn drawers(program: &mr_gpu::program::Program, deps: &[String], meshed: Option<&super::Meshed>, draw_src: &str, shading: &str, what: &str, preset: &str) {
+    pub(crate) fn drawers(program: &mr_gpu::program::Program, deps: &[String], meshed: Option<&super::Meshed>, draw_src: &str, shading: &str, what: &str, region: &Builds) {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         let check = |program: &mr_gpu::program::Program, deps: &[String], root: &str, what: &str| {
             let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
             let m = program.naga(root, &deps).unwrap_or_else(|e| panic!("{what}: {e}"));
             Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));
         };
-        for d in names_on(preset, Slot::Draw) {
+        for d in region.names(Slot::Draw) {
             let mode = DrawMode::parse(d).unwrap();
             let root = format!("{draw_src}\n{}", super::draw_wgsl(mode, shading));
-            check(program, deps, &root, &format!("{preset} drawer {what} {d}"));
+            check(program, deps, &root, &format!("{} drawer {what} {d}", region.name));
             if let Some(m) = meshed.filter(|_| mode.deferred()) {
-                check(&m.program, &m.deps, &root, &format!("{preset} drawer with meshes {what} {d}"));
+                check(&m.program, &m.deps, &root, &format!("{} drawer with meshes {what} {d}", region.name));
             }
         }
         if let Some(m) = meshed {
-            check(&m.forward(), &m.deps, &super::mesh_src(shading), &format!("{preset} forward meshes {what}"));
+            check(&m.forward(), &m.deps, &super::mesh_src(shading), &format!("{} forward meshes {what}", region.name));
         }
     }
 
@@ -454,17 +455,17 @@ mod tests {
     fn cpu_programs_compose() {
         use mr_components::graph::{Graph, Role};
         use mr_components::shaders::Walks;
-        let preset = super::cpu::PRESET;
-        for st in names_on(preset, Slot::ShadowStorage).into_iter().filter(|s| *s != "same") {
+        let region = super::cpu::REGION;
+        for st in region.names(Slot::ShadowStorage).into_iter().filter(|s| *s != "same") {
             for shading in ["direct", "pathtrace"] {
-                let c = mr_components::Composition { shadow_storage: st.into(), shading: shading.into(), ..mr_components::Composition::new(preset) };
+                let c = mr_components::Composition { shadow_storage: st.into(), shading: shading.into(), ..mr_components::Composition::new(region.name) };
                 let ck = Graph::from_composition(&c).unwrap().check().unwrap();
                 let mut walks = Walks::of(&ck);
                 let groups = &[2, 4];
                 let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), groups, false);
                 let bounce = ck.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&ck, s, groups, false));
                 let (program, deps, _) = super::programs(&walks, None, [shadow, bounce], None, shading);
-                drawers(&program, &deps, None, &super::draw_src(include_str!("records.wgsl"), true), shading, &format!("{st} {shading}"), preset);
+                drawers(&program, &deps, None, &super::draw_src(include_str!("records.wgsl"), true), shading, &format!("{st} {shading}"), region);
             }
         }
     }

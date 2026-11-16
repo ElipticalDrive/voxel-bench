@@ -24,7 +24,7 @@ use mr_components::traversal::cpu::Hit;
 use mr_components::traversal::incremental::cpu::trace_incremental;
 use mr_components::traversal::refloor::cpu::{NOWHERE, trace_packet};
 use mr_components::visibility::record::Record;
-use mr_components::{names_on, parse_placement, placement_param, require, Slot};
+use mr_components::{parse_placement, Slot};
 use mr_core::chunk::local_of_block;
 use mr_core::*;
 use rayon::prelude::*;
@@ -56,13 +56,13 @@ pub(crate) fn info() -> RendererInfo {
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
         lacks: vec![],
-        params: mr_components::lighting_knobs(PRESET, params()),
+        params: REGION.lighting_knobs(params()),
     }
 }
 
 /// The executor for graph `g`, its nodes monomorphised for its storage.
 pub(crate) fn create<P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    let storage = require(PRESET, Slot::Storage, &g.node(primary(g)?.storage).component)?;
+    let storage = REGION.require(Slot::Storage, &g.node(primary(g)?.storage).component)?;
     match storage.as_str() {
         "bricks" => of::<U16, P>(p, g),
         "u8" => of::<U8, P>(p, g),
@@ -80,16 +80,16 @@ fn of<R: Repr, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn 
     executor::<R, Generic, P>(p, g)
 }
 
-pub(crate) const PRESET: &str = "raycast-cpu";
+pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::CPU_RAYCAST;
 
 
 fn params() -> Vec<ParamSpec> {
     let mut p = mr_reference::cpu_params();
-    p.push(ParamSpec::choice("storage", "Storage component (CPU implementations)", &names_on(PRESET, Slot::Storage), "bricks", false));
-    p.push(ParamSpec::choice("visibility", "Visibility strategy", &names_on(PRESET, Slot::Visibility), "raycast", false));
-    p.push(ParamSpec::choice("traversal", "Traversal kernel. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &names_on(PRESET, Slot::Traversal), "refloor", true));
-    p.push(ParamSpec::choice("shading", "Shading component", &names_on(PRESET, Slot::Shading), "direct", true));
-    p.push(placement_param(PRESET, "inline"));
+    p.push(ParamSpec::choice("storage", "Storage component (CPU implementations)", &REGION.names(Slot::Storage), "bricks", false));
+    p.push(ParamSpec::choice("visibility", "Visibility strategy", &REGION.names(Slot::Visibility), "raycast", false));
+    p.push(ParamSpec::choice("traversal", "Traversal kernel. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &REGION.names(Slot::Traversal), "refloor", true));
+    p.push(ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", true));
+    p.push(REGION.placement_param("inline"));
     p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
     p.push(ParamSpec::choice("packet", "Rays traced together in lockstep (refloor; measured: no gain on Zen 5)", &["1", "4", "8", "16"], "1", true).of("traversal", &["refloor"]));
     p.push(ParamSpec::choice("isa", "Instruction set for the hot loop", &["auto", "scalar", "avx2", "avx512"], "auto", true));
@@ -200,7 +200,7 @@ fn parse_schedule(s: &str) -> anyhow::Result<bool> {
 
 /// The traversal kernel for the `traversal` and `exact` knobs (also for generated code).
 pub fn traversal(kernel: &str, exact: bool) -> anyhow::Result<Traversal> {
-    Ok(match require(PRESET, Slot::Traversal, kernel)?.as_str() {
+    Ok(match REGION.require(Slot::Traversal, kernel)?.as_str() {
         "refloor" => Traversal::Refloor,
         "incremental" if exact => Traversal::IncrementalExact,
         "incremental" => Traversal::Incremental,
@@ -932,9 +932,9 @@ impl<S: Spec, P: Pixel> Cast<S, P> {
             "perf" => self.perf = perf::allowed(value.as_bool().unwrap_or(false))?,
             "view" => self.view = parse_view(value.as_str().unwrap_or(""))?,
             "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,
-            "visibility" => drop(require(PRESET, Slot::Visibility, value.as_str().unwrap_or(""))?),
+            "visibility" => drop(REGION.require(Slot::Visibility, value.as_str().unwrap_or(""))?),
             "shading" => {
-                require(PRESET, Slot::Shading, value.as_str().unwrap_or(""))?;
+                REGION.require(Slot::Shading, value.as_str().unwrap_or(""))?;
             }
             "packet" => {
                 self.packet = value.as_str().and_then(|s| s.parse().ok()).unwrap_or(8);

@@ -34,7 +34,7 @@ pub(crate) type Far = Executor<Shade>;
 /// The region of the shading's nodes on a GPU of their own: the deferred pass's program and
 /// group 0, the shading it was compiled with, the frame's state.
 pub(crate) struct Shade {
-    preset: &'static str,
+    region: &'static graph::Builds,
     walks: Walks,
     shadow: usize,
     bounce: usize,
@@ -95,7 +95,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
         })
     })?;
     let region = Shade {
-        preset: g.preset().expect("of_init: a region"),
+        region: g.region.expect("of_init: a region"),
         shading: spec.shading.to_string(),
         built_shading: spec.shading.to_string(),
         bind0: None,
@@ -182,7 +182,7 @@ impl exec::State for Shade {
     }
 
     fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        (name == "shading").then(|| mr_components::require(self.preset, mr_components::Slot::Shading, value.as_str().unwrap_or("")).map(|s| self.shading = s))
+        (name == "shading").then(|| self.region.require(mr_components::Slot::Shading, value.as_str().unwrap_or("")).map(|s| self.shading = s))
     }
 
     fn resize(&mut self, _core: &Core) {
@@ -276,7 +276,7 @@ mod tests {
     fn program_composes() {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         for (st, k) in [("bricks", "refloor"), ("tree64", "sphere"), ("distance", "incremental")] {
-            for shading in mr_components::names_on("raycast-gpu", mr_components::Slot::Shading) {
+            for shading in mr_components::graph::GPU_WALK.names(mr_components::Slot::Shading) {
                 let g = split(st, k, shading);
                 let ck = g.check().unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));
                 g.accept().unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));
