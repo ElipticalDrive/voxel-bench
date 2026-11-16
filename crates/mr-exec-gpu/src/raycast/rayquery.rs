@@ -18,7 +18,7 @@ use mr_components::graph::{self, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
 use mr_components::storage::gpu_data::Bound;
-use mr_components::{Slot, components, traversal};
+use mr_components::traversal;
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GpuNeeds, wgpu};
@@ -44,16 +44,9 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-fn describe(slot: Slot) -> String {
-    components(slot).filter(|c| REGION.unavailable(slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
-}
 
 fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::choice("geometry", &format!("Geometry component (what the BLASes hold). {}", describe(Slot::Geometry)), &REGION.names(Slot::Geometry), "greedy", false),
-        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &REGION.names(Slot::Visibility), "raycast", false),
-        ParamSpec::choice("traversal", &format!("Traversal kernel. {}", describe(Slot::Traversal)), &REGION.names(Slot::Traversal), "rayquery", false),
-        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &REGION.names(Slot::Shading), "direct", false),
         ParamSpec::choice("merge", "greedy: merge faces of the same block only (`exposure` is raster-only)", &["block"], "block", false).of("geometry", &["greedy"]),
         ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours (false = every face of every solid block)", true, false).of("geometry", &["naive"]),
         ParamSpec::choice("cull_faces", "Triangle facing culled for primary rays (triangle geometries)", &["back", "front", "none"], "back", true).of("geometry", &["greedy", "naive"]),

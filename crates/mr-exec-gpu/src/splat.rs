@@ -16,7 +16,6 @@ use mr_components::shaders::Walks;
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::Bound;
 use mr_components::visibility::splat;
-use mr_components::Slot;
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
@@ -34,11 +33,6 @@ pub(crate) fn info() -> RendererInfo {
         max_lod: 0,
         lacks: vec![],
         params: REGION.lighting_knobs(vec![
-            ParamSpec::choice("storage", "Storage component the lit-mode shadow rays walk (with the traversal kernel)", &REGION.names(Slot::Storage), "bricks", false),
-            ParamSpec::choice("geometry", "Geometry component", &REGION.names(Slot::Geometry), "points", false),
-            ParamSpec::choice("visibility", "Visibility component", &REGION.names(Slot::Visibility), "splat", false),
-            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &REGION.names(Slot::Traversal), "refloor", false),
-            ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", false),
             ParamSpec::int("max_splat", "Largest splat side (px) one thread draws; larger points take a workgroup each", 1, 64, 16, true).of("visibility", &["splat"]),
             shadows_param(),
             ParamSpec::int("pool_mb", "Voxel pool limit (MiB)", 64, 6144, 2048, false),

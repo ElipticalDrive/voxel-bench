@@ -31,10 +31,6 @@ pub(crate) fn info() -> RendererInfo {
         max_lod: 0,
         lacks: vec![],
         params: REGION.lighting_knobs(vec![
-            ParamSpec::choice("storage", "Storage component", &REGION.names(mr_components::Slot::Storage), "heightmap", false),
-            ParamSpec::choice("visibility", "Visibility component", &REGION.names(mr_components::Slot::Visibility), "columns", false),
-            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &REGION.names(mr_components::Slot::Traversal), "heightfield", false),
-            ParamSpec::choice("shading", "Shading component", &REGION.names(mr_components::Slot::Shading), "direct", false),
             REGION.placement_param("inline"),
             shadows_param(),
             ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),

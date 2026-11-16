@@ -450,6 +450,16 @@ impl RendererSpec {
         self.shorthand.as_ref().map(|sh| &sh.compose)
     }
 
+    /// The flat form's component knobs: one choice per slot of its composition (what its
+    /// region builds there, the other slots at their defaults), none live. The executors list
+    /// no such knob (a node's component is the graph's); the host keeps them while it has the
+    /// flat form, for the tuner (which may restart into another component) and for options
+    /// that name a component.
+    pub fn component_knobs(&self) -> Vec<mr_core::ParamSpec> {
+        let Some((c, b)) = self.composition().and_then(|c| Some((c, c.region()?))) else { return vec![] };
+        c.slots().map(|s| mr_core::ParamSpec::choice(s.name(), &format!("The {} component (restart)", s.label()), &b.names(s), b.default_for(s).unwrap_or_default(), false)).collect()
+    }
+
     /// The sites its shorthand binds otherwise (none when written as a graph).
     pub fn sites(&self) -> BTreeMap<String, String> {
         self.shorthand_form().map(|sh| sh.sites.clone()).unwrap_or_default()
@@ -878,9 +888,9 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
                     c
                 })).collect();
             }
-            // Options the preset declares.
+            // Options the preset declares, and those naming a component (the shorthand's).
             let known: Vec<String> = infos.iter().find(|i| i.name == b.name).map(|i| i.params.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
-            let options: toml::Table = e.get("options").and_then(|o| o.as_table()).map(|t| t.iter().filter(|(k, _)| known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+            let options: toml::Table = e.get("options").and_then(|o| o.as_table()).map(|t| t.iter().filter(|(k, _)| known.contains(k) || component_option(k)).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
             // Combinations whose components' needs cannot be met do not exist.
             for c in combos.into_iter().filter(|c| c.validate().is_ok()) {
                 for (c, sites) in expand_sites(&c, &site_axes)? {
@@ -913,6 +923,11 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether option `k` names a component of the flat form (a slot), not a knob of an executor.
+fn component_option(k: &str) -> bool {
+    mr_components::Slot::ALL.iter().any(|s| s.name() == k)
+}
+
 /// The renderers a swept entry stands for (`vary`, after `graph` and `edits`): one per
 /// combination of its choices (`mr_components::graph::varied`) that can be made and that
 /// `accept` takes, each distinct pipeline once, written as the entry with the combination's
@@ -942,9 +957,9 @@ fn expand_varied(e: &toml::Table, infos: &[mr_core::RendererInfo]) -> anyhow::Re
                 continue;
             }
         };
-        // The options this pipeline's executor declares.
+        // The options this pipeline's executor declares, and those naming a component.
         let known = g.preset().and_then(|name| infos.iter().find(|i| i.name == name));
-        let options: toml::Table = given.iter().filter(|(k, _)| known.is_some_and(|i| i.params.iter().any(|p| p.name == **k))).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let options: toml::Table = given.iter().filter(|(k, _)| component_option(k) || known.is_some_and(|i| i.params.iter().any(|p| p.name == **k))).map(|(k, v)| (k.clone(), v.clone())).collect();
         // The client's region is the workload, not in the key, but a pass of its own.
         let region: Vec<Option<i64>> = CLIENT_KNOBS.iter().map(|k| g.client_knob(k)).collect();
         if !keys.insert((g.with_options(&options).key().map_err(anyhow::Error::msg)?, region)) {
@@ -1287,6 +1302,11 @@ mod tests {
         assert_eq!(r.name, "raycast-gpu");
         let c = r.composition().unwrap();
         assert_eq!((c.storage.as_str(), c.traversal.as_str(), c.visibility.as_str()), ("prefix", "incremental", "raycast"));
+        // The host's own list of what each slot may be (the executors list no component).
+        let knobs = r.component_knobs();
+        let storage = knobs.iter().find(|k| k.name == "storage").expect("a storage choice");
+        assert!(!storage.live && matches!(&storage.kind, mr_core::ParamKind::Choice(c) if c.iter().any(|x| x == "tree64") && c.len() > 4), "{:?}", storage.kind);
+        assert!(crate::pipelines::executor_of(&r.pipeline().unwrap()).unwrap().1.iter().all(|k| knobs.iter().all(|c| c.name != k.name)), "no knob twice");
         assert!(r.options.get("storage").is_none() && r.knob_values().get("storage").and_then(|v| v.as_str()) == Some("prefix"));
         assert_eq!(r.label(), "gpu: prefix + incremental + composite + raycast + direct");
         let opt = Plan::parse(&text.replace("{ exact = false }", "{ exact = false, traversal = \"sphere\" }"), &[]).unwrap();

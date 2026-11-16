@@ -115,6 +115,11 @@ pub fn provides(kind: Kind, slot: Slot, name: &str, cap: Cap) -> bool {
     component(slot, name).and_then(|c| c.on(kind)).is_some_and(|i| i.provides.contains(&cap))
 }
 
+/// Whether component `name` in `role` provides `cap` natively on device kind `kind`.
+pub fn role_provides(kind: Kind, role: crate::graph::Role, name: &str, cap: Cap) -> bool {
+    role.slot().is_some_and(|slot| provides(kind, slot, name, cap))
+}
+
 /// The device kind `c`'s preset runs `slot` on (GPU if the preset is unknown).
 fn kind_of(c: &Composition, slot: Slot) -> Kind {
     c.region().map_or(Kind::Gpu, |b| b.place(slot).kind)

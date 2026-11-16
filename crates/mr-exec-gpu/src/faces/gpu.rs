@@ -63,7 +63,6 @@ use mr_components::storage::gpu_data::Bound;
 use mr_components::shading::state as shade_state;
 use mr_components::draw::{self, drawer::{DrawFrame, DrawNodes}};
 use mr_components::visibility::quadtree;
-use mr_components::Slot;
 use mr_gpu::voxels::{Shadows, hash3, shadows_param};
 use mr_gpu::{Gpu, wgpu};
 use serde::Deserialize;
@@ -96,10 +95,6 @@ pub(crate) const NAME: &str = REGION.name;
 
 fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::choice("storage", "Storage component: what discovery rays, exposure tests and shadow rays read (walked with the traversal kernel)", &REGION.names(Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", "Visibility component", &REGION.names(Slot::Visibility), "quadtree", false),
-        ParamSpec::choice("traversal", "Traversal kernel of the discovery, shadow and bounce rays", &REGION.names(Slot::Traversal), "refloor", false),
-        ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", false),
         ParamSpec::int("tile", "Initial tile size in pixels (power of two)", 2, MAX_TILE as i64, 8, true).of("visibility", &["quadtree"]),
         ParamSpec::choice("criterion", "Tile coherence: all corners hit the same face plane, or the very same face", &["plane", "face"], "plane", true).of("visibility", &["quadtree"]),
         ParamSpec::int("sky_tile", "Tiles whose corners all miss are accepted as sky at or below this size (px)", 1, MAX_TILE as i64, 4, true).of("visibility", &["quadtree"]),
@@ -112,7 +107,6 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("closure_box", "Local-closure box size in cells per axis", 1, 8, 2, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("block_faces", "With each discovered face also add its block's other camera-facing exposed faces (closes raster-vs-ray edge cracks)", true, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("jitter", "Shift the tile lattice randomly every frame (temporal coverage)", true, true).of("visibility", &["quadtree"]),
-        ParamSpec::choice("holes", "Hole detection (was `incremental`): none = discover the whole screen every frame (jittered lattice); coverage = rasterise last frame's faces first and only discover tiles with uncovered pixels, parallax-revealable occlusion edges, edited blocks or changed chunks, or their refresh turn (jitter off)", &REGION.names(Slot::Holes), "none", false),
         ParamSpec::int("keep_unseen", "Incremental: frames a face inside the view stays in S without covering a pixel (faces outside the view use keep_frames)", 1, 1000, 64, true).of("holes", &["coverage"]),
         ParamSpec::int("refresh", "Incremental: re-discover every Nth tile each frame regardless (0 = never)", 0, 1024, 16, true).of("holes", &["coverage"]),
         ParamSpec::float("parallax_px", "Incremental: an occlusion edge needs discovery if the camera's translation can reveal more than this many pixels behind it", 0.05, 16.0, false, 0.5, true).of("holes", &["coverage"]),
@@ -126,7 +120,6 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true).of("visibility", &["quadtree"]),
         shadows_param(),
         ParamSpec::int("max_steps", "DDA step limit (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
-        ParamSpec::choice("draw", "Draw component (the shared face drawer): raster = depth-tested and shaded per fragment (order and the overdraw view apply); visbuffer = face ids, then one compute pass shades each pixel; gbuffer = the common hit records, then the common deferred pass (no diagnostic tints)", &REGION.names(Slot::Draw), "raster", false),
         ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("max_faces", "Capacity of the face set S (faces)", 1 << 16, 1 << 24, 1 << 20, false).of("visibility", &["quadtree"]),
         ParamSpec::int("pool_mb", "Voxel pool limit (MiB); for region storages the limit of their own data", 64, 6144, 1536, false),

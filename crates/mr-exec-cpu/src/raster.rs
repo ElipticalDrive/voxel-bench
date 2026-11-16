@@ -30,7 +30,6 @@ use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_core::*;
 use mr_components::geometry::{Knobs, MeshFn};
 use mr_components::graph::{Checked, Role};
-use mr_components::Slot;
 use mr_mesh::{FACE_AXES, Mesh, Quad};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -105,10 +104,6 @@ pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::
 
 fn params() -> Vec<ParamSpec> {
     let mut p = mr_reference::cpu_params();
-    p.push(ParamSpec::choice("geometry", "Geometry component (quads meshed on the CPU)", &REGION.names(Slot::Geometry), "greedy", false));
-    p.push(ParamSpec::choice("visibility", "Visibility strategy", &REGION.names(Slot::Visibility), "faces", false));
-    p.push(ParamSpec::choice("draw", "Draw component: `raster` here is edge functions into a visibility buffer, then deferred shading", &REGION.names(Slot::Draw), "raster", false));
-    p.push(ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", false));
     p.push(REGION.placement_param("deferred"));
     p.push(ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours", true, true).of("geometry", &["naive"]));
     p.push(ParamSpec::int("tile_width", "Raster tile width (pixels)", 8, 1024, 64, true).of("draw", &["raster"]));
@@ -439,7 +434,7 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
         let node: Box<dyn Node> = match g.node(id).role {
             Role::Geometry => {
                 geometry = Some(passes.len());
-                let mesh = mesh_fn(&REGION.require(Slot::Geometry, &g.node(id).component)?);
+                let mesh = mesh_fn(&g.node(id).component);
                 let k: GeometryKnobs = g.knobs(id).map_err(anyhow::Error::msg)?;
                 Box::new(Geometry { dirty: HashSet::new(), mesh, knobs: Knobs { cull: k.cull, ..Default::default() }, nodes: vec![id.to_string()] })
             }

@@ -24,7 +24,7 @@ use mr_components::traversal::cpu::Hit;
 use mr_components::traversal::incremental::cpu::trace_incremental;
 use mr_components::traversal::refloor::cpu::{NOWHERE, trace_packet};
 use mr_components::visibility::record::Record;
-use mr_components::{parse_placement, Slot};
+use mr_components::parse_placement;
 use mr_core::chunk::local_of_block;
 use mr_core::*;
 use rayon::prelude::*;
@@ -62,8 +62,7 @@ pub(crate) fn info() -> RendererInfo {
 
 /// The executor for graph `g`, its nodes monomorphised for its storage.
 pub(crate) fn create<P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    let storage = REGION.require(Slot::Storage, &g.node(primary(g)?.storage).component)?;
-    match storage.as_str() {
+    match g.node(primary(g)?.storage).component.as_str() {
         "bricks" => of::<U16, P>(p, g),
         "u8" => of::<U8, P>(p, g),
         "bits" => of::<Bits, P>(p, g),
@@ -85,10 +84,6 @@ pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::
 
 fn params() -> Vec<ParamSpec> {
     let mut p = mr_reference::cpu_params();
-    p.push(ParamSpec::choice("storage", "Storage component (CPU implementations)", &REGION.names(Slot::Storage), "bricks", false));
-    p.push(ParamSpec::choice("visibility", "Visibility strategy", &REGION.names(Slot::Visibility), "raycast", false));
-    p.push(ParamSpec::choice("traversal", "Traversal kernel. refloor: probe for the largest empty cube, step out, re-floor (ray packets). incremental: hierarchical DDA keeping per-level exit times (packets ignored)", &REGION.names(Slot::Traversal), "refloor", false));
-    p.push(ParamSpec::choice("shading", "Shading component", &REGION.names(Slot::Shading), "direct", false));
     p.push(REGION.placement_param("inline"));
     p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
     p.push(ParamSpec::choice("packet", "Rays traced together in lockstep (refloor; measured: no gain on Zen 5)", &["1", "4", "8", "16"], "1", true).of("traversal", &["refloor"]));
@@ -198,9 +193,9 @@ fn parse_schedule(s: &str) -> anyhow::Result<bool> {
     }
 }
 
-/// The traversal kernel for the `traversal` and `exact` knobs (also for generated code).
+/// The traversal kernel for component `kernel` and its `exact` knob (also for generated code).
 pub fn traversal(kernel: &str, exact: bool) -> anyhow::Result<Traversal> {
-    Ok(match REGION.require(Slot::Traversal, kernel)?.as_str() {
+    Ok(match kernel {
         "refloor" => Traversal::Refloor,
         "incremental" if exact => Traversal::IncrementalExact,
         "incremental" => Traversal::Incremental,
@@ -413,7 +408,7 @@ impl<R: Repr> Scene<R> {
 
 // ------------------------------------------------------------------------- the parts
 
-/// The kernel's knobs (`traversal`, `exact`, `skip*`), set on the scene its rays walk.
+/// The kernel's knobs (`exact`, `skip*`), set on the scene its rays walk.
 struct Kernel {
     kernel: String,
     exact: bool,
@@ -431,13 +426,9 @@ impl Kernel {
                     scene.levels &= !bit;
                 }
             }
-            "traversal" | "exact" => {
-                let (kernel, exact) = match name {
-                    "traversal" => (value.as_str().unwrap_or("refloor").to_string(), self.exact),
-                    _ => (self.kernel.clone(), value.as_bool().unwrap_or(true)),
-                };
-                let t = traversal(&kernel, exact)?;
-                (self.kernel, self.exact, scene.traversal) = (kernel, exact, t);
+            "exact" => {
+                let exact = value.as_bool().unwrap_or(true);
+                (self.exact, scene.traversal) = (exact, traversal(&self.kernel, exact)?);
             }
             _ => return Ok(false),
         }

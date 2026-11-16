@@ -187,7 +187,8 @@ impl Session {
         self.shared.lock().unwrap().log(s);
     }
 
-    /// All knobs of a lane: host ones, then the renderer's.
+    /// All knobs of a lane: host ones, the renderer's, then its components as the flat form
+    /// names them (the host's own list: the tuner's way to another component).
     fn specs(&self, i: usize) -> Vec<ParamSpec> {
         let radius = self.lanes.get(i).map_or(self.plan.run.view_radius, |l| l.given.view_radius(&self.plan.run));
         let mut v = tune::host_params(radius);
@@ -197,6 +198,7 @@ impl Session {
             }
             v.extend(info.params.iter().cloned());
         }
+        v.extend(self.lanes.get(i).map(|l| l.latest().component_knobs()).unwrap_or_default());
         v
     }
 

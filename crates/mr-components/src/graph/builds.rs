@@ -241,12 +241,24 @@ impl Builds {
         }
     }
 
-    /// Lighting knobs belong to the shading stage (lit mode is the shading component's job):
-    /// marks `shadows` as owned by its shading components, so UIs show it there.
+    /// The components it declares for `role`, on any device (a graph it builds may need other
+    /// nodes changed with one of them: what a node may be is [`Graph::choices`]).
+    pub fn declared(&self, role: Role) -> Vec<&'static str> {
+        let mut v: Vec<&'static str> = vec![];
+        for c in self.nodes.iter().filter(|b| b.role == role).flat_map(|b| b.components) {
+            if !v.contains(c) {
+                v.push(c);
+            }
+        }
+        v
+    }
+
+    /// Lighting knobs belong to the shading node (lit mode is the shading component's job):
+    /// marks `shadows` as owned by the shadings it declares, so UIs show it there.
     pub fn lighting_knobs(&self, mut params: Vec<mr_core::ParamSpec>) -> Vec<mr_core::ParamSpec> {
-        let shading = self.names(Slot::Shading);
+        let shading = self.declared(Role::Shading);
         for p in params.iter_mut().filter(|p| p.name == "shadows" && p.owner.is_none()) {
-            *p = p.clone().of(Slot::Shading.name(), &shading);
+            *p = p.clone().of(Role::Shading.name(), &shading);
         }
         params
     }
@@ -264,7 +276,7 @@ impl Builds {
             default,
             false,
         )
-        .of(Slot::Shading.name(), &self.names(Slot::Shading))
+        .of(Role::Shading.name(), &self.declared(Role::Shading))
         .baked(false)
     }
 

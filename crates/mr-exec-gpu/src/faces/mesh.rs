@@ -27,7 +27,6 @@ use mr_components::graph::{Checked, Role};
 use mr_components::storage::gpu_data::Bound;
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
-use mr_components::{Slot, components};
 use mr_core::*;
 use mr_gpu::meshes::{ForwardSpec, GpuMeshes, MeshPass};
 use mr_gpu::voxels::{Shadows, shadows_param};
@@ -55,19 +54,9 @@ pub(crate) fn info() -> RendererInfo {
 }
 
 
-fn describe(slot: Slot) -> String {
-    components(slot).filter(|c| REGION.unavailable(slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
-}
 
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
-        ParamSpec::choice("storage", &format!("Storage component the lit-mode shadow rays walk (with the traversal kernel). {}", describe(Slot::Storage)), &REGION.names(Slot::Storage), "bricks", false),
-        ParamSpec::choice("geometry", &format!("Geometry component. {}", describe(Slot::Geometry)), &REGION.names(Slot::Geometry), "greedy", false),
-        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &REGION.names(Slot::Visibility), "faces", false),
-        ParamSpec::choice("draw", &format!("Draw component. {}", describe(Slot::Draw)), &REGION.names(Slot::Draw), "raster", false),
-        ParamSpec::choice("traversal", &format!("Traversal kernel of the lit-mode shadow rays. {}", describe(Slot::Traversal)), &REGION.names(Slot::Traversal), "refloor", false),
-        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &REGION.names(Slot::Shading), "direct", false),
-        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &REGION.names(Slot::Meshes), "depth", false),
         ParamSpec::choice("merge", "greedy: merge faces of the same block only (`block`), or any exposed coplanar faces with a per-pixel block lookup (`exposure`)", &["block", "exposure"], "block", true).of("geometry", &["greedy"]),
         ParamSpec::bool("cull", "naive / cubes: skip faces (blocks) hidden by solid neighbours (false = every face of every solid block)", true, true).of("geometry", &["naive", "cubes"]),
         ParamSpec::bool("depth_prepass", "raster, lit mode: depth pre-pass so lighting runs once per pixel", true, true).of("draw", &["raster"]),

@@ -599,6 +599,22 @@ mod tests {
     use crate::Composition;
     use crate::graph::REGIONS;
 
+    /// The knobs of the shading node are owned by the shadings its region declares
+    /// (`Builds::declared`): exactly what the shading node of the region's file may be.
+    #[test]
+    fn declared_shadings_are_the_choices() {
+        assert_eq!(SHIPPED.len(), REGIONS.len());
+        for (name, _) in SHIPPED {
+            let g = shipped(name).unwrap();
+            let b = g.region().unwrap();
+            let (id, _) = g.nodes.iter().find(|(_, n)| n.role == Role::Shading).unwrap();
+            let (mut declared, mut choices) = (b.declared(Role::Shading), g.choices(id));
+            declared.sort();
+            choices.sort();
+            assert!(!choices.is_empty() && declared == choices, "{name}: declares {declared:?}, the node may be {choices:?}");
+        }
+    }
+
     /// The edits a running executor takes are its region's: another component on exactly
     /// the nodes it replaces, such a node removed or added back; the edits arrive as text.
     #[test]

@@ -34,10 +34,6 @@ pub(crate) fn info() -> RendererInfo {
         max_lod: 0,
         lacks: vec![],
         params: vec![
-            ParamSpec::choice("storage", "Storage component", &REGION.names(mr_components::Slot::Storage), "heightmap", false),
-            ParamSpec::choice("visibility", "Visibility component", &REGION.names(mr_components::Slot::Visibility), "columns", false),
-            ParamSpec::choice("traversal", "Traversal kernel of the lit-mode shadow rays", &REGION.names(mr_components::Slot::Traversal), "heightfield", false),
-            ParamSpec::choice("shading", "Shading component", &REGION.names(mr_components::Slot::Shading), "direct", false),
             REGION.placement_param("inline"),
             ParamSpec::int("threads", "Worker threads (0 = all cores)", 0, 256, 0, true),
             ParamSpec::choice("shadows", "Shadow rays in lit mode (walking the heightmap)", &["none", "sun", "all"], "all", true).of("shading", &["direct"]),

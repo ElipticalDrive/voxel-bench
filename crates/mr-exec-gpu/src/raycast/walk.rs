@@ -20,7 +20,7 @@ use mr_components::graph::{self, Role};
 use mr_components::shaders::{KernelInst, Walks};
 use mr_components::shading::state as shade_state;
 use mr_components::storage::gpu_data::Bound;
-use mr_components::{Cap, Slot, caps, components};
+use mr_components::{Cap, caps};
 use mr_core::*;
 use mr_gpu::meshes::{MESH_RECORDS_WGSL, MeshRecords};
 use mr_gpu::voxels::{Shadows, shadows_param};
@@ -59,20 +59,9 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-fn describe(slot: Slot) -> String {
-    components(slot).filter(|c| REGION.unavailable(slot, c.name).is_none()).map(|c| format!("{}: {}", c.name, c.description)).collect::<Vec<_>>().join(" ")
-}
 
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
-        ParamSpec::choice("storage", &format!("Storage component. {}", describe(Slot::Storage)), &REGION.names(Slot::Storage), "bricks", false),
-        ParamSpec::choice("visibility", &format!("Visibility strategy. {}", describe(Slot::Visibility)), &REGION.names(Slot::Visibility), "raycast", false),
-        ParamSpec::choice("traversal", &format!("Traversal kernel (any storage works with any; missing fast paths come from adapters). {}", describe(Slot::Traversal)), &REGION.names(Slot::Traversal), "refloor", false),
-        ParamSpec::choice("shadow_storage", "What shadow and bounce rays walk: `same` (the primary storage) or another storage (its data is kept as well)", &REGION.names(Slot::ShadowStorage), "same", false),
-        ParamSpec::choice("shadow_traversal", "The kernel of shadow and bounce rays: `same` (the primary kernel) or another", &REGION.names(Slot::ShadowTraversal), "same", false),
-        ParamSpec::choice("shading", &format!("Shading component. {}", describe(Slot::Shading)), &REGION.names(Slot::Shading), "direct", false),
-        ParamSpec::choice("prepass", &format!("Prepass component (a stage before the walk). {}", describe(Slot::Prepass)), &REGION.names(Slot::Prepass), "none", false),
-        ParamSpec::choice("meshes", &format!("Meshes component (mesh mode). {}", describe(Slot::Meshes)), &REGION.names(Slot::Meshes), "composite", false),
         ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
     ];
     p.extend(shade_state::params());
@@ -291,11 +280,11 @@ impl Composition {
 /// (none; the beam reads level 0); `view = "steps"` a primary walk that counts its steps.
 fn feature_blocker(c: &Composition) -> Option<String> {
     let lod = c.lod.then(|| lod_blocker(c).map(|w| format!("this run streams LOD chunks: {w}"))).flatten();
-    lod.or_else(|| (c.view == View::Steps && !caps::provides(mr_components::Kind::Gpu, Slot::Traversal, &c.primary().component, Cap::Steps)).then(|| format!("view = steps: traversal `{}` lacks steps", c.primary().component)))
+    lod.or_else(|| (c.view == View::Steps && !caps::role_provides(mr_components::Kind::Gpu, Role::Traversal, &c.primary().component, Cap::Steps)).then(|| format!("view = steps: traversal `{}` lacks steps", c.primary().component)))
 }
 
 fn lod_blocker(c: &Composition) -> Option<String> {
-    let pre = (!caps::provides(mr_components::Kind::Gpu, Slot::Prepass, c.prepass(), Cap::Lod)).then(|| format!("prepass `{}` lacks lod", c.prepass()));
+    let pre = (!caps::role_provides(mr_components::Kind::Gpu, Role::Prepass, c.prepass(), Cap::Lod)).then(|| format!("prepass `{}` lacks lod", c.prepass()));
     let why: Vec<String> = c.walks.lod_blocker().into_iter().chain(pre).collect();
     (!why.is_empty()).then(|| why.join("; "))
 }

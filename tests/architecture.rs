@@ -12,6 +12,9 @@
 //!    and each back end uses its kind's shading entry point (`SHADING_USE`). Exceptions are
 //!    listed with their reason.
 //!
+//! 5. A node's component is the graph's: the executors list no knob named after a role, and
+//!    their sources do not name the flat form's `Slot`.
+//!
 //! WGSL is read from `.wgsl` files and from string literals in Rust sources (WGSL composed
 //! in code).
 
@@ -305,6 +308,33 @@ fn lighting_goes_through_the_shading_component() {
 }
 
 /// The guard itself: catches a planted duplicate, a renamed copy and an own lighting call.
+/// A component is chosen in the graph (what a node may be: `Graph::choices`), never by a knob
+/// of an executor, and the executors know roles, not the flat form's slots.
+#[test]
+fn components_are_the_graphs() {
+    use mr_components::graph::Role;
+    let infos = mr_worker::infos();
+    assert!(infos.len() > 10 && infos.iter().all(|i| !i.params.is_empty()), "every region lists its knobs");
+    for i in &infos {
+        for p in &i.params {
+            assert!(Role::ALL.iter().all(|r| r.name() != p.name) && !p.name.starts_with("shadow_"), "{}: knob `{}` names a component's role", i.name, p.name);
+        }
+    }
+    let mut sources = vec![];
+    for dir in ["crates/mr-exec-cpu/src", "crates/mr-exec-gpu/src"] {
+        files(&root().join(dir), "rs", &mut sources);
+    }
+    assert!(sources.len() > 10, "{sources:?}");
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    for f in sources {
+        let text = fs::read_to_string(&f).unwrap();
+        for (at, _) in text.match_indices("Slot") {
+            let named = !word(text[..at].chars().next_back()) && !word(text[at + 4..].chars().next());
+            assert!(!named, "{}: names `Slot` (line {})", rel(&f), text[..at].lines().count());
+        }
+    }
+}
+
 #[test]
 fn the_guard_catches_what_it_should() {
     let a = "fn face_axes(face: u32) -> vec3<u32> {\n    switch face { default: { return vec3<u32>(0u, 1u, 2u); } }\n}\n";
