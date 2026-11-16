@@ -309,6 +309,7 @@ impl StorageData {
                 ("chunks".into(), self.regions.len() as f64),
                 ("dag_nodes".into(), self.dag.nodes.len() as f64),
                 ("dedup_ratio".into(), self.dag.dedup_ratio()),
+                ("dag_collections".into(), self.dag.collections as f64),
                 ("chunks_rebuilt".into(), self.rebuilt as f64),
             ],
             Kind::Clipmap => vec![("clipmap_evictions".into(), self.clip.as_ref().map_or(0.0, |c| c.dropped as f64))],
