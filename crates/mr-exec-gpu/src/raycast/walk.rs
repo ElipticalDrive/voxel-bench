@@ -31,7 +31,6 @@ use super::{Cast, CastProgram, Passes, Ticket, View};
 use crate::{Core, CoreSpec, REGION_BINDING};
 
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_WALK;
-pub(crate) const NAME: &str = REGION.name;
 
 
 /// What the pipeline of graph `g` supports: the preset's, less what its components lack (LOD
@@ -48,8 +47,8 @@ pub(crate) fn info_of(g: &graph::Checked, p: &InitParams) -> anyhow::Result<Rend
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: NAME.into(),
-        description: "raycast-gpu preset: renders a composition of components (storage, traversal, shading) fused into one compute shader".into(),
+        name: "gpu".into(),
+        description: "GPU compute shaders (wgpu / WGSL): one thread per pixel walks the composed storage and visibility, fused into one shader".into(),
         tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "modular".into(), "wgpu".into(), "meshes".into(), "lod".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         // LOD with pool storages and refloor (cells 2x coarser per level; was gpu-dda-lod).
@@ -82,7 +81,7 @@ fn params() -> Vec<ParamSpec> {
     p
 }
 
-/// The preset's own knobs (the nodes' are read from the graph).
+/// The region's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
 #[serde(default)]
 struct Options {

@@ -24,7 +24,7 @@ use crate::{Core, CoreSpec, REGION_BINDING, storage_entry};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: "columns-gpu".into(),
+        name: "gpu".into(),
         description: "Comanche-style Voxel Space: per-column front-to-back heightmap march with a y-buffer (2.5D, no overhangs)".into(),
         tags: vec!["gpu".into(), "compute".into(), "heightmap".into(), "2.5d".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
@@ -41,7 +41,7 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-/// The preset's own knobs (the nodes' are read from the graph).
+/// The region's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
 #[serde(default)]
 struct Options {

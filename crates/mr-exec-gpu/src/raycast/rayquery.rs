@@ -29,13 +29,12 @@ use crate::accel::AccelSpec;
 use crate::{Core, CoreSpec};
 
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_RAYQUERY;
-pub(crate) const NAME: &str = REGION.name;
 
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: NAME.into(),
-        description: "rayquery-gpu preset: hardware ray queries over a TLAS of per-chunk BLASes built from the geometry component (triangles or brick boxes); shading components as elsewhere".into(),
+        name: "gpu".into(),
+        description: "GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component (triangles or brick boxes), a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries".into(),
         tags: vec!["gpu".into(), "raytrace".into(), "hardware-rt".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
@@ -73,7 +72,7 @@ enum Cull {
     None,
 }
 
-/// The preset's own knobs (the nodes' are read from the graph).
+/// The region's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
 #[serde(default)]
 struct Options {
@@ -143,15 +142,15 @@ const STORAGE_GROUPS: &[u32] = &[2, 3, 4, 5];
 impl RayQuery {
     pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String, Option<crate::remote::Far>)> {
         let opts: Options = p.options()?;
-        let geometry_id = g.find(Role::Geometry).ok_or_else(|| anyhow::anyhow!("{NAME}: no geometry node"))?;
+        let geometry_id = g.find(Role::Geometry).ok_or_else(|| anyhow::anyhow!("no geometry node"))?;
         let geometry = g.node(geometry_id).component.clone();
         let gk: GeometryKnobs = g.knobs(geometry_id).map_err(anyhow::Error::msg)?;
         let shading = g.node(g.shading()).component.clone();
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         let mut walks = Walks::of(g);
-        let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{NAME}: {} `{port}` rays are not bound", role.name()));
+        let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{} `{port}` rays are not bound", role.name()));
         let primary = walks.site(g, site(Role::Visibility, "primary")?, STORAGE_GROUPS, false);
-        anyhow::ensure!(primary == 0 && walks.is_query(0), "{NAME}: the primary rays are ray queries");
+        anyhow::ensure!(primary == 0 && walks.is_query(0), "the primary rays are ray queries");
         let shadow = match super::shading_site(g, "shadow") {
             Some(_) => walks.site(g, site(Role::Shading, "shadow")?, STORAGE_GROUPS, false),
             None => primary,

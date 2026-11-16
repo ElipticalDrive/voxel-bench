@@ -48,12 +48,11 @@ use crate::exec::{self, Cx, Node, Region};
 use crate::Core;
 
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::CPU_SAMPLER;
-pub(crate) const NAME: &str = REGION.name;
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: NAME.into(),
-        description: "discover-cpu preset (CPU storage, quadtree or cluster visibility, shading). Self-directed visibility: CPU rays (adaptive quadtree, or face clusters) discover the visible face set (temporal, pipelined one frame ahead), GPU rasterises only those faces; lit mode adds ray-traced shadows".into(),
+        name: "gpu".into(),
+        description: "CPU discovery + GPU raster (the user's idea): CPU rays (adaptive quadtree, or face clusters) discover the visible face set (one frame ahead, pipelined), the GPU rasterises only it; lit mode adds ray-traced shadows. Storage: the CPU representation discovery rays walk".into(),
         tags: vec!["cpu".into(), "gpu".into(), "raster".into(), "raycast".into(), "hybrid".into(), "discovery".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
@@ -90,7 +89,7 @@ fn params() -> Vec<ParamSpec> {
     .collect()
 }
 
-/// The preset's own knobs (the nodes' are read from the graph).
+/// The region's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
 #[serde(default)]
 struct Options {
@@ -231,22 +230,22 @@ impl CpuSampler {
     /// `world`: the CPU world of a pipeline compiled for one storage (else the `storage` knob's).
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<(Core, Self)> {
         let mut opts: Options = p.options()?;
-        let site = g.site(Role::Visibility, "rays").ok_or_else(|| anyhow::anyhow!("{NAME}: discovery rays are not bound"))?;
+        let site = g.site(Role::Visibility, "rays").ok_or_else(|| anyhow::anyhow!("discovery rays are not bound"))?;
         let storage = g.node(site.storage).component.clone();
-        let vis_id = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{NAME}: no visibility node"))?;
+        let vis_id = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
         let visibility = g.node(vis_id).component.clone();
         let vis: VisibilityKnobs = g.knobs(vis_id).map_err(anyhow::Error::msg)?;
-        let draw = g.node(g.find(Role::Draw).ok_or_else(|| anyhow::anyhow!("{NAME}: no draw node"))?).component.clone();
+        let draw = g.node(g.find(Role::Draw).ok_or_else(|| anyhow::anyhow!("no draw node"))?).component.clone();
         let shading = g.node(g.shading()).component.clone();
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         // The faces cross from the CPU to the GPU: the schedule's transfer, whose timing is
         // the pipelining (`prev`: drawn a frame after they were discovered).
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
-        let faces = schedule.transfers.iter().find(|e| e.port == "faces" && g.node(&e.to).role == Role::Draw).ok_or_else(|| anyhow::anyhow!("{NAME}: the faces do not cross from the CPU to the GPU"))?;
+        let faces = schedule.transfers.iter().find(|e| e.port == "faces" && g.node(&e.to).role == Role::Draw).ok_or_else(|| anyhow::anyhow!("the faces do not cross from the CPU to the GPU"))?;
         opts.pipelined = faces.when == mr_components::graph::When::Prev;
         // The GPU sites' walks: shadow rays (the shadow stages), bounces their own or the same.
         let mut walks = Walks::of(g);
-        let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("{NAME}: GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
+        let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: k.bounces, spp: k.spp, accumulate: k.accumulate, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };

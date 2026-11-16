@@ -49,7 +49,7 @@ impl App {
                 .map(|l| {
                     let (fps, gpu) = recent(&l.samples, 1.0);
                     // Lanes whose renderer can't draw meshes say so while mesh mode is on.
-                    let no_meshes = self.mode.meshes && !self.infos.iter().any(|i| i.name == l.spec.name && l.spec.supports(i, self.mode));
+                    let no_meshes = self.mode.meshes && !l.spec.info(&self.infos).is_some_and(|i| l.spec.supports(&i, self.mode));
                     // The events of the last seconds, newest first, with their age.
                     let recent: Vec<(f64, String)> = l.events.iter().rev().map(|(t, e)| (now - t, e.clone())).take_while(|(age, _)| *age < EVENT_SECS).take(3).collect();
                     (l.spec.label().to_string(), l.status.clone(), l.frame.clone(), fps, gpu, no_meshes, l.legend.clone(), recent)

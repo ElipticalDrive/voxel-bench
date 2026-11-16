@@ -37,12 +37,12 @@ pub(crate) mod mesh;
 /// The region for graph `g`: meshing when the drawer's faces are every meshed face (the `faces`
 /// visibility), else discovery on the visibility node's device (on the CPU in `cpu_world`'s
 /// storage when a compiled pipeline names one).
-pub(crate) fn create(preset: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, cpu_world: Option<fn() -> mr_components::visibility::discover::grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
-    let faces = g.input(Role::Draw, "faces").ok_or_else(|| anyhow::anyhow!("{preset}: the drawer's faces are not bound"))?;
+pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, cpu_world: Option<fn() -> mr_components::visibility::discover::grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
+    let faces = g.input(Role::Draw, "faces").ok_or_else(|| anyhow::anyhow!("the drawer's faces are not bound"))?;
     if g.node(faces).component == "faces" {
         return mesh::create(p, devices, waker, g);
     }
-    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{preset}: no visibility node"))?;
+    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
     match g.devices[vis] {
         Device::Cpu => cpu::create(p, devices, waker, g, cpu_world),
         Device::Gpu(_) => gpu::create(p, devices, waker, g),

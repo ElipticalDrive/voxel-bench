@@ -509,7 +509,7 @@ impl Graph {
         let region = self.region().ok_or("no region builds the running graph")?;
         to.accept()?;
         if to.region().map(|b| b.id) != Some(region.id) {
-            return Err(format!("the pipeline is no longer one `{}` builds", region.name));
+            return Err(format!("the pipeline is no longer one {} builds", region.who()));
         }
         let edits: Vec<Change> = self.diff(to).ok_or("another executor")?.into_iter().filter(|c| !matches!(c, Change::Knob(..) | Change::Knobs(..))).collect();
         let mut switches: Vec<Switch> = vec![];
@@ -518,7 +518,7 @@ impl Graph {
                 Change::Remove(id) if region.replaces(self, id) => switches.push(Switch { node: id.clone(), role: self.nodes[id].role, component: None }),
                 Change::Add(id, role, c) if region.replaces(to, id) => switches.push(Switch { node: id.clone(), role: *role, component: Some(c.clone()) }),
                 Change::Component(id, c) if region.replaces(self, id) && region.replaces(to, id) => switches.push(Switch { node: id.clone(), role: to.nodes[id].role, component: Some(c.clone()) }),
-                Change::Remove(_) | Change::Add(..) | Change::Component(..) => return Err(format!("`{c}` needs a new renderer (`{}` replaces {} while running)", region.name, live_roles(region))),
+                Change::Remove(_) | Change::Add(..) | Change::Component(..) => return Err(format!("`{c}` needs a new renderer ({} replaces {} while running)", region.who(), live_roles(region))),
                 _ => {}
             }
         }
@@ -678,10 +678,12 @@ mod tests {
         assert_eq!(SHIPPED.len(), REGIONS.len());
         let mut keys = vec![];
         for b in REGIONS {
-            let g = shipped(b.name).unwrap_or_else(|| panic!("no pipelines/{}.toml", b.name));
-            g.accept().unwrap_or_else(|e| panic!("{}: {e}", b.name));
-            assert_eq!(g.region().map(|r| r.id), Some(b.id), "{}", b.name);
-            keys.push(format!("{} {}", b.name, g.key().unwrap()));
+            let mut of = SHIPPED.iter().filter(|(n, _)| shipped(n).unwrap().region().map(|r| r.id) == Some(b.id));
+            let (name, _) = of.next().unwrap_or_else(|| panic!("no shipped file of {:?}", b.id));
+            assert!(of.next().is_none(), "two shipped files of {:?}", b.id);
+            let g = shipped(name).unwrap();
+            g.accept().unwrap_or_else(|e| panic!("{name}: {e}"));
+            keys.push(format!("{name} {}", g.key().unwrap()));
         }
         assert_eq!(keys, KEYS);
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pipelines");

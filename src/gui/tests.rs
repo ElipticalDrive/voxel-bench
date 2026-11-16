@@ -280,7 +280,7 @@ fn gui_headless_smoke() {
         if start.elapsed().as_secs() >= 60 {
             let msg = {
                 let sh = app.live.as_ref().unwrap().shared.lock().unwrap();
-                let lanes: Vec<_> = sh.lanes.iter().map(|l| (l.spec.name.clone(), l.status.clone(), l.frames, l.frame.is_some())).collect();
+                let lanes: Vec<_> = sh.lanes.iter().map(|l| (l.spec.label().to_string(), l.status.clone(), l.frames, l.frame.is_some())).collect();
                 format!("no frames displayed; status {}; lanes {lanes:?}; log:\n{}", sh.status, sh.log.join("\n"))
             };
             panic!("{msg}");

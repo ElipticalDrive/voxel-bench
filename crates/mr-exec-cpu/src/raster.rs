@@ -39,8 +39,8 @@ use crate::{Pixel, Spec};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: "raster-cpu".into(),
-        description: "raster-cpu preset: geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading".into(),
+        name: "cpu".into(),
+        description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)".into(),
         tags: vec!["cpu".into(), "raster".into(), "software".into(), "visibility-buffer".into(), "modular".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
@@ -49,7 +49,7 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-/// The preset's own knobs (the nodes' are read from the graph).
+/// The region's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Options {

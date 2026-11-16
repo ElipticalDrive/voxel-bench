@@ -65,15 +65,19 @@ impl Executor {
     }
 }
 
-/// The executor that runs `g` (`Graph::runs_on`) and the knobs of its region that builds
-/// the graph's shape (`None`: no region of that executor does, so no generated pipeline
-/// runs it).
-pub(crate) fn executor_of(g: &mr_components::graph::Graph) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
+/// The executor that runs `g` (`Graph::runs_on`) and the info of its region that builds the
+/// graph's shape (`None`: no region of that executor does, so no generated pipeline runs it).
+pub(crate) fn executor_info(g: &mr_components::graph::Graph) -> Option<(Executor, mr_core::RendererInfo)> {
     let region = g.region().filter(|b| b.executor() == g.runs_on())?.id;
     Some(match g.runs_on() {
-        "cpu" => (Executor::Cpu, mr_exec_cpu::info(region).params),
-        _ => (Executor::Gpu, mr_exec_gpu::info(region).params),
+        "cpu" => (Executor::Cpu, mr_exec_cpu::info(region)),
+        _ => (Executor::Gpu, mr_exec_gpu::info(region)),
     })
+}
+
+/// The executor that runs `g` and the knobs of its region (see [`executor_info`]).
+pub(crate) fn executor_of(g: &mr_components::graph::Graph) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
+    executor_info(g).map(|(e, i)| (e, i.params))
 }
 
 /// A built pipeline worker.

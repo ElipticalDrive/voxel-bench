@@ -174,13 +174,13 @@ mod tests {
     }
 
     /// The valid graphs one or two edits from the pipelines' own are either refused by what
-    /// their executor declares, with the reason, or built (with the preset options the graph
+    /// their executor declares, with the reason, or built (with the region options the graph
     /// spells, as the host sends them); `accept` takes exactly the built ones.
     #[test]
     fn executors_build_what_they_declare() {
         let (mut built, mut refused) = (0, 0);
         for ck in graph::near(&[raycast::REGION, raster::REGION, columns::REGION]) {
-            let e = ck.preset().unwrap();
+            let e = format!("{:?}", ck.region.unwrap().id);
             let key = ck.graph.canonical().unwrap();
             if let Err(why) = ck.built() {
                 assert!(ck.graph.accept().is_err(), "`{e}` refuses a graph `accept` takes ({why}): {key}");

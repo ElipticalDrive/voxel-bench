@@ -9,12 +9,10 @@ pub fn registry() -> Vec<RendererEntry> {
     vec![mr_reference::entry(), mr_exec_cpu::entry(), mr_exec_gpu::entry()]
 }
 
-/// The knobs of every standalone renderer and every executor's region, by preset.
+/// The standalone renderers (a pipeline's info is its graph's: the host asks the executor
+/// that runs it).
 pub fn infos() -> Vec<RendererInfo> {
-    let mut infos = vec![mr_reference::info()];
-    infos.extend(mr_exec_cpu::infos());
-    infos.extend(mr_exec_gpu::infos());
-    infos
+    vec![mr_reference::info()]
 }
 
 /// Connects to the host at `socket` and serves until shutdown.

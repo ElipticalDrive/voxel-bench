@@ -312,8 +312,9 @@ fn lighting_goes_through_the_shading_component() {
 #[test]
 fn components_are_the_graphs() {
     use mr_components::graph::Role;
-    let infos = mr_worker::infos();
-    assert!(infos.len() > 10 && infos.iter().all(|i| !i.params.is_empty()), "every region lists its knobs");
+    let mut infos = mr_exec_cpu::infos();
+    infos.extend(mr_exec_gpu::infos());
+    assert!(infos.len() == mr_components::graph::REGIONS.len() && infos.iter().all(|i| !i.params.is_empty()), "every region lists its knobs");
     for i in &infos {
         for p in &i.params {
             assert!(Role::ALL.iter().all(|r| r.name() != p.name) && !p.name.starts_with("shadow_"), "{}: knob `{}` names a component's role", i.name, p.name);

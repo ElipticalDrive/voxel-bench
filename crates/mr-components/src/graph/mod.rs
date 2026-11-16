@@ -310,7 +310,7 @@ mod tests {
         assert!(e.contains("runs its shading with raster here, not compute"), "{e}");
         let e = set(&gc, &[("kernel", Api::RayQuery)]).validate().unwrap_err();
         // Primary rays as ray queries run on the ray-query caster, which draws no meshes.
-        assert!(e.contains("`meshes`: `rayquery-gpu` builds no meshes node"), "{e}");
+        assert!(e.contains("`meshes`: the gpu executor (for this shape) builds no meshes node"), "{e}");
         // A face drawer's shading: in the fragment shader for `raster`, else deferred compute.
         assert!(set(&r, &[("shading", Api::Raster)]).validate().is_ok());
         assert_eq!(set(&r, &[("shading", Api::Raster)]).key(), r.key(), "no choice: not in the key");
@@ -395,7 +395,7 @@ mod tests {
         })
         .validate()
         .unwrap_err();
-        assert!(e.contains("`discover-cpu` builds 1 storage node on cpu (here: `storage`, `x`)"), "{e}");
+        assert!(e.contains("the gpu executor (for this shape) builds 1 storage node on cpu (here: `storage`, `x`)"), "{e}");
         assert!(with(pathtrace(cd), &|g| own(g, "b", "rows", "rowrun", &[("shading", "bounce")])).validate().is_ok());
         // CPU ray casting: a shadow kernel of its own over the primary storage, not another storage.
         let cpu = file("raycast-cpu");
@@ -406,7 +406,7 @@ mod tests {
         .accept()
         .unwrap();
         let e = with(cpu, &|g| own(g, "s", "hier", "refloor", &[("shading", "shadow")])).validate().unwrap_err();
-        assert!(e.contains("`raycast-cpu` builds 1 storage node"), "{e}");
+        assert!(e.contains("the cpu executor (for this shape) builds 1 storage node"), "{e}");
         // rayquery-gpu: its shading's rays free: a kernel node of their own over its
         // one acceleration structure.
         with(pathtrace(file("rayquery-gpu")), &|g| {
@@ -429,7 +429,7 @@ mod tests {
             g.nodes.insert(id.into(), Node { device: Some(Device::Gpu(0)), ..n });
         }
         g.nodes.get_mut("shading").unwrap().inputs.insert("shadow".into(), "shadow.kernel".into());
-        assert_eq!((g.preset(), g.executor.as_str()), (Some("discover-cpu"), "gpu"));
+        assert_eq!((g.region().map(|b| b.id), g.executor.as_str()), (Some(RegionId::CpuSampler), "gpu"));
         let now: toml::Table = toml::from_str("pipelined = false").unwrap();
         assert_eq!(g.key().unwrap(), file("discover-cpu").with_options(&now).key().unwrap());
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
@@ -450,15 +450,15 @@ mod tests {
         // GPU executor is GPU ray casting, which the CPU executor does not build.
         let mut g = file("raycast-cpu");
         g.executor = "gpu".into();
-        assert_eq!(g.preset(), Some("raycast-gpu"));
+        assert_eq!(g.region().map(|b| b.id), Some(RegionId::GpuWalk));
         g.executor = "cpu".into();
         g.nodes.values_mut().filter(|n| matches!(n.role, Role::Visibility | Role::Shading)).for_each(|n| n.device = Some(Device::Gpu(0)));
-        assert_eq!(g.preset(), Some("raycast-gpu"));
-        assert!(g.check().unwrap().built().unwrap_err().contains("the cpu executor builds no `raycast-gpu` pipeline"));
+        assert_eq!(g.region().map(|b| b.id), Some(RegionId::GpuWalk));
+        assert!(g.check().unwrap().built().unwrap_err().contains("the cpu executor builds no pipeline of this shape (the gpu executor does)"));
         // A shape no region has keeps its reasons.
         let mut g = file("raster-cpu");
         g.nodes.get_mut("draw").unwrap().device = Some(Device::Gpu(0));
-        assert_eq!(g.preset(), Some("raster-gpu"));
+        assert_eq!(g.region().map(|b| b.id), Some(RegionId::GpuMeshing));
         assert!(g.validate().is_err());
     }
 
@@ -675,17 +675,17 @@ mod tests {
         g.nodes.insert("rq".into(), Node::new(Role::Traversal, "rayquery").with(&[("geometry", "pts")]));
         bind(&mut g, "shadow", "rq");
         let e = g.validate().unwrap_err();
-        assert!(e.contains("`pts`: `raycast-gpu` builds geometry `greedy`, `naive`, `boxes`, not `points`"), "{e}");
+        assert!(e.contains("`pts`: the gpu executor (for this shape) builds geometry `greedy`, `naive`, `boxes`, not `points`"), "{e}");
         let mut g = of("rayquery-gpu");
         rq(&mut g, "geo2", "rq2");
         bind(&mut g, "shadow", "rq2");
         let e = g.validate().unwrap_err();
-        assert!(e.contains("`rayquery-gpu` builds 1 geometry node"), "{e}");
+        assert!(e.contains("the gpu executor (for this shape) builds 1 geometry node"), "{e}");
         let mut g = of("raster-gpu");
         rq(&mut g, "geo2", "rq");
         g.nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), "rq".into());
         let e = g.validate().unwrap_err();
-        assert!(e.contains("`meshes`.shadow → `rq`: `raster-gpu` reads `refloor`, `incremental`, `sphere`, `rowrun` here, not `rayquery`"), "{e}");
+        assert!(e.contains("`meshes`.shadow → `rq`: the gpu executor (for this shape) reads `refloor`, `incremental`, `sphere`, `rowrun` here, not `rayquery`"), "{e}");
         let mut g = of("raycast-gpu");
         g.nodes.insert("st".into(), Node::new(Role::Storage, "palette"));
         g.nodes.insert("wk".into(), Node::new(Role::Traversal, "refloor").with(&[("storage", "st")]));
@@ -751,7 +751,7 @@ mod tests {
         // Faces a frame late instead of the loop: a valid graph discover-gpu does not build.
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Prev);
         let e = g.validate().unwrap_err();
-        assert!(e.contains("`draw`.faces: `discover-gpu` runs this edge now or iterate 2, not prev"), "{e}");
+        assert!(e.contains("`draw`.faces: the gpu executor (for this shape) runs this edge now or iterate 2, not prev"), "{e}");
         let mut g = base.clone();
         g.nodes.get_mut("draw").unwrap().timing.insert("faces".into(), When::Iterate(2));
         let e = g.check().unwrap_err();

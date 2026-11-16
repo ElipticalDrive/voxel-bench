@@ -30,8 +30,8 @@ pub(crate) mod walk;
 
 /// The ray-casting nodes of graph `g` on the node executor: the caster by the API of the
 /// primary rays' kernel (ray queries, else a walk).
-pub(crate) fn create(preset: &str, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    let kernel = g.input(Role::Visibility, "primary").ok_or_else(|| anyhow::anyhow!("{preset}: the primary rays are not bound"))?;
+pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    let kernel = g.input(Role::Visibility, "primary").ok_or_else(|| anyhow::anyhow!("the primary rays are not bound"))?;
     match g.api(kernel) {
         Some(Api::RayQuery) => run(rayquery::RayQuery::new(p, devices, waker, g)?, g),
         // A walk: compute threads or a fragment shader (`dispatch`), the kernel compiled in.
@@ -44,7 +44,7 @@ pub(crate) fn create(preset: &str, p: &InitParams, devices: &Devices, waker: Wak
 fn run<C: Cast + 'static>((core, cast, shading, far): (Core, C, String, Option<crate::remote::Far>), g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let region = Raycast::new(&core, cast, shading, far.is_some())?;
     let passes = nodes::of::<C>(g)?;
-    tracing::debug!("{}: {} passes", C::REGION.name, passes.len());
+    tracing::debug!("{:?}: {} passes", C::REGION.id, passes.len());
     match far {
         Some(far) => crate::exec::split(g, crate::exec::Executor::new(core, region, passes), far),
         None => crate::exec::run(core, region, passes),
@@ -331,7 +331,7 @@ struct Raycast<C> {
 impl<C: Cast> Raycast<C> {
     /// `remote`: the shading is a node of another GPU's executor.
     fn new(core: &Core, cast: C, shading: String, remote: bool) -> anyhow::Result<Self> {
-        anyhow::ensure!(!remote || cast.view() == View::Image, "{}: a diagnostic view shades inline, not on the shading's GPU", C::REGION.name);
+        anyhow::ensure!(!remote || cast.view() == View::Image, "a diagnostic view shades inline, not on the shading's GPU");
         let passes = Passes::new(core, &cast, &shading, remote)?;
         Ok(Self { passes, cast, built_shading: shading.clone(), shading, steps: Steps::default(), world: None })
     }
@@ -597,7 +597,7 @@ mod tests {
     fn casters_build_what_they_declare() {
         let (mut built, mut refused) = (0, 0);
         for ck in graph::near(&[super::walk::REGION, super::rayquery::REGION]) {
-            let e = ck.preset().unwrap();
+            let e = format!("{:?}", ck.region.unwrap().id);
             let key = ck.graph.canonical().unwrap();
             match (ck.built(), ck.graph.accept()) {
                 (Ok(()), Ok(_)) => built += 1,

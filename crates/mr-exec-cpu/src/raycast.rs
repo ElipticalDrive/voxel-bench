@@ -50,8 +50,8 @@ pub fn storage_type(name: &str) -> Option<&'static str> {
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: "raycast-cpu".into(),
-        description: "raycast-cpu preset: renders a composition of components (storage, traversal, shading), multi-threaded".into(),
+        name: "cpu".into(),
+        description: "CPU ray casting, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops".into(),
         tags: vec!["cpu".into(), "raycast".into(), "simd".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
@@ -100,7 +100,7 @@ fn params() -> Vec<ParamSpec> {
     p
 }
 
-/// The preset's own knobs (the nodes' are read from the graph).
+/// The region's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
 #[serde(default)]
 struct Options {

@@ -23,7 +23,7 @@ pub fn load(base: &RendererSpec, g: &Graph, infos: &[RendererInfo]) -> Result<Re
     s.graph = Some(g.clone());
     s.name.clear();
     s.resolve().map_err(|e| format!("{e:#}").trim_start_matches("renderer graph: ").to_string())?;
-    if let Some(info) = infos.iter().find(|i| i.name == s.name) {
+    if let Some(info) = s.info(infos) {
         let before = s.options.len();
         s.options.retain(|k, _| info.params.iter().any(|p| p.name == k));
         if s.options.len() != before {
@@ -208,7 +208,7 @@ mod tests {
         let (st, vis, shading) = (node(&g, Role::Storage), node(&g, Role::Visibility), node(&g, Role::Shading));
         // Another storage: only that node changes.
         let (h, l) = t.try_change(&Change::Component(st.clone(), "tree64".into()), &[]).unwrap();
-        assert_eq!(l.name, "raycast-gpu");
+        assert!(l.same_kind(&s));
         let mut want = g.clone();
         want.nodes.get_mut(&st).unwrap().component = "tree64".into();
         assert_eq!(h, want);

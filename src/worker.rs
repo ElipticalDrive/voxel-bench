@@ -93,7 +93,7 @@ pub fn spawn_renderer(
         link: spec.link(),
     };
     let w = Worker::spawn(SpawnConfig {
-        renderer: graph.as_ref().map_or(spec.name.as_str(), |g| g.runs_on()),
+        renderer: spec.entry(),
         label: spec.label(),
         params,
         isolation: run.isolation,

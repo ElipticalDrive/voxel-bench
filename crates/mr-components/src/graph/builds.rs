@@ -102,8 +102,6 @@ pub enum RegionId {
 #[derive(Copy, Clone, Debug)]
 pub struct Builds {
     pub id: RegionId,
-    /// The name its messages use.
-    pub name: &'static str,
     pub nodes: &'static [Build],
     pub same: &'static [Same],
     pub only: &'static [Only],
@@ -122,14 +120,12 @@ pub struct Builds {
     /// The nodes it replaces while running ([`Graph::live_edits`]); any other change to the
     /// graph's shape is a new renderer.
     pub live: &'static [Live],
-    /// What it is, for listings.
-    pub description: &'static str,
 }
 
 impl Builds {
     /// Region `id` with nothing built and no choices: the base the declarations fill in.
-    const fn plain(id: RegionId, name: &'static str) -> Builds {
-        Builds { id, name, nodes: &[], same: &[], only: &[], free: &[], timing_knobs: &[], split: false, api_choice: None, live: &[], description: "" }
+    const fn plain(id: RegionId) -> Builds {
+        Builds { id, nodes: &[], same: &[], only: &[], free: &[], timing_knobs: &[], split: false, api_choice: None, live: &[] }
     }
 
     /// The timings it runs the edge into `port` of a `role` node with, if the graph may choose.
@@ -195,15 +191,16 @@ impl Builds {
             _ => "gpu",
         }
     }
+
+    /// How messages name it: by its executor, in the shape of the graph at hand (a region is
+    /// the code an executor has for one shape of graph).
+    pub fn who(&self) -> String {
+        format!("the {} executor (for this shape)", self.executor())
+    }
 }
 
 /// Every region, in the order listings and sweeps go through them.
 pub const REGIONS: &[&Builds] = &[&GPU_WALK, &CPU_RAYCAST, &GPU_MESHING, &GPU_RAYQUERY, &GPU_SAMPLER, &CPU_SAMPLER, &GPU_SPLAT, &GPU_COLUMNS, &CPU_COLUMNS, &CPU_RASTER];
-
-/// The region whose messages use `name` (how the standalone renderers are told from pipelines).
-pub fn region_named(name: &str) -> Option<&'static Builds> {
-    REGIONS.iter().copied().find(|b| b.name == name)
-}
 
 /// The stages one API choice sets, and hit records shaded now or a frame late on a second GPU.
 const CAST_ROLES: &[Role] = &[Role::Storage, Role::Visibility, Role::Traversal, Role::Shading];
@@ -235,8 +232,7 @@ pub const CPU_RAYCAST: Builds = Builds {
     same: &[],
     only: &[],
     api_choice: Some(ApiChoice { knob: "isa", roles: CAST_ROLES, values: &[(Api::Scalar, "scalar"), (Api::Avx2, "avx2"), (Api::Avx512, "avx512")], default: None }),
-    description: "CPU, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops",
-    ..Builds::plain(RegionId::CpuRaycast, "raycast-cpu")
+    ..Builds::plain(RegionId::CpuRaycast)
 };
 
 /// `raster-cpu`: the geometry's quads, their culling, the rasteriser and the shading.
@@ -249,9 +245,8 @@ pub const CPU_RASTER: Builds = Builds {
     ],
     same: &[],
     only: &[],
-    description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)",
     live: &[Live::of(Role::Geometry)],
-    ..Builds::plain(RegionId::CpuRaster, "raster-cpu")
+    ..Builds::plain(RegionId::CpuRaster)
 };
 
 /// `columns-cpu`: the heightmap, its own ray march (the shadow rays), the column march and the shading.
@@ -264,8 +259,7 @@ pub const CPU_COLUMNS: Builds = Builds {
     ],
     same: &[],
     only: &[],
-    description: "Comanche-style Voxel Space (2.5D) on the CPU, rayon-parallel over screen columns",
-    ..Builds::plain(RegionId::CpuColumns, "columns-cpu")
+    ..Builds::plain(RegionId::CpuColumns)
 };
 
 /// The GPU walk (`raycast-gpu`): a storage and kernel per walk (primary, shadow, bounce and
@@ -287,9 +281,8 @@ pub const GPU_WALK: Builds = Builds {
     free: HITS_LATE,
     split: true,
     api_choice: Some(ApiChoice { knob: "dispatch", roles: CAST_ROLES, values: &[(Api::Compute, "compute"), (Api::Raster, "fragment")], default: Some(Api::Compute) }),
-    description: "GPU compute shaders (wgpu / WGSL, on Vulkan here): one thread per pixel walks the composed storage and visibility",
     live: &[Live::of(Role::Traversal).read_by(Role::Visibility, "primary"), Live::of(Role::Shading), Live::of(Role::Prepass), Live::of(Role::Meshes)],
-    ..Builds::plain(RegionId::GpuWalk, "raycast-gpu")
+    ..Builds::plain(RegionId::GpuWalk)
 };
 
 /// GPU ray queries (`rayquery-gpu`): the geometry of the acceleration structures (on the CPU), the
@@ -307,9 +300,8 @@ pub const GPU_RAYQUERY: Builds = Builds {
     only: &[],
     free: HITS_LATE,
     split: true,
-    description: "GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component, a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries",
     live: &[Live::of(Role::Shading)],
-    ..Builds::plain(RegionId::GpuRayQuery, "rayquery-gpu")
+    ..Builds::plain(RegionId::GpuRayQuery)
 };
 
 /// Faces with the meshing source (`raster-gpu`): the geometry the drawer draws (and one for
@@ -333,9 +325,8 @@ pub const GPU_MESHING: Builds = Builds {
         SHADOW_WALKED,
         RT,
     ],
-    description: "GPU rasterisation (wgpu): the geometry component turns chunks into faces on the CPU, drawn with vertex pulling and multi-draw-indirect after chunk and face-direction culling. Storage here is what lit-mode shadow rays walk (refloor)",
     live: &[Live::of(Role::Geometry).read_by(Role::Visibility, "faces"), Live::of(Role::Draw), Live::of(Role::Shading), Live::of(Role::Meshes)],
-    ..Builds::plain(RegionId::GpuMeshing, "raster-gpu")
+    ..Builds::plain(RegionId::GpuMeshing)
 };
 
 /// GPU discovery (`discover-gpu`): the sampler (its rays and exposure tests over any GPU
@@ -361,9 +352,8 @@ pub const GPU_SAMPLER: Builds = Builds {
     // Hole detection closes a cycle through the drawer, which draws twice a frame, and reads
     // the last frame's sky mask.
     free: &[(Role::Draw, "faces", &[When::Now, When::Iterate(2)]), (Role::Holes, "sky", &[When::Prev])],
-    description: "GPU discovery + raster (the user's idea): cast as few rays as possible to discover every visible block face, keep the face set across frames, rasterise only it. Rays, exposure tests and shadow rays read the composed storage",
     live: &[Live::of(Role::Holes).with(&[(Role::Draw, "faces")]), Live::of(Role::Draw)],
-    ..Builds::plain(RegionId::GpuSampler, "discover-gpu")
+    ..Builds::plain(RegionId::GpuSampler)
 };
 
 /// CPU discovery (`discover-cpu`): the sampler over a CPU storage (exposure tests over the one
@@ -385,9 +375,8 @@ pub const CPU_SAMPLER: Builds = Builds {
     // Discovery a frame ahead of the drawer, or within its frame.
     free: &[(Role::Draw, "faces", &[When::Now, When::Prev])],
     timing_knobs: &[("pipelined", Role::Draw, "faces", When::Prev, When::Now)],
-    description: "CPU discovery + GPU raster (the user's idea): CPU rays discover the visible face set (one frame ahead, pipelined), the GPU rasterises only it. Storage: the CPU representation discovery rays walk",
     live: &[Live::of(Role::Visibility), Live::of(Role::Draw)],
-    ..Builds::plain(RegionId::CpuSampler, "discover-cpu")
+    ..Builds::plain(RegionId::CpuSampler)
 };
 
 /// Point splatting (`splat-gpu`): the points (and a geometry for ray-queried bounce rays), the
@@ -402,8 +391,7 @@ pub const GPU_SPLAT: Builds = Builds {
     ],
     same: &[],
     only: &[Only { role: Role::Visibility, of: &[], port: "points", components: &["points"], bound: true }, SHADOW_WALKED, RT],
-    description: "GPU point splatting: one point per exposed block, atomicMin depth + id buffers, ray-box resolve; lit-mode shadow rays walk the composed storage",
-    ..Builds::plain(RegionId::GpuSplat, "splat-gpu")
+    ..Builds::plain(RegionId::GpuSplat)
 };
 
 /// Voxel Space on the GPU (`columns-gpu`): the heightmap, its own ray march (the shadow and
@@ -417,8 +405,7 @@ pub const GPU_COLUMNS: Builds = Builds {
     ],
     same: &[],
     only: &[],
-    description: "Comanche-style Voxel Space (2.5D, no overhangs) in a compute shader: one thread per screen column marches a heightmap front to back with a y-buffer",
-    ..Builds::plain(RegionId::GpuColumns, "columns-gpu")
+    ..Builds::plain(RegionId::GpuColumns)
 };
 
 /// The roles the worker runs in front of every executor (the world's side), and the post every
@@ -426,27 +413,27 @@ pub const GPU_COLUMNS: Builds = Builds {
 const AROUND: &[Role] = &[Role::World, Role::Generator, Role::Link, Role::Client, Role::Post];
 
 impl Checked {
-    /// The region of the graph's executor that builds this graph (named by its preset, which
-    /// the graph's shape names: [`Graph::preset`]) and what it declares; `None`: a shape no
-    /// region has, or one another device's executor runs. GPU ray casting runs on the
+    /// The region of the graph's executor that builds this graph (the one the graph's shape
+    /// picks: [`Graph::region`]) and what it declares; `None`: a shape no region has, or one
+    /// another device's executor runs. GPU ray casting runs on the
     /// ray-query caster when the primary rays' kernel is a ray query, else on the walk.
-    pub fn builder(&self) -> Option<(&'static str, Builds)> {
-        let b = self.region.filter(|b| b.executor() == self.graph.runs_on())?;
-        Some((b.name, *b))
+    pub fn builder(&self) -> Option<Builds> {
+        self.region.filter(|b| b.executor() == self.graph.runs_on()).copied()
     }
 
     /// Whether the node executor running this graph builds it (see [`Self::built_by`]).
     pub fn built(&self) -> Result<(), String> {
-        let (e, b) = self.builder().ok_or_else(|| match self.region {
-            Some(r) => format!("the {} executor builds no `{}` pipeline (the {} executor's)", self.graph.runs_on(), r.name, r.executor()),
+        let b = self.builder().ok_or_else(|| match self.region {
+            Some(r) => format!("the {} executor builds no pipeline of this shape (the {} executor does)", self.graph.runs_on(), r.executor()),
             None => format!("no region of the {} executor builds this shape (an image from a shading over hits from a visibility node or a drawer)", self.graph.runs_on()),
         })?;
-        self.built_by(e, b)
+        self.built_by(b)
     }
 
-    /// Whether `executor`, building `builds`, builds this graph; else the first node (or role)
-    /// it cannot, with the reason.
-    pub fn built_by(&self, executor: &str, builds: Builds) -> Result<(), String> {
+    /// Whether region `builds` builds this graph; else the first node (or role) it cannot,
+    /// with the reason.
+    pub fn built_by(&self, builds: Builds) -> Result<(), String> {
+        let executor = builds.who();
         let Builds { nodes: builds, same, only, .. } = builds;
         let list = |v: &[&str]| v.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ");
         for (id, n) in self.graph.nodes.iter().filter(|(_, n)| !AROUND.contains(&n.role)) {
@@ -454,15 +441,15 @@ impl Checked {
             if of_role.is_empty() {
                 let mut roles: Vec<&str> = builds.iter().map(|b| b.role.name()).collect();
                 roles.dedup();
-                return Err(format!("`{id}`: `{executor}` builds no {} node (only {})", n.role.name(), roles.join(", ")));
+                return Err(format!("`{id}`: {executor} builds no {} node (only {})", n.role.name(), roles.join(", ")));
             }
             let kind = self.devices[id.as_str()].kind();
             let Some(b) = of_role.iter().find(|b| b.at.kind == kind) else {
                 let kinds: Vec<&str> = of_role.iter().map(|b| b.at.kind.name()).collect();
-                return Err(format!("`{id}`: `{executor}` builds {} on {}, not on {}", n.role.name(), kinds.join(" and "), kind.name()));
+                return Err(format!("`{id}`: {executor} builds {} on {}, not on {}", n.role.name(), kinds.join(" and "), kind.name()));
             };
             if !b.components.contains(&n.component.as_str()) {
-                return Err(format!("`{id}`: `{executor}` builds {} {}{}, not `{}`", n.role.name(), list(b.components), if of_role.len() > 1 { format!(" on {}", kind.name()) } else { String::new() }, n.component));
+                return Err(format!("`{id}`: {executor} builds {} {}{}, not `{}`", n.role.name(), list(b.components), if of_role.len() > 1 { format!(" on {}", kind.name()) } else { String::new() }, n.component));
             }
         }
         for b in builds {
@@ -472,15 +459,15 @@ impl Checked {
                 let here = if ids.is_empty() { "none".into() } else { list(&ids) };
                 let on = if builds.iter().filter(|o| o.role == b.role).count() > 1 { format!(" on {}", b.at.kind.name()) } else { String::new() };
                 let plural = if ids.len() < b.least { b.least } else { b.most } != 1;
-                return Err(format!("`{executor}` builds {want} {} node{}{on} (here: {here})", b.role.name(), if plural { "s" } else { "" }));
+                return Err(format!("{executor} builds {want} {} node{}{on} (here: {here})", b.role.name(), if plural { "s" } else { "" }));
             }
         }
         for o in only {
             for (id, n) in self.graph.nodes.iter().filter(|(_, n)| n.role == o.role && (o.of.is_empty() || o.of.contains(&n.component.as_str()))) {
                 match n.inputs.get(o.port) {
-                    None if o.bound => return Err(format!("`{id}`.{}: not bound, and `{executor}` has nothing of its own to read there", o.port)),
+                    None if o.bound => return Err(format!("`{id}`.{}: not bound, and {executor} has nothing of its own to read there", o.port)),
                     Some(src) if !o.components.contains(&self.graph.nodes[src].component.as_str()) => {
-                        return Err(format!("`{id}`.{} → `{src}`: `{executor}` reads {} here, not `{}`", o.port, list(o.components), self.graph.nodes[src].component));
+                        return Err(format!("`{id}`.{} → `{src}`: {executor} reads {} here, not `{}`", o.port, list(o.components), self.graph.nodes[src].component));
                     }
                     _ => {}
                 }
@@ -492,7 +479,7 @@ impl Checked {
             if let (Some(a), Some(b)) = (path(s.a), path(s.b))
                 && a != b
             {
-                return Err(format!("`{executor}` reads {} and {} as one node (here: `{a}` and `{b}`)", name(s.a), name(s.b)));
+                return Err(format!("{executor} reads {} and {} as one node (here: `{a}` and `{b}`)", name(s.a), name(s.b)));
             }
         }
         Ok(())

@@ -73,8 +73,8 @@ use crate::Core;
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: NAME.into(),
-        description: "discover-gpu preset (storage, quadtree visibility, shading). Self-directed visibility: GPU adaptive quadtree of corner rays discovers the visible block faces (coherent tiles add a whole plane footprint), faces kept in a GPU hash set across frames, then rasterised as one quad per face; no read-back".into(),
+        name: "gpu".into(),
+        description: "GPU discovery + raster (the user's idea): a GPU adaptive quadtree of corner rays discovers the visible block faces (coherent tiles add a whole plane footprint), kept in a GPU hash set across frames and rasterised as one quad per face; no read-back. Rays, exposure tests and shadow rays read the composed storage".into(),
         tags: vec!["gpu".into(), "raster".into(), "raytrace".into(), "hybrid".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
@@ -89,7 +89,6 @@ const MAX_SLOTS: usize = 1 << 14;
 const CHUNK_TABLE: usize = MAX_SLOTS * 4;
 
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_SAMPLER;
-pub(crate) const NAME: &str = REGION.name;
 
 
 
@@ -130,7 +129,7 @@ fn params() -> Vec<ParamSpec> {
     .collect()
 }
 
-/// The preset's own knobs (the nodes' are read from the graph).
+/// The region's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
 #[serde(default)]
 struct Options {
@@ -575,7 +574,7 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
 impl GpuSampler {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
-        let node = |role: Role| g.find(role).ok_or_else(|| anyhow::anyhow!("{NAME}: no {} node", role.name()));
+        let node = |role: Role| g.find(role).ok_or_else(|| anyhow::anyhow!("no {} node", role.name()));
         let vis: VisibilityKnobs = g.knobs(node(Role::Visibility)?).map_err(anyhow::Error::msg)?;
         let draw_id = node(Role::Draw)?;
         let draw = g.node(draw_id).component.clone();
@@ -588,9 +587,9 @@ impl GpuSampler {
         // The sites' walks: discovery rays (the storage and traversal stages),
         // the storage exposure tests read, shadow and bounce rays; each its own or shared.
         let mut walks = Walks::of(g);
-        let bound = |role, port: &str| g.site(role, port).ok_or_else(|| anyhow::anyhow!("{NAME}: `{port}` rays are not bound"));
+        let bound = |role, port: &str| g.site(role, port).ok_or_else(|| anyhow::anyhow!("`{port}` rays are not bound"));
         let rays = walks.site(g, bound(Role::Visibility, "rays")?, STORAGE_GROUPS, false);
-        let exposure = walks.storage(g, g.input(Role::Visibility, "exposure").ok_or_else(|| anyhow::anyhow!("{NAME}: exposure is not bound"))?, STORAGE_GROUPS);
+        let exposure = walks.storage(g, g.input(Role::Visibility, "exposure").ok_or_else(|| anyhow::anyhow!("exposure is not bound"))?, STORAGE_GROUPS);
         let shadow = walks.site(g, bound(Role::Shading, "shadow")?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);

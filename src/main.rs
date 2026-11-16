@@ -181,7 +181,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             println!("\nStandalone renderers (-r name; cpu-reference defines the reference images):");
-            for i in mr_worker::infos().into_iter().filter(|i| mr_components::graph::region_named(&i.name).is_none()) {
+            for i in mr_worker::infos() {
                 let modes: Vec<_> = i.modes.iter().map(|m| m.name()).collect();
                 println!("  {:<16} [{}] modes={} max_lod={}\n      {}", i.name, i.tags.join(","), modes.join(","), i.max_lod, i.description);
             }
@@ -330,7 +330,7 @@ impl Ctx<'_> {
             let label = self.label(spec);
             let mut report = PassReport {
                 label: label.clone(),
-                renderer: spec.pipeline().map_or_else(|| spec.name.clone(), |g| g.runs_on().to_string()),
+                renderer: spec.entry().to_string(),
                 graph_key: spec.pipeline().and_then(|g| g.key().ok()),
                 graph: spec.pipeline(),
                 options: spec.options.clone(),
@@ -470,8 +470,8 @@ impl Ctx<'_> {
 fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result<(Vec<PassReport>, Option<features::SceneFeatures>)> {
     let infos = mr_worker::infos();
     for r in &plan.renderers {
-        if !infos.iter().any(|i| i.name == r.name) {
-            bail!("unknown renderer `{}` (see `multirenderer list`)", r.name);
+        if r.info(&infos).is_none() {
+            bail!("unknown renderer `{}` (see `multirenderer list`)", r.label());
         }
     }
     let ctx = Ctx { plan, blocks: Arc::new(default_registry()), run_dir: Some(run_dir), ui: ui.clone() };
@@ -488,7 +488,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         let mut configs: Vec<Vec<u32>> = plan
             .renderers
             .iter()
-            .map(|r| r.region(run, infos.iter().find(|i| i.name == r.name).map(|i| i.max_lod).unwrap_or(0)).streamed())
+            .map(|r| r.region(run, r.info(&infos).map_or(0, |i| i.max_lod)).streamed())
             .filter(|r| !r.is_empty())
             .chain(std::iter::once(vec![run.view_radius]))
             .collect();
@@ -532,7 +532,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
             .renderers
             .iter()
             .filter(|s| {
-                let ok = infos.iter().any(|i| i.name == s.name && s.supports(i, mode));
+                let ok = s.info(&infos).is_some_and(|i| s.supports(&i, mode));
                 if !ok && !s.swept {
                     tracing::warn!("{} does not support {} mode; skipped", s.label(), mode.name());
                 }

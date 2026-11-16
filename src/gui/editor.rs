@@ -504,16 +504,11 @@ fn events(ui: &mut Ui, es: &mut Vec<EventSpec>, ctx: &EditorCtx) -> Changed {
     c
 }
 
-/// Whether `name` is a preset's renderer (edited as a pipeline graph).
-fn is_preset_renderer(name: &str) -> bool {
-    mr_components::graph::region_named(name).is_some()
-}
-
 /// A pipeline's summary (`graph::summary`): edits go into it. Returns whether
 /// anything changed.
 fn composition(ui: &mut Ui, i: usize, r: &mut RendererSpec, run: &crate::plan::RunSpec, ctx: &mut EditorCtx) -> Changed {
     use super::graph::{self, Of};
-    let params: &[mr_core::ParamSpec] = ctx.infos.iter().find(|x| x.name == r.name).map_or(&[], |x| &x.params);
+    let params = r.info(ctx.infos).map(|i| i.params).unwrap_or_default();
     let values = r.knob_values();
     let knobs: Vec<_> = params.iter().map(|p| (p.clone(), super::knobs::option_value(p, &values))).collect();
     let edits = graph::summary(ui, &format!("{:?}", Of::Plan(i)), r, &knobs, false, None, ctx.trials, ctx.infos, run);
@@ -596,7 +591,7 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
                 }
             }
         });
-        for info in ctx.infos.iter().filter(|x| !is_preset_renderer(&x.name)) {
+        for info in ctx.infos {
             if ui.button(format!("+ {}", info.name)).on_hover_text(format!("Add the standalone renderer: {}", info.description)).clicked() {
                 plan.renderers.push(RendererSpec::new(info.name.clone()));
                 ctx.option_text.push(String::new());

@@ -291,8 +291,8 @@ impl Session {
             }
             _ if spec.live => {
                 // The replacement a hot swap is loading takes it too.
-                let back_end = lane.run.spec.name.clone();
-                for run in std::iter::once(&mut lane.run).chain(lane.standby.as_mut().filter(|s| s.spec.name == back_end)) {
+                let back_end = lane.run.spec.clone();
+                for run in std::iter::once(&mut lane.run).chain(lane.standby.as_mut().filter(|s| s.spec.same_kind(&back_end))) {
                     run.spec.options.insert(name.into(), crate::gui::param_to_toml(&value));
                     run.pending_params.push((name.to_string(), value.clone()));
                 }
@@ -357,7 +357,7 @@ impl Session {
         lane.standby_warm = 0;
         let native = spec.compiled(&self.plan.run).is_some();
         self.shared.lock().unwrap().lanes[i].swap = Some(if native { "compiling for this machine (generic build meanwhile)".into() } else { "spawning".into() });
-        self.event(i, format!("hot swap ➡ {} {}", spec.name, toml::to_string(&spec.options).unwrap_or_default().replace('\n', " ")));
+        self.event(i, format!("hot swap ➡ {} {}", spec.label(), toml::to_string(&spec.options).unwrap_or_default().replace('\n', " ")));
     }
 
     fn command(&mut self, cmd: Cmd) {

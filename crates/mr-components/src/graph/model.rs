@@ -447,9 +447,3 @@ pub struct Checked {
     pub region: Option<&'static super::Builds>,
 }
 
-impl Checked {
-    /// The name of its region.
-    pub fn preset(&self) -> Option<&'static str> {
-        self.region.map(|b| b.name)
-    }
-}

@@ -163,15 +163,14 @@ impl Renderer for Compiled {
 /// pipeline names one.
 fn create_with(p: InitParams, devices: &Devices, waker: Waker, cpu_world: Option<fn() -> CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
     let g = graph::of_init("gpu", &p)?;
-    let preset = g.preset().expect("of_init: a region");
     if g.find(Role::Draw).is_some() {
-        return faces::create(preset, &p, devices, waker, &g, cpu_world);
+        return faces::create(&p, devices, waker, &g, cpu_world);
     }
-    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{preset}: no visibility node"))?;
+    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
     match g.node(vis).component.as_str() {
         "splat" => splat::create(&p, devices, waker, &g),
         "columns" => columns::create(&p, devices, waker, &g),
-        _ => raycast::create(preset, &p, devices, waker, &g),
+        _ => raycast::create(&p, devices, waker, &g),
     }
 }
 

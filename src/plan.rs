@@ -176,8 +176,8 @@ pub fn component_knob(name: &str) -> Option<&str> {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "Written", into = "Written")]
 pub struct RendererSpec {
-    /// Renderer entry to run: a standalone renderer's name; for pipelines derived (the
-    /// entry of the region the graph's shape names, `Graph::region`).
+    /// A standalone renderer's name; empty for a pipeline (its graph says what runs it:
+    /// [`Self::entry`], [`Self::info`]).
     pub name: String,
     /// The pipeline (`mr_components::graph`; `None` for standalone renderers), run as it
     /// is written.
@@ -339,9 +339,8 @@ impl RendererSpec {
         Self::try_from(Written { graph: Some(GraphRef::File(file.into())), ..Default::default() })
     }
 
-    /// Checks the pipeline and derives what follows from it: `name` (the entry of the region
-    /// the graph's shape names) and, into the options, the knobs the graph spells (the API
-    /// choice, timings) where they are not the knob's default.
+    /// Checks the pipeline and derives what follows from it: into the options, the knobs the
+    /// graph spells (the API choice, timings) where they are not the knob's default.
     pub fn resolve(&mut self) -> anyhow::Result<()> {
         self.compose_label = Default::default();
         let Some(g) = &self.graph else {
@@ -354,7 +353,7 @@ impl RendererSpec {
             return Ok(());
         };
         g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
-        let region = g.region().context("renderer graph: no executor builds a graph of this shape")?;
+        g.region().context("renderer graph: no executor builds a graph of this shape")?;
         let params = crate::pipelines::executor_of(g).map(|(_, p)| p).unwrap_or_default();
         for (k, v) in g.preset_options().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
             let default = params.iter().find(|p| p.name == k).and_then(|p| toml::Value::try_from(p.default.to_json()).ok());
@@ -366,8 +365,29 @@ impl RendererSpec {
             }
             self.options.insert(k, v);
         }
-        self.name = region.name.to_string();
+        self.name.clear();
         Ok(())
+    }
+
+    /// The worker's entry that runs it: a pipeline's executor (`Graph::runs_on`), else its name.
+    pub fn entry(&self) -> &str {
+        self.graph.as_ref().map_or(self.name.as_str(), |g| g.runs_on())
+    }
+
+    /// Whether `other` is run by the same code with the same knobs: the same standalone
+    /// renderer, or pipelines of one shape (the same region of the same executor).
+    pub fn same_kind(&self, other: &RendererSpec) -> bool {
+        let region = |s: &RendererSpec| s.graph.as_ref().and_then(|g| g.region()).map(|b| b.id);
+        self.entry() == other.entry() && self.name == other.name && region(self) == region(other)
+    }
+
+    /// What it supports and its knobs: a pipeline's from its graph (the region of the executor
+    /// that builds its shape), a standalone renderer's from `standalone` by name.
+    pub fn info(&self, standalone: &[mr_core::RendererInfo]) -> Option<mr_core::RendererInfo> {
+        match &self.graph {
+            Some(g) => crate::pipelines::executor_info(g).map(|(_, i)| i),
+            None => standalone.iter().find(|i| i.name == self.name).cloned(),
+        }
     }
 
     /// The components its nodes may be instead, as knobs of the host's (`<node>.component`;
@@ -498,13 +518,13 @@ impl RendererSpec {
     }
 
     /// Display label: the explicit one, else the graph's (`Graph::label`), else the
-    /// renderer name.
+    /// standalone renderer's name.
     pub fn label(&self) -> &str {
         if let Some(l) = &self.label {
             return l;
         }
         match &self.graph {
-            Some(g) => self.compose_label.get_or_init(|| g.label().unwrap_or_else(|e| format!("{} [invalid graph: {e}]", self.name))),
+            Some(g) => self.compose_label.get_or_init(|| g.label().unwrap_or_else(|e| format!("{} [invalid graph: {e}]", g.runs_on()))),
             None => &self.name,
         }
     }
@@ -739,11 +759,10 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
     if !entries.iter().any(|e| e.get("vary").is_some()) {
         return Ok(());
     }
-    let infos = mr_worker::infos();
     let mut out = vec![];
     for e in entries.drain(..) {
         match e.get("vary") {
-            Some(_) => out.extend(expand_varied(e.as_table().context("a renderer is a table")?, &infos)?),
+            Some(_) => out.extend(expand_varied(e.as_table().context("a renderer is a table")?)?),
             None => out.push(e),
         }
     }
@@ -756,7 +775,7 @@ fn expand_sweeps(table: &mut toml::Table) -> anyhow::Result<()> {
 /// `accept` takes, each distinct pipeline once, written as the entry with the combination's
 /// edits after its own. A combination that is no pipeline does not exist; none at all is an
 /// error, with the first reason.
-fn expand_varied(e: &toml::Table, infos: &[mr_core::RendererInfo]) -> anyhow::Result<Vec<toml::Value>> {
+fn expand_varied(e: &toml::Table) -> anyhow::Result<Vec<toml::Value>> {
     use mr_components::graph::{CLIENT_KNOBS, Change, varied};
     let graph: GraphRef = e.get("graph").cloned().context("`vary` sweeps the edits of a `graph` (a file's name or the graph itself); this renderer has none")?.try_into()?;
     let edits: Vec<Change> = e.get("edits").cloned().map(|v| v.try_into()).transpose()?.unwrap_or_default();
@@ -778,8 +797,8 @@ fn expand_varied(e: &toml::Table, infos: &[mr_core::RendererInfo]) -> anyhow::Re
             }
         };
         // The options this pipeline's executor declares.
-        let known = g.preset().and_then(|name| infos.iter().find(|i| i.name == name));
-        let options: toml::Table = given.iter().filter(|(k, _)| known.is_some_and(|i| i.params.iter().any(|p| p.name == **k))).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let known = crate::pipelines::executor_of(&g).map(|(_, p)| p).unwrap_or_default();
+        let options: toml::Table = given.iter().filter(|(k, _)| known.iter().any(|p| p.name == **k)).map(|(k, v)| (k.clone(), v.clone())).collect();
         // The client's region is the workload, not in the key, but a pass of its own.
         let region: Vec<Option<i64>> = CLIENT_KNOBS.iter().map(|k| g.client_knob(k)).collect();
         if !keys.insert((g.with_options(&options).key().map_err(anyhow::Error::msg)?, region)) {
@@ -898,6 +917,12 @@ fn apply_override(table: &mut toml::Table, ov: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mr_components::graph::RegionId;
+
+    /// The region that builds a pipeline's graph (`None` for a standalone renderer).
+    fn region(r: &RendererSpec) -> Option<RegionId> {
+        r.pipeline().and_then(|g| g.region()).map(|b| b.id)
+    }
 
     fn renderer(text: &str) -> anyhow::Result<RendererSpec> {
         Ok(toml::from_str(text)?)
@@ -918,7 +943,7 @@ mod tests {
             let r = renderer(&format!("graph = \"{name}\"")).unwrap();
             let d = RendererSpec::from_cli(name).unwrap();
             assert_eq!(key(&r), key(&d), "{name}");
-            assert_eq!((r.name.as_str(), r.label()), (d.name.as_str(), d.label()), "{name}");
+            assert_eq!((region(&r), r.label()), (region(&d), d.label()), "{name}");
             assert_eq!(toml::to_string(&r).unwrap().trim(), format!("graph = \"{name}\"\n\n[options]"), "{name}");
         }
         // Edits: a component, a new node bound, an API, a timing, a node knob.
@@ -928,7 +953,7 @@ mod tests {
         ] {
             let text = format!("graph = \"raycast-gpu\"\nedits = {edits}");
             let r = renderer(&text).unwrap_or_else(|e| panic!("{edits}: {e:#}"));
-            assert_eq!((r.name.as_str(), r.label()), ("raycast-gpu", label), "{edits}");
+            assert_eq!((region(&r), r.label()), (Some(RegionId::GpuWalk), label), "{edits}");
             assert_ne!(key(&r), key(&renderer("graph = \"raycast-gpu\"").unwrap()), "{edits}");
             // Written as read, and read back as the same renderer.
             let w = toml::to_string(&r).unwrap();
@@ -1078,7 +1103,7 @@ mod tests {
         let text = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n\n[[renderer]]\ngraph = \"raycast-gpu\"\nedits = [{ node = \"storage\", component = \"prefix\" }, { node = \"kernel\", component = \"incremental\" }]\noptions = { exact = false }\n";
         let p = Plan::parse(text, &[]).unwrap();
         let r = &p.renderers[0];
-        assert_eq!(r.name, "raycast-gpu");
+        assert_eq!(region(r), Some(RegionId::GpuWalk));
         // The host's own list of what each node may be (the executors list no component).
         let knobs = r.component_knobs();
         let storage = knobs.iter().find(|k| k.name == "storage.component").expect("a storage choice");
@@ -1116,8 +1141,8 @@ mod tests {
         assert_eq!((key(&opt.renderers[0]), opt.renderers[0].options.get("traversal").and_then(|v| v.as_str())), (key(r), Some("sphere")));
         // Another region's file; what a graph cannot be is refused with the reason.
         let raster = RendererSpec::from_cli("raster-gpu,geometry=cubes").unwrap();
-        assert_eq!((raster.name.as_str(), raster.label()), ("raster-gpu", "gpu: cubes@cpu + faces + bricks + refloor + depth + raster + direct"));
-        assert_eq!(RendererSpec::from_cli("raycast-cpu,storage=palette").unwrap().name, "raycast-cpu");
+        assert_eq!((region(&raster), raster.label()), (Some(RegionId::GpuMeshing), "gpu: cubes@cpu + faces + bricks + refloor + depth + raster + direct"));
+        assert_eq!(region(&RendererSpec::from_cli("raycast-cpu,storage=palette").unwrap()), Some(RegionId::CpuRaycast));
         for (bad, why) in [("raycast-cpu,storage=rows", "renderer graph: "), ("rayquery-gpu,storage=prefix", "no node `storage`"), ("raycast-gpu,geometry=greedy", "no node `geometry`")] {
             let e = format!("{:#}", RendererSpec::from_cli(bad).unwrap_err());
             assert!(e.contains(why), "{bad}: {e}");
@@ -1329,7 +1354,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let new = plan("graph = \"raycast-gpu\"\nlabel = \"gone\"\nvary = [{ node = \"storage\", component = \"*\" }, { node = \"kernel\", component = [\"refloor\", \"sphere\"] }]\noptions = { exact = false, merge = \"rows\" }").unwrap();
         // raycast-gpu: 8 storages x 2 kernels.
         each_once(&new, 16, "storages x two kernels");
-        assert!(new.renderers.iter().all(|r| r.name == "raycast-gpu" && r.label != Some("gone".into()) && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
+        assert!(new.renderers.iter().all(|r| region(r) == Some(RegionId::GpuWalk) && r.label != Some("gone".into()) && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
         // Each is written as its file and edits (the entry's own first), and reads back.
         let r = new.renderers.iter().find(|r| r.label().contains("tree64") && r.label().contains("sphere")).unwrap();
         let w = toml::to_string(r).unwrap();
@@ -1339,12 +1364,12 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         let full = include_str!("../scripts/full-sweep.toml").split_once("renderer = ").unwrap().1;
         let all = Plan::parse(base, &[format!("renderer={full}")]).unwrap();
         each_once(&all, 1787, "the full sweep");
-        let n = |b: &str| all.renderers.iter().filter(|r| r.name == b).count();
+        let n = |b: RegionId| all.renderers.iter().filter(|r| region(r) == Some(b)).count();
         // raycast-gpu: 8 storages x 2 prepasses x 4 kernels x 2 shadings x 2 meshes; the
         // rasteriser's shadow rays: 8 storages x 4 kernels x 3 geometries x 3 draws x 2 shadings x 2 meshes.
-        assert_eq!((n("raycast-gpu"), n("rayquery-gpu"), n("raster-gpu"), n("columns-cpu")), (8 * 2 * 4 * 2 * 2, 3 * 2, 8 * 4 * 3 * 3 * 2 * 2, 1));
-        assert_eq!(mr_components::graph::REGIONS.iter().map(|b| n(b.name)).sum::<usize>(), all.renderers.len(), "every one a region's");
-        assert!(mr_components::graph::REGIONS.iter().all(|b| n(b.name) > 0), "every region swept");
+        assert_eq!((n(RegionId::GpuWalk), n(RegionId::GpuRayQuery), n(RegionId::GpuMeshing), n(RegionId::CpuColumns)), (8 * 2 * 4 * 2 * 2, 3 * 2, 8 * 4 * 3 * 3 * 2 * 2, 1));
+        assert_eq!(mr_components::graph::REGIONS.iter().map(|b| n(b.id)).sum::<usize>(), all.renderers.len(), "every one a region's");
+        assert!(mr_components::graph::REGIONS.iter().all(|b| n(b.id) > 0), "every region swept");
         // `plans/stream.toml`: four links, the generator's two places, three clients.
         let stream = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/stream.toml")), &[]).unwrap();
         each_once(&stream, 4 * 2 * 3, "stream");
@@ -1386,7 +1411,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
             let path = e.unwrap().path();
             if path.extension().is_some_and(|x| x == "toml") {
                 let p = Plan::load(&path, &[]).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
-                assert!(p.renderers.iter().all(|r| !r.name.is_empty()));
+                assert!(p.renderers.iter().all(|r| r.info(&mr_worker::infos()).is_some()));
                 n += 1;
             }
         }

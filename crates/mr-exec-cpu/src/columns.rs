@@ -27,7 +27,7 @@ use crate::{Pixel, Spec, fixed};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: "columns-cpu".into(),
+        name: "cpu".into(),
         description: "Comanche-style Voxel Space on the CPU: per-column front-to-back heightmap march with a y-buffer, rayon-parallel over columns (2.5D, no overhangs)".into(),
         tags: vec!["cpu".into(), "heightmap".into(), "2.5d".into(), "software".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
@@ -41,7 +41,7 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-/// The preset's own knobs (the nodes' are read from the graph).
+/// The region's own knobs (the nodes' are read from the graph).
 #[derive(serde::Deserialize, Default)]
 #[serde(default)]
 struct Options {

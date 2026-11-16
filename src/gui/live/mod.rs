@@ -316,7 +316,7 @@ impl Carry {
 /// knobs carry over on the same preset only.
 pub fn keep_knobs(given: &RendererSpec, now: &RendererSpec, new: RendererSpec) -> RendererSpec {
     let mut kept = new.clone();
-    if new.name == now.name {
+    if new.same_kind(now) {
         for (k, v) in &now.options {
             if given.options.get(k) != Some(v) && new.options.get(k) == given.options.get(k) {
                 kept.options.insert(k.clone(), v.clone());

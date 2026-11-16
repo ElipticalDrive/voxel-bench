@@ -38,11 +38,6 @@ impl Graph {
         }
     }
 
-    /// The name of this graph's region ([`Self::region`]).
-    pub fn preset(&self) -> Option<&'static str> {
-        self.region().map(|b| b.name)
-    }
-
     /// The graph with the edge timings its knobs spell set ([`Builds::timing_knobs`]: discover-cpu's
     /// `pipelined = false` makes the drawer's faces arrive `now`). Knobs not given keep the
     /// graph's timing.

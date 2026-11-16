@@ -26,8 +26,8 @@ use crate::{Core, CoreSpec, REGION_BINDING, storage_entry};
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: "splat-gpu".into(),
-        description: "splat-gpu preset (storage for shadow rays, points geometry, splat visibility, shading). Compute point splatting: one point per exposed block, atomicMin depth + id buffer, ray-box resolve".into(),
+        name: "gpu".into(),
+        description: "GPU point splatting (compute): one point per exposed block, atomicMin depth + id buffers, ray-box resolve; lit-mode shadow rays walk the composed storage".into(),
         tags: vec!["gpu".into(), "compute".into(), "points".into(), "splat".into(), "modular".into(), "wgpu".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
@@ -44,7 +44,7 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-/// The preset's own knobs (the nodes' are read from the graph).
+/// The region's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
 #[serde(default)]
 struct Options {
@@ -88,7 +88,6 @@ impl Default for ShadingKnobs {
 }
 
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_SPLAT;
-pub(crate) const NAME: &str = REGION.name;
 
 /// The region the splat's nodes share: the points and their buffers, the program, group 0,
 /// the frame's world and storages. The ids the splat passes write and the resolve shades are
@@ -126,7 +125,7 @@ fn big_buffer(gpu: &Gpu, points_bytes: u64) -> wgpu::Buffer {
 impl Splat {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
-        let visibility = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("{NAME}: no visibility node"))?;
+        let visibility = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
         let v: VisibilityKnobs = g.knobs(visibility).map_err(anyhow::Error::msg)?;
         let shading = &g.node(g.shading()).component;
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
@@ -134,7 +133,7 @@ impl Splat {
         // transfer, its adapter `upload`.
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
         if !schedule.transfers.iter().any(|e| e.port == "points" && g.node(&e.to).role == Role::Visibility) {
-            anyhow::bail!("{NAME}: the points do not cross from the CPU to the GPU");
+            anyhow::bail!("the points do not cross from the CPU to the GPU");
         }
         // The sites' walks: shadow rays (the storage and traversal stages),
         // bounces their own or the same.

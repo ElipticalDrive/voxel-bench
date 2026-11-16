@@ -39,12 +39,11 @@ use crate::exec::{self, Cx, Node, Region, State};
 use crate::Core;
 
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_MESHING;
-pub(crate) const NAME: &str = REGION.name;
 
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
-        name: NAME.into(),
-        description: "raster-gpu preset: renders a composition (storage and traversal kernel for shadow rays, geometry, draw, shading); faces meshed on the CPU, vertex pulling, multi-draw-indirect, chunk + face culling".into(),
+        name: "gpu".into(),
+        description: "GPU rasterisation (wgpu): the geometry component turns chunks into faces on the CPU, drawn with vertex pulling and multi-draw-indirect after chunk and face-direction culling; the storage is what lit-mode shadow rays walk".into(),
         tags: vec!["gpu".into(), "raster".into(), "hybrid".into(), "modular".into(), "wgpu".into(), "meshes".into()],
         modes: vec![RenderMode::Unlit, RenderMode::Lit],
         max_lod: 0,
@@ -71,7 +70,7 @@ fn params() -> Vec<ParamSpec> {
     p
 }
 
-/// The preset's own knobs (the nodes' are read from the graph).
+/// The region's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
 #[serde(default)]
 struct Options {
@@ -160,7 +159,7 @@ const STORAGE_GROUPS: &[u32] = &[2, 4, 5];
 /// the indices of (shadow, bounce, mesh shadow).
 fn walks(g: &Checked) -> anyhow::Result<(Walks, usize, usize, usize)> {
     let mut walks = Walks::of(g);
-    let shadow = g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("{NAME}: shadow rays are not bound"))?;
+    let shadow = g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("shadow rays are not bound"))?;
     let shadow = walks.site(g, shadow, STORAGE_GROUPS, false);
     let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
     let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
@@ -256,7 +255,7 @@ struct Frame {
 impl Meshing {
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
         let opts: Options = p.options()?;
-        let node = |role| g.find(role).ok_or_else(|| anyhow::anyhow!("{NAME}: no {role:?} node"));
+        let node = |role| g.find(role).ok_or_else(|| anyhow::anyhow!("no {role:?} node"));
         let (geometry_id, draw_id) = (node(Role::Geometry)?, node(Role::Draw)?);
         let geometry = g.node(geometry_id).component.clone();
         let draw = g.node(draw_id).component.clone();
@@ -270,7 +269,7 @@ impl Meshing {
         // transfer; its adapter is the per-chunk upload.
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
         if !schedule.transfers.iter().any(|e| e.port == "faces" && g.node(&e.to).role == Role::Visibility) {
-            anyhow::bail!("{NAME}: the faces do not cross from the CPU to the GPU");
+            anyhow::bail!("the faces do not cross from the CPU to the GPU");
         }
         let (mut walks, shadow, bounce, mesh_shadow) = walks(g)?;
         walks.set_max_steps(opts.max_steps);

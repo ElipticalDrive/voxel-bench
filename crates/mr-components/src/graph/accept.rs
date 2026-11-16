@@ -38,14 +38,14 @@ impl Graph {
     pub fn accept(&self) -> Result<(), String> {
         let ck = self.check()?;
         let region = ck.region.ok_or_else(|| ck.built().err().unwrap_or_else(|| "no region builds this shape".into()))?;
-        let preset = region.name;
+        let who = region.who();
         // Timings a region lets the graph choose; every other edge runs now.
         let free = |n: &Node, p: &str| region.free_at(n.role, p);
         for (id, n) in &ck.graph.nodes {
             for p in n.inputs.keys() {
                 let w = &n.when(p);
                 if let Some(ok) = free(n, p).or(Some(&[When::Now][..])).filter(|ok| !ok.contains(w)) {
-                    return Err(format!("`{id}`.{p}: `{preset}` runs this edge {}, not {}", ok.iter().map(|w| w.label()).collect::<Vec<_>>().join(" or "), w.label()));
+                    return Err(format!("`{id}`.{p}: {who} runs this edge {}, not {}", ok.iter().map(|w| w.label()).collect::<Vec<_>>().join(" or "), w.label()));
                 }
             }
         }
@@ -56,7 +56,7 @@ impl Graph {
         Ok(())
     }
 
-    /// Checks the graph and that its preset runs it.
+    /// Checks the graph and that its executor runs it.
     pub fn validate(&self) -> Result<(), String> {
         self.accept()
     }
@@ -84,7 +84,7 @@ fn device_blocker(ck: &Checked) -> Option<String> {
     };
     let used = slots.iter().map(|&i| format!("{} ({})", Device::Gpu(i), on(Device::Gpu(i)))).collect::<Vec<_>>().join("; ");
     if !ck.region.is_some_and(|b| b.split) {
-        return Some(format!("`{}` runs on one GPU (here: {used}); a pipeline over two GPUs is split at the hit records, ray casting's deferred shading on the second", ck.preset().unwrap_or("this pipeline")));
+        return Some(format!("this pipeline runs on one GPU (here: {used}); a pipeline over two GPUs is split at the hit records, ray casting's deferred shading on the second"));
     }
     let (Some(vis), Some(shading)) = (g.nodes.iter().find(|(_, n)| n.role == Role::Visibility), g.nodes.iter().find(|(_, n)| n.role == Role::Shading)) else {
         return Some(format!("a pipeline over two GPUs is split between its visibility and shading nodes (here: {used})"));
@@ -113,8 +113,8 @@ fn device_blocker(ck: &Checked) -> Option<String> {
 /// not set it; the stages its `api_choice` sets run with one API.
 fn api_blocker(ck: &Checked) -> Option<String> {
     let g = &ck.graph;
-    let (name, builds) = ck.builder()?;
-    let b = builds;
+    let b = ck.builder()?;
+    let name = b.who();
     let drawer = ck.find(Role::Draw).map(|d| g.nodes[d].component.as_str());
     let mut why = Vec::new();
     for (id, &a) in ck.apis.iter().filter(|(id, _)| g.nodes[*id].api.is_some()) {
@@ -128,7 +128,7 @@ fn api_blocker(ck: &Checked) -> Option<String> {
         stages.dedup();
         for st in stages {
             let role = g.nodes[st].role;
-            let Some(place) = builds.nodes.iter().find(|d| d.role == role && d.at.kind == ck.devices[st].kind()).map(|d| d.at) else { continue };
+            let Some(place) = b.nodes.iter().find(|d| d.role == role && d.at.kind == ck.devices[st].kind()).map(|d| d.at) else { continue };
             let chosen = b.chooses(role);
             let at = if st == id { format!("`{id}`") } else { format!("`{id}` (in `{st}`)") };
             let fixed = match place.apis {
@@ -137,8 +137,8 @@ fn api_blocker(ck: &Checked) -> Option<String> {
                 _ => drawer.map(|d| if d == "raster" { Api::Raster } else { Api::Compute }),
             };
             match fixed {
-                Some(x) if x != a => why.push(format!("{at}: `{name}` runs its {} with {} here, not {}", role.name(), x.name(), a.name())),
-                None if !place.apis.contains(&a) => why.push(format!("{at}: `{name}` runs its {} with {}, not {}", role.name(), place.label(), a.name())),
+                Some(x) if x != a => why.push(format!("{at}: {name} runs its {} with {} here, not {}", role.name(), x.name(), a.name())),
+                None if !place.apis.contains(&a) => why.push(format!("{at}: {name} runs its {} with {}, not {}", role.name(), place.label(), a.name())),
                 _ => {}
             }
         }
@@ -148,7 +148,7 @@ fn api_blocker(ck: &Checked) -> Option<String> {
         set.sort();
         set.dedup();
         if set.len() > 1 {
-            why.push(format!("`{name}` runs its {} with one api, its `{}` (have: {})", ch.roles.iter().map(|s| s.name()).collect::<Vec<_>>().join(", "), ch.knob, set.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")));
+            why.push(format!("{name} runs its {} with one api, its `{}` (have: {})", ch.roles.iter().map(|s| s.name()).collect::<Vec<_>>().join(", "), ch.knob, set.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")));
         }
     }
     (!why.is_empty()).then(|| why.join("; "))
