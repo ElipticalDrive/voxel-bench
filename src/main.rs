@@ -182,8 +182,7 @@ fn main() -> anyhow::Result<()> {
             }
             println!("\nStandalone renderers (-r name; cpu-reference defines the reference images):");
             for i in mr_worker::infos() {
-                let modes: Vec<_> = i.modes.iter().map(|m| m.name()).collect();
-                println!("  {:<16} [{}] modes={} max_lod={}\n      {}", i.name, i.tags.join(","), modes.join(","), i.max_lod, i.description);
+                println!("  {:<16} [{}] {}\n      {}", i.name, i.tags.join(","), i.features.describe(), i.description);
             }
             Ok(())
         }
@@ -346,9 +345,9 @@ impl Ctx<'_> {
                     report.init_ms = worker.init_ms;
                     report.tags = worker.info.tags.clone();
                     let i = lanes.len();
-                    let region = spec.region(run, worker.info.max_lod);
+                    let region = spec.region(run, worker.info.features.max_lod());
                     // What the plan asks beyond what the pipeline reports is not asked of it.
-                    report.not_supported = spec.not_supported(run, &worker.info);
+                    report.not_supported = spec.not_supported(run, mode, &worker.info);
                     let mut lane = Lane::new(worker, region, report, i, w, h);
                     // A reference records for the region it was given; a pipeline given another
                     // region than the full-resolution reference is scored against that one too.
@@ -486,7 +485,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         let mut configs: Vec<Vec<u32>> = plan
             .renderers
             .iter()
-            .map(|r| r.region(run, r.info(&infos).map_or(0, |i| i.max_lod)).streamed())
+            .map(|r| r.region(run, r.info(&infos).map_or(0, |i| i.features.max_lod())).streamed())
             .filter(|r| !r.is_empty())
             .chain(std::iter::once(vec![run.view_radius]))
             .collect();

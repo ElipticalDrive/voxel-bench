@@ -57,9 +57,7 @@ pub(crate) fn info() -> RendererInfo {
         name: "gpu".into(),
         description: "CPU discovery + GPU raster (the user's idea): CPU rays (adaptive quadtree, or face clusters) discover the visible face set (one frame ahead, pipelined), the GPU rasterises only it; lit mode adds ray-traced shadows. Storage: the CPU representation discovery rays walk".into(),
         tags: vec!["cpu".into(), "gpu".into(), "raster".into(), "raycast".into(), "hybrid".into(), "discovery".into(), "modular".into(), "wgpu".into()],
-        modes: vec![RenderMode::Unlit, RenderMode::Lit],
-        max_lod: 0,
-        lacks: vec![],
+        features: Features::of(&[Feature::Lit]),
         params: REGION.lighting_knobs(params()),
     }
 }

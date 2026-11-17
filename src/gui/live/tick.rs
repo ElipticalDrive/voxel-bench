@@ -174,7 +174,7 @@ impl Session {
                         lane.values.insert(p.name.clone(), v);
                     }
                     // Now that its LOD support is known, stream the levels it can use.
-                    let lods = lane.run.spec.max_lod(&run_spec, info.max_lod);
+                    let lods = lane.run.spec.max_lod(&run_spec, info.features.max_lod());
                     lane.run.region.max_lod = lods;
                     if let Some(own) = &mut lane.run.own {
                         // The reference's client takes its own server's stream as it is.
@@ -224,7 +224,7 @@ impl Session {
             busy = true;
             match result {
                 Ok(w) => {
-                    let lods = sb.spec.max_lod(&run_spec, w.info.max_lod);
+                    let lods = sb.spec.max_lod(&run_spec, w.info.features.max_lod());
                     sb.region.max_lod = lods;
                     sb.worker = Some(w);
                     self.shared.lock().unwrap().lanes[i].swap = Some("loading world".into());

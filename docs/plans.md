@@ -81,10 +81,15 @@ from the previous camera) and the last is scored, against the like reference whe
 one. A late pipeline scores low as shown and high settled; a wrong one low in both.
 `settle = 0` leaves it out.
 
-A pipeline reports what it supports for its graph (its lighting modes, meshes, the LOD levels
-it holds), and is asked for nothing beyond that. What a plan asks of one that lacks it is left
-out and named in its report (`not_supported`, e.g. `max_lod 2: storage `tree64` lacks lod`):
-it ran without, and its region and scores are those of what it ran.
+A pipeline reports what it supports for its graph as one typed set of features
+(`mr_core::Features`: `lit`, `meshes`, `mesh rays`, `lod` with its levels), each missing one with
+the reason; its executor declares the region's, and the graph narrows them by what its nodes and
+components lack (no meshes node; a drawer without mesh rays). It is asked for nothing beyond
+that. What a plan asks of one that lacks it is left out and named in its report
+(`not_supported`, e.g. `max_lod 2: storage `tree64` lacks lod`, or `mesh rays: draw
+`raster` (`draw`) lacks mesh rays: ...` for forward raster-gpu's lit `+meshes` passes, whose
+meshes take voxel shadows only): it ran without, and its region and scores are those of what it
+ran. Passes of a mode it lacks entirely (`+meshes` without meshes) are skipped.
 
 ## Worlds
 

@@ -38,9 +38,7 @@ pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::
 pub(crate) fn info_of(g: &graph::Checked, p: &InitParams) -> anyhow::Result<RendererInfo> {
     let mut info = info();
     if let Some(why) = lod_blocker(&Composition::of(g, &p.options()?, 0)?) {
-        info.max_lod = 0;
-        info.tags.retain(|t| t != "lod");
-        info.lacks.push(format!("lod: {why}"));
+        info.features.lack(Feature::Lod, why);
     }
     Ok(info)
 }
@@ -49,11 +47,9 @@ pub(crate) fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu".into(),
         description: "GPU compute shaders (wgpu / WGSL): one thread per pixel walks the composed storage and visibility, fused into one shader".into(),
-        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "modular".into(), "wgpu".into(), "meshes".into(), "lod".into()],
-        modes: vec![RenderMode::Unlit, RenderMode::Lit],
+        tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "modular".into(), "wgpu".into()],
         // LOD with pool storages and refloor (cells 2x coarser per level; was gpu-dda-lod).
-        max_lod: 6,
-        lacks: vec![],
+        features: Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays]).with_lod(6),
         params: REGION.lighting_knobs(params()),
     }
 }

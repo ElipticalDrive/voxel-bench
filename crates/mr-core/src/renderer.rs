@@ -3,7 +3,7 @@ use std::sync::Arc;
 use glam::IVec3;
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockId, BlockRegistry, Camera, ChunkData, ChunkKey, Environment, Light, MeshUpdate, ParamSpec, ParamValue, PassMode, RenderMode};
+use crate::{BlockId, BlockRegistry, Camera, ChunkData, ChunkKey, Environment, Light, MeshUpdate, ParamSpec, ParamValue, RenderMode};
 
 /// Static description of a renderer implementation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -13,24 +13,12 @@ pub struct RendererInfo {
     pub description: String,
     /// Free-form category tags (`cpu`, `gpu`, `raster`, `compute`, `raytrace`, ...).
     pub tags: Vec<String>,
-    pub modes: Vec<RenderMode>,
-    /// Highest LOD level the renderer handles, as built for its graph (its client holds no
-    /// coarser one). 0 means full-resolution chunks only.
-    pub max_lod: u8,
-    /// Features this pipeline lacks that others of its kind have, each with the reason
-    /// (`lod: storage `tree64` lacks lod`): what it must not be asked for.
-    #[serde(default)]
-    pub lacks: Vec<String>,
+    /// What it supports (lighting, meshes, mesh rays, LOD levels), each missing feature with
+    /// the reason: what it must not be asked for.
+    pub features: crate::Features,
     /// Knobs this renderer exposes (also its accepted `options` keys).
     #[serde(default)]
     pub params: Vec<ParamSpec>,
-}
-
-impl RendererInfo {
-    /// Whether this renderer can render passes of mode `m` (meshes need the `meshes` tag).
-    pub fn supports(&self, m: PassMode) -> bool {
-        self.modes.contains(&m.lighting) && (!m.meshes || self.tags.iter().any(|t| t == "meshes"))
-    }
 }
 
 /// Everything a renderer receives at construction.

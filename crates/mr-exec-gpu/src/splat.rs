@@ -29,9 +29,7 @@ pub(crate) fn info() -> RendererInfo {
         name: "gpu".into(),
         description: "GPU point splatting (compute): one point per exposed block, atomicMin depth + id buffers, ray-box resolve; lit-mode shadow rays walk the composed storage".into(),
         tags: vec!["gpu".into(), "compute".into(), "points".into(), "splat".into(), "modular".into(), "wgpu".into()],
-        modes: vec![RenderMode::Unlit, RenderMode::Lit],
-        max_lod: 0,
-        lacks: vec![],
+        features: Features::of(&[Feature::Lit]),
         params: REGION.lighting_knobs(vec![
             ParamSpec::int("max_splat", "Largest splat side (px) one thread draws; larger points take a workgroup each", 1, 64, 16, true).of("visibility", &["splat"]),
             shadows_param(),

@@ -127,7 +127,7 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let devices = devices(&params.devices);
     // The renderer's region: its radius, and the levels it asked for that it supports.
     // The renderer is asked only for what it reports: no level beyond its own.
-    let supported = info.max_lod;
+    let supported = info.features.max_lod();
     params.max_lod = params.max_lod.min(supported);
     let levels = params.client;
     let mut client = Client::new(params.view_radius_chunks, params.max_lod, levels);

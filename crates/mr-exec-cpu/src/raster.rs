@@ -44,9 +44,7 @@ pub(crate) fn info() -> RendererInfo {
         name: "cpu".into(),
         description: "CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)".into(),
         tags: vec!["cpu".into(), "raster".into(), "software".into(), "visibility-buffer".into(), "modular".into()],
-        modes: vec![RenderMode::Unlit, RenderMode::Lit],
-        max_lod: 0,
-        lacks: vec![],
+        features: Features::of(&[Feature::Lit]),
         params: REGION.lighting_knobs(params()),
     }
 }

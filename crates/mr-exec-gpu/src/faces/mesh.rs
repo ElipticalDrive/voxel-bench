@@ -44,10 +44,8 @@ pub(crate) fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu".into(),
         description: "GPU rasterisation (wgpu): the geometry component turns chunks into faces on the CPU, drawn with vertex pulling and multi-draw-indirect after chunk and face-direction culling; the storage is what lit-mode shadow rays walk".into(),
-        tags: vec!["gpu".into(), "raster".into(), "hybrid".into(), "modular".into(), "wgpu".into(), "meshes".into()],
-        modes: vec![RenderMode::Unlit, RenderMode::Lit],
-        max_lod: 0,
-        lacks: vec![],
+        tags: vec!["gpu".into(), "raster".into(), "hybrid".into(), "modular".into(), "wgpu".into()],
+        features: Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays]),
         params: REGION.lighting_knobs(params()),
     }
 }

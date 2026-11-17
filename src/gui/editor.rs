@@ -551,8 +551,7 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
                         c = true;
                     }
                 } else if let Some(info) = ctx.infos.iter().find(|x| x.name == r.name) {
-                    let modes: Vec<_> = info.modes.iter().map(|m| m.name()).collect();
-                    ui.weak(format!("[{}] {} — modes: {}", info.tags.join(", "), info.description, modes.join("/")));
+                    ui.weak(format!("[{}] {} — supports: {}", info.tags.join(", "), info.description, info.features.describe()));
                 }
                 let text = &mut ctx.option_text[i];
                 egui::CollapsingHeader::new("options as TOML").id_salt("toml").show(ui, |ui| {

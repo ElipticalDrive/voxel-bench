@@ -27,6 +27,7 @@ mod canonical;
 mod check;
 mod compose;
 mod edit;
+mod features;
 mod model;
 mod schedule;
 mod sites;

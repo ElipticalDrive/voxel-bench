@@ -156,7 +156,14 @@ const MAX_LOD: u8 = 15;
 pub fn entry() -> RendererEntry {
     RendererEntry {
         name: "cpu-reference",
-        info: |p| Ok(RendererInfo { max_lod: if p.options::<Options>()?.lod { MAX_LOD } else { 0 }, ..info() }),
+        info: |p| {
+            let mut i = info();
+            match p.options::<Options>()?.lod {
+                true => i.features = i.features.with_lod(MAX_LOD),
+                false => i.features.lack(Feature::Lod, "the reference holds LOD levels only with `lod = true`"),
+            }
+            Ok(i)
+        },
         create: |p, _, _| Ok(Box::new(CpuReference::new(p)?)),
     }
 }
@@ -165,10 +172,8 @@ pub fn info() -> RendererInfo {
     RendererInfo {
         name: "cpu-reference".into(),
         description: "Multi-threaded f64 two-level DDA ray caster; defines the reference images".into(),
-        tags: vec!["cpu".into(), "raycast".into(), "reference".into(), "meshes".into()],
-        modes: vec![RenderMode::Unlit, RenderMode::Lit],
-        max_lod: 0,
-        lacks: vec![],
+        tags: vec!["cpu".into(), "raycast".into(), "reference".into()],
+        features: Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays]),
         params: params(),
     }
 }

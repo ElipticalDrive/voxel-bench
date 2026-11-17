@@ -27,9 +27,7 @@ pub(crate) fn info() -> RendererInfo {
         name: "gpu".into(),
         description: "Comanche-style Voxel Space: per-column front-to-back heightmap march with a y-buffer (2.5D, no overhangs)".into(),
         tags: vec!["gpu".into(), "compute".into(), "heightmap".into(), "2.5d".into(), "wgpu".into()],
-        modes: vec![RenderMode::Unlit, RenderMode::Lit],
-        max_lod: 0,
-        lacks: vec![],
+        features: Features::of(&[Feature::Lit]),
         params: REGION.lighting_knobs(vec![
             REGION.placement_param("inline"),
             shadows_param(),

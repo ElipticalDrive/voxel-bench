@@ -76,9 +76,7 @@ pub(crate) fn info() -> RendererInfo {
         name: "gpu".into(),
         description: "GPU discovery + raster (the user's idea): a GPU adaptive quadtree of corner rays discovers the visible block faces (coherent tiles add a whole plane footprint), kept in a GPU hash set across frames and rasterised as one quad per face; no read-back. Rays, exposure tests and shadow rays read the composed storage".into(),
         tags: vec!["gpu".into(), "raster".into(), "raytrace".into(), "hybrid".into(), "modular".into(), "wgpu".into()],
-        modes: vec![RenderMode::Unlit, RenderMode::Lit],
-        max_lod: 0,
-        lacks: vec![],
+        features: Features::of(&[Feature::Lit]),
         params: REGION.lighting_knobs(params()),
     }
 }

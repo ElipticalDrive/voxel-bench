@@ -385,7 +385,12 @@ impl RendererSpec {
     /// that builds its shape), a standalone renderer's from `standalone` by name.
     pub fn info(&self, standalone: &[mr_core::RendererInfo]) -> Option<mr_core::RendererInfo> {
         match &self.graph {
-            Some(g) => crate::pipelines::executor_info(g).map(|(_, i)| i),
+            Some(g) => crate::pipelines::executor_info(g).map(|(_, mut i)| {
+                if let Ok(c) = g.check() {
+                    c.narrow(&mut i.features);
+                }
+                i
+            }),
             None => standalone.iter().find(|i| i.name == self.name).cloned(),
         }
     }
@@ -538,21 +543,17 @@ impl RendererSpec {
         }
     }
 
-    /// Whether this renderer draws passes of mode `m`: its lighting modes from `info`, mesh
-    /// support from the graph's meshes stage (standalone renderers: the `meshes` tag).
+    /// Whether this renderer draws passes of mode `m` (`info`'s features, narrowed to its
+    /// graph by [`RendererSpec::info`]).
     pub fn supports(&self, info: &mr_core::RendererInfo, m: PassMode) -> bool {
-        match &self.graph {
-            Some(g) => info.modes.contains(&m.lighting) && (!m.meshes || g.nodes.values().any(|n| n.role == mr_components::graph::Role::Meshes && n.component != "none")),
-            None => info.supports(m),
-        }
+        info.features.supports(m)
     }
 
-    /// What the plan asks of it that the pipeline (`info`, as its worker reported it for this
-    /// graph) lacks, each with the reason: it is not asked for these.
-    pub fn not_supported(&self, run: &RunSpec, info: &mr_core::RendererInfo) -> Vec<String> {
-        let asked = self.max_lod(run, u8::MAX);
-        let why = info.lacks.iter().find_map(|l| l.strip_prefix("lod: ")).map_or_else(|| format!("it holds levels up to {}", info.max_lod), String::from);
-        (asked > info.max_lod).then(|| format!("max_lod {asked}: {why}")).into_iter().collect()
+    /// What the plan asks of it in mode `m` (`None`: a view) that the pipeline (`info`, as its
+    /// worker reported it for this graph) lacks, each with the reason: it is not asked for
+    /// these, or (mesh rays) its frames leave them out.
+    pub fn not_supported(&self, run: &RunSpec, m: Option<PassMode>, info: &mr_core::RendererInfo) -> Vec<String> {
+        info.features.left_out(m, self.max_lod(run, u8::MAX))
     }
 
     /// The edges of its graph whose value arrives a frame late (`node.port`): its frames show
@@ -1247,11 +1248,19 @@ mod tests {
         assert_eq!(key(&cli("discover-gpu,visibility@cpu,visibility@default").unwrap()), key(&cli("discover-gpu").unwrap()));
         assert_eq!(key(&cli("raycast-gpu,visibility.meshes=,-meshes").unwrap()), key(&cli("raycast-gpu,-meshes").unwrap()));
         // No meshes stage: no mesh passes.
-        let info = mr_core::RendererInfo { name: "raycast-gpu".into(), description: String::new(), tags: vec!["meshes".into()], modes: vec![mr_core::RenderMode::Unlit, mr_core::RenderMode::Lit], max_lod: 0, lacks: vec![], params: vec![] };
         let lit_meshes = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
         let bare = cli("raycast-gpu,-meshes").unwrap();
-        assert!(!bare.supports(&info, lit_meshes) && bare.supports(&info, PassMode::LIT));
-        assert!(cli("raycast-gpu").unwrap().supports(&info, lit_meshes));
+        let info = |s: &RendererSpec| s.info(&[]).unwrap();
+        assert!(!bare.supports(&info(&bare), lit_meshes) && bare.supports(&info(&bare), PassMode::LIT));
+        let walk = cli("raycast-gpu").unwrap();
+        assert!(walk.supports(&info(&walk), lit_meshes) && info(&walk).features.left_out(Some(lit_meshes), 0).is_empty());
+        // Forward raster-gpu draws meshes but its shadow rays miss them: said, not hidden.
+        let forward = cli("raster-gpu").unwrap();
+        assert!(forward.supports(&info(&forward), lit_meshes));
+        assert_eq!(info(&forward).features.left_out(Some(lit_meshes), 0), vec!["mesh rays: draw `raster` (`draw`) lacks mesh rays: its shading does not meet the triangles".to_string()]);
+        assert!(info(&forward).features.left_out(Some(PassMode { lighting: mr_core::RenderMode::Unlit, meshes: true }), 0).is_empty());
+        let visbuffer = cli("raster-gpu,draw=visbuffer").unwrap();
+        assert!(info(&visbuffer).features.has(mr_core::Feature::MeshRays));
         // Refused with the reason.
         for (s, why) in [
             ("raycast-gpu,nowhere=tree64", "no node `nowhere` (the graph has "),

@@ -76,10 +76,12 @@ pub fn entry() -> RendererEntry {
 /// What the pipeline of `p`'s graph supports: its region's, less what its components lack.
 fn info_of(p: &InitParams) -> anyhow::Result<RendererInfo> {
     let g = graph::of_init("gpu", p)?;
-    match g.region.expect("of_init: a region").id {
-        RegionId::GpuWalk => raycast::walk::info_of(&g, p),
-        region => Ok(info(region)),
-    }
+    let mut info = match g.region.expect("of_init: a region").id {
+        RegionId::GpuWalk => raycast::walk::info_of(&g, p)?,
+        region => info(region),
+    };
+    g.narrow(&mut info.features);
+    Ok(info)
 }
 
 /// The knobs of every region.

@@ -35,6 +35,9 @@ pub enum Cap {
     Lod,
     /// Traversal: the walk counts its loop iterations (`ct_iters`; the `steps` views).
     Steps,
+    /// Draw: the shading's rays (shadows, bounces) meet mesh triangles, not only voxels (the
+    /// deferred pass binds them; a forward drawer's fragment shader does not).
+    MeshRays,
 }
 
 impl Cap {
@@ -46,6 +49,7 @@ impl Cap {
             Cap::Row => "s_row",
             Cap::Lod => "lod",
             Cap::Steps => "steps",
+            Cap::MeshRays => "mesh_rays",
         }
     }
 }
