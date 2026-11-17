@@ -282,23 +282,25 @@ fn live_compiled_pipeline() {
 fn live_meshes_end_to_end() {
     let plan = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/meshes.toml")), &[
         "run.isolation=\"thread\"".into(),
-        "renderer=[{graph=\"raster-gpu\"},{graph=\"raycast-cpu\"}]".into(),
+        "renderer=[{graph=\"raster-gpu\"},{graph=\"raycast-cpu\"},{graph=\"raster-gpu\",edits=[{node=\"draw\",component=\"visbuffer\"}]}]".into(),
         "run.resolution=[480,270]".into(),
     ])
     .unwrap();
     let mode = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
     let control = Control { camera: CameraControl::Path, mode, scene_frame: 50, events: true, fps_cap: 0.0, display_hz: 30.0, probe_interval: 0.3, windows: 0, paper_white: 1.0 };
     let live = LiveHandle::start(plan, vec![], control, || {});
-    wait(&live.shared, "probes on both lanes", 120, |s| s.lanes.len() == 2 && s.lanes.iter().all(|l| !l.quality.is_empty()));
-    let (with, without) = {
+    wait(&live.shared, "probes on every lane", 120, |s| s.lanes.len() == 3 && s.lanes.iter().all(|l| !l.quality.is_empty()));
+    let [forward, without, deferred] = {
         let sh = live.shared.lock().unwrap();
-        (sh.lanes[0].quality.back().unwrap().psnr, sh.lanes[1].quality.back().unwrap().psnr)
+        std::array::from_fn(|i| sh.lanes[i].quality.back().unwrap().psnr)
     };
-    println!("mesh mode probe: raster-gpu {with:.1} dB, cpu (no meshes) {without:.1} dB");
+    println!("mesh mode probe: raster-gpu {forward:.1} dB, visbuffer {deferred:.1} dB, cpu (no meshes) {without:.1} dB");
     // The forward drawer draws the meshes in its stage.
     let stages = live.shared.lock().unwrap().lanes[0].stages.clone();
     assert!(stages.iter().any(|s| s.name == "draw+shade" && s.nodes.iter().any(|n| n == "meshes")), "{stages:?}");
-    assert!(with > 45.0, "raster-gpu with meshes vs reference: {with:.1} dB");
-    assert!(with > without + 5.0, "meshes should matter: raster-gpu {with:.1} dB, cpu (no meshes) {without:.1} dB");
+    assert!(forward > without + 5.0, "meshes should matter: raster-gpu {forward:.1} dB, cpu (no meshes) {without:.1} dB");
+    // The deferred shading's rays meet the meshes (shadows by meshes, as the reference's);
+    // the forward drawer's do not yet.
+    assert!(deferred > 45.0, "raster-gpu visbuffer with meshes vs reference: {deferred:.1} dB");
     drop(live);
 }

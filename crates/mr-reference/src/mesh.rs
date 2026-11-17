@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use glam::{DVec3, Vec3};
 use mr_core::lighting::srgb_to_linear_f;
+use mr_core::mesh::{BvhNode, build_bvh};
 use mr_core::{MeshData, MeshInstance, MeshUpdate};
 
 struct Tri {
@@ -24,25 +25,12 @@ struct Bounds {
     root: usize,
 }
 
-/// A BVH node: a box around triangles `tris[a..b]` (a leaf) or around children `nodes[a]`,
-/// `nodes[b]`.
-struct Node {
-    lo: DVec3,
-    hi: DVec3,
-    a: usize,
-    b: usize,
-    leaf: bool,
-}
-
-/// Triangles per BVH leaf at most.
-const LEAF: usize = 4;
-
 #[derive(Default)]
 pub struct Meshes {
     data: HashMap<u32, Arc<MeshData>>,
     instances: Vec<MeshInstance>,
     tris: Vec<Tri>,
-    nodes: Vec<Node>,
+    nodes: Vec<BvhNode>,
     bounds: Vec<Bounds>,
     dirty: bool,
 }
@@ -92,9 +80,6 @@ impl Tri {
         self.p0.max(self.p0 + self.e1).max(self.p0 + self.e2)
     }
 
-    fn centroid(&self) -> DVec3 {
-        self.p0 + (self.e1 + self.e2) / 3.0
-    }
 }
 
 impl Meshes {
@@ -139,7 +124,7 @@ impl Meshes {
                 continue;
             }
             let end = self.tris.len();
-            let root = build(&mut self.tris, &mut self.nodes, start, end);
+            let root = build_bvh(&mut self.tris[start..end], &mut self.nodes, start, &|t: &Tri| (t.lo(), t.hi()));
             self.bounds.push(Bounds { center: inst.position, radius: m.radius() as f64 * inst.scale * 1.0001 + 1e-6, root });
         }
     }
@@ -202,26 +187,6 @@ impl Meshes {
         }
         best
     }
-}
-
-/// Builds the BVH over `tris[start..end]` (reordering them; median split on the widest
-/// centroid axis); returns its root.
-fn build(tris: &mut [Tri], nodes: &mut Vec<Node>, start: usize, end: usize) -> usize {
-    let (lo, hi) = tris[start..end].iter().fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), t| (lo.min(t.lo()), hi.max(t.hi())));
-    let n = nodes.len();
-    nodes.push(Node { lo, hi, a: start, b: end, leaf: true });
-    if end - start <= LEAF {
-        return n;
-    }
-    let (clo, chi) = tris[start..end].iter().fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), t| (lo.min(t.centroid()), hi.max(t.centroid())));
-    let ext = chi - clo;
-    let axis = if ext.x >= ext.y && ext.x >= ext.z { 0 } else if ext.y >= ext.z { 1 } else { 2 };
-    let mid = (end - start) / 2;
-    tris[start..end].select_nth_unstable_by(mid, |a, b| a.centroid()[axis].total_cmp(&b.centroid()[axis]));
-    let a = build(tris, nodes, start, start + mid);
-    let b = build(tris, nodes, start + mid, end);
-    nodes[n] = Node { lo, hi, a, b, leaf: false };
-    n
 }
 
 #[cfg(test)]

@@ -34,13 +34,9 @@ fn pt_linear(c: vec4<f32>) -> vec3<f32> {
     return vec3<f32>(srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b));
 }
 
-fn pt_albedo(s: Surface) -> vec3<f32> {
-    return pt_linear(surface_texel(s.block, s.face, s.local));
-}
-
 // Linear radiance (pre-exposure) of one path starting at the primary surface point `p0`
-// with normal `n0` and linear albedo `albedo0` (a voxel face or a mesh); bounces land on
-// voxel surfaces (`strace`, `surface_of`).
+// with normal `n0` and linear albedo `albedo0` (a voxel face or a mesh); bounces land
+// where the bounce rays' `btrace` says (voxel faces, and meshes where the program has them).
 fn pt_path(albedo0: vec3<f32>, p0: vec3<f32>, n0: vec3<f32>) -> vec3<f32> {
     var albedo = albedo0;
     var p = p0;
@@ -57,13 +53,12 @@ fn pt_path(albedo0: vec3<f32>, p0: vec3<f32>, n0: vec3<f32>) -> vec3<f32> {
         radiance += thr * light;
         if (depth == sp.bounces) { break; }
         let d = pt_cosine_dir(n);
-        let h = strace(po, d, vp.max_dist);
-        if (!h.hit) {
+        let s = btrace(po, d, vp.max_dist);
+        if (!s.hit) {
             radiance += thr * vp.ambient;
             break;
         }
-        let s = surface_of(h, po, d);
-        albedo = pt_albedo(s);
+        albedo = pt_linear(s.albedo);
         p = s.p;
         n = s.n;
     }

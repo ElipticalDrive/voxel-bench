@@ -243,10 +243,13 @@ and `lit+meshes`, and the GUI has **Lit** and **Meshes** toggles.
 
 Meshes and voxels occlude each other. A mesh pixel is shaded by the pipeline's shading
 component like a voxel's, with the interpolated vertex colour as its albedo: `direct` lights
-it with the same lights and shadow rays, `pathtrace` bounces off it (bounces land on voxels).
+it with the same lights and shadow rays, `pathtrace` bounces off it.
 The `meshes` node's `shadow` port picks the rays that shadow meshes (unbound: the shading's).
-In the pipelines meshes cast no shadows yet; in the reference they do (on voxels and each
-other) and its bounces land on them too, so a pipeline is scored against the full model. Pipelines with a `meshes` node draw them: `depth` on the
+Meshes are also geometry of the lighting model: they cast shadows (on voxels and each other)
+and bounces land on them, in the reference and in the GPU pipelines whose shading pass has
+the triangles bound (raycast-gpu, raster-gpu with a deferred drawer: `visbuffer`,
+`gbuffer`; the triangles' BVH is rebuilt on the CPU when meshes move). raster-gpu's forward
+drawer (`raster`) and rayquery-gpu do not yet; a pipeline is scored against the full model. Pipelines with a `meshes` node draw them: `depth` on the
 rasterisers (the same depth buffer) and `composite` on raycast-gpu (meshes are rasterised
 first, and rays stop at them). Pipelines without one are skipped in `+meshes` benchmark
 passes, and the GUI labels them "(no meshes)".

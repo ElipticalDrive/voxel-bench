@@ -60,14 +60,27 @@ pub fn kernel(p: &mut Program, path: &str, storage: &str, kernel: &str, consts: 
 }
 
 /// Adds ray services `path` through kernel module `kernel`: `occluded()` for shadow rays,
-/// `strace()` for bounces.
+/// `strace()` and `btrace()` for bounces.
 pub fn rays(p: &mut Program, path: &str, kernel: &str) {
-    p.add(
-        path,
-        "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n\
-         fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit { return ctrace(o, d, max_t); }\n",
-        &[kernel, VOXELS],
-    );
+    let src = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n\
+               fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit { return ctrace(o, d, max_t); }\n";
+    p.add(path, format!("{src}{}", btrace_wgsl(false)), &[kernel, VOXELS]);
+}
+
+/// `btrace()` (where a bounce lands, a `Bounced`) over the module's `strace()`; with
+/// `meshes` the nearer of the voxel hit and the mesh triangles' (`mesh_trace`).
+fn btrace_wgsl(meshes: bool) -> String {
+    let mesh = if meshes {
+        "    let m = mesh_trace(o, d, select(max_t, h.t, h.hit));\n    \
+         if (m.tri != MESH_NONE) {\n        let s = mesh_surface(m.tri, o, d, m.t);\n        return Bounced(true, s.p, s.n, s.color);\n    }\n"
+    } else {
+        ""
+    };
+    format!(
+        "fn btrace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Bounced {{\n    let h = strace(o, d, max_t);\n{mesh}    \
+         if (!h.hit) {{ return Bounced(false, vec3<f32>(0.0), vec3<f32>(0.0), vec4<f32>(0.0)); }}\n    \
+         let s = surface_of(h, o, d);\n    return Bounced(true, s.p, s.n, surface_texel(s.block, s.face, s.local));\n}}\n"
+    )
 }
 
 /// Adds the shadow-ray service `occluded()` at `path`, through kernel module `kernel`.
@@ -181,12 +194,16 @@ impl Walks {
     }
 
     /// Adds ray services `path` through kernel `k` (`occluded()` for shadow rays and/or
-    /// `strace()` for bounces): a module over the kernel's walk, or for a ray query virtual
-    /// functions the program's root overrides with the trace.
-    pub fn services(&self, p: &mut Program, path: &str, k: usize, occluded: bool, strace: bool) {
-        const OCCLUDED: &str = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool";
+    /// `strace()` and `btrace()` for bounces): a module over the kernel's walk, or for a
+    /// ray query virtual functions the program's root overrides with the trace. With
+    /// `meshes` the rays also meet the mesh triangles (the program has [`meshes`]'s
+    /// mesh-surface module): `occluded` by either, `btrace` the nearer.
+    pub fn services(&self, p: &mut Program, path: &str, k: usize, occluded: bool, strace: bool, meshes: bool) {
+        const OCCLUDED: &str = "fn vox_occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool";
         const STRACE: &str = "fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit";
         let mut src = String::new();
+        let kernel = self.kernel_path(k);
+        let mut deps = vec![VOXELS];
         if self.is_query(k) {
             let mut over = String::new();
             if occluded {
@@ -197,7 +214,6 @@ impl Walks {
                 src += &format!("virtual {STRACE} {{ var h: Hit; return h; }}\n");
                 over += &format!("override {} {{ return g_rt_trace(o, d, max_t, false); }}\n", STRACE.replacen("fn ", &format!("fn {path}::"), 1));
             }
-            p.add(path, src, &[VOXELS]);
             p.root(over);
         } else {
             if occluded {
@@ -206,8 +222,19 @@ impl Walks {
             if strace {
                 src += &format!("{STRACE} {{ return ctrace(o, d, max_t); }}\n");
             }
-            p.add(path, src, &[&self.kernel_path(k), VOXELS]);
+            deps.insert(0, &kernel);
         }
+        let mesh_occ = if meshes { "mesh_occluded(p, d, max_t) || " } else { "" };
+        if occluded {
+            src += &format!("fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool {{ return {mesh_occ}vox_occluded(p, d, max_t); }}\n");
+        }
+        if strace {
+            src += &btrace_wgsl(meshes);
+        }
+        if meshes {
+            deps.push(mr_gpu::meshes::MESH_SURFACE);
+        }
+        p.add(path, src, &deps);
     }
 
     pub fn gpu_storage(&self, i: usize) -> GpuStorage {
@@ -251,8 +278,8 @@ impl Walks {
 /// kernel, so a live switch to pathtrace finds them). Adds them to `p` and returns their
 /// module paths.
 pub fn shading_rays(p: &mut Program, walks: &Walks, shadow: usize, bounce: usize) -> Vec<String> {
-    walks.services(p, "rays::shadow", shadow, true, false);
-    walks.services(p, "rays::bounce", bounce, false, true);
+    walks.services(p, "rays::shadow", shadow, true, false, false);
+    walks.services(p, "rays::bounce", bounce, false, true, false);
     vec!["rays::shadow".to_string(), "rays::bounce".to_string()]
 }
 
@@ -262,14 +289,21 @@ pub fn shading_rays(p: &mut Program, walks: &Walks, shadow: usize, bounce: usize
 /// `mesh_shadow` (the program's shading instance when that is the shadow rays' kernel
 /// `shadow`, else an instance of its own with a lighting of its own, its bounces the
 /// shading's); and shader def `MESHES`, which compiles in the record's mesh capability.
+/// With `rays` the shading's rays (`shadow`, `bounce`: [`shading_rays`]'s, replaced) and the
+/// mesh-shadow site's meet the triangles too (meshes cast shadows and take bounces);
+/// without, they see voxels only (programs whose stage lacks the triangles' binding).
 /// Returns the modules' paths for the root's dependencies.
-pub fn meshes(p: &mut Program, walks: &Walks, shading: &str, shadow: usize, mesh_shadow: usize, group: u32, binding: u32) -> Vec<String> {
+pub fn meshes(p: &mut Program, walks: &Walks, shading: &str, [shadow, bounce]: [usize; 2], mesh_shadow: usize, group: u32, binding: u32, rays: bool) -> Vec<String> {
     use mr_gpu::meshes::{MESH_SURFACE, surface_wgsl};
     p.add(MESH_SURFACE, surface_wgsl(group, binding), &[VOXELS, mr_gpu::program::COMMON]);
+    if rays {
+        walks.services(p, "rays::shadow", shadow, true, false, true);
+        walks.services(p, "rays::bounce", bounce, false, true, true);
+    }
     let shade = if mesh_shadow == shadow {
         SHADING
     } else {
-        walks.services(p, "rays::mesh", mesh_shadow, true, false);
+        walks.services(p, "rays::mesh", mesh_shadow, true, false, rays);
         p.add("lighting::mesh", mr_gpu::voxels::LIGHTING_WGSL, &["rays::mesh", VOXELS, mr_gpu::program::POST]);
         shading_instance(p, "shading::meshlit", shading, &["rays::mesh", "rays::bounce"], "lighting::mesh");
         "shading::meshlit"

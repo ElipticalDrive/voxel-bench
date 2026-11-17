@@ -109,7 +109,8 @@ pub struct GpuMeshes {
     data: HashMap<u32, Arc<MeshData>>,
     instances: Vec<MeshInstance>,
     dirty: bool,
-    built_for: Option<IVec3>,
+    /// The camera block and whether with the BVH the triangles were last built for.
+    built_for: Option<(IVec3, bool)>,
     vbuf: wgpu::Buffer,
     vcount: u32,
     frame_buf: wgpu::Buffer,
@@ -167,7 +168,7 @@ impl GpuMeshes {
         gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh vertices"), size, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
     }
 
-    /// The triangles' vertices (seven words each, three per triangle) for
+    /// The triangles (a header, their vertices, their BVH: [`mesh_words`]) for
     /// [`surface_wgsl`]'s binding. It may be replaced by [`Self::prepare`].
     pub fn vertices(&self) -> &wgpu::Buffer {
         &self.vbuf
@@ -197,44 +198,43 @@ impl GpuMeshes {
     }
 
     /// Updates the per-frame uniform and, if instances or the camera's block changed, the
-    /// triangles. Call once per frame before drawing. Returns whether the vertex buffer was
-    /// replaced (bind groups holding [`Self::vertices`] then need rebuilding).
-    pub fn prepare(&mut self, gpu: &Gpu, cam: &Camera, view_proj: glam::Mat4, mode: RenderMode) -> bool {
+    /// triangles; with `rays` (the frame's shading casts rays that meet the triangles: lit,
+    /// in a program with them bound) also their BVH, else an empty one. Call once per frame
+    /// before drawing. Returns whether the vertex buffer was replaced (bind groups holding
+    /// [`Self::vertices`] then need rebuilding).
+    pub fn prepare(&mut self, gpu: &Gpu, cam: &Camera, view_proj: glam::Mat4, mode: RenderMode, rays: bool) -> bool {
         let (cam_block, frac) = cam.split_position();
         let f = MeshFrame { view_proj: view_proj.to_cols_array_2d(), cam_frac: frac.to_array(), mode: (mode == RenderMode::Lit) as u32 };
         gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&f));
-        if !self.dirty && self.built_for == Some(cam_block) {
+        if !self.dirty && self.built_for == Some((cam_block, rays)) {
             return false;
         }
         self.dirty = false;
-        self.built_for = Some(cam_block);
+        self.built_for = Some((cam_block, rays));
         let origin = cam_block.as_dvec3();
-        let mut verts: Vec<Vertex> = vec![];
+        let mut tris: Vec<[Vertex; 3]> = vec![];
         for inst in &self.instances {
             let Some(m) = self.data.get(&inst.mesh) else { continue };
             let xf = inst.matrix_rel(origin);
             for t in m.indices.as_chunks::<3>().0 {
                 let p: [Vec3; 3] = std::array::from_fn(|k| xf.transform_point3(Vec3::from_array(m.positions[t[k] as usize])));
                 let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
-                for (k, &i) in t.iter().enumerate() {
-                    verts.push(Vertex { pos: p[k].to_array(), color: m.colors[i as usize], normal: n.to_array() });
-                }
+                tris.push(std::array::from_fn(|k| Vertex { pos: p[k].to_array(), color: m.colors[t[k] as usize], normal: n.to_array() }));
             }
         }
         // Records name at most MESH_TRIS triangles.
-        if verts.len() > MESH_TRIS * 3 {
-            gpu.fail(format!("meshes: {} triangles, more than the {MESH_TRIS} a hit record can name; frames would miss the rest", verts.len() / 3));
-            verts.truncate(MESH_TRIS * 3);
+        if tris.len() > MESH_TRIS {
+            gpu.fail(format!("meshes: {} triangles, more than the {MESH_TRIS} a hit record can name; frames would miss the rest", tris.len()));
+            tris.truncate(MESH_TRIS);
         }
-        let bytes: &[u8] = bytemuck::cast_slice(&verts);
+        let words = mesh_words(&mut tris, rays);
+        let bytes: &[u8] = bytemuck::cast_slice(&words);
         let grown = bytes.len() as u64 > self.vbuf.size();
         if grown {
             self.vbuf = Self::vertex_buffer(gpu, (bytes.len() as u64).next_power_of_two());
         }
-        if !bytes.is_empty() {
-            gpu.queue.write_buffer(&self.vbuf, 0, bytes);
-        }
-        self.vcount = verts.len() as u32;
+        gpu.queue.write_buffer(&self.vbuf, 0, bytes);
+        self.vcount = tris.len() as u32 * 3;
         grown
     }
 
@@ -261,9 +261,45 @@ impl GpuMeshes {
         if matches!(kind, MeshPass::Records | MeshPass::Ids) {
             pass.set_bind_group(0, &self.bind, &[]);
         }
-        pass.set_vertex_buffer(0, self.vbuf.slice(..));
+        pass.set_vertex_buffer(0, self.vbuf.slice(MESH_HEAD as u64 * 4..));
         pass.draw(0..self.vcount, 0..1);
     }
+}
+
+/// Words before the vertices in the vertex buffer (`MESH_HEAD` in `mesh_surface.wgsl`).
+const MESH_HEAD: usize = 4;
+
+/// The vertex buffer's words as `mesh_surface.wgsl` reads them, reordering `tris` into
+/// their BVH's leaves' order: a header (the BVH's first word, then padding to
+/// [`MESH_HEAD`]), the vertices (seven words each, three per triangle), the BVH. BVH node
+/// `k` (the root `k = 0`) is 8 words: its box (lo, hi: 6 f32), then a leaf's first triangle
+/// and count, or an inner node's children (the second in bits 0-28, its split axis in bits
+/// 29-30, bit 31 set; the first child on the axis' lower side). Without triangles,
+/// or without `bvh`, one empty leaf.
+fn mesh_words(tris: &mut [[Vertex; 3]], bvh: bool) -> Vec<u32> {
+    let mut nodes = vec![];
+    let bounds = |t: &[Vertex; 3]| {
+        let p = t.map(|v| Vec3::from_array(v.pos).as_dvec3());
+        (p[0].min(p[1]).min(p[2]), p[0].max(p[1]).max(p[2]))
+    };
+    if bvh && !tris.is_empty() {
+        mr_core::mesh::build_bvh(tris, &mut nodes, 0, &bounds);
+    }
+    let verts: &[u32] = bytemuck::cast_slice(tris);
+    let start = MESH_HEAD + verts.len();
+    let mut words = vec![0u32; start + nodes.len().max(1) * 8];
+    words[0] = start as u32;
+    words[MESH_HEAD..start].copy_from_slice(verts);
+    for (k, n) in nodes.iter().enumerate() {
+        let w = &mut words[start + k * 8..][..8];
+        // The boxes are of f32 corners, so exact in f32.
+        for i in 0..3 {
+            w[i] = (n.lo[i] as f32).to_bits();
+            w[3 + i] = (n.hi[i] as f32).to_bits();
+        }
+        (w[6], w[7]) = if n.leaf { (n.a as u32, (n.b - n.a) as u32) } else { (n.a as u32, n.b as u32 | (n.axis as u32) << 29 | 1 << 31) };
+    }
+    words
 }
 
 /// The mesh pass's shader (the root of its programs). The root provides `mesh_frame()`
@@ -428,7 +464,7 @@ impl MeshRecords {
             return;
         }
         let view_proj = cam.projection(aspect) * cam.view_rotation();
-        if self.meshes.prepare(gpu, cam, view_proj, mode) {
+        if self.meshes.prepare(gpu, cam, view_proj, mode, mode == RenderMode::Lit) {
             self.rebind(gpu);
         }
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -463,5 +499,86 @@ mod tests {
         wgpu::naga::valid::Validator::new(wgpu::naga::valid::ValidationFlags::all(), wgpu::naga::valid::Capabilities::all()).validate(&m).unwrap();
         assert!(m.entry_points.iter().all(|e| e.name != "mesh_fs"));
         assert!(crate::voxels::VOXELS_WGSL.contains(&format!("const MESH_TRIS: u32 = {:#x}u;", super::MESH_TRIS)));
+    }
+
+    /// `mesh_surface.wgsl`'s walk, word for word on the CPU over the buffer `prepare` writes
+    /// (a header, the triangles, the BVH), finds what testing every triangle finds.
+    #[test]
+    fn bvh_words_walk_matches_brute_force() {
+        use super::{MESH_HEAD, Vertex, mesh_words};
+        use glam::Vec3;
+        let mut seed = 9u32;
+        let mut r = |s: f32| {
+            seed = seed.wrapping_mul(747796405).wrapping_add(2891336453);
+            ((seed >> 8) as f32 / 16777216.0 * 2.0 - 1.0) * s
+        };
+        let mut tris: Vec<[Vertex; 3]> = (0..500)
+            .map(|_| {
+                let c = Vec3::new(r(6.0), r(6.0), r(6.0));
+                std::array::from_fn(|_| Vertex { pos: (c + Vec3::new(r(0.8), r(0.8), r(0.8))).to_array(), color: [0; 4], normal: [0.0; 3] })
+            })
+            .collect();
+        let buf = mesh_words(&mut tris, true);
+        let pos = |v: u32| Vec3::from_array(std::array::from_fn(|k| f32::from_bits(buf[MESH_HEAD + (v * 7) as usize + k])));
+        let tri_t = |tri: u32, o: Vec3, d: Vec3| -> f32 {
+            let p0 = pos(tri * 3);
+            let (e1, e2) = (pos(tri * 3 + 1) - p0, pos(tri * 3 + 2) - p0);
+            let pv = d.cross(e2);
+            let det = e1.dot(pv);
+            if det.abs() < 1e-12 {
+                return -1.0;
+            }
+            let inv = 1.0 / det;
+            let tv = o - p0;
+            let u = tv.dot(pv) * inv;
+            if !(0.0..=1.0).contains(&u) {
+                return -1.0;
+            }
+            let qv = tv.cross(e1);
+            let v = d.dot(qv) * inv;
+            if v < 0.0 || u + v > 1.0 {
+                return -1.0;
+            }
+            e2.dot(qv) * inv
+        };
+        let walk = |o: Vec3, d: Vec3, max_t: f32| -> Option<f32> {
+            let mut best = (max_t, None);
+            let dd = Vec3::select(d.abs().cmplt(Vec3::splat(1e-20)), Vec3::splat(1e-20), d);
+            let inv = dd.recip();
+            let mut stack = vec![0u32];
+            while let Some(k) = stack.pop() {
+                let w = (buf[0] + 8 * k) as usize;
+                let f = |i: usize| f32::from_bits(buf[w + i]);
+                let (lo, hi) = (Vec3::new(f(0), f(1), f(2)), Vec3::new(f(3), f(4), f(5)));
+                let (t0, t1) = ((lo - o) * inv, (hi - o) * inv);
+                if t0.min(t1).max_element().max(0.0) > t0.max(t1).min_element().min(best.0) {
+                    continue;
+                }
+                let (a, b) = (buf[w + 6], buf[w + 7]);
+                if b & 1 << 31 != 0 {
+                    // The far child first, so the near one is walked first.
+                    let (near, far) = if d[(b >> 29 & 3) as usize] < 0.0 { (b & 0x1fff_ffff, a) } else { (a, b & 0x1fff_ffff) };
+                    stack.extend([far, near]);
+                    continue;
+                }
+                for i in a..a + b {
+                    let t = tri_t(i, o, d);
+                    if t > 1e-4 && t < best.0 {
+                        best = (t, Some(i));
+                    }
+                }
+            }
+            best.1.map(|_| best.0)
+        };
+        let mut hits = 0;
+        for _ in 0..2000 {
+            let o = Vec3::new(r(15.0), r(15.0), r(15.0));
+            let d = (Vec3::new(r(6.0), r(6.0), r(6.0)) - o).normalize();
+            let max_t = 5.0 + r(1.0).abs() * 25.0;
+            let brute = (0..tris.len() as u32).map(|i| tri_t(i, o, d)).filter(|&t| t > 1e-4 && t < max_t).min_by(f32::total_cmp);
+            assert_eq!(walk(o, d, max_t), brute);
+            hits += brute.is_some() as u32;
+        }
+        assert!(hits > 200, "{hits} rays hit");
     }
 }

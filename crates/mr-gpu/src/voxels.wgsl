@@ -72,6 +72,10 @@ var<private> ct_iters: u32;
 // a better one), the point within the block (texture lookup), the block and its face.
 struct Surface { p: vec3<f32>, n: vec3<f32>, local: vec3<f32>, block: u32, face: u32 }
 
+// Where a bounce ray lands (`btrace`, the ray services'): the point, the normal facing the
+// ray, the sRGB albedo; voxel faces and, in programs with meshes, mesh triangles.
+struct Bounced { hit: bool, p: vec3<f32>, n: vec3<f32>, albedo: vec4<f32> }
+
 // The surface at hit `h` of ray (`o`, `d`): the adapter for ray walks.
 fn surface_of(h: Hit, o: vec3<f32>, d: vec3<f32>) -> Surface {
     let face = face_entered(h.axis, d[h.axis] > 0.0);

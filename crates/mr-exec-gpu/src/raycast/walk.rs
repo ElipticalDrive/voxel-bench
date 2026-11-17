@@ -250,7 +250,7 @@ impl Composition {
         let rays = shaders::shading_rays(&mut program, &self.walks, self.shadow, self.bounce);
         shaders::shading(&mut program, shading, &rays.iter().map(String::as_str).collect::<Vec<_>>(), 0, crate::STATE_BINDING);
         // Mesh records at group 3 (the triangles at binding 3), lit through the mesh-shadow site.
-        let meshes = meshed.then(|| shaders::meshes(&mut program, &self.walks, shading, self.shadow, self.mesh_shadow, 3, 3));
+        let meshes = meshed.then(|| shaders::meshes(&mut program, &self.walks, shading, [self.shadow, self.bounce], self.mesh_shadow, 3, 3, true));
         let pre = mr_components::prepass::gpu_wgsl(self.prepass()).expect("validated");
         let primary = self.primary();
         let primary_storage = primary.storage.expect("the walk's primary rays walk a storage");

@@ -90,9 +90,12 @@ struct SourceSpec {
     nodes: DrawNodes,
 }
 
-/// The mesh capability's variant of a program.
+/// The mesh capability's variants of a program: `program` for the deferred shading pass,
+/// whose rays meet the triangles (bound in the images group), and `rays_voxels` for the
+/// forward mesh passes, whose rays see voxels only (their layout lacks the triangles).
 struct Meshed {
     program: mr_gpu::program::Program,
+    rays_voxels: mr_gpu::program::Program,
     deps: Vec<String>,
 }
 
@@ -193,9 +196,11 @@ fn programs(walks: &Walks, lead: Option<(usize, usize)>, [shadow, bounce]: [usiz
     let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string()];
     deps.extend(sites);
     let meshed = meshes.map(|mesh_shadow| {
-        let (mut program, mut deps) = (program.clone(), deps.clone());
-        deps.splice(0..0, shaders::meshes(&mut program, walks, shading, shadow, mesh_shadow, 3, 2));
-        Meshed { program, deps }
+        let (mut rays_voxels, mut deps) = (program.clone(), deps.clone());
+        deps.splice(0..0, shaders::meshes(&mut rays_voxels, walks, shading, [shadow, bounce], mesh_shadow, 3, 2, false));
+        let mut program = program.clone();
+        shaders::meshes(&mut program, walks, shading, [shadow, bounce], mesh_shadow, 3, 2, true);
+        Meshed { program, rays_voxels, deps }
     });
     (program, deps, meshed)
 }
@@ -214,10 +219,17 @@ fn mesh_src(shading: &str) -> String {
     shade_state::fragment_wgsl(shading, &format!("{}\n{frame}{}", include_str!("frame.wgsl"), mr_gpu::meshes::MESH_WGSL), "mesh_fs")
 }
 
+impl Draw {
+    /// The drawer shades in a deferred pass (else in its fragment shader).
+    pub(crate) fn deferred(&self) -> bool {
+        DrawMode::parse(&self.draw).is_some_and(DrawMode::deferred)
+    }
+}
+
 impl Meshed {
     /// The program with `SHADE`, for the forward mesh passes.
     fn forward(&self) -> mr_gpu::program::Program {
-        let mut p = self.program.clone();
+        let mut p = self.rays_voxels.clone();
         p.define("SHADE");
         p
     }
@@ -274,6 +286,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
     core.trace_root(&mut program, "0u");
     if let Some(m) = &mut meshed {
         core.trace_root(&mut m.program, "0u");
+        core.trace_root(&mut m.rays_voxels, "0u");
     }
     let draw_src = draw_src(&src.wgsl, src.varyings);
     let buf = |binding| wgpu::BindGroupLayoutEntry {
