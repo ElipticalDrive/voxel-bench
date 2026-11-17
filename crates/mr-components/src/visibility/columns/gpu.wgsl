@@ -94,15 +94,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 #ifdef DEFERRED
                 records[u32(row) * cam.width + gid.x] = pack_hit(t, Surface(p, face_normal(face), local, block, face));
 #else
-                // Lit and unlit call the shading separately (a constant flag; see `raster`).
-                var color: vec4<f32>;
-                if (cam.mode == 1u) {
-                    var n = face_normal(face);
-                    if (!side) { n = slope_normal(cell); }
-                    color = shade_surface(Surface(p, n, local, block, face), d, true, vec2<u32>(gid.x, u32(row)));
-                } else {
-                    color = shade_surface(Surface(p, face_normal(face), local, block, face), d, false, vec2<u32>(gid.x, u32(row)));
-                }
+                // Lit and unlit are separate programs (shader def `LIT`): a runtime flag here
+                // kept the lighting's registers live in unlit frames (+30 % GPU time).
+#ifdef LIT
+                var n = face_normal(face);
+                if (!side) { n = slope_normal(cell); }
+                let color = shade_surface(Surface(p, n, local, block, face), d, true, vec2<u32>(gid.x, u32(row)));
+#else
+                let color = shade_surface(Surface(p, face_normal(face), local, block, face), d, false, vec2<u32>(gid.x, u32(row)));
+#endif
                 textureStore(out_tex, vec2<i32>(i32(gid.x), row), color);
 #endif
             }
