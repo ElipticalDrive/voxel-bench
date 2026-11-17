@@ -100,19 +100,36 @@ pub struct ParamSpec {
     /// Specialisable: compiled pipelines may bake its value in (see the module docs).
     #[serde(default)]
     pub baked: bool,
+    /// Values that work only where the graph has what they need (`view = steps`: a primary
+    /// walk that counts its steps); asked where it lacks it, the value is left out and the
+    /// report says so.
+    #[serde(default)]
+    pub needs: Vec<ValueNeed>,
+}
+
+/// What a knob's value needs of the graph: a node of role `role` (or, with `port`, the
+/// node feeding that node's input `port`) whose component is one of `components`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ValueNeed {
+    pub value: String,
+    pub role: String,
+    pub port: Option<String>,
+    pub components: Vec<String>,
+    /// What those components have, for the report (`steps`: "traversal `x` lacks steps").
+    pub what: String,
 }
 
 impl ParamSpec {
     pub fn bool(name: &str, description: &str, default: bool, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Bool, default: ParamValue::Bool(default), live, owner: None, baked: true }
+        Self { name: name.into(), description: description.into(), kind: ParamKind::Bool, default: ParamValue::Bool(default), live, owner: None, baked: true, needs: vec![] }
     }
 
     pub fn int(name: &str, description: &str, min: i64, max: i64, default: i64, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Int { min, max }, default: ParamValue::Int(default), live, owner: None, baked: false }
+        Self { name: name.into(), description: description.into(), kind: ParamKind::Int { min, max }, default: ParamValue::Int(default), live, owner: None, baked: false, needs: vec![] }
     }
 
     pub fn float(name: &str, description: &str, min: f64, max: f64, log: bool, default: f64, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Float { min, max, log }, default: ParamValue::Float(default), live, owner: None, baked: false }
+        Self { name: name.into(), description: description.into(), kind: ParamKind::Float { min, max, log }, default: ParamValue::Float(default), live, owner: None, baked: false, needs: vec![] }
     }
 
     pub fn choice(name: &str, description: &str, options: &[&str], default: &str, live: bool) -> Self {
@@ -124,6 +141,7 @@ impl ParamSpec {
             live,
             owner: None,
             baked: true,
+            needs: vec![],
         }
     }
 
@@ -136,6 +154,13 @@ impl ParamSpec {
     /// Marks the knob as belonging to `components` of `slot` (see `owner`).
     pub fn of(mut self, slot: &str, components: &[&str]) -> Self {
         self.owner = Some((slot.into(), components.iter().map(|c| c.to_string()).collect()));
+        self
+    }
+
+    /// Value `value` needs a node of `role` (with `port`: the node feeding its input `port`)
+    /// whose component is one of `components`, which have `what` (see [`ValueNeed`]).
+    pub fn needs(mut self, value: &str, role: &str, port: Option<&str>, components: &[&str], what: &str) -> Self {
+        self.needs.push(ValueNeed { value: value.into(), role: role.into(), port: port.map(Into::into), components: components.iter().map(|c| c.to_string()).collect(), what: what.into() });
         self
     }
 

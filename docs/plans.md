@@ -90,6 +90,12 @@ that. What a plan asks of one that lacks it is left out and named in its report
 `raster` (`draw`) lacks mesh rays: ...` for forward raster-gpu's lit `+meshes` passes, whose
 meshes take voxel shadows only): it ran without, and its region and scores are those of what it
 ran. Passes of a mode it lacks entirely (`+meshes` without meshes) are skipped.
+Knobs too: a knob in `options` its pipeline does not have, one whose owning node the graph lacks
+(`bounces` without a `pathtrace` shading), or a value whose need no node meets (`view = steps`
+needs a primary walk that counts its steps; discover-cpu's `clusters` / `kinds` views a
+`cluster` visibility) is left out and named the same way (`knob `bounces`: no shading node of
+`pathtrace` (its shading: `direct`)`). Executors declare a value's needs on its knob
+(`ParamSpec::needs`).
 
 ## Worlds
 

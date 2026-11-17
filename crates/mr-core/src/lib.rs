@@ -26,7 +26,7 @@ pub use features::{Feature, Features};
 pub use legend::{Legend, Reading};
 pub use lighting::{Environment, Light, PassMode, RenderMode, Sun};
 pub use mesh::{MeshData, MeshInstance, MeshUpdate};
-pub use params::{ParamKind, ParamSpec, ParamValue};
+pub use params::{ParamKind, ParamSpec, ParamValue, ValueNeed};
 pub use renderer::*;
 pub use texture::{BlockRegistry, BlockType, TEX_SIZE, Texture};
 

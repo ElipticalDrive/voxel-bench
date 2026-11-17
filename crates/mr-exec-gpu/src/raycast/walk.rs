@@ -55,6 +55,12 @@ pub(crate) fn info() -> RendererInfo {
 }
 
 
+/// The GPU traversals that count their steps (`Cap::Steps`), which `view = steps` needs as
+/// the primary walk.
+fn steps_walks() -> Vec<&'static str> {
+    mr_components::components(Role::Traversal).filter(|c| caps::provides(mr_components::Kind::Gpu, Role::Traversal, c.name, Cap::Steps)).map(|c| c.name).collect()
+}
+
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
         ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
@@ -66,7 +72,7 @@ fn params() -> Vec<ParamSpec> {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("traversal", &["incremental"]));
     }
     p.push(ParamSpec::choice("dispatch", "How pixels are run: `compute` (one compute thread per pixel) or `fragment` (a fragment shader over a full-screen triangle; was gpu-frag-dda)", &["compute", "fragment"], "compute", true));
-    p.push(ParamSpec::choice("view", "image: the rendered scene. steps: primary-ray loop iterations per pixel on a colour scale (log; white above view_max). distance: the primary hit's distance in blocks (linear; white above view_max and for the sky)", &["image", "steps", "distance"], "image", true));
+    p.push(ParamSpec::choice("view", "image: the rendered scene. steps: primary-ray loop iterations per pixel on a colour scale (log; white above view_max). distance: the primary hit's distance in blocks (linear; white above view_max and for the sky)", &["image", "steps", "distance"], "image", true).needs("steps", "visibility", Some("primary"), &steps_walks(), "steps"));
     p.push(ParamSpec::int("view_max", "steps / distance view: the top of the colour scale (iterations / blocks)", 1, 16384, 256, true));
     p.extend([
         shadows_param(),

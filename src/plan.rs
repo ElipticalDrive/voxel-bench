@@ -551,9 +551,14 @@ impl RendererSpec {
 
     /// What the plan asks of it in mode `m` (`None`: a view) that the pipeline (`info`, as its
     /// worker reported it for this graph) lacks, each with the reason: it is not asked for
-    /// these, or (mesh rays) its frames leave them out.
+    /// these, or (mesh rays) its frames leave them out; then the knobs in its options its
+    /// graph leaves out (`Checked::knobs_left_out`: no node to take them, a value's need unmet).
     pub fn not_supported(&self, run: &RunSpec, m: Option<PassMode>, info: &mr_core::RendererInfo) -> Vec<String> {
-        info.features.left_out(m, self.max_lod(run, u8::MAX))
+        let mut out = info.features.left_out(m, self.max_lod(run, u8::MAX));
+        if let Some(c) = self.pipeline().and_then(|g| g.check().ok()) {
+            out.extend(c.knobs_left_out(&info.params, &self.options));
+        }
+        out
     }
 
     /// The edges of its graph whose value arrives a frame late (`node.port`): its frames show
@@ -1261,6 +1266,18 @@ mod tests {
         assert!(info(&forward).features.left_out(Some(PassMode { lighting: mr_core::RenderMode::Unlit, meshes: true }), 0).is_empty());
         let visbuffer = cli("raster-gpu,draw=visbuffer").unwrap();
         assert!(info(&visbuffer).features.has(mr_core::Feature::MeshRays));
+        // Knobs asked of a graph that leaves them out: said, not dropped silently.
+        let left_out = |s: &str, knobs: &[(&str, toml::Value)]| {
+            let mut r = cli(s).unwrap();
+            r.options.extend(knobs.iter().map(|(k, v)| (k.to_string(), v.clone())));
+            r.not_supported(&RunSpec::default(), Some(PassMode::LIT), &info(&r))
+        };
+        assert_eq!(left_out("raycast-gpu", &[("bounces", 3.into())]), vec!["knob `bounces`: no shading node of `pathtrace` (its shading: `direct`)".to_string()]);
+        assert!(left_out("raycast-gpu,shading=pathtrace", &[("bounces", 3.into()), ("view", "steps".into())]).is_empty());
+        assert_eq!(left_out("rayquery-gpu", &[("view", "steps".into())]), vec!["knob `view`: this pipeline has no such knob".to_string()]);
+        assert_eq!(left_out("discover-cpu", &[("view", "kinds".into())]), vec!["`view = kinds`: visibility `quadtree` (`visibility`) lacks clusters".to_string()]);
+        assert!(left_out("discover-cpu,visibility=cluster", &[("view", "kinds".into()), ("seed_step", 8.into())]).is_empty());
+        assert_eq!(left_out("raycast-gpu", &[("nonsense", 1.into())]), vec!["knob `nonsense`: this pipeline has no such knob".to_string()]);
         // Refused with the reason.
         for (s, why) in [
             ("raycast-gpu,nowhere=tree64", "no node `nowhere` (the graph has "),
@@ -1475,6 +1492,12 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
             if path.extension().is_some_and(|x| x == "toml") {
                 let p = Plan::load(&path, &[]).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
                 assert!(p.renderers.iter().all(|r| r.info(&mr_worker::infos()).is_some()));
+                // No knob a plan sets is unknown to its pipeline or left out by its graph.
+                for r in &p.renderers {
+                    let info = r.info(&mr_worker::infos()).unwrap();
+                    let knobs: Vec<String> = r.not_supported(&p.run, None, &info).into_iter().filter(|w| w.starts_with("knob ") || w.starts_with('`')).collect();
+                    assert!(knobs.is_empty(), "{}: {}: {knobs:?}", path.display(), r.label());
+                }
                 n += 1;
             }
         }
