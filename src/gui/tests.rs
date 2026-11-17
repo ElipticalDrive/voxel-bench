@@ -100,7 +100,7 @@ fn ctrl_s_saves_or_flies_backwards() {
     let ctx = egui::Context::default();
     let mut app = App::new(&ctx, None);
     let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/target/test-tmp/ctrl_s"));
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(dir);
     let path = dir.join("plan.toml");
     app.plan_path = Some(path.clone());
     let ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
@@ -133,7 +133,7 @@ fn ctrl_s_saves_or_flies_backwards() {
     run(&mut app, vec![key(false)], ctrl);
     assert!(!path.exists(), "Ctrl+S on the canvas saves nothing");
     let back = -app.cam.forward().with_y(0.0).normalize().as_dvec3();
-    assert!((app.cam.position - start).dot(back) > 0.0, "it flies backwards: {start} → {}", app.cam.position);
+    assert!((app.cam.position - start).dot(back) > 0.0, "it flies backwards: {start} -> {}", app.cam.position);
 }
 
 fn frame(ctx: &egui::Context, app: &mut App, keys: &[Key], t: &mut f64) {

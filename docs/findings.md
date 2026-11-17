@@ -12,8 +12,9 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
   edits, compared with `bricks` + `refloor`). With LOD it is 22% faster.
 - `distance` + `sphere` has the cheapest traversal (0.9 ms against 1.3 ms for `bricks`), but is
   twice as slow under heavy edits: edited chunks are walked cell by cell until their distance
-  field is recomputed. It is also slow to stream: 23–30 ms of world update per frame on the
-  `city` and `islands` plans (bricks: about 1 ms), from a field build quadratic per line.
+  field is recomputed. It streams in about 1–1.5 ms of world update per frame on the `city`
+  and `islands` plans (mean; p95 6–8 ms) since its field is built by bitmask dilation
+  (2026-11-16; was 7–10 ms mean, p95 40–68 ms, from a transform quadratic per line).
 - The stress worlds (2026-10-19, 100 frames each): on `lattice` (beams every 24 blocks) ray
   walks cost 2–4.5 ms of GPU time, while `raster-gpu` takes 0.15 ms; on `checker` (96³, every
   block six faces) rays stop at once (0.06–0.3 ms) while rasterisers pay for hidden faces
