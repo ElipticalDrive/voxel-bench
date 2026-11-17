@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use glam::{IVec3, Vec3};
-use super::{FaceMap, Output, Settings, State};
+use super::{FaceSet, Output, Settings, State};
 use crate::storage::cpu::{Entry, Grid as StorageGrid, Repr};
 use crate::traversal::refloor::cpu::trace_packet;
 use mr_core::chunk::local_of_block;
@@ -43,7 +43,7 @@ pub trait Snapshot: Send + Sync {
     fn discover(&self, st: State, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output;
     /// One ray per pixel for `cam`: (pixels whose face is missing from `s`, distinct missing
     /// faces, pixels hitting geometry). Parallel over rows (rayon's current pool).
-    fn audit(&self, s: &FaceMap, cam: &Camera, w: u32, h: u32) -> (u64, u64, u64);
+    fn audit(&self, s: &FaceSet, cam: &Camera, w: u32, h: u32) -> (u64, u64, u64);
 }
 
 impl<G: World> Snapshot for G {
@@ -51,7 +51,7 @@ impl<G: World> Snapshot for G {
         super::discover(st, self, cam, w, h, set)
     }
 
-    fn audit(&self, s: &FaceMap, cam: &Camera, w: u32, h: u32) -> (u64, u64, u64) {
+    fn audit(&self, s: &FaceSet, cam: &Camera, w: u32, h: u32) -> (u64, u64, u64) {
         super::audit(self, s, cam, w, h)
     }
 }

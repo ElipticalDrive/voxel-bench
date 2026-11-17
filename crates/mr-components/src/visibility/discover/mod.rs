@@ -54,6 +54,19 @@ impl Hasher for KeyHasher {
 
 pub type FaceMap = HashMap<u64, u32, BuildHasherDefault<KeyHasher>>;
 
+/// A face of S: the pass it was last confirmed in and its slot in the drawn records
+/// ([`NO_SLOT`]: not drawn, i.e. not exposed in the current world).
+#[derive(Clone, Copy, Debug)]
+pub struct Known {
+    pub frame: u32,
+    slot: u32,
+}
+
+const NO_SLOT: u32 = u32::MAX;
+
+/// The discovered face set S by face key.
+pub type FaceSet = HashMap<u64, Known, BuildHasherDefault<KeyHasher>>;
+
 pub(crate) const MISS: u64 = u64::MAX;
 const COORD_BITS: u32 = 20;
 const COORD_MASK: u64 = (1 << COORD_BITS) - 1;
@@ -103,8 +116,14 @@ pub(crate) struct Sample {
 /// Persistent discovery state, moved into each background job and back.
 #[derive(Default)]
 pub struct State {
-    /// The discovered face set S: face key -> frame it was last confirmed.
-    pub s: FaceMap,
+    /// The discovered face set S.
+    pub s: FaceSet,
+    /// The drawn records, one per slot and dense (a freed slot takes the last record), each
+    /// slot's face key, and their origin (`None`: not placed yet). The GPU's copy follows
+    /// through [`Records::writes`].
+    recs: Vec<[u32; 2]>,
+    keys: Vec<u64>,
+    anchor: Option<IVec3>,
     pub(crate) samples: Vec<Sample>,
     pub(crate) stamp: Vec<u32>,
     pub(crate) generation: u32,
@@ -115,12 +134,34 @@ pub struct State {
     pub kinds: Vec<(u64, u8, u32)>,
 }
 
-pub struct Output {
-    pub state: State,
-    /// Validated face records for the raster pass (see `record`).
-    pub instances: Vec<[u32; 2]>,
+/// What a pass changed in the drawn records (the face set S validated against the world).
+pub struct Records {
+    /// The slots written since the last pass, ascending, with their records (see `record`);
+    /// all of them when the anchor moved.
+    pub writes: Vec<(u32, [u32; 2])>,
+    /// Slots drawn (`0..count`, no holes).
+    pub count: u32,
     /// Absolute block all records are relative to.
     pub anchor: IVec3,
+    /// Per slot, for the diagnostic views (cluster discovery; empty otherwise):
+    /// kind << 30 | cluster id, 0 for faces carried over from earlier passes.
+    pub tags: Vec<u32>,
+}
+
+impl Records {
+    /// Applies the writes to a copy of the records (`mirror`), resized to `count`.
+    pub fn apply(&self, mirror: &mut Vec<[u32; 2]>) {
+        mirror.resize(self.count as usize, [0; 2]);
+        for &(s, r) in &self.writes {
+            mirror[s as usize] = r;
+        }
+    }
+}
+
+pub struct Output {
+    pub state: State,
+    /// The drawn records' changes.
+    pub records: Records,
     pub rays: u64,
     pub tiles_accepted: u64,
     pub faces_found: u64,
@@ -131,9 +172,6 @@ pub struct Output {
     pub ms: f32,
     /// Algorithm-specific counters.
     pub extra: Vec<(String, f64)>,
-    /// Per instance, for the diagnostic views (cluster discovery; empty otherwise):
-    /// kind << 30 | cluster id, 0 for faces carried over from earlier passes.
-    pub tags: Vec<u32>,
 }
 
 /// Bias for the 15-bit anchor-relative coordinates in a face record.
@@ -222,33 +260,113 @@ pub fn discover<G: World>(st: State, grid: &G, cam: &Camera, w: u32, h: u32, set
 }
 
 /// Merges this pass's faces into the temporal set S (expiring faces not confirmed for
-/// `keep_frames` passes), then validates S against the current world and builds the raster
-/// records relative to `anchor`; with `tags`, also each record's tag (0 if absent).
-pub fn finalize<G: World>(st: &mut State, mut found: Vec<u64>, grid: &G, anchor: IVec3, keep_frames: u32, tags: Option<&FaceMap>) -> (Vec<[u32; 2]>, Vec<u32>) {
+/// `keep_frames` passes), then validates S against the current world and hands back what
+/// changed in the drawn records: a face drawn keeps its slot and record while it stays exposed,
+/// so a pass writes only the faces that appeared, vanished (the last record fills the hole)
+/// or changed block. The records' anchor stays put until an exposed face falls out of its
+/// range but not out of `cam`'s (the camera block's), then moves to `cam` and every record is
+/// written; faces out of range of both are not drawn. With `tags`, also each slot's tag (0 if
+/// absent).
+pub fn finalize<G: World>(st: &mut State, mut found: Vec<u64>, grid: &G, cam: IVec3, keep_frames: u32, tags: Option<&FaceMap>) -> Records {
     let frame = st.frame;
     found.par_sort_unstable();
     found.dedup();
     for k in found {
-        st.s.insert(k, frame);
+        st.s.entry(k).and_modify(|e| e.frame = frame).or_insert(Known { frame, slot: NO_SLOT });
     }
     let keep = keep_frames.max(1);
-    st.s.retain(|_, f| frame.wrapping_sub(*f) < keep);
+    let keys = &mut st.keys;
+    st.s.retain(|_, e| {
+        let kept = frame.wrapping_sub(e.frame) < keep;
+        if !kept && e.slot != NO_SLOT {
+            keys[e.slot as usize] = MISS;
+        }
+        kept
+    });
+    let changes = match st.anchor.map(|a| changes(st, grid, a, Some(cam))) {
+        Some(Ok(c)) => c,
+        _ => {
+            // Not placed yet, or a face out of range: everything again around the camera
+            // (faces out of range of it are dropped).
+            st.anchor = Some(cam);
+            st.recs.clear();
+            st.keys.clear();
+            st.s.values_mut().for_each(|e| e.slot = NO_SLOT);
+            changes(st, grid, cam, None).unwrap_or_default()
+        }
+    };
+    // Faces no longer exposed leave their slots; then the holes are filled from the end.
+    let mut written = Vec::new();
+    for (k, r) in &changes {
+        if r.is_none() {
+            let e = st.s.get_mut(k).expect("in S");
+            st.keys[e.slot as usize] = MISS;
+            e.slot = NO_SLOT;
+        }
+    }
+    let mut holes: Vec<u32> = (0..st.keys.len() as u32).filter(|&i| st.keys[i as usize] == MISS).collect();
+    holes.reverse();
+    loop {
+        while st.keys.last() == Some(&MISS) {
+            st.keys.pop();
+            st.recs.pop();
+        }
+        let Some(h) = holes.pop() else { break };
+        if h as usize >= st.keys.len() {
+            break;
+        }
+        let (k, r) = (st.keys.pop().expect("live"), st.recs.pop().expect("live"));
+        st.keys[h as usize] = k;
+        st.recs[h as usize] = r;
+        st.s.get_mut(&k).expect("in S").slot = h;
+        written.push(h);
+    }
+    // Faces newly exposed take a slot at the end; changed ones are rewritten in place.
+    for (k, r) in changes {
+        let Some(r) = r else { continue };
+        let e = st.s.get_mut(&k).expect("in S");
+        if e.slot == NO_SLOT {
+            e.slot = st.recs.len() as u32;
+            st.recs.push(r);
+            st.keys.push(k);
+        } else {
+            st.recs[e.slot as usize] = r;
+        }
+        written.push(e.slot);
+    }
+    written.sort_unstable();
+    written.dedup();
+    let count = st.recs.len() as u32;
+    let writes = written.into_iter().take_while(|&s| s < count).map(|s| (s, st.recs[s as usize])).collect();
+    let tags = tags.map_or_else(Vec::new, |t| st.keys.par_iter().map(|k| t.get(k).copied().unwrap_or(0)).collect());
+    Records { writes, count, anchor: st.anchor.expect("placed"), tags }
+}
+
+/// The faces of S whose drawn record changes with `anchor`: `Some` = its record (newly
+/// exposed or changed block), `None` = no longer exposed (or out of range). `Err` when an
+/// exposed face is out of the records' range but in range of `cam`.
+fn changes<G: World>(st: &State, grid: &G, anchor: IVec3, cam: Option<IVec3>) -> Result<Vec<(u64, Option<[u32; 2]>)>, ()> {
     st.s
         .par_iter()
-        .filter_map(|(&k, _)| {
+        .filter_map(|(&k, e)| {
             let (cell, face) = unpack_key(k);
             let block = grid.block(cell);
-            if block == 0 || grid.block(cell + Face::from_index(face as usize).normal()) != 0 {
-                return None;
+            let exposed = block != 0 && grid.block(cell + Face::from_index(face as usize).normal()) == 0;
+            let rec = if exposed { record(cell - anchor, face, block) } else { None };
+            match (rec, e.slot) {
+                (None, _) if exposed && cam.is_some_and(|c| record(cell - c, face, block).is_some()) => Some(Err(())),
+                (None, NO_SLOT) => None,
+                (None, _) => Some(Ok((k, None))),
+                (Some(r), s) if s != NO_SLOT && st.recs[s as usize] == r => None,
+                (Some(r), _) => Some(Ok((k, Some(r)))),
             }
-            record(cell - anchor, face, block).map(|r| (r, tags.and_then(|t| t.get(&k).copied()).unwrap_or(0)))
         })
-        .unzip()
+        .collect()
 }
 
 /// One ray per pixel for `cam`: (pixels whose face is missing from `s`, distinct missing
 /// faces, pixels hitting geometry); `audit = true` measures discovery's holes with it.
-pub fn audit<G: World>(grid: &G, s: &FaceMap, cam: &Camera, w: u32, h: u32) -> (u64, u64, u64) {
+pub fn audit<G: World>(grid: &G, s: &FaceSet, cam: &Camera, w: u32, h: u32) -> (u64, u64, u64) {
     let rays = Rays::new(cam, w, h, 0.0);
     let (bmin, bmax) = grid.bounds_rel(rays.cb);
     let (px, hit, mut keys) = (0..h)
@@ -273,4 +391,93 @@ pub fn audit<G: World>(grid: &G, s: &FaceMap, cam: &Camera, w: u32, h: u32) -> (
     keys.sort_unstable();
     keys.dedup();
     (px, keys.len() as u64, hit)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::visibility::discover::grid::Hit;
+
+    /// Blocks by cell; rays are not cast here.
+    struct Blocks(HashMap<IVec3, u16>);
+
+    impl World for Blocks {
+        fn trace(&self, _: IVec3, _: Vec3, _: Vec3, _: IVec3, _: IVec3) -> Option<Hit> {
+            None
+        }
+        fn block(&self, abs: IVec3) -> u16 {
+            self.0.get(&abs).copied().unwrap_or(0)
+        }
+        fn bounds_rel(&self, _: IVec3) -> (IVec3, IVec3) {
+            (IVec3::ZERO, IVec3::ZERO)
+        }
+    }
+
+    /// A buffer written only by the passes' changes holds exactly the records of S's exposed
+    /// faces, each once, through finds, expiry, block edits and a camera far enough away to move
+    /// the anchor; and the passes write a small part of what rewriting every record would.
+    #[test]
+    fn writes_only_changes() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as u32
+        };
+        let mut world = Blocks(HashMap::new());
+        for _ in 0..4000 {
+            let c = IVec3::new(rnd(40) as i32, rnd(40) as i32, rnd(40) as i32);
+            world.0.insert(c, 1 + rnd(5) as u16);
+        }
+        let cells: Vec<IVec3> = world.0.keys().copied().collect();
+        let far: Vec<IVec3> = (0..200).map(|i| IVec3::new(20_000 + i % 10, i / 10, 0)).collect();
+        for &c in &far {
+            world.0.insert(c, 1);
+        }
+        let (mut st, mut gpu) = (State::default(), Vec::new());
+        let (mut written, mut full, mut anchors) = (0usize, 0usize, Vec::new());
+        for pass in 0..200u32 {
+            // A far camera for a few passes finds faces out of the anchor's range and moves it
+            // (the faces near the origin out of range of both are not drawn, and the anchor
+            // stays), then back.
+            let away = (100..104).contains(&pass);
+            let cam = if away { IVec3::new(20_000, 0, 0) } else { IVec3::new(rnd(8) as i32, 0, 0) };
+            let at = if away { &far } else { &cells };
+            let found: Vec<u64> = (0..300).map(|_| face_key(at[rnd(at.len() as u32) as usize], rnd(6))).collect();
+            for _ in 0..20 {
+                let c = cells[rnd(cells.len() as u32) as usize];
+                world.0.insert(c, rnd(6) as u16);
+            }
+            st.frame = pass;
+            let r = finalize(&mut st, found, &world, cam, 8, None);
+            assert!(r.writes.windows(2).all(|w| w[0].0 < w[1].0));
+            r.apply(&mut gpu);
+            written += r.writes.len();
+            full += r.count as usize;
+            anchors.push(r.anchor);
+            if pass == 103 {
+                assert_eq!(r.count as usize, gpu.len());
+                assert!(st.s.keys().any(|&k| unpack_key(k).0.x < 100), "near faces still in S, not drawn");
+            }
+            let mut want: Vec<[u32; 2]> = st
+                .s
+                .keys()
+                .filter_map(|&k| {
+                    let (cell, face) = unpack_key(k);
+                    let block = world.block(cell);
+                    (block != 0 && world.block(cell + Face::from_index(face as usize).normal()) == 0).then(|| record(cell - r.anchor, face, block)).flatten()
+                })
+                .collect();
+            let mut have = gpu.clone();
+            want.sort_unstable();
+            have.sort_unstable();
+            assert_eq!(have, want, "pass {pass}");
+        }
+        anchors.dedup();
+        assert_eq!(anchors.len(), 3, "the anchor moved away and back: {anchors:?}");
+        assert!(written * 3 < full, "{written} records written of {full}");
+    }
 }

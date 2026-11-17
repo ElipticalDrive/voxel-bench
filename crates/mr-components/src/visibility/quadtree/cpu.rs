@@ -141,8 +141,8 @@ pub(crate) fn quadtree<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, 
     let t_quad = start.elapsed().as_secs_f32() * 1e3;
     let faces_found = found.len() as u64;
     let _ = frame;
-    let (instances, _) = finalize(&mut st, found, grid, rays.cb, set.keep_frames, None);
-    Output { state: st, instances, anchor: rays.cb, rays: rays_cast, tiles_accepted: accepted, faces_found, quad_ms: [gather_ms, trace_ms, classify_ms], phase_ms: [t_quad, 0.0, start.elapsed().as_secs_f32() * 1e3 - t_quad], ms: start.elapsed().as_secs_f32() * 1e3, extra: vec![], tags: vec![] }
+    let records = finalize(&mut st, found, grid, rays.cb, set.keep_frames, None);
+    Output { state: st, records, rays: rays_cast, tiles_accepted: accepted, faces_found, quad_ms: [gather_ms, trace_ms, classify_ms], phase_ms: [t_quad, 0.0, start.elapsed().as_secs_f32() * 1e3 - t_quad], ms: start.elapsed().as_secs_f32() * 1e3, extra: vec![] }
 }
 
 /// Enumerates exposed faces on the common plane of the four corner samples inside the

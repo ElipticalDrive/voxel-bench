@@ -294,11 +294,10 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
     let t_disc = start.elapsed().as_secs_f32() * 1e3;
     let faces_found = found.len() as u64;
     let tag_map: FaceMap = st.kinds.iter().map(|&(k, kind, id)| (k, (kind as u32) << 30 | (id & 0x3fff_ffff))).collect();
-    let (instances, tags) = finalize(&mut st, found, grid, rays.cb, set.keep_frames, Some(&tag_map));
+    let records = finalize(&mut st, found, grid, rays.cb, set.keep_frames, Some(&tag_map));
     let mut out = Output {
         state: st,
-        instances,
-        anchor: rays.cb,
+        records,
         rays: seed_rays + corner_rays,
         tiles_accepted: confirmed,
         faces_found,
@@ -306,7 +305,6 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
         quad_ms: [seed_ms, corner_ms, fill_ms],
         ms: start.elapsed().as_secs_f32() * 1e3,
         extra: vec![],
-        tags,
     };
     out.extra = vec![
         ("seed_rays".into(), seed_rays as f64),

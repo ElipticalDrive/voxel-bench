@@ -2,6 +2,7 @@
 import os
 import pathlib
 import subprocess
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXE = ".exe" if os.name == "nt" else ""
@@ -20,6 +21,19 @@ def before():
 def build_release():
     """`cargo build --release -q`; True when it succeeded."""
     return subprocess.run(["cargo", "build", "--release", "-q"], cwd=ROOT).returncode == 0
+
+
+def after_build():
+    """The "after" side of an A/B: release rebuilt from the working tree (save-before.py leaves the
+    old code's build there), unless AFTER_BIN names another binary; exits when the build fails or
+    equals the saved "before" build (fine with AFTER_ARGS: an A/B of a setting)."""
+    import filecmp
+    if os.environ.get("AFTER_BIN"):
+        return
+    if not build_release():
+        sys.exit("release build failed")
+    if before().exists() and filecmp.cmp(before(), release(), shallow=False) and not os.environ.get("SAME_OK") and not os.environ.get("AFTER_ARGS"):
+        sys.exit("the release build equals the saved \"before\" build: nothing to compare (SAME_OK=1 for a noise floor)")
 
 
 def run_logged(args, log, env=None):

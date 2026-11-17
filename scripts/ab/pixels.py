@@ -12,9 +12,10 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from mr import ROOT, before, fresh, release, run_logged
+from mr import ROOT, after_build, before, fresh, release, run_logged
 
 plan, rb = sys.argv[1], sys.argv[2]
+after_build()
 rest = sys.argv[3:]
 ra = rb
 if rest and not rest[0].startswith("-"):

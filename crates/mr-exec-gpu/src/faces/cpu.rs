@@ -14,6 +14,9 @@
 //! face (8-byte face record, analytic UVs, lit mode with ray-traced shadows in the fragment
 //! shader). If S is complete, the image equals rasterising the whole world.
 //!
+//! A face keeps its slot in the records while it stays exposed (the records' origin stays put
+//! until a face leaves its range), so each pass writes only the records that changed.
+//!
 //! The upload of the records is the schedule's transfer of the faces from the CPU to the
 //! GPU; its timing is the pipelining (the drawer's faces `prev`; the `pipelined` knob spells
 //! it): discovery for frame N+1 runs on a rayon pool while the GPU renders frame N,
@@ -23,7 +26,7 @@
 //! (and the first after a resize) discovers synchronously.
 //!
 //! Counters: `rays` / `rays_per_pixel` (discovery rays), `faces_s` (|S|), `faces_drawn`
-//! (valid records uploaded), `discovery_ms` (CPU job time), `wait_ms` (render thread
+//! (valid records on the GPU), `faces_uploaded` (records written this frame), `discovery_ms` (CPU job time), `wait_ms` (render thread
 //! blocked on the job). `audit=true` also casts one CPU ray per pixel for the rendered
 //! camera and counts pixels / distinct faces visible but missing from S.
 
@@ -37,7 +40,7 @@ use mr_components::graph::{Checked, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
 use mr_components::storage::gpu_data::Bound;
-use mr_components::visibility::discover::{Output, Settings, State, grid};
+use mr_components::visibility::discover::{Output, Records, Settings, State, grid};
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{DEVICE_BOUND, GrowableBuffer, wgpu};
@@ -179,6 +182,12 @@ pub(crate) struct CpuSampler {
     pending: Option<Receiver<Output>>,
     prev_cam: Option<Camera>,
     rec_buf: GrowableBuffer,
+    /// What `rec_buf` holds once the queued writes land (the discovery state's records as of
+    /// the last pass received), and the slots changed since the last upload.
+    mirror: Vec<[u32; 2]>,
+    dirty: Vec<u32>,
+    /// Records written to the GPU this frame.
+    uploaded: u32,
     /// Per-record tags for the diagnostic views (cluster discovery).
     tag_buf: GrowableBuffer,
     tags_valid: bool,
@@ -278,6 +287,9 @@ impl CpuSampler {
             pending: None,
             prev_cam: None,
             rec_buf,
+            mirror: Vec::new(),
+            dirty: Vec::new(),
+            uploaded: 0,
             tag_buf,
             tags_valid: false,
             bind0: None,
@@ -288,10 +300,12 @@ impl CpuSampler {
         Ok((core, s))
     }
 
-    /// Takes back the state from an in-flight job (discarding its result).
+    /// Takes back the state from an in-flight job (its records' changes kept for the next
+    /// upload, as the state has them).
     fn cancel_pending(&mut self) {
         if let Some(rx) = self.pending.take()
             && let Ok(out) = rx.recv() {
+            self.receive(&out.records);
             self.state = Some(out.state);
         }
         if self.state.is_none() {
@@ -299,29 +313,52 @@ impl CpuSampler {
         }
     }
 
-    /// The transfer adapter of the faces (CPU to GPU): the records into `rec_buf`, the
-    /// views' tags into `tag_buf`; returns how many records the GPU draws.
+    /// A pass's records' changes into the mirror (uploaded by the next [`Self::upload`]).
+    fn receive(&mut self, r: &Records) {
+        r.apply(&mut self.mirror);
+        self.dirty.extend(r.writes.iter().map(|&(s, _)| s));
+    }
+
+    /// The transfer adapter of the faces (CPU to GPU): the records that changed into `rec_buf`
+    /// (runs of slots closer than [`GAP`] merged into one write), the views' tags into
+    /// `tag_buf`; returns how many records the GPU draws.
     fn upload(&mut self, core: &Core, out: &Output) -> u32 {
-        // Full rewrite: S changes little but records are anchor-relative and validated
-        // against the current world every pass.
-        let n = out.instances.len() as u32;
+        /// Unchanged slots between two changed ones written with them rather than splitting
+        /// the write.
+        const GAP: u32 = 64;
+        self.receive(&out.records);
+        let n = self.mirror.len() as u32;
         let bytes = n as u64 * REC_BYTES;
+        self.uploaded = 0;
         if let Some(grew) = self.rec_buf.reserve(&core.gpu, bytes, DEVICE_BOUND) {
             if grew {
                 self.bind0 = None;
             }
-            if n > 0 {
-                core.gpu.queue.write_buffer(self.rec_buf.buffer(), 0, bytemuck::cast_slice(&out.instances));
+            let mut dirty = std::mem::take(&mut self.dirty);
+            dirty.sort_unstable();
+            dirty.dedup();
+            let mut runs = dirty.into_iter().filter(|&s| s < n).peekable();
+            while let Some(a) = runs.next() {
+                let mut b = a;
+                while let Some(&c) = runs.peek()
+                    && c - b <= GAP {
+                    b = c;
+                    runs.next();
+                }
+                let recs = &self.mirror[a as usize..=b as usize];
+                core.gpu.queue.write_buffer(self.rec_buf.buffer(), a as u64 * REC_BYTES, bytemuck::cast_slice(recs));
+                self.uploaded += recs.len() as u32;
             }
         }
         // Tags for the views, when the algorithm provides them.
+        let tags = &out.records.tags;
         self.tags_valid = false;
-        if out.tags.len() == out.instances.len() && !out.tags.is_empty() && self.opts.view != "image"
-            && let Some(grew) = self.tag_buf.reserve(&core.gpu, out.tags.len() as u64 * 4, DEVICE_BOUND) {
+        if tags.len() == n as usize && !tags.is_empty() && self.opts.view != "image"
+            && let Some(grew) = self.tag_buf.reserve(&core.gpu, tags.len() as u64 * 4, DEVICE_BOUND) {
             if grew {
                 self.bind0 = None;
             }
-            core.gpu.queue.write_buffer(self.tag_buf.buffer(), 0, bytemuck::cast_slice(&out.tags));
+            core.gpu.queue.write_buffer(self.tag_buf.buffer(), 0, bytemuck::cast_slice(tags));
             self.tags_valid = true;
         }
         if bytes <= self.rec_buf.size() { n } else { 0 }
@@ -467,7 +504,8 @@ impl exec::State for CpuSampler {
     }
 
     fn memory(&self, core: &Core) -> (u64, u64) {
-        let s = self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16);
+        // S (key + entry), the state's records and keys, the mirror.
+        let s = self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16) + self.mirror.len() as u64 * 24;
         (self.cpu.memory() + s + (core.width as u64 + 1) * (core.height as u64 + 1) * 36, self.rec_buf.size() + self.drawing.memory_bytes(core))
     }
 }
@@ -539,7 +577,7 @@ impl Region for CpuSampler {
         } else {
             0
         };
-        self.drawing.write_frame(core, &c, req.mode, view, out.anchor);
+        self.drawing.write_frame(core, &c, req.mode, view, out.records.anchor);
         let world = core.world.prepare(&core.gpu, &c).clone();
         core.accum.begin(&core.gpu, &c, req.mode);
         let pixels = (w as f64) * (h as f64);
@@ -548,6 +586,7 @@ impl Region for CpuSampler {
             ("rays_per_pixel".into(), out.rays as f64 / pixels),
             ("faces_s".into(), faces_s as f64),
             ("faces_drawn".into(), n as f64),
+            ("faces_uploaded".into(), self.uploaded as f64),
             ("faces_found".into(), out.faces_found as f64),
             ("quadtree_ms".into(), out.phase_ms[0] as f64),
             ("gather_ms".into(), out.quad_ms[0] as f64),

@@ -13,9 +13,10 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from mr import ROOT, before, fresh, release, run_logged
+from mr import ROOT, after_build, before, fresh, release, run_logged
 
 plan, renderers, rounds, extra = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4:]
+after_build()
 t = fresh(ROOT / "target" / "ab" / "perf")
 for i in range(1, rounds + 1):
     for side in ("before", "after"):
