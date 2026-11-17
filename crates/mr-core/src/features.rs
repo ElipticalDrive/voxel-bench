@@ -20,6 +20,10 @@ pub enum Feature {
     MeshRays,
     /// LOD chunks beyond level 0 (the client's coarser rings); up to [`Features::max_lod`].
     Lod,
+    /// See-through blocks (glass, grates) shown with what is behind them, composited front
+    /// to back. Asked by the world (one holding such blocks), not by the pass; pipelines
+    /// without it draw them opaque.
+    Transparency,
 }
 
 impl Feature {
@@ -29,6 +33,7 @@ impl Feature {
             Feature::Meshes => "meshes",
             Feature::MeshRays => "mesh rays",
             Feature::Lod => "lod",
+            Feature::Transparency => "transparency",
         }
     }
 }
@@ -100,9 +105,10 @@ impl Features {
         (m.lighting == RenderMode::Unlit || self.has(Feature::Lit)) && (!m.meshes || self.has(Feature::Meshes))
     }
 
-    /// What a pass of mode `m` (`None`: an interactive view) with LOD levels up to `max_lod`
+    /// What a pass of mode `m` (`None`: an interactive view) with LOD levels up to `max_lod`,
+    /// over a world asking the features `world` (see-through blocks: [`Feature::Transparency`]),
     /// asks of it that it leaves out, each with the reason.
-    pub fn left_out(&self, m: Option<PassMode>, max_lod: u8) -> Vec<String> {
+    pub fn left_out(&self, m: Option<PassMode>, max_lod: u8, world: &[Feature]) -> Vec<String> {
         let mut out = vec![];
         let mut missing = |f: Feature| {
             if let Some(why) = self.why_not(f) {
@@ -120,6 +126,9 @@ impl Features {
             if lit && m.meshes && self.has(Feature::Meshes) {
                 missing(Feature::MeshRays);
             }
+        }
+        for &f in world {
+            missing(f);
         }
         if max_lod > self.max_lod() {
             let why = self.why_not(Feature::Lod).unwrap_or_else(|| format!("it holds levels up to {}", self.max_lod()));
@@ -145,14 +154,17 @@ mod tests {
         let mut f = Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays]).with_lod(6);
         assert_eq!(f.max_lod(), 6);
         let lit_meshes = PassMode { lighting: RenderMode::Lit, meshes: true };
-        assert!(f.supports(lit_meshes) && f.left_out(Some(lit_meshes), 6).is_empty());
+        assert!(f.supports(lit_meshes) && f.left_out(Some(lit_meshes), 6, &[]).is_empty());
         f.lack(Feature::MeshRays, "draw `raster` shades forward");
         f.lack(Feature::Lod, "storage `tree64` lacks lod");
         assert!(f.supports(lit_meshes));
-        assert_eq!(f.left_out(Some(lit_meshes), 2), vec!["mesh rays: draw `raster` shades forward".to_string(), "max_lod 2: storage `tree64` lacks lod".into()]);
-        assert!(f.left_out(Some(PassMode::UNLIT), 0).is_empty());
+        assert_eq!(f.left_out(Some(lit_meshes), 2, &[]), vec!["mesh rays: draw `raster` shades forward".to_string(), "max_lod 2: storage `tree64` lacks lod".into()]);
+        assert!(f.left_out(Some(PassMode::UNLIT), 0, &[]).is_empty());
+        f.lack(Feature::Transparency, "visibility `raycast` lacks layers");
+        assert!(f.supports(PassMode::UNLIT), "a world's ask skips no pass");
+        assert_eq!(f.left_out(Some(PassMode::UNLIT), 0, &[Feature::Transparency]), vec!["transparency: visibility `raycast` lacks layers".to_string()]);
         let plain = Features::of(&[Feature::Lit]);
         assert!(!plain.supports(lit_meshes) && plain.supports(PassMode::LIT));
-        assert_eq!(plain.left_out(None, 1), vec!["max_lod 1: its executor does not build it".to_string()]);
+        assert_eq!(plain.left_out(None, 1, &[]), vec!["max_lod 1: its executor does not build it".to_string()]);
     }
 }

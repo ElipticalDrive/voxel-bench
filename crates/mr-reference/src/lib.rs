@@ -173,7 +173,7 @@ pub fn info() -> RendererInfo {
         name: "cpu-reference".into(),
         description: "Multi-threaded f64 two-level DDA ray caster; defines the reference images".into(),
         tags: vec!["cpu".into(), "raycast".into(), "reference".into()],
-        features: Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays]),
+        features: Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays, Feature::Transparency]),
         params: params(),
     }
 }

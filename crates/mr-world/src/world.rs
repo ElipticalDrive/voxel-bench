@@ -94,6 +94,17 @@ impl World {
             .collect()
     }
 
+    /// The features this world asks of a pipeline: its generator's ([`WorldGen::asks`]), and
+    /// [`mr_core::Feature::Transparency`] once an edited chunk holds a see-through block.
+    pub fn asks(&self, blocks: &mr_core::BlockRegistry) -> Vec<mr_core::Feature> {
+        let mut out = self.generator.asks();
+        let t = mr_core::Feature::Transparency;
+        if !out.contains(&t) && self.edited.iter().any(|&pos| self.chunks.get(&ChunkKey { pos, lod: 0 }).is_some_and(|c| blocks.chunk_see_through(c))) {
+            out.push(t);
+        }
+        out
+    }
+
     /// Every edit made so far, as the blocks that differ from the generator's (what a client
     /// generating the world itself needs to join).
     pub fn edits(&self) -> Vec<BlockEdit> {

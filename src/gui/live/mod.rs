@@ -267,6 +267,9 @@ pub struct Shared {
     pub closed_windows: Vec<usize>,
     /// A presenter window's keys changed the paper white: the GUI takes it over.
     pub paper_white: Option<f32>,
+    /// What the world asks of a pipeline (`mr_world::World::asks`: transparency once it
+    /// holds see-through blocks); lane titles name what a pipeline leaves out of it.
+    pub asks: Vec<mr_core::Feature>,
 }
 
 impl Shared {

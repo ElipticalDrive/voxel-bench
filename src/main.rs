@@ -319,7 +319,7 @@ impl Ctx<'_> {
         spec.run_label(&self.plan.run)
     }
 
-    fn spawn_lanes(&self, specs: &[RendererSpec], mode: Option<PassMode>) -> (Vec<Lane>, Vec<PassReport>) {
+    fn spawn_lanes(&self, specs: &[RendererSpec], mode: Option<PassMode>, asks: &[mr_core::Feature]) -> (Vec<Lane>, Vec<PassReport>) {
         let run = &self.plan.run;
         let [w, h] = run.resolution;
         let (mut lanes, mut failed) = (vec![], vec![]);
@@ -347,7 +347,7 @@ impl Ctx<'_> {
                     let i = lanes.len();
                     let region = spec.region(run, worker.info.features.max_lod());
                     // What the plan asks beyond what the pipeline reports is not asked of it.
-                    report.not_supported = spec.not_supported(run, mode, &worker.info);
+                    report.not_supported = spec.not_supported(run, mode, asks, &worker.info);
                     let mut lane = Lane::new(worker, region, report, i, w, h);
                     // A reference records for the region it was given; a pipeline given another
                     // region than the full-resolution reference is scored against that one too.
@@ -416,7 +416,7 @@ impl Ctx<'_> {
         let scene = Scene::new(self.plan.scene.clone(), self.blocks.clone(), &mut world, run.frames)?;
         let lights = scene.initial_lights().to_vec();
         let mesh_data = if mode.meshes { scene.mesh_data() } else { vec![] };
-        let (mut lanes, mut reports) = self.spawn_lanes(specs, Some(mode));
+        let (mut lanes, mut reports) = self.spawn_lanes(specs, Some(mode), &world.asks(&self.blocks));
         if lanes.is_empty() {
             return Ok(reports);
         }
@@ -437,8 +437,13 @@ impl Ctx<'_> {
         if let Err(e) = &result {
             tracing::error!("pass failed: {e:#}");
         }
+        // What the world asked by the end (edits may have placed see-through blocks).
+        let asks = world.asks(&self.blocks);
         for lane in lanes {
             let mut r = lane.report;
+            if let Some(spec) = specs.iter().find(|s| self.label(s) == r.label) {
+                r.not_supported = spec.not_supported(run, Some(mode), &asks, &lane.worker.info);
+            }
             if let (None, Err(e)) = (&r.error, &result) {
                 r.error = Some(format!("{e:#}"));
             }
@@ -586,7 +591,7 @@ fn view(plan: &Plan, ui: UiHandle) -> anyhow::Result<()> {
     let scene = Scene::new(plan.scene.clone(), ctx.blocks.clone(), &mut world, plan.run.frames)?;
     let lights = scene.initial_lights().to_vec();
     let mesh_data = scene.mesh_data();
-    let (mut lanes, failed) = ctx.spawn_lanes(&plan.renderers, None);
+    let (mut lanes, failed) = ctx.spawn_lanes(&plan.renderers, None, &world.asks(&ctx.blocks));
     for f in failed {
         tracing::error!("{}: {}", f.label, f.error.unwrap_or_default());
     }

@@ -39,7 +39,11 @@ impl Session {
         let instances = scene.mesh_instances(0);
         let server = Streamer::new(vec![plan.run.view_radius], budget(&plan));
         let start = Instant::now();
-        shared.lock().unwrap().start = Some(start);
+        {
+            let mut sh = shared.lock().unwrap();
+            sh.start = Some(start);
+            sh.asks = world.asks(&blocks);
+        }
         let mut s = Session {
             blocks,
             world,
@@ -240,6 +244,11 @@ impl Session {
             return;
         }
         let changed = self.world.apply_edits(&edits);
+        // A see-through block placed: the world asks transparency from now on (sticky).
+        if edits.iter().any(|e| self.blocks.see_through(e.block)) {
+            let asks = self.world.asks(&self.blocks);
+            self.shared.lock().unwrap().asks = asks;
+        }
         for l in self.lanes.iter_mut().chain(self.reference.as_mut()) {
             if let Some(own) = &mut l.run.own {
                 let mut stream = vec![];

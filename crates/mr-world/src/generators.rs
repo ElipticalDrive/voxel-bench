@@ -25,6 +25,12 @@ pub trait WorldGen: Send + Sync {
     fn chunk(&self, key: ChunkKey) -> ChunkData {
         sample_chunk(key, |p| self.block(p))
     }
+
+    /// The features its blocks ask of a pipeline: [`mr_core::Feature::Transparency`] where it
+    /// places see-through blocks (edits are [`crate::World::asks`]'s).
+    fn asks(&self) -> Vec<mr_core::Feature> {
+        vec![]
+    }
 }
 
 /// Samples a chunk from a per-block function. At LOD > 0 a cell takes 8 samples (at the
@@ -704,6 +710,9 @@ pub struct GlassGen {
 }
 
 impl WorldGen for GlassGen {
+    fn asks(&self) -> Vec<mr_core::Feature> {
+        vec![mr_core::Feature::Transparency]
+    }
     fn block(&self, p: IVec3) -> BlockId {
         let s = self.size;
         if p.y == -1 && (-8..s + 8).contains(&p.x) && (-8..s + 8).contains(&p.z) {
@@ -1015,6 +1024,21 @@ mod tests {
         }
         let panes = (0..48).filter(|&z| matches!(g.block(IVec3::new(24, 2, z)), GLASS | GLASS_RED | GLASS_GREEN | GLASS_BLUE)).count();
         assert_eq!(panes, 6);
+    }
+
+    /// The world asks transparency where its generator places see-through blocks, or once an
+    /// edit does; never otherwise.
+    #[test]
+    fn worlds_ask_transparency_by_their_blocks() {
+        use mr_core::Feature::Transparency;
+        let blocks = crate::textures::default_registry();
+        assert_eq!(crate::World::new(GenSpec::Glass { size: 48, panes: 6 }.build()).asks(&blocks), vec![Transparency]);
+        let mut w = crate::World::new(GenSpec::Room { size: 32 }.build());
+        assert!(w.asks(&blocks).is_empty());
+        w.apply_edits(&[mr_core::renderer::BlockEdit { pos: IVec3::new(3, 3, 3), block: RED }]);
+        assert!(w.asks(&blocks).is_empty(), "an opaque edit");
+        w.apply_edits(&[mr_core::renderer::BlockEdit { pos: IVec3::new(4, 3, 3), block: GLASS }]);
+        assert_eq!(w.asks(&blocks), vec![Transparency]);
     }
 
     #[test]

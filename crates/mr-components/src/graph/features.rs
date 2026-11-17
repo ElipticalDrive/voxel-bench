@@ -17,6 +17,9 @@ impl Checked {
     /// Lit passes need, where stateful shading runs in a forward drawer's fragment shader,
     /// forced early depth tests on that drawer's GPU (the adapter `devices` names for its
     /// slot; see [`Checked::narrow_on`]).
+    /// Transparency needs every visibility and draw node to give more than one surface per
+    /// pixel ([`Cap::Layers`]); their reasons are said even where the region does not build it,
+    /// so a report names the node that stands in the way.
     pub fn narrow(&self, f: &mut Features, devices: &mr_core::DeviceConfig) {
         self.narrow_on(f, &|slot| mr_gpu::adapter_features(devices.gpu(slot as usize)));
     }
@@ -61,6 +64,15 @@ impl Checked {
         }
         let mut ids: Vec<&String> = nodes.keys().collect();
         ids.sort();
+        let layers: Vec<String> = ids
+            .iter()
+            .filter(|id| matches!(nodes[**id].role, Role::Visibility | Role::Draw) && nodes[**id].component != "none")
+            .filter(|id| !provides(self.devices.get(**id).map_or(Kind::Gpu, |d| d.kind()), nodes[**id].role, &nodes[**id].component, Cap::Layers))
+            .map(|id| format!("{} `{}` (`{id}`) lacks layers: one surface per pixel", nodes[*id].role.name(), nodes[*id].component))
+            .collect();
+        if !layers.is_empty() {
+            f.lack(Feature::Transparency, layers.join("; "));
+        }
         for id in ids.into_iter().filter(|id| nodes[*id].role == Role::Draw) {
             let (n, kind) = (&nodes[id], self.devices.get(id).map_or(Kind::Gpu, |d| d.kind()));
             if f.has(Feature::MeshRays) && !provides(kind, Role::Draw, &n.component, Cap::MeshRays) {
@@ -167,6 +179,25 @@ mod tests {
         assert_eq!(c.taken(&p(&["refloor"])).map(|t| t.kind), Some(mr_core::ParamKind::Choice(vec!["image".into(), "steps".into()])));
         let owned = ParamSpec::int("bounces", "", 1, 8, 1, true).of("shading", &["pathtrace"]);
         assert!(c.taken(&owned).is_none());
+    }
+
+    /// No shipped graph has transparency yet: each says which visibility or draw node lacks
+    /// layers, even where its region does not build it.
+    #[test]
+    fn transparency_names_the_nodes_without_layers() {
+        use mr_core::{Feature, Features};
+        for (name, _) in crate::graph::SHIPPED {
+            let c = shipped(name).unwrap().check().unwrap();
+            for mut f in [Features::of(&[Feature::Lit, Feature::Transparency]), Features::of(&[Feature::Lit])] {
+                c.narrow_on(&mut f, &|_| None);
+                let why = f.why_not(Feature::Transparency).unwrap();
+                assert!(why.contains("lacks layers: one surface per pixel") && (why.starts_with("visibility `") || why.starts_with("draw `")), "{name}: {why}");
+            }
+        }
+        let c = shipped("raster-gpu").unwrap().check().unwrap();
+        let mut f = Features::of(&[Feature::Transparency]);
+        c.narrow_on(&mut f, &|_| None);
+        assert_eq!(f.why_not(Feature::Transparency).unwrap(), "draw `raster` (`draw`) lacks layers: one surface per pixel; visibility `faces` (`visibility`) lacks layers: one surface per pixel");
     }
 
     /// Stateful shading in a forward drawer's fragment shader takes lit passes away on a GPU

@@ -82,14 +82,19 @@ one. A late pipeline scores low as shown and high settled; a wrong one low in bo
 `settle = 0` leaves it out.
 
 A pipeline reports what it supports for its graph as one typed set of features
-(`mr_core::Features`: `lit`, `meshes`, `mesh rays`, `lod` with its levels), each missing one with
-the reason; its executor declares the region's, and the graph narrows them by what its nodes and
-components lack (no meshes node; a drawer without mesh rays). It is asked for nothing beyond
+(`mr_core::Features`: `lit`, `meshes`, `mesh rays`, `lod` with its levels, `transparency`), each
+missing one with the reason; its executor declares the region's, and the graph narrows them by what
+its nodes and components lack (no meshes node; a drawer without mesh rays; a visibility or draw
+node with one surface per pixel, which no pipeline but the reference has yet). It is asked for nothing beyond
 that. What a plan asks of one that lacks it is left out and named in its report
 (`not_supported`, e.g. `max_lod 2: storage `tree64` lacks lod`, or `mesh rays: draw
 `raster` (`draw`) lacks mesh rays: ...` for forward raster-gpu's lit `+meshes` passes, whose
 meshes take voxel shadows only): it ran without, and its region and scores are those of what it
 ran. Passes of a mode it lacks entirely (`+meshes` without meshes) are skipped.
+Transparency is asked by the world, not the pass: a world whose generator places see-through
+blocks (`glass`), or one an edit put such a block in, asks it of every pipeline; one without it
+draws them opaque and its report says `transparency: visibility `raycast` (`visibility`) lacks
+layers: ...`.
 Knobs too: a knob in `options` its pipeline does not have, one whose owning node the graph lacks
 (`bounces` without a `pathtrace` shading), or a value whose need no node meets (`view = steps`
 needs a primary walk that counts its steps; discover-cpu's `clusters` / `kinds` views a

@@ -544,12 +544,13 @@ impl RendererSpec {
         info.features.supports(m)
     }
 
-    /// What the plan asks of it in mode `m` (`None`: a view) that the pipeline (`info`, as its
-    /// worker reported it for this graph) lacks, each with the reason: it is not asked for
-    /// these, or (mesh rays) its frames leave them out; then the knobs in its options its
+    /// What the plan asks of it in mode `m` (`None`: a view), over a world asking `world`
+    /// (`mr_world::World::asks`: transparency), that the pipeline (`info`, as its worker
+    /// reported it for this graph) lacks, each with the reason: it is not asked for these, or
+    /// (mesh rays, transparency) its frames leave them out; then the knobs in its options its
     /// graph leaves out (`Checked::knobs_left_out`: no node to take them, a value's need unmet).
-    pub fn not_supported(&self, run: &RunSpec, m: Option<PassMode>, info: &mr_core::RendererInfo) -> Vec<String> {
-        let mut out = info.features.left_out(m, self.max_lod(run, u8::MAX));
+    pub fn not_supported(&self, run: &RunSpec, m: Option<PassMode>, world: &[mr_core::Feature], info: &mr_core::RendererInfo) -> Vec<String> {
+        let mut out = info.features.left_out(m, self.max_lod(run, u8::MAX), world);
         if let Some(c) = self.pipeline().and_then(|g| g.check().ok()) {
             out.extend(c.knobs_left_out(&info.params, &self.options));
         }
@@ -1253,19 +1254,19 @@ mod tests {
         let info = |s: &RendererSpec| s.info(&RunSpec::default(), &[]).unwrap();
         assert!(!bare.supports(&info(&bare), lit_meshes) && bare.supports(&info(&bare), PassMode::LIT));
         let walk = cli("raycast-gpu").unwrap();
-        assert!(walk.supports(&info(&walk), lit_meshes) && info(&walk).features.left_out(Some(lit_meshes), 0).is_empty());
+        assert!(walk.supports(&info(&walk), lit_meshes) && info(&walk).features.left_out(Some(lit_meshes), 0, &[]).is_empty());
         // Forward raster-gpu draws meshes but its shadow rays miss them: said, not hidden.
         let forward = cli("raster-gpu").unwrap();
         assert!(forward.supports(&info(&forward), lit_meshes));
-        assert_eq!(info(&forward).features.left_out(Some(lit_meshes), 0), vec!["mesh rays: draw `raster` (`draw`) lacks mesh rays: its shading does not meet the triangles".to_string()]);
-        assert!(info(&forward).features.left_out(Some(PassMode { lighting: mr_core::RenderMode::Unlit, meshes: true }), 0).is_empty());
+        assert_eq!(info(&forward).features.left_out(Some(lit_meshes), 0, &[]), vec!["mesh rays: draw `raster` (`draw`) lacks mesh rays: its shading does not meet the triangles".to_string()]);
+        assert!(info(&forward).features.left_out(Some(PassMode { lighting: mr_core::RenderMode::Unlit, meshes: true }), 0, &[]).is_empty());
         let visbuffer = cli("raster-gpu,draw=visbuffer").unwrap();
         assert!(info(&visbuffer).features.has(mr_core::Feature::MeshRays));
         // Knobs asked of a graph that leaves them out: said, not dropped silently.
         let left_out = |s: &str, knobs: &[(&str, toml::Value)]| {
             let mut r = cli(s).unwrap();
             r.options.extend(knobs.iter().map(|(k, v)| (k.to_string(), v.clone())));
-            r.not_supported(&RunSpec::default(), Some(PassMode::LIT), &info(&r))
+            r.not_supported(&RunSpec::default(), Some(PassMode::LIT), &[], &info(&r))
         };
         assert_eq!(left_out("raycast-gpu", &[("bounces", 3.into())]), vec!["knob `bounces`: no shading node of `pathtrace` (its shading: `direct`)".to_string()]);
         assert!(left_out("raycast-gpu,shading=pathtrace", &[("bounces", 3.into()), ("view", "steps".into())]).is_empty());
@@ -1490,7 +1491,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
                 // No knob a plan sets is unknown to its pipeline or left out by its graph.
                 for r in &p.renderers {
                     let info = r.info(&p.run, &mr_worker::infos()).unwrap();
-                    let knobs: Vec<String> = r.not_supported(&p.run, None, &info).into_iter().filter(|w| w.starts_with("knob ") || w.starts_with('`')).collect();
+                    let knobs: Vec<String> = r.not_supported(&p.run, None, &[], &info).into_iter().filter(|w| w.starts_with("knob ") || w.starts_with('`')).collect();
                     assert!(knobs.is_empty(), "{}: {}: {knobs:?}", path.display(), r.label());
                 }
                 n += 1;
