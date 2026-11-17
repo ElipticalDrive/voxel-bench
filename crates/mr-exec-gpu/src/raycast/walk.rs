@@ -613,7 +613,7 @@ mod tests {
         let (mut n, mut with) = (0, 0);
         for ck in graph::near(&[REGION]) {
             let mut f = info().features;
-            ck.narrow(&mut f);
+            ck.narrow_on(&mut f, &|_| None);
             // (Graphs of the region the walk does not compose, the second GPU's split, aside.)
             let Ok(c) = Composition::of(&ck, &Options::default(), 0) else { continue };
             let walk = lod_blocker(&c);

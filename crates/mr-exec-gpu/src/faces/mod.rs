@@ -160,11 +160,7 @@ impl DrawParts<'_> {
     /// the mesh capability's variant, for frames with meshes.
     fn drawer(&self, draw: &str) -> anyhow::Result<FaceDrawer> {
         let mode = DrawMode::parse(draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`"))?;
-        if !mode.deferred()
-            && let Some(why) = shade_state::fragment_blocker(self.shading, &self.gpu.device) {
-            anyhow::bail!(why);
-        }
-        let vis = draw_wgsl(mode, self.shading);
+        let vis = draw_wgsl(mode, self.shading, self.gpu.device.features());
         let module = self.module("face drawer", &vis);
         let meshed = self.meshed.filter(|_| mode.deferred()).map(|m| Self::compile(self.gpu, "face drawer with meshes", &m.program, &m.deps, &format!("{}\n{vis}", self.draw_src)));
         FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: self.strip, mesh_module: meshed.as_ref(), format: self.format }, mode, self.images, self.width, self.height)
@@ -178,10 +174,10 @@ fn hits_form(draw: &str) -> Option<crate::exec::Form> {
 }
 
 /// The draw component's WGSL after `draw_src`: deferred drawers shade in compute, forward
-/// drawing in the fragment shader.
-fn draw_wgsl(mode: DrawMode, shading: &str) -> String {
+/// drawing in the fragment shader (on a device with `features`).
+fn draw_wgsl(mode: DrawMode, shading: &str, features: wgpu::Features) -> String {
     let vis = draw::gpu_wgsl(mode.name()).unwrap();
-    if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis, "fs") }
+    if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis, "fs", features) }
 }
 
 /// The walks' program for a source's sites (discovery rays, exposure, shadow, bounce) with
@@ -214,9 +210,9 @@ fn draw_src(source: &str, varyings: bool) -> String {
 
 /// The forward mesh passes' root: the frame as the meshes' camera, then `mesh.wgsl` with
 /// `SHADE` (the fragments shaded through `shade_mesh`; stateful shading once per pixel).
-fn mesh_src(shading: &str) -> String {
+fn mesh_src(shading: &str, features: wgpu::Features) -> String {
     let frame = "fn mesh_frame() -> MeshFrame { return MeshFrame(fr.view_proj, fr.cam_frac, fr.mode); }\n";
-    shade_state::fragment_wgsl(shading, &format!("{}\n{frame}{}", include_str!("frame.wgsl"), mr_gpu::meshes::MESH_WGSL), "mesh_fs")
+    shade_state::fragment_wgsl(shading, &format!("{}\n{frame}{}", include_str!("frame.wgsl"), mr_gpu::meshes::MESH_WGSL), "mesh_fs", features)
 }
 
 impl Draw {
@@ -354,7 +350,7 @@ impl Draw {
     /// layout.
     fn mesh_module(&self, core: &Core) -> Option<wgpu::ShaderModule> {
         let m = self.meshed.as_ref()?;
-        Some(DrawParts::compile(&core.gpu, "forward meshes", &m.forward(), &m.deps, &mesh_src(&self.shading)))
+        Some(DrawParts::compile(&core.gpu, "forward meshes", &m.forward(), &m.deps, &mesh_src(&self.shading, core.gpu.device.features())))
     }
 
     /// Recompiles the drawer for a new face source WGSL (`strip`: its primitive), shading
@@ -447,14 +443,14 @@ mod tests {
         assert!(!draws.is_empty(), "{what}: no drawer");
         for d in draws {
             let mode = DrawMode::parse(d).unwrap();
-            let root = format!("{draw_src}\n{}", super::draw_wgsl(mode, shading));
+            let root = format!("{draw_src}\n{}", super::draw_wgsl(mode, shading, mr_components::shading::state::FRAGMENT_FEATURE));
             check(program, deps, &root, &format!("drawer {what} {d}"));
             if let Some(m) = meshed.filter(|_| mode.deferred()) {
                 check(&m.program, &m.deps, &root, &format!("drawer with meshes {what} {d}"));
             }
         }
         if let Some(m) = meshed {
-            check(&m.forward(), &m.deps, &super::mesh_src(shading), &format!("forward meshes {what}"));
+            check(&m.forward(), &m.deps, &super::mesh_src(shading, mr_components::shading::state::FRAGMENT_FEATURE), &format!("forward meshes {what}"));
         }
     }
 

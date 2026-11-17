@@ -14,8 +14,32 @@ impl Checked {
     /// ([`Cap::MeshRays`]); LOD needs every storage, traversal and prepass (its sites' too) to
     /// handle LOD chunks ([`Cap::Lod`]; a prepass of `tile = 1`, which does not run, still
     /// counts).
-    pub fn narrow(&self, f: &mut Features) {
+    /// Lit passes need, where stateful shading runs in a forward drawer's fragment shader,
+    /// forced early depth tests on that drawer's GPU (the adapter `devices` names for its
+    /// slot; see [`Checked::narrow_on`]).
+    pub fn narrow(&self, f: &mut Features, devices: &mr_core::DeviceConfig) {
+        self.narrow_on(f, &|slot| mr_gpu::adapter_features(devices.gpu(slot as usize)));
+    }
+
+    /// [`Checked::narrow`] with the features of each GPU slot from `gpu` (`None`: unknown,
+    /// taken to have what is asked). Only graphs that shade statefully in a fragment shader
+    /// ask it.
+    pub fn narrow_on(&self, f: &mut Features, gpu: &dyn Fn(u8) -> Option<mr_gpu::wgpu::Features>) {
         let nodes = &self.graph.nodes;
+        if f.has(Feature::Lit) {
+            let mut ids: Vec<&String> = nodes.keys().collect();
+            ids.sort();
+            for id in ids {
+                let n = &nodes[id];
+                let Some(draw) = n.inputs.get("hits").filter(|_| n.role == Role::Shading).and_then(|d| nodes.get(d).map(|x| (d, x))) else { continue };
+                let forward = draw.1.role == Role::Draw && crate::draw::drawer::DrawMode::parse(&draw.1.component).is_some_and(|m| !m.deferred());
+                let Some(crate::graph::Device::Gpu(slot)) = self.devices.get(draw.0).copied().filter(|_| forward && crate::shading::state::stateful(&n.component)) else { continue };
+                if let Some(what) = crate::shading::state::fragment_lacks(&n.component, gpu(slot)) {
+                    let dev = crate::graph::Device::Gpu(slot);
+                    f.lack(Feature::Lit, format!("shading `{}` (`{id}`) in draw `{}` (`{}`)'s fragment shader needs {what}, which {dev} lacks", n.component, draw.1.component, draw.0));
+                }
+            }
+        }
         if f.has(Feature::Lod) {
             let mut ids: Vec<&String> = nodes.keys().collect();
             ids.sort();
@@ -143,5 +167,35 @@ mod tests {
         assert_eq!(c.taken(&p(&["refloor"])).map(|t| t.kind), Some(mr_core::ParamKind::Choice(vec!["image".into(), "steps".into()])));
         let owned = ParamSpec::int("bounces", "", 1, 8, 1, true).of("shading", &["pathtrace"]);
         assert!(c.taken(&owned).is_none());
+    }
+
+    /// Stateful shading in a forward drawer's fragment shader takes lit passes away on a GPU
+    /// without forced early depth tests, with the reason; deferred drawers, stateless shading
+    /// and devices with the feature (or unknown ones) keep them.
+    #[test]
+    fn fragment_pathtrace_needs_its_device_feature() {
+        use mr_core::{Feature, Features};
+
+        use crate::graph::Change;
+        use crate::shading::state::FRAGMENT_FEATURE;
+        let lit = |name: &str, edits: &[Change], gpu: Option<mr_gpu::wgpu::Features>| {
+            let c = shipped(name).unwrap().with_edits(edits).unwrap().check().unwrap();
+            let mut f = Features::of(&[Feature::Lit]);
+            c.narrow_on(&mut f, &|_| gpu);
+            f.why_not(Feature::Lit)
+        };
+        let pt = Change::component("shading", "pathtrace");
+        let (none, has) = (Some(mr_gpu::wgpu::Features::empty()), Some(FRAGMENT_FEATURE));
+        for name in ["raster-gpu", "discover-gpu"] {
+            assert_eq!(
+                lit(name, std::slice::from_ref(&pt), none).as_deref(),
+                Some("shading `pathtrace` (`shading`) in draw `raster` (`draw`)'s fragment shader needs forced early depth tests (wgpu SHADER_EARLY_DEPTH_TEST), which gpu lacks"),
+                "{name}"
+            );
+            assert_eq!(lit(name, std::slice::from_ref(&pt), has), None, "{name}");
+            assert_eq!(lit(name, std::slice::from_ref(&pt), None), None, "{name}");
+            assert_eq!(lit(name, &[], none), None, "{name}: direct shading");
+        }
+        assert_eq!(lit("raster-gpu", &[pt, Change::component("draw", "visbuffer")], none), None, "deferred");
     }
 }

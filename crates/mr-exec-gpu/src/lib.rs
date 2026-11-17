@@ -77,7 +77,7 @@ pub fn entry() -> RendererEntry {
 fn info_of(p: &InitParams) -> anyhow::Result<RendererInfo> {
     let g = graph::of_init("gpu", p)?;
     let mut info = info(g.region.expect("of_init: a region").id);
-    g.narrow(&mut info.features);
+    g.narrow(&mut info.features, &p.devices);
     Ok(info)
 }
 

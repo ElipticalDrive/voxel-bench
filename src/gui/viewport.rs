@@ -53,7 +53,7 @@ impl App {
                     let (fps, gpu) = recent(&l.samples, 1.0);
                     // What the view asks of the lane that its pipeline leaves out (meshes, mesh
                     // rays, LOD levels, knobs), as the benchmark's reports name it.
-                    let left_out = l.spec.info(&self.infos).map_or_else(Vec::new, |i| l.spec.not_supported(&self.plan.run, Some(self.mode), &i));
+                    let left_out = l.spec.info(&self.plan.run, &self.infos).map_or_else(Vec::new, |i| l.spec.not_supported(&self.plan.run, Some(self.mode), &i));
                     // The events of the last seconds, newest first, with their age.
                     let recent: Vec<(f64, String)> = l.events.iter().rev().map(|(t, e)| (now - t, e.clone())).take_while(|(age, _)| *age < EVENT_SECS).take(3).collect();
                     (l.spec.label().to_string(), l.status.clone(), l.frame.clone(), fps, gpu, left_out, l.legend.clone(), recent)

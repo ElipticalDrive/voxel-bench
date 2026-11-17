@@ -508,7 +508,7 @@ fn events(ui: &mut Ui, es: &mut Vec<EventSpec>, ctx: &EditorCtx) -> Changed {
 /// anything changed.
 fn composition(ui: &mut Ui, i: usize, r: &mut RendererSpec, run: &crate::plan::RunSpec, ctx: &mut EditorCtx) -> Changed {
     use super::graph::{self, Of};
-    let params = r.info(ctx.infos).map(|i| i.params).unwrap_or_default();
+    let params = r.info(run, ctx.infos).map(|i| i.params).unwrap_or_default();
     let values = r.knob_values();
     let knobs: Vec<_> = params.iter().map(|p| (p.clone(), super::knobs::option_value(p, &values))).collect();
     let edits = graph::summary(ui, &format!("{:?}", Of::Plan(i)), r, &knobs, false, None, ctx.trials, ctx.infos, run);

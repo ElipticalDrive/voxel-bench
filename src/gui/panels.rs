@@ -357,7 +357,7 @@ impl App {
         };
         let target = match win.of {
             graph::Of::Plan(i) => self.plan.renderers.get(i).map(|r| {
-                let params = r.info(&self.infos).map(|i| i.params).unwrap_or_default();
+                let params = r.info(&self.plan.run, &self.infos).map(|i| i.params).unwrap_or_default();
                 (format!("plan renderer {} ({})", i + 1, r.label()), r.clone(), { let values = r.knob_values(); params.iter().map(|p| (p.clone(), knobs::option_value(p, &values))).collect::<Vec<_>>() })
             }),
             graph::Of::Lane(i) => self.live.as_ref().and_then(|l| {

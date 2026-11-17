@@ -620,12 +620,9 @@ impl GpuSampler {
         let disc_mods = [discovery("quadtree", quadtree::GPU_WGSL, &program), discovery("quadtree holes", quadtree::GPU_WGSL, &with_holes)];
         let holes_mod = discovery("holes", mr_components::holes::coverage::GPU_WGSL, &with_holes);
         let args_mod = module("discover args", include_str!("args.wgsl").to_string());
-        if let Some(why) = shade_state::fragment_blocker(&shading, dev) {
-            anyhow::bail!(why);
-        }
         // The forward raster's fragment stage, for painter order, the overdraw view and the
         // face-id raster.
-        let draw_mod = drawing.module(&core, "discover raster", &shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap(), "fs"));
+        let draw_mod = drawing.module(&core, "discover raster", &shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap(), "fs", dev.features()));
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {
             binding,

@@ -75,12 +75,12 @@ pub(crate) fn executor_info(g: &mr_components::graph::Graph) -> Option<(Executor
     })
 }
 
-/// What the pipeline of `g` supports and its knobs: its executor's region narrowed by the
-/// graph (`Checked::narrow`), as its worker reports it.
-pub(crate) fn graph_info(g: &mr_components::graph::Graph) -> Option<mr_core::RendererInfo> {
+/// What the pipeline of `g` on `devices` supports and its knobs: its executor's region
+/// narrowed by the graph and its devices (`Checked::narrow`), as its worker reports it.
+pub(crate) fn graph_info(g: &mr_components::graph::Graph, devices: &mr_core::DeviceConfig) -> Option<mr_core::RendererInfo> {
     executor_info(g).map(|(_, mut i)| {
         if let Ok(c) = g.check() {
-            c.narrow(&mut i.features);
+            c.narrow(&mut i.features, devices);
         }
         i
     })

@@ -40,13 +40,15 @@ pub fn stateful(name: &str) -> bool {
 /// The device feature stateful shading needs when it runs in a fragment shader.
 pub const FRAGMENT_FEATURE: wgpu::Features = wgpu::Features::SHADER_EARLY_DEPTH_TEST;
 
-/// Fragment shading with `shading`: stateful shading writes per-pixel state, so only the
-/// fragment that survives the depth test may run. Its fragment entry point `entry` gets
-/// `@early_depth_test(force)` ([`FRAGMENT_FEATURE`]), and lit passes need a depth prepass
-/// with an `Equal` test so that exactly one fragment per pixel shades. Stateless shading
-/// keeps the source as it is.
-pub fn fragment_wgsl(shading: &str, src: &str, entry: &str) -> String {
-    if !stateful(shading) {
+/// Fragment shading with `shading` on a device with `features`: stateful shading writes
+/// per-pixel state in lit frames, so only the fragment that survives the depth test may run.
+/// Its fragment entry point `entry` gets `@early_depth_test(force)` ([`FRAGMENT_FEATURE`]),
+/// and lit passes need a depth prepass with an `Equal` test so that exactly one fragment per
+/// pixel shades. Stateless shading, and stateful shading on a device without the feature,
+/// keep the source as it is: there the graph's pipeline lacks lit passes
+/// ([`fragment_lacks`], `graph::Checked::narrow`), and unlit frames write no state.
+pub fn fragment_wgsl(shading: &str, src: &str, entry: &str, features: wgpu::Features) -> String {
+    if fragment_lacks(shading, Some(features)).is_some() || !stateful(shading) {
         return src.to_string();
     }
     let at = format!("@fragment\nfn {entry}(");
@@ -54,10 +56,11 @@ pub fn fragment_wgsl(shading: &str, src: &str, entry: &str) -> String {
     src.replace(&at, &format!("@fragment @early_depth_test(force)\nfn {entry}("))
 }
 
-/// Why `shading` cannot shade fragments on `device` (the feature is missing), if it can't.
-pub fn fragment_blocker(shading: &str, device: &wgpu::Device) -> Option<String> {
-    (stateful(shading) && !device.features().contains(FRAGMENT_FEATURE))
-        .then(|| format!("`{shading}` shading in a fragment shader needs forced early depth tests (wgpu SHADER_EARLY_DEPTH_TEST), which this device lacks"))
+/// What `shading` in a fragment shader lacks on a device with `features` (`None`: an unknown
+/// device, taken to have it), if anything: lit passes need [`FRAGMENT_FEATURE`] when it keeps
+/// per-pixel state.
+pub fn fragment_lacks(shading: &str, features: Option<wgpu::Features>) -> Option<&'static str> {
+    (stateful(shading) && features.is_some_and(|f| !f.contains(FRAGMENT_FEATURE))).then_some("forced early depth tests (wgpu SHADER_EARLY_DEPTH_TEST)")
 }
 
 pub struct ShadeState {

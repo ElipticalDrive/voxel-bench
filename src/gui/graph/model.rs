@@ -23,7 +23,8 @@ pub fn load(base: &RendererSpec, g: &Graph, infos: &[RendererInfo]) -> Result<Re
     s.graph = Some(g.clone());
     s.name.clear();
     s.resolve().map_err(|e| format!("{e:#}").trim_start_matches("renderer graph: ").to_string())?;
-    if let Some(info) = s.info(infos) {
+    // Only its knobs are read: any devices do.
+    if let Some(info) = s.info(&crate::plan::RunSpec::default(), infos) {
         let before = s.options.len();
         s.options.retain(|k, _| info.params.iter().any(|p| p.name == k));
         if s.options.len() != before {

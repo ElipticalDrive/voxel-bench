@@ -467,7 +467,7 @@ impl Ctx<'_> {
 fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result<(Vec<PassReport>, Option<features::SceneFeatures>)> {
     let infos = mr_worker::infos();
     for r in &plan.renderers {
-        if r.info(&infos).is_none() {
+        if r.info(&plan.run, &infos).is_none() {
             bail!("unknown renderer `{}` (see `multirenderer list`)", r.label());
         }
     }
@@ -485,7 +485,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         let mut configs: Vec<Vec<u32>> = plan
             .renderers
             .iter()
-            .map(|r| r.region(run, r.info(&infos).map_or(0, |i| i.features.max_lod())).streamed())
+            .map(|r| r.region(run, r.info(&plan.run, &infos).map_or(0, |i| i.features.max_lod())).streamed())
             .filter(|r| !r.is_empty())
             .chain(std::iter::once(vec![run.view_radius]))
             .collect();
@@ -529,7 +529,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
             .renderers
             .iter()
             .filter(|s| {
-                let ok = s.info(&infos).is_some_and(|i| s.supports(&i, mode));
+                let ok = s.info(&plan.run, &infos).is_some_and(|i| s.supports(&i, mode));
                 if !ok && !s.swept {
                     tracing::warn!("{} does not support {} mode; skipped", s.label(), mode.name());
                 }

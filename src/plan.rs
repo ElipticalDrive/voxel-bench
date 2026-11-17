@@ -383,9 +383,9 @@ impl RendererSpec {
 
     /// What it supports and its knobs: a pipeline's from its graph (the region of the executor
     /// that builds its shape), a standalone renderer's from `standalone` by name.
-    pub fn info(&self, standalone: &[mr_core::RendererInfo]) -> Option<mr_core::RendererInfo> {
+    pub fn info(&self, run: &RunSpec, standalone: &[mr_core::RendererInfo]) -> Option<mr_core::RendererInfo> {
         match &self.graph {
-            Some(g) => crate::pipelines::graph_info(g),
+            Some(g) => crate::pipelines::graph_info(g, &self.devices(run)),
             None => standalone.iter().find(|i| i.name == self.name).cloned(),
         }
     }
@@ -1250,7 +1250,7 @@ mod tests {
         // No meshes stage: no mesh passes.
         let lit_meshes = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
         let bare = cli("raycast-gpu,-meshes").unwrap();
-        let info = |s: &RendererSpec| s.info(&[]).unwrap();
+        let info = |s: &RendererSpec| s.info(&RunSpec::default(), &[]).unwrap();
         assert!(!bare.supports(&info(&bare), lit_meshes) && bare.supports(&info(&bare), PassMode::LIT));
         let walk = cli("raycast-gpu").unwrap();
         assert!(walk.supports(&info(&walk), lit_meshes) && info(&walk).features.left_out(Some(lit_meshes), 0).is_empty());
@@ -1486,10 +1486,10 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
             let path = e.unwrap().path();
             if path.extension().is_some_and(|x| x == "toml") {
                 let p = Plan::load(&path, &[]).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
-                assert!(p.renderers.iter().all(|r| r.info(&mr_worker::infos()).is_some()));
+                assert!(p.renderers.iter().all(|r| r.info(&p.run, &mr_worker::infos()).is_some()));
                 // No knob a plan sets is unknown to its pipeline or left out by its graph.
                 for r in &p.renderers {
-                    let info = r.info(&mr_worker::infos()).unwrap();
+                    let info = r.info(&p.run, &mr_worker::infos()).unwrap();
                     let knobs: Vec<String> = r.not_supported(&p.run, None, &info).into_iter().filter(|w| w.starts_with("knob ") || w.starts_with('`')).collect();
                     assert!(knobs.is_empty(), "{}: {}: {knobs:?}", path.display(), r.label());
                 }

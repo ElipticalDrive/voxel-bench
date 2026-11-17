@@ -201,7 +201,7 @@ fn node_grid<'l>(ui: &mut Ui, salt: &str, g: &Graph, id: Option<&str>, knobs: &[
     let own = vals.len();
     let world = id.map(|id| &g.nodes[id]).map_or(vec![], |n| {
         let shadowed = |s: &ParamSpec| CLIENT_HOST.iter().any(|(h, k)| *k == s.name && knobs.iter().any(|(x, _)| x.name == *h));
-        model::world_knobs(n.role, &n.component, run, crate::pipelines::graph_info(g).map(|i| i.features).as_ref()).into_iter().filter(|s| n.role != Role::Client || !shadowed(s)).collect()
+        model::world_knobs(n.role, &n.component, run, crate::pipelines::graph_info(g, &run.devices).map(|i| i.features).as_ref()).into_iter().filter(|s| n.role != Role::Client || !shadowed(s)).collect()
     });
     if let Some(n) = id.map(|id| &g.nodes[id]) {
         vals.extend(world.iter().map(|s| (s, n.knobs.get(&s.name).and_then(|v| serde_json::to_value(v).ok()).and_then(|j| s.from_json(&j)).unwrap_or_else(|| s.default.clone()))));

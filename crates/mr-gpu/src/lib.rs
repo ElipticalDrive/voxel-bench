@@ -831,6 +831,21 @@ pub fn pick_adapter(filter: Option<&str>) -> anyhow::Result<wgpu::Adapter> {
     Ok(adapter)
 }
 
+/// The features of the adapter [`pick_adapter`] chooses for `filter` (`None`: no adapter),
+/// looked up once per filter per process: what a graph's device offers, for what its
+/// pipeline supports (`mr_components::graph::Checked::narrow`).
+pub fn adapter_features(filter: Option<&str>) -> Option<wgpu::Features> {
+    static SEEN: std::sync::Mutex<Vec<(Option<String>, Option<wgpu::Features>)>> = std::sync::Mutex::new(Vec::new());
+    let key = filter.map(str::to_string);
+    let mut seen = SEEN.lock().unwrap();
+    if let Some((_, f)) = seen.iter().find(|(k, _)| *k == key) {
+        return *f;
+    }
+    let f = pick_adapter(filter).ok().map(|a| a.features());
+    seen.push((key, f));
+    f
+}
+
 /// Name, driver and backend of the adapter [`pick_adapter`] chooses (for records of which
 /// machine a measurement came from).
 pub fn adapter_info(filter: Option<&str>) -> anyhow::Result<wgpu::AdapterInfo> {
