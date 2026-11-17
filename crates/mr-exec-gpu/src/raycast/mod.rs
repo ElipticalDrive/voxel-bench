@@ -78,6 +78,8 @@ struct Steps {
     stored: bool,
     meshed: Option<bool>,
     prepassed: bool,
+    /// The frame is lit.
+    lit: bool,
     /// A pass began the frame's clock.
     started: bool,
 }
@@ -126,8 +128,8 @@ trait Cast: Sized {
     fn bind_entries(&self) -> Vec<wgpu::BindGroupEntry<'_>>;
     /// The bind group layouts after group 0 and the world's (group 1).
     fn layouts<'a>(&'a self, core: &'a Core, base: [&'a wgpu::BindGroupLayout; 2]) -> Vec<Option<&'a wgpu::BindGroupLayout>>;
-    /// The shader with `shading`; `meshed`: the variant for frames with mesh records.
-    fn program(&self, shading: &str, meshed: bool) -> CastProgram;
+    /// The shader with `shading`; `meshed`: which mesh code it carries.
+    fn program(&self, shading: &str, meshed: Meshed) -> CastProgram;
     /// The caster's knobs changed what its shader compiles (cleared by `compiled`).
     fn stale(&self) -> bool;
     fn compiled(&mut self);
@@ -183,6 +185,17 @@ trait Cast: Sized {
 }
 
 /// One variant of the rays' pass and the deferred shading pass after it.
+/// The mesh code a ray-casting program carries: none, the mesh records (primary rays stop
+/// at the meshes), or the records and the mesh rays (shadow rays and bounces meet the
+/// triangles). Lit is a runtime flag in the shader, so the mesh rays are compiled only into
+/// the variant for lit frames: compiled in, they cost unlit frames 19-51% GPU time.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Meshed {
+    No,
+    Records,
+    Rays,
+}
+
 struct Variant {
     main: Main,
     shade: Option<wgpu::ComputePipeline>,
@@ -195,16 +208,17 @@ enum Main {
 }
 
 /// The compiled passes: group 0's layout and bind group, the variant for frames without mesh
-/// records and (with a meshes stage) the one with them (the mesh capability is compiled in
-/// only there: its code cost frames without meshes 2-2.5% with `dispatch = fragment`), and the
-/// caster's own entry points.
+/// records and (with a meshes stage) those with them, unlit and lit, each compiled when a
+/// frame first needs it (the mesh capability is compiled in only there: its code cost frames
+/// without meshes 2-2.5% with `dispatch = fragment`), and the caster's own entry points.
 pub(crate) struct Passes {
     layout0: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     /// The shading is another GPU's executor's node (no shading pass here).
     remote: bool,
     plain: Variant,
-    meshed: Option<Variant>,
+    /// The variants for frames with mesh records, unlit and lit, once a frame needed them.
+    meshed: [Option<Variant>; 2],
     extra: Vec<wgpu::ComputePipeline>,
     bind0: Option<wgpu::BindGroup>,
     /// Group 0 for `dispatch = "fragment"`: a 1x1 stand-in instead of the output texture.
@@ -219,18 +233,11 @@ impl Passes {
         entries.extend(cast.layout_entries(core.stages));
         let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("raycast"), entries: &entries });
         let pipeline_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("raycast"), bind_group_layouts: &cast.layouts(core, [&layout0, core.world.layout()]), immediate_size: 0 });
-        let (plain, meshed, extra) = Self::compile(core, &pipeline_layout, cast, shading, remote)?;
-        Ok(Self { layout0, pipeline_layout, remote, plain, meshed, extra, bind0: None, bind0_frag: None, stand_in: None })
+        let (plain, extra) = Self::variant(core, &pipeline_layout, cast, shading, Meshed::No, remote)?;
+        Ok(Self { layout0, pipeline_layout, remote, plain, meshed: [None, None], extra, bind0: None, bind0_frag: None, stand_in: None })
     }
 
-    /// The variants for `cast` and its own entry points.
-    fn compile<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, remote: bool) -> anyhow::Result<(Variant, Option<Variant>, Vec<wgpu::ComputePipeline>)> {
-        let (plain, extra) = Self::variant(core, layout, cast, shading, false, remote)?;
-        let meshed = if cast.meshes() { Some(Self::variant(core, layout, cast, shading, true, remote)?.0) } else { None };
-        Ok((plain, meshed, extra))
-    }
-
-    fn variant<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, meshed: bool, remote: bool) -> anyhow::Result<(Variant, Vec<wgpu::ComputePipeline>)> {
+    fn variant<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, meshed: Meshed, remote: bool) -> anyhow::Result<(Variant, Vec<wgpu::ComputePipeline>)> {
         let dev = &core.gpu.device;
         let deferred = core.edges.records().is_some() && cast.view() == View::Image;
         let mut lp = cast.program(shading, meshed);
@@ -262,7 +269,7 @@ impl Passes {
             Main::Compute(entry(if deferred { "walk_records" } else { "main" }))
         };
         let shade = (deferred && !remote).then(|| entry("shade"));
-        let extra = if meshed { vec![] } else { cast.entries().iter().map(|e| entry(e)).collect() };
+        let extra = if meshed != Meshed::No { vec![] } else { cast.entries().iter().map(|e| entry(e)).collect() };
         if let Some(e) = pollster::block_on(scope.pop()) {
             anyhow::bail!("compiling the ray-casting shader: {e}");
         }
@@ -336,10 +343,11 @@ impl<C: Cast> Raycast<C> {
         Ok(Self { passes, cast, built_shading: shading.clone(), shading, steps: Steps::default(), world: None })
     }
 
-    /// The variant this frame runs: the meshed one when the meshes' records ran.
+    /// The variant this frame runs: a meshed one when the meshes' records ran (with mesh
+    /// rays when lit).
     fn variant(&self) -> &Variant {
-        match (self.steps.meshed, &self.passes.meshed) {
-            (Some(true), Some(m)) => m,
+        match self.steps.meshed {
+            Some(true) => self.passes.meshed[self.steps.lit as usize].as_ref().expect("compiled for the frame (Region::compile)"),
             _ => &self.passes.plain,
         }
     }
@@ -443,21 +451,28 @@ impl<C: Cast> Raycast<C> {
 }
 
 impl<C: Cast> crate::exec::Region for Raycast<C> {
-    fn compile(&mut self, core: &mut Core, _req: &FrameRequest) -> anyhow::Result<()> {
+    fn compile(&mut self, core: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
         let (passes, cast) = (&mut self.passes, &mut self.cast);
         if cast.stale() || self.shading != self.built_shading {
-            (passes.plain, passes.meshed, passes.extra) = Passes::compile(core, &passes.pipeline_layout, cast, &self.shading, passes.remote)?;
+            (passes.plain, passes.extra) = Passes::variant(core, &passes.pipeline_layout, cast, &self.shading, Meshed::No, passes.remote)?;
+            passes.meshed = [None, None];
             if core.accum.set_shading(&core.gpu, &self.shading) {
                 passes.unbind();
             }
             self.built_shading = self.shading.clone();
             cast.compiled();
         }
+        // The variant with mesh records for this frame's mode, the first time one asks for it.
+        let lit = req.mode == RenderMode::Lit;
+        if req.meshes && cast.meshes() && passes.meshed[lit as usize].is_none() {
+            let meshed = if lit { Meshed::Rays } else { Meshed::Records };
+            passes.meshed[lit as usize] = Some(Passes::variant(core, &passes.pipeline_layout, cast, &self.shading, meshed, passes.remote)?.0);
+        }
         Ok(())
     }
 
     fn setup(&mut self, core: &mut Core, req: &FrameRequest) {
-        self.steps = Steps::default();
+        self.steps = Steps { lit: req.mode == RenderMode::Lit, ..Steps::default() };
         core.accum.begin(&core.gpu, &req.camera, req.mode);
         core.write_camera(&req.camera, req.mode, self.cast.camera());
         self.world = Some(core.world.prepare(&core.gpu, &req.camera).clone());

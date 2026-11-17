@@ -90,9 +90,10 @@ struct SourceSpec {
     nodes: DrawNodes,
 }
 
-/// The mesh capability's variants of a program: `program` for the deferred shading pass,
-/// whose rays meet the triangles (bound in the images group), and `rays_voxels` for the
-/// forward mesh passes, whose rays see voxels only (their layout lacks the triangles).
+/// The mesh capability's variants of a program: `program` for the deferred shading pass of
+/// lit frames, whose rays meet the triangles (bound in the images group), and `rays_voxels`,
+/// whose rays see voxels only, for the forward mesh passes (their layout lacks the
+/// triangles) and the deferred shading pass of unlit frames (mesh rays compiled in cost them).
 struct Meshed {
     program: mr_gpu::program::Program,
     rays_voxels: mr_gpu::program::Program,
@@ -155,15 +156,23 @@ impl DrawParts<'_> {
         mr_gpu::program::compile(&gpu.device, label, program, root, &deps.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
+    /// A deferred drawer's shade module for frames with meshes, when the source draws them:
+    /// the mesh capability's program, its rays meeting the triangles when `lit` (see
+    /// [`Meshed`]).
+    fn mesh_shade_module(&self, mode: DrawMode, lit: bool) -> Option<wgpu::ShaderModule> {
+        let m = self.meshed?;
+        let vis = draw_wgsl(mode, self.shading, self.gpu.device.features());
+        Some(Self::compile(self.gpu, "face drawer with meshes", if lit { &m.program } else { &m.rays_voxels }, &m.deps, &format!("{}\n{vis}", self.draw_src)))
+    }
+
     /// The face drawer for `draw` (the draw component's WGSL over `draw_src`; forward
-    /// drawing shades in the fragment shader); deferred drawers of a source with meshes also
-    /// the mesh capability's variant, for frames with meshes.
+    /// drawing shades in the fragment shader). A deferred drawer's shade passes for frames
+    /// with meshes are added when a frame needs them ([`Draw::mesh_shade`]).
     fn drawer(&self, draw: &str) -> anyhow::Result<FaceDrawer> {
         let mode = DrawMode::parse(draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`"))?;
         let vis = draw_wgsl(mode, self.shading, self.gpu.device.features());
         let module = self.module("face drawer", &vis);
-        let meshed = self.meshed.filter(|_| mode.deferred()).map(|m| Self::compile(self.gpu, "face drawer with meshes", &m.program, &m.deps, &format!("{}\n{vis}", self.draw_src)));
-        FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: self.strip, mesh_module: meshed.as_ref(), format: self.format }, mode, self.images, self.width, self.height)
+        FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: self.strip, format: self.format }, mode, self.images, self.width, self.height)
     }
 }
 
@@ -343,6 +352,22 @@ impl Draw {
 
     fn drawer(&self, core: &Core, draw: &str) -> anyhow::Result<FaceDrawer> {
         self.parts(core).drawer(draw)
+    }
+
+    /// Adds a deferred drawer's shade pass for frames that draw meshes, `lit` or unlit, the
+    /// first time a frame needs it.
+    pub(crate) fn mesh_shade(&mut self, core: &Core, lit: bool) -> anyhow::Result<()> {
+        if !self.drawer.lacks_mesh_shade(lit) {
+            return Ok(());
+        }
+        let scope = core.gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        if let Some(module) = self.parts(core).mesh_shade_module(self.drawer.mode(), lit) {
+            self.drawer.add_mesh_shade(&core.gpu, lit, &module);
+        }
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            anyhow::bail!("compiling the {} drawer's shading with meshes: {e}", self.drawer.mode().name());
+        }
+        Ok(())
     }
 
     /// The forward mesh passes' module (`mr_gpu::meshes::ForwardSpec`), when the source has

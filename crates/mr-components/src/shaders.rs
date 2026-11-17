@@ -78,8 +78,9 @@ fn btrace_wgsl(meshes: bool) -> String {
     };
     format!(
         "fn btrace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Bounced {{\n    let h = strace(o, d, max_t);\n{mesh}    \
-         if (!h.hit) {{ return Bounced(false, vec3<f32>(0.0), vec3<f32>(0.0), vec4<f32>(0.0)); }}\n    \
-         let s = surface_of(h, o, d);\n    return Bounced(true, s.p, s.n, surface_texel(s.block, s.face, s.local));\n}}\n"
+         var b: Bounced;\n    b.hit = h.hit;\n    \
+         if (h.hit) {{\n        let s = surface_of(h, o, d);\n        b.p = s.p;\n        b.n = s.n;\n        \
+         b.albedo = surface_texel(s.block, s.face, s.local);\n    }}\n    return b;\n}}\n"
     )
 }
 

@@ -27,7 +27,7 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
 use serde::Deserialize;
 
-use super::{Cast, CastProgram, Passes, Ticket, View};
+use super::{Cast, CastProgram, Meshed, Passes, Ticket, View};
 use crate::{Core, CoreSpec, REGION_BINDING};
 
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_WALK;
@@ -234,15 +234,16 @@ impl Composition {
     /// module (`Walks`), the shadow and bounce rays' services through their kernels, the
     /// shading component, and the caster's root, which casts the primary rays through kernel 0
     /// and reads its storage (the prepass); `meshed`: with the mesh capability (`MESHES`) and
-    /// the mesh records at group 3.
-    fn program(&self, shading: &str, meshed: bool) -> CastProgram {
+    /// the mesh records at group 3, and with `Rays` the shading's rays meeting the triangles.
+    fn program(&self, shading: &str, meshed: Meshed) -> CastProgram {
         use mr_components::shaders;
         let mut program = mr_gpu::program::Program::world(Some("rays::shadow"));
         self.walks.add_to(&mut program);
         let rays = shaders::shading_rays(&mut program, &self.walks, self.shadow, self.bounce);
         shaders::shading(&mut program, shading, &rays.iter().map(String::as_str).collect::<Vec<_>>(), 0, crate::STATE_BINDING);
         // Mesh records at group 3 (the triangles at binding 3), lit through the mesh-shadow site.
-        let meshes = meshed.then(|| shaders::meshes(&mut program, &self.walks, shading, [self.shadow, self.bounce], self.mesh_shadow, 3, 3, true));
+        // With `Meshed::Rays` the shading's rays meet the triangles too.
+        let meshes = (meshed != Meshed::No).then(|| shaders::meshes(&mut program, &self.walks, shading, [self.shadow, self.bounce], self.mesh_shadow, 3, 3, meshed == Meshed::Rays));
         let pre = mr_components::prepass::gpu_wgsl(self.prepass()).expect("validated");
         let primary = self.primary();
         let primary_storage = primary.storage.expect("the walk's primary rays walk a storage");
@@ -254,7 +255,7 @@ impl Composition {
             self.prepass(),
             primary.component,
             self.tile.max(1),
-            if meshed { MESH_RECORDS_WGSL } else { "" },
+            if meshed != Meshed::No { MESH_RECORDS_WGSL } else { "" },
             if self.view != View::Image { mr_core::legend::ramp_wgsl() } else { String::new() },
             include_str!("walk.wgsl"),
         );
@@ -379,7 +380,7 @@ impl Cast for Walk {
         core.storages.layouts(&[Some(layout0), Some(world), None, Some(self.meshes.layout())])
     }
 
-    fn program(&self, shading: &str, meshed: bool) -> CastProgram {
+    fn program(&self, shading: &str, meshed: Meshed) -> CastProgram {
         self.comp.program(shading, meshed)
     }
 
@@ -700,10 +701,11 @@ mod tests {
                                 // Every site's kernel walks with the knob's step limit, a constant.
                                 assert!(c.walks.kernels.iter().all(|k| k.consts.max_steps == 77), "{c:?}");
                                 // Inline and deferred shading (the record-writing walk and the
-                                // common pass), with meshes' records and without, in compute
-                                // and fragment shaders.
-                                for (deferred, meshed, fragment) in [(false, true, false), (true, true, true), (false, false, true), (true, false, false)] {
-                                    let what = format!("{c:?} {shading} deferred {deferred} meshed {meshed} fragment {fragment}");
+                                // common pass), with meshes' records (and their rays) and
+                                // without, in compute and fragment shaders.
+                                use Meshed::{No, Records, Rays};
+                                for (deferred, meshed, fragment) in [(false, Rays, false), (true, Rays, true), (false, Records, true), (true, Records, false), (false, No, true), (true, No, false)] {
+                                    let what = format!("{c:?} {shading} deferred {deferred} meshed {meshed:?} fragment {fragment}");
                                     let view = if deferred { View::Image } else { c.view };
                                     super::super::tests::validate(c.program(shading, meshed), deferred, view, fragment, &what);
                                     if !deferred {

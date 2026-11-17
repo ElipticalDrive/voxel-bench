@@ -70,21 +70,21 @@ pub struct DrawerSpec<'a> {
     pub shade_layout: &'a wgpu::PipelineLayout,
     /// Triangle strips (quads of 4 vertices) or lists.
     pub strip: bool,
-    /// Deferred drawers with meshes: the module with the record's mesh capability, whose
-    /// shade pass runs on frames that draw meshes (the plain one on the others).
-    pub mesh_module: Option<&'a wgpu::ShaderModule>,
     /// The output's format (the post's).
     pub format: wgpu::TextureFormat,
 }
 
 enum Pipes {
     Forward { fill: wgpu::RenderPipeline, depth: wgpu::RenderPipeline, equal: wgpu::RenderPipeline },
-    Deferred { ids: wgpu::RenderPipeline, shade: wgpu::ComputePipeline, mesh_shade: Option<wgpu::ComputePipeline> },
+    /// `mesh_shade`: the shade pass of frames that draw meshes, unlit and lit, once added
+    /// ([`FaceDrawer::add_mesh_shade`]).
+    Deferred { ids: wgpu::RenderPipeline, shade: wgpu::ComputePipeline, mesh_shade: [Option<wgpu::ComputePipeline>; 2] },
 }
 
 pub struct FaceDrawer {
     mode: DrawMode,
     pipes: Pipes,
+    shade_layout: wgpu::PipelineLayout,
     images_layout: wgpu::BindGroupLayout,
     width: u32,
     height: u32,
@@ -168,16 +168,33 @@ impl FaceDrawer {
 
     /// `images_layout` is the one the shade layout was built with.
     pub fn new(gpu: &Gpu, spec: &DrawerSpec, mode: DrawMode, images_layout: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<Self> {
-        Ok(Self { mode, pipes: Self::pipes(gpu, spec, mode)?, images_layout: images_layout.clone(), width, height })
+        Ok(Self { mode, pipes: Self::pipes(gpu, spec, mode)?, shade_layout: spec.shade_layout.clone(), images_layout: images_layout.clone(), width, height })
     }
 
     pub fn mode(&self) -> DrawMode {
         self.mode
     }
 
+    /// A deferred drawer lacks the shade pass for frames that draw meshes, `lit` or unlit.
+    pub fn lacks_mesh_shade(&self, lit: bool) -> bool {
+        matches!(&self.pipes, Pipes::Deferred { mesh_shade, .. } if mesh_shade[lit as usize].is_none())
+    }
+
+    /// Adds a deferred drawer's shade pass for frames that draw meshes, `lit` or unlit:
+    /// `module` has the record's mesh capability; for lit frames its rays meet the
+    /// triangles, for unlit ones they see voxels only (lit is a runtime flag, so mesh rays
+    /// compiled into unlit frames' shader would cost them). Added when a frame first needs
+    /// it, so pipelines whose frames never draw meshes compile neither.
+    pub fn add_mesh_shade(&mut self, gpu: &Gpu, lit: bool, module: &wgpu::ShaderModule) {
+        if let Pipes::Deferred { mesh_shade, .. } = &mut self.pipes {
+            mesh_shade[lit as usize] = Some(shade_pipeline(gpu, &self.shade_layout, module));
+        }
+    }
+
     /// After a mode or shader change.
     pub fn rebuild(&mut self, gpu: &Gpu, spec: &DrawerSpec, mode: DrawMode) -> anyhow::Result<()> {
         self.pipes = Self::pipes(gpu, spec, mode)?;
+        self.shade_layout = spec.shade_layout.clone();
         self.mode = mode;
         Ok(())
     }
@@ -228,17 +245,7 @@ impl FaceDrawer {
                 } else {
                     render("visibility ids", &[Some(R32Uint.into())], true, Greater, true)
                 };
-                let shade = |module| {
-                    gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                        label: Some("deferred shade"),
-                        layout: Some(spec.shade_layout),
-                        module,
-                        entry_point: Some("shade"),
-                        compilation_options: Default::default(),
-                        cache: gpu.cache(),
-                    })
-                };
-                Pipes::Deferred { ids, shade: shade(spec.module), mesh_shade: spec.mesh_module.map(shade) }
+                Pipes::Deferred { ids, shade: shade_pipeline(gpu, spec.shade_layout, spec.module), mesh_shade: [None, None] }
             }
         };
         if let Some(e) = pollster::block_on(scope.pop()) {
@@ -338,12 +345,13 @@ impl FaceDrawer {
     }
 
     /// The shading node's pass (after [`encode_draw`](Self::encode_draw)): deferred, shading the ids or
-    /// records (`meshes`: with the meshes drawn into them); nothing when forward.
-    pub fn encode_shade(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, f: &DrawFrame, meshes: bool) {
+    /// records (`meshes`: with the meshes drawn into them, `lit`: the frame is lit); nothing
+    /// when forward.
+    pub fn encode_shade(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, f: &DrawFrame, meshes: bool, lit: bool) {
         match &self.pipes {
             Pipes::Forward { .. } => {}
             Pipes::Deferred { shade, mesh_shade, .. } => {
-                let shade = if meshes { mesh_shade.as_ref().expect("deferred meshes need DrawerSpec::mesh_module") } else { shade };
+                let shade = if meshes { mesh_shade[lit as usize].as_ref().expect("deferred meshes need FaceDrawer::add_mesh_shade") } else { shade };
                 let mut entries = vec![
                     wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(f.ids.expect("a deferred drawer shades DrawFrame::ids")) },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(f.out) },
@@ -364,4 +372,16 @@ impl FaceDrawer {
             }
         }
     }
+}
+
+/// A deferred drawer's shade pass over `module`.
+fn shade_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule) -> wgpu::ComputePipeline {
+    gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("deferred shade"),
+        layout: Some(layout),
+        module,
+        entry_point: Some("shade"),
+        compilation_options: Default::default(),
+        cache: gpu.cache(),
+    })
 }

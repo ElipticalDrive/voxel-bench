@@ -199,7 +199,7 @@ impl Cast for RayQuery {
         core.storages.layouts(&[Some(layout0), Some(world)])
     }
 
-    fn program(&self, shading: &str, _meshed: bool) -> CastProgram {
+    fn program(&self, shading: &str, _meshed: super::Meshed) -> CastProgram {
         program(&self.walks, self.shadow, self.bounce, shading)
     }
 

@@ -469,7 +469,7 @@ impl CpuSampler {
     /// The shading node: the deferred drawers' pass over the ids or records.
     fn shade(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
         self.draw(core, enc, ticket, req);
-        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_shade(&core.gpu, enc, f, false));
+        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_shade(&core.gpu, enc, f, false, false));
     }
 }
 

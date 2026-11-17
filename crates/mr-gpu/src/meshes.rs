@@ -227,13 +227,20 @@ impl GpuMeshes {
             gpu.fail(format!("meshes: {} triangles, more than the {MESH_TRIS} a hit record can name; frames would miss the rest", tris.len()));
             tris.truncate(MESH_TRIS);
         }
-        let words = mesh_words(&mut tris, rays);
-        let bytes: &[u8] = bytemuck::cast_slice(&words);
-        let grown = bytes.len() as u64 > self.vbuf.size();
+        // Three writes, so the vertices go up as they are, without a copy into one buffer
+        // (frames whose rays do not meet the triangles upload no more than before there was
+        // a BVH).
+        let (head, nodes) = mesh_words(&mut tris, rays);
+        let verts: &[u8] = bytemuck::cast_slice(&tris);
+        let (head, nodes): (&[u8], &[u8]) = (bytemuck::cast_slice(&head), bytemuck::cast_slice(&nodes));
+        let size = (head.len() + verts.len() + nodes.len()) as u64;
+        let grown = size > self.vbuf.size();
         if grown {
-            self.vbuf = Self::vertex_buffer(gpu, (bytes.len() as u64).next_power_of_two());
+            self.vbuf = Self::vertex_buffer(gpu, size.next_power_of_two());
         }
-        gpu.queue.write_buffer(&self.vbuf, 0, bytes);
+        gpu.queue.write_buffer(&self.vbuf, 0, head);
+        gpu.queue.write_buffer(&self.vbuf, head.len() as u64, verts);
+        gpu.queue.write_buffer(&self.vbuf, (head.len() + verts.len()) as u64, nodes);
         self.vcount = tris.len() as u32 * 3;
         grown
     }
@@ -271,12 +278,13 @@ const MESH_HEAD: usize = 4;
 
 /// The vertex buffer's words as `mesh_surface.wgsl` reads them, reordering `tris` into
 /// their BVH's leaves' order: a header (the BVH's first word, then padding to
-/// [`MESH_HEAD`]), the vertices (seven words each, three per triangle), the BVH. BVH node
+/// [`MESH_HEAD`]), the vertices (seven words each, three per triangle: `tris` itself, not
+/// returned), the BVH (returned after the header). BVH node
 /// `k` (the root `k = 0`) is 8 words: its box (lo, hi: 6 f32), then a leaf's first triangle
 /// and count, or an inner node's children (the second in bits 0-28, its split axis in bits
 /// 29-30, bit 31 set; the first child on the axis' lower side). Without triangles,
 /// or without `bvh`, one empty leaf.
-fn mesh_words(tris: &mut [[Vertex; 3]], bvh: bool) -> Vec<u32> {
+fn mesh_words(tris: &mut [[Vertex; 3]], bvh: bool) -> ([u32; MESH_HEAD], Vec<u32>) {
     let mut nodes = vec![];
     let bounds = |t: &[Vertex; 3]| {
         let p = t.map(|v| Vec3::from_array(v.pos).as_dvec3());
@@ -285,13 +293,11 @@ fn mesh_words(tris: &mut [[Vertex; 3]], bvh: bool) -> Vec<u32> {
     if bvh && !tris.is_empty() {
         mr_core::mesh::build_bvh(tris, &mut nodes, 0, &bounds);
     }
-    let verts: &[u32] = bytemuck::cast_slice(tris);
-    let start = MESH_HEAD + verts.len();
-    let mut words = vec![0u32; start + nodes.len().max(1) * 8];
-    words[0] = start as u32;
-    words[MESH_HEAD..start].copy_from_slice(verts);
+    let mut head = [0u32; MESH_HEAD];
+    head[0] = (MESH_HEAD + tris.len() * 3 * std::mem::size_of::<Vertex>() / 4) as u32;
+    let mut words = vec![0u32; nodes.len().max(1) * 8];
     for (k, n) in nodes.iter().enumerate() {
-        let w = &mut words[start + k * 8..][..8];
+        let w = &mut words[k * 8..][..8];
         // The boxes are of f32 corners, so exact in f32.
         for i in 0..3 {
             w[i] = (n.lo[i] as f32).to_bits();
@@ -299,7 +305,7 @@ fn mesh_words(tris: &mut [[Vertex; 3]], bvh: bool) -> Vec<u32> {
         }
         (w[6], w[7]) = if n.leaf { (n.a as u32, (n.b - n.a) as u32) } else { (n.a as u32, n.b as u32 | (n.axis as u32) << 29 | 1 << 31) };
     }
-    words
+    (head, words)
 }
 
 /// The mesh pass's shader (the root of its programs). The root provides `mesh_frame()`
@@ -518,7 +524,8 @@ mod tests {
                 std::array::from_fn(|_| Vertex { pos: (c + Vec3::new(r(0.8), r(0.8), r(0.8))).to_array(), color: [0; 4], normal: [0.0; 3] })
             })
             .collect();
-        let buf = mesh_words(&mut tris, true);
+        let (head, nodes) = mesh_words(&mut tris, true);
+        let buf = [&head[..], bytemuck::cast_slice(&tris), &nodes].concat();
         let pos = |v: u32| Vec3::from_array(std::array::from_fn(|k| f32::from_bits(buf[MESH_HEAD + (v * 7) as usize + k])));
         let tri_t = |tri: u32, o: Vec3, d: Vec3| -> f32 {
             let p0 = pos(tri * 3);

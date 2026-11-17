@@ -570,7 +570,8 @@ impl Meshing {
     fn shade(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
         self.draw(core, enc, ticket, req);
         let meshes = self.draws_meshes();
-        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_shade(&core.gpu, enc, f, meshes));
+        let lit = req.mode == RenderMode::Lit;
+        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_shade(&core.gpu, enc, f, meshes, lit));
     }
 }
 
@@ -668,6 +669,9 @@ impl Region for Meshing {
                 self.remesh_all();
             }
             self.stale = false;
+        }
+        if req.meshes {
+            self.drawing.mesh_shade(core, req.mode == RenderMode::Lit)?;
         }
         self.drawing.check_state(req.mode, None)
     }
