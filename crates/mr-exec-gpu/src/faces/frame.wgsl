@@ -6,7 +6,7 @@ struct Frame {
     forward: vec3<f32>, tan_half_fov: f32,
     right: vec3<f32>, aspect: f32,
     up: vec3<f32>, mode: u32,         // 0 unlit, 1 lit
-    cam_frac: vec3<f32>, sky: u32,    // camera position within vp.cam_block; packed sRGB sky (deferred drawing: uncovered pixels)
+    cam_frac: vec3<f32>, sky: u32,    // camera position within vp.cam_block; the sky (unpack_sky) (deferred drawing: uncovered pixels)
     width: u32, height: u32,
     view: u32, _pad: u32,             // the face source's diagnostic tint (0 = the image)
     view_proj: mat4x4<f32>,

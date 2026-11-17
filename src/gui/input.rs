@@ -21,7 +21,7 @@ impl App {
         });
         for k in pressed {
             match k {
-                Key::S if mods.command => {
+                Key::S if mods.command && !self.canvas_focus => {
                     if let Some(p) = self.plan_path.clone() {
                         self.save(p);
                     } else {
@@ -85,7 +85,8 @@ impl App {
             (i.stable_dt.min(0.1), keys.map(|k| !typing && i.key_down(k)), i.modifiers)
         });
         let [w, a, s, d, up, al, ar, au, ad] = held;
-        let s = s && !mods.command;
+        // Ctrl+S saves the plan unless the canvas has the keyboard (then: fast reverse).
+        let s = s && (self.canvas_focus || !mods.command);
         let down = !typing && mods.shift;
         let mut look = look * 0.004;
         let arrow = 1.8 * dt;
@@ -139,7 +140,7 @@ pub(super) fn help(ui: &mut egui::Ui) {
             ("M", "match render resolution to the tile's pixel size and restart live"),
             ("O", "show / hide overlays (labels, HUD)"),
             ("Double-click", "focus / unfocus a tile"),
-            ("Ctrl+S", "save the plan"),
+            ("Ctrl+S", "save the plan; on the canvas (after a click on it) fast backwards"),
         ] {
             ui.monospace(k);
             ui.label(d);

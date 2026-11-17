@@ -93,6 +93,49 @@ fn default_plan_and_demos() {
     }
 }
 
+/// Ctrl+S saves the plan, except when the canvas has the keyboard (the last click landed on
+/// it): there it flies fast backwards and saves nothing.
+#[test]
+fn ctrl_s_saves_or_flies_backwards() {
+    let ctx = egui::Context::default();
+    let mut app = App::new(&ctx, None);
+    let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/target/test-tmp/ctrl_s"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("plan.toml");
+    app.plan_path = Some(path.clone());
+    let ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+    let mut t = 0.0;
+    let mut run = |app: &mut App, mut events: Vec<egui::Event>, modifiers: egui::Modifiers| {
+        t += 1.0 / 60.0;
+        events.insert(0, egui::Event::ModifiersChanged(modifiers));
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1700.0, 1000.0))), time: Some(t), events, ..Default::default() };
+        ctx.run_ui(input, |ui| app.draw(ui)).textures_delta.clear();
+    };
+    let key = |pressed| egui::Event::Key { key: Key::S, physical_key: None, pressed, repeat: false, modifiers: ctrl };
+    run(&mut app, vec![], Default::default());
+    app.follow_path = false;
+    let start = app.cam.position;
+    run(&mut app, vec![key(true), key(false)], ctrl);
+    assert!(path.exists(), "Ctrl+S off the canvas saves");
+    assert_eq!(app.cam.position, start, "and does not fly");
+    std::fs::remove_file(&path).unwrap();
+
+    // A click on the canvas (the middle of the window) gives it the keyboard.
+    let at = Pos2::new(850.0, 500.0);
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    run(&mut app, vec![egui::Event::PointerMoved(at), button(true)], Default::default());
+    run(&mut app, vec![button(false)], Default::default());
+    assert!(app.canvas_focus, "the click landed on the canvas");
+    run(&mut app, vec![key(true)], ctrl);
+    for _ in 0..5 {
+        run(&mut app, vec![], ctrl);
+    }
+    run(&mut app, vec![key(false)], ctrl);
+    assert!(!path.exists(), "Ctrl+S on the canvas saves nothing");
+    let back = -app.cam.forward().with_y(0.0).normalize().as_dvec3();
+    assert!((app.cam.position - start).dot(back) > 0.0, "it flies backwards: {start} → {}", app.cam.position);
+}
+
 fn frame(ctx: &egui::Context, app: &mut App, keys: &[Key], t: &mut f64) {
     *t += 1.0 / 60.0;
     let mut events = vec![];

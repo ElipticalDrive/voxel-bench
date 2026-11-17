@@ -273,6 +273,30 @@ pub fn srgb_extended_to_linear(c: f32) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
+/// `c` (non-negative, up to 65408) in RGB9E5: a 9-bit mantissa per channel and a shared
+/// 5-bit exponent in one word (bits 0-8 red, 9-17 green, 18-26 blue, 27-31 the exponent),
+/// what a float colour passes through where a uniform has one `u32` for it (the GPU's sky
+/// in `hdr`). Relative error within half a step of the largest channel's 2⁻⁹.
+pub fn encode_rgb9e5(c: Vec3) -> u32 {
+    const MAX: f32 = 511.0 / 512.0 * 65536.0;
+    let c = c.clamp(Vec3::ZERO, Vec3::splat(MAX));
+    let top = c.max_element();
+    let mut e = (top.max(f32::MIN_POSITIVE).log2().floor() as i32).max(-16) + 16;
+    let mut step = 2f32.powi(e - 24);
+    if (top / step + 0.5).floor() >= 512.0 {
+        e += 1;
+        step *= 2.0;
+    }
+    let m = |v: f32| ((v / step + 0.5).floor() as u32).min(511);
+    m(c.x) | m(c.y) << 9 | m(c.z) << 18 | (e as u32) << 27
+}
+
+/// Its inverse (the WGSL twin is `unpack_rgb9e5` in `mr-gpu`'s `common.wgsl`).
+pub fn decode_rgb9e5(p: u32) -> Vec3 {
+    let step = 2f32.powi((p >> 27) as i32 - 24);
+    Vec3::new((p & 511) as f32, (p >> 9 & 511) as f32, (p >> 18 & 511) as f32) * step
+}
+
 /// An `Rgba16F` frame's 8-bit form: clamped and quantised, the pixels `clamp` writes (up to
 /// one step where the half's rounding crosses a quantisation boundary).
 pub fn hdr_to_rgba8(px: &[u8]) -> Vec<u8> {
@@ -390,6 +414,17 @@ const LUMA: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rgb9e5_roundtrip() {
+        for c in [Vec3::ZERO, Vec3::new(0.7, 0.83, 0.98), Vec3::new(1.0, 0.5, 0.0), Vec3::new(3.7, 12.0, 0.01), Vec3::splat(65408.0), Vec3::new(1e-6, 0.0, 2e-6)] {
+            let d = decode_rgb9e5(encode_rgb9e5(c));
+            let step = (c.max_element() / 256.0).max(2f32.powi(-24)); // denormal range: absolute steps
+            assert!((d - c).abs().max_element() <= step * 0.5 + 1e-12, "{c} → {d}");
+        }
+        assert_eq!(decode_rgb9e5(encode_rgb9e5(Vec3::splat(1e9))), Vec3::splat(65408.0), "clamped to the largest value");
+        assert_eq!(decode_rgb9e5(encode_rgb9e5(Vec3::new(1.0, 0.0, 0.0))).x, 1.0, "1 is exact");
+    }
 
     #[test]
     fn half_round_trip_and_rounding() {

@@ -115,7 +115,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 #ifdef DEFERRED
     for (var row = 0; row < ybuf; row++) { records[u32(row) * cam.width + gid.x] = vec2<u32>(0u); }
 #else
-    let sky = unpack4x8unorm(cam.sky);
+    let sky = unpack_sky(cam.sky);
     for (var row = 0; row < ybuf; row++) { textureStore(out_tex, vec2<i32>(i32(gid.x), row), sky); }
 #endif
 }

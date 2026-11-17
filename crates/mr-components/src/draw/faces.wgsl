@@ -60,7 +60,7 @@ fn pixel_ray(px: vec2<f32>) -> vec3<f32> {
 // The deferred shading pass's view of the frame (`shading/deferred.wgsl`).
 fn view_ray(px: vec2<u32>) -> vec3<f32> { return pixel_ray(vec2<f32>(px) + 0.5); }
 fn view_origin() -> vec3<f32> { return fr.cam_frac; }
-fn view_miss(px: vec2<u32>) -> vec4<f32> { return unpack4x8unorm(fr.sky); }
+fn view_miss(px: vec2<u32>) -> vec4<f32> { return unpack_sky(fr.sky); }
 fn view_lit() -> bool { return fr.mode == 1u; }
 fn view_surface(s: Surface) -> Surface { return s; }
 

@@ -348,9 +348,28 @@ impl Core {
         mr_gpu::output_format(self.tone.format())
     }
 
-    /// The sky's pixel (a linear colour, through the post).
-    fn sky(&self) -> [u8; 4] {
-        self.tone.encode(self.world.env.sky)
+    /// The sky past 1: with `hdr`, its extended sRGB when a channel passes 1 (`None`: the sky
+    /// is what RGBA8 holds, quantised to it, so every path writes `clamp`'s value).
+    fn sky_hdr(&self) -> Option<glam::Vec3> {
+        let c = self.tone.map(self.world.env.sky).map(mr_core::lighting::linear_to_srgb_extended);
+        (self.tone == mr_core::lighting::Tone::Hdr && c.max_element() > 1.0).then_some(c)
+    }
+
+    /// The sky's output value (a linear colour through the post; a render pass's clear colour).
+    fn sky(&self) -> [f64; 4] {
+        match self.sky_hdr() {
+            Some(c) => [c.x as f64, c.y as f64, c.z as f64, 1.0],
+            None => self.tone.encode(self.world.env.sky).map(|v| v as f64 / 255.0),
+        }
+    }
+
+    /// The sky as the camera uniform's word (`unpack_sky` in `common.wgsl`): RGBA8, or a sky
+    /// past 1 in RGB9E5 with its exponent below 31 (values up to 32704).
+    fn sky_word(&self) -> u32 {
+        match self.sky_hdr() {
+            Some(c) => mr_core::lighting::encode_rgb9e5(c.min(glam::Vec3::splat(32704.0))),
+            None => u32::from_le_bytes(self.tone.encode(self.world.env.sky)),
+        }
     }
 
     /// Adds the ray queries' root code to `p` (the bindings and the trace; `flags`: the ray
@@ -436,7 +455,7 @@ impl Core {
             up: c.up().to_array(),
             mode: (mode == RenderMode::Lit) as u32,
             origin: c.split_position().1.to_array(),
-            sky: u32::from_le_bytes(self.sky()),
+            sky: self.sky_word(),
             width: self.width,
             height: self.height,
             region,

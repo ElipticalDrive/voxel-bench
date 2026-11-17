@@ -235,7 +235,8 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Run { plan: path, overrides, unset } => {
-            let plan = Plan::load_with(&path, &overrides, &unset)?;
+            let mut plan = Plan::load_with(&path, &overrides, &unset)?;
+            plan.distinct_labels();
             let run_dir = make_run_dir(&plan)?;
             let text = std::fs::read_to_string(&path)?;
             std::fs::write(run_dir.join("plan.toml"), format!("# overrides: {overrides:?}, unset: {unset:?}\n{text}"))?;
@@ -316,10 +317,7 @@ impl Ctx<'_> {
     /// A renderer's label in reports: pipelines compiled for this machine are told apart
     /// from the generic build.
     fn label(&self, spec: &RendererSpec) -> String {
-        match spec.compiled(&self.plan.run) {
-            Some(c) => format!("{} [{}]", spec.label(), c.name()),
-            None => spec.label().to_string(),
-        }
+        spec.run_label(&self.plan.run)
     }
 
     fn spawn_lanes(&self, specs: &[RendererSpec], mode: Option<PassMode>) -> (Vec<Lane>, Vec<PassReport>) {

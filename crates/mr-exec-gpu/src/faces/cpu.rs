@@ -431,12 +431,12 @@ impl CpuSampler {
         let bound = f.bound.as_ref().expect("stored");
         let (storage_bg, more) = bound.split();
         let binds: Vec<&wgpu::BindGroup> = [self.bind0.as_ref(), f.world.as_ref(), storage_bg].into_iter().flatten().collect();
-        let sky = super::sky_rgba(core);
+        let sky = core.sky();
         let frame = DrawFrame {
             out: f.out.as_ref().expect("set up"),
             depth: &self.drawing.depth,
             ids: core.edges.hits().map(|h| h.view()),
-            clear: wgpu::Color { r: sky[0] as f64, g: sky[1] as f64, b: sky[2] as f64, a: 1.0 },
+            clear: wgpu::Color { r: sky[0], g: sky[1], b: sky[2], a: 1.0 },
             prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
             binds: &binds,

@@ -87,6 +87,9 @@ struct App {
     fullscreen: bool,
     /// Draw frames at exactly one frame pixel per screen pixel (Z).
     pixel_exact: bool,
+    /// The canvas (the viewport) has the keyboard: the last click landed on it. Ctrl+S is
+    /// then fast reverse flight, elsewhere it saves the plan.
+    canvas_focus: bool,
     /// Labels and HUD drawn over the frames (O).
     overlays: bool,
     /// Physical pixel size of the first visible tile, for "match resolution".
@@ -189,6 +192,7 @@ impl App {
             edit_mode: false,
             fullscreen: false,
             pixel_exact: false,
+            canvas_focus: false,
             overlays: true,
             tile_px: None,
             place_block: 7,
@@ -344,6 +348,11 @@ impl App {
     fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.keys(&ctx);
+        // A click anywhere takes the keyboard from the canvas; the viewport gives it back when
+        // the click was on it.
+        if ctx.input(|i| i.pointer.any_pressed()) {
+            self.canvas_focus = false;
+        }
         if self.playing && self.live.is_some() {
             let dt = ctx.input(|i| i.stable_dt.min(0.1)) as f64;
             self.scene_frame += dt * SCENE_FPS;

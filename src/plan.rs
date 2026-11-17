@@ -517,6 +517,15 @@ impl RendererSpec {
         Some(self.compile.unwrap_or(run.compile)).filter(|&c| c != Compile::Off && matches!(crate::pipelines::bake(self), Ok(Some(_))))
     }
 
+    /// The label of its lanes in a run: [`Self::label`], with the compiled level when it runs
+    /// compiled (` [native]`), so the generic build and a compiled one stay apart.
+    pub fn run_label(&self, run: &RunSpec) -> String {
+        match self.compiled(run) {
+            Some(c) => format!("{} [{}]", self.label(), c.name()),
+            None => self.label().to_string(),
+        }
+    }
+
     /// Display label: the explicit one, else the graph's (`Graph::label`), else the
     /// standalone renderer's name.
     pub fn label(&self) -> &str {
@@ -746,6 +755,29 @@ impl Plan {
 }
 
 impl Plan {
+    /// Gives renderers whose lanes would share a label ([`RendererSpec::run_label`]) distinct
+    /// ones (the second `label #2`, ...), so their frames, logs and report rows stay apart.
+    pub fn distinct_labels(&mut self) {
+        let run = self.run.clone();
+        let mut seen: std::collections::HashMap<String, usize> = Default::default();
+        let mut taken: std::collections::HashSet<String> = self.renderers.iter().map(|r| r.run_label(&run)).collect();
+        for r in &mut self.renderers {
+            let n = seen.entry(r.run_label(&run)).or_insert(0);
+            *n += 1;
+            if *n == 1 {
+                continue;
+            }
+            let label = r.label().to_string();
+            for k in *n.. {
+                r.label = Some(format!("{label} #{k}"));
+                if taken.insert(r.run_label(&run)) {
+                    *n = k;
+                    break;
+                }
+            }
+        }
+    }
+
     /// TOML of the plan, every renderer as [`RendererSpec::written`].
     pub fn to_toml(&self) -> anyhow::Result<String> {
         Ok(toml::to_string_pretty(self)?)
@@ -1083,6 +1115,28 @@ mod tests {
         assert!(Plan::parse(&text, &[]).unwrap().output.save.is_some());
         assert!(Plan::parse_with(&text, &[], &["output.save".into()]).unwrap().output.save.is_none());
         assert!(Plan::parse_with(&text, &[], &["output.nope".into(), "nope.x".into()]).is_ok(), "unsetting what is not there is fine");
+    }
+
+    #[test]
+    fn distinct_labels() {
+        let text = r#"
+            [scene]
+            generator = { type = "flat" }
+            camera = { type = "static" }
+            [[renderer]]
+            name = "cpu-reference"
+            [[renderer]]
+            name = "cpu-reference"
+            [[renderer]]
+            name = "cpu-reference"
+            label = "cpu-reference #2"
+            [[renderer]]
+            name = "cpu-reference"
+        "#;
+        let mut p = Plan::parse(text, &[]).unwrap();
+        p.distinct_labels();
+        let labels: Vec<&str> = p.renderers.iter().map(|r| r.label()).collect();
+        assert_eq!(labels, ["cpu-reference", "cpu-reference #3", "cpu-reference #2", "cpu-reference #4"]);
     }
 
     #[test]

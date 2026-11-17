@@ -12,6 +12,9 @@ impl App {
     pub(super) fn viewport(&mut self, ui: &mut egui::Ui) {
         let rect = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(rect, Sense::click_and_drag());
+        if resp.hovered() && ui.input(|i| i.pointer.any_pressed()) {
+            self.canvas_focus = true;
+        }
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::from_gray(18));
 

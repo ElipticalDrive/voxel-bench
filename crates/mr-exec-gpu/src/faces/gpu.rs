@@ -1451,8 +1451,8 @@ impl GpuSampler {
         let f = &self.now;
         let painter = self.order == "painter";
         let overdraw = view_code(&self.vis.view) == 4;
-        let sky = if overdraw { [0, 0, 0, 255] } else { core.sky() };
-        let clear = wgpu::Color { r: sky[0] as f64 / 255.0, g: sky[1] as f64 / 255.0, b: sky[2] as f64 / 255.0, a: 1.0 };
+        let sky = if overdraw { [0.0, 0.0, 0.0, 1.0] } else { core.sky() };
+        let clear = wgpu::Color { r: sky[0], g: sky[1], b: sky[2], a: 1.0 };
         let merging = self.merging();
         let draw_ofs = if merging { 108 * 4 } else { (72 + f.parity as u64 * 4) * 4 };
         let bind_draw = if painter {

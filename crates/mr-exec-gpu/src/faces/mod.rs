@@ -320,11 +320,6 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
     Ok((core, draw))
 }
 
-fn sky_rgba(core: &Core) -> [f32; 4] {
-    let s = core.sky();
-    [s[0] as f32 / 255.0, s[1] as f32 / 255.0, s[2] as f32 / 255.0, 1.0]
-}
-
 impl Draw {
     fn parts<'a>(&'a self, core: &'a Core) -> DrawParts<'a> {
         let meshed = self.meshed.as_ref().filter(|_| self.draw_meshes);

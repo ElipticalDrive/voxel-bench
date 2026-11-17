@@ -10,7 +10,7 @@
 fn view_ray(px: vec2<u32>) -> vec3<f32> { return column_ray(f32(px.x) + 0.5, f32(px.y) + 0.5); }
 fn view_origin() -> vec3<f32> { return cam.origin; }
 fn view_lit() -> bool { return cam.mode == 1u; }
-fn view_miss(px: vec2<u32>) -> vec4<f32> { return unpack4x8unorm(cam.sky); }
+fn view_miss(px: vec2<u32>) -> vec4<f32> { return unpack_sky(cam.sky); }
 fn view_surface(s: Surface) -> Surface {
     let cell = vec2<i32>(round(s.p - s.local).xz);
     var r = s;

@@ -49,6 +49,22 @@ fn camera_ray(forward: vec3<f32>, right: vec3<f32>, up: vec3<f32>, tan_half_fov:
     return normalize(camera_dir(forward, right, up, tan_half_fov, aspect, px, size));
 }
 
+// An RGB9E5 colour (mr_core::lighting::encode_rgb9e5).
+fn unpack_rgb9e5(p: u32) -> vec3<f32> {
+    let step = exp2(f32(p >> 27u) - 24.0);
+    return vec3<f32>(f32(p & 511u), f32((p >> 9u) & 511u), f32((p >> 18u) & 511u)) * step;
+}
+
+// The sky's output colour from a camera uniform's `sky` word (Core::sky_word): packed sRGB
+// RGBA8 (alpha 255), or with `hdr` and a sky past 1 extended sRGB in RGB9E5 (its exponent
+// kept below 31, so the top byte is never 255).
+fn unpack_sky(p: u32) -> vec4<f32> {
+#ifdef HDR
+    if ((p >> 24u) != 255u) { return vec4<f32>(unpack_rgb9e5(p), 1.0); }
+#endif
+    return unpack4x8unorm(p);
+}
+
 // (normal axis, u axis, v axis) per face; must match mr_mesh::FACE_AXES.
 fn face_axes(face: u32) -> vec3<u32> {
     switch face {

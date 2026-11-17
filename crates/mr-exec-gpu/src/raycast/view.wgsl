@@ -6,7 +6,7 @@ struct Camera {
     forward: vec3<f32>, tan_half_fov: f32,
     right: vec3<f32>, aspect: f32,
     up: vec3<f32>, mode: u32,      // 0 unlit, 1 lit
-    origin: vec3<f32>, sky: u32,   // camera position relative to vp.cam_block; packed sRGB sky
+    origin: vec3<f32>, sky: u32,   // camera position relative to vp.cam_block; the sky (unpack_sky)
     width: u32, height: u32,
     view_max: u32,                 // steps view: the top of the colour scale
     ray_flags: u32,                // ray queries: primary-ray culling
