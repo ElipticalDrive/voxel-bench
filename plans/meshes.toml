@@ -1,6 +1,6 @@
 # Mesh mode: animated triangle meshes inside the voxel Cornell box. Meshes and
-# voxels occlude each other; in lit mode the voxel world shadows the meshes (meshes cast no
-# shadows yet). Only renderers with the `meshes` tag run `+meshes` passes.
+# voxels occlude each other; in lit mode the reference has voxels and meshes shadow both
+# (raster-gpu: voxels only, so far). Only renderers with the `meshes` tag run `+meshes` passes.
 name = "meshes"
 
 [scene]

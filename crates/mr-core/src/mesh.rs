@@ -7,8 +7,9 @@
 //!   triangle (barycentric), no textures. Normals are the flat geometric triangle normal,
 //!   taken on the side facing the ray, so meshes need not be closed or consistently wound.
 //! * Unlit: pixel = interpolated vertex colour. Lit: the same lighting model as voxels
-//!   ([`crate::lighting`]), with the voxel world shadowing meshes. Meshes cast no shadows in
-//!   this baseline (neither on voxels nor on each other).
+//!   ([`crate::lighting`]). In the reference, meshes are geometry of the whole lighting
+//!   model: they shadow voxels and each other, and path-traced bounces land on them (their
+//!   linear vertex colour the albedo). Pipelines that lack this report it by their score.
 //! * Meshes occlude voxels and voxels occlude meshes, by distance along the primary ray.
 //!
 //! Renderers opt in with the `meshes` tag in [`crate::RendererInfo::tags`] and receive mesh

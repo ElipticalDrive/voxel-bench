@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use glam::{DVec3, Vec3};
+use mr_core::lighting::srgb_to_linear_f;
 use mr_core::{MeshData, MeshInstance, MeshUpdate};
 
 struct Tri {
@@ -16,19 +17,32 @@ struct Tri {
     c: [Vec3; 3],
 }
 
-/// One instance's triangles `tris[start..end]` and bounding sphere.
+/// One instance's triangles `tris[start..end]`, bounding sphere and BVH root (`nodes[root]`).
 struct Bounds {
     center: DVec3,
     radius: f64,
-    start: usize,
-    end: usize,
+    root: usize,
 }
+
+/// A BVH node: a box around triangles `tris[a..b]` (a leaf) or around children `nodes[a]`,
+/// `nodes[b]`.
+struct Node {
+    lo: DVec3,
+    hi: DVec3,
+    a: usize,
+    b: usize,
+    leaf: bool,
+}
+
+/// Triangles per BVH leaf at most.
+const LEAF: usize = 4;
 
 #[derive(Default)]
 pub struct Meshes {
     data: HashMap<u32, Arc<MeshData>>,
     instances: Vec<MeshInstance>,
     tris: Vec<Tri>,
+    nodes: Vec<Node>,
     bounds: Vec<Bounds>,
     dirty: bool,
 }
@@ -39,6 +53,48 @@ pub struct MeshHit {
     pub normal: Vec3,
     /// Interpolated sRGB colour (0..1).
     pub color: Vec3,
+}
+
+impl MeshHit {
+    /// The linear albedo (the colour without its sRGB encoding).
+    pub fn albedo(&self) -> Vec3 {
+        Vec3::new(srgb_to_linear_f(self.color.x), srgb_to_linear_f(self.color.y), srgb_to_linear_f(self.color.z))
+    }
+}
+
+/// Möller–Trumbore, two-sided: `(t, u, v)` when the ray meets the triangle at any `t`.
+fn intersect(tri: &Tri, o: DVec3, d: DVec3) -> Option<(f64, f64, f64)> {
+    let p = d.cross(tri.e2);
+    let det = tri.e1.dot(p);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let s = o - tri.p0;
+    let u = s.dot(p) * inv;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = s.cross(tri.e1);
+    let v = d.dot(q) * inv;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    Some((tri.e2.dot(q) * inv, u, v))
+}
+
+impl Tri {
+    fn lo(&self) -> DVec3 {
+        self.p0.min(self.p0 + self.e1).min(self.p0 + self.e2)
+    }
+
+    fn hi(&self) -> DVec3 {
+        self.p0.max(self.p0 + self.e1).max(self.p0 + self.e2)
+    }
+
+    fn centroid(&self) -> DVec3 {
+        self.p0 + (self.e1 + self.e2) / 3.0
+    }
 }
 
 impl Meshes {
@@ -58,13 +114,14 @@ impl Meshes {
         self.tris.len()
     }
 
-    /// Rebuilds world-space triangles after updates; call before tracing.
+    /// Rebuilds world-space triangles and their BVHs after updates; call before tracing.
     pub fn prepare(&mut self) {
         if !self.dirty {
             return;
         }
         self.dirty = false;
         self.tris.clear();
+        self.nodes.clear();
         self.bounds.clear();
         for inst in &self.instances {
             let Some(m) = self.data.get(&inst.mesh) else { continue };
@@ -78,14 +135,39 @@ impl Meshes {
                 let (a, b, c) = (xf(m.positions[t[0] as usize]), xf(m.positions[t[1] as usize]), xf(m.positions[t[2] as usize]));
                 self.tris.push(Tri { p0: a, e1: b - a, e2: c - a, c: [col(t[0]), col(t[1]), col(t[2])] });
             }
-            self.bounds.push(Bounds { center: inst.position, radius: m.radius() as f64 * inst.scale * 1.0001 + 1e-6, start, end: self.tris.len() });
+            if self.tris.len() == start {
+                continue;
+            }
+            let end = self.tris.len();
+            let root = build(&mut self.tris, &mut self.nodes, start, end);
+            self.bounds.push(Bounds { center: inst.position, radius: m.radius() as f64 * inst.scale * 1.0001 + 1e-6, root });
         }
     }
 
-    /// Nearest triangle hit with `0 < t < max_t` (Möller–Trumbore, two-sided, f64).
+    /// Nearest triangle hit with `0 < t < max_t` (two-sided, f64).
     pub fn trace(&self, o: DVec3, d: DVec3, max_t: f64) -> Option<MeshHit> {
-        let mut best: Option<(f64, usize, f64, f64)> = None;
+        let (t, i, u, v) = self.walk(o, d, max_t, false)?;
+        let tri = &self.tris[i];
+        let mut n = tri.e1.cross(tri.e2).normalize();
+        if n.dot(d) > 0.0 {
+            n = -n;
+        }
+        let (u, v) = (u as f32, v as f32);
+        Some(MeshHit { t, normal: n.as_vec3(), color: tri.c[0] * (1.0 - u - v) + tri.c[1] * u + tri.c[2] * v })
+    }
+
+    /// Whether any triangle is hit with `0 < t < max_t` (a shadow ray's test; stops at the
+    /// first).
+    pub fn occluded(&self, o: DVec3, d: DVec3, max_t: f64) -> bool {
+        self.walk(o, d, max_t, true).is_some()
+    }
+
+    /// The nearest hit `(t, triangle, u, v)`, or with `any` the first found.
+    fn walk(&self, o: DVec3, d: DVec3, max_t: f64, any: bool) -> Option<(f64, usize, f64, f64)> {
+        let mut best = None;
         let mut limit = max_t;
+        let inv = d.recip();
+        let mut stack = Vec::with_capacity(64);
         for b in &self.bounds {
             // Ray vs bounding sphere (d is unit length).
             let oc = o - b.center;
@@ -94,40 +176,52 @@ impl Meshes {
             if disc < 0.0 || -bb - disc.sqrt() > limit || -bb + disc.sqrt() < 0.0 {
                 continue;
             }
-            for (i, tri) in self.tris[b.start..b.end].iter().enumerate() {
-                let p = d.cross(tri.e2);
-                let det = tri.e1.dot(p);
-                if det.abs() < 1e-12 {
+            stack.push(b.root);
+            while let Some(n) = stack.pop() {
+                let node = &self.nodes[n];
+                let (t0, t1) = ((node.lo - o) * inv, (node.hi - o) * inv);
+                // A NaN (0 * inf, a ray in a slab's plane) is skipped: f64 min / max take the other.
+                if t0.min(t1).max_element().max(0.0) > t0.max(t1).min_element().min(limit) {
                     continue;
                 }
-                let inv = 1.0 / det;
-                let s = o - tri.p0;
-                let u = s.dot(p) * inv;
-                if !(0.0..=1.0).contains(&u) {
+                if !node.leaf {
+                    stack.extend([node.a, node.b]);
                     continue;
                 }
-                let q = s.cross(tri.e1);
-                let v = d.dot(q) * inv;
-                if v < 0.0 || u + v > 1.0 {
-                    continue;
-                }
-                let t = tri.e2.dot(q) * inv;
-                if t > 1e-9 && t < limit {
-                    limit = t;
-                    best = Some((t, b.start + i, u, v));
+                for (i, tri) in self.tris[node.a..node.b].iter().enumerate() {
+                    if let Some((t, u, v)) = intersect(tri, o, d).filter(|h| h.0 > 1e-9 && h.0 < limit) {
+                        let i = node.a + i;
+                        limit = t;
+                        best = Some((t, i, u, v));
+                        if any {
+                            return best;
+                        }
+                    }
                 }
             }
         }
-        best.map(|(t, i, u, v)| {
-            let tri = &self.tris[i];
-            let mut n = tri.e1.cross(tri.e2).normalize();
-            if n.dot(d) > 0.0 {
-                n = -n;
-            }
-            let (u, v) = (u as f32, v as f32);
-            MeshHit { t, normal: n.as_vec3(), color: tri.c[0] * (1.0 - u - v) + tri.c[1] * u + tri.c[2] * v }
-        })
+        best
     }
+}
+
+/// Builds the BVH over `tris[start..end]` (reordering them; median split on the widest
+/// centroid axis); returns its root.
+fn build(tris: &mut [Tri], nodes: &mut Vec<Node>, start: usize, end: usize) -> usize {
+    let (lo, hi) = tris[start..end].iter().fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), t| (lo.min(t.lo()), hi.max(t.hi())));
+    let n = nodes.len();
+    nodes.push(Node { lo, hi, a: start, b: end, leaf: true });
+    if end - start <= LEAF {
+        return n;
+    }
+    let (clo, chi) = tris[start..end].iter().fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), t| (lo.min(t.centroid()), hi.max(t.centroid())));
+    let ext = chi - clo;
+    let axis = if ext.x >= ext.y && ext.x >= ext.z { 0 } else if ext.y >= ext.z { 1 } else { 2 };
+    let mid = (end - start) / 2;
+    tris[start..end].select_nth_unstable_by(mid, |a, b| a.centroid()[axis].total_cmp(&b.centroid()[axis]));
+    let a = build(tris, nodes, start, start + mid);
+    let b = build(tris, nodes, start + mid, end);
+    nodes[n] = Node { lo, hi, a, b, leaf: false };
+    n
 }
 
 #[cfg(test)]
@@ -174,5 +268,38 @@ mod tests {
         let h = s.trace(DVec3::new(20.0, 1.0, -1.0), -DVec3::X, 100.0).expect("hit");
         assert!((h.t - 10.0).abs() < 1e-9);
         assert!(s.trace(DVec3::new(20.0, 1.0, 1.0), -DVec3::X, 100.0).is_none());
+    }
+
+    /// The BVH finds what testing every triangle finds: the same nearest hit, and a hit for
+    /// `occluded` exactly when there is one (random triangles, random rays through them).
+    #[test]
+    fn bvh_matches_brute_force() {
+        let mut rng = crate::Rng::new(7);
+        let mut r = |s: f64| (rng.unit() * 2.0 - 1.0) * s;
+        let mut positions = vec![];
+        for _ in 0..300 {
+            let c = [r(4.0), r(4.0), r(4.0)];
+            for _ in 0..3 {
+                positions.push([(c[0] + r(0.7)) as f32, (c[1] + r(0.7)) as f32, (c[2] + r(0.7)) as f32]);
+            }
+        }
+        let n = positions.len() as u32;
+        let m = MeshData { id: 0, positions, colors: vec![[200, 100, 50, 255]; n as usize], indices: (0..n).collect() };
+        let mut s = Meshes::default();
+        s.apply(MeshUpdate::Meshes(vec![Arc::new(m)]));
+        s.apply(MeshUpdate::Instances(vec![inst(DVec3::new(1.0, 2.0, 3.0), DQuat::from_rotation_z(0.4), 1.5)]));
+        s.prepare();
+        assert!(s.nodes.len() > 100, "a tree, not one leaf");
+        let mut hits = 0;
+        for _ in 0..2000 {
+            let o = DVec3::new(r(12.0), r(12.0), r(12.0));
+            let d = (DVec3::new(1.0, 2.0, 3.0) + DVec3::new(r(5.0), r(5.0), r(5.0)) - o).normalize();
+            let max_t = 4.0 + r(1.0).abs() * 20.0;
+            let brute = s.tris.iter().filter_map(|t| intersect(t, o, d)).map(|h| h.0).filter(|&t| t > 1e-9 && t < max_t).min_by(f64::total_cmp);
+            assert_eq!(s.trace(o, d, max_t).map(|h| h.t), brute);
+            assert_eq!(s.occluded(o, d, max_t), brute.is_some());
+            hits += brute.is_some() as u32;
+        }
+        assert!(hits > 200, "{hits} rays hit");
     }
 }

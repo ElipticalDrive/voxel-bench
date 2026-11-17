@@ -329,12 +329,20 @@ impl Lod {
     }
 }
 
-/// The world with its chunks: the reference lighting model, reusable by other CPU
-/// renderers.
+/// The world with its chunks and meshes: the reference lighting model, reusable by other CPU
+/// renderers. Meshes (when shown) are surfaces, occluders of shadow rays and bounce targets.
 #[derive(Copy, Clone)]
 pub struct VoxelScene<'a> {
     pub world: &'a World,
     pub chunks: &'a Chunks,
+    pub meshes: Option<&'a mesh::Meshes>,
+}
+
+/// A surface a path's ray met: distance, normal facing the ray, linear albedo.
+struct Surface {
+    t: f64,
+    n: DVec3,
+    albedo: Vec3,
 }
 
 pub struct CpuReference {
@@ -624,12 +632,22 @@ impl VoxelScene<'_> {
         self.chunks.trace(o, d, max_t)
     }
 
+    /// Whether a voxel or a mesh is hit from `p` along `dir` within `dist`.
     pub fn occluded(&self, p: DVec3, dir: DVec3, dist: f64) -> bool {
-        self.chunks.occluded(p, dir, dist)
+        self.chunks.occluded(p, dir, dist) || self.meshes.is_some_and(|m| m.occluded(p, dir, dist))
     }
 
     pub fn max_dist(&self) -> f64 {
         self.chunks.max_dist()
+    }
+
+    /// The nearest surface, voxel or mesh.
+    fn surface(&self, o: DVec3, d: DVec3, max_t: f64) -> Option<Surface> {
+        let hit = self.trace(o, d, max_t);
+        if let Some(m) = self.meshes.and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_t, |h| h.t))) {
+            return Some(Surface { t: m.t, n: m.normal.as_dvec3(), albedo: m.albedo() });
+        }
+        hit.map(|h| Surface { t: h.t, n: h.face.normal().as_dvec3(), albedo: self.albedo(o, d, &h) })
     }
 
     pub fn shade(&self, o: DVec3, d: DVec3, hit: &Hit, mode: RenderMode) -> [u8; 4] {
@@ -654,7 +672,7 @@ impl VoxelScene<'_> {
     /// the mean of `paths` paths of up to `bounces` bounces: the `pathtrace` shading's model.
     /// Every vertex takes the sun and the point lights with their shadow rays
     /// ([`Self::light_at`]); the ambient term stands in for the sky, so only a ray that
-    /// escapes and the last vertex take it. Bounces land on voxels. `bounces = 0` is
+    /// escapes and the last vertex take it. Bounces land on voxels and meshes. `bounces = 0` is
     /// [`Self::light_at`].
     pub fn light_by_paths(&self, p: DVec3, n: Vec3, bounces: u32, paths: u32, rng: &mut Rng) -> Vec3 {
         let ambient = self.world.env.ambient;
@@ -669,12 +687,12 @@ impl VoxelScene<'_> {
             for depth in 1..=bounces {
                 let o = p + n * 1e-4;
                 let d = rng.cosine(n);
-                let Some(hit) = self.trace(o, d, max_dist) else {
+                let Some(hit) = self.surface(o, d, max_dist) else {
                     sum += through * ambient;
                     break;
                 };
-                (p, n) = (o + d * hit.t, hit.face.normal().as_dvec3());
-                through *= self.albedo(o, d, &hit);
+                (p, n) = (o + d * hit.t, hit.n);
+                through *= hit.albedo;
                 let light = self.light_at(p, n.as_vec3());
                 sum += through * if depth < bounces { light - ambient } else { light };
             }
@@ -690,7 +708,7 @@ impl VoxelScene<'_> {
 
     /// Shades a mesh surface (mesh mode): `color` is the interpolated sRGB vertex colour,
     /// `n` the normal facing the viewer. Unlit returns the colour; lit uses the voxel
-    /// lighting model with the voxel world casting shadows.
+    /// lighting model, voxels and meshes casting shadows.
     pub fn shade_mesh(&self, p: DVec3, n: Vec3, color: Vec3, mode: RenderMode) -> [u8; 4] {
         if mode == RenderMode::Unlit {
             let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
@@ -701,7 +719,7 @@ impl VoxelScene<'_> {
     }
 
     /// Incoming light (linear) at surface point `p` with normal `n`: ambient, sun and
-    /// point lights, each with its shadow ray through the voxel world.
+    /// point lights, each with its shadow ray through the voxels and meshes.
     pub fn light_at(&self, p: DVec3, n: Vec3) -> Vec3 {
         self.world.light_at(p, n, |p, d, dist| self.occluded(p, d, dist))
     }
@@ -735,11 +753,10 @@ impl Renderer for CpuReference {
         self.chunks.prepare();
         self.chunks.look_from(req.camera.position);
         self.meshes.prepare();
-        let meshes = req.meshes.then_some(&self.meshes);
         let (w, h) = (self.width, self.height);
         let cam = req.camera;
         let o = cam.position;
-        let this = VoxelScene { world: &self.world, chunks: &self.chunks };
+        let this = VoxelScene { world: &self.world, chunks: &self.chunks, meshes: req.meshes.then_some(&self.meshes) };
         let max_dist = this.max_dist();
         let sky = self.world.sky();
         // Path-traced lit frames: the light at the primary point from its paths.
@@ -752,10 +769,10 @@ impl Renderer for CpuReference {
                 let d = cam.ray_dir(x, y as u32, w, h).as_dvec3();
                 let hit = this.trace(o, d, max_dist);
                 // Mesh mode: the nearest mesh surface in front of the voxel hit wins.
-                let mesh_hit = meshes.and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_dist, |h| h.t)));
+                let mesh_hit = this.meshes.and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_dist, |h| h.t)));
                 let mut rng = Rng::new(y as u32 * w + x);
                 let px = match (mesh_hit, hit, paths) {
-                    (Some(m), _, Some(k)) => lit(Vec3::new(srgb_to_linear_f(m.color.x), srgb_to_linear_f(m.color.y), srgb_to_linear_f(m.color.z)), o + d * m.t, m.normal, k, &mut rng),
+                    (Some(m), _, Some(k)) => lit(m.albedo(), o + d * m.t, m.normal, k, &mut rng),
                     (Some(m), _, None) => this.shade_mesh(o + d * m.t, m.normal, m.color, req.mode),
                     (None, Some(hit), Some(k)) => lit(this.albedo(o, d, &hit), o + d * hit.t, hit.face.normal().as_vec3(), k, &mut rng),
                     (None, Some(hit), None) => this.shade(o, d, &hit, req.mode),
@@ -860,7 +877,7 @@ mod tests {
         let (at, up) = (DVec3::new(8.5, 1.0, 8.5), Vec3::Y);
         let chunks = chunk_of(&[(IVec3::new(8, 0, 8), STONE)]);
         {
-            let s = VoxelScene { world: &world, chunks: &chunks };
+            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None };
             let direct = s.light_at(at, up);
             assert!(direct.max_element() > ambient.max_element(), "the sun reaches it");
             assert_eq!(s.light_by_paths(at, up, 0, 16, &mut Rng::new(1)), direct);
@@ -871,7 +888,7 @@ mod tests {
             let mut cells = vec![(IVec3::new(8, 0, 8), STONE)];
             cells.extend((0..32).flat_map(|x| (0..32).map(move |z| (IVec3::new(x, 4, z), ceiling))));
             let chunks = chunk_of(&cells);
-            let s = VoxelScene { world: &world, chunks: &chunks };
+            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None };
             let light = s.light_by_paths(at, up, 2, 1024, &mut Rng::new(1));
             if grey {
                 assert!(light.max_element() < ambient.max_element() * 0.9 && light.min_element() > ambient.min_element() * 0.2, "{light}");
@@ -880,6 +897,47 @@ mod tests {
             }
             // The same seed, the same light.
             assert_eq!(light, s.light_by_paths(at, up, 2, 1024, &mut Rng::new(1)));
+        }
+    }
+
+    /// Meshes cast shadows and take bounces: a mesh square between a floor point and the sun
+    /// leaves it the ambient; under a mesh ceiling with no sun, a white one gives back what the
+    /// ambient gives (as a voxel ceiling does), a grey one less.
+    #[test]
+    fn meshes_occlude_and_take_bounces() {
+        let texture = |v: u8| Texture { name: String::new(), texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE] };
+        let block = |t: u16| BlockType { name: String::new(), faces: [t; 6] };
+        let blocks = Arc::new(BlockRegistry { textures: vec![texture(255)], blocks: vec![block(0), block(0)] });
+        let mut world = World { blocks, env: Environment::default(), shadows: Shadows::All, tone: Tone::Clamp, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false };
+        let ambient = world.env.ambient;
+        let (at, up) = (DVec3::new(8.5, 1.0, 8.5), Vec3::Y);
+        let chunks = chunk_of(&[(IVec3::new(8, 0, 8), STONE)]);
+        // A horizontal square of side 2h at height y above `at`, its centre moved by `by`.
+        let square = |y: f32, h: f32, grey: u8, by: DVec3| {
+            let m = MeshData { id: 0, positions: vec![[-h, y, -h], [h, y, -h], [h, y, h], [-h, y, h]], colors: vec![[grey, grey, grey, 255]; 4], indices: vec![0, 1, 2, 0, 2, 3] };
+            let mut s = mesh::Meshes::default();
+            s.apply(MeshUpdate::Meshes(vec![Arc::new(m)]));
+            s.apply(MeshUpdate::Instances(vec![MeshInstance { id: 0, mesh: 0, position: DVec3::new(8.5, 0.0, 8.5) + by, rotation: glam::DQuat::IDENTITY, scale: 1.0 }]));
+            s.prepare();
+            s
+        };
+        let sun = world.env.sun.expect("the default has a sun").direction.as_dvec3();
+        // A square centred on the sun's ray from the point, 3 blocks up it.
+        let shade = square(0.0, 3.0, 255, at - sun * 3.0 - DVec3::new(8.5, 0.0, 8.5));
+        let open = VoxelScene { world: &world, chunks: &chunks, meshes: None }.light_at(at, up);
+        let shaded = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&shade) }.light_at(at, up);
+        assert!(open.max_element() > ambient.max_element(), "the sun reaches it");
+        assert!((shaded - ambient).abs().max_element() < 1e-6, "the mesh shades it: {shaded}");
+        world.env.sun = None;
+        for (grey, absorbs) in [(255, false), (128, true)] {
+            let ceiling = square(4.0, 1e4, grey, DVec3::ZERO);
+            let s = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&ceiling) };
+            let light = s.light_by_paths(at, up, 2, 1024, &mut Rng::new(1));
+            if absorbs {
+                assert!(light.max_element() < ambient.max_element() * 0.9 && light.min_element() > ambient.min_element() * 0.2, "{light}");
+            } else {
+                assert!((light - ambient).abs().max_element() < 1e-5, "{light}");
+            }
         }
     }
 

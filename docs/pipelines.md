@@ -245,7 +245,8 @@ Meshes and voxels occlude each other. A mesh pixel is shaded by the pipeline's s
 component like a voxel's, with the interpolated vertex colour as its albedo: `direct` lights
 it with the same lights and shadow rays, `pathtrace` bounces off it (bounces land on voxels).
 The `meshes` node's `shadow` port picks the rays that shadow meshes (unbound: the shading's).
-Meshes do not cast shadows yet. Pipelines with a `meshes` node draw them: `depth` on the
+In the pipelines meshes cast no shadows yet; in the reference they do (on voxels and each
+other) and its bounces land on them too, so a pipeline is scored against the full model. Pipelines with a `meshes` node draw them: `depth` on the
 rasterisers (the same depth buffer) and `composite` on raycast-gpu (meshes are rasterised
 first, and rays stop at them). Pipelines without one are skipped in `+meshes` benchmark
 passes, and the GUI labels them "(no meshes)".
