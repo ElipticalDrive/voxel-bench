@@ -23,7 +23,8 @@ use mr_components::graph::{Checked, Role};
 use mr_components::traversal::cpu::Hit;
 use mr_components::traversal::incremental::cpu::trace_incremental;
 use mr_components::traversal::refloor::cpu::{NOWHERE, trace_packet};
-use mr_components::visibility::record::Record;
+use mr_components::shading::direct::cpu::Surface;
+use mr_components::visibility::record::{LAYERS, Record};
 use mr_components::parse_placement;
 use mr_core::chunk::local_of_block;
 use mr_core::*;
@@ -53,7 +54,7 @@ pub(crate) fn info() -> RendererInfo {
         name: "cpu".into(),
         description: "CPU ray casting, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops".into(),
         tags: vec!["cpu".into(), "raycast".into(), "simd".into()],
-        features: Features::of(&[Feature::Lit]),
+        features: Features::of(&[Feature::Lit, Feature::Transparency]),
         params: REGION.lighting_knobs(params()),
     }
 }
@@ -107,6 +108,8 @@ fn walked_in<R: Repr, S: Spec>(p: &InitParams, g: &Checked, site: mr_components:
         traversal: traversal(kernel, k.exact)?,
         levels: level_mask([k.skip2, k.skip4, k.skip8, k.skip16]),
         shadow: None,
+        blocks: p.blocks.clone(),
+        layered: false,
     };
     let node = nodes::storage(scene, Kernel { kernel: kernel.clone(), exact: k.exact }, vec![site.storage.to_string()]);
     Ok(Walked { node, occluded: |r, cam, p, d, dist| nodes::scene::<R>(r).occluded::<S>(cam, p, d, dist) })
@@ -289,6 +292,72 @@ struct Scene<R> {
     /// The shadow rays' own kernel and levels (a kernel node of their own over
     /// the same storage), `None`: the primary rays' kernel.
     shadow: Option<(Traversal, u32)>,
+    blocks: Arc<BlockRegistry>,
+    /// A see-through block has arrived (sticky): primary rays continue past them, the
+    /// frame's variant with layers.
+    layered: bool,
+}
+
+/// A surface on a primary ray with layers: camera-relative cell and distance, the block and
+/// face crossed, whether it is the exit face of a see-through block, and its coverage.
+#[derive(Copy, Clone, Debug)]
+struct Layer {
+    t: f32,
+    cell: IVec3,
+    block: u16,
+    face: Face,
+    exit: bool,
+    a: f32,
+}
+
+impl Layer {
+    fn record(&self, index: usize) -> Record {
+        Record::hit(self.t, self.block, self.face, self.cell).layer(index, self.exit)
+    }
+}
+
+/// Front-to-back OVER compositing in linear light (the reference's `shade_layered`): stops
+/// once less than 1e-3 of the light behind passes (a quarter of an 8-bit step).
+struct Over {
+    c: Vec3,
+    left: f32,
+}
+
+impl Over {
+    const NEW: Over = Over { c: Vec3::ZERO, left: 1.0 };
+
+    /// Adds a layer of colour `c` covering `a`; whether the light behind no longer counts.
+    #[inline]
+    fn add(&mut self, c: Vec3, a: f32) -> bool {
+        self.c += c * (self.left * a);
+        self.left *= 1.0 - a;
+        self.left < 1e-3
+    }
+
+    /// The pixel, `behind` (the sky) seen through what is left.
+    #[inline]
+    fn pixel<P: Pixel>(&self, tone: mr_core::lighting::Tone, behind: Vec3) -> P {
+        P::encode(tone, if self.left < 1e-3 { self.c } else { self.c + behind * self.left })
+    }
+}
+
+/// The shading component's context for a scene: `world`'s blocks, environment and lights,
+/// shadow rays walking the scene's chunks (`S` what a compiled pipeline baked).
+macro_rules! shading_ctx {
+    ($scene:expr, $S:ty, $world:expr, $cam:expr) => {{
+        let (scene, world, cam) = ($scene, $world, $cam);
+        let shadows = <$S>::SHADOWS.unwrap_or(world.shadows);
+        mr_components::shading::direct::cpu::Ctx {
+            blocks: &world.blocks,
+            env: &world.env,
+            cam,
+            sun_shadows: shadows != Shadows::None,
+            light_shadows: shadows == Shadows::All,
+            lights_near: move |w: IVec3| world.lights_near(w),
+            occluded: move |p: Vec3, d: Vec3, dist: f32| scene.occluded::<$S>(cam, p, d, dist),
+            tone: <$S>::TONE.unwrap_or(world.tone),
+        }
+    }};
 }
 
 /// The shadow rays' own kernel and levels in graph `g` (a kernel node of their
@@ -316,6 +385,7 @@ impl<R: Repr> Scene<R> {
     fn apply(&mut self, updates: &[WorldUpdate]) {
         let s = self;
         for u in updates {
+            s.layered = s.layered || s.blocks.update_see_through(u);
             match u {
                 WorldUpdate::ChunkLoad { key, data } if key.lod == 0 => {
                     match data {
@@ -401,17 +471,106 @@ impl<R: Repr> Scene<R> {
 
     /// Shadow rays: their own kernel, else the primary rays' (constants where `S` baked them).
     fn occluded<S: Spec>(&self, cam: IVec3, p: Vec3, d: Vec3, dist: f32) -> bool {
-        let (bmin, bmax) = self.bounds_rel(cam);
         let primary = (S::TRAVERSAL.unwrap_or(self.traversal), S::LEVELS.unwrap_or(self.levels));
         let (kernel, levels) = S::SHADOW.unwrap_or(self.shadow).unwrap_or(primary);
+        self.trace_one(kernel, levels, cam, p, d, dist).is_some()
+    }
+
+    /// One ray from `p` (relative to block `cam`) through `kernel`: its first hit past the
+    /// start cell.
+    #[inline]
+    fn trace_one(&self, kernel: Traversal, levels: u32, cam: IVec3, p: Vec3, d: Vec3, dist: f32) -> Option<Hit> {
+        let (bmin, bmax) = self.bounds_rel(cam);
         match kernel {
             Traversal::Refloor => {}
-            Traversal::Incremental => return trace_incremental::<R, false>(&self.grid, levels, cam, p, d, dist, bmin, bmax).0.is_some(),
-            Traversal::IncrementalExact => return trace_incremental::<R, true>(&self.grid, levels, cam, p, d, dist, bmin, bmax).0.is_some(),
+            Traversal::Incremental => return trace_incremental::<R, false>(&self.grid, levels, cam, p, d, dist, bmin, bmax).0,
+            Traversal::IncrementalExact => return trace_incremental::<R, true>(&self.grid, levels, cam, p, d, dist, bmin, bmax).0,
         }
         let mut out = [None];
         trace_packet::<R, 1>(&self.grid, cam, p, &[d.x], &[d.y], &[d.z], dist, bmin, bmax, &mut out);
-        out[0].is_some()
+        out[0]
+    }
+
+    /// The surfaces on primary ray (`o` relative to block `cam`, unit `d`) front to back,
+    /// as the reference's `layers` finds them: the entry face of every solid block, and the
+    /// exit face of a see-through block left (a run of one block is one slab; a ray starting
+    /// inside one leaves it through a surface). `first` is the kernel's first hit. Past a
+    /// see-through block the walk goes cell by cell through its run, then the kernel resumes
+    /// from the cell after it (any kernel: it skips the start cell). Stops after an opaque
+    /// block, or when `f` returns true.
+    fn layers<S: Spec>(&self, cam: IVec3, o: Vec3, d: Vec3, first: Option<Hit>, mut f: impl FnMut(Layer) -> bool) {
+        let blocks = &*self.blocks;
+        let see = |b: u16| blocks.see_through(BlockId(b));
+        let kernel = S::TRAVERSAL.unwrap_or(self.traversal);
+        let levels = S::LEVELS.unwrap_or(self.levels);
+        let step = d.signum().as_ivec3();
+        let layer = |t: f32, cell: IVec3, block: u16, face: Face, exit: bool| {
+            let mut s = mr_components::shading::direct::cpu::Surface::at_cell(block, face, cell, o + d * t);
+            s.local = s.local.clamp(Vec3::ZERO, Vec3::ONE);
+            let a = if see(block) { mr_components::shading::direct::cpu::coverage(blocks, &s) } else { 1.0 };
+            Layer { t, cell, block, face, exit, a }
+        };
+        let b0 = self.grid.block_at(cam);
+        // The see-through run being crossed (the cell entered, its block), else the kernel's
+        // next hit and the distance it was cast from.
+        let mut run = see(b0).then_some((IVec3::ZERO, b0));
+        let (mut hit, mut base) = (first, 0.0f32);
+        // A bound on the surfaces (a ray along a long row of panes), so a walk always ends.
+        for _ in 0..1024 {
+            match run {
+                None => {
+                    let Some(h) = hit else { return };
+                    let t = base + h.t;
+                    let block = self.grid.block_at(h.cell + cam);
+                    let face = Face::entered(h.axis as usize, step[h.axis as usize]);
+                    if f(layer(t, h.cell, block, face, false)) || !see(block) {
+                        return;
+                    }
+                    run = Some((h.cell, block));
+                }
+                Some((start, block)) => {
+                    // Cell by cell through the run (a DDA from the cell entered).
+                    let mut c = start;
+                    let mut tmax = Vec3::ZERO;
+                    let mut delta = Vec3::ZERO;
+                    for a in 0..3 {
+                        (tmax[a], delta[a]) = if d[a] == 0.0 {
+                            (f32::INFINITY, f32::INFINITY)
+                        } else {
+                            let edge = (c[a] + (step[a] > 0) as i32) as f32;
+                            ((edge - o[a]) / d[a], (1.0 / d[a]).abs())
+                        };
+                    }
+                    let (axis, t, next, nb) = loop {
+                        let a = if tmax.x <= tmax.y && tmax.x <= tmax.z { 0 } else if tmax.y <= tmax.z { 1 } else { 2 };
+                        let t = tmax[a];
+                        let mut n = c;
+                        n[a] += step[a];
+                        tmax[a] += delta[a];
+                        let nb = self.grid.block_at(n + cam);
+                        if nb != block || t > 1e7 {
+                            break (a, t, n, nb);
+                        }
+                        c = n;
+                    };
+                    if f(layer(t, c, block, Face::entered(axis, -step[axis]), true)) || t > 1e7 {
+                        return;
+                    }
+                    if nb != 0 {
+                        if f(layer(t, next, nb, Face::entered(axis, step[axis]), false)) || !see(nb) {
+                            return;
+                        }
+                        run = Some((next, nb));
+                    } else {
+                        // Out into the air: the kernel again, from that cell (the point
+                        // where the ray enters it, in it).
+                        let p = (o + d * t - next.as_vec3()).clamp(Vec3::ZERO, Vec3::splat(1.0 - f32::EPSILON));
+                        hit = self.trace_one(kernel, levels, cam + next, p, d, 1e7).map(|h| Hit { cell: h.cell + next, ..h });
+                        (base, run) = (t, None);
+                    }
+                }
+            }
+        }
     }
 
     /// The block and face of walk hit `h` on ray direction `d`.
@@ -422,26 +581,69 @@ impl<R: Repr> Scene<R> {
 
     fn shade<S: Spec, P: Pixel>(&self, world: &World, cam: IVec3, o: Vec3, d: Vec3, h: &Hit, mode: RenderMode) -> P {
         let (block, face) = self.hit_face(cam, d, h);
-        self.shade_surface::<S, P>(world, cam, &mr_components::shading::direct::cpu::Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
+        self.shade_surface::<S, P>(world, cam, &Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
     }
 
     /// Shades surface `s` of `world` (its blocks, environment, lights), shadow rays walking
     /// these chunks.
-    fn shade_surface<S: Spec, P: Pixel>(&self, world: &World, cam: IVec3, s: &mr_components::shading::direct::cpu::Surface, mode: RenderMode) -> P {
-        let shadows = S::SHADOWS.unwrap_or(world.shadows);
-        let ctx = mr_components::shading::direct::cpu::Ctx {
-            blocks: &world.blocks,
-            env: &world.env,
-            cam,
-            sun_shadows: shadows != Shadows::None,
-            light_shadows: shadows == Shadows::All,
-            lights_near: |w: IVec3| world.lights_near(w),
-            occluded: |p: Vec3, d: Vec3, dist: f32| self.occluded::<S>(cam, p, d, dist),
-            tone: S::TONE.unwrap_or(world.tone),
-        };
-        mr_components::shading::direct::cpu::shade(&ctx, s, mode)
+    fn shade_surface<S: Spec, P: Pixel>(&self, world: &World, cam: IVec3, s: &Surface, mode: RenderMode) -> P {
+        mr_components::shading::direct::cpu::shade(&shading_ctx!(self, S, world, cam), s, mode)
+    }
+
+    /// [`Self::shade_surface`] in linear light, before the tone map (what layers composite).
+    fn radiance<S: Spec>(&self, world: &World, cam: IVec3, s: &Surface, mode: RenderMode) -> Vec3 {
+        mr_components::shading::direct::cpu::radiance(&shading_ctx!(self, S, world, cam), s, mode)
+    }
+
+    /// The pixel of primary ray (`o`, `d`) with layers, `first` the kernel's hit: its
+    /// surfaces composited front to back (the reference's `shade_layered`). A ray whose first
+    /// surface is an entry face covering fully is the opaque path's pixel exactly.
+    fn shade_layers<S: Spec, P: Pixel>(&self, world: &World, cam: IVec3, o: Vec3, d: Vec3, first: Option<Hit>, mode: RenderMode) -> P {
+        let mut over = Over::NEW;
+        let (mut count, mut full) = (0, None);
+        self.layers::<S>(cam, o, d, first, |l| {
+            if l.a <= 0.0 {
+                return false;
+            }
+            if count == 0 && l.a >= 1.0 && !l.exit {
+                full = Some(l);
+                return true;
+            }
+            count += 1;
+            let mut s = Surface::at_cell(l.block, l.face, l.cell, o + d * l.t);
+            if l.exit {
+                s.n = -s.n;
+            }
+            over.add(self.radiance::<S>(world, cam, &s, mode), l.a)
+        });
+        if let Some(l) = full {
+            return self.shade_surface::<S, P>(world, cam, &Surface::at_cell(l.block, l.face, l.cell, o + d * l.t), mode);
+        }
+        if count == 0 {
+            return world.sky();
+        }
+        over.pixel(S::TONE.unwrap_or(world.tone), world.env.sky)
+    }
+
+    /// The records of primary ray (`o`, `d`) with layers into `out` ([`LAYERS`] of them,
+    /// front to back, unused ones the sky): the surfaces [`Self::shade_layers`] composites.
+    /// The last slot holds the first opaque surface behind the others (the light the layers
+    /// past the slots would have stopped is lost).
+    fn record_layers<S: Spec>(&self, cam: IVec3, o: Vec3, d: Vec3, first: Option<Hit>, out: &mut [Record]) {
+        let (mut n, mut left) = (0, 1.0f32);
+        self.layers::<S>(cam, o, d, first, |l| {
+            if l.a <= 0.0 || n == LAYERS - 1 && l.a < 1.0 {
+                return false;
+            }
+            out[n] = l.record(n);
+            n += 1;
+            left *= 1.0 - l.a;
+            left < 1e-3 || n == LAYERS
+        });
+        out[n..].fill(Record::SKY);
     }
 }
+
 
 // ------------------------------------------------------------------------- the parts
 
@@ -501,6 +703,8 @@ struct Casted {
     hw: Option<Vec<f64>>,
     /// Wrote hit records (else pixels).
     deferred: bool,
+    /// [`LAYERS`] records per pixel.
+    layered: bool,
     ms: f32,
 }
 
@@ -555,6 +759,8 @@ impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
                 traversal: fixed("traversal", S::TRAVERSAL, traversal(kernel, k.exact)?)?,
                 levels: level_mask([k.skip2, k.skip4, k.skip8, k.skip16]),
                 shadow,
+                blocks: p.blocks.clone(),
+                layered: false,
             },
             deferred: parse_placement(&shading.placement)?,
             threads: o.threads,
@@ -616,11 +822,13 @@ struct Job<'a, R, P> {
 }
 
 /// The pixels of `r`, `N` rays per packet: `N` along a row, or with `two_d` a 1x1, 2x2,
-/// 4x2 or 4x4 block; shaded, or with `D` (`placement = deferred`) their hit records.
+/// 4x2 or 4x4 block; shaded, or with `D` (`placement = deferred`) their hit records. With
+/// `L` (the scene has see-through blocks) each ray continues past them: its layers
+/// composited, or [`LAYERS`] records per pixel.
 /// `#[inline(always)]` so each ISA wrapper below compiles its own copy with its target
 /// features.
 #[inline(always)]
-fn render_rect<R: Repr, S: Spec, P: Pixel, const N: usize, const D: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
+fn render_rect<R: Repr, S: Spec, P: Pixel, const N: usize, const D: bool, const L: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
     let (scene, w, h, mode) = (job.scene, job.w, job.h, job.mode);
     let mut work = RowWork::default();
     let (cam_block, o) = job.cam.split_position();
@@ -692,6 +900,18 @@ fn render_rect<R: Repr, S: Spec, P: Pixel, const N: usize, const D: bool>(job: &
                 if pix[l] == u32::MAX {
                     continue;
                 }
+                if L {
+                    let p = pix[l] as usize;
+                    if D {
+                        // SAFETY: as below; the pixel's slots are its own.
+                        let out = unsafe { std::slice::from_raw_parts_mut(job.records.0.add(p * LAYERS), LAYERS) };
+                        scene.record_layers::<S>(cam_block, o, dirs[l], hits[l], out);
+                    } else {
+                        // SAFETY: as below.
+                        unsafe { *job.out.0.add(p) = scene.shade_layers::<S, P>(job.world, cam_block, o, dirs[l], hits[l], mode) };
+                    }
+                    continue;
+                }
                 if D {
                     let rec = match &hits[l] {
                         Some(hit) => {
@@ -729,35 +949,35 @@ fn render_rect<R: Repr, S: Spec, P: Pixel, const N: usize, const D: bool>(job: &
 }
 
 #[inline(always)]
-fn render_rect_dyn<R: Repr, S: Spec, P: Pixel, const D: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
+fn render_rect_dyn<R: Repr, S: Spec, P: Pixel, const D: bool, const L: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
     match S::PACKET.unwrap_or(job.packet) {
-        1 => render_rect::<R, S, P, 1, D>(job, r),
-        4 => render_rect::<R, S, P, 4, D>(job, r),
-        16 => render_rect::<R, S, P, 16, D>(job, r),
-        _ => render_rect::<R, S, P, 8, D>(job, r),
+        1 => render_rect::<R, S, P, 1, D, L>(job, r),
+        4 => render_rect::<R, S, P, 4, D, L>(job, r),
+        16 => render_rect::<R, S, P, 16, D, L>(job, r),
+        _ => render_rect::<R, S, P, 8, D, L>(job, r),
     }
 }
 
 #[target_feature(enable = "avx2,fma")]
-fn render_rect_avx2<R: Repr, S: Spec, P: Pixel, const D: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
-    render_rect_dyn::<R, S, P, D>(job, r)
+fn render_rect_avx2<R: Repr, S: Spec, P: Pixel, const D: bool, const L: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
+    render_rect_dyn::<R, S, P, D, L>(job, r)
 }
 
 #[target_feature(enable = "avx512f,avx512vl,avx512bw,avx2,fma")]
-fn render_rect_avx512<R: Repr, S: Spec, P: Pixel, const D: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
-    render_rect_dyn::<R, S, P, D>(job, r)
+fn render_rect_avx512<R: Repr, S: Spec, P: Pixel, const D: bool, const L: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
+    render_rect_dyn::<R, S, P, D, L>(job, r)
 }
 
-fn render_rect_isa<R: Repr, S: Spec, P: Pixel, const D: bool>(isa: Isa, job: &Job<R, P>, r: Rect) -> RowWork {
+fn render_rect_isa<R: Repr, S: Spec, P: Pixel, const D: bool, const L: bool>(isa: Isa, job: &Job<R, P>, r: Rect) -> RowWork {
     if S::NATIVE {
         // The whole crate is compiled for this CPU.
-        return render_rect_dyn::<R, S, P, D>(job, r);
+        return render_rect_dyn::<R, S, P, D, L>(job, r);
     }
     match isa {
         // SAFETY: only selected when the CPU reports these features.
-        Isa::Avx512 => unsafe { render_rect_avx512::<R, S, P, D>(job, r) },
-        Isa::Avx2 => unsafe { render_rect_avx2::<R, S, P, D>(job, r) },
-        Isa::Scalar => render_rect_dyn::<R, S, P, D>(job, r),
+        Isa::Avx512 => unsafe { render_rect_avx512::<R, S, P, D, L>(job, r) },
+        Isa::Avx2 => unsafe { render_rect_avx2::<R, S, P, D, L>(job, r) },
+        Isa::Scalar => render_rect_dyn::<R, S, P, D, L>(job, r),
     }
 }
 
@@ -806,6 +1026,47 @@ impl<R: Repr, S: Spec, P: Pixel> mr_components::shading::deferred::Records for D
     #[inline]
     fn miss(&self, _: u32, _: u32) -> P {
         self.sky
+    }
+}
+
+/// `placement = deferred` with layers: [`LAYERS`] records per pixel, composited front to
+/// back as [`Scene::shade_layers`] does inline.
+struct Layered<'a, R, S, P>(Deferred<'a, R, S, P>);
+
+impl<R: Repr, S: Spec, P: Pixel> mr_components::shading::deferred::Records for Layered<'_, R, S, P> {
+    type Record = Record;
+    type Px = P;
+    #[inline]
+    fn record_at(&self, x: u32, y: u32) -> Record {
+        self.0.records[(y * self.0.w + x) as usize * LAYERS]
+    }
+    #[inline]
+    fn hit(r: Record) -> bool {
+        r.is_hit()
+    }
+    fn shade(&self, first: Record, x: u32, y: u32) -> P {
+        let q = &self.0;
+        let (f, rt, u, tan, aspect) = q.basis;
+        let d = pixel_dir(f, rt, u, tan, aspect, q.w, q.h, x, y);
+        let blocks = &*q.world.blocks;
+        let a_of = |s: &Surface| if blocks.see_through(BlockId(s.block)) { mr_components::shading::direct::cpu::coverage(blocks, s) } else { 1.0 };
+        let s = first.layer_surface(q.o, d);
+        if !first.is_exit() && a_of(&s) >= 1.0 {
+            return q.scene.shade_surface::<S, P>(q.world, q.cam, &s, q.mode);
+        }
+        let at = (y * q.w + x) as usize * LAYERS;
+        let mut over = Over::NEW;
+        for &r in q.records[at..at + LAYERS].iter().take_while(|r| r.is_hit()) {
+            let s = r.layer_surface(q.o, d);
+            if over.add(q.scene.radiance::<S>(q.world, q.cam, &s, q.mode), a_of(&s)) {
+                break;
+            }
+        }
+        over.pixel(S::TONE.unwrap_or(q.world.tone), q.world.env.sky)
+    }
+    #[inline]
+    fn miss(&self, _: u32, _: u32) -> P {
+        self.0.sky
     }
 }
 
@@ -941,17 +1202,25 @@ impl<S: Spec, P: Pixel> Cast<S, P> {
             View::Distance => Some(Legend::ramp("distance to the primary hit (blocks)", self.view_max as f64, false)),
         };
         // A diagnostic view shows the walk itself, so it runs inline whatever the placement.
+        // Layers only in the image: a view shows the first hit's walk.
+        let layered = scene.layered && legend.is_none();
         let records = records.filter(|_| legend.is_none()).map(|r| {
-            r.resize((w * h) as usize, Record::SKY);
+            r.resize((w * h) as usize * if layered { LAYERS } else { 1 }, Record::SKY);
             RecPtr(r.as_mut_ptr())
         });
         let deferred = records.is_some();
         let job = Job { scene, world, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone().map(|l| (l, self.view)), out: OutPtr(pixels.as_mut_ptr()), records: records.unwrap_or(RecPtr(std::ptr::null_mut())) };
         let cast = Instant::now();
-        let rect: fn(Isa, &Job<R, P>, Rect) -> RowWork = if deferred { render_rect_isa::<R, S, P, true> } else { render_rect_isa::<R, S, P, false> };
+        // The variant with layers runs only once a see-through block has arrived.
+        let rect: fn(Isa, &Job<R, P>, Rect) -> RowWork = match (deferred, layered) {
+            (true, false) => render_rect_isa::<R, S, P, true, false>,
+            (false, false) => render_rect_isa::<R, S, P, false, false>,
+            (true, true) => render_rect_isa::<R, S, P, true, true>,
+            (false, true) => render_rect_isa::<R, S, P, false, true>,
+        };
         let work: RowWork = self.rects.par_iter().map(|&r| rect(isa, &job, r)).reduce(RowWork::default, |a, b| a + b);
         let ms = cast.elapsed().as_secs_f32() * 1e3;
-        Casted { work, legend, hw: counters.map(|c| c.stop()), deferred, ms }
+        Casted { work, legend, hw: counters.map(|c| c.stop()), deferred, layered, ms }
     }
 
     /// Sets knob `name`; `false` if it is not one of the cast's.
@@ -1003,9 +1272,13 @@ impl Casted {
 }
 
 /// Shades `records` (the common deferred pass) into `pixels`.
-fn shade_records<R: Repr, S: Spec, P: Pixel>(scene: &Scene<R>, world: &World, records: &[Record], req: &FrameRequest, w: u32, h: u32, pixels: &mut [P]) {
+fn shade_records<R: Repr, S: Spec, P: Pixel>(scene: &Scene<R>, world: &World, records: &[Record], layered: bool, req: &FrameRequest, w: u32, h: u32, pixels: &mut [P]) {
     let deferred = Deferred::<R, S, P>::new(scene, world, records, &req.camera, w, h, req.mode);
-    mr_components::shading::deferred::shade(&deferred, w, pixels);
+    if layered {
+        mr_components::shading::deferred::shade(&Layered(deferred), w, pixels);
+    } else {
+        mr_components::shading::deferred::shade(&deferred, w, pixels);
+    }
 }
 
 // ------------------------------------------------------------------------- the nodes
@@ -1063,6 +1336,8 @@ mod nodes {
         records: Vec<Record>,
         pixels: Vec<P>,
         shown: bool,
+        /// [`LAYERS`] records per pixel.
+        layered: bool,
     }
 
     /// The primary rays' cast; `fused`: shading inline, its output the image.
@@ -1075,7 +1350,7 @@ mod nodes {
 
     impl<R: Repr, S: Spec, P: Pixel> Node for Visibility<R, S, P> {
         fn output(&mut self, w: u32, h: u32) -> Res {
-            if self.fused { exec::image::<P>(w, h) } else { Box::new(Hits::<P> { records: vec![], pixels: vec![], shown: false }) }
+            if self.fused { exec::image::<P>(w, h) } else { Box::new(Hits::<P> { records: vec![], pixels: vec![], shown: false, layered: false }) }
         }
         fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
             let scene = scene::<R>(ins[0]);
@@ -1087,7 +1362,7 @@ mod nodes {
                 let hits = out.downcast_mut::<Hits<P>>().expect("hit records");
                 hits.pixels.resize((w * h) as usize, P::zeroed());
                 let cast = self.cast.run(scene, cx.pool, cx.world, cx.req, w, h, &mut hits.pixels, Some(&mut hits.records));
-                hits.shown = !cast.deferred;
+                (hits.shown, hits.layered) = (!cast.deferred, cast.layered);
                 cast
             };
             report.stages.push(StageTime::cpu(if self.fused { "cast+shade" } else { "cast" }, &self.nodes, cast.ms));
@@ -1126,7 +1401,7 @@ mod nodes {
                 return;
             }
             let start = Instant::now();
-            shade_records::<R, S, P>(scene, cx.world, &hits.records, cx.req, cx.width, cx.height, pixels);
+            shade_records::<R, S, P>(scene, cx.world, &hits.records, hits.layered, cx.req, cx.width, cx.height, pixels);
             report.stages.push(StageTime::cpu("shade", &self.nodes, start.elapsed().as_secs_f32() * 1e3));
         }
         fn resize(&mut self, out: &mut Res, w: u32, h: u32) {

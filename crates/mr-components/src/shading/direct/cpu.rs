@@ -48,11 +48,48 @@ where
     L: Fn(IVec3) -> Option<&'a [Light]>,
     O: Fn(Vec3, Vec3, f32) -> bool,
 {
-    let uv = s.face.uv(s.local);
-    let texel = ctx.blocks.texture_of(BlockId(s.block), s.face).texel(texel_coord(uv.x), texel_coord(uv.y));
+    let texel = texel_of(ctx.blocks, s);
     if mode == RenderMode::Unlit {
         return P::from_rgba8(texel);
     }
+    P::encode(ctx.tone, lit(ctx, s, texel))
+}
+
+/// Colour of surface `s` in linear light, before the tone map: what layers composite
+/// (unlit: the texel's linear albedo).
+pub fn radiance<'a, L, O>(ctx: &Ctx<'a, L, O>, s: &Surface, mode: RenderMode) -> Vec3
+where
+    L: Fn(IVec3) -> Option<&'a [Light]>,
+    O: Fn(Vec3, Vec3, f32) -> bool,
+{
+    let texel = texel_of(ctx.blocks, s);
+    if mode == RenderMode::Unlit {
+        return Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
+    }
+    lit(ctx, s, texel)
+}
+
+/// The texel of `s`'s block where the surface is.
+#[inline]
+fn texel_of(blocks: &BlockRegistry, s: &Surface) -> [u8; 4] {
+    let uv = s.face.uv(s.local);
+    blocks.texture_of(BlockId(s.block), s.face).texel(texel_coord(uv.x), texel_coord(uv.y))
+}
+
+/// How much of the light surface `s` stops: its texel's coverage (1 for an opaque block).
+#[inline]
+pub fn coverage(blocks: &BlockRegistry, s: &Surface) -> f32 {
+    let uv = s.face.uv(s.local);
+    blocks.texture_of(BlockId(s.block), s.face).alpha(texel_coord(uv.x), texel_coord(uv.y)) as f32 / 255.0
+}
+
+/// The lit colour (linear, exposed) of `s` with `texel`.
+#[inline]
+fn lit<'a, L, O>(ctx: &Ctx<'a, L, O>, s: &Surface, texel: [u8; 4]) -> Vec3
+where
+    L: Fn(IVec3) -> Option<&'a [Light]>,
+    O: Fn(Vec3, Vec3, f32) -> bool,
+{
     let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
     let n = s.n;
     let ps = s.p + n * 1e-3;
@@ -76,5 +113,5 @@ where
             }
         }
     }
-    P::encode(ctx.tone, albedo * light * ctx.env.exposure)
+    albedo * light * ctx.env.exposure
 }

@@ -3,6 +3,9 @@
 //! along the pixel's unit primary ray (f32 bits); the high 32 an id: 0 = no hit (sky), else
 //! bit 0 set, the face in bits 1-3, the block in bits 4-19, the parity of the surface's cell
 //! per axis in bits 20-22; bits 23-31 belong to optional capabilities and are 0 without them.
+//! With layers (transparency) a pixel has [`LAYERS`] records, front to back: the layer's
+//! index in bits 24-26, bit 27 set on the exit face of a see-through block (the face seen
+//! from inside: its shading normal faces the other way), unused slots [`Record::SKY`].
 
 use glam::{IVec3, Vec3};
 use mr_core::Face;
@@ -12,6 +15,12 @@ use crate::shading::direct::cpu::Surface;
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Record(pub u64);
+
+/// Records per pixel with layers: what bits 24-26 can index.
+pub const LAYERS: usize = 8;
+
+/// Bit 27 of the id: an exit face.
+const EXIT: u32 = 1 << 27;
 
 impl Record {
     /// No hit: the pixel shows the sky.
@@ -23,6 +32,34 @@ impl Record {
         let parity = (cell.x & 1) as u32 | ((cell.y & 1) as u32) << 1 | ((cell.z & 1) as u32) << 2;
         let id = 1 | (face as u32) << 1 | (block as u32) << 4 | parity << 20;
         Self(t.to_bits() as u64 | (id as u64) << 32)
+    }
+
+    /// Record `self` as layer `index` of its pixel, an exit face if `exit`.
+    #[inline]
+    pub fn layer(self, index: usize, exit: bool) -> Self {
+        Self(self.0 | ((index as u64) << 24 | if exit { EXIT as u64 } else { 0 }) << 32)
+    }
+
+    /// The layer's index (0 without layers).
+    #[inline]
+    pub fn index(self) -> usize {
+        ((self.0 >> 56) & 7) as usize
+    }
+
+    /// Whether the record is an exit face (see the module docs).
+    #[inline]
+    pub fn is_exit(self) -> bool {
+        (self.0 >> 32) as u32 & EXIT != 0
+    }
+
+    /// [`Self::surface`] of a layer: an exit face's normal faces back along the ray.
+    #[inline]
+    pub fn layer_surface(self, o: Vec3, d: Vec3) -> Surface {
+        let mut s = self.surface(o, d);
+        if self.is_exit() {
+            s.n = -s.n;
+        }
+        s
     }
 
     #[inline]
@@ -73,5 +110,16 @@ mod tests {
             let s = Record::hit(2.75, 1, Face::NegX, IVec3::new(3, 0, z)).surface(o, d);
             assert!((s.local.z - local).abs() < 1e-6, "{z}: {:?}", s.local);
         }
+        // A layer keeps the surface, adds its index and flips an exit face's normal.
+        let (o, d) = (Vec3::new(0.25, 0.5, 0.75), Vec3::new(1.0, 0.0, 0.0));
+        let r = Record::hit(3.75, 19, Face::PosX, IVec3::new(3, 0, 0));
+        for (i, exit) in [(0, false), (5, true), (7, true)] {
+            let l = r.layer(i, exit);
+            assert_eq!((l.index(), l.is_exit(), l.is_hit()), (i, exit, true));
+            let (a, b) = (r.surface(o, d), l.layer_surface(o, d));
+            assert_eq!((a.block, a.face, a.p, a.local), (b.block, b.face, b.p, b.local));
+            assert_eq!(b.n, if exit { -a.n } else { a.n });
+        }
+        assert_eq!(r.index(), 0);
     }
 }

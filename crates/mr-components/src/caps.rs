@@ -84,14 +84,14 @@ pub const RECORD_CAPS: &[RecordCap] = &[
     RecordCap {
         name: "layers",
         bits: Some(24..=26),
-        description: "Transparency: several hits per pixel, each record a layer (its index here), sorted or accumulated by the shading pass. Built after the architecture.",
-        built: false,
+        description: "Transparency: several surfaces per pixel, `LAYERS` (8) records front to back, each its index here (unused slots the sky); the shading pass composites them (OVER). Written by a walk that continues past see-through blocks (raycast-cpu; `visibility::record`).",
+        built: true,
     },
     RecordCap {
-        name: "continued",
+        name: "exit",
         bits: Some(27..=27),
-        description: "Transparency: the ray continues past a translucent hit (flag), its next hit written by the strategy that cast it. Built after the architecture.",
-        built: false,
+        description: "Transparency: the layer is the exit face of a see-through block (seen from inside; its shading normal faces back along the ray).",
+        built: true,
     },
     RecordCap {
         name: "opaque-only",

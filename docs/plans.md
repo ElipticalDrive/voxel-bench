@@ -94,7 +94,10 @@ ran. Passes of a mode it lacks entirely (`+meshes` without meshes) are skipped.
 Transparency is asked by the world, not the pass: a world whose generator places see-through
 blocks (`glass`), or one an edit put such a block in, asks it of every pipeline; one without it
 draws them opaque and its report says `transparency: visibility `raycast` (`visibility`) lacks
-layers: ...`.
+layers: ...`. Today raycast-cpu has it: past a see-through block its rays continue (the kernel
+resumes after the block's run), the surfaces composited front to back as the reference does;
+with `placement = deferred` the hits edge holds 8 records per pixel (the 8th the first opaque
+surface behind). Shadow rays still stop at see-through blocks.
 Knobs too: a knob in `options` its pipeline does not have, one whose owning node the graph lacks
 (`bounces` without a `pathtrace` shading), or a value whose need no node meets (`view = steps`
 needs a primary walk that counts its steps; discover-cpu's `clusters` / `kinds` views a

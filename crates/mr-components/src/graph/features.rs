@@ -188,9 +188,16 @@ mod tests {
         use mr_core::{Feature, Features};
         for (name, _) in crate::graph::SHIPPED {
             let c = shipped(name).unwrap().check().unwrap();
-            for mut f in [Features::of(&[Feature::Lit, Feature::Transparency]), Features::of(&[Feature::Lit])] {
+            for (declared, mut f) in [(true, Features::of(&[Feature::Lit, Feature::Transparency])), (false, Features::of(&[Feature::Lit]))] {
                 c.narrow_on(&mut f, &|_| None);
-                let why = f.why_not(Feature::Transparency).unwrap();
+                let why = f.why_not(Feature::Transparency);
+                // CPU ray casting continues past see-through blocks: nothing in its way.
+                if *name == "raycast-cpu" {
+                    assert_eq!(why.is_none(), declared, "{name}: {why:?}");
+                    assert!(why.as_ref().is_none_or(|w| !w.contains("lacks layers")), "{name}: {why:?}");
+                    continue;
+                }
+                let why = why.unwrap();
                 assert!(why.contains("lacks layers: one surface per pixel") && (why.starts_with("visibility `") || why.starts_with("draw `")), "{name}: {why}");
             }
         }
