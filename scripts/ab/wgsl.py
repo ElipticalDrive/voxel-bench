@@ -18,6 +18,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from mr import ROOT, before, fresh, full_sweep, release, run_logged
 
 plans = sys.argv[1:] or ["terrain", "meshes"]
+import filecmp
+if filecmp.cmp(before(), release(), shallow=False):
+    sys.exit(f"{before()} is the current build: save the before side again (scripts/ab/save-before.py at the old commit)")
 t = fresh(ROOT / "target" / "ab" / "wgsl")
 # A copy, so rebuilding during the (long) run does not pull the binary from under it.
 after = t / ("multirenderer-after" + release().suffix)
