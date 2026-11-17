@@ -385,12 +385,7 @@ impl RendererSpec {
     /// that builds its shape), a standalone renderer's from `standalone` by name.
     pub fn info(&self, standalone: &[mr_core::RendererInfo]) -> Option<mr_core::RendererInfo> {
         match &self.graph {
-            Some(g) => crate::pipelines::executor_info(g).map(|(_, mut i)| {
-                if let Ok(c) = g.check() {
-                    c.narrow(&mut i.features);
-                }
-                i
-            }),
+            Some(g) => crate::pipelines::graph_info(g),
             None => standalone.iter().find(|i| i.name == self.name).cloned(),
         }
     }

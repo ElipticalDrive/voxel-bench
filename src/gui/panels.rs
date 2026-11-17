@@ -100,7 +100,7 @@ impl App {
             if ui.toggle_value(&mut lit, "💡 Lit").on_hover_text("Sun, sky and point lights with shadows; off = textures only (L toggles)").changed() {
                 self.mode.lighting = if lit { mr_core::RenderMode::Lit } else { mr_core::RenderMode::Unlit };
             }
-            ui.toggle_value(&mut self.mode.meshes, "🔺 Meshes").on_hover_text("Draw the scene's triangle meshes with the voxel world (renderers with the `meshes` tag; others show voxels only). N toggles");
+            ui.toggle_value(&mut self.mode.meshes, "🔺 Meshes").on_hover_text("Draw the scene's triangle meshes with the voxel world (pipelines with a meshes node; a lane that leaves them out, or their shadows, says so in its title). N toggles");
             ui.separator();
             if ui.checkbox(&mut self.follow_path, "follow path (F)").on_hover_text("Camera follows the plan's scripted path. Any movement key switches to free fly.").changed() && !self.follow_path {
                 self.follow_path = true;

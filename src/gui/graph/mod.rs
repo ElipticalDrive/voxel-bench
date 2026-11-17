@@ -201,13 +201,16 @@ fn node_grid<'l>(ui: &mut Ui, salt: &str, g: &Graph, id: Option<&str>, knobs: &[
     let own = vals.len();
     let world = id.map(|id| &g.nodes[id]).map_or(vec![], |n| {
         let shadowed = |s: &ParamSpec| CLIENT_HOST.iter().any(|(h, k)| *k == s.name && knobs.iter().any(|(x, _)| x.name == *h));
-        model::world_knobs(n.role, &n.component, run).into_iter().filter(|s| n.role != Role::Client || !shadowed(s)).collect()
+        model::world_knobs(n.role, &n.component, run, crate::pipelines::graph_info(g).map(|i| i.features).as_ref()).into_iter().filter(|s| n.role != Role::Client || !shadowed(s)).collect()
     });
     if let Some(n) = id.map(|id| &g.nodes[id]) {
         vals.extend(world.iter().map(|s| (s, n.knobs.get(&s.name).and_then(|v| serde_json::to_value(v).ok()).and_then(|j| s.from_json(&j)).unwrap_or_else(|| s.default.clone()))));
     }
     let mut edits = vec![];
-    for (i, value, commit) in knobs::knob_grid(ui, (salt, id), &vals, marks, lock) {
+    // A choice the graph leaves out (a view its traversal lacks) is greyed with the reason.
+    let checked = g.check().ok();
+    let left_out = |s: &ParamSpec, v: &str| checked.as_ref().and_then(|c| c.value_left_out(s, v).into_iter().next());
+    for (i, value, commit) in knobs::knob_grid(ui, (salt, id), &vals, marks, lock, &left_out) {
         let name = vals[i].0.name.clone();
         if i < own {
             edits.push(Edit::Knob { name, value, commit });
@@ -239,7 +242,7 @@ pub fn summary<'l>(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamS
     let Some(trial) = trials.get(key, spec) else {
         // A standalone renderer: its knobs only.
         let vals: Vec<(&ParamSpec, ParamValue)> = knobs.iter().map(|(s, v)| (s, v.clone())).collect();
-        for (i, value, commit) in knobs::knob_grid(ui, (key, "knobs"), &vals, marks, lock) {
+        for (i, value, commit) in knobs::knob_grid(ui, (key, "knobs"), &vals, marks, lock, &knobs::takes_all) {
             edits.push(Edit::Knob { name: vals[i].0.name.clone(), value, commit });
         }
         return edits;
@@ -547,7 +550,7 @@ fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, Para
         });
     }
     let own = node_knobs(g, Some(&id), knobs);
-    let world = matches!(n.role, Role::Client | Role::Link) && !model::world_knobs(n.role, &n.component, run).is_empty();
+    let world = matches!(n.role, Role::Client | Role::Link) && !model::world_knobs(n.role, &n.component, run, None).is_empty();
     if !own.is_empty() || world {
         ui.add_space(6.0);
         ui.label(RichText::new("Knobs").strong());

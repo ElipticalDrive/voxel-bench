@@ -33,16 +33,6 @@ use crate::{Core, CoreSpec, REGION_BINDING};
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_WALK;
 
 
-/// What the pipeline of graph `g` supports: the preset's, less what its components lack (LOD
-/// needs every storage and kernel to handle LOD chunks and a prepass that copes).
-pub(crate) fn info_of(g: &graph::Checked, p: &InitParams) -> anyhow::Result<RendererInfo> {
-    let mut info = info();
-    if let Some(why) = lod_blocker(&Composition::of(g, &p.options()?, 0)?) {
-        info.features.lack(Feature::Lod, why);
-    }
-    Ok(info)
-}
-
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu".into(),
@@ -615,6 +605,24 @@ impl Beam {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The graph's own narrowing (`Checked::narrow`, from the components' `Cap::Lod`, which the
+    /// host and the GUI ask) says LOD exactly where the walk's composition takes it.
+    #[test]
+    fn graph_narrowing_says_lod_as_the_walk_does() {
+        let (mut n, mut with) = (0, 0);
+        for ck in graph::near(&[REGION]) {
+            let mut f = info().features;
+            ck.narrow(&mut f);
+            // (Graphs of the region the walk does not compose, the second GPU's split, aside.)
+            let Ok(c) = Composition::of(&ck, &Options::default(), 0) else { continue };
+            let walk = lod_blocker(&c);
+            assert_eq!(f.has(Feature::Lod), walk.is_none(), "{:?}: narrow {:?}, walk {walk:?}", ck.graph.label(), f.why_not(Feature::Lod));
+            n += 1;
+            with += f.has(Feature::Lod) as usize;
+        }
+        assert!(n > 20 && with > 0 && with < n, "{n} graphs, {with} with LOD");
+    }
 
     /// Every composition's shader composes from its modules and validates (no GPU needed):
     /// every storage and kernel, shadow, bounce and mesh-shadow rays through the primary

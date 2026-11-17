@@ -40,10 +40,19 @@ pub fn form_row<R>(ui: &mut Ui, name: &str, tip: &str, add: impl FnOnce(&mut Ui)
     r
 }
 
+/// Why the pipeline leaves out a knob's value (a choice's name): `None` where it takes it.
+pub type LeftOut<'a> = &'a dyn Fn(&ParamSpec, &str) -> Option<String>;
+
+/// Every value taken.
+pub fn takes_all(_: &ParamSpec, _: &str) -> Option<String> {
+    None
+}
+
 /// Knobs as a grid: the tuner's lock (a column only when `lock` is given), the value (a
-/// constant width) and the name; `marks` labels restart-only knobs with ↻. Returns
-/// (index into `knobs`, value, commit).
-pub fn knob_grid<'l>(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, knobs: &[(&ParamSpec, ParamValue)], marks: bool, mut lock: Option<&mut (dyn FnMut(&mut Ui, &ParamSpec) + 'l)>) -> Vec<(usize, ParamValue, bool)> {
+/// constant width) and the name; `marks` labels restart-only knobs with ↻; choices the
+/// pipeline leaves out (`left_out`) are greyed with the reason. Returns (index into `knobs`,
+/// value, commit).
+pub fn knob_grid<'l>(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, knobs: &[(&ParamSpec, ParamValue)], marks: bool, mut lock: Option<&mut (dyn FnMut(&mut Ui, &ParamSpec) + 'l)>, left_out: LeftOut) -> Vec<(usize, ParamValue, bool)> {
     let mut out = vec![];
     if knobs.is_empty() {
         return out;
@@ -53,7 +62,7 @@ pub fn knob_grid<'l>(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, 
             if let Some(lock) = lock.as_deref_mut() {
                 ui.horizontal(|ui| lock(ui, spec));
             }
-            if let Some((v, commit)) = value_cell(ui, |ui| knob_widget(ui, spec, value)) {
+            if let Some((v, commit)) = value_cell(ui, |ui| knob_widget(ui, spec, value, left_out)) {
                 out.push((i, v, commit));
             }
             let label = if marks && !spec.live { format!("{} ↻", spec.name) } else { spec.name.clone() };
@@ -66,7 +75,7 @@ pub fn knob_grid<'l>(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, 
 
 /// Edits a knob value. Returns the new value and whether the edit is complete (e.g. a
 /// drag finished), for knobs that should only be applied once.
-pub fn knob_widget(ui: &mut Ui, spec: &ParamSpec, value: &ParamValue) -> Option<(ParamValue, bool)> {
+pub fn knob_widget(ui: &mut Ui, spec: &ParamSpec, value: &ParamValue, left_out: LeftOut) -> Option<(ParamValue, bool)> {
     use mr_core::ParamKind;
     match &spec.kind {
         ParamKind::Bool => {
@@ -95,7 +104,11 @@ pub fn knob_widget(ui: &mut Ui, spec: &ParamSpec, value: &ParamValue) -> Option<
                 .selected_text(&cur)
                 .show_ui(ui, |ui| {
                     for o in opts {
-                        if ui.selectable_label(*o == cur, o).clicked() && *o != cur {
+                        let why = left_out(spec, o);
+                        let r = ui.add_enabled(why.is_none(), egui::Button::selectable(*o == cur, o));
+                        if let Some(why) = why {
+                            r.on_disabled_hover_text(why);
+                        } else if r.clicked() && *o != cur {
                             out = Some((ParamValue::Choice(o.clone()), true));
                         }
                     }

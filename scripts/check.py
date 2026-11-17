@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Quiet verification: prints only problems and one-line totals; full logs in target/logs/.
 
-  scripts/check.py [build|clippy|test|gpu|windows|wine|all]...
+  scripts/check.py [only] [build|clippy|test|gpu|windows|wine|all]...
 
-Default: build clippy test. `build`: dev and release builds, warnings count as failures.
+Default: build clippy test. `gpu`, `windows` and `wine` add to the default (`check.py gpu` runs
+build clippy test gpu); `only` runs just what is named (`check.py only gpu`). `build`: dev and release builds, warnings count as failures.
 `clippy`: clippy over the workspace, every warning a failure. `test`: the workspace's tests. `gpu`: the tests that need a GPU (the
 host's end-to-end live sessions, the tuner and scale-curve demos run briefly, the device pool);
 only `gui_screenshot` stays manual. `windows`: zero-warning
@@ -19,7 +20,13 @@ from mr import ROOT
 
 logs = ROOT / "target" / "logs"
 logs.mkdir(parents=True, exist_ok=True)
-what = sys.argv[1:] or ["build", "clippy", "test"]
+DEFAULT = ["build", "clippy", "test"]
+args = sys.argv[1:]
+if args[:1] == ["only"]:
+    what = args[1:]
+else:
+    # Extras add to the default: "add `gpu`" ran gpu alone twice, the unit tests unrun.
+    what = [w for w in DEFAULT if w not in args] + args if not set(args) & set(DEFAULT) else args
 if "all" in what:
     what = ["build", "clippy", "test", "gpu", "windows"]
 

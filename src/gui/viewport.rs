@@ -43,7 +43,7 @@ impl App {
         };
 
         // Snapshot lane state.
-        type LaneSnap = (String, LaneStatus, Option<live::LiveFrame>, f64, Option<f64>, bool, Option<mr_core::Legend>, Vec<(f64, String)>);
+        type LaneSnap = (String, LaneStatus, Option<live::LiveFrame>, f64, Option<f64>, Vec<String>, Option<mr_core::Legend>, Vec<(f64, String)>);
         let lanes: Vec<LaneSnap> = {
             let sh = live.shared.lock().unwrap();
             let now = sh.start.map_or(0.0, |s| s.elapsed().as_secs_f64());
@@ -51,11 +51,12 @@ impl App {
                 .iter()
                 .map(|l| {
                     let (fps, gpu) = recent(&l.samples, 1.0);
-                    // Lanes whose renderer can't draw meshes say so while mesh mode is on.
-                    let no_meshes = self.mode.meshes && !l.spec.info(&self.infos).is_some_and(|i| l.spec.supports(&i, self.mode));
+                    // What the view asks of the lane that its pipeline leaves out (meshes, mesh
+                    // rays, LOD levels, knobs), as the benchmark's reports name it.
+                    let left_out = l.spec.info(&self.infos).map_or_else(Vec::new, |i| l.spec.not_supported(&self.plan.run, Some(self.mode), &i));
                     // The events of the last seconds, newest first, with their age.
                     let recent: Vec<(f64, String)> = l.events.iter().rev().map(|(t, e)| (now - t, e.clone())).take_while(|(age, _)| *age < EVENT_SECS).take(3).collect();
-                    (l.spec.label().to_string(), l.status.clone(), l.frame.clone(), fps, gpu, no_meshes, l.legend.clone(), recent)
+                    (l.spec.label().to_string(), l.status.clone(), l.frame.clone(), fps, gpu, left_out, l.legend.clone(), recent)
                 })
                 .collect()
         };
@@ -73,7 +74,7 @@ impl App {
         let ppp = ui.ctx().pixels_per_point();
         let snap = |p: Pos2| Pos2::new((p.x * ppp).round() / ppp, (p.y * ppp).round() / ppp);
         for (k, &i) in visible.iter().enumerate() {
-            let (label, status, frame, fps, gpu, no_meshes, legend, recent) = &lanes[i];
+            let (label, status, frame, fps, gpu, left_out, legend, recent) = &lanes[i];
             let mut reading = None;
             let mut t = Rect::from_min_size(rect.min + Vec2::new((k % cols) as f32 * tile.x, (k / cols) as f32 * tile.y), tile);
             if visible.len() > 1 {
@@ -137,8 +138,10 @@ impl App {
             if let Some(g) = gpu {
                 text += &format!("  gpu {g:.2} ms");
             }
-            if *no_meshes {
-                text += "  (no meshes)";
+            if !left_out.is_empty() {
+                // The names only (`mesh rays`, `knob `view``); the reasons in the hover.
+                let names: Vec<&str> = left_out.iter().map(|w| w.split(':').next().unwrap_or(w)).collect();
+                text += &format!("  (leaves out {})", names.join(", "));
             }
             match status {
                 LaneStatus::Starting => text += "  — starting…",
@@ -151,6 +154,9 @@ impl App {
             let bg = Rect::from_min_size(t.min + Vec2::splat(4.0), galley.size() + Vec2::splat(8.0));
             painter.rect_filled(bg, 3.0, Color32::from_black_alpha(170));
             painter.galley(bg.min + Vec2::splat(4.0), galley, Color32::WHITE);
+            if !left_out.is_empty() {
+                ui.interact(bg.intersect(t), ui.id().with(("left out", i)), egui::Sense::hover()).on_hover_text(format!("Asked of this pipeline and left out:\n{}", left_out.join("\n")));
+            }
             // The lane's latest events, fading out.
             let mut y = bg.max.y + 3.0;
             for (age, e) in recent {

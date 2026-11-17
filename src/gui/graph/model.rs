@@ -115,13 +115,18 @@ pub fn readers(g: &Graph, id: &str) -> Vec<(String, String)> {
 }
 
 /// The client's and the link's knobs (they are graph knobs, not the executor's parameters).
-pub fn world_knobs(role: Role, component: &str, run: &crate::plan::RunSpec) -> Vec<mr_core::ParamSpec> {
-    use mr_core::ParamSpec;
+/// The client's `max_lod` offers the levels the pipeline holds (`features` of its graph;
+/// `None`: not known, every level).
+pub fn world_knobs(role: Role, component: &str, run: &crate::plan::RunSpec, features: Option<&mr_core::Features>) -> Vec<mr_core::ParamSpec> {
+    use mr_core::{Feature, ParamSpec};
     match (role, component) {
-        (Role::Client, _) => vec![
-            ParamSpec::int("radius", "View radius in chunks this renderer holds (default: the run's view_radius)", 1, 64, run.view_radius as i64, false),
-            ParamSpec::int("max_lod", "Coarsest LOD level it holds (default: the run's max_lod, capped by what it supports)", 0, 8, run.max_lod as i64, false),
-        ],
+        (Role::Client, _) => {
+            let (max, why) = features.map_or((8, String::new()), |f| (f.max_lod(), f.why_not(Feature::Lod).map_or_else(String::new, |w| format!("\nThis pipeline holds no LOD levels: {w}"))));
+            vec![
+                ParamSpec::int("radius", "View radius in chunks this renderer holds (default: the run's view_radius)", 1, 64, run.view_radius as i64, false),
+                ParamSpec::int("max_lod", &format!("Coarsest LOD level it holds (default: the run's max_lod, capped by what it supports){why}"), 0, max as i64, (run.max_lod.min(max)) as i64, false),
+            ]
+        }
         (Role::Link, "net") => vec![
             ParamSpec::float("latency_ms", "One-way delay of every message", 0.0, 1000.0, false, 0.0, false),
             ParamSpec::float("jitter_ms", "Extra delay per message, uniform in [0, jitter]", 0.0, 500.0, false, 0.0, false),

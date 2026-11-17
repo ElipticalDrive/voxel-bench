@@ -191,6 +191,18 @@ impl Session {
         v
     }
 
+    /// The knobs a tuner of lane `i` may vary: its knobs as far as its graph takes them
+    /// (`Checked::taken`: none without a node to take it, a choice without the values it
+    /// leaves out), so no trial is spent on a knob that does nothing.
+    fn tunable(&self, i: usize) -> Vec<ParamSpec> {
+        let checked = self.lanes.get(i).and_then(|l| l.latest().pipeline()).and_then(|g| g.check().ok());
+        let specs = self.specs(i);
+        match checked {
+            Some(c) => specs.iter().filter_map(|s| if s.name.contains('.') { Some(s.clone()) } else { c.taken(s) }).collect(),
+            None => specs,
+        }
+    }
+
     pub(super) fn publish_params(&self, i: usize) {
         let Some(lane) = self.lanes.get(i) else { return };
         let params = self.specs(i).into_iter().map(|s| (s.clone(), lane.values.get(&s.name).cloned().unwrap_or(s.default))).collect();
@@ -417,7 +429,7 @@ impl Session {
             Cmd::Compare => self.request_probe(true),
             Cmd::Tune { lane, config } => {
                 let now = self.now();
-                let specs = self.specs(lane);
+                let specs = self.tunable(lane);
                 let Some(l) = self.lanes.get_mut(lane) else { return };
                 // Stopping (or restarting) restores the best configuration found.
                 let was_tuning = l.tuner.is_some();

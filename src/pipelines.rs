@@ -75,6 +75,17 @@ pub(crate) fn executor_info(g: &mr_components::graph::Graph) -> Option<(Executor
     })
 }
 
+/// What the pipeline of `g` supports and its knobs: its executor's region narrowed by the
+/// graph (`Checked::narrow`), as its worker reports it.
+pub(crate) fn graph_info(g: &mr_components::graph::Graph) -> Option<mr_core::RendererInfo> {
+    executor_info(g).map(|(_, mut i)| {
+        if let Ok(c) = g.check() {
+            c.narrow(&mut i.features);
+        }
+        i
+    })
+}
+
 /// The executor that runs `g` and the knobs of its region (see [`executor_info`]).
 pub(crate) fn executor_of(g: &mr_components::graph::Graph) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
     executor_info(g).map(|(e, i)| (e, i.params))
