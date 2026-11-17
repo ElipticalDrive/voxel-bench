@@ -28,7 +28,7 @@ pub use lighting::{Environment, Light, PassMode, RenderMode, Sun};
 pub use mesh::{MeshData, MeshInstance, MeshUpdate};
 pub use params::{ParamKind, ParamSpec, ParamValue, ValueNeed};
 pub use renderer::*;
-pub use texture::{BlockRegistry, BlockType, TEX_SIZE, Texture};
+pub use texture::{BlockClass, BlockRegistry, BlockType, TEX_SIZE, Texture};
 
 pub use glam;
 

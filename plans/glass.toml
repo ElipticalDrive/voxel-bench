@@ -1,0 +1,29 @@
+# See-through blocks: six parallel panes of clear and stained glass (a ray through all of them
+# crosses twelve surfaces), a hollow glass cube around a glowing block, a grate cube (holes) around
+# a red one, a pillar and a brick wall behind, the sun casting their partial shadows on the floor.
+# The reference composites the surfaces front to back; pipelines without transparency draw the
+# see-through blocks opaque.
+name = "glass"
+
+[scene]
+generator = { type = "glass" }
+camera = { type = "static", position = [34, 36, 66], target = [23, 2, 16] }
+
+[run]
+frames = 60
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 4
+
+[[renderer]]
+graph = "raycast-gpu"
+
+[[renderer]]
+graph = "raster-gpu"
+
+[[renderer]]
+graph = "raycast-cpu"
+
+[output]
+compare = { every = 30 }
+save = { every = 30 }

@@ -135,6 +135,23 @@ pub enum GenSpec {
         #[serde(default = "default_one")]
         cell: i32,
     },
+    /// See-through blocks in a `size`-block yard: `panes` parallel walls of clear and stained
+    /// glass one block thick (a ray through all of them crosses `2 * panes` surfaces), a
+    /// hollow glass cube around a glowing block, a grate (cutout) cube around a red one,
+    /// opaque pillars and a back wall behind, a checkered floor that takes their shadows.
+    Glass {
+        #[serde(default = "default_glass_size")]
+        size: i32,
+        #[serde(default = "default_glass_panes")]
+        panes: i32,
+    },
+}
+
+fn default_glass_size() -> i32 {
+    48
+}
+fn default_glass_panes() -> i32 {
+    6
 }
 
 fn default_city_block() -> i32 {
@@ -193,6 +210,10 @@ impl GenSpec {
             }
             GenSpec::Gyroid { period, thickness, height } => Arc::new(GyroidGen { period: period.max(4), thickness, height: height.max(1) }),
             GenSpec::Checker { size, cell } => Arc::new(CheckerGen { size: size.max(1), cell: cell.max(1) }),
+            GenSpec::Glass { size, panes } => {
+                let size = size.max(32);
+                Arc::new(GlassGen { size, panes: panes.clamp(0, (size - 26) / 3) })
+            }
         }
     }
 }
@@ -677,6 +698,70 @@ impl WorldGen for CheckerGen {
     }
 }
 
+pub struct GlassGen {
+    size: i32,
+    panes: i32,
+}
+
+impl WorldGen for GlassGen {
+    fn block(&self, p: IVec3) -> BlockId {
+        let s = self.size;
+        if p.y == -1 && (-8..s + 8).contains(&p.x) && (-8..s + 8).contains(&p.z) {
+            return if (p.x + p.z).rem_euclid(2) == 0 { WHITE } else { GRAVEL };
+        }
+        if p.y < 0 || !(0..s).contains(&p.x) || !(0..s).contains(&p.z) {
+            return AIR;
+        }
+        // The panes, front (high z) to back.
+        let (x0, x1) = (s / 8, s - s / 8);
+        let front = s - 6;
+        let back = front - 3 * (self.panes - 1);
+        if self.panes > 0 && (back..=front).contains(&p.z) && (front - p.z) % 3 == 0 && (x0..x1).contains(&p.x) && p.y < s / 4 {
+            return [GLASS, GLASS_RED, GLASS_GREEN, GLASS_BLUE][((front - p.z) / 3 % 4) as usize];
+        }
+        // Two hollow 7-block cubes holding an opaque block, a pillar between them.
+        let shell = |o: IVec3, wall: BlockId, core: BlockId| {
+            let l = p - o;
+            if l.cmplt(IVec3::ZERO).any() || l.cmpge(IVec3::splat(7)).any() {
+                return None;
+            }
+            let edge = l.cmpeq(IVec3::ZERO).any() || l.cmpeq(IVec3::splat(6)).any();
+            if edge {
+                Some(wall)
+            } else if l == IVec3::splat(3) {
+                Some(core)
+            } else {
+                Some(AIR)
+            }
+        };
+        if let Some(b) = shell(IVec3::new(x0, 0, 10), GLASS, GLOW).or_else(|| shell(IVec3::new(x1 - 7, 0, 10), GRATE, RED)) {
+            return b;
+        }
+        if (s / 2 - 1..s / 2 + 1).contains(&p.x) && (12..14).contains(&p.z) && p.y < s / 3 {
+            return WHITE;
+        }
+        if p.z == 0 && p.y < s / 2 {
+            return BRICKS;
+        }
+        AIR
+    }
+    fn chunk_y_range(&self) -> (i32, i32) {
+        (-1, (self.size / 2 + CHUNK_SIZE - 1) / CHUNK_SIZE)
+    }
+    fn spawn(&self) -> DVec3 {
+        let s = self.size as f64;
+        DVec3::new(s * 0.5, s * 0.25, s * 1.3)
+    }
+    fn chunk(&self, key: ChunkKey) -> ChunkData {
+        let (o, e) = (key.origin(), key.extent());
+        let (lo, hi) = (-8, self.size + 8);
+        if o.y >= self.size / 2 || o.y + e <= -1 || o.x >= hi || o.z >= hi || o.x + e <= lo || o.z + e <= lo {
+            return ChunkData::Uniform(AIR);
+        }
+        sample_chunk(key, |p| self.block(p))
+    }
+}
+
 /// The huge-world generator: infinite in x/z, heights roughly -40..200.
 pub struct TerrainGen {
     seed: u64,
@@ -889,6 +974,7 @@ mod tests {
             GenSpec::Lattice { period: 24, thickness: 1, height: 160 },
             GenSpec::Gyroid { period: 48, thickness: 0.3, height: 192 },
             GenSpec::Checker { size: 96, cell: 1 },
+            GenSpec::Glass { size: 48, panes: 6 },
         ];
         for spec in specs {
             let g = spec.build();
@@ -909,6 +995,26 @@ mod tests {
             }
             assert!(solid > 0, "{spec:?}: nothing solid");
         }
+    }
+
+    /// The glass world holds every see-through block; a ray along a pane row's normal
+    /// crosses all panes.
+    #[test]
+    fn glass_world_has_its_blocks() {
+        let g = GenSpec::Glass { size: 48, panes: 6 }.build();
+        let mut seen = std::collections::HashSet::new();
+        for y in -1..24 {
+            for z in 0..48 {
+                for x in 0..48 {
+                    seen.insert(g.block(IVec3::new(x, y, z)));
+                }
+            }
+        }
+        for b in [GLASS, GLASS_RED, GLASS_GREEN, GLASS_BLUE, GRATE, GLOW, RED, WHITE, BRICKS, GRAVEL] {
+            assert!(seen.contains(&b), "{b:?}");
+        }
+        let panes = (0..48).filter(|&z| matches!(g.block(IVec3::new(24, 2, z)), GLASS | GLASS_RED | GLASS_GREEN | GLASS_BLUE)).count();
+        assert_eq!(panes, 6);
     }
 
     #[test]

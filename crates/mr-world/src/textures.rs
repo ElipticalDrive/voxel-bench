@@ -1,6 +1,6 @@
 //! Procedurally generated 16x16 block textures, so the project needs no asset files.
 
-use mr_core::{BlockId, BlockRegistry, BlockType, TEX_SIZE, Texture};
+use mr_core::{BlockClass, BlockId, BlockRegistry, BlockType, TEX_SIZE, Texture};
 
 use crate::noise::{hash3, unit};
 
@@ -26,6 +26,12 @@ pub mod blocks {
     pub const DEBUG: BlockId = BlockId(16);
     pub const ORE: BlockId = BlockId(17);
     pub const GLOW: BlockId = BlockId(18);
+    /// See-through blocks (after every opaque one, so existing worlds keep their ids).
+    pub const GLASS: BlockId = BlockId(19);
+    pub const GLASS_RED: BlockId = BlockId(20);
+    pub const GLASS_GREEN: BlockId = BlockId(21);
+    pub const GLASS_BLUE: BlockId = BlockId(22);
+    pub const GRATE: BlockId = BlockId(23);
 }
 
 type Rgb = [f32; 3];
@@ -36,26 +42,40 @@ struct Builder {
 
 impl Builder {
     fn tex(&mut self, name: &str, f: impl Fn(usize, usize, u64) -> Rgb) -> u16 {
+        self.tex_alpha(name, |x, y, h| (f(x, y, h), 1.0))
+    }
+
+    /// A texture with coverage: `f` gives colour and alpha; all-opaque keeps `alpha` empty.
+    fn tex_alpha(&mut self, name: &str, f: impl Fn(usize, usize, u64) -> (Rgb, f32)) -> u16 {
         let seed = name.bytes().fold(0u64, |a, b| a.wrapping_mul(131).wrapping_add(b as u64));
-        let texels = (0..TEX_SIZE * TEX_SIZE)
+        let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        let (texels, mut alpha): (Vec<[u8; 4]>, Vec<u8>) = (0..TEX_SIZE * TEX_SIZE)
             .map(|i| {
                 let (x, y) = (i % TEX_SIZE, i / TEX_SIZE);
-                let c = f(x, y, hash3(seed, x as i32, y as i32, 0));
-                let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                [q(c[0]), q(c[1]), q(c[2]), 255]
+                let (c, a) = f(x, y, hash3(seed, x as i32, y as i32, 0));
+                ([q(c[0]), q(c[1]), q(c[2]), 255], q(a))
             })
-            .collect();
-        self.reg.textures.push(Texture { name: name.into(), texels });
+            .unzip();
+        if alpha.iter().all(|&a| a == 255) {
+            alpha.clear();
+        }
+        self.reg.textures.push(Texture { name: name.into(), texels, alpha });
         (self.reg.textures.len() - 1) as u16
     }
 
     fn block(&mut self, name: &str, faces: [u16; 6]) -> BlockId {
-        self.reg.blocks.push(BlockType { name: name.into(), faces });
+        self.reg.blocks.push(BlockType { name: name.into(), faces, class: BlockClass::Opaque });
         BlockId((self.reg.blocks.len() - 1) as u16)
     }
 
     fn cube(&mut self, name: &str, t: u16) -> BlockId {
         self.block(name, [t; 6])
+    }
+
+    fn see_through(&mut self, name: &str, t: u16, class: BlockClass) -> BlockId {
+        let b = self.cube(name, t);
+        self.reg.blocks[b.0 as usize].class = class;
+        b
     }
 }
 
@@ -147,6 +167,27 @@ pub fn default_registry() -> BlockRegistry {
     b.block("debug", debug);
     b.cube("ore", ore);
     b.cube("glow", glow);
+
+    // Glass: a nearly clear pane with a denser frame; stained panes of even alpha; a grate of
+    // bars and holes (cutout).
+    let glass = b.tex_alpha("glass", |x, y, h| {
+        let frame = x == 0 || y == 0 || x == TEX_SIZE - 1 || y == TEX_SIZE - 1;
+        let streak = (x + y) % 7 == 0;
+        if frame { ([0.80, 0.86, 0.90], 0.85) } else { (mul([0.85, 0.93, 0.97], 0.97 + unit(h) * 0.06), if streak { 0.35 } else { 0.18 }) }
+    });
+    let stained = |c: Rgb| move |_: usize, _: usize, h: u64| (mul(c, 0.95 + unit(h) * 0.1), 0.55);
+    let glass_red = b.tex_alpha("glass_red", stained([0.85, 0.15, 0.12]));
+    let glass_green = b.tex_alpha("glass_green", stained([0.15, 0.75, 0.20]));
+    let glass_blue = b.tex_alpha("glass_blue", stained([0.15, 0.30, 0.90]));
+    let grate = b.tex_alpha("grate", |x, y, h| {
+        let bar = x % 4 == 0 || y % 4 == 0;
+        (mul([0.42, 0.44, 0.47], 0.85 + unit(h) * 0.3), if bar { 1.0 } else { 0.0 })
+    });
+    b.see_through("glass", glass, BlockClass::Translucent);
+    b.see_through("glass_red", glass_red, BlockClass::Translucent);
+    b.see_through("glass_green", glass_green, BlockClass::Translucent);
+    b.see_through("glass_blue", glass_blue, BlockClass::Translucent);
+    b.see_through("grate", grate, BlockClass::Cutout);
     b.reg
 }
 
@@ -160,5 +201,27 @@ mod tests {
         assert_eq!(r.find("stone"), Some(blocks::STONE));
         assert_eq!(r.find("debug"), Some(blocks::DEBUG));
         assert_eq!(r.find("glow"), Some(blocks::GLOW));
+        assert_eq!(r.find("glass"), Some(blocks::GLASS));
+        assert_eq!(r.find("grate"), Some(blocks::GRATE));
+    }
+
+    /// Opaque blocks keep alpha 255 and no coverage; see-through ones have coverage, the
+    /// cutout one only 0 or 255.
+    #[test]
+    fn classes_and_coverage() {
+        let r = default_registry();
+        for (i, b) in r.blocks.iter().enumerate().skip(1) {
+            let id = BlockId(i as u16);
+            for f in b.faces {
+                let t = &r.textures[f as usize];
+                assert!(t.texels.iter().all(|p| p[3] == 255), "{}", t.name);
+                assert_eq!(t.alpha.is_empty(), b.class == BlockClass::Opaque, "{}", t.name);
+                if b.class == BlockClass::Cutout {
+                    assert!(t.alpha.iter().all(|&a| a == 0 || a == 255), "{}", t.name);
+                }
+            }
+            assert_eq!(r.see_through(id), id.0 >= blocks::GLASS.0);
+        }
+        assert!(!r.see_through(blocks::AIR));
     }
 }

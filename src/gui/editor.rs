@@ -155,6 +155,7 @@ fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
         GenSpec::Lattice { .. } => "lattice",
         GenSpec::Gyroid { .. } => "gyroid",
         GenSpec::Checker { .. } => "checker",
+        GenSpec::Glass { .. } => "glass",
     };
     let mut c = ui
         .horizontal(|ui| {
@@ -175,6 +176,7 @@ fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
                     ("lattice", || GenSpec::Lattice { period: 24, thickness: 1, height: 160 }, "Jungle gym of thin beams: every ray grazes geometry; thin features at LOD"),
                     ("gyroid", || GenSpec::Gyroid { period: 48, thickness: 0.3, height: 192 }, "Gyroid caves: curved walls nothing can merge, two interleaved tunnel networks"),
                     ("checker", || GenSpec::Checker { size: 96, cell: 1 }, "3D checkerboard cube: every block shows all six faces, yet perfectly regular"),
+                    ("glass", || GenSpec::Glass { size: 48, panes: 6 }, "Glass panes, a glass cube and a grate: see-through blocks, several surfaces per pixel"),
                     ("showcase", || GenSpec::Showcase, "One of every block type, for checking textures"),
                     ("empty", || GenSpec::Empty, "No blocks (sky only)"),
                 ],
@@ -221,6 +223,10 @@ fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
         GenSpec::Checker { size, cell } => {
             c |= num(ui, "size", size, 1.0, "Edge length of the cube in blocks");
             c |= num(ui, "cell", cell, 1.0, "Checker cell size in blocks (1 = every other block)");
+        }
+        GenSpec::Glass { size, panes } => {
+            c |= num(ui, "size", size, 1.0, "Edge length of the yard in blocks");
+            c |= num(ui, "panes", panes, 1.0, "Parallel glass walls one behind the other (a ray through all crosses twice as many surfaces)");
         }
         GenSpec::Empty | GenSpec::Showcase => {}
     }

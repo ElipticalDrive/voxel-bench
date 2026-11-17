@@ -6,8 +6,9 @@ connected as a pipeline graph, and each piece can run on the CPU or the GPU. Man
 renderers draw the same scenes side by side, each in its own worker process, and are
 measured against a reference renderer and against each other.
 
-The world is a lattice of unit cubes: each cell is air or an opaque block with a 16×16
-texture per face. Point lights take up no space and cannot be seen. Worlds are unbounded and
+The world is a lattice of unit cubes: each cell is air or a block with a 16×16 texture per
+face; most blocks are opaque, a few (glass, a grate) let light through, which the reference
+composites front to back and pipelines without transparency draw opaque. Point lights take up no space and cannot be seen. Worlds are unbounded and
 streamed in chunks of 32³ cells.
 
 ## Install

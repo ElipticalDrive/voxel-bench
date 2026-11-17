@@ -261,6 +261,12 @@ impl World {
     /// block) with the reference model, shadow rays tested by `occluded` (from a point along a
     /// unit direction within a distance: whether something is hit).
     pub fn shade_surface<P: Pixel>(&self, p: DVec3, local: Vec3, face: Face, block: BlockId, mode: RenderMode, occluded: impl Fn(DVec3, DVec3, f64) -> bool) -> P {
+        self.shade_surface_through(p, local, face, block, mode, |p, d, dist| if occluded(p, d, dist) { 0.0 } else { 1.0 })
+    }
+
+    /// [`Self::shade_surface`] with shadow rays that pass partly: `transmit` gives the fraction
+    /// of light that arrives (0 = occluded).
+    pub fn shade_surface_through<P: Pixel>(&self, p: DVec3, local: Vec3, face: Face, block: BlockId, mode: RenderMode, transmit: impl Fn(DVec3, DVec3, f64) -> f32) -> P {
         let uv = face.uv(local);
         let tex = self.blocks.texture_of(block, face);
         let texel = tex.texel(texel_coord(uv.x), texel_coord(uv.y));
@@ -268,18 +274,28 @@ impl World {
             return P::from_rgba8(texel);
         }
         let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
-        P::encode(self.tone, albedo * self.light_at(p, face.normal().as_vec3(), occluded) * self.env.exposure)
+        P::encode(self.tone, albedo * self.light_through(p, face.normal().as_vec3(), transmit) * self.env.exposure)
     }
 
     /// Incoming light (linear) at surface point `p` with normal `n`: ambient, sun and
     /// point lights, each with its shadow ray tested by `occluded`.
     pub fn light_at(&self, p: DVec3, n: Vec3, occluded: impl Fn(DVec3, DVec3, f64) -> bool) -> Vec3 {
+        self.light_through(p, n, |p, d, dist| if occluded(p, d, dist) { 0.0 } else { 1.0 })
+    }
+
+    /// [`Self::light_at`] with shadow rays that pass partly: each light is scaled by the
+    /// fraction `transmit` lets through (see-through blocks attenuate, opaque ones stop).
+    #[inline]
+    pub fn light_through(&self, p: DVec3, n: Vec3, transmit: impl Fn(DVec3, DVec3, f64) -> f32) -> Vec3 {
         let p = p + n.as_dvec3() * 1e-4;
         let mut light = self.env.ambient;
         if let Some(sun) = self.env.sun {
             let ndl = n.dot(-sun.direction);
-            if ndl > 0.0 && (self.shadows == Shadows::None || !occluded(p, -sun.direction.as_dvec3(), MAX_DIST)) {
-                light += sun.color * ndl;
+            if ndl > 0.0 {
+                let v = if self.shadows == Shadows::None { 1.0 } else { transmit(p, -sun.direction.as_dvec3(), MAX_DIST) };
+                if v > 0.0 {
+                    light += sun.color * ndl * v;
+                }
             }
         }
         if let Some(ls) = self.lights_near(p.floor().as_ivec3()) {
@@ -288,8 +304,9 @@ impl World {
                 let c = point_light(n, to.as_vec3(), l);
                 if c != Vec3::ZERO {
                     let dist = to.length();
-                    if self.shadows != Shadows::All || !occluded(p, to / dist, dist) {
-                        light += c;
+                    let v = if self.shadows != Shadows::All { 1.0 } else { transmit(p, to / dist, dist) };
+                    if v > 0.0 {
+                        light += c * v;
                     }
                 }
             }
@@ -341,6 +358,23 @@ pub struct VoxelScene<'a> {
     pub world: &'a World,
     pub chunks: &'a Chunks,
     pub meshes: Option<&'a mesh::Meshes>,
+    /// The chunks hold see-through blocks: rays composite the surfaces they cross front to
+    /// back and shadow rays are attenuated by them (else every block stops a ray, as before).
+    pub layered: bool,
+}
+
+/// A surface a ray crosses ([`VoxelScene::layers`]): a face between two cells of different
+/// blocks, of a solid block (its entry face) or of a see-through one being left (its exit
+/// face); `cell` / `lod` / `block` / `face` are that block's, `n` the face's normal facing the
+/// ray's origin.
+#[derive(Copy, Clone, Debug)]
+pub struct Layer {
+    pub t: f64,
+    pub cell: IVec3,
+    pub lod: u8,
+    pub block: BlockId,
+    pub face: Face,
+    pub n: Vec3,
 }
 
 /// A surface a path's ray met: distance, normal facing the ray, linear albedo.
@@ -360,6 +394,20 @@ pub struct CpuReference {
     pixels: Vec<u8>,
     /// Lit frames are path traced.
     paths: Option<Paths>,
+    /// A see-through block has arrived (sticky): rays composite layers.
+    layered: bool,
+}
+
+/// A cell a walk enters ([`Chunks::walk`]): where (`t`), which (`cell`, at LOD `lod` its
+/// lowest corner), its block, and the axis crossed to enter it (3: the walk began inside it on
+/// a boundary).
+#[derive(Copy, Clone, Debug)]
+pub struct Visit {
+    pub t: f64,
+    pub cell: IVec3,
+    pub block: BlockId,
+    pub axis: usize,
+    pub lod: u8,
 }
 
 pub struct Hit {
@@ -378,7 +426,7 @@ impl CpuReference {
         world.shadows = opts.shadows;
         let chunks = if opts.lod && p.max_lod > 0 { Chunks::with_lod(p.view_radius_chunks, p.max_lod.min(MAX_LOD)) } else { Chunks::default() };
         let paths = opts.bounces.map(|bounces| Paths { bounces, paths: opts.paths.unwrap_or(PATHS).max(1) });
-        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths })
+        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths, layered: false })
     }
 }
 
@@ -475,9 +523,34 @@ impl Chunks {
     /// Two-level DDA. Ignores the cell containing `o` (so rays starting inside a block,
     /// e.g. a camera clipping into terrain, see out of it).
     pub fn trace(&self, o: DVec3, d: DVec3, max_t: f64) -> Option<Hit> {
+        let mut hit = None;
+        self.walk(o, d, max_t, |v| {
+            if !v.block.is_solid() {
+                return false;
+            }
+            // Degenerate (axis 3): started on a boundary inside solid.
+            hit = (v.axis != 3).then(|| Hit { t: v.t, cell: v.cell, block: v.block, face: Face::entered(v.axis, d.signum().as_ivec3()[v.axis]), lod: v.lod });
+            true
+        });
+        hit
+    }
+
+    /// The block at a LOD-0 cell (air where no chunk is loaded).
+    pub fn block_at(&self, cell: IVec3) -> BlockId {
+        self.chunks.get(&(cell >> CHUNK_BITS as i32)).map_or(BlockId::AIR, |c| c.get(local_of_block(cell)))
+    }
+
+    /// Walks the cells along the ray front to back, calling `visit` with each cell entered
+    /// (a skipped empty box once, as air) until it returns true or the ray leaves the loaded
+    /// region. Ignores the cell containing `o`.
+    pub fn walk(&self, o: DVec3, d: DVec3, max_t: f64, visit: impl FnMut(Visit) -> bool) {
         if let Some(l) = &self.lod {
-            return self.trace_lod(l, o, d, max_t);
+            return self.walk_lod(l, o, d, max_t, visit);
         }
+        self.walk_lod0(o, d, max_t, visit);
+    }
+
+    fn walk_lod0(&self, o: DVec3, d: DVec3, max_t: f64, mut visit: impl FnMut(Visit) -> bool) -> Option<()> {
         let (lo, hi) = self.bounds?;
         // Clip against the loaded-chunk AABB.
         let bmin = (lo << CHUNK_BITS as i32).as_dvec3();
@@ -512,6 +585,9 @@ impl Chunks {
             let chunk_pos = cell >> CHUNK_BITS as i32;
             match self.chunks.get(&chunk_pos) {
                 None | Some(ChunkData::Uniform(BlockId::AIR)) => {
+                    if visit(Visit { t, cell, block: BlockId::AIR, axis, lod: 0 }) {
+                        return None;
+                    }
                     // Skip the whole chunk: advance to its exit face.
                     let tc = next_t(cell, CHUNK_SIZE);
                     let a = min_axis(tc);
@@ -533,14 +609,8 @@ impl Chunks {
                 Some(chunk) => {
                     let c0 = chunk_pos << CHUNK_BITS as i32;
                     loop {
-                        if cell != start_cell {
-                            let b = chunk.get(local_of_block(cell));
-                            if b.is_solid() {
-                                if axis == 3 {
-                                    return None; // degenerate: started on a boundary inside solid
-                                }
-                                return Some(Hit { t, cell, block: b, face: Face::entered(axis, step[axis]), lod: 0 });
-                            }
+                        if cell != start_cell && visit(Visit { t, cell, block: chunk.get(local_of_block(cell)), axis, lod: 0 }) {
+                            return None;
                         }
                         let tv = next_t(cell, 1);
                         let a = min_axis(tv);
@@ -562,8 +632,8 @@ impl Chunks {
 
     /// The walk through LOD levels: every cell at the finest level whose region contains it,
     /// exactly (no step crosses into another level's cells unseen). Ignores the cell containing
-    /// `o`, as [`Chunks::trace`] does.
-    fn trace_lod(&self, l: &Lod, o: DVec3, d: DVec3, max_t: f64) -> Option<Hit> {
+    /// `o`, as [`Chunks::trace`] does. A coarse cell is visited as its lowest corner.
+    fn walk_lod(&self, l: &Lod, o: DVec3, d: DVec3, max_t: f64, mut visit: impl FnMut(Visit) -> bool) {
         // The outermost level's region bounds everything.
         let top = CHUNK_BITS as i32 + l.max as i32;
         let c = l.cam >> top;
@@ -574,7 +644,7 @@ impl Chunks {
         let tnear = t0.min(t1).max_element().max(0.0);
         let tfar = t0.max(t1).min_element().min(max_t);
         if tnear > tfar {
-            return None;
+            return;
         }
         let step = d.signum().as_ivec3();
         let start = o.floor().as_ivec3();
@@ -589,16 +659,15 @@ impl Chunks {
             // cell that is all of this level (the chunk at level 0; else the chunk's octant, a
             // chunk of the level below that its region left out whole).
             let size = match chunk {
-                None | Some(ChunkData::Uniform(BlockId::AIR)) => CHUNK_SIZE << m.saturating_sub(1),
+                None | Some(ChunkData::Uniform(BlockId::AIR)) => {
+                    if visit(Visit { t, cell: (cell >> m) << m, block: BlockId::AIR, axis, lod: m }) {
+                        return;
+                    }
+                    CHUNK_SIZE << m.saturating_sub(1)
+                }
                 Some(chunk) => {
-                    if cell >> m != start >> m {
-                        let b = chunk.get(local_of_block(cell >> m));
-                        if b.is_solid() {
-                            if axis == 3 {
-                                return None; // degenerate: started on a boundary inside solid
-                            }
-                            return Some(Hit { t, cell: (cell >> m) << m, block: b, face: Face::entered(axis, step[axis]), lod: m });
-                        }
+                    if cell >> m != start >> m && visit(Visit { t, cell: (cell >> m) << m, block: chunk.get(local_of_block(cell >> m)), axis, lod: m }) {
+                        return;
                     }
                     1 << m
                 }
@@ -620,7 +689,6 @@ impl Chunks {
             cell = next;
             axis = a;
         }
-        None
     }
 
     pub fn occluded(&self, p: DVec3, dir: DVec3, dist: f64) -> bool {
@@ -642,17 +710,159 @@ impl VoxelScene<'_> {
         self.chunks.occluded(p, dir, dist) || self.meshes.is_some_and(|m| m.occluded(p, dir, dist))
     }
 
+    /// The fraction of light that passes from `p` along `dir` within `dist`: the product of
+    /// `1 - coverage` over the surfaces crossed (0 at an opaque block or a mesh).
+    pub fn transmittance(&self, p: DVec3, dir: DVec3, dist: f64) -> f32 {
+        if self.meshes.is_some_and(|m| m.occluded(p, dir, dist)) {
+            return 0.0;
+        }
+        let mut through = 1.0;
+        self.layers(p, dir, dist, |l| {
+            through *= 1.0 - self.coverage(p, dir, &l);
+            through <= 0.0
+        });
+        through
+    }
+
+    /// The surfaces along a ray front to back, until `f` returns true or an opaque block is
+    /// met (after `f` saw it). The cell holding `o` is left out unless it lets light through
+    /// (then leaving it is a surface).
+    pub fn layers(&self, o: DVec3, d: DVec3, max_t: f64, mut f: impl FnMut(Layer) -> bool) {
+        let blocks = &*self.world.blocks;
+        let step = d.signum().as_ivec3();
+        let start = o.floor().as_ivec3();
+        let first = self.chunks.block_at(start);
+        // The block being crossed (air outside), its last cell and level.
+        let mut prev = if blocks.see_through(first) { (first, start, 0) } else { (BlockId::AIR, start, 0) };
+        self.chunks.walk(o, d, max_t, |v| {
+            if v.axis == 3 {
+                prev = (v.block, v.cell, v.lod);
+                return v.block.is_solid() && !blocks.see_through(v.block);
+            }
+            if v.block == prev.0 {
+                (prev.1, prev.2) = (v.cell, v.lod);
+                return false;
+            }
+            let mut n = Vec3::ZERO;
+            n[v.axis] = -step[v.axis] as f32;
+            if blocks.see_through(prev.0) && f(Layer { t: v.t, cell: prev.1, lod: prev.2, block: prev.0, face: Face::entered(v.axis, -step[v.axis]), n }) {
+                return true;
+            }
+            prev = (v.block, v.cell, v.lod);
+            if v.block.is_solid() {
+                return f(Layer { t: v.t, cell: v.cell, lod: v.lod, block: v.block, face: Face::entered(v.axis, step[v.axis]), n }) || !blocks.see_through(v.block);
+            }
+            false
+        });
+    }
+
+    /// The texture and texel where a layer is crossed.
+    fn texel_at(&self, o: DVec3, d: DVec3, l: &Layer) -> (&Texture, usize, usize) {
+        let uv = l.face.uv(Self::local_at(o, d, l.t, l.cell, l.lod));
+        (self.world.blocks.texture_of(l.block, l.face), texel_coord(uv.x), texel_coord(uv.y))
+    }
+
+    /// How much of the light a layer stops (its texel's alpha; 1 for an opaque block).
+    pub fn coverage(&self, o: DVec3, d: DVec3, l: &Layer) -> f32 {
+        if !self.world.blocks.see_through(l.block) {
+            return 1.0;
+        }
+        let (tex, x, y) = self.texel_at(o, d, l);
+        tex.alpha(x, y) as f32 / 255.0
+    }
+
+    /// The front of a layered ray: the surfaces it composites (with their coverage, the last
+    /// one opaque or the ray's end) up to `max_t`, and whether the light behind still passes.
+    fn front(&self, o: DVec3, d: DVec3, max_t: f64) -> (Vec<(Layer, f32)>, f32) {
+        let mut out = Vec::new();
+        let mut through = 1.0f32;
+        self.layers(o, d, max_t, |l| {
+            let a = self.coverage(o, d, &l);
+            if a <= 0.0 {
+                return false;
+            }
+            out.push((l, a));
+            through *= 1.0 - a;
+            // Past this a layer changes the pixel by less than a quarter of an 8-bit step.
+            through < 1e-3
+        });
+        (out, if through < 1e-3 { 0.0 } else { through })
+    }
+
+    /// A layered ray's pixel: its surfaces composited front to back (OVER) in linear light,
+    /// the nearest mesh or the sky behind. A ray whose first surface covers fully is the
+    /// opaque path's pixel ([`Self::shade`], bit for bit; with shadow rays attenuated).
+    fn shade_layered(&self, o: DVec3, d: DVec3, max_t: f64, mode: RenderMode, paths: Option<Paths>, rng: &mut Rng) -> [u8; 4] {
+        let mesh = self.meshes.and_then(|m| m.trace(o, d, max_t));
+        let (layers, through) = self.front(o, d, mesh.as_ref().map_or(max_t, |m| m.t));
+        let (tone, exposure) = (self.world.tone, self.world.env.exposure);
+        let lit = |albedo: Vec3, p: DVec3, n: Vec3, rng: &mut Rng| match (mode, paths) {
+            (RenderMode::Unlit, _) => albedo,
+            (_, Some(k)) => albedo * self.light_by_paths(p, n, k.bounces, k.paths, rng) * exposure,
+            (_, None) => albedo * self.light_at(p, n) * exposure,
+        };
+        // An entry face covering fully (an exit face's normal is not its face's).
+        if let Some((l, _)) = layers.first().filter(|(l, a)| *a >= 1.0 && l.n == l.face.normal().as_vec3()) {
+            let hit = Hit { t: l.t, cell: l.cell, block: l.block, face: l.face, lod: l.lod };
+            return match paths.filter(|_| mode == RenderMode::Lit) {
+                Some(_) => tone.encode(lit(self.albedo(o, d, &hit), o + d * hit.t, hit.face.normal().as_vec3(), rng)),
+                None => self.shade(o, d, &hit, mode),
+            };
+        }
+        if layers.is_empty() {
+            return match mesh {
+                Some(m) if mode == RenderMode::Lit && paths.is_some() => tone.encode(lit(m.albedo(), o + d * m.t, m.normal, rng)),
+                Some(m) => self.shade_mesh(o + d * m.t, m.normal, m.color, mode),
+                None => self.world.sky(),
+            };
+        }
+        let mut c = Vec3::ZERO;
+        let mut left = 1.0f32;
+        for (l, a) in &layers {
+            let (tex, x, y) = self.texel_at(o, d, l);
+            let t = tex.texel(x, y);
+            let albedo = Vec3::new(srgb_to_linear(t[0]), srgb_to_linear(t[1]), srgb_to_linear(t[2]));
+            c += lit(albedo, o + d * l.t, l.n, rng) * (left * a);
+            left *= 1.0 - a;
+        }
+        if through > 0.0 {
+            c += left
+                * match mesh {
+                    Some(m) => {
+                        let albedo = Vec3::new(srgb_to_linear_f(m.color.x), srgb_to_linear_f(m.color.y), srgb_to_linear_f(m.color.z));
+                        lit(if mode == RenderMode::Unlit { albedo } else { m.albedo() }, o + d * m.t, m.normal, rng)
+                    }
+                    None => self.world.env.sky,
+                };
+        }
+        tone.encode(c)
+    }
+
     pub fn max_dist(&self) -> f64 {
         self.chunks.max_dist()
     }
 
-    /// The nearest surface, voxel or mesh.
-    fn surface(&self, o: DVec3, d: DVec3, max_t: f64) -> Option<Surface> {
-        let hit = self.trace(o, d, max_t);
+    /// The nearest surface, voxel or mesh. In a layered world a see-through layer is the
+    /// surface with probability its coverage (else the ray passes on).
+    fn surface(&self, o: DVec3, d: DVec3, max_t: f64, rng: &mut Rng) -> Option<Surface> {
+        let hit = if self.layered {
+            let mut hit = None;
+            self.layers(o, d, max_t, |l| {
+                let a = self.coverage(o, d, &l);
+                if a >= 1.0 || (a > 0.0 && (rng.unit() as f32) < a) {
+                    hit = Some(Hit { t: l.t, cell: l.cell, block: l.block, face: l.face, lod: l.lod });
+                    return true;
+                }
+                false
+            });
+            hit
+        } else {
+            self.trace(o, d, max_t)
+        };
         if let Some(m) = self.meshes.and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_t, |h| h.t))) {
             return Some(Surface { t: m.t, n: m.normal.as_dvec3(), albedo: m.albedo() });
         }
-        hit.map(|h| Surface { t: h.t, n: h.face.normal().as_dvec3(), albedo: self.albedo(o, d, &h) })
+        hit.map(|h| Surface { t: h.t, n: facing(h.face, d), albedo: self.albedo(o, d, &h) })
     }
 
     pub fn shade(&self, o: DVec3, d: DVec3, hit: &Hit, mode: RenderMode) -> [u8; 4] {
@@ -661,9 +871,14 @@ impl VoxelScene<'_> {
 
     /// The hit point within its block.
     fn local(o: DVec3, d: DVec3, hit: &Hit) -> Vec3 {
-        let p = o + d * hit.t;
+        Self::local_at(o, d, hit.t, hit.cell, hit.lod)
+    }
+
+    /// The point at `t` within the block of `cell` (at level `lod`).
+    fn local_at(o: DVec3, d: DVec3, t: f64, cell: IVec3, lod: u8) -> Vec3 {
+        let p = o + d * t;
         // A coarse cell shows its block's texture once per block, as the pipelines do.
-        if hit.lod == 0 { (o - hit.cell.as_dvec3() + d * hit.t).as_vec3() } else { (p - p.floor()).as_vec3() }
+        if lod == 0 { (o - cell.as_dvec3() + d * t).as_vec3() } else { (p - p.floor()).as_vec3() }
     }
 
     /// The linear albedo where `hit` was hit.
@@ -692,7 +907,7 @@ impl VoxelScene<'_> {
             for depth in 1..=bounces {
                 let o = p + n * 1e-4;
                 let d = rng.cosine(n);
-                let Some(hit) = self.surface(o, d, max_dist) else {
+                let Some(hit) = self.surface(o, d, max_dist, rng) else {
                     sum += through * ambient;
                     break;
                 };
@@ -708,6 +923,9 @@ impl VoxelScene<'_> {
     /// Shades a surface point `p` on `face` of `block` (`local` = position within the
     /// block) with the reference model.
     pub fn shade_surface<P: Pixel>(&self, p: DVec3, local: Vec3, face: Face, block: BlockId, mode: RenderMode) -> P {
+        if self.layered {
+            return self.world.shade_surface_through(p, local, face, block, mode, |p, d, dist| self.transmittance(p, d, dist));
+        }
         self.world.shade_surface(p, local, face, block, mode, |p, d, dist| self.occluded(p, d, dist))
     }
 
@@ -726,8 +944,17 @@ impl VoxelScene<'_> {
     /// Incoming light (linear) at surface point `p` with normal `n`: ambient, sun and
     /// point lights, each with its shadow ray through the voxels and meshes.
     pub fn light_at(&self, p: DVec3, n: Vec3) -> Vec3 {
+        if self.layered {
+            return self.world.light_through(p, n, |p, d, dist| self.transmittance(p, d, dist));
+        }
         self.world.light_at(p, n, |p, d, dist| self.occluded(p, d, dist))
     }
+}
+
+/// A face's normal turned to face a ray along `d` (an exit face's points away from it).
+fn facing(face: Face, d: DVec3) -> DVec3 {
+    let n = face.normal().as_dvec3();
+    if n.dot(d) > 0.0 { -n } else { n }
 }
 
 fn min_axis(t: DVec3) -> usize {
@@ -743,6 +970,7 @@ fn min_axis(t: DVec3) -> usize {
 impl Renderer for CpuReference {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let rest = self.world.apply(updates);
+        self.layered = self.layered || rest.iter().any(|u| self.world.blocks.update_see_through(u));
         self.chunks.apply(&rest);
         Ok(())
     }
@@ -761,7 +989,7 @@ impl Renderer for CpuReference {
         let (w, h) = (self.width, self.height);
         let cam = req.camera;
         let o = cam.position;
-        let this = VoxelScene { world: &self.world, chunks: &self.chunks, meshes: req.meshes.then_some(&self.meshes) };
+        let this = VoxelScene { world: &self.world, chunks: &self.chunks, meshes: req.meshes.then_some(&self.meshes), layered: self.layered };
         let max_dist = this.max_dist();
         let sky = self.world.sky();
         // Path-traced lit frames: the light at the primary point from its paths.
@@ -772,6 +1000,11 @@ impl Renderer for CpuReference {
         self.pool.install(|| pixels.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
             for x in 0..w {
                 let d = cam.ray_dir(x, y as u32, w, h).as_dvec3();
+                if this.layered {
+                    let px = this.shade_layered(o, d, max_dist, req.mode, paths, &mut Rng::new(y as u32 * w + x));
+                    row[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&px);
+                    continue;
+                }
                 let hit = this.trace(o, d, max_dist);
                 // Mesh mode: the nearest mesh surface in front of the voxel hit wins.
                 let mesh_hit = this.meshes.and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_dist, |h| h.t)));
@@ -874,15 +1107,15 @@ mod tests {
     /// made), less when it is grey.
     #[test]
     fn paths_agree_with_direct_light_where_they_must() {
-        let texture = |v: u8| Texture { name: String::new(), texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE] };
-        let block = |t: u16| BlockType { name: String::new(), faces: [t; 6] };
+        let texture = |v: u8| Texture { name: String::new(), texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE], alpha: vec![] };
+        let block = |t: u16| BlockType { name: String::new(), faces: [t; 6], class: BlockClass::Opaque };
         let blocks = Arc::new(BlockRegistry { textures: vec![texture(255), texture(128)], blocks: vec![block(0), block(0), block(1)] });
         let mut world = World { blocks, env: Environment::default(), shadows: Shadows::All, tone: Tone::Clamp, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false };
         let ambient = world.env.ambient;
         let (at, up) = (DVec3::new(8.5, 1.0, 8.5), Vec3::Y);
         let chunks = chunk_of(&[(IVec3::new(8, 0, 8), STONE)]);
         {
-            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None };
+            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false };
             let direct = s.light_at(at, up);
             assert!(direct.max_element() > ambient.max_element(), "the sun reaches it");
             assert_eq!(s.light_by_paths(at, up, 0, 16, &mut Rng::new(1)), direct);
@@ -893,7 +1126,7 @@ mod tests {
             let mut cells = vec![(IVec3::new(8, 0, 8), STONE)];
             cells.extend((0..32).flat_map(|x| (0..32).map(move |z| (IVec3::new(x, 4, z), ceiling))));
             let chunks = chunk_of(&cells);
-            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None };
+            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false };
             let light = s.light_by_paths(at, up, 2, 1024, &mut Rng::new(1));
             if grey {
                 assert!(light.max_element() < ambient.max_element() * 0.9 && light.min_element() > ambient.min_element() * 0.2, "{light}");
@@ -910,8 +1143,8 @@ mod tests {
     /// ambient gives (as a voxel ceiling does), a grey one less.
     #[test]
     fn meshes_occlude_and_take_bounces() {
-        let texture = |v: u8| Texture { name: String::new(), texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE] };
-        let block = |t: u16| BlockType { name: String::new(), faces: [t; 6] };
+        let texture = |v: u8| Texture { name: String::new(), texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE], alpha: vec![] };
+        let block = |t: u16| BlockType { name: String::new(), faces: [t; 6], class: BlockClass::Opaque };
         let blocks = Arc::new(BlockRegistry { textures: vec![texture(255)], blocks: vec![block(0), block(0)] });
         let mut world = World { blocks, env: Environment::default(), shadows: Shadows::All, tone: Tone::Clamp, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false };
         let ambient = world.env.ambient;
@@ -929,14 +1162,14 @@ mod tests {
         let sun = world.env.sun.expect("the default has a sun").direction.as_dvec3();
         // A square centred on the sun's ray from the point, 3 blocks up it.
         let shade = square(0.0, 3.0, 255, at - sun * 3.0 - DVec3::new(8.5, 0.0, 8.5));
-        let open = VoxelScene { world: &world, chunks: &chunks, meshes: None }.light_at(at, up);
-        let shaded = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&shade) }.light_at(at, up);
+        let open = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false }.light_at(at, up);
+        let shaded = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&shade), layered: false }.light_at(at, up);
         assert!(open.max_element() > ambient.max_element(), "the sun reaches it");
         assert!((shaded - ambient).abs().max_element() < 1e-6, "the mesh shades it: {shaded}");
         world.env.sun = None;
         for (grey, absorbs) in [(255, false), (128, true)] {
             let ceiling = square(4.0, 1e4, grey, DVec3::ZERO);
-            let s = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&ceiling) };
+            let s = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&ceiling), layered: false };
             let light = s.light_by_paths(at, up, 2, 1024, &mut Rng::new(1));
             if absorbs {
                 assert!(light.max_element() < ambient.max_element() * 0.9 && light.min_element() > ambient.min_element() * 0.2, "{light}");
@@ -947,6 +1180,59 @@ mod tests {
     }
 
     /// Chunks of one LOD-0 chunk at the origin holding these cells.
+    /// Layers: a translucent pane composites over what is behind (OVER, linear), a run of
+    /// the same block is one slab (two surfaces), two different see-through blocks meet at
+    /// two surfaces; shadow rays pass `1 - alpha` per surface; a pixel whose first surface is
+    /// opaque is the opaque path's.
+    #[test]
+    fn layers_composite_and_attenuate() {
+        let texture = |v: u8, a: Vec<u8>| Texture { name: String::new(), texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE], alpha: a };
+        let block = |t: u16, class| BlockType { name: String::new(), faces: [t; 6], class };
+        let half = vec![128u8; TEX_SIZE * TEX_SIZE];
+        let blocks = Arc::new(BlockRegistry {
+            textures: vec![texture(255, vec![]), texture(0, half.clone())],
+            blocks: vec![block(0, BlockClass::Opaque), block(0, BlockClass::Opaque), block(1, BlockClass::Translucent), block(1, BlockClass::Translucent)],
+        });
+        let (glass, other) = (BlockId(2), BlockId(3));
+        let world = World { blocks, env: Environment::default(), shadows: Shadows::All, tone: Tone::Clamp, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false };
+        let a = 128.0 / 255.0;
+        let (o, d) = (DVec3::new(0.0, 0.5, 0.5), DVec3::X);
+        let count = |chunks: &Chunks| {
+            let s = VoxelScene { world: &world, chunks, meshes: None, layered: true };
+            let mut n = vec![];
+            s.layers(o, d, 100.0, |l| {
+                n.push((l.t, l.block));
+                false
+            });
+            (n, s.transmittance(o, d, 100.0))
+        };
+        // One pane, two cells of it, two different panes, then a wall.
+        let (n, t) = count(&chunk_of(&[(IVec3::new(3, 0, 0), glass)]));
+        assert_eq!(n, vec![(3.0, glass), (4.0, glass)]);
+        assert!((t - (1.0 - a) * (1.0 - a)).abs() < 1e-6, "{t}");
+        let (n, _) = count(&chunk_of(&[(IVec3::new(3, 0, 0), glass), (IVec3::new(4, 0, 0), glass)]));
+        assert_eq!(n, vec![(3.0, glass), (5.0, glass)]);
+        let (n, _) = count(&chunk_of(&[(IVec3::new(3, 0, 0), glass), (IVec3::new(4, 0, 0), other)]));
+        assert_eq!(n, vec![(3.0, glass), (4.0, glass), (4.0, other), (5.0, other)]);
+        let (n, t) = count(&chunk_of(&[(IVec3::new(3, 0, 0), glass), (IVec3::new(6, 0, 0), STONE), (IVec3::new(8, 0, 0), glass)]));
+        assert_eq!(n, vec![(3.0, glass), (4.0, glass), (6.0, STONE)]);
+        assert_eq!(t, 0.0);
+        // Unlit: black glass at half coverage, twice, over the white wall.
+        let chunks = chunk_of(&[(IVec3::new(3, 0, 0), glass), (IVec3::new(6, 0, 0), STONE)]);
+        let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: true };
+        let px = s.shade_layered(o, d, 100.0, RenderMode::Unlit, None, &mut Rng::new(1));
+        assert_eq!(px, Tone::Clamp.encode(Vec3::ONE * (1.0 - a) * (1.0 - a)));
+        // The wall alone: the opaque path's pixel, unlit and lit.
+        let chunks = chunk_of(&[(IVec3::new(6, 0, 0), STONE)]);
+        for layered in [false, true] {
+            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered };
+            for mode in [RenderMode::Unlit, RenderMode::Lit] {
+                let hit = s.trace(o, d, 100.0).unwrap();
+                assert_eq!(s.shade_layered(o, d, 100.0, mode, None, &mut Rng::new(1)), s.shade(o, d, &hit, mode));
+            }
+        }
+    }
+
     fn chunk_of(cells: &[(IVec3, BlockId)]) -> Chunks {
         let mut data = ChunkData::Uniform(BlockId::AIR);
         for &(cell, b) in cells {
