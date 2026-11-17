@@ -1,4 +1,6 @@
 # cmp.py BEFORE_DIR AFTER_DIR: compares saved frames of two runs pixel by pixel.
+# AB_RENAME="old=new": the before side's frame folders with `old` replaced by `new` (a graph
+# that gained nodes has a new label, so a new folder name).
 import sys, os, glob
 from PIL import Image
 import numpy as np
@@ -8,6 +10,8 @@ sep = os.sep + 'frames' + os.sep
 same = 0
 for f in fa:
     rel = os.path.normpath(f).split(sep)[1]
+    old, _, new = os.environ.get('AB_RENAME', '').partition('=')
+    if old: rel = rel.replace(old, new)
     g = glob.glob(b + '/*/frames/' + rel)
     if not g: print('missing', rel); continue
     x = np.asarray(Image.open(f).convert('RGB')).astype(int); y = np.asarray(Image.open(g[0]).convert('RGB')).astype(int)

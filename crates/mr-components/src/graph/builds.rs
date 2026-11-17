@@ -213,6 +213,7 @@ const GPU_KERNELS: &[&str] = &["refloor", "incremental", "sphere", "rowrun", "ra
 const RT_GEOMETRY: &[&str] = &["greedy", "naive", "boxes"];
 const DRAWERS: &[&str] = &["raster", "visbuffer", "gbuffer"];
 const CPU_STORAGES: &[&str] = &["bricks", "u8", "bits", "hier", "prefix", "palette", "brickmajor", "morton"];
+const CPU_WALKS: &[&str] = &["refloor", "incremental"];
 
 /// Ray queries trace an acceleration structure built from one of `RT_GEOMETRY`.
 const RT: Only = Only { role: Role::Traversal, of: &["rayquery"], port: "geometry", components: RT_GEOMETRY, bound: false };
@@ -225,7 +226,7 @@ const SHADOW_BOUND: Only = Only { role: Role::Shading, of: &[], port: "shadow", 
 pub const CPU_RAYCAST: Builds = Builds {
     nodes: &[
         Build::one(Role::Storage, CPU_STORAGES, impls::CPU_ISAS),
-        Build::one(Role::Traversal, &["refloor", "incremental"], impls::CPU_ISAS).count(1, 2),
+        Build::one(Role::Traversal, CPU_WALKS, impls::CPU_ISAS).count(1, 2),
         Build::one(Role::Visibility, &["raycast"], impls::CPU_ISAS),
         Build::one(Role::Shading, &["direct"], impls::CPU_ISAS),
     ],
@@ -235,16 +236,19 @@ pub const CPU_RAYCAST: Builds = Builds {
     ..Builds::plain(RegionId::CpuRaycast)
 };
 
-/// `raster-cpu`: the geometry's quads, their culling, the rasteriser and the shading.
+/// `raster-cpu`: the geometry's quads, their culling, the rasteriser and the shading, its
+/// shadow rays through a storage and kernel of the ray caster's.
 pub const CPU_RASTER: Builds = Builds {
     nodes: &[
         Build::one(Role::Geometry, &["greedy", "naive"], impls::CPU_SCALAR),
         Build::one(Role::Visibility, &["faces"], impls::CPU_SCALAR),
         Build::one(Role::Draw, &["raster"], impls::CPU_SCALAR),
+        Build::one(Role::Storage, CPU_STORAGES, impls::CPU_SCALAR),
+        Build::one(Role::Traversal, CPU_WALKS, impls::CPU_SCALAR),
         Build::one(Role::Shading, &["direct"], impls::CPU_SCALAR),
     ],
     same: &[],
-    only: &[],
+    only: &[Only { role: Role::Shading, of: &[], port: "shadow", components: CPU_WALKS, bound: true }],
     live: &[Live::of(Role::Geometry)],
     ..Builds::plain(RegionId::CpuRaster)
 };

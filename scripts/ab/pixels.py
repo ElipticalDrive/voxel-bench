@@ -5,7 +5,8 @@ frames 0, 20, 39 with reference comparisons) with the saved "before" build
 by pixel. AFTER_RENDERERS (optional, a TOML list) gives the current build different
 renderers (e.g. a new knob set to reproduce the old behaviour).
   scripts/ab/pixels.py terrain '[{graph="raycast-gpu"}]'
-AFTER_BIN: another binary as the "after" side (e.g. the "before" build itself, for a noise floor).
+AB_RENAME="old=new": pair the before side's labels (frame folders) with `old` replaced by
+`new` (a graph that gained nodes has a new label). AFTER_BIN: another binary as the "after" side (e.g. the "before" build itself, for a noise floor).
 """
 import os
 import subprocess

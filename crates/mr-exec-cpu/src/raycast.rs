@@ -60,19 +60,58 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
+/// `$f::<R, ...>($args)` for the CPU storage named `$name` (its type `R`), or an error.
+macro_rules! by_storage {
+    ($name:expr, $f:ident::<_ $(, $t:ty)*>($($a:expr),*)) => {
+        match $name {
+            "bricks" => $f::<U16 $(, $t)*>($($a),*),
+            "u8" => $f::<U8 $(, $t)*>($($a),*),
+            "bits" => $f::<Bits $(, $t)*>($($a),*),
+            "hier" => $f::<Hier $(, $t)*>($($a),*),
+            "prefix" => $f::<Prefix $(, $t)*>($($a),*),
+            "palette" => $f::<Palette $(, $t)*>($($a),*),
+            "brickmajor" => $f::<mr_components::storage::brickmajor::Cpu $(, $t)*>($($a),*),
+            "morton" => $f::<mr_components::storage::morton::Cpu $(, $t)*>($($a),*),
+            s => anyhow::bail!("storage `{s}` has no CPU implementation"),
+        }
+    };
+}
+
 /// The executor for graph `g`, its nodes monomorphised for its storage.
 pub(crate) fn create<P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    match g.node(primary(g)?.storage).component.as_str() {
-        "bricks" => of::<U16, P>(p, g),
-        "u8" => of::<U8, P>(p, g),
-        "bits" => of::<Bits, P>(p, g),
-        "hier" => of::<Hier, P>(p, g),
-        "prefix" => of::<Prefix, P>(p, g),
-        "palette" => of::<Palette, P>(p, g),
-        "brickmajor" => of::<mr_components::storage::brickmajor::Cpu, P>(p, g),
-        "morton" => of::<mr_components::storage::morton::Cpu, P>(p, g),
-        s => anyhow::bail!("storage `{s}` has no CPU implementation"),
+    by_storage!(g.node(primary(g)?.storage).component.as_str(), of::<_, P>(p, g))
+}
+
+/// Another pipeline's rays through a CPU storage and kernel (the raster region's shadow rays):
+/// the storage node (its output the scene, the kernel's knobs live on it) and the walk over
+/// that output (camera block, origin relative to it, unit direction, distance: a hit).
+pub(crate) struct Walked {
+    pub node: Box<dyn crate::exec::Node>,
+    pub occluded: fn(&crate::exec::Res, IVec3, Vec3, Vec3, f32) -> bool,
+}
+
+/// The storage and kernel of `site` in graph `g` as [`Walked`] (`S` what a compiled pipeline
+/// baked: its shadows and tone, no kernel).
+pub(crate) fn walked<S: Spec>(p: &InitParams, g: &Checked, site: mr_components::graph::Site) -> anyhow::Result<Walked> {
+    by_storage!(g.node(site.storage).component.as_str(), walked_in::<_, S>(p, g, site))
+}
+
+fn walked_in<R: Repr, S: Spec>(p: &InitParams, g: &Checked, site: mr_components::graph::Site) -> anyhow::Result<Walked> {
+    let (storage, kernel) = (&g.node(site.storage).component, &g.node(site.kernel).component);
+    let k: KernelKnobs = g.knobs(site.kernel).map_err(anyhow::Error::msg)?;
+    if storage == "u8" && p.blocks.blocks.len() > 256 {
+        anyhow::bail!("storage u8 needs <= 256 block types, registry has {}", p.blocks.blocks.len());
     }
+    let scene = Scene::<R> {
+        chunks: HashMap::new(),
+        grid: Grid::default(),
+        grid_dirty: false,
+        traversal: traversal(kernel, k.exact)?,
+        levels: level_mask([k.skip2, k.skip4, k.skip8, k.skip16]),
+        shadow: None,
+    };
+    let node = nodes::storage(scene, Kernel { kernel: kernel.clone(), exact: k.exact }, vec![site.storage.to_string()]);
+    Ok(Walked { node, occluded: |r, cam, p, d, dist| nodes::scene::<R>(r).occluded::<S>(cam, p, d, dist) })
 }
 
 fn of<R: Repr, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
@@ -990,8 +1029,13 @@ mod nodes {
         nodes: Vec<String>,
     }
 
-    fn scene<R: 'static>(r: &Res) -> &Scene<R> {
+    pub(super) fn scene<R: 'static>(r: &Res) -> &Scene<R> {
         r.downcast_ref().expect("a scene")
+    }
+
+    /// The storage node of `scene`, the kernel's knobs set on it.
+    pub(super) fn storage<R: Repr>(scene: Scene<R>, kernel: Kernel, nodes: Vec<String>) -> Box<dyn Node> {
+        Box::new(Storage::<R> { init: Some(scene), kernel, nodes })
     }
 
     impl<R: Repr> Node for Storage<R> {
@@ -1099,15 +1143,15 @@ mod nodes {
         let parts = Parts::<R, S, P>::new(p, g)?;
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
         let mut cast = Some(parts.cast);
-        let mut storage = Some((parts.scene, parts.kernel));
+        let mut store = Some((parts.scene, parts.kernel));
         let mut passes: Vec<Pass> = vec![];
         let mut index: HashMap<String, usize> = HashMap::new();
         for pass in schedule.passes() {
             let id = pass.node.as_str();
             let node: Box<dyn Node> = match g.node(id).role {
                 Role::Storage => {
-                    let (scene, kernel) = storage.take().expect("one storage node");
-                    Box::new(Storage::<R> { init: Some(scene), kernel, nodes: vec![id.to_string()] })
+                    let (scene, kernel) = store.take().expect("one storage node");
+                    storage(scene, kernel, vec![id.to_string()])
                 }
                 Role::Visibility => {
                     let fused = !parts.deferred;

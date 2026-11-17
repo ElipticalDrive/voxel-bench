@@ -1,4 +1,4 @@
-# CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64)
+# CPU software rasteriser: the geometry component's quads, homogeneous clipping, tiled multithreaded edge-function raster into a visibility buffer, deferred exact shading (reference model, f64). Storage here is what lit-mode shadow rays walk (refloor)
 # A pipeline graph: start a renderer from it with `graph = "raster-cpu"` and `edits`.
 
 executor = "cpu"
@@ -17,12 +17,27 @@ component = "greedy"
 [nodes.geometry.inputs]
 changes = "world"
 
+[nodes.kernel]
+role = "traversal"
+component = "refloor"
+
+[nodes.kernel.inputs]
+storage = "storage"
+
 [nodes.shading]
 role = "shading"
 component = "direct"
 
 [nodes.shading.inputs]
 hits = "draw"
+shadow = "kernel"
+
+[nodes.storage]
+role = "storage"
+component = "bricks"
+
+[nodes.storage.inputs]
+changes = "world"
 
 [nodes.visibility]
 role = "visibility"

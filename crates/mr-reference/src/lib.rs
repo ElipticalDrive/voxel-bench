@@ -251,7 +251,51 @@ impl World {
     pub fn light_count(&self) -> usize {
         self.lights.len()
     }
+
+    /// Shades a surface point `p` on `face` of `block` (`local` = position within the
+    /// block) with the reference model, shadow rays tested by `occluded` (from a point along a
+    /// unit direction within a distance: whether something is hit).
+    pub fn shade_surface<P: Pixel>(&self, p: DVec3, local: Vec3, face: Face, block: BlockId, mode: RenderMode, occluded: impl Fn(DVec3, DVec3, f64) -> bool) -> P {
+        let uv = face.uv(local);
+        let tex = self.blocks.texture_of(block, face);
+        let texel = tex.texel(texel_coord(uv.x), texel_coord(uv.y));
+        if mode == RenderMode::Unlit {
+            return P::from_rgba8(texel);
+        }
+        let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
+        P::encode(self.tone, albedo * self.light_at(p, face.normal().as_vec3(), occluded) * self.env.exposure)
+    }
+
+    /// Incoming light (linear) at surface point `p` with normal `n`: ambient, sun and
+    /// point lights, each with its shadow ray tested by `occluded`.
+    pub fn light_at(&self, p: DVec3, n: Vec3, occluded: impl Fn(DVec3, DVec3, f64) -> bool) -> Vec3 {
+        let p = p + n.as_dvec3() * 1e-4;
+        let mut light = self.env.ambient;
+        if let Some(sun) = self.env.sun {
+            let ndl = n.dot(-sun.direction);
+            if ndl > 0.0 && (self.shadows == Shadows::None || !occluded(p, -sun.direction.as_dvec3(), MAX_DIST)) {
+                light += sun.color * ndl;
+            }
+        }
+        if let Some(ls) = self.lights_near(p.floor().as_ivec3()) {
+            for l in ls {
+                let to = l.position - p;
+                let c = point_light(n, to.as_vec3(), l);
+                if c != Vec3::ZERO {
+                    let dist = to.length();
+                    if self.shadows != Shadows::All || !occluded(p, to / dist, dist) {
+                        light += c;
+                    }
+                }
+            }
+        }
+        light
+    }
 }
+
+/// How far a ray goes: rays are clipped to the loaded region, no artificial limit (so the
+/// view radius can change at run time).
+const MAX_DIST: f64 = 1e7;
 
 /// Dense chunks: the reference's representation of the world's blocks (and the CPU
 /// rasteriser's and voxelspace's), traced with a two-level DDA.
@@ -571,9 +615,7 @@ impl Chunks {
     }
 
     pub fn max_dist(&self) -> f64 {
-        // Rays are clipped to the loaded region; no artificial distance limit, so the view
-        // radius can change at runtime.
-        1e7
+        MAX_DIST
     }
 }
 
@@ -643,14 +685,7 @@ impl VoxelScene<'_> {
     /// Shades a surface point `p` on `face` of `block` (`local` = position within the
     /// block) with the reference model.
     pub fn shade_surface<P: Pixel>(&self, p: DVec3, local: Vec3, face: Face, block: BlockId, mode: RenderMode) -> P {
-        let uv = face.uv(local);
-        let tex = self.world.blocks.texture_of(block, face);
-        let texel = tex.texel(texel_coord(uv.x), texel_coord(uv.y));
-        if mode == RenderMode::Unlit {
-            return P::from_rgba8(texel);
-        }
-        let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
-        P::encode(self.world.tone, albedo * self.light_at(p, face.normal().as_vec3()) * self.world.env.exposure)
+        self.world.shade_surface(p, local, face, block, mode, |p, d, dist| self.occluded(p, d, dist))
     }
 
     /// Shades a mesh surface (mesh mode): `color` is the interpolated sRGB vertex colour,
@@ -668,29 +703,7 @@ impl VoxelScene<'_> {
     /// Incoming light (linear) at surface point `p` with normal `n`: ambient, sun and
     /// point lights, each with its shadow ray through the voxel world.
     pub fn light_at(&self, p: DVec3, n: Vec3) -> Vec3 {
-        let p = p + n.as_dvec3() * 1e-4;
-        let w = self.world;
-        let mut light = w.env.ambient;
-        let max_dist = self.max_dist();
-        if let Some(sun) = w.env.sun {
-            let ndl = n.dot(-sun.direction);
-            if ndl > 0.0 && (w.shadows == Shadows::None || !self.occluded(p, -sun.direction.as_dvec3(), max_dist)) {
-                light += sun.color * ndl;
-            }
-        }
-        if let Some(ls) = w.lights_near(p.floor().as_ivec3()) {
-            for l in ls {
-                let to = l.position - p;
-                let c = point_light(n, to.as_vec3(), l);
-                if c != Vec3::ZERO {
-                    let dist = to.length();
-                    if w.shadows != Shadows::All || !self.occluded(p, to / dist, dist) {
-                        light += c;
-                    }
-                }
-            }
-        }
-        light
+        self.world.light_at(p, n, |p, d, dist| self.occluded(p, d, dist))
     }
 }
 

@@ -4,7 +4,8 @@ build and the current build (no reference, no saved frames) and prints median GP
 fps per pass. Both builds must use the same code alignment (.cargo/config.toml).
   scripts/ab/perf.py terrain '[{graph="raster-gpu"}]' 3 -s run.frames=300
 AFTER_ARGS: extra arguments for the current build only (with BEFORE pointing at the same
-binary, an A/B of one setting, e.g. AFTER_ARGS='-s run.compile="native"'). AFTER_BIN: another
+binary, an A/B of one setting, e.g. AFTER_ARGS='-s run.compile="native"'). AB_RENAME="old=new": pair the before side's labels with `old` replaced by
+`new` (a graph that gained nodes has a new label). AFTER_BIN: another
 binary as the "after" side (e.g. a layout probe: the old commit with a meaningless change).
 """
 import os
