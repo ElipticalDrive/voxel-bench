@@ -101,8 +101,10 @@ Today ray casting by walks has it, raycast-cpu and raycast-gpu (any walk kernel,
 fragment): past a see-through block its rays continue (the kernel resumes after the block's
 run), the surfaces composited front to back in linear light as the reference does; with
 `placement = deferred` the hits edge holds 8 records per pixel (the 8th the first opaque
-surface behind). The variant with layers is compiled (GPU) or chosen (CPU) only once a
-see-through block has arrived: other worlds run what they ran before. Shadow rays then carry
+surface behind). The variant with layers is compiled (GPU) or chosen (CPU) only once the
+world asks transparency (its generator places see-through blocks, or an edit did; the host
+sends the ask with every frame, so no pipeline scans its chunks): other worlds run what they
+ran before. Shadow rays then carry
 the light through see-through blocks as the reference's do (each see-through surface lets
 `1 - coverage` through, through the shadow rays' own kernel); without layers they stop at the
 first block (see-through ones shadow fully).

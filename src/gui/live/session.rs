@@ -39,10 +39,12 @@ impl Session {
         let instances = scene.mesh_instances(0);
         let server = Streamer::new(vec![plan.run.view_radius], budget(&plan));
         let start = Instant::now();
+        let asks = world.asks(&blocks);
+        let layers = asks.contains(&mr_core::Feature::Transparency);
         {
             let mut sh = shared.lock().unwrap();
             sh.start = Some(start);
-            sh.asks = world.asks(&blocks);
+            sh.asks = asks;
         }
         let mut s = Session {
             blocks,
@@ -59,6 +61,7 @@ impl Session {
             repaint,
             start,
             applied_frame: None,
+            layers,
             next_light: USER_LIGHT_BASE,
             probe: None,
             probe_seq: 0,
@@ -247,6 +250,7 @@ impl Session {
         // A see-through block placed: the world asks transparency from now on (sticky).
         if edits.iter().any(|e| self.blocks.see_through(e.block)) {
             let asks = self.world.asks(&self.blocks);
+            self.layers = asks.contains(&mr_core::Feature::Transparency);
             self.shared.lock().unwrap().asks = asks;
         }
         for l in self.lanes.iter_mut().chain(self.reference.as_mut()) {

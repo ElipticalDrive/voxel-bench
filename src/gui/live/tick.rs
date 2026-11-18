@@ -110,6 +110,7 @@ impl Session {
 
         // Live frames.
         let instant = Instant::now();
+        let layers = self.layers;
         for (i, lane) in self.lanes.iter_mut().enumerate() {
             if lane.run.worker.is_none() || lane.want_res.is_some() {
                 continue;
@@ -122,7 +123,7 @@ impl Session {
                 continue;
             }
             let display = lane.last_display.is_none_or(|t| instant.duration_since(t).as_secs_f64() >= 1.0 / ctl.display_hz.max(1.0));
-            match lane.run.submit(cam, ctl.mode, display, Purpose::Live) {
+            match lane.run.submit(cam, ctl.mode, layers, display, Purpose::Live) {
                 Ok(true) => {
                     if display {
                         lane.last_display = Some(instant);
@@ -251,7 +252,7 @@ impl Session {
             // Warm-up frames once everything in range has streamed.
             let pending = if sb.joined { self.server.pending() } else { 1 };
             if pending == 0 && sb.in_flight.is_empty() && lane.standby_warm < 3 {
-                match sb.submit(cam, mode, false, Purpose::Warm) {
+                match sb.submit(cam, mode, self.layers, false, Purpose::Warm) {
                     Ok(_) => busy = true,
                     Err(e) => {
                         failures.push((i, e.context("hot swap")));

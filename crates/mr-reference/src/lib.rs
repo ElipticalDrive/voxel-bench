@@ -358,7 +358,7 @@ pub struct VoxelScene<'a> {
     pub world: &'a World,
     pub chunks: &'a Chunks,
     pub meshes: Option<&'a mesh::Meshes>,
-    /// The chunks hold see-through blocks: rays composite the surfaces they cross front to
+    /// The world asks transparency (the frame's `layers`): rays composite the surfaces they cross front to
     /// back and shadow rays are attenuated by them (else every block stops a ray, as before).
     pub layered: bool,
 }
@@ -394,8 +394,6 @@ pub struct CpuReference {
     pixels: Vec<u8>,
     /// Lit frames are path traced.
     paths: Option<Paths>,
-    /// A see-through block has arrived (sticky): rays composite layers.
-    layered: bool,
 }
 
 /// A cell a walk enters ([`Chunks::walk`]): where (`t`), which (`cell`, at LOD `lod` its
@@ -426,7 +424,7 @@ impl CpuReference {
         world.shadows = opts.shadows;
         let chunks = if opts.lod && p.max_lod > 0 { Chunks::with_lod(p.view_radius_chunks, p.max_lod.min(MAX_LOD)) } else { Chunks::default() };
         let paths = opts.bounces.map(|bounces| Paths { bounces, paths: opts.paths.unwrap_or(PATHS).max(1) });
-        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths, layered: false })
+        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths })
     }
 }
 
@@ -970,7 +968,6 @@ fn min_axis(t: DVec3) -> usize {
 impl Renderer for CpuReference {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let rest = self.world.apply(updates);
-        self.layered = self.layered || rest.iter().any(|u| self.world.blocks.update_see_through(u));
         self.chunks.apply(&rest);
         Ok(())
     }
@@ -989,7 +986,7 @@ impl Renderer for CpuReference {
         let (w, h) = (self.width, self.height);
         let cam = req.camera;
         let o = cam.position;
-        let this = VoxelScene { world: &self.world, chunks: &self.chunks, meshes: req.meshes.then_some(&self.meshes), layered: self.layered };
+        let this = VoxelScene { world: &self.world, chunks: &self.chunks, meshes: req.meshes.then_some(&self.meshes), layered: req.layers };
         let max_dist = this.max_dist();
         let sky = self.world.sky();
         // Path-traced lit frames: the light at the primary point from its paths.

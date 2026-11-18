@@ -433,7 +433,7 @@ impl Ctx<'_> {
         let env = scene.environment;
         let mut driver = ScriptedDriver::new(scene, mode, warmup, run.frames, only_every, run.clock_fps);
         driver.settle = out.compare_every.filter(|_| settle > 0).map(|every| (every, settle));
-        let result = run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, run, out);
+        let result = run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, &self.blocks, run, out);
         if let Err(e) = &result {
             tracing::error!("pass failed: {e:#}");
         }
@@ -602,7 +602,7 @@ fn view(plan: &Plan, ui: UiHandle) -> anyhow::Result<()> {
     let env = scene.environment;
     let mut driver = InteractiveDriver::new(ui.clone(), scene, mode);
     let mut out = Outputs::new(Some(ui), plan::Readback::Auto, None, None, u32::MAX);
-    run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, &plan.run, &mut out).context("view session")?;
+    run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, &ctx.blocks, &plan.run, &mut out).context("view session")?;
     if lanes.iter().all(|l| l.report.error.is_some()) {
         bail!("every renderer failed");
     }

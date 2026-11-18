@@ -434,7 +434,7 @@ impl Runner {
         self.pending.extend_from_slice(stream);
     }
 
-    fn submit(&mut self, camera: Camera, mode: PassMode, readback: bool, purpose: Purpose) -> anyhow::Result<bool> {
+    fn submit(&mut self, camera: Camera, mode: PassMode, layers: bool, readback: bool, purpose: Purpose) -> anyhow::Result<bool> {
         let Some(w) = self.worker.as_mut() else { return Ok(false) };
         let slot = if readback {
             match w.take_slot() {
@@ -458,7 +458,7 @@ impl Runner {
         }
         let id = self.next_id;
         self.next_id += 1;
-        w.send(HostMsg::Render { req: FrameRequest { frame_id: id, camera, mode: mode.lighting, meshes: mode.meshes, readback: slot.is_some() }, slot, time })?;
+        w.send(HostMsg::Render { req: FrameRequest { frame_id: id, camera, mode: mode.lighting, meshes: mode.meshes, layers, readback: slot.is_some() }, slot, time })?;
         self.in_flight.push_back(Flight { id, sent: Instant::now(), purpose });
         Ok(true)
     }
@@ -518,6 +518,8 @@ struct Session {
     repaint: Box<dyn Fn() + Send>,
     start: Instant,
     applied_frame: Option<u32>,
+    /// The world asks transparency (`Shared.asks`): every frame request says so.
+    layers: bool,
     next_light: u32,
     probe: Option<Probe>,
     probe_seq: u64,

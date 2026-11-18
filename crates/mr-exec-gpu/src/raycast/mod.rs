@@ -479,10 +479,10 @@ impl<C: Cast> crate::exec::Region for Raycast<C> {
             self.built_shading = self.shading.clone();
             cast.compiled();
         }
-        // Layers once a see-through block has arrived, where the caster, the shading and the
+        // Layers once the world asks them (sticky), where the caster, the shading and the
         // placement can (the shading on this GPU; a diagnostic view shows the first hit):
         // every variant again, records `LAYERS` per pixel.
-        if !passes.layered && core.world.layered && cast.layers() && !passes.remote && cast.view() == View::Image && caps::provides(mr_components::Kind::Gpu, Role::Shading, &self.shading, Cap::Layers) {
+        if !passes.layered && req.layers && cast.layers() && !passes.remote && cast.view() == View::Image && caps::provides(mr_components::Kind::Gpu, Role::Shading, &self.shading, Cap::Layers) {
             passes.layered = true;
             core.edges.set_layers(&core.gpu, core.width, core.height, mr_components::visibility::record::LAYERS as u32);
             passes.unbind();

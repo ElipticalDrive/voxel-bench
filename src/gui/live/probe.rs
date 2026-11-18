@@ -59,7 +59,8 @@ impl Session {
         probe.camera = cam;
         probe.mode = mode;
         let id = probe.id;
-        match reference.run.submit(cam, mode, true, Purpose::Probe(id)) {
+        let layers = self.layers;
+        match reference.run.submit(cam, mode, layers, true, Purpose::Probe(id)) {
             Ok(true) => probe.waiting += 1,
             Ok(false) => {}
             Err(e) => failures.push((REFERENCE, e)),
@@ -68,7 +69,7 @@ impl Session {
             if lane.run.worker.is_none() || lane.want_res.is_some() {
                 continue;
             }
-            match lane.run.submit(cam, mode, true, Purpose::Probe(id)) {
+            match lane.run.submit(cam, mode, layers, true, Purpose::Probe(id)) {
                 Ok(true) => probe.waiting += 1,
                 Ok(false) => {}
                 Err(e) => failures.push((i, e)),

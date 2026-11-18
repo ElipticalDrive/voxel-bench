@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::bail;
 use glam::{DVec3, Vec3};
-use mr_core::{Camera, Environment, FrameRequest, Light, MeshData, MeshInstance, MeshUpdate, PassMode, WorldUpdate};
+use mr_core::{BlockRegistry, Camera, Environment, FrameRequest, Light, MeshData, MeshInstance, MeshUpdate, PassMode, WorldUpdate};
 use mr_ipc::{HostMsg, WorkerMsg};
 use mr_world::scenario::{FrameEvents, resolve_edits};
 use mr_world::{Scene, World};
@@ -467,6 +467,7 @@ pub fn run_pass(
     environment: Environment,
     lights: &[Light],
     meshes: &[Arc<MeshData>],
+    blocks: &BlockRegistry,
     run: &RunSpec,
     out: &mut Outputs,
 ) -> anyhow::Result<()> {
@@ -477,6 +478,7 @@ pub fn run_pass(
     let mut measure_start: Option<Instant> = None;
     let mut missed = 0u32;
     let mut sent_instances: Option<Vec<MeshInstance>> = None;
+    let mut layers = false;
     // The server streams one region, as large as the largest any client needs streamed at
     // each level; clients generating the world need nothing streamed.
     let streams = lanes.iter().any(|l| !l.region.generates);
@@ -494,6 +496,11 @@ pub fn run_pass(
         let instances = input.meshes.filter(|i| sent_instances.as_ref() != Some(i));
         let edits = resolve_edits(world, input.events.edits);
         let changed = world.apply_edits(&edits);
+        // What the world asks (transparency once a see-through block is placed): recomputed
+        // only when edits land, every frame request carries it.
+        if first || !edits.is_empty() {
+            layers = world.asks(blocks).contains(&mr_core::Feature::Transparency);
+        }
         let (mut head, mut tail) = (vec![], vec![]);
         // Everything a renderer knows of the world comes over the stream,
         // the environment too (its creation's is a default until then).
@@ -589,7 +596,7 @@ pub fn run_pass(
             let slot = if readback { lane.worker.take_slot() } else { None };
             let id = lane.next_id;
             lane.next_id += 1;
-            let req = FrameRequest { frame_id: id, camera: input.camera, mode: input.mode.lighting, meshes: input.mode.meshes, readback: slot.is_some() };
+            let req = FrameRequest { frame_id: id, camera: input.camera, mode: input.mode.lighting, meshes: input.mode.meshes, layers, readback: slot.is_some() };
             let backlog = if streams && !lane.region.generates { server.pending_within(&lane.region.streamed()) as u32 } else { 0 };
             lane.in_flight.push_back(InFlight { id, frame: input.frame, mode: input.mode, sent: Instant::now(), recorded: input.recorded, time: input.time, backlog });
             let r = lane.worker.send(HostMsg::Render { req, slot, time: input.time });

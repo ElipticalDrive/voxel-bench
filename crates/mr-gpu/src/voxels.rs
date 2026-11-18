@@ -270,10 +270,6 @@ pub struct VoxelWorld {
     face_tex: wgpu::Buffer,
     texels: wgpu::Buffer,
     texel_words: u32,
-    blocks: BlockRegistry,
-    /// A see-through block has arrived (sticky): ray casters switch to their variant with
-    /// layers.
-    pub layered: bool,
     lights: HashMap<u32, Light>,
     lights_dirty: bool,
     light_buf: GrowBuf,
@@ -316,7 +312,6 @@ impl VoxelWorld {
         let colours = blocks.packed_texels();
         let texel_words = colours.len() as u32;
         let texels = mk("texels", bytemuck::cast_slice(&[colours, blocks.packed_see_through()].concat()));
-        let see_through = blocks.clone();
         Ok(Self {
             params: gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("voxel params"),
@@ -339,8 +334,6 @@ impl VoxelWorld {
             face_tex,
             texels,
             texel_words,
-            blocks: see_through,
-            layered: false,
             lights: HashMap::new(),
             lights_dirty: true,
             light_buf: GrowBuf::new(gpu, "lights", 256),
@@ -413,7 +406,6 @@ impl VoxelWorld {
         let mut changed = vec![];
         self.changed_keys.clear();
         for u in updates {
-            self.layered = self.layered || self.blocks.update_see_through(&u);
             match u {
                 WorldUpdate::ChunkLoad { key, data } if key.lod <= self.cfg.max_lod => {
                     self.changed_keys.push(key);

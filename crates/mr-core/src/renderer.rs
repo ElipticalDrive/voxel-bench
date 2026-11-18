@@ -141,6 +141,11 @@ pub struct FrameRequest {
     /// Draw meshes (mesh mode) this frame. Only sent to renderers with the `meshes` tag.
     #[serde(default)]
     pub meshes: bool,
+    /// The world asks transparency this frame (`mr_world::World::asks`: a see-through block
+    /// may be in view): rays continue past see-through blocks where the pipeline can. The
+    /// host says so, so no pipeline scans the chunks it loads for such blocks.
+    #[serde(default)]
+    pub layers: bool,
     /// Whether the pixels must be delivered to the host. When false the renderer may
     /// skip any read-back entirely.
     pub readback: bool,

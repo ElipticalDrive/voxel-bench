@@ -109,7 +109,6 @@ fn walked_in<R: Repr, S: Spec>(p: &InitParams, g: &Checked, site: mr_components:
         levels: level_mask([k.skip2, k.skip4, k.skip8, k.skip16]),
         shadow: None,
         blocks: p.blocks.clone(),
-        layered: false,
     };
     let node = nodes::storage(scene, Kernel { kernel: kernel.clone(), exact: k.exact }, vec![site.storage.to_string()]);
     Ok(Walked { node, occluded: |r, cam, p, d, dist| nodes::scene::<R>(r).occluded::<S>(cam, p, d, dist) })
@@ -293,9 +292,6 @@ struct Scene<R> {
     /// the same storage), `None`: the primary rays' kernel.
     shadow: Option<(Traversal, u32)>,
     blocks: Arc<BlockRegistry>,
-    /// A see-through block has arrived (sticky): primary rays continue past them, the
-    /// frame's variant with layers.
-    layered: bool,
 }
 
 /// A surface on a primary ray with layers: camera-relative cell and distance, the block and
@@ -395,7 +391,6 @@ impl<R: Repr> Scene<R> {
     fn apply(&mut self, updates: &[WorldUpdate]) {
         let s = self;
         for u in updates {
-            s.layered = s.layered || s.blocks.update_see_through(u);
             match u {
                 WorldUpdate::ChunkLoad { key, data } if key.lod == 0 => {
                     match data {
@@ -798,7 +793,6 @@ impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
                 levels: level_mask([k.skip2, k.skip4, k.skip8, k.skip16]),
                 shadow,
                 blocks: p.blocks.clone(),
-                layered: false,
             },
             deferred: parse_placement(&shading.placement)?,
             threads: o.threads,
@@ -1240,8 +1234,8 @@ impl<S: Spec, P: Pixel> Cast<S, P> {
             View::Distance => Some(Legend::ramp("distance to the primary hit (blocks)", self.view_max as f64, false)),
         };
         // A diagnostic view shows the walk itself, so it runs inline whatever the placement.
-        // Layers only in the image: a view shows the first hit's walk.
-        let layered = scene.layered && legend.is_none();
+        // Layers when the world asks them, only in the image: a view shows the first hit's walk.
+        let layered = req.layers && legend.is_none();
         let records = records.filter(|_| legend.is_none()).map(|r| {
             r.resize((w * h) as usize * if layered { LAYERS } else { 1 }, Record::SKY);
             RecPtr(r.as_mut_ptr())
@@ -1249,7 +1243,7 @@ impl<S: Spec, P: Pixel> Cast<S, P> {
         let deferred = records.is_some();
         let job = Job { scene, world, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone().map(|l| (l, self.view)), out: OutPtr(pixels.as_mut_ptr()), records: records.unwrap_or(RecPtr(std::ptr::null_mut())) };
         let cast = Instant::now();
-        // The variant with layers runs only once a see-through block has arrived.
+        // The variant with layers runs only in frames whose world asks transparency.
         let rect: fn(Isa, &Job<R, P>, Rect) -> RowWork = match (deferred, layered) {
             (true, false) => render_rect_isa::<R, S, P, true, false>,
             (false, false) => render_rect_isa::<R, S, P, false, false>,

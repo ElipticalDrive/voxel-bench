@@ -1041,6 +1041,49 @@ mod tests {
         assert_eq!(w.asks(&blocks), vec![Transparency]);
     }
 
+    /// A generator that does not ask transparency places no see-through block: pipelines
+    /// take the ask with each frame instead of scanning chunks, so a block placed without it
+    /// would be drawn opaque. Every generator the editor offers but `Empty`, the chunks around its spawn.
+    #[test]
+    fn generators_ask_for_the_blocks_they_place() {
+        let blocks = crate::textures::default_registry();
+        // (`Empty` has no chunks at all.)
+        let gens = [
+            GenSpec::Terrain { seed: 0, caves: true, trees: true },
+            GenSpec::Flat { checker: false },
+            GenSpec::Flat { checker: true },
+            GenSpec::Menger { level: 4 },
+            GenSpec::Room { size: 48 },
+            GenSpec::Random { size: 128, density: 0.1, seed: 0 },
+            GenSpec::City { seed: 0, block: 48, max_height: 240 },
+            GenSpec::Islands { seed: 0, spacing: 96, height: 512, fill: 0.35 },
+            GenSpec::Lattice { period: 24, thickness: 1, height: 160 },
+            GenSpec::Gyroid { period: 48, thickness: 0.3, height: 192 },
+            GenSpec::Checker { size: 96, cell: 1 },
+            GenSpec::Glass { size: 48, panes: 6 },
+            GenSpec::Showcase,
+        ];
+        let mut asking = 0;
+        for spec in gens {
+            let g = spec.build();
+            let asks = g.asks().contains(&mr_core::Feature::Transparency);
+            let at = ChunkKey::of_block(g.spawn().floor().as_ivec3()).pos;
+            let (y0, y1) = g.chunk_y_range();
+            let mut chunks = 0;
+            let seen = (y0..y1).flat_map(|y| (-2..=2).flat_map(move |z| (-2..=2).map(move |x| IVec3::new(at.x + x, y, at.z + z)))).any(|pos| {
+                chunks += 1;
+                blocks.chunk_see_through(&g.chunk(ChunkKey::lod0(pos)))
+            });
+            assert!(chunks > 0, "{spec:?}: no chunks sampled");
+            assert!(!seen || asks, "{spec:?} places see-through blocks without asking transparency");
+            if asks {
+                assert!(seen, "{spec:?} asks transparency but its spawn has no see-through block");
+                asking += 1;
+            }
+        }
+        assert_eq!(asking, 1, "the glass world asks");
+    }
+
     #[test]
     fn menger_holes() {
         let g = MengerGen { size: 27 };

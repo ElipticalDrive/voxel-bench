@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockId, ChunkData, Face, WorldUpdate};
+use crate::{BlockId, ChunkData, Face};
 
 pub const TEX_SIZE: usize = 16;
 
@@ -87,11 +87,6 @@ impl BlockRegistry {
         block.is_solid() && self.class(block).see_through()
     }
 
-    /// Whether any block of the registry lets light through.
-    pub fn any_see_through(&self) -> bool {
-        self.blocks.iter().skip(1).any(|b| b.class.see_through())
-    }
-
     /// The lowest and highest id of a block that lets light through (none: `None`).
     fn see_through_ids(&self) -> Option<(u16, u16)> {
         let see = |b: &u16| self.blocks[*b as usize].class.see_through();
@@ -100,10 +95,10 @@ impl BlockRegistry {
         Some((lo, ids.rev().find(see).unwrap_or(lo)))
     }
 
-    /// Whether a chunk holds a block that lets light through: what makes a world ask for
-    /// transparency. Run on every chunk a pipeline loads, so the scan is a branch-free
-    /// range test over the ids (vectorised), the exact test only for a chunk with ids in
-    /// that range.
+    /// Whether a chunk holds a block that lets light through: what makes an edited world ask
+    /// for transparency (`mr_world::World::asks`, on the host; pipelines take the ask with
+    /// each frame). A branch-free range test over the ids (vectorised), the exact test only
+    /// for a chunk with ids in that range.
     pub fn chunk_see_through(&self, data: &ChunkData) -> bool {
         match data {
             ChunkData::Uniform(b) => self.see_through(*b),
@@ -111,15 +106,6 @@ impl BlockRegistry {
                 let span = hi - lo;
                 d.0.chunks(64).any(|c| c.iter().fold(false, |a, b| a | (b.0.wrapping_sub(lo) <= span))) && d.0.iter().any(|&b| self.see_through(b))
             }),
-        }
-    }
-
-    /// Whether an update brings a block that lets light through (a chunk or an edit).
-    pub fn update_see_through(&self, u: &WorldUpdate) -> bool {
-        match u {
-            WorldUpdate::ChunkLoad { data, .. } => self.chunk_see_through(data),
-            WorldUpdate::SetBlocks(edits) => edits.iter().any(|e| self.see_through(e.block)),
-            _ => false,
         }
     }
 
