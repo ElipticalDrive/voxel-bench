@@ -21,7 +21,7 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec3, Vec4};
-use mr_components::draw::drawer::{DrawFrame, DrawNodes};
+use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawNodes};
 use mr_components::geometry::{GpuGeometry, Knobs, Merge};
 use mr_components::graph::{Checked, Role};
 use mr_components::storage::gpu_data::Bound;
@@ -30,7 +30,7 @@ use mr_components::shading::state as shade_state;
 use mr_core::*;
 use mr_gpu::meshes::{ForwardSpec, GpuMeshes, MeshPass};
 use mr_gpu::voxels::{Shadows, shadows_param};
-use mr_gpu::{GrowableBuffer, RangeAlloc, wgpu};
+use mr_gpu::{PagedBuffer, wgpu};
 use rayon::prelude::*;
 use serde::Deserialize;
 
@@ -61,7 +61,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("max_steps", "Shadow-ray step limit (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
         ParamSpec::int("mesh_budget", "Chunks remeshed per frame, nearest first (0 = all)", 0, 100000, 0, true),
         ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB); for region storages (tree64) the limit of their own data", 64, 6144, 1536, false),
-        ParamSpec::int("quad_buffer_mb", "Instance buffer limit (MiB; grows on demand, to at most what the device binds)", 16, 4096, 1024, false),
+        ParamSpec::int("quad_buffer_mb", "Instance memory limit (MiB; grows on demand, in buffers of at most what the device binds)", 16, 16384, 8192, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ];
     p.extend(shade_state::params());
@@ -82,7 +82,7 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { max_steps: 2048, mesh_budget: 0, pool_mb: 1536, quad_buffer_mb: 1024, frames_in_flight: 3 }
+        Self { max_steps: 2048, mesh_budget: 0, pool_mb: 1536, quad_buffer_mb: 8192, frames_in_flight: 3 }
     }
 }
 
@@ -184,9 +184,13 @@ struct DrawArgs {
 
 const MAX_SLOTS: usize = 1 << 16;
 const QUAD_BYTES: u64 = 8;
+/// Quads staged for upload before the writes are sent.
+const FLUSH_BYTES: u64 = 256 << 20;
 
 struct ChunkMesh {
     slot: u16,
+    /// Its quads' page of the quad buffer and their offset in it.
+    page: usize,
     offset: u32,
     counts: [u32; 6],
 }
@@ -210,17 +214,18 @@ pub(crate) struct Meshing {
     /// The storage of the mesh-shadow site's walk.
     /// Mesh mode: drawn into the same depth buffer.
     mesh: GpuMeshes,
-    quad_buf: GrowableBuffer,
+    /// The quads, in pages (draw batches) of at most what the device binds.
+    quads: PagedBuffer,
     chunk_buf: wgpu::Buffer,
     indirect: wgpu::Buffer,
-    bind0: Option<wgpu::BindGroup>,
+    /// Group 0 per page of the quads (empty: stale).
+    bind0: Vec<wgpu::BindGroup>,
     /// The nodes of the timed stages: geometry and culling on the CPU (the
     /// drawer's are the core's).
     geometry_nodes: Vec<String>,
     cull_nodes: Vec<String>,
     meshes: HashMap<IVec3, ChunkMesh>,
     dirty: HashSet<IVec3>,
-    alloc: RangeAlloc,
     free_slots: Vec<u16>,
     /// This frame's state: what its nodes did so far, its counters and its groups.
     frame: Frame,
@@ -241,8 +246,10 @@ struct Frame {
     world: Option<wgpu::BindGroup>,
     bound: Option<Bound>,
     out: Option<wgpu::TextureView>,
-    /// Indirect draws; instances drawn and in all; chunks remeshed.
+    /// Indirect draws, and their batches (page, first draw, draws); instances drawn and in
+    /// all; chunks remeshed.
     draws: u32,
+    batches: Vec<(usize, u32, u32)>,
     drawn_instances: u64,
     total: u64,
     remeshed: usize,
@@ -296,8 +303,6 @@ impl Meshing {
             },
         )?;
         let gpu = &core.gpu;
-        let max_bytes = gpu.device.limits().max_storage_buffer_binding_size.min(gpu.device.limits().max_buffer_size);
-        let quad_capacity = ((opts.quad_buffer_mb as u64 * 1024 * 1024).min(max_bytes) / QUAD_BYTES).min(u32::MAX as u64) as u32;
         let storage = |label, size: u64, extra| {
             gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -306,7 +311,8 @@ impl Meshing {
                 mapped_at_creation: false,
             })
         };
-        let quad_buf = GrowableBuffer::new(gpu, "quads", 1 << 20, quad_capacity as u64 * QUAD_BYTES, wgpu::BufferUsages::STORAGE);
+        // Pages hold fewer than 2^32 quads (offsets and instance indices are u32).
+        let quads = PagedBuffer::new(gpu, "quads", 1 << 20, u32::MAX as u64 * QUAD_BYTES, (opts.quad_buffer_mb as u64) << 20, wgpu::BufferUsages::STORAGE);
         let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
         // Forward drawers shade meshes through the region's shading component (lit through the
@@ -316,15 +322,14 @@ impl Meshing {
             built: geometry.clone(),
             stale: false,
             mesh,
-            quad_buf,
+            quads,
             chunk_buf,
             indirect,
-            bind0: None,
+            bind0: vec![],
             geometry_nodes: g.ids(&[Role::Geometry]),
             cull_nodes: g.ids(&[Role::Draw]),
             meshes: HashMap::new(),
             dirty: HashSet::new(),
-            alloc: RangeAlloc::new(((1 << 20) / QUAD_BYTES) as u32),
             free_slots: (0..MAX_SLOTS as u32).rev().map(|s| s as u16).collect(),
             frame: Frame::default(),
             opts,
@@ -344,7 +349,7 @@ impl Meshing {
 
     fn drop_mesh(&mut self, pos: IVec3) {
         if let Some(m) = self.meshes.remove(&pos) {
-            self.alloc.free(m.offset, m.len());
+            self.quads.free(m.page, m.offset, m.len());
             self.free_slots.push(m.slot);
         }
     }
@@ -373,7 +378,7 @@ impl Meshing {
                 Some(m) => m.slot,
                 None => match self.free_slots.pop() {
                     Some(s) => {
-                        self.meshes.insert(pos, ChunkMesh { slot: s, offset: 0, counts: [0; 6] });
+                        self.meshes.insert(pos, ChunkMesh { slot: s, page: 0, offset: 0, counts: [0; 6] });
                         gpu.queue.write_buffer(&self.chunk_buf, s as u64 * 16, bytemuck::cast_slice(&[pos.x, pos.y, pos.z, 0]));
                         s
                     }
@@ -395,23 +400,31 @@ impl Meshing {
             })
             .collect();
         let n = results.len();
+        let mut staged = 0;
         for (pos, mesh) in results {
             let m = self.meshes.get_mut(&pos).unwrap();
-            let old = (m.offset, m.len());
+            let old = (m.page, m.offset, m.len());
             m.counts = [0; 6];
-            self.alloc.free(old.0, old.1);
+            self.quads.free(old.0, old.1, old.2);
             let len = mesh.quads.len() as u32;
             if len == 0 {
                 continue;
             }
-            let Some((off, grew)) = self.quad_buf.alloc(gpu, &mut self.alloc, len, QUAD_BYTES, "`quad_buffer_mb` (at most what the device binds)") else { continue };
+            let Some((page, off, grew)) = self.quads.alloc(gpu, len, QUAD_BYTES, "`quad_buffer_mb`") else { continue };
             if grew {
-                self.bind0 = None;
+                self.bind0.clear();
             }
             let m = self.meshes.get_mut(&pos).unwrap();
-            m.offset = off;
+            (m.page, m.offset) = (page, off);
             m.counts = mesh.counts;
-            gpu.queue.write_buffer(self.quad_buf.buffer(), off as u64 * QUAD_BYTES, bytemuck::cast_slice(&mesh.quads));
+            gpu.queue.write_buffer(self.quads.buffer(page), off as u64 * QUAD_BYTES, bytemuck::cast_slice(&mesh.quads));
+            // Large uploads (a whole world at once) are sent in parts, or their staging
+            // copies take as much memory as the quads.
+            staged += len as u64 * QUAD_BYTES;
+            if staged >= FLUSH_BYTES {
+                gpu.flush_writes();
+                staged = 0;
+            }
         }
         n
     }
@@ -440,13 +453,15 @@ impl Meshing {
         let (cam_block, frac) = self.frame.camera;
         let planes = frustum_planes(self.frame.view_proj);
         let geo = geometry(&self.built);
-        let mut draws: Vec<DrawArgs> = Vec::with_capacity(self.meshes.len() * 3);
+        // A list of draws per page of the quads, one batch each.
+        let mut pages: Vec<Vec<DrawArgs>> = (0..self.quads.pages()).map(|_| Vec::new()).collect();
         let (mut drawn, mut total) = (0u64, 0u64);
         for (pos, m) in &self.meshes {
             total += m.len() as u64;
             if m.len() == 0 {
                 continue;
             }
+            let draws = &mut pages[m.page];
             let min = (*pos * 32 - cam_block).as_vec3() - frac;
             let max = min + 32.0;
             if !aabb_visible(&planes, min, max) {
@@ -470,6 +485,15 @@ impl Meshing {
                 off += n;
             }
         }
+        let mut batches = Vec::with_capacity(pages.len());
+        let mut first = 0;
+        for (page, d) in pages.iter().enumerate() {
+            if !d.is_empty() {
+                batches.push((page, first, d.len() as u32));
+                first += d.len() as u32;
+            }
+        }
+        let draws = if pages.len() == 1 { pages.pop().unwrap() } else { pages.concat() };
         let bytes = (draws.len() * 16) as u64;
         if bytes > self.indirect.size() {
             self.indirect = core.gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -483,7 +507,7 @@ impl Meshing {
             core.gpu.queue.write_buffer(&self.indirect, 0, bytemuck::cast_slice(&draws));
         }
         let f = &mut self.frame;
-        (f.draws, f.drawn_instances, f.total) = (draws.len() as u32, drawn, total);
+        (f.draws, f.batches, f.drawn_instances, f.total) = (draws.len() as u32, batches, drawn, total);
         f.cull_ms = cull_start.elapsed().as_secs_f32() * 1e3;
     }
 
@@ -493,13 +517,13 @@ impl Meshing {
         if std::mem::replace(&mut self.frame.stored, true) {
             return;
         }
-        if self.bind0.is_none() {
-            self.bind0 = Some(self.drawing.bind(core, self.quad_buf.buffer(), &self.chunk_buf));
-        }
         let bound = core.storages.prepare(&core.gpu, &core.world);
         self.frame.bound = Some(bound);
         if core.build_accel(enc, ticket, req) {
-            self.bind0 = Some(self.drawing.bind(core, self.quad_buf.buffer(), &self.chunk_buf));
+            self.bind0.clear();
+        }
+        if self.bind0.is_empty() {
+            self.bind0 = (0..self.quads.pages()).map(|p| self.drawing.bind(core, self.quads.buffer(p), &self.chunk_buf)).collect();
         }
     }
 
@@ -519,7 +543,7 @@ impl Meshing {
         let f = &self.frame;
         let bound = f.bound.as_ref().expect("stored");
         let (bind2, more) = bound.split();
-        let binds: Vec<&wgpu::BindGroup> = [self.bind0.as_ref(), f.world.as_ref(), bind2].into_iter().flatten().collect();
+        let binds: Vec<&wgpu::BindGroup> = [self.bind0.first(), f.world.as_ref(), bind2].into_iter().flatten().collect();
         let sky = core.sky();
         let frame = DrawFrame {
             out: f.out.as_ref().expect("set up"),
@@ -544,8 +568,8 @@ impl Meshing {
         self.frame.want_meshes && (!self.drawing.drawer.mode().deferred() || self.mesh.triangles() > 0)
     }
 
-    /// The draw node: the faces with one multi-draw-indirect (and the meshes), shaded in the
-    /// fragments when forward.
+    /// The draw node: the faces with one multi-draw-indirect per page of the quads, each
+    /// binding its page (and the meshes), shaded in the fragments when forward.
     fn draw(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
         self.cull(core);
         self.store(core, enc, ticket, req);
@@ -553,10 +577,16 @@ impl Meshing {
         if std::mem::replace(&mut self.frame.drawn, true) {
             return;
         }
-        let n = self.frame.draws;
+        let (batches, binds) = (&self.frame.batches, &self.bind0);
         let draw = |pass: &mut wgpu::RenderPass<'_>| {
-            if n > 0 {
-                pass.multi_draw_indirect(&self.indirect, 0, n);
+            for &(page, first, n) in batches {
+                if binds.len() > 1 {
+                    pass.set_bind_group(0, &binds[page], &[]);
+                }
+                pass.multi_draw_indirect(&self.indirect, first as u64 * 16, n);
+            }
+            if binds.len() > 1 {
+                pass.set_bind_group(0, &binds[0], &[]);
             }
         };
         let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp);
@@ -616,11 +646,11 @@ impl State for Meshing {
 
     fn resize(&mut self, core: &Core) {
         self.drawing.resize(core);
-        self.bind0 = None;
+        self.bind0.clear();
     }
 
     fn memory(&self, core: &Core) -> (u64, u64) {
-        (0, self.quad_buf.size() + self.chunk_buf.size() + self.indirect.size() + self.drawing.memory_bytes(core))
+        (0, self.quads.size() + self.chunk_buf.size() + self.indirect.size() + self.drawing.memory_bytes(core))
     }
 }
 
@@ -658,7 +688,7 @@ impl Region for Meshing {
         if self.stale {
             let o = &self.live;
             if self.drawing.rebuild(core, source_wgsl(&o.geometry), geometry(&o.geometry).strip, &o.shading, o.meshes != "none")? {
-                self.bind0 = None;
+                self.bind0.clear();
             }
             // The forward mesh passes shade through the drawer's shading.
             self.mesh.set_forward(&core.gpu, ForwardSpec { module: &self.drawing.mesh_module(core).expect("raster-gpu has meshes"), layout: &self.drawing.pl_draw, format: core.output_format() });
@@ -679,6 +709,11 @@ impl Region for Meshing {
     fn setup(&mut self, core: &mut Core, req: &FrameRequest) {
         let start = Instant::now();
         let remeshed = self.remesh(core, req.camera.split_position().0 >> 5);
+        if self.quads.pages() > 1 && self.drawing.drawer.mode() == DrawMode::Visbuffer {
+            // Its ids name an instance of one page (at most 2^28, about what one binds), and
+            // its shading pass binds one.
+            core.gpu.fail(format!("raster-gpu: the quads take {} buffers; `visbuffer` reads one (draw = raster or gbuffer read any number)", self.quads.pages()));
+        }
         let mesh_ms = start.elapsed().as_secs_f64() * 1e3;
         let c = &req.camera;
         self.drawing.write_frame(core, c, req.mode, 0, IVec3::ZERO);

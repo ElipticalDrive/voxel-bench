@@ -151,6 +151,16 @@ impl Gpu {
         }
     }
 
+    /// Sends the queue's pending writes and waits for them, so their staging memory is freed:
+    /// for uploads too large to stage at once (`write_buffer` holds every write until the next
+    /// submission).
+    pub fn flush_writes(&self) {
+        self.queue.submit([]);
+        if let Err(e) = self.device.poll(wgpu::PollType::wait_indefinitely()) {
+            self.fail(format!("waiting for uploads failed: {e}"));
+        }
+    }
+
     /// Records that frames from here on would be wrong (`why`: what was lost and the knob
     /// that would hold it): data that did not fit a buffer, a table out of slots, a failed
     /// read-back. The renderer fails with it at its next frame; nothing is dropped quietly.
@@ -736,6 +746,17 @@ impl GrowableBuffer {
         Self { buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false }), label, usage, max }
     }
 
+    /// A buffer of `size` bytes from the start, never grown (a [`PagedBuffer`]'s later pages:
+    /// no copy, so no old and new buffer at once); `None` if the device is out of memory (it
+    /// has failed).
+    /// `doing` names the buffer's place for the message.
+    fn whole(gpu: &Gpu, label: &'static str, size: u64, usage: wgpu::BufferUsages, doing: impl FnOnce(u64) -> String) -> Option<Self> {
+        let mut b = Self::new(gpu, label, 256, size, usage);
+        let size = b.max;
+        b.buf = create_named(gpu, label, size, b.usage, || doing(size))?;
+        Some(b)
+    }
+
     pub fn buffer(&self) -> &wgpu::Buffer {
         &self.buf
     }
@@ -752,21 +773,35 @@ impl GrowableBuffer {
     /// (bind groups referencing it must be recreated), `None` if `bytes` exceeds the maximum
     /// (the device has failed, naming `limit` as what sets the maximum: a knob, [`DEVICE_BOUND`]).
     pub fn reserve(&mut self, gpu: &Gpu, bytes: u64, limit: &str) -> Option<bool> {
+        let r = self.grow_to(gpu, bytes);
+        if r.is_none() {
+            gpu.fail(format!("{}: more than {} MiB needed; the limit is {limit}; frames would miss data", self.label, self.max >> 20));
+        }
+        r
+    }
+
+    /// [`Self::reserve`] without failing the device: `None` if `bytes` exceeds the maximum.
+    fn grow_to(&mut self, gpu: &Gpu, bytes: u64) -> Option<bool> {
         if bytes <= self.buf.size() {
             return Some(false);
         }
         if bytes > self.max {
-            gpu.fail(format!("{}: more than {} MiB needed; the limit is {limit}; frames would miss data", self.label, self.max >> 20));
             return None;
         }
         let size = (self.buf.size() * 2).max(bytes).min(self.max).next_multiple_of(16);
-        let new = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(self.label), size, usage: self.usage, mapped_at_creation: false });
+        let old = self.buf.size();
+        let new = create_named(gpu, self.label, size, self.usage, || format!("growing it from {} to {} MiB", old >> 20, size >> 20))?;
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         enc.copy_buffer_to_buffer(&self.buf, 0, &new, 0, self.buf.size());
         // Pending queue writes to the old buffer are flushed before this submission.
         gpu.queue.submit([enc.finish()]);
         tracing::debug!("{} grown to {} MiB", self.label, size >> 20);
-        self.buf = new;
+        std::mem::replace(&mut self.buf, new).destroy();
+        // The old buffer is freed once the copy is done and the device polled: wait for it,
+        // or a run of doublings (one large remesh) holds every old size at once.
+        if let Err(e) = gpu.device.poll(wgpu::PollType::wait_indefinitely()) {
+            gpu.fail(format!("{}: waiting for its copy failed: {e}", self.label));
+        }
         Some(true)
     }
 
@@ -774,6 +809,15 @@ impl GrowableBuffer {
     /// needed. Returns the offset and whether the buffer was reallocated; `None` as
     /// [`Self::reserve`].
     pub fn alloc(&mut self, gpu: &Gpu, alloc: &mut RangeAlloc, n: u32, unit: u64, limit: &str) -> Option<(u32, bool)> {
+        let r = self.alloc_within(gpu, alloc, n, unit);
+        if r.is_none() {
+            gpu.fail(format!("{}: more than {} MiB needed; the limit is {limit}; frames would miss data", self.label, self.max >> 20));
+        }
+        r
+    }
+
+    /// [`Self::alloc`] without failing the device: `None` if the range does not fit within the maximum.
+    fn alloc_within(&mut self, gpu: &Gpu, alloc: &mut RangeAlloc, n: u32, unit: u64) -> Option<(u32, bool)> {
         let mut grew = false;
         loop {
             if let Some(off) = alloc.alloc(n) {
@@ -781,10 +825,91 @@ impl GrowableBuffer {
             }
             // The whole buffer is the allocator's by now and no hole fits: past the maximum.
             let cap = alloc.capacity() as u64;
-            let need = if (cap + 1) * unit > self.max { self.max + 1 } else { ((cap + n.max(1) as u64).max(cap * 2) * unit).min(self.max) };
-            grew |= self.reserve(gpu, need, limit)?;
+            if (cap + 1) * unit > self.max {
+                return None;
+            }
+            let need = ((cap + n.max(1) as u64).max(cap * 2) * unit).min(self.max);
+            grew |= self.grow_to(gpu, need)?;
             alloc.grow((self.buf.size() / unit).min(u32::MAX as u64) as u32);
         }
+    }
+}
+
+/// A buffer whose creation, when the device is out of memory, fails the device naming it
+/// and `doing` (rare creations only: it waits for the error scope).
+fn create_named(gpu: &Gpu, label: &str, size: u64, usage: wgpu::BufferUsages, doing: impl FnOnce() -> String) -> Option<wgpu::Buffer> {
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
+    if let Some(e) = pollster::block_on(scope.pop()) {
+        gpu.fail(format!("{label}: the device is out of memory {}: {e}", doing()));
+        return None;
+    }
+    Some(buf)
+}
+
+/// Data that may outgrow one binding: [`GrowableBuffer`]s ("pages") of at most `page_max`
+/// bytes each (at most what the device binds), together at most `max` bytes, each with its
+/// own [`RangeAlloc`]. A range lives in one page; users bind a page at a time (a draw batch
+/// per page). A page is added when no earlier one holds a range, so data that fits one
+/// binding costs what a [`GrowableBuffer`] does. The first page grows (doubling, copied);
+/// later ones are created whole at a quarter of `page_max` (or the range, if larger): no copy
+/// while the data is already large, at most that quarter unused.
+pub struct PagedBuffer {
+    pages: Vec<(GrowableBuffer, RangeAlloc)>,
+    label: &'static str,
+    usage: wgpu::BufferUsages,
+    page_max: u64,
+    max: u64,
+}
+
+impl PagedBuffer {
+    pub fn new(gpu: &Gpu, label: &'static str, initial: u64, page_max: u64, max: u64, usage: wgpu::BufferUsages) -> Self {
+        let first = GrowableBuffer::new(gpu, label, initial, page_max.min(max), usage);
+        let page_max = first.max();
+        let alloc = RangeAlloc::new(0);
+        Self { pages: vec![(first, alloc)], label, usage, page_max, max }
+    }
+
+    pub fn pages(&self) -> usize {
+        self.pages.len()
+    }
+
+    pub fn buffer(&self, page: usize) -> &wgpu::Buffer {
+        self.pages[page].0.buffer()
+    }
+
+    /// The bytes held, over all pages.
+    pub fn size(&self) -> u64 {
+        self.pages.iter().map(|(b, _)| b.size()).sum()
+    }
+
+    /// Allocates `n` units of `unit` bytes in the first page that holds them, else in a new
+    /// page. Returns the page, the offset in it (in units) and whether that page's buffer is
+    /// new or reallocated (bind groups referencing it must be recreated); `None` if `max` is
+    /// reached or `n` units exceed a page (the device has failed, naming `limit`).
+    pub fn alloc(&mut self, gpu: &Gpu, n: u32, unit: u64, limit: &str) -> Option<(usize, u32, bool)> {
+        for (i, (buf, alloc)) in self.pages.iter_mut().enumerate() {
+            if let Some((off, grew)) = buf.alloc_within(gpu, alloc, n, unit) {
+                return Some((i, off, grew));
+            }
+        }
+        let held: u64 = self.pages.iter().map(|(b, _)| b.max()).sum();
+        let left = self.max.saturating_sub(held) & !15;
+        let bytes = n as u64 * unit;
+        if left < 256 || bytes > left.min(self.page_max) {
+            let why = if bytes > self.page_max { format!("{} bytes in one range, more than a page holds ({} MiB)", bytes, self.page_max >> 20) } else { format!("more than {} MiB needed", self.max >> 20) };
+            gpu.fail(format!("{}: {why}; the limit is {limit}; frames would miss data", self.label));
+            return None;
+        }
+        let size = (self.page_max / 4).max(bytes).min(left).min(self.page_max);
+        let mut page = (GrowableBuffer::whole(gpu, self.label, size, self.usage, |size| format!("allocating page {} ({} MiB; {} MiB held)", self.pages.len() + 1, size >> 20, self.size() >> 20))?, RangeAlloc::new(0));
+        let (off, _) = page.0.alloc_within(gpu, &mut page.1, n, unit)?;
+        self.pages.push(page);
+        Some((self.pages.len() - 1, off, true))
+    }
+
+    pub fn free(&mut self, page: usize, off: u32, n: u32) {
+        self.pages[page].1.free(off, n);
     }
 }
 
@@ -900,5 +1025,30 @@ mod tests {
         // The first failure stays.
         gpu.fail("later");
         assert_eq!(gpu.check().unwrap_err().to_string(), err);
+    }
+
+    /// A [`PagedBuffer`] fills its pages, adds pages up to its maximum and then fails the
+    /// device. Needs a GPU.
+    #[test]
+    #[ignore]
+    fn paged_buffer_adds_pages() {
+        let gpu = GpuPool::new(&[]).gpu(0, &GpuNeeds::default()).unwrap();
+        // Pages of 256 bytes (16 units of 16), four of them at most.
+        let mut buf = PagedBuffer::new(&gpu, "test pages", 64, 256, 1024, wgpu::BufferUsages::STORAGE);
+        let mut got = vec![];
+        for _ in 0..12 {
+            let (page, off, _) = buf.alloc(&gpu, 5, 16, "`test_mb`").expect("fits");
+            got.push((page, off));
+        }
+        // Three ranges of 5 per page (15 of 16 units), no range across pages.
+        assert_eq!(got.iter().filter(|g| g.0 == 0).map(|g| g.1).collect::<Vec<_>>(), [0, 5, 10]);
+        assert_eq!((buf.pages(), got[11]), (4, (3, 10)));
+        assert!(gpu.check().is_ok());
+        // A freed range in an earlier page is used before failing.
+        buf.free(1, 5, 5);
+        assert_eq!(buf.alloc(&gpu, 4, 16, "`test_mb`").map(|r| (r.0, r.1)), Some((1, 5)));
+        assert!(buf.alloc(&gpu, 5, 16, "`test_mb`").is_none());
+        let err = gpu.check().unwrap_err().to_string();
+        assert!(err.contains("test pages") && err.contains("`test_mb`"), "{err}");
     }
 }
