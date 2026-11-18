@@ -342,9 +342,11 @@ impl Over {
 }
 
 /// The shading component's context for a scene: `world`'s blocks, environment and lights,
-/// shadow rays walking the scene's chunks (`S` what a compiled pipeline baked).
+/// shadow rays walking the scene's chunks (`S` what a compiled pipeline baked); `$T` (a
+/// constant): they pass see-through blocks attenuated ([`Scene::transmit`]), else they stop
+/// at the first block.
 macro_rules! shading_ctx {
-    ($scene:expr, $S:ty, $world:expr, $cam:expr) => {{
+    ($scene:expr, $S:ty, $world:expr, $cam:expr, $T:expr) => {{
         let (scene, world, cam) = ($scene, $world, $cam);
         let shadows = <$S>::SHADOWS.unwrap_or(world.shadows);
         mr_components::shading::direct::cpu::Ctx {
@@ -354,7 +356,15 @@ macro_rules! shading_ctx {
             sun_shadows: shadows != Shadows::None,
             light_shadows: shadows == Shadows::All,
             lights_near: move |w: IVec3| world.lights_near(w),
-            occluded: move |p: Vec3, d: Vec3, dist: f32| scene.occluded::<$S>(cam, p, d, dist),
+            transmit: move |p: Vec3, d: Vec3, dist: f32| {
+                if $T {
+                    scene.transmit::<$S>(cam, p, d, dist)
+                } else if scene.occluded::<$S>(cam, p, d, dist) {
+                    0.0
+                } else {
+                    1.0
+                }
+            },
             tone: <$S>::TONE.unwrap_or(world.tone),
         }
     }};
@@ -469,11 +479,40 @@ impl<R: Repr> Scene<R> {
         (self.grid.min * 32 - cam, (self.grid.min + self.grid.dims) * 32 - cam)
     }
 
-    /// Shadow rays: their own kernel, else the primary rays' (constants where `S` baked them).
+    /// The primary rays' kernel and levels (constants where `S` baked them).
+    #[inline]
+    fn primary<S: Spec>(&self) -> (Traversal, u32) {
+        (S::TRAVERSAL.unwrap_or(self.traversal), S::LEVELS.unwrap_or(self.levels))
+    }
+
+    /// The shadow rays' kernel and levels: their own, else the primary rays'.
+    #[inline]
+    fn shadow_walk<S: Spec>(&self) -> (Traversal, u32) {
+        S::SHADOW.unwrap_or(self.shadow).unwrap_or(self.primary::<S>())
+    }
+
+    /// Shadow rays: whether something is hit within `dist`.
     fn occluded<S: Spec>(&self, cam: IVec3, p: Vec3, d: Vec3, dist: f32) -> bool {
-        let primary = (S::TRAVERSAL.unwrap_or(self.traversal), S::LEVELS.unwrap_or(self.levels));
-        let (kernel, levels) = S::SHADOW.unwrap_or(self.shadow).unwrap_or(primary);
+        let (kernel, levels) = self.shadow_walk::<S>();
         self.trace_one(kernel, levels, cam, p, d, dist).is_some()
+    }
+
+    /// Shadow rays with layers (the reference's `transmittance`): the fraction of light that
+    /// passes within `dist`, each see-through surface on the way (entry and exit faces)
+    /// letting `1 - coverage` through, an opaque block none. The walk is
+    /// [`Self::layers`]' through the shadow rays' kernel.
+    fn transmit<S: Spec>(&self, cam: IVec3, p: Vec3, d: Vec3, dist: f32) -> f32 {
+        let walk = self.shadow_walk::<S>();
+        // From the cell holding `p` (the walk's start cell is its camera block).
+        let cell = p.floor().as_ivec3();
+        let (cam, o) = (cam + cell, p - cell.as_vec3());
+        let first = self.trace_one(walk.0, walk.1, cam, o, d, dist);
+        let mut through = 1.0f32;
+        self.layers(walk, cam, o, d, dist, first, |l| {
+            through *= 1.0 - l.a;
+            through <= 0.0
+        });
+        through.max(0.0)
     }
 
     /// One ray from `p` (relative to block `cam`) through `kernel`: its first hit past the
@@ -491,18 +530,16 @@ impl<R: Repr> Scene<R> {
         out[0]
     }
 
-    /// The surfaces on primary ray (`o` relative to block `cam`, unit `d`) front to back,
+    /// The surfaces on ray (`o` relative to block `cam`, unit `d`) front to back, up to `max_t`,
     /// as the reference's `layers` finds them: the entry face of every solid block, and the
     /// exit face of a see-through block left (a run of one block is one slab; a ray starting
-    /// inside one leaves it through a surface). `first` is the kernel's first hit. Past a
-    /// see-through block the walk goes cell by cell through its run, then the kernel resumes
-    /// from the cell after it (any kernel: it skips the start cell). Stops after an opaque
-    /// block, or when `f` returns true.
-    fn layers<S: Spec>(&self, cam: IVec3, o: Vec3, d: Vec3, first: Option<Hit>, mut f: impl FnMut(Layer) -> bool) {
+    /// inside one leaves it through a surface). `first` is the first hit of kernel `walk`
+    /// (and its levels). Past a see-through block the walk goes cell by cell through its run,
+    /// then the kernel resumes from the cell after it (any kernel: it skips the start cell).
+    /// Stops after an opaque block, or when `f` returns true.
+    fn layers(&self, (kernel, levels): (Traversal, u32), cam: IVec3, o: Vec3, d: Vec3, max_t: f32, first: Option<Hit>, mut f: impl FnMut(Layer) -> bool) {
         let blocks = &*self.blocks;
         let see = |b: u16| blocks.see_through(BlockId(b));
-        let kernel = S::TRAVERSAL.unwrap_or(self.traversal);
-        let levels = S::LEVELS.unwrap_or(self.levels);
         let step = d.signum().as_ivec3();
         let layer = |t: f32, cell: IVec3, block: u16, face: Face, exit: bool| {
             let mut s = mr_components::shading::direct::cpu::Surface::at_cell(block, face, cell, o + d * t);
@@ -548,12 +585,12 @@ impl<R: Repr> Scene<R> {
                         n[a] += step[a];
                         tmax[a] += delta[a];
                         let nb = self.grid.block_at(n + cam);
-                        if nb != block || t > 1e7 {
+                        if nb != block || t > max_t {
                             break (a, t, n, nb);
                         }
                         c = n;
                     };
-                    if f(layer(t, c, block, Face::entered(axis, -step[axis]), true)) || t > 1e7 {
+                    if t > max_t || f(layer(t, c, block, Face::entered(axis, -step[axis]), true)) {
                         return;
                     }
                     if nb != 0 {
@@ -565,7 +602,7 @@ impl<R: Repr> Scene<R> {
                         // Out into the air: the kernel again, from that cell (the point
                         // where the ray enters it, in it).
                         let p = (o + d * t - next.as_vec3()).clamp(Vec3::ZERO, Vec3::splat(1.0 - f32::EPSILON));
-                        hit = self.trace_one(kernel, levels, cam + next, p, d, 1e7).map(|h| Hit { cell: h.cell + next, ..h });
+                        hit = self.trace_one(kernel, levels, cam + next, p, d, max_t - t).map(|h| Hit { cell: h.cell + next, ..h });
                         (base, run) = (t, None);
                     }
                 }
@@ -581,18 +618,19 @@ impl<R: Repr> Scene<R> {
 
     fn shade<S: Spec, P: Pixel>(&self, world: &World, cam: IVec3, o: Vec3, d: Vec3, h: &Hit, mode: RenderMode) -> P {
         let (block, face) = self.hit_face(cam, d, h);
-        self.shade_surface::<S, P>(world, cam, &Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
+        self.shade_surface::<S, P, false>(world, cam, &Surface::at_cell(block, face, h.cell, o + d * h.t), mode)
     }
 
     /// Shades surface `s` of `world` (its blocks, environment, lights), shadow rays walking
-    /// these chunks.
-    fn shade_surface<S: Spec, P: Pixel>(&self, world: &World, cam: IVec3, s: &Surface, mode: RenderMode) -> P {
-        mr_components::shading::direct::cpu::shade(&shading_ctx!(self, S, world, cam), s, mode)
+    /// these chunks (`T`: through see-through blocks, the frames with layers).
+    fn shade_surface<S: Spec, P: Pixel, const T: bool>(&self, world: &World, cam: IVec3, s: &Surface, mode: RenderMode) -> P {
+        mr_components::shading::direct::cpu::shade(&shading_ctx!(self, S, world, cam, T), s, mode)
     }
 
-    /// [`Self::shade_surface`] in linear light, before the tone map (what layers composite).
+    /// [`Self::shade_surface`] in linear light, before the tone map (what layers composite;
+    /// shadow rays through see-through blocks).
     fn radiance<S: Spec>(&self, world: &World, cam: IVec3, s: &Surface, mode: RenderMode) -> Vec3 {
-        mr_components::shading::direct::cpu::radiance(&shading_ctx!(self, S, world, cam), s, mode)
+        mr_components::shading::direct::cpu::radiance(&shading_ctx!(self, S, world, cam, true), s, mode)
     }
 
     /// The pixel of primary ray (`o`, `d`) with layers, `first` the kernel's hit: its
@@ -601,7 +639,7 @@ impl<R: Repr> Scene<R> {
     fn shade_layers<S: Spec, P: Pixel>(&self, world: &World, cam: IVec3, o: Vec3, d: Vec3, first: Option<Hit>, mode: RenderMode) -> P {
         let mut over = Over::NEW;
         let (mut count, mut full) = (0, None);
-        self.layers::<S>(cam, o, d, first, |l| {
+        self.layers(self.primary::<S>(), cam, o, d, 1e7, first, |l| {
             if l.a <= 0.0 {
                 return false;
             }
@@ -617,7 +655,7 @@ impl<R: Repr> Scene<R> {
             over.add(self.radiance::<S>(world, cam, &s, mode), l.a)
         });
         if let Some(l) = full {
-            return self.shade_surface::<S, P>(world, cam, &Surface::at_cell(l.block, l.face, l.cell, o + d * l.t), mode);
+            return self.shade_surface::<S, P, true>(world, cam, &Surface::at_cell(l.block, l.face, l.cell, o + d * l.t), mode);
         }
         if count == 0 {
             return world.sky();
@@ -631,7 +669,7 @@ impl<R: Repr> Scene<R> {
     /// past the slots would have stopped is lost).
     fn record_layers<S: Spec>(&self, cam: IVec3, o: Vec3, d: Vec3, first: Option<Hit>, out: &mut [Record]) {
         let (mut n, mut left) = (0, 1.0f32);
-        self.layers::<S>(cam, o, d, first, |l| {
+        self.layers(self.primary::<S>(), cam, o, d, 1e7, first, |l| {
             if l.a <= 0.0 || n == LAYERS - 1 && l.a < 1.0 {
                 return false;
             }
@@ -1021,7 +1059,7 @@ impl<R: Repr, S: Spec, P: Pixel> mr_components::shading::deferred::Records for D
     fn shade(&self, r: Record, x: u32, y: u32) -> P {
         let (f, rt, u, tan, aspect) = self.basis;
         let d = pixel_dir(f, rt, u, tan, aspect, self.w, self.h, x, y);
-        self.scene.shade_surface::<S, P>(self.world, self.cam, &r.surface(self.o, d), self.mode)
+        self.scene.shade_surface::<S, P, false>(self.world, self.cam, &r.surface(self.o, d), self.mode)
     }
     #[inline]
     fn miss(&self, _: u32, _: u32) -> P {
@@ -1052,7 +1090,7 @@ impl<R: Repr, S: Spec, P: Pixel> mr_components::shading::deferred::Records for L
         let a_of = |s: &Surface| if blocks.see_through(BlockId(s.block)) { mr_components::shading::direct::cpu::coverage(blocks, s) } else { 1.0 };
         let s = first.layer_surface(q.o, d);
         if !first.is_exit() && a_of(&s) >= 1.0 {
-            return q.scene.shade_surface::<S, P>(q.world, q.cam, &s, q.mode);
+            return q.scene.shade_surface::<S, P, true>(q.world, q.cam, &s, q.mode);
         }
         let at = (y * q.w + x) as usize * LAYERS;
         let mut over = Over::NEW;

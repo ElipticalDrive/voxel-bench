@@ -327,7 +327,7 @@ fn shader(mut lp: CastProgram, deferred: bool, view: View, fragment: bool, layer
         if deferred {
             lp.program.define("DEFERRED_LAYERS");
         }
-        lp.root = format!("{}\n{}", lp.root, include_str!("layers.wgsl"));
+        lp.root = format!("{}\n{}\n{}", lp.root, mr_components::visibility::LAYER_WALK_WGSL, include_str!("layers.wgsl"));
     }
     if fragment {
         lp.program.define("FRAGMENT");

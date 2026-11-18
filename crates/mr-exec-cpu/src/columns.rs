@@ -90,7 +90,7 @@ impl Field {
             sun_shadows: shadows != Shadows::None,
             light_shadows: shadows == Shadows::All,
             lights_near: move |at: IVec3| world.lights_near(at),
-            occluded: move |p: Vec3, d: Vec3, dist: f32| hm.trace(cam, p, d, dist).is_some(),
+            transmit: move |p: Vec3, d: Vec3, dist: f32| if hm.trace(cam, p, d, dist).is_some() { 0.0 } else { 1.0 },
             tone: S::TONE.unwrap_or(world.tone),
         };
         let mode = req.mode;

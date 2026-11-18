@@ -21,3 +21,9 @@ pub mod discover;
 pub mod quadtree;
 pub mod record;
 pub mod splat;
+
+/// The layer walk on the GPU (transparency): the surfaces along a ray front to back through a
+/// kernel's `ctrace` and its storage's `s_block_at` (`layer_walk`, `layer_next`). The
+/// ray-casting root's primary rays and the shadow-ray service (`vox_transmit`) each carry it,
+/// over their own kernel, compiled in only with `LAYERS`.
+pub const LAYER_WALK_WGSL: &str = include_str!("layer_walk.wgsl");

@@ -97,8 +97,8 @@ pub const RECORD_CAPS: &[RecordCap] = &[
     RecordCap {
         name: "opaque-only",
         bits: None,
-        description: "Transparency: an opaque-only query for shadow and other secondary rays (a ray service, no record bits): translucent blocks do not occlude. Built after the architecture.",
-        built: false,
+        description: "Transparency: the cheap declared variant of the shadow rays (a ray service, no record bits): they stop at the first occupied cell, see-through blocks included (fully dark shadows). What a shadow kernel without layers gives (a ray query; every pipeline in a world without see-through blocks); with layers they carry the light through instead (`transmit`, the walk's `1 - coverage` per see-through surface).",
+        built: true,
     },
 ];
 

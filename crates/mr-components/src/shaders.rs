@@ -67,6 +67,31 @@ pub fn rays(p: &mut Program, path: &str, kernel: &str) {
     p.add(path, format!("{src}{}", btrace_wgsl(false)), &[kernel, VOXELS]);
 }
 
+/// A walk kernel's `vox_transmit` (the shadow rays' light through see-through blocks, the
+/// reference's `transmittance`): with `LAYERS` the layer walk from `p`, each see-through
+/// surface (entry and exit faces) letting `1 - coverage` through, an opaque block or a LOD
+/// cell none; else 0 or 1 by `vox_occluded`.
+const TRANSMIT_WALK: &str = "fn vox_transmit(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> f32 {
+#ifdef LAYERS
+    var w = layer_walk(p, ctrace(p, d, max_t));
+    var through = 1.0;
+    for (var i = 0u; i < 1024u; i++) {
+        let l = layer_next(&w, p, d, max_t);
+        if (!l.ok) { break; }
+        through *= 1.0 - layer_coverage(l, layer_surface(l, p, d));
+        if (through <= 0.0) { return 0.0; }
+    }
+    return through;
+#else
+    return select(1.0, 0.0, vox_occluded(p, d, max_t));
+#endif
+}
+";
+
+/// A ray query's `vox_transmit`: it stops at the first surface (the acceleration
+/// structures are opaque), so see-through blocks shadow fully.
+const TRANSMIT_QUERY: &str = "fn vox_transmit(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> f32 { return select(1.0, 0.0, vox_occluded(p, d, max_t)); }\n";
+
 /// `btrace()` (where a bounce lands, a `Bounced`) over the module's `strace()`; with
 /// `meshes` the nearer of the voxel hit and the mesh triangles' (`mesh_trace`).
 fn btrace_wgsl(meshes: bool) -> String {
@@ -198,7 +223,10 @@ impl Walks {
     /// `strace()` and `btrace()` for bounces): a module over the kernel's walk, or for a
     /// ray query virtual functions the program's root overrides with the trace. With
     /// `meshes` the rays also meet the mesh triangles (the program has [`meshes`]'s
-    /// mesh-surface module): `occluded` by either, `btrace` the nearer.
+    /// mesh-surface module): `occluded` by either, `btrace` the nearer. With shadow rays
+    /// also `transmit()`, the light they carry: with shader def `LAYERS` (transparency)
+    /// through see-through blocks attenuated (the layer walk over a walk kernel; a ray query
+    /// stops at the first surface), else `occluded`'s 0 or 1.
     pub fn services(&self, p: &mut Program, path: &str, k: usize, occluded: bool, strace: bool, meshes: bool) {
         const OCCLUDED: &str = "fn vox_occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool";
         const STRACE: &str = "fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit";
@@ -209,6 +237,7 @@ impl Walks {
             let mut over = String::new();
             if occluded {
                 src += &format!("virtual {OCCLUDED} {{ return false; }}\n");
+                src += TRANSMIT_QUERY;
                 over += &format!("override {} {{ return g_rt_trace(p, d, max_t, true).hit; }}\n", OCCLUDED.replacen("fn ", &format!("fn {path}::"), 1));
             }
             if strace {
@@ -219,6 +248,8 @@ impl Walks {
         } else {
             if occluded {
                 src += &format!("{OCCLUDED} {{ return ctrace(p, d, max_t).hit; }}\n");
+                src += &format!("#ifdef LAYERS\n{}#endif\n", crate::visibility::LAYER_WALK_WGSL);
+                src += TRANSMIT_WALK;
             }
             if strace {
                 src += &format!("{STRACE} {{ return ctrace(o, d, max_t); }}\n");
@@ -228,6 +259,8 @@ impl Walks {
         let mesh_occ = if meshes { "mesh_occluded(p, d, max_t) || " } else { "" };
         if occluded {
             src += &format!("fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool {{ return {mesh_occ}vox_occluded(p, d, max_t); }}\n");
+            let mesh = if meshes { "    if (mesh_occluded(p, d, max_t)) { return 0.0; }\n" } else { "" };
+            src += &format!("fn transmit(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> f32 {{\n{mesh}    return vox_transmit(p, d, max_t);\n}}\n");
         }
         if strace {
             src += &btrace_wgsl(meshes);
