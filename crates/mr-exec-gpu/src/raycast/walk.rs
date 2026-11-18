@@ -39,7 +39,7 @@ pub(crate) fn info() -> RendererInfo {
         description: "GPU compute shaders (wgpu / WGSL): one thread per pixel walks the composed storage and visibility, fused into one shader".into(),
         tags: vec!["gpu".into(), "compute".into(), "raycast".into(), "modular".into(), "wgpu".into()],
         // LOD with pool storages and refloor (cells 2x coarser per level; was gpu-dda-lod).
-        features: Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays]).with_lod(6),
+        features: Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays, Feature::Transparency]).with_lod(6),
         params: REGION.lighting_knobs(params()),
     }
 }
@@ -396,6 +396,10 @@ impl Cast for Walk {
         self.comp.meshes
     }
 
+    fn layers(&self) -> bool {
+        true
+    }
+
     fn fragment(&self) -> bool {
         self.comp.fragment
     }
@@ -707,16 +711,20 @@ mod tests {
                                 for (deferred, meshed, fragment) in [(false, Rays, false), (true, Rays, true), (false, Records, true), (true, Records, false), (false, No, true), (true, No, false)] {
                                     let what = format!("{c:?} {shading} deferred {deferred} meshed {meshed:?} fragment {fragment}");
                                     let view = if deferred { View::Image } else { c.view };
-                                    super::super::tests::validate(c.program(shading, meshed), deferred, view, fragment, &what);
+                                    super::super::tests::validate(c.program(shading, meshed), deferred, view, fragment, false, &what);
+                                    // With layers (the shadings that composite them).
+                                    if caps::provides(mr_components::Kind::Gpu, Role::Shading, shading, Cap::Layers) {
+                                        super::super::tests::validate(c.program(shading, meshed), deferred, View::Image, fragment, true, &format!("{what} layered"));
+                                    }
                                     if !deferred {
                                         let d = Composition { view: View::Distance, ..c.clone() };
-                                        super::super::tests::validate(d.program(shading, meshed), false, View::Distance, fragment, &what);
+                                        super::super::tests::validate(d.program(shading, meshed), false, View::Distance, fragment, false, &what);
                                     }
                                     // The float output (`hdr`: the `HDR` def's declarations).
                                     if prepass == "none" {
                                         let mut h = c.clone();
                                         h.walks.post = mr_components::post::Tone::Hdr;
-                                        super::super::tests::validate(h.program(shading, meshed), deferred, view, fragment, &format!("{what} hdr"));
+                                        super::super::tests::validate(h.program(shading, meshed), deferred, view, fragment, false, &format!("{what} hdr"));
                                     }
                                 }
                                 n += 1;

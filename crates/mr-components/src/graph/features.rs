@@ -64,12 +64,29 @@ impl Checked {
         }
         let mut ids: Vec<&String> = nodes.keys().collect();
         ids.sort();
-        let layers: Vec<String> = ids
+        let kind = |id: &str| self.devices.get(id).map_or(Kind::Gpu, |d| d.kind());
+        let lacks = |id: &str| nodes[id].component != "none" && !provides(kind(id), nodes[id].role, &nodes[id].component, Cap::Layers);
+        let mut layers: Vec<String> = ids
             .iter()
-            .filter(|id| matches!(nodes[**id].role, Role::Visibility | Role::Draw) && nodes[**id].component != "none")
-            .filter(|id| !provides(self.devices.get(**id).map_or(Kind::Gpu, |d| d.kind()), nodes[**id].role, &nodes[**id].component, Cap::Layers))
+            .filter(|id| matches!(nodes[**id].role, Role::Visibility | Role::Draw) && lacks(id))
             .map(|id| format!("{} `{}` (`{id}`) lacks layers: one surface per pixel", nodes[*id].role.name(), nodes[*id].component))
             .collect();
+        for id in ids.iter().filter(|id| nodes[**id].role == Role::Visibility && !lacks(id)) {
+            if let Some(k) = nodes[*id].inputs.get("primary").filter(|k| nodes.contains_key(*k) && lacks(k)) {
+                layers.push(format!("traversal `{}` (`{k}`) lacks layers: its rays stop at the first surface", nodes[k].component));
+            }
+        }
+        for id in ids.iter().filter(|id| nodes[**id].role == Role::Shading) {
+            let Some(from) = nodes[*id].inputs.get("hits").filter(|f| nodes.contains_key(*f)) else { continue };
+            if lacks(id) {
+                layers.push(format!("shading `{}` (`{id}`) lacks layers: it shades one surface per pixel", nodes[*id].component));
+            } else if let (Some(a), Some(b)) = (self.devices.get(*id), self.devices.get(from.as_str()))
+                && a != b
+                && !lacks(from)
+            {
+                layers.push(format!("shading `{}` (`{id}`) on {a} lacks layers from {b}: the records crossing between devices carry one surface per pixel", nodes[*id].component));
+            }
+        }
         if !layers.is_empty() {
             f.lack(Feature::Transparency, layers.join("; "));
         }
@@ -191,15 +208,44 @@ mod tests {
             for (declared, mut f) in [(true, Features::of(&[Feature::Lit, Feature::Transparency])), (false, Features::of(&[Feature::Lit]))] {
                 c.narrow_on(&mut f, &|_| None);
                 let why = f.why_not(Feature::Transparency);
-                // CPU ray casting continues past see-through blocks: nothing in its way.
-                if *name == "raycast-cpu" {
+                // Ray casting by walks continues past see-through blocks: nothing in its way.
+                if ["raycast-cpu", "raycast-gpu"].contains(name) {
                     assert_eq!(why.is_none(), declared, "{name}: {why:?}");
                     assert!(why.as_ref().is_none_or(|w| !w.contains("lacks layers")), "{name}: {why:?}");
                     continue;
                 }
                 let why = why.unwrap();
+                // Ray queries: the visibility node would continue, the kernel's rays cannot.
+                if *name == "rayquery-gpu" {
+                    assert_eq!(why, "traversal `rayquery` (`kernel`) lacks layers: its rays stop at the first surface");
+                    continue;
+                }
                 assert!(why.contains("lacks layers: one surface per pixel") && (why.starts_with("visibility `") || why.starts_with("draw `")), "{name}: {why}");
             }
+        }
+        // The shading composites the layers: path tracing does not; nor does a shading on
+        // another GPU than the rays (one record per pixel crosses).
+        use crate::graph::edit::Change;
+        let g = shipped("raycast-gpu").unwrap();
+        let far = [
+            r#"{ remove = "meshes" }"#,
+            r#"{ add = "s.storage", role = "storage", component = "prefix" }"#,
+            r#"{ node = "s.storage", input = "changes", from = "world" }"#,
+            r#"{ add = "s.kernel", role = "traversal", component = "incremental" }"#,
+            r#"{ node = "s.kernel", input = "storage", from = "s.storage" }"#,
+            r#"{ node = "shading", input = "shadow", from = "s.kernel" }"#,
+            r#"{ node = "shading", knob = "placement", value = "deferred" }"#,
+            r#"{ node = "shading", device = "gpu1" }"#,
+        ];
+        for (edits, want) in [
+            (&[r#"{ node = "shading", component = "pathtrace" }"#][..], "shading `pathtrace` (`shading`) lacks layers: it shades one surface per pixel"),
+            (&far[..], "shading `direct` (`shading`) on gpu1 lacks layers from gpu: the records crossing between devices carry one surface per pixel"),
+        ] {
+            let changes: Vec<Change> = edits.iter().map(|e| toml::from_str::<toml::Table>(&format!("e = {e}")).unwrap()["e"].clone().try_into().unwrap()).collect();
+            let c = g.with_edits(&changes).unwrap().check().unwrap();
+            let mut f = Features::of(&[Feature::Transparency]);
+            c.narrow_on(&mut f, &|_| None);
+            assert_eq!(f.why_not(Feature::Transparency).unwrap(), want);
         }
         let c = shipped("raster-gpu").unwrap().check().unwrap();
         let mut f = Features::of(&[Feature::Transparency]);

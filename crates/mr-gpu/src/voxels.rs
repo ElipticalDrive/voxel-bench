@@ -62,7 +62,8 @@ pub fn shadows_param() -> mr_core::ParamSpec {
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct Params {
     cam_block: [i32; 3],
-    spare: u32,
+    /// Where the coverage starts in `texels` (after the colours; see `texel_words`).
+    texel_words: u32,
     bounds_min: [i32; 3],
     table_mask: u32,
     bounds_max: [i32; 3],
@@ -78,7 +79,8 @@ struct Params {
     shadows: u32,
     max_lod: u32,
     lod_radius: u32,
-    _lod_pad: [u32; 3],
+    /// The sky in linear light (what layers composite over).
+    sky: [f32; 3],
 }
 
 // Keep the WGSL struct (`VoxelParams`) and this one in sync.
@@ -267,6 +269,11 @@ pub struct VoxelWorld {
     bounds_dirty: bool,
     face_tex: wgpu::Buffer,
     texels: wgpu::Buffer,
+    texel_words: u32,
+    blocks: BlockRegistry,
+    /// A see-through block has arrived (sticky): ray casters switch to their variant with
+    /// layers.
+    pub layered: bool,
     lights: HashMap<u32, Light>,
     lights_dirty: bool,
     light_buf: GrowBuf,
@@ -304,7 +311,12 @@ impl VoxelWorld {
             b
         };
         let face_tex = mk("face table", bytemuck::cast_slice(&blocks.face_table()));
-        let texels = mk("texels", bytemuck::cast_slice(&blocks.packed_texels()));
+        // The colours, then the coverage and the see-through blocks (read only by programs
+        // with layers; the others never look past the colours).
+        let colours = blocks.packed_texels();
+        let texel_words = colours.len() as u32;
+        let texels = mk("texels", bytemuck::cast_slice(&[colours, blocks.packed_see_through()].concat()));
+        let see_through = blocks.clone();
         Ok(Self {
             params: gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("voxel params"),
@@ -326,6 +338,9 @@ impl VoxelWorld {
             bounds_dirty: false,
             face_tex,
             texels,
+            texel_words,
+            blocks: see_through,
+            layered: false,
             lights: HashMap::new(),
             lights_dirty: true,
             light_buf: GrowBuf::new(gpu, "lights", 256),
@@ -398,6 +413,7 @@ impl VoxelWorld {
         let mut changed = vec![];
         self.changed_keys.clear();
         for u in updates {
+            self.layered = self.layered || self.blocks.update_see_through(&u);
             match u {
                 WorldUpdate::ChunkLoad { key, data } if key.lod <= self.cfg.max_lod => {
                     self.changed_keys.push(key);
@@ -597,7 +613,7 @@ impl VoxelWorld {
         let sun = self.env.sun;
         let params = Params {
             cam_block: cam_block.to_array(),
-            spare: 0,
+            texel_words: self.texel_words,
             bounds_min: bmin.to_array(),
             table_mask: self.table.mask() as u32,
             bounds_max: bmax.to_array(),
@@ -619,7 +635,7 @@ impl VoxelWorld {
             },
             max_lod: self.cfg.max_lod as u32,
             lod_radius: self.cfg.view_radius,
-            _lod_pad: [0; 3],
+            sky: self.env.sky.to_array(),
         };
         gpu.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
         if rebind {

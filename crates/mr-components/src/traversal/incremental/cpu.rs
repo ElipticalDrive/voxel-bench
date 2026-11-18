@@ -11,7 +11,7 @@ pub struct Incremental;
 
 impl crate::traversal::cpu::Kernel for Incremental {
     const NAME: &'static str = "incremental";
-    const CAPS: &'static [crate::Cap] = &[crate::Cap::Steps];
+    const CAPS: &'static [crate::Cap] = &[crate::Cap::Steps, crate::Cap::Layers];
 }
 
 /// Next level above `level` in the level mask `mask` (5 = chunk is always present).

@@ -119,4 +119,21 @@ impl BlockRegistry {
     pub fn packed_texels(&self) -> Vec<u32> {
         self.textures.iter().flat_map(|t| t.texels.iter().map(|&p| u32::from_le_bytes(p))).collect()
     }
+
+    /// For GPU upload after [`Self::packed_texels`]: every texture's coverage, four texels per
+    /// `u32` (little-endian bytes, texel order), then one bit per block (bit `b & 31` of word
+    /// `b >> 5`) set where the block lets light through.
+    pub fn packed_see_through(&self) -> Vec<u32> {
+        let mut out: Vec<u32> = self
+            .textures
+            .iter()
+            .flat_map(|t| (0..TEX_SIZE * TEX_SIZE / 4).map(move |w| u32::from_le_bytes(std::array::from_fn(|i| t.alpha.get(w * 4 + i).copied().unwrap_or(255)))))
+            .collect();
+        let mut bits = vec![0u32; self.blocks.len().div_ceil(32)];
+        for b in (0..self.blocks.len()).filter(|&b| self.see_through(BlockId(b as u16))) {
+            bits[b >> 5] |= 1 << (b & 31);
+        }
+        out.extend(bits);
+        out
+    }
 }

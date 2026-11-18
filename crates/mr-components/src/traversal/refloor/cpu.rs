@@ -12,7 +12,7 @@ pub struct Refloor;
 
 impl crate::traversal::cpu::Kernel for Refloor {
     const NAME: &'static str = "refloor";
-    const CAPS: &'static [crate::Cap] = &[crate::Cap::Steps];
+    const CAPS: &'static [crate::Cap] = &[crate::Cap::Steps, crate::Cap::Layers];
 }
 
 /// The bounds of an empty world (nothing loaded yet): one cell so far away

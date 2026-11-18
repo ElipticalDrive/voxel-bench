@@ -38,9 +38,10 @@ pub enum Cap {
     /// Draw: the shading's rays (shadows, bounces) meet mesh triangles, not only voxels (the
     /// deferred pass binds them; a forward drawer's fragment shader does not).
     MeshRays,
-    /// Visibility, draw: more than one surface per pixel (a walk continuing past a
-    /// see-through block, k records per pixel): what [`mr_core::Feature::Transparency`] needs of
-    /// every visibility and draw node. None provides it yet.
+    /// More than one surface per pixel: what [`mr_core::Feature::Transparency`] needs of every
+    /// visibility and draw node (a walk continuing past a see-through block, k records per
+    /// pixel), of the primary rays' kernel (it resumes a walk from any cell) and of the
+    /// shading (each surface's colour in linear light, to composite).
     Layers,
 }
 

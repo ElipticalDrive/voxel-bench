@@ -30,6 +30,9 @@ fn pixel_color(px: vec2<u32>) -> vec4<f32> {
     // Sky (and meshes, which this view leaves out) above the top: white.
     return ramp_value(select(1e30, h.t, h.hit), f32(cam.view_max), false);
 #else
+#ifdef LAYERS
+    return pixel_layers(px, d, mt, h);
+#else
     var color = unpack_sky(cam.sky);
 #ifdef MESHES
     // No voxel in front of the mesh: its record's surface.
@@ -40,6 +43,7 @@ fn pixel_color(px: vec2<u32>) -> vec4<f32> {
 #endif
     if (h.hit) { color = shade_surface(surface_of(h, cam.origin, d), d, cam.mode == 1u, px); }
     return color;
+#endif
 #endif
 #endif
 }

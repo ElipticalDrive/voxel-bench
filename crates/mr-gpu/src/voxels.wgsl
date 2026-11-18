@@ -2,14 +2,14 @@
 // camera's integer block `vp.cam_block`, so precision does not degrade far from the origin.
 
 struct VoxelParams {
-    cam_block: vec3<i32>, spare: u32,         // free (the walks' step limit is each kernel's constant)
+    cam_block: vec3<i32>, texel_words: u32,   // where the coverage starts in `texels`
     bounds_min: vec3<i32>, table_mask: u32,   // loaded region, camera-relative blocks
     bounds_max: vec3<i32>, max_probe: u32,
     sun_dir: vec3<f32>, has_sun: u32,         // direction towards the sun
     sun_color: vec3<f32>, max_dist: f32,
     ambient: vec3<f32>, exposure: f32,
     light_mask: u32, light_max_probe: u32, shadows: u32, max_lod: u32, // shadows: 0 none, 1 sun, 2 all
-    lod_radius: u32, _la: u32, _lb: u32, _lc: u32,   // streamed Chebyshev radius per LOD (chunks)
+    lod_radius: u32, sky_r: f32, sky_g: f32, sky_b: f32,   // streamed Chebyshev radius per LOD (chunks); the sky, linear
 }
 
 struct Light { block: vec3<i32>, radius: f32, frac: vec3<f32>, intensity: f32, color: vec3<f32>, _pad: f32 }
@@ -163,3 +163,23 @@ fn surface_texel(block: u32, face: u32, local: vec3<f32>) -> vec4<f32> {
     return unpack4x8unorm(texels[tex * 256u + texel_coord(uv.y) * 16u + texel_coord(uv.x)]);
 }
 
+
+// Transparency (read only by programs with layers): `texels` holds, after the colours, every
+// texture's coverage (4 texels per word) and then one bit per block that lets light through
+// (`BlockRegistry::packed_see_through`).
+
+// Whether `block` lets light through (cutout or translucent).
+fn block_see_through(block: u32) -> bool {
+    let tex_count = vp.texel_words / 256u;
+    return ((texels[vp.texel_words + tex_count * 64u + (block >> 5u)] >> (block & 31u)) & 1u) != 0u;
+}
+
+// How much of the light surface `s` stops: its texel's coverage (a see-through block's).
+fn surface_coverage(s: Surface) -> f32 {
+    let uv = face_uv(s.face, s.local);
+    let i = face_tex[s.block * 6u + s.face] * 256u + texel_coord(uv.y) * 16u + texel_coord(uv.x);
+    return f32((texels[vp.texel_words + (i >> 2u)] >> ((i & 3u) * 8u)) & 0xffu) / 255.0;
+}
+
+// The sky in linear light (what layers composite over).
+fn sky_linear() -> vec3<f32> { return vec3<f32>(vp.sky_r, vp.sky_g, vp.sky_b); }

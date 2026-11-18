@@ -12,3 +12,15 @@ fn shade_point(albedo: vec4<f32>, p: vec3<f32>, n: vec3<f32>, d: vec3<f32>, lit:
 fn shade_surface(s: Surface, d: vec3<f32>, lit: bool, px: vec2<u32>) -> vec4<f32> {
     return shade_point(surface_texel(s.block, s.face, s.local), s.p, s.n, d, lit, px);
 }
+
+// Layers (transparency): the colour in linear light, before the display mapping, of a point
+// with sRGB `albedo` (unlit: the albedo, linear), and of surface `s`: what layers composite.
+fn radiance_point(albedo: vec4<f32>, p: vec3<f32>, n: vec3<f32>, lit: bool) -> vec3<f32> {
+    let a = vec3<f32>(srgb_to_linear(albedo.r), srgb_to_linear(albedo.g), srgb_to_linear(albedo.b));
+    if (!lit) { return a; }
+    return a * direct_light(p + n * 1e-3, n) * vp.exposure;
+}
+
+fn shade_radiance(s: Surface, d: vec3<f32>, lit: bool, px: vec2<u32>) -> vec3<f32> {
+    return radiance_point(surface_texel(s.block, s.face, s.local), s.p, s.n, lit);
+}

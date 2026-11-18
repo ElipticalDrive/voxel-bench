@@ -93,11 +93,16 @@ meshes take voxel shadows only): it ran without, and its region and scores are t
 ran. Passes of a mode it lacks entirely (`+meshes` without meshes) are skipped.
 Transparency is asked by the world, not the pass: a world whose generator places see-through
 blocks (`glass`), or one an edit put such a block in, asks it of every pipeline; one without it
-draws them opaque and its report says `transparency: visibility `raycast` (`visibility`) lacks
-layers: ...`. Today raycast-cpu has it: past a see-through block its rays continue (the kernel
-resumes after the block's run), the surfaces composited front to back as the reference does;
-with `placement = deferred` the hits edge holds 8 records per pixel (the 8th the first opaque
-surface behind). Shadow rays still stop at see-through blocks.
+draws them opaque and its report names what stands in the way (`transparency: visibility
+`faces` (`visibility`) lacks layers: ...`; a ray-query kernel, whose rays stop at the first
+surface; a shading that cannot composite, `pathtrace`; a shading on another GPU than the rays).
+Today ray casting by walks has it, raycast-cpu and raycast-gpu (any walk kernel, compute or
+fragment): past a see-through block its rays continue (the kernel resumes after the block's
+run), the surfaces composited front to back in linear light as the reference does; with
+`placement = deferred` the hits edge holds 8 records per pixel (the 8th the first opaque
+surface behind). The variant with layers is compiled (GPU) or chosen (CPU) only once a
+see-through block has arrived: other worlds run what they ran before. Shadow rays still stop
+at see-through blocks.
 Knobs too: a knob in `options` its pipeline does not have, one whose owning node the graph lacks
 (`bounces` without a `pathtrace` shading), or a value whose need no node meets (`view = steps`
 needs a primary walk that counts its steps; discover-cpu's `clusters` / `kinds` views a

@@ -7,6 +7,10 @@ fn pixel_record(px: vec2<u32>) {
     let d = view_ray(px);
     let mt = pixel_mesh_t(px, d);
     let h = pixel_hit(px, d, mt);
+#ifdef DEFERRED_LAYERS
+    pixel_layer_records(px, d, mt, h);
+    return;
+#endif
     var r = vec2<u32>(0u);
     if (h.hit) {
         r = pack_hit(h.t, surface_of(h, cam.origin, d));

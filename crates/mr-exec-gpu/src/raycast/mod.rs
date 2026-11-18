@@ -18,6 +18,7 @@
 
 use glam::IVec3;
 use mr_components::Api;
+use mr_components::caps::{self, Cap};
 use mr_components::graph::{self, Role};
 use mr_core::*;
 use mr_gpu::{Ticket, wgpu};
@@ -137,6 +138,10 @@ trait Cast: Sized {
     fn meshes(&self) -> bool {
         false
     }
+    /// Its primary rays can continue past see-through blocks (the variant with layers).
+    fn layers(&self) -> bool {
+        false
+    }
     /// Pixels run in a fragment shader (`dispatch = fragment`).
     fn fragment(&self) -> bool {
         false
@@ -217,6 +222,10 @@ pub(crate) struct Passes {
     /// The shading is another GPU's executor's node (no shading pass here).
     remote: bool,
     plain: Variant,
+    /// Every variant carries layers (`LAYERS`): the primary rays continue past see-through
+    /// blocks, composited inline or written as `LAYERS` records per pixel. Set once a
+    /// see-through block arrives; programs before that carry nothing of it.
+    layered: bool,
     /// The variants for frames with mesh records, unlit and lit, once a frame needed them.
     meshed: [Option<Variant>; 2],
     extra: Vec<wgpu::ComputePipeline>,
@@ -233,16 +242,16 @@ impl Passes {
         entries.extend(cast.layout_entries(core.stages));
         let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("raycast"), entries: &entries });
         let pipeline_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("raycast"), bind_group_layouts: &cast.layouts(core, [&layout0, core.world.layout()]), immediate_size: 0 });
-        let (plain, extra) = Self::variant(core, &pipeline_layout, cast, shading, Meshed::No, remote)?;
-        Ok(Self { layout0, pipeline_layout, remote, plain, meshed: [None, None], extra, bind0: None, bind0_frag: None, stand_in: None })
+        let (plain, extra) = Self::variant(core, &pipeline_layout, cast, shading, Meshed::No, remote, false)?;
+        Ok(Self { layout0, pipeline_layout, remote, plain, layered: false, meshed: [None, None], extra, bind0: None, bind0_frag: None, stand_in: None })
     }
 
-    fn variant<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, meshed: Meshed, remote: bool) -> anyhow::Result<(Variant, Vec<wgpu::ComputePipeline>)> {
+    fn variant<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, meshed: Meshed, remote: bool, layered: bool) -> anyhow::Result<(Variant, Vec<wgpu::ComputePipeline>)> {
         let dev = &core.gpu.device;
         let deferred = core.edges.records().is_some() && cast.view() == View::Image;
         let mut lp = cast.program(shading, meshed);
         core.trace_root(&mut lp.program, C::RT_FLAGS);
-        let lp = shader(lp, deferred, cast.view(), cast.fragment());
+        let lp = shader(lp, deferred, cast.view(), cast.fragment(), layered);
         let deps: Vec<&str> = lp.deps.iter().map(String::as_str).collect();
         let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = mr_gpu::program::compile(dev, "raycast", &lp.program, &lp.root, &deps);
@@ -268,7 +277,7 @@ impl Passes {
         } else {
             Main::Compute(entry(if deferred { "walk_records" } else { "main" }))
         };
-        let shade = (deferred && !remote).then(|| entry("shade"));
+        let shade = (deferred && !remote).then(|| entry(if layered { "shade_layers" } else { "shade" }));
         let extra = if meshed != Meshed::No { vec![] } else { cast.entries().iter().map(|e| entry(e)).collect() };
         if let Some(e) = pollster::block_on(scope.pop()) {
             anyhow::bail!("compiling the ray-casting shader: {e}");
@@ -307,10 +316,18 @@ impl Passes {
 
 /// The whole shader of a caster's program: its root, then `view.wgsl` and `cast.wgsl`
 /// (`view`: a diagnostic view, `fragment`: the fragment entry points), and when shading is
-/// `deferred` `records.wgsl` and `deferred.wgsl` with the common pass.
-fn shader(mut lp: CastProgram, deferred: bool, view: View, fragment: bool) -> CastProgram {
+/// `deferred` `records.wgsl` and `deferred.wgsl` with the common pass; `layered`: with
+/// layers (`LAYERS`, `layers.wgsl`).
+fn shader(mut lp: CastProgram, deferred: bool, view: View, fragment: bool, layered: bool) -> CastProgram {
     if let Some(d) = view.define() {
         lp.program.define(d);
+    }
+    if layered {
+        lp.program.define("LAYERS");
+        if deferred {
+            lp.program.define("DEFERRED_LAYERS");
+        }
+        lp.root = format!("{}\n{}", lp.root, include_str!("layers.wgsl"));
     }
     if fragment {
         lp.program.define("FRAGMENT");
@@ -454,7 +471,7 @@ impl<C: Cast> crate::exec::Region for Raycast<C> {
     fn compile(&mut self, core: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
         let (passes, cast) = (&mut self.passes, &mut self.cast);
         if cast.stale() || self.shading != self.built_shading {
-            (passes.plain, passes.extra) = Passes::variant(core, &passes.pipeline_layout, cast, &self.shading, Meshed::No, passes.remote)?;
+            (passes.plain, passes.extra) = Passes::variant(core, &passes.pipeline_layout, cast, &self.shading, Meshed::No, passes.remote, passes.layered)?;
             passes.meshed = [None, None];
             if core.accum.set_shading(&core.gpu, &self.shading) {
                 passes.unbind();
@@ -462,11 +479,21 @@ impl<C: Cast> crate::exec::Region for Raycast<C> {
             self.built_shading = self.shading.clone();
             cast.compiled();
         }
+        // Layers once a see-through block has arrived, where the caster, the shading and the
+        // placement can (the shading on this GPU; a diagnostic view shows the first hit):
+        // every variant again, records `LAYERS` per pixel.
+        if !passes.layered && core.world.layered && cast.layers() && !passes.remote && cast.view() == View::Image && caps::provides(mr_components::Kind::Gpu, Role::Shading, &self.shading, Cap::Layers) {
+            passes.layered = true;
+            core.edges.set_layers(&core.gpu, core.width, core.height, mr_components::visibility::record::LAYERS as u32);
+            passes.unbind();
+            (passes.plain, passes.extra) = Passes::variant(core, &passes.pipeline_layout, cast, &self.shading, Meshed::No, passes.remote, true)?;
+            passes.meshed = [None, None];
+        }
         // The variant with mesh records for this frame's mode, the first time one asks for it.
         let lit = req.mode == RenderMode::Lit;
         if req.meshes && cast.meshes() && passes.meshed[lit as usize].is_none() {
             let meshed = if lit { Meshed::Rays } else { Meshed::Records };
-            passes.meshed[lit as usize] = Some(Passes::variant(core, &passes.pipeline_layout, cast, &self.shading, meshed, passes.remote)?.0);
+            passes.meshed[lit as usize] = Some(Passes::variant(core, &passes.pipeline_layout, cast, &self.shading, meshed, passes.remote, passes.layered)?.0);
         }
         Ok(())
     }
@@ -626,9 +653,9 @@ mod tests {
 
     /// A caster's program as the passes compile it (`shader`), composed and validated (no GPU
     /// needed).
-    pub(crate) fn validate(lp: super::CastProgram, deferred: bool, view: super::View, fragment: bool, what: &str) {
+    pub(crate) fn validate(lp: super::CastProgram, deferred: bool, view: super::View, fragment: bool, layered: bool, what: &str) {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
-        let lp = super::shader(lp, deferred, view, fragment);
+        let lp = super::shader(lp, deferred, view, fragment, layered);
         let deps: Vec<&str> = lp.deps.iter().map(String::as_str).collect();
         let m = lp.program.naga(&lp.root, &deps).unwrap_or_else(|e| panic!("{what}: {e}"));
         Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));

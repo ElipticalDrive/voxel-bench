@@ -62,6 +62,8 @@ pub(crate) struct Hits {
     pub from: String,
     pub to: String,
     form: Form,
+    /// Records per pixel: 1, or `LAYERS` once a ray caster writes layers (transparency).
+    layers: u32,
     bytes: u64,
     resource: Resource,
 }
@@ -83,7 +85,7 @@ impl Edges {
         self.hits = match form {
             Some(form) => {
                 let (from, to) = self.ends.clone().ok_or_else(|| anyhow::anyhow!("no node's hits to shade (its `hits` input is not bound)"))?;
-                Some(Hits { from, to, form, bytes: form.bytes(width, height), resource: Hits::resource_on(gpu, form, width, height) })
+                Some(Hits { from, to, form, layers: 1, bytes: form.bytes(width, height), resource: Hits::resource_on(gpu, form, width, height, 1) })
             }
             None => None,
         };
@@ -102,8 +104,18 @@ impl Edges {
 
     pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) {
         if let Some(h) = &mut self.hits {
-            h.bytes = h.form.bytes(width, height);
-            h.resource = Hits::resource_on(gpu, h.form, width, height);
+            h.bytes = h.form.bytes(width, height) * h.layers as u64;
+            h.resource = Hits::resource_on(gpu, h.form, width, height, h.layers);
+        }
+    }
+
+    /// `layers` records per pixel in the records edge from now on (a new, larger buffer:
+    /// group 0 is bound anew); nothing without one.
+    pub fn set_layers(&mut self, gpu: &Gpu, width: u32, height: u32, layers: u32) {
+        if let Some(h) = self.hits.as_mut().filter(|h| h.form == Form::Records && h.layers != layers) {
+            h.layers = layers;
+            h.bytes = h.form.bytes(width, height) * layers as u64;
+            h.resource = Hits::resource_on(gpu, h.form, width, height, layers);
         }
     }
 
@@ -118,12 +130,12 @@ impl Hits {
         Form::Records.bytes(width, height)
     }
 
-    fn resource_on(gpu: &Gpu, form: Form, width: u32, height: u32) -> Resource {
+    fn resource_on(gpu: &Gpu, form: Form, width: u32, height: u32, layers: u32) -> Resource {
         match form {
             Form::Records | Form::Ids => {
                 // The records are copied out and written by the transfers between GPUs.
                 let usage = if form == Form::Records { wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::STORAGE };
-                Resource::Buffer(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(if form == Form::Records { "hit records" } else { "hit ids" }), size: form.bytes(width, height), usage, mapped_at_creation: false }))
+                Resource::Buffer(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(if form == Form::Records { "hit records" } else { "hit ids" }), size: form.bytes(width, height) * layers as u64, usage, mapped_at_creation: false }))
             }
             Form::Image(format) => Resource::Image(
                 gpu.device
