@@ -224,13 +224,6 @@ fn mesh_src(shading: &str, features: wgpu::Features) -> String {
     shade_state::fragment_wgsl(shading, &format!("{}\n{frame}{}", include_str!("frame.wgsl"), mr_gpu::meshes::MESH_WGSL), "mesh_fs", features)
 }
 
-impl Draw {
-    /// The drawer shades in a deferred pass (else in its fragment shader).
-    pub(crate) fn deferred(&self) -> bool {
-        DrawMode::parse(&self.draw).is_some_and(DrawMode::deferred)
-    }
-}
-
 impl Meshed {
     /// The program with `SHADE`, for the forward mesh passes.
     fn forward(&self) -> mr_gpu::program::Program {

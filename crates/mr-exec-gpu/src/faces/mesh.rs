@@ -510,9 +510,7 @@ impl Meshing {
         }
         if self.frame.want_meshes {
             // The images group is built each frame, so a new vertex buffer needs nothing more.
-            // Only the deferred shading pass's rays meet the triangles (`faces::Meshed`).
-            let rays = req.mode == RenderMode::Lit && self.drawing.deferred();
-            self.mesh.prepare(&core.gpu, &req.camera, self.frame.view_proj, req.mode, rays);
+            self.mesh.prepare(&core.gpu, &req.camera, self.frame.view_proj, req.mode);
         }
     }
 
