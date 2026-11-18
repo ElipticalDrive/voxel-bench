@@ -166,7 +166,8 @@ fn surface_texel(block: u32, face: u32, local: vec3<f32>) -> vec4<f32> {
 
 // Transparency (read only by programs with layers): `texels` holds, after the colours, every
 // texture's coverage (4 texels per word) and then one bit per block that lets light through
-// (`BlockRegistry::packed_see_through`).
+// (`BlockRegistry::packed_see_through`). Compiled only with `LAYERS`.
+#ifdef LAYERS
 
 // Whether `block` lets light through (cutout or translucent).
 fn block_see_through(block: u32) -> bool {
@@ -183,3 +184,4 @@ fn surface_coverage(s: Surface) -> f32 {
 
 // The sky in linear light (what layers composite over).
 fn sky_linear() -> vec3<f32> { return vec3<f32>(vp.sky_r, vp.sky_g, vp.sky_b); }
+#endif

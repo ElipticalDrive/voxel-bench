@@ -114,9 +114,12 @@ impl Program {
     }
 
     /// The `#import` lines for a module with `source` and dependencies `deps`.
+    /// Only the code active under the program's shader defs counts: a branch compiled out
+    /// imports nothing (and declares nothing), so it brings no code into the program.
     fn imports(&self, source: &str, deps: &[String]) -> Result<String, String> {
-        let own: HashSet<String> = declared(source).into_iter().collect();
-        let mut wanted: HashSet<String> = used(source).into_iter().filter(|n| !own.contains(n)).collect();
+        let source = active(source, &self.defs);
+        let own: HashSet<String> = declared(&source).into_iter().collect();
+        let mut wanted: HashSet<String> = used(&source).into_iter().filter(|n| !own.contains(n)).collect();
         let mut by_module: Vec<(String, Vec<String>)> = Vec::new();
         let mut seen = HashSet::new();
         let mut queue: VecDeque<String> = deps.iter().cloned().collect();
@@ -125,7 +128,7 @@ impl Program {
                 continue;
             }
             let m = self.get(&path)?;
-            let mut names: Vec<String> = declared(&m.source).into_iter().filter(|n| wanted.remove(n)).collect();
+            let mut names: Vec<String> = declared(&active(&m.source, &self.defs)).into_iter().filter(|n| wanted.remove(n)).collect();
             names.sort();
             if !names.is_empty() {
                 by_module.push((path, names));
@@ -209,6 +212,33 @@ fn with_imports(src: &str, imports: &str) -> String {
     format!("{}{imports}{}\n", directives.iter().map(|l| format!("{l}\n")).collect::<String>(), rest.join("\n"))
 }
 
+/// The lines of `src` the module system compiles with shader defs `defs` set (every other
+/// def unset): `#ifdef` / `#ifndef` / `#else` / `#endif` resolved, nested.
+fn active(src: &str, defs: &[String]) -> String {
+    // One entry per open `#if`: whether its current branch is taken.
+    let mut open: Vec<bool> = Vec::new();
+    let mut out = String::with_capacity(src.len());
+    for line in src.lines() {
+        let t = line.trim_start();
+        let def = |rest: &str| defs.iter().any(|d| d == rest.split_whitespace().next().unwrap_or(""));
+        if let Some(rest) = t.strip_prefix("#ifdef ") {
+            open.push(def(rest));
+        } else if let Some(rest) = t.strip_prefix("#ifndef ") {
+            open.push(!def(rest));
+        } else if t.starts_with("#else") {
+            if let Some(b) = open.last_mut() {
+                *b = !*b;
+            }
+        } else if t.starts_with("#endif") {
+            open.pop();
+        } else if open.iter().all(|&b| b) {
+            out += line;
+            out.push('\n');
+        }
+    }
+    out
+}
+
 fn ident(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
@@ -280,6 +310,21 @@ fn used(src: &str) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A branch compiled out imports nothing: the names it uses or declares count only with
+    /// its shader def set (nested, `#else`, `#ifndef`).
+    #[test]
+    fn compiled_out_branches_import_nothing() {
+        let mut p = Program::new();
+        p.add("a", "fn fa() -> u32 { return 1u; }\nfn fb() -> u32 { return 2u; }\nfn fc() -> u32 { return 3u; }\n", &[]);
+        let src = "#ifdef X\nfn x() -> u32 { return fa(); }\n#ifndef Y\nfn y() -> u32 { return fb(); }\n#endif\n#else\nfn z() -> u32 { return fc(); }\n#endif\n";
+        let deps = ["a".to_string()];
+        assert_eq!(p.imports(src, &deps).unwrap(), "#import a::{fc}\n");
+        p.define("X");
+        assert_eq!(p.imports(src, &deps).unwrap(), "#import a::{fa, fb}\n");
+        p.define("Y");
+        assert_eq!(p.imports(src, &deps).unwrap(), "#import a::{fa}\n");
+    }
 
     /// Two instances of one storage and kernel (different bind groups and constants) sit in
     /// one shader without renaming; each caller reaches the kernel it is bound to.
