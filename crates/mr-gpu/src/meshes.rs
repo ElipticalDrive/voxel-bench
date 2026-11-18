@@ -21,10 +21,12 @@ use mr_core::{Camera, MeshData, MeshInstance, MeshUpdate, RenderMode};
 
 use crate::Gpu;
 
+pub mod layout;
+
 /// Seven words, as `mesh_surface.wgsl` reads them.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-struct Vertex {
+pub struct Vertex {
     pos: [f32; 3],
     color: [u8; 4],
     normal: [f32; 3],

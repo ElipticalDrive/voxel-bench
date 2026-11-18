@@ -92,12 +92,25 @@ impl BlockRegistry {
         self.blocks.iter().skip(1).any(|b| b.class.see_through())
     }
 
+    /// The lowest and highest id of a block that lets light through (none: `None`).
+    fn see_through_ids(&self) -> Option<(u16, u16)> {
+        let see = |b: &u16| self.blocks[*b as usize].class.see_through();
+        let mut ids = 1..self.blocks.len() as u16;
+        let lo = ids.find(see)?;
+        Some((lo, ids.rev().find(see).unwrap_or(lo)))
+    }
+
     /// Whether a chunk holds a block that lets light through: what makes a world ask for
-    /// transparency.
+    /// transparency. Run on every chunk a pipeline loads, so the scan is a branch-free
+    /// range test over the ids (vectorised), the exact test only for a chunk with ids in
+    /// that range.
     pub fn chunk_see_through(&self, data: &ChunkData) -> bool {
         match data {
             ChunkData::Uniform(b) => self.see_through(*b),
-            ChunkData::Dense(d) => self.any_see_through() && d.0.iter().any(|&b| self.see_through(b)),
+            ChunkData::Dense(d) => self.see_through_ids().is_some_and(|(lo, hi)| {
+                let span = hi - lo;
+                d.0.chunks(64).any(|c| c.iter().fold(false, |a, b| a | (b.0.wrapping_sub(lo) <= span))) && d.0.iter().any(|&b| self.see_through(b))
+            }),
         }
     }
 

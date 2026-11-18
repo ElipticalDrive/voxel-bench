@@ -224,4 +224,35 @@ mod tests {
         }
         assert!(!r.see_through(blocks::AIR));
     }
+
+    /// A chunk asks for transparency exactly when it holds a see-through block, wherever it
+    /// sits in the chunk and in the ids' range (the scan's range prefilter).
+    #[test]
+    fn chunks_see_through_by_their_blocks() {
+        use mr_core::{ChunkData, DenseChunk, chunk::CHUNK_VOLUME};
+        use std::sync::Arc;
+        let mut r = default_registry();
+        let dense = |at: usize, b: BlockId| {
+            let mut d = DenseChunk::filled(blocks::STONE);
+            d.0[at] = b;
+            ChunkData::Dense(Arc::new(d))
+        };
+        assert!(!r.chunk_see_through(&dense(5, blocks::AIR)));
+        for b in [blocks::GLASS, blocks::GLASS_GREEN, blocks::GRATE] {
+            for at in [0, 63, 64, CHUNK_VOLUME - 1] {
+                assert!(r.chunk_see_through(&dense(at, b)), "{b:?} at {at}");
+            }
+        }
+        assert!(r.chunk_see_through(&ChunkData::Uniform(blocks::GLASS)));
+        assert!(!r.chunk_see_through(&ChunkData::Uniform(blocks::STONE)));
+        // One see-through block; then an opaque block inside the range of see-through ids.
+        for b in r.blocks.iter_mut().skip(blocks::GLASS.0 as usize + 1) {
+            b.class = BlockClass::Opaque;
+        }
+        assert!(r.chunk_see_through(&dense(7, blocks::GLASS)));
+        assert!(!r.chunk_see_through(&dense(7, blocks::GLASS_RED)));
+        r.blocks[blocks::GRATE.0 as usize].class = BlockClass::Cutout;
+        assert!(!r.chunk_see_through(&dense(7, blocks::GLASS_RED)), "an opaque id between see-through ones");
+        assert!(r.chunk_see_through(&dense(7, blocks::GRATE)));
+    }
 }
