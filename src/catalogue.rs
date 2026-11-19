@@ -369,7 +369,7 @@ impl Catalogue {
             self.min_psnr
         );
         let wrong = self.wrong();
-        let _ = writeln!(s, "## Below the floor\n\nRenderers that failed or whose frames scored below {:.0} dB (by the settled score for a pipeline with a late edge, else the score against the reference given the same, else the plain one): each a bug or a missing `accept` rule. {}\n", self.min_psnr, if wrong.is_empty() { "None." } else { "" });
+        let _ = writeln!(s, "## Below the floor\n\nRenderers that failed or whose frames scored below {:.0} dB (by the settled score for a pipeline with a late edge or accumulated frames, else the score against the reference given the same, else the plain one): each a bug or a missing `accept` rule. {}\n", self.min_psnr, if wrong.is_empty() { "None." } else { "" });
         if !wrong.is_empty() {
             let _ = writeln!(s, "| scenario | renderer | why |\n|---|---|---|");
             for w in &wrong {

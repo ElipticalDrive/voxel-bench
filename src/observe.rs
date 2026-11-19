@@ -125,6 +125,9 @@ pub struct Observation {
     /// caught up (the compared frames held still; against the like reference where it has one).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub late: Vec<String>,
+    /// For one that accumulates lit frames: the paths per pixel its settled frames averaged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub converged_spp: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub psnr_settled: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,6 +224,7 @@ impl Observation {
             psnr_like: r.quality_like.as_ref().map(|q| q.psnr.mean),
             bad_pct_like: r.quality_like.as_ref().map(|q| q.bad_pct.mean),
             late: r.late.clone(),
+            converged_spp: r.converged_spp,
             psnr_settled: r.quality_settled.as_ref().map(|q| q.psnr.mean),
             bad_pct_settled: r.quality_settled.as_ref().map(|q| q.bad_pct.mean),
             counters: sums.into_iter().map(|(k, (s, n))| (k, s / n.max(1) as f64)).collect(),

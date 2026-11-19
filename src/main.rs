@@ -395,15 +395,15 @@ impl Ctx<'_> {
         reports
     }
 
-    /// The settled score of a pipeline with late edges: a pass of its own over the same
-    /// frames, the compared ones held still for `compare.settle` more renders and the last
-    /// one scored (against the like reference where it has one). `None` with `settle = 0`.
-    fn settled(&self, spec: &RendererSpec, mode: PassMode, base: &World, out: &mut Outputs) -> anyhow::Result<Option<report::QualitySummary>> {
-        let Some(c) = self.plan.output.compare.as_ref().filter(|c| c.settle > 0) else { return Ok(None) };
-        let mut held = spec.clone();
-        held.label = Some(format!("{} (settled)", spec.label()));
-        let label = self.label(&held);
-        let reports = self.pass(&[held], mode, base, out, None, self.plan.run.warmup, c.settle)?;
+    /// The settled score of a pipeline with late edges or accumulated frames: a pass of its
+    /// own over the same frames, the compared ones held still for `held` more renders
+    /// (`CompareSpec::held`) and the last one scored (against the like reference where it
+    /// has one).
+    fn settled(&self, spec: &RendererSpec, mode: PassMode, base: &World, out: &mut Outputs, held: u32) -> anyhow::Result<Option<report::QualitySummary>> {
+        let mut still = spec.clone();
+        still.label = Some(format!("{} (settled)", spec.label()));
+        let label = self.label(&still);
+        let reports = self.pass(&[still], mode, base, out, None, self.plan.run.warmup, held)?;
         Ok(reports.into_iter().find(|r| r.label == label).and_then(|r| r.quality_like.or(r.quality)))
     }
 
@@ -450,17 +450,19 @@ impl Ctx<'_> {
             lane.worker.shutdown();
             reports.push(r);
         }
-        // Pipelines with an edge a frame late are scored again on settled frames.
-        if only_every.is_none() && settle == 0 && out.compare_every.is_some() {
+        // Pipelines with an edge a frame late, or that accumulate frames held still, are
+        // scored again on settled frames.
+        if let Some(c) = self.plan.output.compare.as_ref().filter(|_| only_every.is_none() && settle == 0 && out.compare_every.is_some()) {
             for spec in specs {
-                let late = spec.late();
+                let held = c.held(spec, mode);
                 let label = self.label(spec);
-                if late.is_empty() || !reports.iter().any(|r| r.label == label && r.error.is_none()) {
+                if held == 0 || !reports.iter().any(|r| r.label == label && r.error.is_none()) {
                     continue;
                 }
-                let settled = self.settled(spec, mode, base, out)?;
+                let settled = self.settled(spec, mode, base, out, held)?;
                 let r = reports.iter_mut().find(|r| r.label == label).unwrap();
-                (r.late, r.quality_settled) = (late, settled);
+                let converged = spec.accumulates(mode).map(|spp| spp * (held + 1));
+                (r.late, r.converged_spp, r.quality_settled) = (spec.late(), converged, settled);
             }
         }
         println!("{}", report::table(&reports).lines().skip(1).collect::<Vec<_>>().join("\n"));

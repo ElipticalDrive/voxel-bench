@@ -260,6 +260,8 @@ pub(crate) struct Executor<R> {
     core: Core,
     region: R,
     passes: Vec<Box<dyn Node<R>>>,
+    /// The mesh instances last given: accumulated shading starts over when they move.
+    instances: Vec<mr_core::MeshInstance>,
 }
 
 /// The renderer running `region`'s `passes` over `core`.
@@ -270,7 +272,7 @@ pub(crate) fn run<R: Region + 'static>(core: Core, region: R, passes: Vec<Box<dy
 
 impl<R: Region> Executor<R> {
     pub fn new(core: Core, region: R, passes: Vec<Box<dyn Node<R>>>) -> Self {
-        Self { core, region, passes }
+        Self { core, region, passes, instances: vec![] }
     }
 
     /// The frame's commands on this GPU, before their submission: its ticket on the ring
@@ -344,6 +346,16 @@ impl<R: Region> Renderer for Executor<R> {
     }
 
     fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        let moved = match &update {
+            MeshUpdate::Meshes(_) => true,
+            MeshUpdate::Instances(i) => *i != self.instances && {
+                self.instances.clone_from(i);
+                true
+            },
+        };
+        if moved {
+            self.core.accum.invalidate();
+        }
         self.region.update_meshes(update);
         Ok(())
     }

@@ -49,7 +49,7 @@ options = { shadows = "sun" } # the components' knobs
 window = false
 readback = "auto"             # auto | always | never
 save = { every = 100, diffs = true }
-compare = { reference = "cpu-reference", every = 100, settle = 2 }
+compare = { reference = "cpu-reference", every = 100, settle = 2, converge = 64 }
 dir = "runs"
 ```
 
@@ -80,6 +80,14 @@ still for `compare.settle` more renders (2: one for the late edge, one for a pre
 from the previous camera) and the last is scored, against the like reference where it has
 one. A late pipeline scores low as shown and high settled; a wrong one low in both.
 `settle = 0` leaves it out.
+
+A pipeline that averages lit frames while nothing moves (`pathtrace` with `accumulate`, the
+default) is scored settled the same way, each compared frame held still until it has
+accumulated `compare.converge` paths per pixel (64; `converge_spp` in the report), so its
+score shows its error rather than its 1 spp noise (on `meshes` at 480x270: 30.0 dB as shown,
+37.3 settled; 33.8 at 16 spp, 40.7 at 256). Where both apply, the longer hold.
+`converge = 0` leaves it out. The catalogue judges a pipeline on its settled score where it
+has one.
 
 A pipeline reports what it supports for its graph as one typed set of features
 (`mr_core::Features`: `lit`, `meshes`, `mesh rays`, `lod` with its levels, `transparency`), each

@@ -196,6 +196,10 @@ pub struct PassReport {
     /// low there and high here; a wrong one low in both.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub late: Vec<String>,
+    /// For a pipeline that accumulates lit frames: the paths per pixel its settled frames
+    /// averaged (held still for enough renders to reach `compare.converge`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub converged_spp: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality_settled: Option<QualitySummary>,
     pub error: Option<String>,
@@ -281,7 +285,7 @@ pub fn table(reports: &[PassReport]) -> String {
             o((r.memory.gpu_bytes > 0).then(|| r.memory.gpu_bytes as f64 / 1048576.0), 0),
             [
                 r.quality_like.as_ref().map(|q| format!("  like {}: {:.1} dB, {:.2} % bad", r.like.as_deref().unwrap_or("-"), q.psnr.mean, q.bad_pct.mean)),
-                r.quality_settled.as_ref().map(|q| format!("  settled ({} late): {:.1} dB, {:.2} % bad", r.late.join(", "), q.psnr.mean, q.bad_pct.mean)),
+                r.quality_settled.as_ref().map(|q| format!("  settled ({}): {:.1} dB, {:.2} % bad", settled_why(r), q.psnr.mean, q.bad_pct.mean)),
                 (!r.beside_failed.is_empty()).then(|| format!("  ! beside failed: {}", r.beside_failed.join(", "))),
                 (!r.not_supported.is_empty()).then(|| format!("  ! not supported: {}", r.not_supported.join("; "))),
             ]
@@ -365,6 +369,13 @@ pub fn repeat_table(reports: &[PassReport]) -> Option<String> {
         let _ = writeln!(s, "{:<22} {:<6} {:>4} {:>24} {:>24} {:>8}", label, mode.map(|m| m.name()).unwrap_or("-"), runs.len(), f(fps, 1), f(gpu, 2), spread);
     }
     Some(s)
+}
+
+/// Why a pass report was scored settled: its late edges, its accumulated paths per pixel.
+fn settled_why(r: &PassReport) -> String {
+    let late = (!r.late.is_empty()).then(|| format!("{} late", r.late.join(", ")));
+    let spp = r.converged_spp.map(|n| format!("{n} spp accumulated"));
+    late.into_iter().chain(spp).collect::<Vec<_>>().join("; ")
 }
 
 #[cfg(test)]

@@ -564,6 +564,22 @@ impl RendererSpec {
         g.nodes.iter().flat_map(|(id, n)| n.timing.iter().filter(|t| *t.1 == mr_components::graph::When::Prev).map(move |(port, _)| format!("{id}.{port}"))).collect()
     }
 
+    /// The paths per pixel per frame it accumulates in a pass of mode `m`, if it averages
+    /// frames held still: its shading node path traces a lit frame with `accumulate` on.
+    pub fn accumulates(&self, m: PassMode) -> Option<u32> {
+        use mr_components::graph::Role;
+        if m.lighting != mr_core::RenderMode::Lit {
+            return None;
+        }
+        let g = self.worker_graph().ok()??;
+        let n = g.nodes.values().find(|n| n.role == Role::Shading && n.component == "pathtrace")?;
+        let defaults = mr_components::shading::state::params();
+        let default = |name: &str| defaults.iter().find(|p| p.name == name).map(|p| p.default.clone());
+        let on = n.knobs.get("accumulate").and_then(|v| v.as_bool()).or_else(|| default("accumulate")?.as_bool()).unwrap_or(true);
+        let spp = n.knobs.get("spp").and_then(|v| v.as_integer()).or_else(|| default("spp")?.as_i64()).unwrap_or(1);
+        on.then_some(spp.clamp(1, 64) as u32)
+    }
+
     /// The lighting model of its frames in a pass of mode `m`: path tracing where its
     /// shading node path traces a lit frame (with the node's `bounces`), else direct.
     pub fn lighting(&self, m: PassMode) -> Lighting {
@@ -698,10 +714,30 @@ pub struct CompareSpec {
     /// late edges is scored once more, settled (0: no settled score).
     #[serde(default = "default_settle")]
     pub settle: u32,
+    /// Paths per pixel a compared frame accumulates, held still, before a pipeline that
+    /// accumulates lit frames (`pathtrace` with `accumulate`) is scored settled (0: none).
+    #[serde(default = "default_converge")]
+    pub converge: u32,
+}
+
+impl CompareSpec {
+    /// Renders a compared frame of `spec` is held still in its settled pass in mode `m`
+    /// (0: no settled pass): `settle` for late edges, enough for `converge` paths per pixel
+    /// where it accumulates, the larger.
+    pub fn held(&self, spec: &RendererSpec, m: PassMode) -> u32 {
+        let late = if spec.late().is_empty() { 0 } else { self.settle };
+        // The compared frame's own render is the first of them.
+        let converge = spec.accumulates(m).map_or(0, |spp| self.converge.div_ceil(spp).saturating_sub(1));
+        late.max(converge)
+    }
 }
 
 fn default_settle() -> u32 {
     2
+}
+
+fn default_converge() -> u32 {
+    64
 }
 
 fn default_every() -> u32 {
@@ -1411,6 +1447,17 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert_eq!(Like::of(&region, Lighting::Direct, &run), None);
         let like = Like::of(&region, pt.lighting(PassMode::LIT), &run).unwrap();
         assert_eq!(like.to_string(), format!("pick(radius={}), pathtrace(bounces=1)", run.view_radius));
+        // Accumulating pipelines are held still until `converge` paths per pixel; late ones
+        // for `settle` renders; the larger where both.
+        let c = CompareSpec { reference: "cpu-reference".into(), reference_options: Default::default(), every: 10, settle: 2, converge: 64 };
+        assert_eq!((pt.accumulates(PassMode::LIT), pt.accumulates(PassMode::UNLIT)), (Some(1), None));
+        assert_eq!((c.held(&pt, PassMode::LIT), c.held(&pt, PassMode::UNLIT)), (63, 0));
+        let mut four = pt.clone();
+        four.options.insert("spp".into(), 4.into());
+        assert_eq!(c.held(&four, PassMode::LIT), 15);
+        four.options.insert("accumulate".into(), false.into());
+        assert_eq!((four.accumulates(PassMode::LIT), c.held(&four, PassMode::LIT)), (None, 0));
+        assert_eq!((c.held(&late, PassMode::UNLIT), c.held(&RendererSpec::from_cli("raycast-gpu").unwrap(), PassMode::LIT)), (2, 0));
     }
 
     /// Sweeps as edits (`vary`): every combination that is a pipeline, each once, with
