@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Sweeps every valid composition over the scenario plans (an overnight job), then writes the
-catalogue of what each renderer is good at.
+catalogue of what each renderer is good at, its first section the graphs below the floor
+or failed (the bugs and missing `accept` rules a sweep finds).
 
   scripts/sweep.py                     # every scenario plan, at each plan's own length
   FRAMES=120 scripts/sweep.py terrain  # shorter camera paths (faster flight), one plan
+  RES=480x270 EVERY=20 FRAMES=60 scripts/sweep.py terrain  # a quick correctness pass
 
 Results: target/sweep/<time>/<run>/observations.jsonl (one record per renderer and pass,
 tagged with this machine), and target/sweep/<time>/catalogue.md / .csv. Re-run the
@@ -20,9 +22,12 @@ from mr import ROOT, build_release, full_sweep, release, run_logged
 out = f"target/sweep/{time.strftime('%Y%m%d-%H%M')}"
 plans = sys.argv[1:] or "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker meshes".split()
 sweep = full_sweep()
-args = ["-s", sweep, "-s", "run.repeats=1", "-s", "run.parallel=false", "-s", "output.compare.every=50", "-s", f'output.dir="{out}"', "-u", "output.save", "-u", "output.window"]
+args = ["-s", sweep, "-s", "run.repeats=1", "-s", "run.parallel=false", "-s", f"output.compare.every={os.environ.get('EVERY', 50)}", "-s", f'output.dir="{out}"', "-u", "output.save", "-u", "output.window"]
 if os.environ.get("FRAMES"):
     args += ["-s", f"run.frames={os.environ['FRAMES']}", "-s", "run.warmup=10"]
+if os.environ.get("RES"):
+    w, h = os.environ["RES"].split("x")
+    args += ["-s", f"run.resolution=[{w},{h}]"]
 if not build_release():
     sys.exit(1)
 (ROOT / out).mkdir(parents=True, exist_ok=True)

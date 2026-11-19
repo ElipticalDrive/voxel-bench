@@ -128,6 +128,29 @@ fn nodes(g: &Graph) -> Vec<(&'static str, String, String, String)> {
         .collect()
 }
 
+/// A renderer judged wrong in one scenario (`Catalogue::wrong`).
+pub struct Wrong<'a> {
+    pub scenario: &'a str,
+    pub label: &'a str,
+    pub why: WrongWhy<'a>,
+}
+
+pub enum WrongWhy<'a> {
+    Failed(&'a str),
+    /// Below the floor by the named score ("settled", "like", or "" for the plain one).
+    Below { by: &'static str, db: f64 },
+}
+
+impl std::fmt::Display for WrongWhy<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WrongWhy::Failed(e) => write!(f, "failed: {e}"),
+            WrongWhy::Below { by: "", db } => write!(f, "{db:.1} dB"),
+            WrongWhy::Below { by, db } => write!(f, "{db:.1} dB {by}"),
+        }
+    }
+}
+
 pub struct Catalogue {
     pub min_psnr: f64,
     pub machines: Vec<String>,
@@ -286,9 +309,38 @@ impl Catalogue {
         Self { min_psnr, machines: machines.into_iter().collect(), runs: runs.len(), observations: obs.len(), scenarios, renderers, components }
     }
 
+    /// Every renderer that failed or fell below the floor, per scenario: the bug list of a
+    /// graph sweep (an accepted graph that renders wrongly is a bug or a missing `accept`
+    /// rule). Each with the score it was judged by (settled, like, or plain) and its value.
+    pub fn wrong(&self) -> Vec<Wrong<'_>> {
+        let mut v = vec![];
+        for sc in &self.scenarios {
+            for e in sc.entries.iter().filter(|e| !e.valid) {
+                let why = match (&e.error, e.psnr_settled.map(|p| ("settled", p)).or(e.psnr_like.map(|p| ("like", p))).or(e.psnr.map(|p| ("", p)))) {
+                    (Some(err), _) => WrongWhy::Failed(err.lines().next().unwrap_or("")),
+                    (None, Some((by, db))) => WrongWhy::Below { by, db },
+                    (None, None) => WrongWhy::Failed("no frames"),
+                };
+                v.push(Wrong { scenario: &sc.name, label: &e.label, why });
+            }
+        }
+        v
+    }
+
     /// The best correct renderer of each scenario, and the overall ranking (for the terminal).
     pub fn summary(&self) -> String {
         let mut s = String::new();
+        let wrong = self.wrong();
+        if !wrong.is_empty() {
+            let _ = writeln!(s, "Below the floor ({:.0} dB) or failed: {}", self.min_psnr, wrong.len());
+            for w in wrong.iter().take(40) {
+                let _ = writeln!(s, "  {:<28} {:<60} {}", w.scenario, w.label, w.why);
+            }
+            if wrong.len() > 40 {
+                let _ = writeln!(s, "  ... {} more in catalogue.md", wrong.len() - 40);
+            }
+            let _ = writeln!(s);
+        }
         let _ = writeln!(s, "Best per scenario:");
         for sc in &self.scenarios {
             match sc.entries.iter().find(|e| e.valid) {
@@ -316,6 +368,15 @@ impl Catalogue {
             "How to read: a scenario is a plan (scene, camera path, events) in one pass mode. Speed is throughput (completed frames per second; at several hundred fps and more the host's per-frame overhead compresses differences, so GPU ms is shown too). *rel* is fps relative to the fastest correct renderer of the scenario; correct means a mean PSNR against the reference of at least {:.0} dB (or not compared). *good at*: within 10% of the best. *stands out*: relative speed at least 1.25× the renderer's own average, i.e. where it is comparatively strong.\n",
             self.min_psnr
         );
+        let wrong = self.wrong();
+        let _ = writeln!(s, "## Below the floor\n\nRenderers that failed or whose frames scored below {:.0} dB (by the settled score for a pipeline with a late edge, else the score against the reference given the same, else the plain one): each a bug or a missing `accept` rule. {}\n", self.min_psnr, if wrong.is_empty() { "None." } else { "" });
+        if !wrong.is_empty() {
+            let _ = writeln!(s, "| scenario | renderer | why |\n|---|---|---|");
+            for w in &wrong {
+                let _ = writeln!(s, "| {} | {} | {} |", w.scenario, w.label, w.why.to_string().replace('|', "/"));
+            }
+            let _ = writeln!(s);
+        }
         let _ = writeln!(s, "## Best per scenario\n\n| scenario | best | fps | gpu ms | PSNR | runner-up | rel |\n|---|---|---:|---:|---:|---|---:|");
         for sc in &self.scenarios {
             let mut ok = sc.entries.iter().filter(|e| e.valid);
@@ -473,6 +534,8 @@ mod tests {
         assert_eq!(terrain.entries[0].label, "gpu: prefix + refloor + composite + raycast + direct", "an incorrect renderer is never best");
         let hier = cat.renderers.iter().find(|r| r.label.contains("hier")).unwrap();
         assert_eq!(hier.incorrect, ["terrain [unlit]"]);
+        let wrong: Vec<String> = cat.wrong().iter().map(|w| format!("{} {} {}", w.scenario, w.label, w.why)).collect();
+        assert_eq!(wrong, ["terrain [unlit] gpu: hier + refloor + composite + raycast + direct 20.0 dB"], "the bug list names the wrong renderer and its score");
         let prefix = cat.renderers.iter().find(|r| r.label.contains("prefix")).unwrap();
         assert_eq!(prefix.wins, ["terrain [unlit]"]);
         assert!((prefix.geomean.unwrap() - (1.0f64 * 0.5).sqrt()).abs() < 1e-9);
