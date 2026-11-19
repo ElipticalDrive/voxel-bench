@@ -107,6 +107,12 @@ struct Options {
     bounces: Option<u32>,
     /// Paths per pixel when path tracing.
     paths: Option<u32>,
+    /// Off: shading rays (shadows, bounces) see the voxels only, the meshes are surfaces
+    /// alone: the reference of a pipeline that declares no mesh rays.
+    mesh_rays: Option<bool>,
+    /// Off: see-through blocks drawn opaque whatever the world asks: the reference of a
+    /// pipeline that declares no transparency.
+    transparency: Option<bool>,
 }
 
 /// Paths per pixel of a path-traced reference unless `paths` says otherwise: its noise is
@@ -361,6 +367,8 @@ pub struct VoxelScene<'a> {
     /// The world asks transparency (the frame's `layers`): rays composite the surfaces they cross front to
     /// back and shadow rays are attenuated by them (else every block stops a ray, as before).
     pub layered: bool,
+    /// Shading rays (shadows, bounces) meet the meshes too; off: voxels only.
+    pub mesh_rays: bool,
 }
 
 /// A surface a ray crosses ([`VoxelScene::layers`]): a face between two cells of different
@@ -394,6 +402,8 @@ pub struct CpuReference {
     pixels: Vec<u8>,
     /// Lit frames are path traced.
     paths: Option<Paths>,
+    mesh_rays: bool,
+    transparency: bool,
 }
 
 /// A cell a walk enters ([`Chunks::walk`]): where (`t`), which (`cell`, at LOD `lod` its
@@ -424,7 +434,7 @@ impl CpuReference {
         world.shadows = opts.shadows;
         let chunks = if opts.lod && p.max_lod > 0 { Chunks::with_lod(p.view_radius_chunks, p.max_lod.min(MAX_LOD)) } else { Chunks::default() };
         let paths = opts.bounces.map(|bounces| Paths { bounces, paths: opts.paths.unwrap_or(PATHS).max(1) });
-        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths })
+        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths, mesh_rays: opts.mesh_rays.unwrap_or(true), transparency: opts.transparency.unwrap_or(true) })
     }
 }
 
@@ -699,19 +709,24 @@ impl Chunks {
 }
 
 impl VoxelScene<'_> {
+    /// The meshes shading rays meet.
+    fn ray_meshes(&self) -> Option<&mesh::Meshes> {
+        self.meshes.filter(|_| self.mesh_rays)
+    }
+
     pub fn trace(&self, o: DVec3, d: DVec3, max_t: f64) -> Option<Hit> {
         self.chunks.trace(o, d, max_t)
     }
 
     /// Whether a voxel or a mesh is hit from `p` along `dir` within `dist`.
     pub fn occluded(&self, p: DVec3, dir: DVec3, dist: f64) -> bool {
-        self.chunks.occluded(p, dir, dist) || self.meshes.is_some_and(|m| m.occluded(p, dir, dist))
+        self.chunks.occluded(p, dir, dist) || self.ray_meshes().is_some_and(|m| m.occluded(p, dir, dist))
     }
 
     /// The fraction of light that passes from `p` along `dir` within `dist`: the product of
     /// `1 - coverage` over the surfaces crossed (0 at an opaque block or a mesh).
     pub fn transmittance(&self, p: DVec3, dir: DVec3, dist: f64) -> f32 {
-        if self.meshes.is_some_and(|m| m.occluded(p, dir, dist)) {
+        if self.ray_meshes().is_some_and(|m| m.occluded(p, dir, dist)) {
             return 0.0;
         }
         let mut through = 1.0;
@@ -857,7 +872,7 @@ impl VoxelScene<'_> {
         } else {
             self.trace(o, d, max_t)
         };
-        if let Some(m) = self.meshes.and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_t, |h| h.t))) {
+        if let Some(m) = self.ray_meshes().and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_t, |h| h.t))) {
             return Some(Surface { t: m.t, n: m.normal.as_dvec3(), albedo: m.albedo() });
         }
         hit.map(|h| Surface { t: h.t, n: facing(h.face, d), albedo: self.albedo(o, d, &h) })
@@ -986,7 +1001,7 @@ impl Renderer for CpuReference {
         let (w, h) = (self.width, self.height);
         let cam = req.camera;
         let o = cam.position;
-        let this = VoxelScene { world: &self.world, chunks: &self.chunks, meshes: req.meshes.then_some(&self.meshes), layered: req.layers };
+        let this = VoxelScene { world: &self.world, chunks: &self.chunks, meshes: req.meshes.then_some(&self.meshes), layered: req.layers && self.transparency, mesh_rays: self.mesh_rays };
         let max_dist = this.max_dist();
         let sky = self.world.sky();
         // Path-traced lit frames: the light at the primary point from its paths.
@@ -1112,7 +1127,7 @@ mod tests {
         let (at, up) = (DVec3::new(8.5, 1.0, 8.5), Vec3::Y);
         let chunks = chunk_of(&[(IVec3::new(8, 0, 8), STONE)]);
         {
-            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false };
+            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false, mesh_rays: true };
             let direct = s.light_at(at, up);
             assert!(direct.max_element() > ambient.max_element(), "the sun reaches it");
             assert_eq!(s.light_by_paths(at, up, 0, 16, &mut Rng::new(1)), direct);
@@ -1123,7 +1138,7 @@ mod tests {
             let mut cells = vec![(IVec3::new(8, 0, 8), STONE)];
             cells.extend((0..32).flat_map(|x| (0..32).map(move |z| (IVec3::new(x, 4, z), ceiling))));
             let chunks = chunk_of(&cells);
-            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false };
+            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false, mesh_rays: true };
             let light = s.light_by_paths(at, up, 2, 1024, &mut Rng::new(1));
             if grey {
                 assert!(light.max_element() < ambient.max_element() * 0.9 && light.min_element() > ambient.min_element() * 0.2, "{light}");
@@ -1159,14 +1174,16 @@ mod tests {
         let sun = world.env.sun.expect("the default has a sun").direction.as_dvec3();
         // A square centred on the sun's ray from the point, 3 blocks up it.
         let shade = square(0.0, 3.0, 255, at - sun * 3.0 - DVec3::new(8.5, 0.0, 8.5));
-        let open = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false }.light_at(at, up);
-        let shaded = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&shade), layered: false }.light_at(at, up);
+        let open = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false, mesh_rays: true }.light_at(at, up);
+        let shaded = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&shade), layered: false, mesh_rays: true }.light_at(at, up);
         assert!(open.max_element() > ambient.max_element(), "the sun reaches it");
         assert!((shaded - ambient).abs().max_element() < 1e-6, "the mesh shades it: {shaded}");
+        let bare = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&shade), layered: false, mesh_rays: false }.light_at(at, up);
+        assert_eq!(bare, open, "without mesh rays the mesh casts no shadow");
         world.env.sun = None;
         for (grey, absorbs) in [(255, false), (128, true)] {
             let ceiling = square(4.0, 1e4, grey, DVec3::ZERO);
-            let s = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&ceiling), layered: false };
+            let s = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&ceiling), layered: false, mesh_rays: true };
             let light = s.light_by_paths(at, up, 2, 1024, &mut Rng::new(1));
             if absorbs {
                 assert!(light.max_element() < ambient.max_element() * 0.9 && light.min_element() > ambient.min_element() * 0.2, "{light}");
@@ -1195,7 +1212,7 @@ mod tests {
         let a = 128.0 / 255.0;
         let (o, d) = (DVec3::new(0.0, 0.5, 0.5), DVec3::X);
         let count = |chunks: &Chunks| {
-            let s = VoxelScene { world: &world, chunks, meshes: None, layered: true };
+            let s = VoxelScene { world: &world, chunks, meshes: None, layered: true, mesh_rays: true };
             let mut n = vec![];
             s.layers(o, d, 100.0, |l| {
                 n.push((l.t, l.block));
@@ -1216,13 +1233,13 @@ mod tests {
         assert_eq!(t, 0.0);
         // Unlit: black glass at half coverage, twice, over the white wall.
         let chunks = chunk_of(&[(IVec3::new(3, 0, 0), glass), (IVec3::new(6, 0, 0), STONE)]);
-        let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: true };
+        let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: true, mesh_rays: true };
         let px = s.shade_layered(o, d, 100.0, RenderMode::Unlit, None, &mut Rng::new(1));
         assert_eq!(px, Tone::Clamp.encode(Vec3::ONE * (1.0 - a) * (1.0 - a)));
         // The wall alone: the opaque path's pixel, unlit and lit.
         let chunks = chunk_of(&[(IVec3::new(6, 0, 0), STONE)]);
         for layered in [false, true] {
-            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered };
+            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered, mesh_rays: true };
             for mode in [RenderMode::Unlit, RenderMode::Lit] {
                 let hit = s.trace(o, d, 100.0).unwrap();
                 assert_eq!(s.shade_layered(o, d, 100.0, mode, None, &mut Rng::new(1)), s.shade(o, d, &hit, mode));

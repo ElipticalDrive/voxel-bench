@@ -202,14 +202,39 @@ pub struct RendererSpec {
 }
 
 /// What a pipeline is given of the world and the lighting model it computes, when they are
-/// not the full-resolution reference's (another radius, LOD levels; path tracing): a
-/// reference given the same tells a wrong pipeline from a lossy or a noisy one.
+/// not the full-resolution reference's (another radius, LOD levels; path tracing; features
+/// it declares it leaves out): a reference given the same tells a wrong pipeline from a
+/// lossy, a noisy or a declared-partial one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Like {
     pub radius: u32,
     pub max_lod: u8,
     pub levels: mr_core::client::Levels,
     pub lighting: Lighting,
+    pub leaves: Leaves,
+}
+
+/// What a pass asks that a pipeline declares it leaves out and its frames still show
+/// otherwise: the reference draws them the same way, so the score judges what it claims.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Leaves {
+    /// Lit `+meshes` frames whose shading rays see voxels only (meshes cast no shadows).
+    pub mesh_rays: bool,
+    /// See-through blocks drawn opaque in a world asking transparency.
+    pub transparency: bool,
+}
+
+impl Leaves {
+    /// What a pipeline with `features` leaves out of a pass of mode `m` over a world asking
+    /// `world`.
+    pub fn of(features: &mr_core::Features, m: Option<PassMode>, world: &[mr_core::Feature]) -> Self {
+        use mr_core::Feature;
+        let lit_meshes = m.is_some_and(|m| m.lighting == mr_core::RenderMode::Lit && m.meshes);
+        Leaves {
+            mesh_rays: lit_meshes && features.has(Feature::Meshes) && !features.has(Feature::MeshRays),
+            transparency: world.contains(&Feature::Transparency) && !features.has(Feature::Transparency),
+        }
+    }
 }
 
 /// The lighting model of a lit frame: the reference's direct lighting, or diffuse path
@@ -226,10 +251,10 @@ pub enum Lighting {
 impl Like {
     /// The class of a client's region, if it differs from the full-resolution reference's
     /// (the run's radius at LOD 0).
-    pub fn of(region: &crate::stream::Region, lighting: Lighting, run: &RunSpec) -> Option<Self> {
+    pub fn of(region: &crate::stream::Region, lighting: Lighting, leaves: Leaves, run: &RunSpec) -> Option<Self> {
         // Without coarse levels it does not matter how they would be made.
         let levels = if region.max_lod > 0 { region.levels } else { Default::default() };
-        (region.max_lod > 0 || region.radius != run.view_radius || lighting != Lighting::Direct).then_some(Self { radius: region.radius, max_lod: region.max_lod, levels, lighting })
+        (region.max_lod > 0 || region.radius != run.view_radius || lighting != Lighting::Direct || leaves != Leaves::default()).then_some(Self { radius: region.radius, max_lod: region.max_lod, levels, lighting, leaves })
     }
 }
 
@@ -246,7 +271,14 @@ impl std::fmt::Display for Like {
         match self.lighting {
             Lighting::Direct => Ok(()),
             Lighting::Paths { bounces } => write!(f, ", pathtrace(bounces={bounces})"),
+        }?;
+        if self.leaves.mesh_rays {
+            write!(f, ", no mesh rays")?;
         }
+        if self.leaves.transparency {
+            write!(f, ", no transparency")?;
+        }
+        Ok(())
     }
 }
 
@@ -1444,9 +1476,20 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         assert!(sync.late().is_empty(), "{:?}", sync.late());
         let run = RunSpec::default();
         let region = pt.region(&run, 0);
-        assert_eq!(Like::of(&region, Lighting::Direct, &run), None);
-        let like = Like::of(&region, pt.lighting(PassMode::LIT), &run).unwrap();
+        assert_eq!(Like::of(&region, Lighting::Direct, Leaves::default(), &run), None);
+        let like = Like::of(&region, pt.lighting(PassMode::LIT), Leaves::default(), &run).unwrap();
         assert_eq!(like.to_string(), format!("pick(radius={}), pathtrace(bounces=1)", run.view_radius));
+        // What a pipeline declares it leaves out, its reference leaves out too.
+        use mr_core::Feature;
+        let lit_meshes = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
+        let mut forward = mr_core::Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays]);
+        forward.lack(Feature::MeshRays, "draw `raster` shades forward");
+        let leaves = Leaves::of(&forward, Some(lit_meshes), &[Feature::Transparency]);
+        assert_eq!(leaves, Leaves { mesh_rays: true, transparency: true });
+        assert_eq!(Leaves::of(&forward, Some(PassMode::UNLIT), &[]), Leaves::default(), "no shading rays unlit");
+        assert_eq!(Leaves::of(&forward, None, &[]), Leaves::default());
+        let like = Like::of(&region, Lighting::Direct, leaves, &run).unwrap();
+        assert_eq!(like.to_string(), format!("pick(radius={}), no mesh rays, no transparency", run.view_radius));
         // Accumulating pipelines are held still until `converge` paths per pixel; late ones
         // for `settle` renders; the larger where both.
         let c = CompareSpec { reference: "cpu-reference".into(), reference_options: Default::default(), every: 10, settle: 2, converge: 64 };

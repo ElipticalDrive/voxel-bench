@@ -351,7 +351,7 @@ impl Ctx<'_> {
                     let mut lane = Lane::new(worker, region, report, i, w, h);
                     // A reference records for the region it was given; a pipeline given another
                     // region than the full-resolution reference is scored against that one too.
-                    lane.like = spec.like.or(plan::Like::of(&lane.region, mode.map(|m| spec.lighting(m)).unwrap_or_default(), run).filter(|_| self.plan.output.compare.is_some() && spec.name != self.plan.output.compare.as_ref().unwrap().reference));
+                    lane.like = spec.like.or(plan::Like::of(&lane.region, mode.map(|m| spec.lighting(m)).unwrap_or_default(), plan::Leaves::of(&lane.worker.info.features, mode, asks), run).filter(|_| self.plan.output.compare.is_some() && spec.name != self.plan.output.compare.as_ref().unwrap().reference));
                     if spec.like.is_none() {
                         lane.report.like = lane.like.map(|l| l.to_string());
                     }
@@ -383,6 +383,12 @@ impl Ctx<'_> {
                 spec.options.insert("lod".into(), true.into());
                 if let plan::Lighting::Paths { bounces } = l.lighting {
                     spec.options.insert("bounces".into(), (bounces as i64).into());
+                }
+                if l.leaves.mesh_rays {
+                    spec.options.insert("mesh_rays".into(), false.into());
+                }
+                if l.leaves.transparency {
+                    spec.options.insert("transparency".into(), false.into());
                 }
                 format!("{} as {l} (ref)", c.reference)
             }

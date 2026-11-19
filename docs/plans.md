@@ -72,6 +72,13 @@ left in that score is the pipeline's noise (and any error): it rises about 3 dB 
 doubling of `spp` when the pipeline computes the same model. Such a reference takes seconds
 per compared frame.
 
+And for what a pipeline declares it leaves out of a pass (its `not_supported`) while its
+frames still show the rest: mesh rays (lit `+meshes` frames whose shadows and bounces see only
+the voxels) and transparency (see-through blocks drawn opaque). Its reference leaves out the
+same (reference options `mesh_rays = false`, `transparency = false`; labelled `cpu-reference as
+pick(radius=16), no mesh rays (ref)`), so the score judges what the pipeline claims and a
+declared lack is not counted as an error.
+
 A pipeline whose graph has an edge that arrives a frame late (`prev`: discover-cpu's faces,
 discovered while the previous frame is drawn) shows a moving camera partly as it was a frame
 ago, and scores low for it. It is scored a third time, settled (`quality_settled`; the late
