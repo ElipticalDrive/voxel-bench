@@ -353,7 +353,7 @@ mod tests {
     }
 
     fn settings(seed_step: u32) -> Settings {
-        Settings { tile: 32, face_criterion: false, sky_tile: 16, keep_frames: 1, max_footprint: 4096, margin: 0.0, dilate: 0, dilate_below: 2, cluster: true, seed_step, sky_sparse: false }
+        Settings { tile: 32, face_criterion: false, sky_tile: 16, keep_frames: 1, max_footprint: 4096, strict: true, jitter: false, margin: 0.0, dilate: 0, dilate_below: 2, cluster: true, seed_step, sky_sparse: false }
     }
 
     /// Every face visible at a pixel centre is in S (one pass, from several viewpoints).

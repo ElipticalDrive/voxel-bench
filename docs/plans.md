@@ -92,7 +92,9 @@ A pipeline that averages lit frames while nothing moves (`pathtrace` with `accum
 default) is scored settled the same way, each compared frame held still until it has
 accumulated `compare.converge` paths per pixel (64; `converge_spp` in the report), so its
 score shows its error rather than its 1 spp noise (on `meshes` at 480x270: 30.0 dB as shown,
-37.3 settled; 33.8 at 16 spp, 40.7 at 256). Where both apply, the longer hold.
+37.3 settled; 33.8 at 16 spp, 40.7 at 256). Where both apply, the longer hold. The average
+restarts per pixel when the pixel's surface changes (a late face set still filling in), so
+what was missing in the first held frames does not stay in it.
 
 Every pass (a reference's, a settled one) is given the world over the same timeline as the
 measured pass: the plan's warm-up included (a reference streams it without rendering it),

@@ -65,6 +65,16 @@ fn pt_path(albedo0: vec3<f32>, p0: vec3<f32>, n0: vec3<f32>) -> vec3<f32> {
     return radiance;
 }
 
+const PT_COUNT_MASK: u32 = 0xfffu;
+const PT_SIG_MASK: u32 = 0xfffff000u;
+
+// The primary surface of a pixel, hashed: the cell behind the point and the normal.
+fn pt_surface_sig(p: vec3<f32>, n: vec3<f32>) -> u32 {
+    let c = bitcast<vec3<u32>>(vec3<i32>(floor(p - n * 0.5)));
+    let q = bitcast<vec3<u32>>(vec3<i32>(round(n * 8.0)));
+    return pt_pcg(c.x ^ pt_pcg(c.y ^ pt_pcg(c.z ^ pt_pcg(q.x ^ (q.y << 8u) ^ (q.z << 16u))))) & PT_SIG_MASK;
+}
+
 fn shade_point(albedo: vec4<f32>, p: vec3<f32>, n: vec3<f32>, d: vec3<f32>, lit: bool, px: vec2<u32>) -> vec4<f32> {
     if (!lit) { return albedo; }
     let idx = px.y * sp.width + px.x;
@@ -72,11 +82,19 @@ fn shade_point(albedo: vec4<f32>, p: vec3<f32>, n: vec3<f32>, d: vec3<f32>, lit:
     let a = pt_linear(albedo);
     var sum = vec3<f32>(0.0);
     for (var i = 0u; i < sp.spp; i++) { sum += pt_path(a, p, n); }
+    // Per pixel: the mean so far (bits of linear rgb) and in w the primary surface's
+    // signature (high bits) with the pixel's own sample count (low bits). A pixel whose
+    // surface changed (a face set that changed under a still camera) starts again alone;
+    // `prev_count == 0` (view, mode or world changed) restarts every pixel.
+    let sig = pt_surface_sig(p, n);
+    let old = accum[idx];
+    var count = 0u;
+    if (sp.prev_count > 0u && (old.w & PT_SIG_MASK) == sig) { count = old.w & PT_COUNT_MASK; }
     var mean = sum / f32(sp.spp);
-    if (sp.prev_count > 0u) {
-        mean = (accum[idx].rgb * f32(sp.prev_count) + sum) / f32(sp.prev_count + sp.spp);
+    if (count > 0u) {
+        mean = (bitcast<vec3<f32>>(old.xyz) * f32(count) + sum) / f32(count + sp.spp);
     }
-    accum[idx] = vec4<f32>(mean, 1.0);
+    accum[idx] = vec4<u32>(bitcast<vec3<u32>>(mean), sig | min(count + sp.spp, PT_COUNT_MASK));
     return display(mean * vp.exposure);
 }
 

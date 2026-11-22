@@ -100,7 +100,7 @@ impl ShadeState {
         format!(
             "struct ShadeParams {{ width: u32, frame: u32, prev_count: u32, bounces: u32, spp: u32, _pa: u32, _pb: u32, _pc: u32 }}\n\
              @group({group}) @binding({binding}) var<uniform> sp: ShadeParams;\n\
-             @group({group}) @binding({}) var<storage, read_write> accum: array<vec4<f32>>;\n",
+             @group({group}) @binding({}) var<storage, read_write> accum: array<vec4<u32>>;\n",
             binding + 1
         )
     }

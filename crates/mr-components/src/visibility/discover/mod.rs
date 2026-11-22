@@ -15,7 +15,7 @@
 //! * `plane` criterion: all corners hit one face plane (same direction and plane
 //!   coordinate) -> enumerate every exposed face on that plane inside the bounding box of
 //!   the four hit points ("footprint"); if the footprint exceeds `max_footprint` cells,
-//!   split instead;
+//!   or (`strict`) any of its cells is not an exposed face of the plane, split instead;
 //! * a tile with lattice extent 1x1 is a leaf: all pixel centres it covers are samples.
 //!
 //! So every pixel centre is either sampled directly or covered by an accepted tile; holes
@@ -90,9 +90,14 @@ pub struct Settings {
     pub sky_tile: u32,
     pub keep_frames: u32,
     pub max_footprint: u32,
+    /// Plane criterion: every footprint cell must be an exposed face of the plane, else the
+    /// tile splits (a hole in the plane, such as a window, shows something else).
+    pub strict: bool,
+    /// Quadtree: shift the tile grid by a random offset every frame (temporal coverage).
+    pub jitter: bool,
     pub margin: f32,
     /// Fine-level samples also add camera-facing exposed faces around the hit cell:
-    /// 0 = off, 1 = hit cell + 6 neighbours, 2 = 3x3x3 neighbourhood.
+    /// 0 = off, 1 = the hit cell's, 2 = + its 6 neighbours', 3 = its 3x3x3 neighbourhood's.
     pub dilate: u32,
     /// Tile size (px) at or below which samples are dilated.
     pub dilate_below: u32,

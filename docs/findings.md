@@ -82,14 +82,19 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
   number of rays (terrain 0.24 rays per pixel, 51.0 against 43.8 dB; menger 51.5 against
   26.4 dB), at 2.5× its CPU time. Pipelined (discovering frame N+1 while the GPU draws frame N),
   one frame of latency costs 0.1–0.3% of the pixels while moving. CPU discovery (25–60 ms) is
-  the bottleneck.
+  the bottleneck. (Those `quadtree` figures predate three of its settings, 2026-11-21: `strict`
+  footprints split a coherent-looking tile whose plane has a hole (a window: city 21 -> 36 dB);
+  `jitter` shifts the tile grid every frame, so small floating blocks between one frame's corner
+  rays are hit on another; `dilate = 2` adds the camera-facing faces around fine-level hits
+  (city lit 33 -> 45 dB) for ~45% more discovery time. `dilate = 0` is the fast setting.)
 
 ## Approximate techniques
 
-- `splat-gpu`: exact wherever a block covers more than 2 px (each pixel takes the depth where
-  its ray enters the block); smaller points cover their whole pixel, so distant foliage fattens
-  (PSNR 31–33 dB on `far`, 39–79 dB elsewhere, 2026-10-19). Before, a square footprint at the
-  block centre's depth, capped at 8 px, left near surfaces full of holes (10–26 dB).
+- `splat-gpu`: each pixel of a point's footprint takes the depth where its ray enters the
+  block, or nothing where the ray misses it, so it shows what a ray cast sees: within
+  0.1–0.8 dB of `raycast-gpu` lit and unlit (2026-11-21). Filling a sub-2 px point's whole
+  footprint had grown every silhouette by a pixel (islands lit 21 dB); a square footprint at
+  the block centre's depth, capped at 8 px, had left near surfaces full of holes (10–26 dB).
 - `columns-gpu`: no overhangs, caves or trunks (PSNR ~15–36 dB on terrain-like plans; 4–21 dB
   on the stress worlds, where little is a heightmap), 27 MB of GPU memory.
 
