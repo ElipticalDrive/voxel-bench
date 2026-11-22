@@ -40,8 +40,8 @@ struct Big { n: atomic<u32>, ids: array<u32> }
 @group(0) @binding(11) var<storage, read_write> big: Big;
 
 // A point's footprint: the screen rectangle of its block's eight corners (the whole screen
-// if a corner is behind the camera), and its centre's view depth.
-struct Splat { ok: bool, big: bool, tiny: bool, x0: i32, y0: i32, x1: i32, y1: i32, z: f32, bmin: vec3<f32>, pos: vec3<i32> }
+// if a corner is behind the camera).
+struct Splat { ok: bool, big: bool, x0: i32, y0: i32, x1: i32, y1: i32, bmin: vec3<f32>, pos: vec3<i32> }
 
 fn project(id: u32) -> Splat {
     var s: Splat;
@@ -81,21 +81,21 @@ fn project(id: u32) -> Splat {
         lo = vec2<f32>(0.0);
         hi = vec2<f32>(f32(cam.width), f32(cam.height));
     }
-    s.tiny = !behind && max(hi.x - lo.x, hi.y - lo.y) < 2.0;
     s.x0 = max(i32(floor(lo.x)), 0);
     s.y0 = max(i32(floor(lo.y)), 0);
     s.x1 = min(i32(floor(hi.x)), i32(cam.width) - 1);
     s.y1 = min(i32(floor(hi.y)), i32(cam.height) - 1);
     if (s.x0 > s.x1 || s.y0 > s.y1) { return s; }
     s.big = max(s.x1 - s.x0, s.y1 - s.y0) >= i32(cam.max_splat);
-    s.z = max(z, 0.0);
     s.ok = true;
     return s;
 }
 
-// Point `s`'s depth at pixel (x, y): the view depth where the pixel's ray enters its block;
-// a tiny point (under 2 px) that the ray misses still covers the pixel at its centre's
-// depth, so distant points do not vanish between pixel centres. `none` elsewhere.
+// Point `s`'s depth at pixel (x, y): the view depth where the pixel's ray enters its block,
+// `none` where the ray misses it. Every pixel whose ray meets the block lies in its
+// footprint, so this is exactly what a ray cast sees: no fill for sub-pixel points (filling
+// their footprint fattened silhouettes by a pixel and let a neighbour beside the ray win
+// over the block it meets).
 const NONE: u32 = 0xffffffffu;
 fn depth_at(s: Splat, x: i32, y: i32) -> u32 {
     let d = view_ray(vec2<u32>(u32(x), u32(y)));
@@ -107,7 +107,6 @@ fn depth_at(s: Splat, x: i32, y: i32) -> u32 {
     let tn = max(tlo.x, max(tlo.y, tlo.z));
     let tf = min(thi.x, min(thi.y, thi.z));
     if (tn <= tf && tf > 0.0) { return bitcast<u32>(max(tn, 0.0) * dot(d, cam.forward)); }
-    if (s.tiny) { return bitcast<u32>(s.z); }
     return NONE;
 }
 
@@ -208,37 +207,19 @@ fn view_ray(px: vec2<u32>) -> vec3<f32> {
 fn view_miss(px: vec2<u32>) -> vec4<f32> { return unpack_sky(cam.sky); }
 fn view_lit() -> bool { return cam.mode == 1u; }
 
-// The surface of point `id` on primary ray `d`: the face the ray enters the block through,
-// or, for splat pixels outside the block's silhouette, the box point nearest the ray.
+// The surface of point `id` on primary ray `d`: the face the ray enters the block through
+// (a point wins a pixel only where its ray meets the block).
 fn record_decode(id: u32, d: vec3<f32>) -> Surface {
     let pt = points[id - 1u];
     let o = cam.origin;
     let bmin = vec3<f32>(pt.pos - vp.cam_block);
     let inv = 1.0 / d;
-    let ta = (bmin - o) * inv;
-    let tb = (bmin + vec3<f32>(1.0) - o) * inv;
-    let tlo = min(ta, tb);
-    let thi = max(ta, tb);
+    let tlo = min((bmin - o) * inv, (bmin + vec3<f32>(1.0) - o) * inv);
     var axis = 0u;
     if (tlo.y > tlo[axis]) { axis = 1u; }
     if (tlo.z > tlo[axis]) { axis = 2u; }
-    let tn = tlo[axis];
-    let tf = min(thi.x, min(thi.y, thi.z));
-    var p: vec3<f32>;
-    var face: u32;
-    if (tn <= tf && tf > 0.0) {
-        p = o + d * max(tn, 0.0);
-        face = face_entered(axis, d[axis] > 0.0);
-    } else {
-        // Splat pixel outside the block's silhouette: clamp to the box.
-        let ctr = bmin + vec3<f32>(0.5);
-        p = clamp(o + d * dot(ctr - o, d), bmin, bmin + vec3<f32>(1.0));
-        let q = abs(p - ctr);
-        var a = 0u;
-        if (q.y > q[a]) { a = 1u; }
-        if (q.z > q[a]) { a = 2u; }
-        face = face_entered(a, (p - ctr)[a] < 0.0);
-    }
+    let p = o + d * max(tlo[axis], 0.0);
+    let face = face_entered(axis, d[axis] > 0.0);
     let local = clamp(p - bmin, vec3<f32>(0.0), vec3<f32>(0.9999));
     return Surface(p, face_normal(face), local, pt.info & 0xffffu, face);
 }
