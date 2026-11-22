@@ -93,6 +93,13 @@ default) is scored settled the same way, each compared frame held still until it
 accumulated `compare.converge` paths per pixel (64; `converge_spp` in the report), so its
 score shows its error rather than its 1 spp noise (on `meshes` at 480x270: 30.0 dB as shown,
 37.3 settled; 33.8 at 16 spp, 40.7 at 256). Where both apply, the longer hold.
+
+Every pass (a reference's, a settled one) is given the world over the same timeline as the
+measured pass: the plan's warm-up included (a reference streams it without rendering it),
+and held frames do not advance the stream. With `streaming = { budget = N }` the world is
+never complete while the camera outruns the budget, so the reference shows the same holes as
+the pipelines and the score judges what they draw of what arrived; how much was missing is in
+`holes` and `first_complete`.
 `converge = 0` leaves it out. The catalogue judges a pipeline on its settled score where it
 has one.
 

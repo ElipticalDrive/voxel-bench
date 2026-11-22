@@ -32,6 +32,9 @@ pub struct FrameInput {
     pub render: bool,
     /// False for warm-up frames.
     pub recorded: bool,
+    /// A render of the previous frame again, held still: the stream does not advance either,
+    /// so the world it shows is the one the reference was given at that frame.
+    pub held: bool,
     /// The frame's time in seconds (the link's clock): simulated in
     /// scripted runs, the wall clock in interactive ones.
     pub time: f64,
@@ -75,7 +78,7 @@ impl Driver for ScriptedDriver {
             let f = self.i - 1 - self.warmup;
             let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(f));
             let time = (self.i - 1) as f64 / self.clock_fps;
-            return Ok(Some(FrameInput { frame: f, camera: self.scene.camera(f), mode: self.mode, events: Default::default(), meshes, render: true, recorded: self.held == 0, time }));
+            return Ok(Some(FrameInput { frame: f, camera: self.scene.camera(f), mode: self.mode, events: Default::default(), meshes, render: true, recorded: self.held == 0, held: true, time }));
         }
         let i = self.i;
         self.i += 1;
@@ -83,7 +86,10 @@ impl Driver for ScriptedDriver {
         if i < self.warmup {
             let camera = self.scene.camera(0);
             let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(0));
-            return Ok(Some(FrameInput { frame: 0, camera, mode: self.mode, events: Default::default(), meshes, render: true, recorded: false, time }));
+            // A pass rendering only the compared frames (a reference's) still streams its
+            // warm-up, so what it was given by each frame is what the pipelines were.
+            let render = self.only_every.is_none();
+            return Ok(Some(FrameInput { frame: 0, camera, mode: self.mode, events: Default::default(), meshes, render, recorded: false, held: false, time }));
         }
         let f = i - self.warmup;
         if f >= self.frames {
@@ -96,7 +102,7 @@ impl Driver for ScriptedDriver {
         if let Some((_, n)) = self.settle.filter(|s| render && sampled(f, s.0, self.frames)) {
             self.held = n;
         }
-        Ok(Some(FrameInput { frame: f, camera, mode: self.mode, events, meshes, render, recorded: self.held == 0, time }))
+        Ok(Some(FrameInput { frame: f, camera, mode: self.mode, events, meshes, render, recorded: self.held == 0, held: false, time }))
     }
 }
 
@@ -181,7 +187,7 @@ impl Driver for InteractiveDriver {
             self.fps_window = (Instant::now(), 0);
         }
         let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(self.frame));
-        Ok(Some(FrameInput { frame: self.frame, camera: self.camera, mode: self.mode, events, meshes, render: true, recorded: false, time: self.start.elapsed().as_secs_f64() }))
+        Ok(Some(FrameInput { frame: self.frame, camera: self.camera, mode: self.mode, events, meshes, render: true, recorded: false, held: false, time: self.start.elapsed().as_secs_f64() }))
     }
 }
 
@@ -515,7 +521,7 @@ pub fn run_pass(
             tail.push(WorldUpdate::SetEnvironment(env));
         }
         let mut stream = head.clone();
-        if streams {
+        if streams && !input.held {
             server.edits(&edits, &changed, &mut stream);
             server.update(world, input.camera.position, &mut stream);
         }
@@ -639,4 +645,40 @@ pub fn run_pass(
         lane.report.beside_failed = failed.clone();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mr_world::scenario::SceneSpec;
+
+    fn inputs(only_every: Option<u32>, settle: Option<(u32, u32)>) -> Vec<FrameInput> {
+        let text = "generator = { type = \"flat\" }\ncamera = { type = \"line\", from = [0, 20, 0], to = [400, 20, 0] }\n";
+        let spec: SceneSpec = toml::from_str(text).unwrap();
+        let mut world = World::new(spec.generator.build());
+        let scene = Scene::new(spec, Arc::new(mr_world::textures::default_registry()), &mut world, 10).unwrap();
+        let mut d = ScriptedDriver::new(scene, PassMode::UNLIT, 3, 10, only_every, 60.0);
+        d.settle = settle;
+        std::iter::from_fn(|| d.next().unwrap()).collect()
+    }
+
+    /// The stream a pass sends follows the frames that are not held: a reference's pass (only
+    /// the compared frames rendered) and a settled pass (compared frames held still) give the
+    /// stream the same cameras at the same times as the measured pass, warm-up included, or a
+    /// budgeted stream would hand the reference other chunks than the pipelines.
+    #[test]
+    fn every_pass_streams_the_same_timeline() {
+        let streamed = |v: &[FrameInput]| v.iter().filter(|i| !i.held).map(|i| (i.frame, i.camera.position, i.time)).collect::<Vec<_>>();
+        let measured = inputs(None, None);
+        assert_eq!(measured.len(), 13);
+        let reference = inputs(Some(5), None);
+        let settled = inputs(None, Some((5, 4)));
+        assert_eq!(streamed(&reference), streamed(&measured));
+        assert_eq!(streamed(&settled), streamed(&measured));
+        // The reference renders the compared frames alone, not its warm-up.
+        assert_eq!(reference.iter().filter(|i| i.render).map(|i| i.frame).collect::<Vec<_>>(), [0, 5, 9]);
+        // Held renders: four after each compared frame, the last recorded.
+        assert_eq!(settled.iter().filter(|i| i.held).count(), 12);
+        assert!(settled.iter().filter(|i| i.frame == 5).filter(|i| i.recorded).count() == 1);
+    }
 }

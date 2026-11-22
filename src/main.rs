@@ -396,7 +396,7 @@ impl Ctx<'_> {
         });
         spec.like = like;
         out.recording_reference = true;
-        let reports = self.pass(&[spec], mode, base, out, Some(c.every), 0, 0);
+        let reports = self.pass(&[spec], mode, base, out, Some(c.every), 0);
         out.recording_reference = false;
         reports
     }
@@ -409,14 +409,15 @@ impl Ctx<'_> {
         let mut still = spec.clone();
         still.label = Some(format!("{} (settled)", spec.label()));
         let label = self.label(&still);
-        let reports = self.pass(&[still], mode, base, out, None, self.plan.run.warmup, held)?;
+        let reports = self.pass(&[still], mode, base, out, None, held)?;
         Ok(reports.into_iter().find(|r| r.label == label).and_then(|r| r.quality_like.or(r.quality)))
     }
 
     /// One pass: the given renderers run together through the scripted timeline. With
     /// `only_every`, only the compared frames are rendered; with `settle`, the compared
-    /// frames that many more times, held still, and the last recorded.
-    fn pass(&self, specs: &[RendererSpec], mode: PassMode, base: &World, out: &mut Outputs, only_every: Option<u32>, warmup: u32, settle: u32) -> anyhow::Result<Vec<PassReport>> {
+    /// frames that many more times, held still, and the last recorded. Every pass has the
+    /// plan's warm-up: what a budgeted stream has sent by a frame depends on it.
+    fn pass(&self, specs: &[RendererSpec], mode: PassMode, base: &World, out: &mut Outputs, only_every: Option<u32>, settle: u32) -> anyhow::Result<Vec<PassReport>> {
         let run = &self.plan.run;
         let mut world = base.clone();
         let scene = Scene::new(self.plan.scene.clone(), self.blocks.clone(), &mut world, run.frames)?;
@@ -437,7 +438,7 @@ impl Ctx<'_> {
         let names: Vec<_> = lanes.iter().map(|l| l.report.label.clone()).collect();
         tracing::info!("pass: {} [{}]", names.join(", "), mode.name());
         let env = scene.environment;
-        let mut driver = ScriptedDriver::new(scene, mode, warmup, run.frames, only_every, run.clock_fps);
+        let mut driver = ScriptedDriver::new(scene, mode, run.warmup, run.frames, only_every, run.clock_fps);
         driver.settle = out.compare_every.filter(|_| settle > 0).map(|every| (every, settle));
         let result = run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, &self.blocks, run, out);
         if let Err(e) = &result {
@@ -568,10 +569,10 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         for repeat in 0..run.repeats.max(1) {
             let mut batch = vec![];
             if run.parallel {
-                batch.extend(ctx.pass(&specs, mode, &base, &mut out, None, run.warmup, 0)?);
+                batch.extend(ctx.pass(&specs, mode, &base, &mut out, None, 0)?);
             } else {
                 for s in &specs {
-                    batch.extend(ctx.pass(std::slice::from_ref(s), mode, &base, &mut out, None, run.warmup, 0)?);
+                    batch.extend(ctx.pass(std::slice::from_ref(s), mode, &base, &mut out, None, 0)?);
                     if out.ui.as_ref().is_some_and(|u| u.closed()) {
                         reports.extend(batch);
                         return Ok((reports, scene_features));
