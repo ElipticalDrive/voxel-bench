@@ -85,10 +85,12 @@ impl<'a> March<'a> {
         Vec3::new(gx * 0.5, 2.0, gz * 0.5).normalize()
     }
 
-    /// Texture coordinates of point `p` relative to column `cell`'s top block.
+    /// Texture coordinates of point `p` in column `cell`: across the column, and up the block
+    /// it lies in (a side shows its top block's texture once per block, as a column solid
+    /// below its top of that block's kind would).
     #[inline]
-    fn local(&self, p: Vec3, cell: IVec2, top: f32) -> Vec3 {
-        (p - Vec3::new(cell.x as f32, top - 1.0, cell.y as f32)).clamp(Vec3::ZERO, Vec3::splat(0.999))
+    fn local(p: Vec3, cell: IVec2) -> Vec3 {
+        Vec3::new(p.x - cell.x as f32, p.y - p.y.floor(), p.z - cell.y as f32).clamp(Vec3::ZERO, Vec3::splat(0.999))
     }
 
     /// Marches screen column `gx` front to back, handing its rows to `out`.
@@ -151,7 +153,7 @@ impl<'a> March<'a> {
                         t = if d.y < -1e-6 { (hh - o.y) / d.y } else { t0 / Vec2::new(d.x, d.z).length().max(1e-4) };
                     }
                     let p = o + d * t;
-                    out.hit(row as usize, t, Surface { p, n: face.normal().as_vec3(), local: self.local(p, cell, hh), block, face });
+                    out.hit(row as usize, t, Surface { p, n: face.normal().as_vec3(), local: Self::local(p, cell), block, face });
                 }
                 ybuf = ybuf.min(rtop);
             }
@@ -230,7 +232,7 @@ impl Out for Records<'_> {
 
 /// `placement = deferred`: the frame's column-major records, shaded by the common deferred
 /// pass. The decoded surface gets the march's own details back from the record's cell (as
-/// the GPU's `view_surface`): texture coordinates relative to the column's top block, the
+/// the GPU's `view_surface`): texture coordinates across its column (see [`March::local`]), the
 /// heightmap slope on lit tops.
 pub struct Deferred<'a, S, P> {
     pub recs: &'a [Record],
@@ -256,7 +258,7 @@ impl<P: Pixel, S: Fn(&Surface) -> P + Sync> crate::shading::deferred::Records fo
         let mut s = r.surface(self.m.o, d);
         let c = (s.p - s.local).round();
         let cell = IVec2::new(c.x as i32, c.z as i32);
-        s.local = self.m.local(s.p, cell, self.m.top_of(self.m.hm_at(cell)));
+        s.local = March::local(s.p, cell);
         if self.lit && s.face == Face::PosY {
             s.n = self.m.slope(cell);
         }

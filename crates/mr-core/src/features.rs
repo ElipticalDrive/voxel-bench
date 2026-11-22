@@ -24,6 +24,9 @@ pub enum Feature {
     /// to back. Asked by the world (one holding such blocks), not by the pass; pipelines
     /// without it draw them opaque.
     Transparency,
+    /// Full 3D: overhangs, caves and floating blocks shown as they are. Asked by every pass;
+    /// without it (a heightmap) a column is solid below its top block, of that block's kind.
+    Volume,
 }
 
 impl Feature {
@@ -34,6 +37,7 @@ impl Feature {
             Feature::MeshRays => "mesh rays",
             Feature::Lod => "lod",
             Feature::Transparency => "transparency",
+            Feature::Volume => "volume",
         }
     }
 }
@@ -87,6 +91,12 @@ impl Features {
         }
     }
 
+    /// [`Features::lack`] as a builder.
+    pub fn lacking(mut self, f: Feature, why: impl Into<String>) -> Self {
+        self.lack(f, why);
+        self
+    }
+
     /// Why it lacks `f` (`None`: it has it).
     pub fn why_not(&self, f: Feature) -> Option<String> {
         if self.has(f) {
@@ -127,6 +137,7 @@ impl Features {
                 missing(Feature::MeshRays);
             }
         }
+        missing(Feature::Volume);
         for &f in world {
             missing(f);
         }
@@ -151,7 +162,7 @@ mod tests {
 
     #[test]
     fn narrowing_and_left_out() {
-        let mut f = Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays]).with_lod(6);
+        let mut f = Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays, Feature::Volume]).with_lod(6);
         assert_eq!(f.max_lod(), 6);
         let lit_meshes = PassMode { lighting: RenderMode::Lit, meshes: true };
         assert!(f.supports(lit_meshes) && f.left_out(Some(lit_meshes), 6, &[]).is_empty());
@@ -163,8 +174,8 @@ mod tests {
         f.lack(Feature::Transparency, "visibility `raycast` lacks layers");
         assert!(f.supports(PassMode::UNLIT), "a world's ask skips no pass");
         assert_eq!(f.left_out(Some(PassMode::UNLIT), 0, &[Feature::Transparency]), vec!["transparency: visibility `raycast` lacks layers".to_string()]);
-        let plain = Features::of(&[Feature::Lit]);
-        assert!(!plain.supports(lit_meshes) && plain.supports(PassMode::LIT));
-        assert_eq!(plain.left_out(None, 1, &[]), vec!["max_lod 1: its executor does not build it".to_string()]);
+        let plain = Features::of(&[Feature::Lit]).lacking(Feature::Volume, "storage `heightmap` is 2.5D");
+        assert!(!plain.supports(lit_meshes) && plain.supports(PassMode::LIT), "a heightmap skips no pass");
+        assert_eq!(plain.left_out(None, 1, &[]), vec!["volume: storage `heightmap` is 2.5D".to_string(), "max_lod 1: its executor does not build it".into()]);
     }
 }

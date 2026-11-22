@@ -36,7 +36,7 @@ pub(crate) fn info() -> RendererInfo {
         name: "gpu".into(),
         description: "GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component (triangles or brick boxes), a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries".into(),
         tags: vec!["gpu".into(), "raytrace".into(), "hardware-rt".into(), "modular".into(), "wgpu".into()],
-        features: Features::of(&[Feature::Lit]),
+        features: Features::of(&[Feature::Lit, Feature::Volume]),
         params: REGION.lighting_knobs(params()),
     }
 }

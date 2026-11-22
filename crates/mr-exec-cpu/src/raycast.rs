@@ -54,7 +54,7 @@ pub(crate) fn info() -> RendererInfo {
         name: "cpu".into(),
         description: "CPU ray casting, multi-threaded (rayon), one monomorphised instance per storage; ray packets and AVX2/AVX-512 hot loops".into(),
         tags: vec!["cpu".into(), "raycast".into(), "simd".into()],
-        features: Features::of(&[Feature::Lit, Feature::Transparency]),
+        features: Features::of(&[Feature::Lit, Feature::Volume, Feature::Transparency]),
         params: REGION.lighting_knobs(params()),
     }
 }

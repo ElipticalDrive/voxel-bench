@@ -74,10 +74,12 @@ per compared frame.
 
 And for what a pipeline declares it leaves out of a pass (its `not_supported`) while its
 frames still show the rest: mesh rays (lit `+meshes` frames whose shadows and bounces see only
-the voxels) and transparency (see-through blocks drawn opaque). Its reference leaves out the
-same (reference options `mesh_rays = false`, `transparency = false`; labelled `cpu-reference as
-pick(radius=16), no mesh rays (ref)`), so the score judges what the pipeline claims and a
-declared lack is not counted as an error.
+the voxels), transparency (see-through blocks drawn opaque) and volume (a heightmap: each
+column solid below its top block, of that block's kind, so no overhangs or caves; the
+`columns` pipelines). Its reference leaves out the same (reference options `mesh_rays =
+false`, `transparency = false`, `heightmap = true`; labelled `cpu-reference as
+pick(radius=16), no mesh rays (ref)`, `..., heightmap (ref)`), so the score judges what the
+pipeline claims and a declared lack is not counted as an error.
 
 A pipeline whose graph has an edge that arrives a frame late (`prev`: discover-cpu's faces,
 discovered while the previous frame is drawn) shows a moving camera partly as it was a frame

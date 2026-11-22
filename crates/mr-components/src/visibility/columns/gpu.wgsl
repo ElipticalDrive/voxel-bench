@@ -41,6 +41,12 @@ fn slope_normal(cell: vec2<i32>) -> vec3<f32> {
     return normalize(vec3<f32>(gx * 0.5, 2.0, gz * 0.5));
 }
 
+// Texture coordinates of point `p` in column `cell`: across the column, and up the block it
+// lies in (a side shows its top block's texture once per block). As the CPU's `March::local`.
+fn column_local(p: vec3<f32>, cell: vec2<i32>) -> vec3<f32> {
+    return clamp(vec3<f32>(p.x - f32(cell.x), fract(p.y), p.z - f32(cell.y)), vec3<f32>(0.0), vec3<f32>(0.999));
+}
+
 // Every pixel the march covers is shaded inline or, with shader def `DEFERRED`, written as
 // a hit record (`deferred.wgsl`). One body either way: a function between the march and
 // the shading (a hook per pixel) cost 2.5% of unlit GPU time on NVIDIA.
@@ -90,7 +96,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     if (d.y < -1e-6) { t = (H - o.y) / d.y; } else { t = t0 / max(length(d.xz), 1e-4); }
                 }
                 let p = o + d * t;
-                let local = clamp(p - vec3<f32>(f32(cell.x), H - 1.0, f32(cell.y)), vec3<f32>(0.0), vec3<f32>(0.999));
+                let local = column_local(p, cell);
 #ifdef DEFERRED
                 records[u32(row) * cam.width + gid.x] = pack_hit(t, Surface(p, face_normal(face), local, block, face));
 #else

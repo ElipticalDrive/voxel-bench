@@ -96,7 +96,15 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
   footprint had grown every silhouette by a pixel (islands lit 21 dB); a square footprint at
   the block centre's depth, capped at 8 px, had left near surfaces full of holes (10–26 dB).
 - `columns-gpu`: no overhangs, caves or trunks (PSNR ~15–36 dB on terrain-like plans; 4–21 dB
-  on the stress worlds, where little is a heightmap), 27 MB of GPU memory.
+  on the stress worlds, where little is a heightmap), 27 MB of GPU memory. Against a
+  reference given the world as a heightmap (its declared lack of volume) it still scores
+  ~17–20 dB (480x270: islands 19.1 unlit, 17.4 lit; terrain 20.4 / 17.9, where the heightmap
+  changes nothing): Voxel Space's own approximation. Each screen column marches the
+  horizontal direction of its centre ray and fills row spans with the cells it crosses, so
+  under a pitched camera vertical edges stay vertical on screen instead of converging, and
+  rows take a neighbouring cell near every edge; on detailed ground (foliage) that is a
+  pixel's shift everywhere. Exact only for a level camera; making it exact otherwise is a
+  per-pixel heightmap ray cast, another technique (2026-11-22).
 
 ## Shading
 

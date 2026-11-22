@@ -390,6 +390,9 @@ impl Ctx<'_> {
                 if l.leaves.transparency {
                     spec.options.insert("transparency".into(), false.into());
                 }
+                if l.leaves.volume {
+                    spec.options.insert("heightmap".into(), true.into());
+                }
                 format!("{} as {l} (ref)", c.reference)
             }
             None => format!("{} (ref)", c.reference),

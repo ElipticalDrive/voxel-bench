@@ -113,6 +113,9 @@ struct Options {
     /// Off: see-through blocks drawn opaque whatever the world asks: the reference of a
     /// pipeline that declares no transparency.
     transparency: Option<bool>,
+    /// The world as a heightmap shows it (each column solid below its top block, 2.5D): the
+    /// reference of a pipeline that declares no volume.
+    heightmap: bool,
 }
 
 /// Paths per pixel of a path-traced reference unless `paths` says otherwise: its noise is
@@ -179,7 +182,7 @@ pub fn info() -> RendererInfo {
         name: "cpu-reference".into(),
         description: "Multi-threaded f64 two-level DDA ray caster; defines the reference images".into(),
         tags: vec!["cpu".into(), "raycast".into(), "reference".into()],
-        features: Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays, Feature::Transparency]),
+        features: Features::of(&[Feature::Lit, Feature::Volume, Feature::Meshes, Feature::MeshRays, Feature::Transparency]),
         params: params(),
     }
 }
@@ -334,6 +337,15 @@ pub struct Chunks {
     bounds_dirty: bool,
     /// The coarse levels, when it renders them ([`Chunks::with_lod`]).
     lod: Option<Lod>,
+    /// Shown as a heightmap ([`Chunks::as_columns`]): `chunks` derived from these.
+    columns: Option<Columns>,
+}
+
+/// The chunks as received when they are shown as a heightmap, and the lowest chunk y among
+/// them (every column is filled down to it).
+struct Columns {
+    given: HashMap<IVec3, ChunkData>,
+    low: i32,
 }
 
 /// The coarse levels of a streamed region: at each level a cube of `radius` chunks around the
@@ -344,6 +356,50 @@ struct Lod {
     /// The camera's block (set every frame).
     cam: IVec3,
     coarse: HashMap<ChunkKey, ChunkData>,
+}
+
+impl Columns {
+    /// Rewrites chunk column (`x`, `z`) of `shown` from the given chunks; returns the chunk
+    /// positions written or removed.
+    fn rebuild(&self, shown: &mut HashMap<IVec3, ChunkData>, x: i32, z: i32) -> Vec<IVec3> {
+        let mut out: Vec<IVec3> = shown.keys().filter(|k| k.x == x && k.z == z).copied().collect();
+        for k in &out {
+            shown.remove(k);
+        }
+        let mut ys: Vec<i32> = self.given.keys().filter(|k| k.x == x && k.z == z).map(|k| k.y).collect();
+        ys.sort_unstable_by(|a, b| b.cmp(a));
+        let Some(&high) = ys.first() else { return out };
+        // Per (lx, lz): the top block's world y and kind.
+        let mut tops = vec![None; (CHUNK_SIZE * CHUNK_SIZE) as usize];
+        for lz in 0..CHUNK_SIZE {
+            for lx in 0..CHUNK_SIZE {
+                tops[(lz * CHUNK_SIZE + lx) as usize] = ys.iter().find_map(|&cy| {
+                    let ch = &self.given[&IVec3::new(x, cy, z)];
+                    (0..CHUNK_SIZE).rev().map(|ly| (ly, ch.get(IVec3::new(lx, ly, lz)))).find(|(_, b)| *b != BlockId::AIR).map(|(ly, b)| (cy * CHUNK_SIZE + ly, b))
+                });
+            }
+        }
+        for cy in self.low..=high {
+            let mut d = DenseChunk::filled(BlockId::AIR);
+            for lz in 0..CHUNK_SIZE {
+                for lx in 0..CHUNK_SIZE {
+                    let Some((top, b)) = tops[(lz * CHUNK_SIZE + lx) as usize] else { continue };
+                    for ly in 0..CHUNK_SIZE.min(top - cy * CHUNK_SIZE + 1).max(0) {
+                        d.set(IVec3::new(lx, ly, lz), b);
+                    }
+                }
+            }
+            let c = ChunkData::Dense(Arc::new(d)).compact();
+            if !c.is_air() {
+                let k = IVec3::new(x, cy, z);
+                shown.insert(k, c);
+                out.push(k);
+            }
+        }
+        out.sort_unstable_by_key(|p| (p.x, p.y, p.z));
+        out.dedup();
+        out
+    }
 }
 
 impl Lod {
@@ -432,13 +488,28 @@ impl CpuReference {
         let opts: Options = p.options()?;
         let mut world = World::new(&p);
         world.shadows = opts.shadows;
-        let chunks = if opts.lod && p.max_lod > 0 { Chunks::with_lod(p.view_radius_chunks, p.max_lod.min(MAX_LOD)) } else { Chunks::default() };
+        let chunks = if opts.heightmap {
+            Chunks::default().as_columns()
+        } else if opts.lod && p.max_lod > 0 {
+            Chunks::with_lod(p.view_radius_chunks, p.max_lod.min(MAX_LOD))
+        } else {
+            Chunks::default()
+        };
         let paths = opts.bounces.map(|bounces| Paths { bounces, paths: opts.paths.unwrap_or(PATHS).max(1) });
         Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths, mesh_rays: opts.mesh_rays.unwrap_or(true), transparency: opts.transparency.unwrap_or(true) })
     }
 }
 
 impl Chunks {
+    /// Chunks shown as a heightmap shows them (the `heightmap` storage: columns, 2.5D): each
+    /// (x, z) column solid from its top block down to the lowest chunk loaded anywhere, all of
+    /// the top block's kind; LOD 0 only.
+    pub fn as_columns(mut self) -> Self {
+        self.columns = Some(Columns { given: HashMap::new(), low: i32::MAX });
+        self.lod = None;
+        self
+    }
+
     /// Chunks that hold and trace the levels up to `max_lod` of a region of `radius` chunks
     /// per level; [`Chunks::look_from`] places the region before tracing.
     pub fn with_lod(radius: u32, max_lod: u8) -> Self {
@@ -474,6 +545,30 @@ impl Chunks {
     /// Applies the chunk updates (the world's others are ignored: [`World::apply`]); returns
     /// the LOD-0 chunk positions whose contents changed.
     pub fn apply(&mut self, updates: &[WorldUpdate]) -> Vec<IVec3> {
+        let Some(mut cols) = self.columns.take() else { return self.apply_given(updates) };
+        std::mem::swap(&mut self.chunks, &mut cols.given);
+        let changed = self.apply_given(updates);
+        std::mem::swap(&mut self.chunks, &mut cols.given);
+        let low = cols.given.keys().map(|k| k.y).min().unwrap_or(i32::MAX);
+        let mut xz: Vec<(i32, i32)> = if low != cols.low {
+            cols.low = low;
+            self.chunks.clear();
+            cols.given.keys().map(|k| (k.x, k.z)).collect()
+        } else {
+            changed.iter().map(|k| (k.x, k.z)).collect()
+        };
+        xz.sort_unstable();
+        xz.dedup();
+        let mut out = vec![];
+        for (x, z) in xz {
+            out.extend(cols.rebuild(&mut self.chunks, x, z));
+        }
+        self.columns = Some(cols);
+        self.bounds_dirty = true;
+        out
+    }
+
+    fn apply_given(&mut self, updates: &[WorldUpdate]) -> Vec<IVec3> {
         let mut changed = vec![];
         for u in updates {
             match u {
@@ -1245,6 +1340,38 @@ mod tests {
                 assert_eq!(s.shade_layered(o, d, 100.0, mode, None, &mut Rng::new(1)), s.shade(o, d, &hit, mode));
             }
         }
+    }
+
+    #[test]
+    fn heightmap_view_fills_columns_below_their_tops() {
+        let load = |pos: IVec3, cells: &[(IVec3, BlockId)]| {
+            let mut data = ChunkData::Uniform(BlockId::AIR);
+            for &(cell, b) in cells {
+                data.set(cell, b);
+            }
+            WorldUpdate::ChunkLoad { key: ChunkKey { pos, lod: 0 }, data }
+        };
+        let (stone, grass) = (BlockId(1), BlockId(2));
+        let mut c = Chunks::default().as_columns();
+        // An overhang: grass floating at y = 10 above stone at y = 2, column (3, 4).
+        c.apply(&[load(IVec3::ZERO, &[(IVec3::new(3, 10, 4), grass), (IVec3::new(3, 2, 4), stone)])]);
+        c.prepare();
+        assert_eq!(c.block_at(IVec3::new(3, 10, 4)), grass);
+        assert_eq!(c.block_at(IVec3::new(3, 5, 4)), grass, "the gap under the overhang is solid");
+        assert_eq!(c.block_at(IVec3::new(3, 0, 4)), grass, "all of the top's kind");
+        assert_eq!(c.block_at(IVec3::new(3, 11, 4)), BlockId::AIR);
+        assert_eq!(c.block_at(IVec3::new(4, 5, 4)), BlockId::AIR, "an empty column stays empty");
+        // A lower chunk elsewhere deepens every column to it; the edit's chunk column too.
+        c.apply(&[load(IVec3::new(1, -1, 0), &[(IVec3::new(0, 0, 0), stone)])]);
+        c.prepare();
+        assert_eq!(c.block_at(IVec3::new(3, -20, 4)), grass);
+        assert_eq!(c.block_at(IVec3::new(CHUNK_SIZE, -CHUNK_SIZE, 0)), stone);
+        assert_eq!(c.block_at(IVec3::new(CHUNK_SIZE, -CHUNK_SIZE + 1, 0)), BlockId::AIR);
+        // Edits reach the view: the overhang removed, the column's top is the stone.
+        c.apply(&[WorldUpdate::SetBlocks(vec![BlockEdit { pos: IVec3::new(3, 10, 4), block: BlockId::AIR }])]);
+        c.prepare();
+        assert_eq!(c.block_at(IVec3::new(3, 5, 4)), BlockId::AIR);
+        assert_eq!(c.block_at(IVec3::new(3, 2, 4)), stone);
     }
 
     fn chunk_of(cells: &[(IVec3, BlockId)]) -> Chunks {

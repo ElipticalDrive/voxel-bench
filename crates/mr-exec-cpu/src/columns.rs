@@ -30,7 +30,7 @@ pub(crate) fn info() -> RendererInfo {
         name: "cpu".into(),
         description: "Comanche-style Voxel Space on the CPU: per-column front-to-back heightmap march with a y-buffer, rayon-parallel over columns (2.5D, no overhangs)".into(),
         tags: vec!["cpu".into(), "heightmap".into(), "2.5d".into(), "software".into()],
-        features: Features::of(&[Feature::Lit]),
+        features: Features::of(&[Feature::Lit]).lacking(Feature::Volume, "storage `heightmap` is 2.5D: a column is solid below its top block"),
         params: vec![
             REGION.placement_param("inline"),
             ParamSpec::int("threads", "Worker threads (0 = all cores)", 0, 256, 0, true),

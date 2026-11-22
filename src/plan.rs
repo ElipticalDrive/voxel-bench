@@ -222,6 +222,8 @@ pub struct Leaves {
     pub mesh_rays: bool,
     /// See-through blocks drawn opaque in a world asking transparency.
     pub transparency: bool,
+    /// The world as a heightmap: each column solid below its top block (2.5D).
+    pub volume: bool,
 }
 
 impl Leaves {
@@ -233,6 +235,7 @@ impl Leaves {
         Leaves {
             mesh_rays: lit_meshes && features.has(Feature::Meshes) && !features.has(Feature::MeshRays),
             transparency: world.contains(&Feature::Transparency) && !features.has(Feature::Transparency),
+            volume: !features.has(Feature::Volume),
         }
     }
 }
@@ -277,6 +280,9 @@ impl std::fmt::Display for Like {
         }
         if self.leaves.transparency {
             write!(f, ", no transparency")?;
+        }
+        if self.leaves.volume {
+            write!(f, ", heightmap")?;
         }
         Ok(())
     }
@@ -1482,12 +1488,14 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         // What a pipeline declares it leaves out, its reference leaves out too.
         use mr_core::Feature;
         let lit_meshes = PassMode { lighting: mr_core::RenderMode::Lit, meshes: true };
-        let mut forward = mr_core::Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays]);
+        let mut forward = mr_core::Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays, Feature::Volume]);
         forward.lack(Feature::MeshRays, "draw `raster` shades forward");
         let leaves = Leaves::of(&forward, Some(lit_meshes), &[Feature::Transparency]);
-        assert_eq!(leaves, Leaves { mesh_rays: true, transparency: true });
+        assert_eq!(leaves, Leaves { mesh_rays: true, transparency: true, volume: false });
         assert_eq!(Leaves::of(&forward, Some(PassMode::UNLIT), &[]), Leaves::default(), "no shading rays unlit");
         assert_eq!(Leaves::of(&forward, None, &[]), Leaves::default());
+        let columns = mr_core::Features::of(&[Feature::Lit]).lacking(Feature::Volume, "2.5D");
+        assert_eq!(Leaves::of(&columns, Some(PassMode::UNLIT), &[]), Leaves { volume: true, ..Default::default() });
         let like = Like::of(&region, Lighting::Direct, leaves, &run).unwrap();
         assert_eq!(like.to_string(), format!("pick(radius={}), no mesh rays, no transparency", run.view_radius));
         // Accumulating pipelines are held still until `converge` paths per pixel; late ones
