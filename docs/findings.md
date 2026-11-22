@@ -87,6 +87,15 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
   `jitter` shifts the tile grid every frame, so small floating blocks between one frame's corner
   rays are hit on another; `dilate = 2` adds the camera-facing faces around fine-level hits
   (city lit 33 -> 45 dB) for ~45% more discovery time. `dilate = 0` is the fast setting.)
+- Drawing discovered faces one quad each disagrees with a ray about which face owns a pixel
+  whose centre lies on, or within float error of, the shared edge of faces smaller than a
+  pixel. In a distant forest (`far`, faces ~0.6 px at 480x270, ~460 blocks away) that is ~0.13%
+  of pixels: `discover-gpu` 33.4 dB lit / 35.1 unlit, while its audit finds no visible face
+  missing from the set and no `quadtree` setting changes the score. The error falls
+  quickly as resolution rises (960x540: 38.9 dB, 1920x1080: 46.0). Rasterising greedy meshes has
+  fewer edges and the same trend (44.3 / 46.6 / 49.3). This is sub-pixel aliasing, not missing
+  faces; neither answer is wrong and the reference's ray decides. It stays below the floor at
+  the sweep's resolution.
 
 ## Approximate techniques
 
