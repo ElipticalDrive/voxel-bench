@@ -312,7 +312,15 @@ const MESHES: &[Port] = &[
         "shadow rays onto meshes (unbound: the shading's)",
     ),
 ];
-const FACES: &[Port] = &[port("faces", Data::Faces, true, "the faces to draw")];
+const FACES: &[Port] = &[
+    port("faces", Data::Faces, true, "the faces to draw"),
+    port(
+        "storage",
+        Data::Storage,
+        false,
+        "the storage quads merged across block types look their blocks up in, per pixel (unbound: no lookup, so no such merging)",
+    ),
+];
 const SPLAT: &[Port] = &[port("points", Data::Faces, true, "the points to splat")];
 const DRAW: &[Port] = &[
     port("faces", Data::Faces, true, "the faces to draw"),

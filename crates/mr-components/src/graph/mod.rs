@@ -650,6 +650,50 @@ mod tests {
         })
         .accept()
         .unwrap();
+        // raster-gpu: faces merged across block types look their blocks up in the face
+        // source's storage (any GPU storage); unbound, merge = exposure is refused; the CPU
+        // rasteriser reads none there.
+        let exposure = |g: &mut Graph| {
+            g.nodes
+                .get_mut("geometry")
+                .unwrap()
+                .knobs
+                .insert("merge".into(), "exposure".into());
+        };
+        let rg = file("raster-gpu");
+        let bind = |g: &mut Graph, st: &str| {
+            g.nodes
+                .get_mut("visibility")
+                .unwrap()
+                .inputs
+                .insert("storage".into(), st.into());
+        };
+        let e = with(rg.clone(), &exposure).accept().unwrap_err();
+        assert!(e.contains("`visibility`.storage: not bound, and `geometry` merges"), "{e}");
+        with(rg.clone(), &|g| bind(g, "storage")).accept().unwrap();
+        with(rg.clone(), &|g| {
+            exposure(g);
+            bind(g, "storage");
+        })
+        .accept()
+        .unwrap();
+        with(rg, &|g| {
+            exposure(g);
+            g.nodes.insert("l".into(), Node::new(Role::Storage, "rows"));
+            bind(g, "l");
+        })
+        .accept()
+        .unwrap();
+        let e = with(file("raster-cpu"), &|g| {
+            g.nodes
+                .get_mut("visibility")
+                .unwrap()
+                .inputs
+                .insert("storage".into(), "storage".into());
+        })
+        .accept()
+        .unwrap_err();
+        assert!(e.contains("`visibility`.storage → `storage`: the cpu executor (for this shape) reads nothing there"), "{e}");
         // discover-cpu: exposure is the discovery storage; GPU shadow rays their own.
         let cd = file("discover-cpu");
         let e = with(cd.clone(), &|g| {

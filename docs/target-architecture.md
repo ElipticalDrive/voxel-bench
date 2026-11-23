@@ -185,7 +185,11 @@ Decided for the GPU rows (2026-11-23):
   region *is* one program, so its compiled pipelines and its bindings are its own. The rule:
   anything another node reads is an edge (a port, its resource the executor's); anything only
   one program uses (the drawers' depths, the splats' depth buffer) stays the region's. A
-  buffer a second node comes to need becomes an output port then, not before.
+  buffer a second node comes to need becomes an output port then, not before. So the face
+  drawer's per-pixel block lookup of merged faces reads the storage bound to its face
+  source's input (the `faces` visibility's `storage`, the quadtree's `exposure`), never the
+  shadow walk's by accident of linking: unbound (the shipped files), nothing merges across
+  block types and nothing is looked up.
 - **Every form of the hits edge gets a transfer between GPUs (to do).** Only the hit records
   cross today, so the drawers' and the splats' pipelines run on one GPU: a gap in "any edge,
   any pipeline", not a design. The transfer is to copy any `Form` (buffers as they are, render

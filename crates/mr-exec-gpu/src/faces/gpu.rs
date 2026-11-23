@@ -599,6 +599,7 @@ impl GpuSampler {
             wgsl: include_str!("set_faces.wgsl").into(),
             walks,
             lead: Some((rays, exposure)),
+            lookup: None,
             sites: [shadow, bounce],
             varyings: true,
             strip: true,
@@ -1964,7 +1965,7 @@ mod tests {
                     let mut with_bounce = walks.clone();
                     let bounce = with_bounce.site(&ck, ck.site(Role::Shading, "bounce").unwrap(), STORAGE_GROUPS, false);
                     for (walks, bounce, shading) in [(walks, shadow, "direct"), (with_bounce, bounce, "pathtrace")] {
-                        let (mut program, deps, _) = crate::faces::programs(&walks, Some((rays, exposure)), [shadow, bounce], None, shading);
+                        let (mut program, deps, _) = crate::faces::programs(&walks, Some((rays, exposure)), None, [shadow, bounce], None, shading);
                         crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("set_faces.wgsl"), true), shading, &format!("discover-gpu {st} {k} {shading}"), &base.choices("draw"));
                         // Discovery's pieces: the sampler and hole detection over the shared set.
                         program.add(quadtree::SET, quadtree::SET_WGSL, &deps.iter().map(String::as_str).collect::<Vec<_>>());

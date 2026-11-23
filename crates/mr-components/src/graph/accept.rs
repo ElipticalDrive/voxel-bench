@@ -75,7 +75,10 @@ impl Graph {
             }
         }
         ck.built()?;
-        if let Some(why) = device_blocker(&ck).or_else(|| api_blocker(&ck)) {
+        if let Some(why) = device_blocker(&ck)
+            .or_else(|| api_blocker(&ck))
+            .or_else(|| lookup_blocker(&ck))
+        {
             return Err(why);
         }
         Ok(())
@@ -187,6 +190,20 @@ fn device_blocker(ck: &Checked) -> Option<String> {
         why.push(format!("`{id}` ({}): mesh surfaces are rasterised on {near}, and the shading on {far} has not their triangles (meshes = none)", n.component));
     }
     (!why.is_empty()).then(|| why.join("; "))
+}
+
+/// Why a face source cannot draw its faces, if it can't: quads merged across block types
+/// (`merge = exposure`) look their blocks up per pixel in the storage bound to the face
+/// source's `storage` input; unbound, nothing is looked up.
+fn lookup_blocker(ck: &Checked) -> Option<String> {
+    let g = &ck.graph;
+    g.nodes.iter().find_map(|(id, n)| {
+        let faces = n.inputs.get("faces").filter(|_| n.role == Role::Visibility)?;
+        let merge = g.nodes[faces].knobs.get("merge").and_then(|v| v.as_str());
+        (merge == Some("exposure") && !n.inputs.contains_key("storage")).then(|| {
+            format!("`{id}`.storage: not bound, and `{faces}` merges faces across block types (merge = exposure), whose blocks are looked up per pixel in that storage (bind it, or merge = block)")
+        })
+    })
 }
 
 /// Why the APIs set in `ck` cannot run on its executor, if they can't: a non-fused node's

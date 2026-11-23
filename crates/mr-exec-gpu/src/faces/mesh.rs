@@ -211,7 +211,9 @@ pub(crate) struct Meshing {
     /// meshes) changed, the drawer is rebuilt at the next frame (one rebuild for several).
     built: String,
     stale: bool,
-    /// The storage of the mesh-shadow site's walk.
+    /// The face source's storage is bound: faces may merge across block types (`merge =
+    /// exposure`).
+    lookup: bool,
     /// Mesh mode: drawn into the same depth buffer.
     mesh: GpuMeshes,
     /// The quads, in pages (draw batches) of at most what the device binds.
@@ -277,6 +279,11 @@ impl Meshing {
             anyhow::bail!("the faces do not cross from the CPU to the GPU");
         }
         let (mut walks, shadow, bounce, mesh_shadow) = walks(g)?;
+        // Faces merged across block types look their blocks up in the face source's storage.
+        let lookup = g.input(Role::Visibility, "storage").map(|st| walks.storage(g, st, STORAGE_GROUPS));
+        if knobs.merge == Merge::Exposure && lookup.is_none() {
+            anyhow::bail!("merge = exposure: the visibility node's storage is not bound (the merged faces' blocks are looked up there)");
+        }
         walks.set_max_steps(opts.max_steps);
         tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: sk.bounces, spp: sk.spp, accumulate: sk.accumulate, shadows: sk.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
@@ -292,6 +299,7 @@ impl Meshing {
                 wgsl: source_wgsl(&geometry),
                 walks,
                 lead: None,
+                lookup,
                 sites: [shadow, bounce],
                 varyings: false,
                 strip: self::geometry(&geometry).strip,
@@ -321,6 +329,7 @@ impl Meshing {
         let s = Self {
             built: geometry.clone(),
             stale: false,
+            lookup: lookup.is_some(),
             mesh,
             quads,
             chunk_buf,
@@ -663,11 +672,13 @@ impl Meshing {
                 self.opts.mesh_budget = value.as_i64().unwrap_or(0) as usize;
                 Ok(())
             }
-            "merge" => parse_merge(&s).map(|m| {
+            "merge" => parse_merge(&s).and_then(|m| {
+                anyhow::ensure!(m != Merge::Exposure || self.lookup, "merge = exposure: the visibility node's storage is not bound (the merged faces' blocks are looked up there)");
                 if m != self.live.knobs.merge {
                     self.live.knobs.merge = m;
                     self.remesh_all();
                 }
+                Ok(())
             }),
             "cull" => {
                 let c = value.as_bool().unwrap_or(true);
@@ -828,7 +839,8 @@ mod tests {
                         let bounce = (shading == "pathtrace").then(|| Change::bind("shading", "bounce", "kernel"));
                         let edits: Vec<Change> = [("storage", st), ("kernel", k), ("geometry", g), ("shading", shading)].into_iter().map(|(n, c)| Change::component(n, c)).chain(bounce).collect();
                         let mut graphs = vec![base.with_edits(&edits).unwrap()];
-                        // Bounces and mesh shadows through walks of their own.
+                        // Bounces, mesh shadows and the merged faces' lookup through walks and a
+                        // storage of their own.
                         if shading == "pathtrace" && g == "greedy" {
                             let mut gr = graphs[0].clone();
                             let node = |role, c: &str, ins: &[(&str, &str)]| {
@@ -841,16 +853,26 @@ mod tests {
                             gr.nodes.insert("m.kernel".into(), node(Role::Traversal, "incremental", &[("storage", "storage")]));
                             gr.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "b.kernel".into());
                             gr.nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), "m.kernel".into());
+                            gr.nodes.insert("l.storage".into(), node(Role::Storage, "rows", &[]));
+                            gr.nodes.get_mut("visibility").unwrap().inputs.insert("storage".into(), "l.storage".into());
                             graphs.push(gr);
                         }
                         for gr in graphs {
                             let ck = gr.check().unwrap();
                             gr.validate().unwrap_or_else(|e| panic!("{gr:?}: {e}"));
                             let what = format!("raster-gpu {st} {k} {g} {shading}");
-                            let (walks, shadow, bounce, mesh_shadow) = walks(&ck).unwrap();
+                            let (mut walks, shadow, bounce, mesh_shadow) = walks(&ck).unwrap();
+                            let lookup = ck.input(Role::Visibility, "storage").map(|st| walks.storage(&ck, st, STORAGE_GROUPS));
                             // The drawer (with mesh records for deferred drawers, and without).
-                            let (program, deps, meshed) = crate::faces::programs(&walks, None, [shadow, bounce], Some(mesh_shadow), shading);
+                            let (program, deps, meshed) = crate::faces::programs(&walks, None, lookup, [shadow, bounce], Some(mesh_shadow), shading);
                             let draw_src = crate::faces::draw_src(&source_wgsl(g), false);
+                            // The merged faces' blocks come from the face source's storage.
+                            if let Some(st) = lookup {
+                                let d: Vec<&str> = deps.iter().map(String::as_str).collect();
+                                let text = program.text(&draw_src, &d).unwrap();
+                                let want = format!("#import {}::{{s_block_at}}", walks.storage_path(st));
+                                assert!(text.split("// ---- root").nth(1).unwrap().contains(&want), "{what}: {want}");
+                            }
                             crate::faces::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, &base.choices("draw"));
                             n += 1;
                         }

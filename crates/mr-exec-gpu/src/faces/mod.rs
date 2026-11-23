@@ -71,6 +71,9 @@ struct SourceSpec {
     /// exposure storage in them (the GPU sampler's), and of the shadow and bounce rays'.
     walks: Walks,
     lead: Option<(usize, usize)>,
+    /// The storage the source's merged faces look their blocks up in (its `storage` input):
+    /// compiled first in the drawer's imports, with shader def `LOOKUP`.
+    lookup: Option<usize>,
     sites: [usize; 2],
     /// The drawer's fragment inputs: interpolated (unit faces) or rebuilt from the instance
     /// (merged faces, `draw::faces_wgsl`).
@@ -193,12 +196,16 @@ fn draw_wgsl(mode: DrawMode, shading: &str, features: wgpu::Features) -> String 
 /// the shading component `shading` (its state in group 0) and the root's dependencies; with
 /// meshes (the mesh-shadow site's walk) also the mesh capability's variant, the triangles in
 /// the images group.
-fn programs(walks: &Walks, lead: Option<(usize, usize)>, [shadow, bounce]: [usize; 2], meshes: Option<usize>, shading: &str) -> (mr_gpu::program::Program, Vec<String>, Option<Meshed>) {
+fn programs(walks: &Walks, lead: Option<(usize, usize)>, lookup: Option<usize>, [shadow, bounce]: [usize; 2], meshes: Option<usize>, shading: &str) -> (mr_gpu::program::Program, Vec<String>, Option<Meshed>) {
     use mr_components::shaders;
     let (mut program, sites) = shaders::sites_program(walks, lead, shadow, bounce);
     // The shading's rays are the sites' (`sites_program`: `rays::shadow`, `rays::bounce`).
     shaders::shading(&mut program, shading, &["rays::shadow", "rays::bounce"], 0, crate::STATE_BINDING);
-    let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string()];
+    let mut deps = lookup.map(|st| walks.storage_path(st)).into_iter().collect::<Vec<_>>();
+    if lookup.is_some() {
+        program.define("LOOKUP");
+    }
+    deps.extend([shaders::SHADING.to_string(), shaders::STATE.to_string()]);
     deps.extend(sites);
     let meshed = meshes.map(|mesh_shadow| {
         let (mut rays_voxels, mut deps) = (program.clone(), deps.clone());
@@ -279,7 +286,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
     let shading = o.shading.to_string();
     // The walks' modules: the roots cast through the discovery rays' kernel and read the
     // exposure storage; shading's rays through theirs.
-    let (mut program, deps, mut meshed) = programs(&src.walks, src.lead, src.sites, src.meshes, &shading);
+    let (mut program, deps, mut meshed) = programs(&src.walks, src.lead, src.lookup, src.sites, src.meshes, &shading);
     // Ray queries at the sites: their bindings and trace in every root.
     core.trace_root(&mut program, "0u");
     if let Some(m) = &mut meshed {
@@ -490,7 +497,7 @@ mod tests {
                 let groups = &[2, 4];
                 let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), groups, false);
                 let bounce = ck.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&ck, s, groups, false));
-                let (program, deps, _) = super::programs(&walks, None, [shadow, bounce], None, shading);
+                let (program, deps, _) = super::programs(&walks, None, None, [shadow, bounce], None, shading);
                 drawers(&program, &deps, None, &super::draw_src(include_str!("records.wgsl"), true), shading, &format!("discover-cpu {st} {shading}"), &base.choices("draw"));
             }
         }

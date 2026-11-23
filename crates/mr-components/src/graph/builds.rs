@@ -354,13 +354,23 @@ pub const CPU_RASTER: Builds = Builds {
         Build::one(Role::Shading, &["direct"], impls::CPU_SCALAR),
     ],
     same: &[],
-    only: &[Only {
-        role: Role::Shading,
-        of: &[],
-        port: "shadow",
-        components: CPU_WALKS,
-        bound: true,
-    }],
+    only: &[
+        Only {
+            role: Role::Shading,
+            of: &[],
+            port: "shadow",
+            components: CPU_WALKS,
+            bound: true,
+        },
+        // Its geometry merges only faces of one block: no lookup.
+        Only {
+            role: Role::Visibility,
+            of: &[],
+            port: "storage",
+            components: &[],
+            bound: false,
+        },
+    ],
     live: &[Live::of(Role::Geometry)],
     ..Builds::plain(RegionId::CpuRaster)
 };
@@ -472,6 +482,13 @@ pub const GPU_MESHING: Builds = Builds {
             of: &[],
             port: "shadow",
             components: GPU_WALKS,
+            bound: false,
+        },
+        Only {
+            role: Role::Visibility,
+            of: &[],
+            port: "storage",
+            components: GPU_STORAGES,
             bound: false,
         },
         SHADOW_WALKED,
@@ -743,6 +760,12 @@ impl Checked {
                     None if o.bound => {
                         return Err(format!(
                             "`{id}`.{}: not bound, and {executor} has nothing of its own to read there",
+                            o.port
+                        ));
+                    }
+                    Some(src) if o.components.is_empty() => {
+                        return Err(format!(
+                            "`{id}`.{} → `{src}`: {executor} reads nothing there (unbind it)",
                             o.port
                         ));
                     }

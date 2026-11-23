@@ -268,6 +268,7 @@ impl CpuSampler {
             wgsl: include_str!("records.wgsl").into(),
             walks,
             lead: None,
+            lookup: None,
             sites: [shadow, bounce],
             varyings: true,
             strip: true,

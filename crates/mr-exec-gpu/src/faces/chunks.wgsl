@@ -29,7 +29,9 @@ fn src_block(ii: u32) -> u32 {
 
 // Quads merged across block types (`merge = exposure`) look their block up in the cell
 // kept inside the quad (at silhouettes the analytic hit can land a hair outside it); the
-// texel uses the unclamped cell, which matched the reference better.
+// texel uses the unclamped cell, which matched the reference better. The storage is the
+// face source's `storage` input (`LOOKUP`); unbound, no quad is merged so (never asked).
+#ifdef LOOKUP
 fn src_lookup(ii: u32, face: u32, h: Hit, d: vec3<f32>) -> u32 {
     let q = quads[ii];
     let ax = face_axes(face);
@@ -41,6 +43,11 @@ fn src_lookup(ii: u32, face: u32, h: Hit, d: vec3<f32>) -> u32 {
     cell[ax.z] = i32(clamp(floor(p[ax.z]), base[ax.z], base[ax.z] + size.y - 1.0));
     return s_block_at(cell + vp.cam_block);
 }
+#else
+fn src_lookup(ii: u32, face: u32, h: Hit, d: vec3<f32>) -> u32 {
+    return h.block;
+}
+#endif
 
 fn src_view(ii: u32, color: vec4<f32>) -> vec4<f32> {
     return color;
