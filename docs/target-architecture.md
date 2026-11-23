@@ -179,6 +179,23 @@ exactly. What still differs from the target:
 | Graph-driven program generator | `src/pipelines.rs` is keyed by the graph and its executor alone (the knobs declared specialisable valued on their nodes) and generates one crate per executor, but only the CPU regions are specialised: the GPU executor's crate builds its CPU work natively and bakes no knob (the shaders compile their own constants in). |
 | Diagnostics on the node or edge at fault | A graph that does not run is a draft with its reason as text; the canvas does not mark the node at fault, draft steps are not in the undo stack, and nothing suggests a fix. |
 
+Decided for the GPU rows (2026-11-23):
+
+- **A region owns its program, group 0 and its nodes' internal buffers, by design.** A fused
+  region *is* one program, so its compiled pipelines and its bindings are its own. The rule:
+  anything another node reads is an edge (a port, its resource the executor's); anything only
+  one program uses (the drawers' depths, the splats' depth buffer) stays the region's. A
+  buffer a second node comes to need becomes an output port then, not before.
+- **Every form of the hits edge gets a transfer between GPUs (to do).** Only the hit records
+  cross today, so the drawers' and the splats' pipelines run on one GPU: a gap in "any edge,
+  any pipeline", not a design. The transfer is to copy any `Form` (buffers as they are, render
+  targets through a row-padded copy), not one data product.
+- **The generator specialises CPU regions only, by design.** A GPU program is specialised by
+  composing its shader per graph and baking the knobs as constants (compiled per key, cached),
+  which is the GPU's monomorphisation; a generated Rust crate adds nothing there. The GPU
+  executor's CPU work (meshing, uploads) is per chunk or per frame, not per step. A CPU node
+  of the GPU executor that becomes per-pixel hot is specialised like a CPU region.
+
 What already matches: typed ports, free edges, per-node device and API, `prev`/`iterate`
 timings, the schedule, shader-module composition, the shared hit record, isolation and the
 stream/link/client nodes, the canonical graph key, on-demand compiled builds with pixel
