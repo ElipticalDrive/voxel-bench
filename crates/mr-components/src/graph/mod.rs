@@ -1448,5 +1448,36 @@ mod tests {
             .unwrap();
         let why = g.check().unwrap_err();
         assert!(why.contains("`rowrun` has no cpu implementation"), "{why}");
+        assert!(!why.contains("refused"), "{why}");
+    }
+
+    /// A kind refused by nature says why; every refusal names a registered component that
+    /// really lacks that kind.
+    #[test]
+    fn refusals_give_their_reason() {
+        for &(role, name, kind, _) in crate::REFUSED {
+            let c = crate::component(role, name).expect("a registered component");
+            assert!(
+                c.on(kind).is_none(),
+                "{name} is implemented on {}",
+                kind.name()
+            );
+        }
+        // The ray-query graph with its passes moved to the CPU.
+        let mut g = file("rayquery-gpu");
+        for id in ["kernel", "shading", "visibility"] {
+            g = g
+                .edit(&Change::Device(id.into(), Some(Device::Cpu)))
+                .unwrap();
+        }
+        let why = g.check().unwrap_err();
+        assert!(
+            why.contains("`rayquery` has no cpu implementation"),
+            "{why}"
+        );
+        assert!(
+            why.contains("refused: it is the GPU's ray-tracing API"),
+            "{why}"
+        );
     }
 }

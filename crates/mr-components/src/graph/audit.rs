@@ -232,7 +232,9 @@ pub fn audit_markdown() -> String {
             }
         }
     }
-    s += "\nNo implementation on one kind (the other has one):\n";
+    // Gaps: no implementation on one kind while the other has one; refused by nature
+    // (`crate::REFUSED`, with the reason) or not filled yet.
+    let (mut refused, mut open) = (String::new(), String::new());
     for r in &rows {
         for k in KINDS {
             let other = match k {
@@ -240,15 +242,23 @@ pub fn audit_markdown() -> String {
                 Kind::Gpu => Kind::Cpu,
             };
             if r.unimplemented(k) && !r.unimplemented(other) {
-                s += &format!(
-                    "- {} `{}`: no {} implementation\n",
+                let line = format!(
+                    "- {} `{}`: no {} implementation",
                     r.role.name(),
                     r.name,
                     k.name()
                 );
+                match crate::refused(r.role, r.name, k) {
+                    Some(why) => refused += &format!("{line}: {why}\n"),
+                    None => open += &format!("{line}\n"),
+                }
             }
         }
     }
+    s += "\nNo implementation on one kind (the other has one), not filled yet:\n";
+    s += &open;
+    s += "\nRefused on one kind by nature:\n";
+    s += &refused;
     s
 }
 

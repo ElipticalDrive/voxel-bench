@@ -491,11 +491,14 @@ impl Graph {
             if let Some(c) = component(n.role, &n.component)
                 .filter(|c| !c.impls.iter().any(|i| i.kind == devices[id].kind()))
             {
+                let k = devices[id].kind();
+                let nature = crate::refused(n.role, c.name, k)
+                    .map_or(String::new(), |r| format!(", refused: {r}"));
                 why.push(format!(
-                    "`{id}`: {} `{}` has no {} implementation (has: {})",
+                    "`{id}`: {} `{}` has no {} implementation (has: {}{nature})",
                     n.role.name(),
                     c.name,
-                    devices[id].kind().name(),
+                    k.name(),
                     c.impls_label()
                 ));
             }

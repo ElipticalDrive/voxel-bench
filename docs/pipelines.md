@@ -8,7 +8,8 @@ fills (with the devices and APIs it is implemented for, and the files whose node
 `multirenderer audit` tabulates, per component and device kind, the APIs it is implemented with
 and the shipped files (or graphs one node-adding or -removing edit from one) that accept it there,
 then lists the implementations no such graph reaches and the components implemented on one kind
-only, and `multirenderer graph <renderer>` prints a renderer as its graph.
+only: gaps not filled yet, and those refused on a kind by their nature (`REFUSED` in
+`mr-components`, with the reason, which `accept` also gives), and `multirenderer graph <renderer>` prints a renderer as its graph.
 
 ## Nodes
 

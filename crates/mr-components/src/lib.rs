@@ -653,6 +653,24 @@ pub const COMPONENTS: &[ComponentInfo] = &[
 ];
 
 /// A component of `role`.
+/// Device kinds a component is refused on by its nature, each with the reason (shown by
+/// `accept` and the audit). A kind without an implementation and not listed here is a gap
+/// not yet filled.
+pub const REFUSED: &[(Role, &str, Kind, &str)] = &[(
+    Role::Traversal,
+    "rayquery",
+    Kind::Cpu,
+    "it is the GPU's ray-tracing API (RT cores walking a hardware acceleration structure); a CPU BVH walk would be a traversal of its own",
+)];
+
+/// Why component `name` of `role` is refused on device kind `k`, if it is by nature.
+pub fn refused(role: Role, name: &str, k: Kind) -> Option<&'static str> {
+    REFUSED
+        .iter()
+        .find(|(r, n, kind, _)| *r == role && *n == name && *kind == k)
+        .map(|(.., why)| *why)
+}
+
 pub fn component(role: Role, name: &str) -> Option<&'static ComponentInfo> {
     COMPONENTS.iter().find(|c| c.role == role && c.name == name)
 }
