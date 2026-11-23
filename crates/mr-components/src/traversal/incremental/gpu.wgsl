@@ -10,7 +10,13 @@
 // ray's result is consumed, but only ~1.4x in `view = "steps"` and ~1.3x on AMD (RADV).
 // Ruled out: dynamic vector indexing, private globals, struct writes and returns inside
 // the loop, unbounded inner loops, a flattened one-test-per-iteration form, runaway rays,
-// `continue`, extra live state. Cause still open.
+// `continue`, extra live state. Re-measured 2026-11-23 (terrain, 1080p): 2.0x unlit, 2.4x lit
+// on bricks, 1.5x unlit on tree64; 1.34x in `view = "steps"`, 1.48x in `view = "distance"`.
+// Where the hit's block is read decides much of it, differently per storage: read inside
+// the loop at the hit (as refloor does) bricks takes 1.23 ms instead of 1.73 but tree64 1.71
+// instead of 1.52; `s_probe` at level 0 (the block with the test) 1.37 and 1.78. Same pixels
+// throughout, so this is the compiler's code for the loop, not extra work; left as is until
+// the optimisation pass. Lit adds shadow walks, which read only `hit`.
 
 const TOP: u32 = S_TOP;
 
