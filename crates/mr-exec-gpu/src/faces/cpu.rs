@@ -75,6 +75,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::int("keep_frames", "Discovery passes a face stays in S without being re-confirmed", 1, 1000, 8, true),
         ParamSpec::int("max_footprint", "Max cells enumerated for one coherent tile (else split)", 1, 1 << 20, 4096, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("strict", "Plane criterion: every footprint cell must be an exposed face of that plane, else split (off: a window or a ledge inside a coherent tile is missed)", true, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("occluders", "Plane criterion: a footprint cell's face also needs this many cells toward the eye free of blocks, else split (0 off: a block floating just above a floor, between the corners' rays, is missed)", 0, 64, 4, true).of("visibility", &["quadtree"]),
         ParamSpec::bool("jitter", "Shift the tile grid randomly every frame (temporal coverage: a block small enough to slip between one frame's corner rays is hit on another)", true, true).of("visibility", &["quadtree"]),
         ParamSpec::int("dilate", "Fine-level samples add camera-facing exposed faces around the hit: 0 off, 1 the hit block's (closes edge cracks), 2 + its 6 neighbours, 3 3x3x3", 0, 3, 2, true).of("visibility", &["quadtree"]),
         ParamSpec::int("dilate_below", "Dilate samples traced at tile sizes <= this (px)", 1, 256, 2, true).of("visibility", &["quadtree"]),
@@ -141,6 +142,7 @@ struct VisibilityKnobs {
     criterion: String,
     max_footprint: u32,
     strict: bool,
+    occluders: u32,
     jitter: bool,
     dilate: u32,
     dilate_below: u32,
@@ -148,7 +150,7 @@ struct VisibilityKnobs {
 
 impl Default for VisibilityKnobs {
     fn default() -> Self {
-        Self { seed_step: 16, sky: "corners".into(), tile: 32, criterion: "plane".into(), max_footprint: 4096, strict: true, jitter: true, dilate: 2, dilate_below: 2 }
+        Self { seed_step: 16, sky: "corners".into(), tile: 32, criterion: "plane".into(), max_footprint: 4096, strict: true, occluders: 4, jitter: true, dilate: 2, dilate_below: 2 }
     }
 }
 
@@ -386,6 +388,7 @@ impl CpuSampler {
             cluster: self.visibility == "cluster",
             seed_step: v.seed_step,
             sky_sparse: v.sky == "sparse",
+            occluders: v.occluders,
         }
     }
 
@@ -402,6 +405,7 @@ impl CpuSampler {
             "keep_frames" => self.opts.keep_frames = int(8),
             "max_footprint" => self.vis.max_footprint = int(4096),
             "strict" => self.vis.strict = value.as_bool().unwrap_or(true),
+            "occluders" => self.vis.occluders = int(4),
             "jitter" => self.vis.jitter = value.as_bool().unwrap_or(true),
             "dilate" => self.vis.dilate = int(2),
             "dilate_below" => self.vis.dilate_below = int(2),

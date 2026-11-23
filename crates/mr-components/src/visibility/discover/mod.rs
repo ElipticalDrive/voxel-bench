@@ -107,6 +107,10 @@ pub struct Settings {
     pub seed_step: u32,
     /// Cluster discovery: a single seed miss covers its sky cell (else all four corners).
     pub sky_sparse: bool,
+    /// Plane criterion: a footprint cell's face also needs this many cells toward the eye
+    /// free of solid blocks, else the tile splits (a block floating in front of the plane
+    /// that the corners' rays passed by); 0 = off.
+    pub occluders: u32,
 }
 
 #[derive(Copy, Clone, Default)]

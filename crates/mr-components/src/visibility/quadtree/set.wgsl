@@ -34,7 +34,7 @@ struct Params {
     table_mask: u32, list_cap: u32, chunk_mask: u32, chunk_probe: u32,
     queue_cap: u32, parity: u32, strict: u32, still: u32,   // still: rotation / world-change-only frame
     closure_px: u32, closure_box: i32, block_faces: u32, inline_fp: u32,  // inline_fp: footprints up to this many cells expand in `classify`
-    unused: u32, refresh: u32, par_k: f32, changed: u32, // par_k = f_px * |camera move| / near; changed: tile mask non-empty
+    occluders: u32, refresh: u32, par_k: f32, changed: u32, // occluders: cells walked toward the eye from a footprint face; par_k = f_px * |camera move| / near; changed: tile mask non-empty
     full: u32, r_max: u32, need_off: u32, par_thresh: f32,
     prev_forward: vec3<f32>, prev_tan: f32,               // previous camera, for sky reprojection
     prev_right: vec3<f32>, has_prev: u32,

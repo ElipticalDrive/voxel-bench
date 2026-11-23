@@ -128,7 +128,7 @@ pub(crate) fn quadtree<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, 
                     } else if set.face_criterion {
                         if c.iter().all(|s| s.key == c[0].key) { Verdict::Done } else { Verdict::Split }
                     } else if c.iter().all(|s| s.plane == c[0].plane) {
-                        if footprint(grid, rays.cb, &c, set.max_footprint, set.strict, &mut faces) { Verdict::Done } else { Verdict::Split }
+                        if footprint(grid, &rays, &c, set, &mut faces) { Verdict::Done } else { Verdict::Split }
                     } else {
                         Verdict::Split
                     };
@@ -168,10 +168,13 @@ pub(crate) fn quadtree<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, 
 }
 
 /// Enumerates exposed faces on the common plane of the four corner samples inside the
-/// bounding box of their hit points. Returns false (tile must split) if it is too large or,
-/// `strict`, if a cell of it is not an exposed face of the plane (a hole or something in
-/// front of the plane, seen between the corners).
-fn footprint<G: World>(grid: &G, cb: IVec3, c: &[Sample; 4], max_cells: u32, strict: bool, out: &mut Vec<u64>) -> bool {
+/// bounding box of their hit points. Returns false (tile must split) if it is too large,
+/// `strict`, if a cell of it is not an exposed face of the plane (a hole, or a block resting
+/// on the plane, seen between the corners), or, `occluders`, if a solid cell lies within that
+/// many cells in front of one of its faces toward the eye (a block floating above the plane,
+/// which the corners' rays passed by).
+fn footprint<G: World>(grid: &G, rays: &Rays, c: &[Sample; 4], set: &Settings, out: &mut Vec<u64>) -> bool {
+    let (cb, max_cells, strict) = (rays.cb, set.max_footprint, set.strict);
     let face = (c[0].plane & 7) as u32;
     let a = (face / 2) as usize;
     let coord = (c[0].plane >> 3) as u32 as i32;
@@ -199,6 +202,10 @@ fn footprint<G: World>(grid: &G, cb: IVec3, c: &[Sample; 4], max_cells: u32, str
             cell[a1] = u;
             let abs = cell + cb;
             if grid.block(abs) != 0 && grid.block(abs + n) == 0 {
+                if set.occluders > 0 && occluded(grid, cb, cell, n, rays.o, set.occluders) {
+                    out.truncate(start);
+                    return false;
+                }
                 out.push(face_key(abs, face));
             } else if strict {
                 out.truncate(start);
@@ -207,6 +214,36 @@ fn footprint<G: World>(grid: &G, cb: IVec3, c: &[Sample; 4], max_cells: u32, str
         }
     }
     true
+}
+
+/// Whether a solid cell lies within `cells` cells of the centre of face `n` of `cell` (both
+/// camera-block relative) along the line to the eye `o`: a voxel walk from the air cell in
+/// front of the face, ending at the eye.
+fn occluded<G: World>(grid: &G, cb: IVec3, cell: IVec3, n: IVec3, o: Vec3, cells: u32) -> bool {
+    let p = cell.as_vec3() + Vec3::splat(0.5) + n.as_vec3() * (0.5 + 1e-3);
+    let to = o - p;
+    let len = to.length();
+    if len <= 1e-4 {
+        return false;
+    }
+    let d = to / len;
+    let mut q = p.floor().as_ivec3();
+    let step = d.signum().as_ivec3();
+    let inv = Vec3::new(1.0 / d.x.abs().max(1e-12), 1.0 / d.y.abs().max(1e-12), 1.0 / d.z.abs().max(1e-12));
+    let next = Vec3::new(if d.x > 0.0 { q.x as f32 + 1.0 - p.x } else { p.x - q.x as f32 }, if d.y > 0.0 { q.y as f32 + 1.0 - p.y } else { p.y - q.y as f32 }, if d.z > 0.0 { q.z as f32 + 1.0 - p.z } else { p.z - q.z as f32 });
+    let mut t_max = next * inv;
+    for _ in 0..cells {
+        let a = if t_max.x <= t_max.y && t_max.x <= t_max.z { 0 } else if t_max.y <= t_max.z { 1 } else { 2 };
+        if t_max[a] >= len {
+            return false;
+        }
+        q[a] += step[a];
+        t_max[a] += inv[a];
+        if grid.block(q + cb) != 0 {
+            return true;
+        }
+    }
+    false
 }
 
 /// Adds the camera-facing exposed faces of the hit block (level 1: closes the cracks where a
@@ -273,8 +310,8 @@ mod tests {
         w.snapshot()
     }
 
-    fn settings(strict: bool) -> Settings {
-        Settings { tile: 32, face_criterion: false, sky_tile: 8, keep_frames: 1, max_footprint: 4096, strict, jitter: false, margin: 0.0, dilate: 0, dilate_below: 2, cluster: false, seed_step: 16, sky_sparse: false }
+    fn settings(strict: bool, occluders: u32) -> Settings {
+        Settings { tile: 32, face_criterion: false, sky_tile: 8, keep_frames: 1, max_footprint: 4096, strict, jitter: false, margin: 0.0, dilate: 0, dilate_below: 2, cluster: false, seed_step: 16, sky_sparse: false, occluders }
     }
 
     /// A plane whose footprint has a hole (a window) is not coherent: strict tiles split and
@@ -285,10 +322,41 @@ mod tests {
         let (w, h) = (160, 120);
         let cam = Camera::look_at(DVec3::new(16.0, 10.0, 2.0), DVec3::new(15.5, 9.5, 24.0), 70.0);
         let missing = |strict| {
-            let out = grid.discover(State::default(), &cam, w, h, &settings(strict));
+            let out = grid.discover(State::default(), &cam, w, h, &settings(strict, 0));
             grid.audit(&out.state.s, &cam, w, h).0
         };
         assert_eq!(missing(true), 0, "strict: pixels see faces missing from S");
         assert!(missing(false) > 0, "the scene must exercise the window case");
+    }
+
+    /// One chunk: a floor and a row of blocks floating one cell above it, seen from above at
+    /// a slant (the corners of a floor tile pass by the row; only the walk toward the eye
+    /// finds it in front of the floor).
+    fn floating() -> Arc<dyn Snapshot> {
+        let mut d = DenseChunk(Box::new([BlockId::AIR; CHUNK_VOLUME]));
+        for i in 0..CHUNK_VOLUME {
+            let l = mr_core::chunk::cell_of_index(i);
+            if l.y == 0 || (l.y == 2 && l.z == 16 && (12..20).contains(&l.x)) {
+                d.0[i] = BlockId(1);
+            }
+        }
+        let mut w = CpuWorld::new("bricks").unwrap();
+        w.apply(&[WorldUpdate::ChunkLoad { key: ChunkKey { pos: IVec3::ZERO, lod: 0 }, data: ChunkData::Dense(Arc::new(d)) }]);
+        w.snapshot()
+    }
+
+    /// A strict floor footprint whose cells are all exposed can still have a block floating
+    /// in front of it; `occluders` walks toward the eye and splits such tiles.
+    #[test]
+    fn occluders_find_floating_blocks() {
+        let grid = floating();
+        let (w, h) = (160, 120);
+        let cam = Camera::look_at(DVec3::new(16.0, 12.0, 2.0), DVec3::new(16.0, 1.0, 24.0), 70.0);
+        let missing = |occluders| {
+            let out = grid.discover(State::default(), &cam, w, h, &settings(true, occluders));
+            grid.audit(&out.state.s, &cam, w, h).0
+        };
+        assert_eq!(missing(4), 0, "occluders: pixels see faces missing from S");
+        assert!(missing(0) > 0, "the scene must exercise the floating case");
     }
 }

@@ -254,6 +254,38 @@ fn classify(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg: 
     }
 }
 
+// Whether a solid block lies within `pr.occluders` cells of the centre of face `face` of `a`
+// (absolute) along the line to the eye: a voxel walk from the air cell in front of the face
+// (a block floating in front of a footprint, which the tile's corner rays passed by).
+fn occluded(a: vec3<i32>, face: u32) -> bool {
+    if (pr.occluders == 0u) { return false; }
+    let p = vec3<f32>(a - vp.cam_block) + vec3<f32>(0.5) + vec3<f32>(normal_i(face)) * (0.5 + 1e-3);
+    let to = pr.origin - p;
+    let len = length(to);
+    if (len <= 1e-4) { return false; }
+    let d = to / len;
+    var q = vec3<i32>(floor(p));
+    let sg = vec3<i32>(sign(d));
+    let inv = vec3<f32>(1.0) / max(abs(d), vec3<f32>(1e-12));
+    var tm = select(p - vec3<f32>(q), vec3<f32>(q) + vec3<f32>(1.0) - p, d > vec3<f32>(0.0)) * inv;
+    for (var k = 0u; k < pr.occluders; k++) {
+        var ax = 2u;
+        if (tm.x <= tm.y && tm.x <= tm.z) { ax = 0u; } else if (tm.y <= tm.z) { ax = 1u; }
+        if (tm[ax] >= len) { return false; }
+        q[ax] += sg[ax];
+        tm[ax] += inv[ax];
+        if (block_at_cached(q + vp.cam_block) != 0u) { return true; }
+    }
+    return false;
+}
+
+// A footprint cell that makes its tile split: not an exposed face (`strict`), or an exposed
+// face with a block in front of it (`occluders`).
+fn fp_rejects(a: vec3<i32>, face: u32) -> bool {
+    let b = exposed(a, face);
+    return (b == 0u && pr.strict != 0u) || (b != 0u && occluded(a, face));
+}
+
 fn classify_tile(i: u32) {
     let s = lv.size;
     var t: vec2<u32>;
@@ -333,11 +365,11 @@ fn classify_tile(i: u32) {
     if (n <= pr.inline_fp) {
         // Small footprints (most tiles at deep levels): expand here. A 64-thread workgroup
         // per 1-4 cell job would leave nearly all of its threads idle.
-        for (var k = 0u; k < n && pr.strict != 0u; k++) {
+        for (var k = 0u; k < n && (pr.strict != 0u || pr.occluders != 0u); k++) {
             var a = base;
             a[ua] = a0.x + cb[ua] + i32(k % u32(nu));
             a[va] = a0.y + cb[va] + i32(k / u32(nu));
-            if (exposed(a, face) == 0u) { atomicAdd(&st[C_FP_REJECT], 1u); reject(t, s, c); return; }
+            if (fp_rejects(a, face)) { atomicAdd(&st[C_FP_REJECT], 1u); reject(t, s, c); return; }
         }
         var added = 0u;
         for (var k = 0u; k < n; k++) {
@@ -387,12 +419,12 @@ fn footprint(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) nwg:
         atomicStore(&job_added, 0u);
     }
     workgroupBarrier();
-    if (pr.strict != 0u) {
+    if (pr.strict != 0u || pr.occluders != 0u) {
         for (var k = li; k < n; k += 64u) {
             var a = h0.xyz;
             a[ua] = h1.x + i32(k % nu);
             a[va] = h1.y + i32(k / nu);
-            if (exposed(a, face) == 0u) { atomicStore(&job_ok, 0u); }
+            if (fp_rejects(a, face)) { atomicStore(&job_ok, 0u); }
         }
     }
     let ok = workgroupUniformLoad(&job_ok);

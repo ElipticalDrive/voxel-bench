@@ -86,7 +86,12 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
   footprints split a coherent-looking tile whose plane has a hole (a window: city 21 -> 36 dB);
   `jitter` shifts the tile grid every frame, so small floating blocks between one frame's corner
   rays are hit on another; `dilate = 2` adds the camera-facing faces around fine-level hits
-  (city lit 33 -> 45 dB) for ~45% more discovery time. `dilate = 0` is the fast setting.)
+  (city lit 33 -> 45 dB) for ~45% more discovery time. `dilate = 0` is the fast setting.
+  2026-11-23: `strict` reads only the cell in front of each footprint face, so a block floating
+  a cell or more above a floor, between the corners' rays, passed it; `occluders = 4` also walks
+  4 cells from each face toward the eye and splits the tile on a solid one: showcase lit settled
+  28.6 -> 36.7 dB, unlit 30.5 -> 36.8 at 480x270. The GPU `quadtree` has the same walk; it
+  changed neither showcase (36.7 dB) nor city lit (35.7) at that size.)
 - Drawing discovered faces one quad each disagrees with a ray about which face owns a pixel
   whose centre lies on, or within float error of, the shared edge of faces smaller than a
   pixel. In a distant forest (`far`, faces ~0.6 px at 480x270, ~460 blocks away) that is ~0.13%
