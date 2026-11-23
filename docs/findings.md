@@ -98,6 +98,13 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
   cell up to `sky_tile` (then 16 px) whose four corner seeds missed was sky, and an island
   between seeds was never cast. `sky_tile` is now 8 for both, and `dilate` applies to seeds
   cast at spacing <= `dilate_below`: islands lit settled 34.0 -> 43.7, unlit 37.8 -> 45.5.
+  City does not follow the "more complete" rule above any more: at 480x270, settled, `cluster`
+  gives 40.7 dB unlit and 34.9 lit with `pathtrace` (dilate brought it up from 33.7; `sky_tile`
+  makes no difference there), while the current `quadtree` gives 41.7 and 36.9, and a full GPU
+  raycast with `pathtrace` gives 39.0 lit. Cluster discovery took about 80 ms per frame against
+  quadtree's 11 ms. Neither `dilate_below` 4 or 8 (35.0 lit) nor `seed_step` 8 closes the gap.
+  While moving, both miss the same amount (about 60 faces, 0.34% of pixels: the one frame
+  that `faces~prev` lags behind).
 - Drawing discovered faces one quad each disagrees with a ray about which face owns a pixel
   whose centre lies on, or within float error of, the shared edge of faces smaller than a
   pixel. In a distant forest (`far`, faces ~0.6 px at 480x270, ~460 blocks away) that is ~0.13%
