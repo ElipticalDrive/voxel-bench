@@ -72,6 +72,10 @@ pub struct DrawerSpec<'a> {
     pub strip: bool,
     /// The output's format (the post's).
     pub format: wgpu::TextureFormat,
+    /// A deferred drawer's shade pass is compiled (`shade` in the module); without it the
+    /// drawer only draws its target (the shading runs on another GPU, which the target is
+    /// carried to).
+    pub shade: bool,
 }
 
 enum Pipes {
@@ -84,7 +88,7 @@ enum Pipes {
     /// ([`FaceDrawer::add_mesh_shade`]).
     Deferred {
         ids: wgpu::RenderPipeline,
-        shade: wgpu::ComputePipeline,
+        shade: Option<wgpu::ComputePipeline>,
         mesh_shade: [Option<wgpu::ComputePipeline>; 2],
     },
 }
@@ -313,7 +317,7 @@ impl FaceDrawer {
                 };
                 Pipes::Deferred {
                     ids,
-                    shade: shade_pipeline(gpu, spec.shade_layout, spec.module),
+                    shade: spec.shade.then(|| shade_pipeline(gpu, spec.shade_layout, spec.module)),
                     mesh_shade: [None, None],
                 }
             }
@@ -513,6 +517,8 @@ impl FaceDrawer {
                         .as_ref()
                         .expect("deferred meshes need FaceDrawer::add_mesh_shade")
                 } else {
+                    // Draw-only: the target is shaded on another GPU.
+                    let Some(shade) = shade else { return };
                     shade
                 };
                 let mut entries = vec![

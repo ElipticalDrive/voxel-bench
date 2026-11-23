@@ -1966,7 +1966,7 @@ mod tests {
                     let bounce = with_bounce.site(&ck, ck.site(Role::Shading, "bounce").unwrap(), STORAGE_GROUPS, false);
                     for (walks, bounce, shading) in [(walks, shadow, "direct"), (with_bounce, bounce, "pathtrace")] {
                         let (mut program, deps, _) = crate::faces::programs(&walks, Some((rays, exposure)), None, [shadow, bounce], None, shading);
-                        crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("set_faces.wgsl"), true), shading, &format!("discover-gpu {st} {k} {shading}"), &base.choices("draw"));
+                        crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("set_faces.wgsl"), true), shading, &format!("discover-gpu {st} {k} {shading}"), &base.choices("draw"), (&walks, Some((rays, exposure)), None));
                         // Discovery's pieces: the sampler and hole detection over the shared set.
                         program.add(quadtree::SET, quadtree::SET_WGSL, &deps.iter().map(String::as_str).collect::<Vec<_>>());
                         let disc_deps: Vec<String> = std::iter::once(quadtree::SET.to_string()).chain(deps.iter().cloned()).collect();

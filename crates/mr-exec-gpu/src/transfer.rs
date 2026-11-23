@@ -11,6 +11,10 @@
 //! last records cast are never shaded. Its costs are a GPU stage of the first GPU (`copy`:
 //! the records into the readback buffer), a CPU stage (`transfer`: the upload) and the wait
 //! for the first GPU's frame (the counter `transfer_wait_ms`).
+//!
+//! The first GPU's edge holds the records in a buffer (rays) or a render target of 8-byte
+//! texels (the `gbuffer` drawer's): a target is copied out with its rows padded to 256 bytes
+//! (wgpu's copy alignment) and written into the second GPU's records buffer unpadded.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -77,11 +81,19 @@ pub(crate) struct Transfer {
     upload_ms: f32,
 }
 
+/// The bytes of a row of `width` records as the first GPU's edge is copied out: a render
+/// target's padded to wgpu's copy alignment, `None` for a buffer (copied whole).
+fn padded_row(near: &Core) -> Option<u32> {
+    let edge = near.edges.hits()?;
+    edge.texture().map(|_| (near.width * 8).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
+}
+
 fn staging(near: &Core, late: bool) -> Vec<wgpu::Buffer> {
+    let size = padded_row(near).map_or(Hits::size(near.width, near.height), |row| row as u64 * near.height as u64);
     let one = || {
         near.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hit records readback"),
-            size: Hits::size(near.width, near.height),
+            size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
@@ -92,7 +104,7 @@ fn staging(near: &Core, late: bool) -> Vec<wgpu::Buffer> {
 impl Transfer {
     /// The transfer of `g`'s hits edge between the executors' cores, which both hold it.
     pub fn of(g: &graph::Checked, near: &Core, far: &Core) -> anyhow::Result<Self> {
-        let (Some(edge), Some(_)) = (near.edges.records(), far.edges.records()) else { anyhow::bail!("no hit records cross between the two GPUs (placement = deferred)") };
+        let (Some(edge), Some(_)) = (near.edges.hits().filter(|h| h.holds_records()), far.edges.records()) else { anyhow::bail!("no hit records cross between the two GPUs (placement = deferred, or draw = gbuffer)") };
         let late = g.graph.nodes.get(&edge.to).is_some_and(|n| n.when("hits") == When::Prev);
         tracing::info!("`{}` -> `{}`.hits: {} -> {} ({})", edge.from, edge.to, near.gpu.info.name, far.gpu.info.name, if late { "prev" } else { "now" });
         Ok(Self { staging: staging(near, late), sent: VecDeque::new(), late, near: Captured::default(), nodes: vec![edge.from.clone(), edge.to.clone()], wait_ms: 0.0, upload_ms: 0.0 })
@@ -106,11 +118,21 @@ impl Transfer {
     /// The first half: submits the first GPU's frame `enc` with its records copied out (with
     /// the frame's stats from the first GPU) and starts reading them back.
     pub fn send(&mut self, near: &mut Core, mut enc: wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, stats: FrameStats) {
-        let records = near.edges.records().expect("checked at creation").buffer();
+        let edge = near.edges.hits().expect("checked at creation");
         // `prev`: the other buffer than the records sent last frame, which are delivered next.
         let buffer = self.sent.back().map_or(0, |s| (s.buffer + 1) % self.staging.len());
         near.ring.stage(&mut enc, ticket, "copy", &self.nodes);
-        enc.copy_buffer_to_buffer(records, 0, &self.staging[buffer], 0, records.size());
+        match (edge.texture(), padded_row(near)) {
+            (Some(texture), Some(row)) => enc.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo { buffer: &self.staging[buffer], layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None } },
+                texture.size(),
+            ),
+            _ => {
+                let records = edge.buffer();
+                enc.copy_buffer_to_buffer(records, 0, &self.staging[buffer], 0, records.size());
+            }
+        }
         let index = near.ring.submit(&near.gpu, enc, ticket, &near.output, req.frame_id, false, stats);
         let mapped = Arc::new(AtomicBool::new(false));
         let done = mapped.clone();
@@ -143,7 +165,21 @@ impl Transfer {
         }
         let arrived = Instant::now();
         let staging = &self.staging[s.buffer];
-        far.gpu.queue.write_buffer(far.edges.records().expect("checked at creation").buffer(), 0, &staging.slice(..).get_mapped_range()?);
+        let records = far.edges.records().expect("checked at creation").buffer();
+        let data = staging.slice(..).get_mapped_range()?;
+        match padded_row(near) {
+            // A target's rows, unpadded into the records.
+            Some(row) => {
+                let width = near.width as usize * 8;
+                let size = wgpu::BufferSize::new((width * near.height as usize) as u64).expect("a frame has pixels");
+                let mut view = far.gpu.queue.write_buffer_with(records, 0, size).ok_or_else(|| anyhow::anyhow!("writing the hit records on {}", far.gpu.info.name))?;
+                for (y, from) in data.chunks(row as usize).enumerate() {
+                    view.slice(y * width..(y + 1) * width).copy_from_slice(&from[..width]);
+                }
+            }
+            None => far.gpu.queue.write_buffer(records, 0, &data),
+        }
+        drop(data);
         staging.unmap();
         self.wait_ms = (arrived - start).as_secs_f32() * 1e3;
         self.upload_ms = arrived.elapsed().as_secs_f32() * 1e3;

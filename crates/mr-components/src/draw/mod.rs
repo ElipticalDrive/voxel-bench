@@ -19,6 +19,16 @@ pub fn faces_wgsl(varyings: bool) -> String {
     format!("{}\n{fragment}", include_str!("faces.wgsl"))
 }
 
+/// A deferred draw component's drawing alone (its fragment stage writing the target, no
+/// deferred shade entry): what the first of two GPUs draws when the shading runs on the second.
+pub fn target_wgsl(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "visbuffer" => include_str!("visbuffer/gpu.wgsl"),
+        "gbuffer" => include_str!("gbuffer/gpu.wgsl"),
+        _ => return None,
+    })
+}
+
 /// The GPU draw components.
 pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {

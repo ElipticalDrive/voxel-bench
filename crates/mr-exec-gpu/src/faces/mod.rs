@@ -131,6 +131,9 @@ pub(crate) struct Draw {
     /// The drawer's timed stages' nodes.
     draw_nodes: DrawNodes,
     depth_prepass: bool,
+    /// The shading runs on another GPU ([`crate::remote`]): the drawer draws its target only,
+    /// compiled without the shading ([`draw_program`]).
+    draw_only: bool,
 }
 
 /// What a face drawer is compiled from.
@@ -148,6 +151,8 @@ struct DrawParts<'a> {
     width: u32,
     height: u32,
     format: wgpu::TextureFormat,
+    /// The shading runs on another GPU: the drawer draws its target only.
+    draw_only: bool,
 }
 
 impl DrawParts<'_> {
@@ -173,9 +178,15 @@ impl DrawParts<'_> {
     /// with meshes are added when a frame needs them ([`Draw::mesh_shade`]).
     fn drawer(&self, draw: &str) -> anyhow::Result<FaceDrawer> {
         let mode = DrawMode::parse(draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`"))?;
-        let vis = draw_wgsl(mode, self.shading, self.gpu.device.features());
+        let vis = if self.draw_only {
+            // Only `pack_hit` records cross between GPUs (visbuffer ids decode with their faces).
+            anyhow::ensure!(mode == DrawMode::Gbuffer, "the shading on another GPU shades hit records: draw = gbuffer, not `{draw}`");
+            draw::target_wgsl(mode.name()).expect("a deferred drawer").to_string()
+        } else {
+            draw_wgsl(mode, self.shading, self.gpu.device.features())
+        };
         let module = self.module("face drawer", &vis);
-        FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: self.strip, format: self.format }, mode, self.images, self.width, self.height)
+        FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: self.strip, format: self.format, shade: !self.draw_only }, mode, self.images, self.width, self.height)
     }
 }
 
@@ -215,6 +226,21 @@ fn programs(walks: &Walks, lead: Option<(usize, usize)>, lookup: Option<usize>, 
         Meshed { program, rays_voxels, deps }
     });
     (program, deps, meshed)
+}
+
+/// The walks' program of a draw-only drawing (the shading on another GPU): no shading, no
+/// shadow or bounce rays; the discovery rays' kernel and exposure storage (`lead`) and the
+/// merged faces' lookup storage only. Returns the program and the root's dependencies.
+fn draw_program(walks: &Walks, lead: Option<(usize, usize)>, lookup: Option<usize>) -> (mr_gpu::program::Program, Vec<String>) {
+    let mut program = mr_gpu::program::Program::world(None);
+    walks.add_to(&mut program);
+    let mut deps = lookup.map(|st| walks.storage_path(st)).into_iter().collect::<Vec<_>>();
+    if lookup.is_some() {
+        program.define("LOOKUP");
+    }
+    deps.extend(lead.map_or(vec![], |(k, st)| vec![walks.kernel_path(k), walks.storage_path(st)]));
+    deps.extend([mr_gpu::program::VOXELS, mr_gpu::program::COMMON].map(String::from));
+    (program, deps)
 }
 
 /// The drawing region's WGSL before the draw component: the frame, the face source, the
@@ -286,7 +312,14 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
     let shading = o.shading.to_string();
     // The walks' modules: the roots cast through the discovery rays' kernel and read the
     // exposure storage; shading's rays through theirs.
-    let (mut program, deps, mut meshed) = programs(&src.walks, src.lead, src.lookup, src.sites, src.meshes, &shading);
+    let draw_only = crate::remote::far_slot(g).is_some();
+    anyhow::ensure!(!(draw_only && src.meshes.is_some()), "meshes drawn with the faces are not split over two GPUs yet (the shading on another GPU)");
+    let (mut program, deps, mut meshed) = if draw_only {
+        let (program, deps) = draw_program(&src.walks, src.lead, src.lookup);
+        (program, deps, None)
+    } else {
+        programs(&src.walks, src.lead, src.lookup, src.sites, src.meshes, &shading)
+    };
     // Ray queries at the sites: their bindings and trace in every root.
     core.trace_root(&mut program, "0u");
     if let Some(m) = &mut meshed {
@@ -312,7 +345,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         bind_group_layouts: &core.storages.layouts(&[Some(&layout_draw), Some(core.world.layout()), None, Some(&images)]),
         immediate_size: 0,
     });
-    let parts = DrawParts { gpu, program: &program, deps: &deps, meshed: meshed.as_ref().filter(|_| src.draw_meshes), strip: src.strip, draw_src: &draw_src, shading: &shading, pl_draw: &pl_draw, pl_shade: &pl_shade, images: &images, width: p.width, height: p.height, format: core.output_format() };
+    let parts = DrawParts { gpu, program: &program, deps: &deps, meshed: meshed.as_ref().filter(|_| src.draw_meshes), strip: src.strip, draw_src: &draw_src, shading: &shading, pl_draw: &pl_draw, pl_shade: &pl_shade, images: &images, width: p.width, height: p.height, format: core.output_format(), draw_only };
     let drawer = parts.drawer(o.draw)?;
     let draw = Draw {
         drawer,
@@ -321,6 +354,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         depth_read: src.depth_read,
         draw_nodes: src.nodes,
         depth_prepass,
+        draw_only,
         shading,
         source: src.wgsl,
         varyings: src.varyings,
@@ -341,7 +375,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
 impl Draw {
     fn parts<'a>(&'a self, core: &'a Core) -> DrawParts<'a> {
         let meshed = self.meshed.as_ref().filter(|_| self.draw_meshes);
-        DrawParts { gpu: &core.gpu, program: &self.program, deps: &self.deps, meshed, strip: self.strip, draw_src: &self.draw_src, shading: &self.shading, pl_draw: &self.pl_draw, pl_shade: &self.pl_shade, images: &self.images, width: core.width, height: core.height, format: core.output_format() }
+        DrawParts { gpu: &core.gpu, program: &self.program, deps: &self.deps, meshed, strip: self.strip, draw_src: &self.draw_src, shading: &self.shading, pl_draw: &self.pl_draw, pl_shade: &self.pl_shade, images: &self.images, width: core.width, height: core.height, format: core.output_format(), draw_only: self.draw_only }
     }
 
     /// A module over the walks: `draw_src` plus `rest` (the GPU sampler's own raster entry
@@ -458,7 +492,7 @@ mod tests {
     /// raster's fragment stage with the sampler's own entry points) composes and validates
     /// over `program`, and over the mesh capability's variant where deferred drawers have it;
     /// with meshes, the forward mesh passes too.
-    pub(crate) fn drawers(program: &mr_gpu::program::Program, deps: &[String], meshed: Option<&super::Meshed>, draw_src: &str, shading: &str, what: &str, draws: &[&str]) {
+    pub(crate) fn drawers(program: &mr_gpu::program::Program, deps: &[String], meshed: Option<&super::Meshed>, draw_src: &str, shading: &str, what: &str, draws: &[&str], draw_only: (&mr_components::shaders::Walks, Option<(usize, usize)>, Option<usize>)) {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         let check = |program: &mr_gpu::program::Program, deps: &[String], root: &str, what: &str| {
             let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
@@ -473,6 +507,12 @@ mod tests {
             if let Some(m) = meshed.filter(|_| mode.deferred()) {
                 check(&m.program, &m.deps, &root, &format!("drawer with meshes {what} {d}"));
             }
+        }
+        // Draw-only (the shading on another GPU): the deferred drawers' targets alone.
+        let (walks, lead, lookup) = draw_only;
+        let (program, deps) = super::draw_program(walks, lead, lookup);
+        for d in draws.iter().filter_map(|d| mr_components::draw::target_wgsl(d)) {
+            check(&program, &deps, &format!("{draw_src}\n{d}"), &format!("draw-only {what}"));
         }
         if let Some(m) = meshed {
             check(&m.forward(), &m.deps, &super::mesh_src(shading, mr_components::shading::state::FRAGMENT_FEATURE), &format!("forward meshes {what}"));
@@ -498,7 +538,7 @@ mod tests {
                 let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), groups, false);
                 let bounce = ck.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&ck, s, groups, false));
                 let (program, deps, _) = super::programs(&walks, None, None, [shadow, bounce], None, shading);
-                drawers(&program, &deps, None, &super::draw_src(include_str!("records.wgsl"), true), shading, &format!("discover-cpu {st} {shading}"), &base.choices("draw"));
+                drawers(&program, &deps, None, &super::draw_src(include_str!("records.wgsl"), true), shading, &format!("discover-cpu {st} {shading}"), &base.choices("draw"), (&walks, None, None));
             }
         }
     }

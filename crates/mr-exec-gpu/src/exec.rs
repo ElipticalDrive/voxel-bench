@@ -52,7 +52,7 @@ impl Form {
 
 enum Resource {
     Buffer(wgpu::Buffer),
-    Image(wgpu::TextureView),
+    Image(wgpu::TextureView, wgpu::Texture),
 }
 
 /// The hits edge, `from` -> `to`.hits: what the pass of `from` found at each pixel (or, when
@@ -137,20 +137,20 @@ impl Hits {
                 let usage = if form == Form::Records { wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::STORAGE };
                 Resource::Buffer(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(if form == Form::Records { "hit records" } else { "hit ids" }), size: form.bytes(width, height) * layers as u64, usage, mapped_at_creation: false }))
             }
-            Form::Image(format) => Resource::Image(
-                gpu.device
-                    .create_texture(&wgpu::TextureDescriptor {
-                        label: Some("hits"),
-                        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format,
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                        view_formats: &[],
-                    })
-                    .create_view(&Default::default()),
-            ),
+            Form::Image(format) => {
+                let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("hits"),
+                    size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    // Copied out by the transfer between GPUs.
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                Resource::Image(texture.create_view(&Default::default()), texture)
+            }
         }
     }
 
@@ -158,7 +158,7 @@ impl Hits {
     pub fn buffer(&self) -> &wgpu::Buffer {
         match &self.resource {
             Resource::Buffer(b) => b,
-            Resource::Image(_) => panic!("`{}` -> `{}`.hits is a render target, not a buffer", self.from, self.to),
+            Resource::Image(..) => panic!("`{}` -> `{}`.hits is a render target, not a buffer", self.from, self.to),
         }
     }
 
@@ -166,9 +166,23 @@ impl Hits {
     /// as a texture).
     pub fn view(&self) -> &wgpu::TextureView {
         match &self.resource {
-            Resource::Image(v) => v,
+            Resource::Image(v, _) => v,
             Resource::Buffer(_) => panic!("`{}` -> `{}`.hits is a buffer, not a render target", self.from, self.to),
         }
+    }
+
+    /// The edge's render target as a texture (copied out by the transfer).
+    pub fn texture(&self) -> Option<&wgpu::Texture> {
+        match &self.resource {
+            Resource::Image(_, t) => Some(t),
+            Resource::Buffer(_) => None,
+        }
+    }
+
+    /// Whether the edge carries `pack_hit` records (a buffer of them, or a target of 8-byte
+    /// texels holding them: `gbuffer`'s), what a second GPU's shading reads.
+    pub fn holds_records(&self) -> bool {
+        matches!(self.form, Form::Records | Form::Image(wgpu::TextureFormat::Rg32Uint))
     }
 
     /// The declaration a program attaches the records with, and `record_at` (the common
@@ -188,7 +202,7 @@ impl Hits {
     pub fn bind_entry(&self, binding: u32) -> wgpu::BindGroupEntry<'_> {
         let resource = match &self.resource {
             Resource::Buffer(b) => b.as_entire_binding(),
-            Resource::Image(v) => wgpu::BindingResource::TextureView(v),
+            Resource::Image(v, _) => wgpu::BindingResource::TextureView(v),
         };
         wgpu::BindGroupEntry { binding, resource }
     }

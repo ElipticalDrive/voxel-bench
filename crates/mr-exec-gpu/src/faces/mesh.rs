@@ -873,7 +873,7 @@ mod tests {
                                 let want = format!("#import {}::{{s_block_at}}", walks.storage_path(st));
                                 assert!(text.split("// ---- root").nth(1).unwrap().contains(&want), "{what}: {want}");
                             }
-                            crate::faces::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, &base.choices("draw"));
+                            crate::faces::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, &base.choices("draw"), (&walks, None, lookup));
                             n += 1;
                         }
                     }
