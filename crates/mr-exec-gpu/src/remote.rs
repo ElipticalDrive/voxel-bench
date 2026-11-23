@@ -19,10 +19,11 @@ use crate::{Core, CoreSpec};
 /// The storage groups of the shading's walks on the second GPU.
 const STORAGE_GROUPS: &[u32] = &[2, 3, 4, 5];
 
-/// The GPU slot the shading runs on, if it is another than the visibility node's.
+/// The GPU slot the shading runs on, if it is another than that of the node its hits come
+/// from (ray casting's visibility, the face drawer).
 pub(crate) fn far_slot(g: &graph::Checked) -> Option<usize> {
-    let at = |r| g.find(r).map(|id| g.devices[id]);
-    match (at(Role::Visibility), at(Role::Shading)) {
+    let near = g.input(Role::Shading, "hits").map(|id| g.devices[id]);
+    match (near, g.find(Role::Shading).map(|id| g.devices[id])) {
         (Some(near), Some(Device::Gpu(far))) if near != Device::Gpu(far) => Some(far as usize),
         _ => None,
     }
@@ -56,7 +57,7 @@ pub(crate) struct Shade {
 /// node's (`near`, `spec`: the first GPU's core, whose knobs it shares).
 pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, near: &Core, spec: &CoreSpec) -> anyhow::Result<Option<Far>> {
     let Some(slot) = far_slot(g) else { return Ok(None) };
-    anyhow::ensure!(near.edges.records().is_some(), "the shading on gpu{slot} shades the hit records the rays write on another GPU: placement = deferred");
+    anyhow::ensure!(near.edges.hits().is_some_and(|h| h.holds_records()), "the shading on gpu{slot} shades the hit records written on another GPU: placement = deferred (rays) or draw = gbuffer (faces)");
     let mut walks = Walks::of(g);
     let site = |port| g.site(Role::Shading, port);
     let shadow = walks.site(g, site("shadow").ok_or_else(|| anyhow::anyhow!("the shading's shadow rays are not bound"))?, STORAGE_GROUPS, false);

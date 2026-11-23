@@ -442,7 +442,9 @@ impl FaceDrawer {
                     );
                 }
             }
-            Pipes::Deferred { ids, .. } => {
+            Pipes::Deferred { ids, shade, .. } => {
+                // Draw-only (shaded on another GPU): the frame ends with this pass.
+                let end = f.ts.1 && shade.is_none();
                 let n = f.nodes;
                 let nodes: Vec<String> = n
                     .draw
@@ -472,8 +474,8 @@ impl FaceDrawer {
                             wgpu::LoadOp::Clear(0.0),
                             keep(f.keep_depth),
                         ),
-                        timestamp_writes: if f.ts.0 {
-                            f.ring.render_timestamps(f.ticket, true, false)
+                        timestamp_writes: if f.ts.0 || end {
+                            f.ring.render_timestamps(f.ticket, f.ts.0, end)
                         } else {
                             None
                         },

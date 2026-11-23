@@ -1167,8 +1167,22 @@ mod tests {
         let sh = g.nodes.get_mut("shading").unwrap();
         sh.inputs.insert("shadow".into(), "s.kernel".into());
         sh.device = Some(Device::Gpu(1));
+        // A drawer's shading on the second GPU: the gbuffer's records cross (visbuffer ids and
+        // forward shading do not), meshes stay on one GPU.
         let why = g.accept().unwrap_err();
-        assert!(why.contains("runs on one GPU"), "{why}");
+        assert!(why.contains("draw = gbuffer") && why.contains("meshes = none"), "{why}");
+        let g = g
+            .with_edits(&["meshes", "kernel", "storage"].map(|n| Change::Remove(n.into())).into_iter().chain([Change::component("draw", "gbuffer")]).collect::<Vec<_>>())
+            .unwrap();
+        g.accept().unwrap();
+        let sched = g.check().unwrap().schedule().unwrap().to_string();
+        assert!(sched.contains("gpu -> gpu1"), "{sched}");
+        let why = g
+            .with_edits(&[Change::component("draw", "visbuffer")])
+            .unwrap()
+            .accept()
+            .unwrap_err();
+        assert!(why.contains("draw = gbuffer"), "{why}");
     }
 
     /// Any GPU ray-casting site binds any kernel with a GPU implementation: ray

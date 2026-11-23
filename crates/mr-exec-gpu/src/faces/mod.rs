@@ -50,6 +50,15 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
     }
 }
 
+/// The executor of a face source's GPU, alone or (the shading on another GPU, `far`) with
+/// that GPU's.
+fn run<R: crate::exec::Region + 'static>((core, region, far): (Core, R, Option<crate::remote::Far>), g: &graph::Checked, passes: Vec<Box<dyn crate::exec::Node<R>>>) -> anyhow::Result<Box<dyn Renderer>> {
+    match far {
+        Some(far) => crate::exec::split(g, crate::exec::Executor::new(core, region, passes), far),
+        None => crate::exec::run(core, region, passes),
+    }
+}
+
 /// What the core and the drawer need of a face source's options.
 struct CoreOpts<'a> {
     shading: &'a str,
@@ -284,36 +293,33 @@ fn depth_view(gpu: &Gpu, w: u32, h: u32, read: bool) -> wgpu::TextureView {
 }
 
 /// The core and the drawing for a face source's spec.
-fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &CoreOpts, depth_prepass: bool, src: SourceSpec) -> anyhow::Result<(Core, Draw)> {
-    let core = Core::new(
-        p,
-        devices,
-        waker,
-        g,
-        CoreSpec {
-            gpu: GpuNeeds { experimental: false, required_features: src.features, optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE },
-            walks: &src.walks,
-            accel: crate::accel::AccelSpec::of(g, &src.walks)?,
-            stages: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT,
-            max_lod: 0,
-            voxels: false,
-            hits: hits_form(o.draw),
-            shading: o.shading,
-            bounces: o.bounces,
-            spp: o.spp,
-            accumulate: o.accumulate,
-            shadows: o.shadows,
-            max_steps: o.max_steps,
-            pool_mb: o.pool_mb,
-            frames_in_flight: o.frames_in_flight,
-        },
-    )?;
+fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &CoreOpts, depth_prepass: bool, src: SourceSpec) -> anyhow::Result<(Core, Draw, Option<crate::remote::Far>)> {
+    let spec = CoreSpec {
+        gpu: GpuNeeds { experimental: false, required_features: src.features, optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE },
+        walks: &src.walks,
+        accel: crate::accel::AccelSpec::of(g, &src.walks)?,
+        stages: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT,
+        max_lod: 0,
+        voxels: false,
+        hits: hits_form(o.draw),
+        shading: o.shading,
+        bounces: o.bounces,
+        spp: o.spp,
+        accumulate: o.accumulate,
+        shadows: o.shadows,
+        max_steps: o.max_steps,
+        pool_mb: o.pool_mb,
+        frames_in_flight: o.frames_in_flight,
+    };
+    let core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
+    // The shading on another GPU: that GPU's executor, shading the records this one draws.
+    let far = crate::remote::create(p, devices, waker, g, &core, &spec)?;
     let (gpu, dev) = (&core.gpu, &core.gpu.device);
     let shading = o.shading.to_string();
     // The walks' modules: the roots cast through the discovery rays' kernel and read the
     // exposure storage; shading's rays through theirs.
     let draw_only = crate::remote::far_slot(g).is_some();
-    anyhow::ensure!(!(draw_only && src.meshes.is_some()), "meshes drawn with the faces are not split over two GPUs yet (the shading on another GPU)");
+    anyhow::ensure!(!(draw_only && src.draw_meshes), "meshes drawn with the faces are not split over two GPUs yet (the shading on another GPU)");
     let (mut program, deps, mut meshed) = if draw_only {
         let (program, deps) = draw_program(&src.walks, src.lead, src.lookup);
         (program, deps, None)
@@ -369,7 +375,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         pl_shade,
         images,
     };
-    Ok((core, draw))
+    Ok((core, draw, far))
 }
 
 impl Draw {

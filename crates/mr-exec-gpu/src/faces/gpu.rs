@@ -415,7 +415,8 @@ pub(crate) struct GpuSampler {
     pipe_sort_hist: wgpu::ComputePipeline,
     pipe_sort_scan: wgpu::ComputePipeline,
     pipe_sort_scatter: wgpu::ComputePipeline,
-    pipe_paint: wgpu::RenderPipeline,
+    /// None when drawing only (the shading on another GPU: painter order draws forward).
+    pipe_paint: Option<wgpu::RenderPipeline>,
     pipe_over_depth: wgpu::RenderPipeline,
     pipe_over_paint: wgpu::RenderPipeline,
     /// Painter order: bucket counts / offsets, and this frame's list sorted far to near.
@@ -573,7 +574,7 @@ fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
 }
 
 impl GpuSampler {
-    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
+    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self, Option<crate::remote::Far>)> {
         let opts: Options = p.options()?;
         let node = |role: Role| g.find(role).ok_or_else(|| anyhow::anyhow!("no {} node", role.name()));
         let vis: VisibilityKnobs = g.knobs(node(Role::Visibility)?).map_err(anyhow::Error::msg)?;
@@ -595,7 +596,7 @@ impl GpuSampler {
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: k.bounces, spp: k.spp, accumulate: k.accumulate, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
-        let (core, drawing) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
+        let (core, drawing, far) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("set_faces.wgsl").into(),
             walks,
             lead: Some((rays, exposure)),
@@ -626,7 +627,9 @@ impl GpuSampler {
         let args_mod = module("discover args", include_str!("args.wgsl").to_string());
         // The forward raster's fragment stage, for painter order, the overdraw view and the
         // face-id raster.
-        let draw_mod = drawing.module(&core, "discover raster", &shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap(), "fs", dev.features()));
+        // Drawing only (the shading on another GPU), no shading fragment stage (`fs`).
+        let fs = if drawing.draw_only { String::new() } else { shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap(), "fs", dev.features()) };
+        let draw_mod = drawing.module(&core, "discover raster", &fs);
 
         let buf = |binding, ty, vis, dynamic| wgpu::BindGroupLayoutEntry {
             binding,
@@ -760,7 +763,7 @@ impl GpuSampler {
         };
         // Painter order: no depth test, but depth is still written (the last fragment is the
         // nearest), since incremental mode reads it.
-        let pipe_paint = pipeline("painter", true, wgpu::CompareFunction::Always, true);
+        let pipe_paint = (!drawing.draw_only).then(|| pipeline("painter", true, wgpu::CompareFunction::Always, true));
         let overdraw = |label, compare| {
             let targets = [Some(wgpu::ColorTargetState {
                 format: out_format,
@@ -921,7 +924,7 @@ impl GpuSampler {
             drawing,
             now: Frame::default(),
         };
-        Ok((core, s))
+        Ok((core, s, far))
     }
 
     fn make_bind_disc(&self, core: &Core) -> [wgpu::BindGroup; 2] {
@@ -1482,7 +1485,7 @@ impl GpuSampler {
         let main = match (overdraw, painter) {
             (true, true) => Some(&self.pipe_over_paint),
             (true, false) => Some(&self.pipe_over_depth),
-            (false, true) => Some(&self.pipe_paint),
+            (false, true) => Some(self.pipe_paint.as_ref().expect("painter order draws forward (refused when drawing only)")),
             (false, false) => None,
         };
         pass(&frame, &draw, main);
@@ -1875,8 +1878,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checke
             _ => return None,
         })
     })?;
-    let (core, region) = GpuSampler::new(p, devices, waker, g)?;
-    exec::run(core, region, passes)
+    super::run(GpuSampler::new(p, devices, waker, g)?, g, passes)
 }
 
 /// Screen rectangle, in level-0 tiles, of the world box `[min, min + size)`: `Some(None)`

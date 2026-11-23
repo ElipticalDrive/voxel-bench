@@ -243,7 +243,7 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
 
 impl CpuSampler {
     /// `world`: the CPU world of a pipeline compiled for one storage (else the `storage` knob's).
-    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<(Core, Self)> {
+    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<(Core, Self, Option<crate::remote::Far>)> {
         let mut opts: Options = p.options()?;
         let site = g.site(Role::Visibility, "rays").ok_or_else(|| anyhow::anyhow!("discovery rays are not bound"))?;
         let storage = g.node(site.storage).component.clone();
@@ -264,7 +264,7 @@ impl CpuSampler {
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: k.bounces, spp: k.spp, accumulate: k.accumulate, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
-        let (core, drawing) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
+        let (core, drawing, far) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("records.wgsl").into(),
             walks,
             lead: None,
@@ -304,7 +304,7 @@ impl CpuSampler {
             drawing,
             frame: Frame::default(),
         };
-        Ok((core, s))
+        Ok((core, s, far))
     }
 
     /// Takes back the state from an in-flight job (its records' changes kept for the next
@@ -679,6 +679,5 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checke
             _ => return None,
         })
     })?;
-    let (core, region) = CpuSampler::new(p, devices, waker, g, world)?;
-    exec::run(core, region, passes)
+    super::run(CpuSampler::new(p, devices, waker, g, world)?, g, passes)
 }

@@ -174,7 +174,7 @@ exactly. What still differs from the target:
 
 | Target | Today |
 |---|---|
-| Edge resources owned by the executor | On the GPU, nodes compiled into one program share a *region* (ray casting, faces, splats, columns, discovery) that owns the frame's state and bindings. What a visibility node or a drawer finds for a shading in a later pass is an edge resource the executor allocates from the graph, in the form its writer encodes (`exec::Edges`, `exec::Form`: ray casting's and columns' hit records, the deferred face drawers' id or record target, the splats' ids), and each program attaches it where it chooses; a pipeline over two GPUs runs an executor per GPU slot, each its device's passes, with the hit records' transfer between them the executors' own (`exec::Split`, `transfer.rs`); only the hit records have a transfer between GPUs (the drawers' and the splats' pipelines run on one). The regions still own what is not an edge of the graph: their programs, group 0 and their nodes' internal buffers (depths, the splats' depth buffer). On the CPU, the passes read only what their graph edges reach (`exec::reads`, through fused kernels): raster-cpu's shading (inline: in the draw pass) casts its shadow rays through its `shadow` kernel over a CPU storage of the ray caster's, as raster-gpu's does. |
+| Edge resources owned by the executor | On the GPU, nodes compiled into one program share a *region* (ray casting, faces, splats, columns, discovery) that owns the frame's state and bindings. What a visibility node or a drawer finds for a shading in a later pass is an edge resource the executor allocates from the graph, in the form its writer encodes (`exec::Edges`, `exec::Form`: ray casting's and columns' hit records, the deferred face drawers' id or record target, the splats' ids), and each program attaches it where it chooses; a pipeline over two GPUs runs an executor per GPU slot, each its device's passes, with the hit records' transfer between them the executors' own (`exec::Split`, `transfer.rs`); hit records cross between GPUs, as a buffer (rays) or the `gbuffer` drawer's target (its rows unpadded on arrival); the visbuffer drawer's and the splats' ids do not yet. The regions still own what is not an edge of the graph: their programs, group 0 and their nodes' internal buffers (depths, the splats' depth buffer). On the CPU, the passes read only what their graph edges reach (`exec::reads`, through fused kernels): raster-cpu's shading (inline: in the draw pass) casts its shadow rays through its `shadow` kernel over a CPU storage of the ray caster's, as raster-gpu's does. |
 | Fusion is attempted, not pre-judged | Each executor declares the nodes it builds (`graph::Builds`: per role the components, device kind and count), and `Graph::accept` refuses, with the reason, any valid graph outside the declarations at creation instead of trying it. The declarations are the regions' shapes, so a graph is accepted exactly when a region builds it. The ten presets named by technique and device (`raycast-gpu`, `raster-cpu`, ...) are those regions' names: derived from the graph, offered as starting points, never chosen. |
 | Graph-driven program generator | `src/pipelines.rs` is keyed by the graph and its executor alone (the knobs declared specialisable valued on their nodes) and generates one crate per executor, but only the CPU regions are specialised: the GPU executor's crate builds its CPU work natively and bakes no knob (the shaders compile their own constants in). |
 | Diagnostics on the node or edge at fault | A graph that does not run is a draft with its reason as text; the canvas does not mark the node at fault, draft steps are not in the undo stack, and nothing suggests a fix. |
@@ -190,10 +190,12 @@ Decided for the GPU rows (2026-11-23):
   source's input (the `faces` visibility's `storage`, the quadtree's `exposure`), never the
   shadow walk's by accident of linking: unbound (the shipped files), nothing merges across
   block types and nothing is looked up.
-- **Every form of the hits edge gets a transfer between GPUs (to do).** Only the hit records
-  cross today, so the drawers' and the splats' pipelines run on one GPU: a gap in "any edge,
-  any pipeline", not a design. The transfer is to copy any `Form` (buffers as they are, render
-  targets through a row-padded copy), not one data product.
+- **Every form of the hits edge gets a transfer between GPUs (in part).** The records cross
+  as a buffer (rays) or a render target (the `gbuffer` drawer: the first GPU draws without
+  the shading, the target is copied out with padded rows); the split's near end is the node
+  the shading's hits come from. Ids (visbuffer, splats) decode only with their source, so a
+  decode pass on the first GPU is to turn them into records first (to do); meshes drawn with
+  the faces or the rays stay on one GPU.
 - **The generator specialises CPU regions only, by design.** A GPU program is specialised by
   composing its shader per graph and baking the knobs as constants (compiled per key, cached),
   which is the GPU's monomorphisation; a generated Rust crate adds nothing there. The GPU

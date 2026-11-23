@@ -304,3 +304,59 @@ fn live_meshes_end_to_end() {
     assert!(deferred > 45.0, "raster-gpu visbuffer with meshes vs reference: {deferred:.1} dB");
     drop(live);
 }
+
+/// Pipelines split over two GPUs at the hit records (needs a GPU; run with `--ignored`): ray
+/// casting's deferred records and the three face executors' gbuffer, shaded on `gpu1` (the same GPU
+/// when there is one), match the same graph on one GPU, and the transfer's stages show.
+#[test]
+#[ignore]
+fn live_split_end_to_end() {
+    // The shading's own storage and kernel (a node compiled into callers on two GPUs is
+    // refused); meshes stay on one GPU.
+    let own = r#"{ add = "s.storage", role = "storage", component = "bricks" }, { node = "s.storage", input = "changes", from = "world" }, { add = "s.kernel", role = "traversal", component = "refloor" }, { node = "s.kernel", input = "storage", from = "s.storage" }, { node = "shading", input = "shadow", from = "s.kernel" }"#;
+    let graphs = [
+        ("raycast-gpu", format!(r#"{{ remove = "meshes" }}, {{ node = "shading", knob = "placement", value = "deferred" }}, {own}"#)),
+        ("raster-gpu", r#"{ remove = "meshes" }, { node = "draw", component = "gbuffer" }"#.to_string()),
+        ("discover-gpu", format!(r#"{{ node = "draw", component = "gbuffer" }}, {own}"#)),
+        // Its shading's walks are its own already.
+        ("discover-cpu", r#"{ node = "draw", component = "gbuffer" }"#.to_string()),
+    ];
+    let renderers: String = graphs
+        .iter()
+        .flat_map(|(g, e)| [format!("[[renderer]]\ngraph = \"{g}\"\nedits = [{e}]\n"), format!("[[renderer]]\ngraph = \"{g}\"\nedits = [{e}, {{ node = \"shading\", device = \"gpu1\" }}]\n")])
+        .collect();
+    let plan = Plan::parse(
+        &format!(
+            r#"
+        [scene]
+        generator = {{ type = "showcase" }}
+        camera = {{ type = "orbit", center = [20, 2, 0], radius = 26, height = 12, period = 120 }}
+        [run]
+        resolution = [320, 180]
+        view_radius = 3
+        isolation = "thread"
+        {renderers}"#
+        ),
+        &[],
+    )
+    .unwrap();
+    let mode = PassMode { lighting: mr_core::RenderMode::Lit, meshes: false };
+    let control = Control { camera: CameraControl::Path, mode, scene_frame: 50, events: true, fps_cap: 0.0, display_hz: 30.0, probe_interval: 0.3, windows: 0, paper_white: 1.0 };
+    let live = LiveHandle::start(plan, vec![], control, || {});
+    let n = graphs.len() * 2;
+    wait(&live.shared, "probes on every lane", 120, |s| s.lanes.len() == n && s.lanes.iter().all(|l| !l.quality.is_empty()));
+    let sh = live.shared.lock().unwrap();
+    assert!(!sh.log.iter().any(|l| l.contains("failed")), "{:?}", sh.log);
+    for (i, (g, _)) in graphs.iter().enumerate() {
+        let (one, two) = (&sh.lanes[2 * i], &sh.lanes[2 * i + 1]);
+        let (a, b) = (one.quality.back().unwrap().psnr, two.quality.back().unwrap().psnr);
+        println!("{g}: one GPU {a:.1} dB, split {b:.1} dB");
+        assert!(a > 35.0 && (a - b).abs() < 1.0, "{g}: one GPU {a:.1} dB, split {b:.1} dB");
+        for stage in ["copy", "transfer"] {
+            assert!(two.stages.iter().any(|s| s.name == stage), "{g} split: no `{stage}` stage in {:?}", two.stages);
+            assert!(!one.stages.iter().any(|s| s.name == stage), "{g} on one GPU: a `{stage}` stage");
+        }
+    }
+    drop(sh);
+    drop(live);
+}

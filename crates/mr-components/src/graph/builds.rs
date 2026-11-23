@@ -494,12 +494,14 @@ pub const GPU_MESHING: Builds = Builds {
         SHADOW_WALKED,
         RT,
     ],
+    free: HITS_LATE,
     live: &[
         Live::of(Role::Geometry).read_by(Role::Visibility, "faces"),
         Live::of(Role::Draw),
         Live::of(Role::Shading),
         Live::of(Role::Meshes),
     ],
+    split: true,
     ..Builds::plain(RegionId::GpuMeshing)
 };
 
@@ -540,11 +542,13 @@ pub const GPU_SAMPLER: Builds = Builds {
     free: &[
         (Role::Draw, "faces", &[When::Now, When::Iterate(2)]),
         (Role::Holes, "sky", &[When::Prev]),
+        HITS_LATE[0],
     ],
     live: &[
         Live::of(Role::Holes).with(&[(Role::Draw, "faces")]),
         Live::of(Role::Draw),
     ],
+    split: true,
     ..Builds::plain(RegionId::GpuSampler)
 };
 
@@ -582,9 +586,10 @@ pub const CPU_SAMPLER: Builds = Builds {
         RT,
     ],
     // Discovery a frame ahead of the drawer, or within its frame.
-    free: &[(Role::Draw, "faces", &[When::Now, When::Prev])],
+    free: &[(Role::Draw, "faces", &[When::Now, When::Prev]), HITS_LATE[0]],
     timing_knobs: &[("pipelined", Role::Draw, "faces", When::Prev, When::Now)],
     live: &[Live::of(Role::Visibility), Live::of(Role::Draw)],
+    split: true,
     ..Builds::plain(RegionId::CpuSampler)
 };
 

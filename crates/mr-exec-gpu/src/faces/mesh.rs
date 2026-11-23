@@ -260,7 +260,7 @@ struct Frame {
 }
 
 impl Meshing {
-    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self)> {
+    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self, Option<crate::remote::Far>)> {
         let opts: Options = p.options()?;
         let node = |role| g.find(role).ok_or_else(|| anyhow::anyhow!("no {role:?} node"));
         let (geometry_id, draw_id) = (node(Role::Geometry)?, node(Role::Draw)?);
@@ -288,7 +288,7 @@ impl Meshing {
         tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: sk.bounces, spp: sk.spp, accumulate: sk.accumulate, shadows: sk.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let meshes = meshes_node != "none";
-        let (core, drawing) = super::new(
+        let (core, drawing, far) = super::new(
             p,
             devices,
             waker,
@@ -324,8 +324,10 @@ impl Meshing {
         let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
         // Forward drawers shade meshes through the region's shading component (lit through the
-        // mesh-shadow site's rays: `shaders::meshes`).
-        let mesh = GpuMeshes::new(gpu, Some(ForwardSpec { module: &drawing.mesh_module(&core).expect("raster-gpu has meshes"), layout: &drawing.pl_draw, format: core.output_format() }));
+        // mesh-shadow site's rays: `shaders::meshes`); drawing only (the shading on another
+        // GPU), no meshes.
+        let module = drawing.mesh_module(&core);
+        let mesh = GpuMeshes::new(gpu, module.as_ref().map(|module| ForwardSpec { module, layout: &drawing.pl_draw, format: core.output_format() }));
         let s = Self {
             built: geometry.clone(),
             stale: false,
@@ -345,7 +347,7 @@ impl Meshing {
             live: Live { geometry, shading, meshes: meshes_node, knobs },
             drawing,
         };
-        Ok((core, s))
+        Ok((core, s, far))
     }
 
     fn knobs(&self) -> Knobs {
@@ -818,8 +820,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checke
             _ => return None,
         })
     })?;
-    let (core, region) = Meshing::new(p, devices, waker, g)?;
-    exec::run(core, region, passes)
+    super::run(Meshing::new(p, devices, waker, g)?, g, passes)
 }
 
 #[cfg(test)]

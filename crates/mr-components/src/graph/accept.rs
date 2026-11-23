@@ -141,17 +141,20 @@ fn device_blocker(ck: &Checked) -> Option<String> {
             "this pipeline runs on one GPU (here: {used}); a pipeline over two GPUs is split at the hit records, ray casting's deferred shading on the second"
         ));
     }
-    let (Some(vis), Some(shading)) = (
-        g.nodes.iter().find(|(_, n)| n.role == Role::Visibility),
-        g.nodes.iter().find(|(_, n)| n.role == Role::Shading),
-    ) else {
+    // The split's ends: the shading and the node its hits come from (ray casting's
+    // visibility, the face drawer).
+    let shading = g.nodes.iter().find(|(_, n)| n.role == Role::Shading);
+    let Some(((sid, sn), (hid, hn))) = shading.and_then(|s| {
+        let h = s.1.inputs.get("hits")?;
+        Some((s, g.nodes.get_key_value(h)?))
+    }) else {
         return Some(format!(
-            "a pipeline over two GPUs is split between its visibility and shading nodes (here: {used})"
+            "a pipeline over two GPUs is split between its shading and the node its hits come from (here: {used})"
         ));
     };
-    let (near, far) = (ck.devices[vis.0], ck.devices[shading.0]);
+    let (near, far) = (ck.devices[hid], ck.devices[sid]);
     // The nodes on the shading's GPU are the shading and what is compiled into it (the post;
-    // fused nodes follow their callers), the rest on the visibility's.
+    // fused nodes follow their callers), the rest on the hits' GPU.
     let stray: Vec<String> = g
         .nodes
         .iter()
@@ -159,13 +162,13 @@ fn device_blocker(ck: &Checked) -> Option<String> {
             matches!(ck.devices[*id], Device::Gpu(_))
                 && ck.devices[*id] != near
                 && (far == near
-                    || (*id != shading.0
+                    || (*id != sid
                         && n.role != Role::Post
                         && !output(n.role, &n.component).fused()))
         })
         .map(|(id, _)| format!("`{id}` on {}", ck.devices[id]))
         .collect();
-    if slots.len() > 2 || far == near || !stray.is_empty() {
+    if slots.len() > 2 || far == near || !matches!(near, Device::Gpu(_)) || !stray.is_empty() {
         return Some(format!(
             "only the shading and the walks compiled into it run on a second GPU (here: {used}{})",
             if stray.is_empty() {
@@ -176,11 +179,17 @@ fn device_blocker(ck: &Checked) -> Option<String> {
         ));
     }
     let mut why = Vec::new();
-    if shading.1.knobs.get("placement").and_then(|v| v.as_str()) != Some("deferred") {
-        why.push(format!(
-            "`{}` on {far} shades the hit records `{}` writes on {near}: placement = deferred",
-            shading.0, vis.0
-        ));
+    // What crosses is the records: rays write them deferred, a drawer only as `gbuffer`
+    // (visbuffer ids and forward shading are not records).
+    match hn.role {
+        Role::Draw if hn.component != "gbuffer" => why.push(format!(
+            "`{sid}` on {far} shades the hit records `{hid}` draws on {near}: draw = gbuffer"
+        )),
+        Role::Draw => {}
+        _ if sn.knobs.get("placement").and_then(|v| v.as_str()) != Some("deferred") => why.push(format!(
+            "`{sid}` on {far} shades the hit records `{hid}` writes on {near}: placement = deferred"
+        )),
+        _ => {}
     }
     if let Some((id, n)) = g
         .nodes
