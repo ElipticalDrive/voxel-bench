@@ -1469,7 +1469,7 @@ impl GpuSampler {
         let frame = DrawFrame {
             out: f.out.as_ref().expect("set up"),
             depth: &self.drawing.depth,
-            ids: core.edges.hits().map(|h| h.view()),
+            ids: self.drawing.ids(core),
             clear,
             prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit && !painter && !overdraw,
             keep_depth: self.incremental,
@@ -1515,7 +1515,10 @@ impl GpuSampler {
             pass.set_pipeline(&self.pipe_sort_scatter);
             pass.dispatch_workgroups_indirect(&self.args, aofs);
         }
-        self.encode(core, ticket, req, |f, draw, main| self.drawing.drawer.encode_draw(enc, f, draw, None, main));
+        self.encode(core, ticket, req, |f, draw, main| {
+            self.drawing.drawer.encode_draw(enc, f, draw, None, main);
+            self.drawing.drawer.encode_decode(&core.gpu, enc, f);
+        });
     }
 
     /// The shading node: the deferred drawers' pass over the ids or records.

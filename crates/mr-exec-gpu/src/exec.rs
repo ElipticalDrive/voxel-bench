@@ -194,6 +194,15 @@ impl Hits {
         )
     }
 
+    /// The declaration a program writes the records with and `record_store(i, r)` (record
+    /// `r` of pixel `i`, row-major): a visbuffer's decode on the first of two GPUs.
+    pub fn store_wgsl(group: u32, binding: u32) -> String {
+        format!(
+            "@group({group}) @binding({binding}) var<storage, read_write> records: array<vec2<u32>>;\n\
+             fn record_store(i: u32, r: vec2<u32>) {{ records[i] = r; }}\n"
+        )
+    }
+
     /// A buffer form's layout entry at `binding`.
     pub fn layout_entry(&self, binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
         crate::storage_entry(binding, false, visibility)

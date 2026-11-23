@@ -72,10 +72,10 @@ pub struct DrawerSpec<'a> {
     pub strip: bool,
     /// The output's format (the post's).
     pub format: wgpu::TextureFormat,
-    /// A deferred drawer's shade pass is compiled (`shade` in the module); without it the
-    /// drawer only draws its target (the shading runs on another GPU, which the target is
-    /// carried to).
-    pub shade: bool,
+    /// The entry point of a deferred drawer's compute pass after its target: `shade` (the
+    /// common deferred pass), or, when the shading runs on another GPU, `decode` (a
+    /// visbuffer's ids into the records that cross) or none (a gbuffer's target crosses).
+    pub shade: Option<&'a str>,
 }
 
 enum Pipes {
@@ -88,7 +88,10 @@ enum Pipes {
     /// ([`FaceDrawer::add_mesh_shade`]).
     Deferred {
         ids: wgpu::RenderPipeline,
+        /// The common deferred pass (none when the shading runs on another GPU).
         shade: Option<wgpu::ComputePipeline>,
+        /// A draw-only visbuffer's ids decoded into records, after its target pass.
+        decode: Option<wgpu::ComputePipeline>,
         mesh_shade: [Option<wgpu::ComputePipeline>; 2],
     },
 }
@@ -228,7 +231,7 @@ impl FaceDrawer {
     /// it, so pipelines whose frames never draw meshes compile neither.
     pub fn add_mesh_shade(&mut self, gpu: &Gpu, lit: bool, module: &wgpu::ShaderModule) {
         if let Pipes::Deferred { mesh_shade, .. } = &mut self.pipes {
-            mesh_shade[lit as usize] = Some(shade_pipeline(gpu, &self.shade_layout, module));
+            mesh_shade[lit as usize] = Some(shade_pipeline(gpu, &self.shade_layout, module, "shade"));
         }
     }
 
@@ -317,7 +320,14 @@ impl FaceDrawer {
                 };
                 Pipes::Deferred {
                     ids,
-                    shade: spec.shade.then(|| shade_pipeline(gpu, spec.shade_layout, spec.module)),
+                    shade: spec
+                        .shade
+                        .filter(|e| *e == "shade")
+                        .map(|e| shade_pipeline(gpu, spec.shade_layout, spec.module, e)),
+                    decode: spec
+                        .shade
+                        .filter(|e| *e == "decode")
+                        .map(|e| shade_pipeline(gpu, spec.shade_layout, spec.module, e)),
                     mesh_shade: [None, None],
                 }
             }
@@ -442,9 +452,12 @@ impl FaceDrawer {
                     );
                 }
             }
-            Pipes::Deferred { ids, shade, .. } => {
-                // Draw-only (shaded on another GPU): the frame ends with this pass.
-                let end = f.ts.1 && shade.is_none();
+            Pipes::Deferred {
+                ids, shade, decode, ..
+            } => {
+                // Draw-only (shaded on another GPU) without a decode: the frame ends with
+                // this pass.
+                let end = f.ts.1 && shade.is_none() && decode.is_none();
                 let n = f.nodes;
                 let nodes: Vec<String> = n
                     .draw
@@ -500,7 +513,7 @@ impl FaceDrawer {
 
     /// The shading node's pass (after [`encode_draw`](Self::encode_draw)): deferred, shading the ids or
     /// records (`meshes`: with the meshes drawn into them, `lit`: the frame is lit); nothing
-    /// when forward.
+    /// when forward or draw-only (the target is shaded on another GPU).
     pub fn encode_shade(
         &self,
         gpu: &Gpu,
@@ -509,76 +522,101 @@ impl FaceDrawer {
         meshes: bool,
         lit: bool,
     ) {
-        match &self.pipes {
-            Pipes::Forward { .. } => {}
-            Pipes::Deferred {
-                shade, mesh_shade, ..
-            } => {
-                let shade = if meshes {
-                    mesh_shade[lit as usize]
-                        .as_ref()
-                        .expect("deferred meshes need FaceDrawer::add_mesh_shade")
-                } else {
-                    // Draw-only: the target is shaded on another GPU.
-                    let Some(shade) = shade else { return };
-                    shade
-                };
-                let mut entries = vec![
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            f.ids.expect("a deferred drawer shades DrawFrame::ids"),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(f.out),
-                    },
-                ];
-                entries.extend(f.mesh_verts.map(|b| wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: b.as_entire_binding(),
-                }));
-                let images = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("deferred images"),
-                    layout: &self.images_layout,
-                    entries: &entries,
-                });
-                f.ring.stage(enc, f.ticket, "shade", &f.nodes.shade);
-                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("deferred shade"),
-                    timestamp_writes: if f.ts.1 {
-                        f.ring.compute_timestamps(f.ticket, false, true)
-                    } else {
-                        None
-                    },
-                });
-                pass.set_pipeline(shade);
-                for (i, g) in f.binds.iter().enumerate() {
-                    pass.set_bind_group(i as u32, *g, &[]);
-                }
-                pass.set_bind_group(IMAGES_GROUP, &images, &[]);
-                for (i, g) in f.more {
-                    pass.set_bind_group(*i, *g, &[]);
-                }
-                pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
-            }
+        if let Pipes::Deferred {
+            shade, mesh_shade, ..
+        } = &self.pipes
+        {
+            let shade = if meshes {
+                mesh_shade[lit as usize]
+                    .as_ref()
+                    .expect("deferred meshes need FaceDrawer::add_mesh_shade")
+            } else {
+                let Some(shade) = shade else { return };
+                shade
+            };
+            self.compute(gpu, enc, f, shade, "shade", &f.nodes.shade);
         }
+    }
+
+    /// The drawing's pass after [`encode_draw`](Self::encode_draw) when the shading runs on
+    /// another GPU and the drawer is a visbuffer: its ids decoded into the records that cross
+    /// (`DrawFrame::binds` hold where they go); nothing otherwise. Ends the frame's timestamps.
+    pub fn encode_decode(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, f: &DrawFrame) {
+        if let Pipes::Deferred {
+            decode: Some(decode),
+            ..
+        } = &self.pipes
+        {
+            self.compute(gpu, enc, f, decode, "decode", &f.nodes.draw);
+        }
+    }
+
+    /// A compute pass per pixel over the target (images group) and the frame's groups: stage
+    /// `stage` of `nodes`, ending the frame's timestamps when `DrawFrame::ts` says so.
+    fn compute(
+        &self,
+        gpu: &Gpu,
+        enc: &mut wgpu::CommandEncoder,
+        f: &DrawFrame,
+        pipeline: &wgpu::ComputePipeline,
+        stage: &str,
+        nodes: &[String],
+    ) {
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(
+                    f.ids.expect("a deferred drawer reads DrawFrame::ids"),
+                ),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(f.out),
+            },
+        ];
+        entries.extend(f.mesh_verts.map(|b| wgpu::BindGroupEntry {
+            binding: 2,
+            resource: b.as_entire_binding(),
+        }));
+        let images = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("deferred images"),
+            layout: &self.images_layout,
+            entries: &entries,
+        });
+        f.ring.stage(enc, f.ticket, stage, nodes);
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some(stage),
+            timestamp_writes: if f.ts.1 {
+                f.ring.compute_timestamps(f.ticket, false, true)
+            } else {
+                None
+            },
+        });
+        pass.set_pipeline(pipeline);
+        for (i, g) in f.binds.iter().enumerate() {
+            pass.set_bind_group(i as u32, *g, &[]);
+        }
+        pass.set_bind_group(IMAGES_GROUP, &images, &[]);
+        for (i, g) in f.more {
+            pass.set_bind_group(*i, *g, &[]);
+        }
+        pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
     }
 }
 
-/// A deferred drawer's shade pass over `module`.
+/// A deferred drawer's compute pass over `module` at `entry` (`shade`, `decode`).
 fn shade_pipeline(
     gpu: &Gpu,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
+    entry: &str,
 ) -> wgpu::ComputePipeline {
     gpu.device
         .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("deferred shade"),
+            label: Some(entry),
             layout: Some(layout),
             module,
-            entry_point: Some("shade"),
+            entry_point: Some(entry),
             compilation_options: Default::default(),
             cache: gpu.cache(),
         })

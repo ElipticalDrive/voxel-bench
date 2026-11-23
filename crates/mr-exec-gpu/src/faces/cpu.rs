@@ -448,7 +448,7 @@ impl CpuSampler {
         let frame = DrawFrame {
             out: f.out.as_ref().expect("set up"),
             depth: &self.drawing.depth,
-            ids: core.edges.hits().map(|h| h.view()),
+            ids: self.drawing.ids(core),
             clear: wgpu::Color { r: sky[0], g: sky[1], b: sky[2], a: 1.0 },
             prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
@@ -476,7 +476,10 @@ impl CpuSampler {
                 pass.draw(0..4, 0..n);
             }
         };
-        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_draw(enc, f, &draw, None, None));
+        self.encode(core, ticket, req, |f| {
+            self.drawing.drawer.encode_draw(enc, f, &draw, None, None);
+            self.drawing.drawer.encode_decode(&core.gpu, enc, f);
+        });
     }
 
     /// The shading node: the deferred drawers' pass over the ids or records.

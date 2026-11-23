@@ -559,13 +559,14 @@ impl Meshing {
         let frame = DrawFrame {
             out: f.out.as_ref().expect("set up"),
             depth: &self.drawing.depth,
-            ids: core.edges.hits().map(|h| h.view()),
+            ids: self.drawing.ids(core),
             clear: wgpu::Color { r: sky[0], g: sky[1], b: sky[2], a: 1.0 },
             prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
             binds: &binds,
             more: &more,
-            mesh_verts: Some(self.mesh.vertices()),
+            // Bound where the images group has them (not drawing only: no mesh capability).
+            mesh_verts: self.drawing.meshed.as_ref().map(|_| self.mesh.vertices()),
             ring: &core.ring,
             ticket,
             ts: (true, true),
@@ -602,7 +603,10 @@ impl Meshing {
         };
         let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp);
         let meshes = self.draws_meshes().then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass));
-        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_draw(enc, f, &draw, meshes, None));
+        self.encode(core, ticket, req, |f| {
+            self.drawing.drawer.encode_draw(enc, f, &draw, meshes, None);
+            self.drawing.drawer.encode_decode(&core.gpu, enc, f);
+        });
     }
 
     /// The shading node: the deferred drawers' pass over the ids or records.

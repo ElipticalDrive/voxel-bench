@@ -104,7 +104,7 @@ fn staging(near: &Core, late: bool) -> Vec<wgpu::Buffer> {
 impl Transfer {
     /// The transfer of `g`'s hits edge between the executors' cores, which both hold it.
     pub fn of(g: &graph::Checked, near: &Core, far: &Core) -> anyhow::Result<Self> {
-        let (Some(edge), Some(_)) = (near.edges.hits().filter(|h| h.holds_records()), far.edges.records()) else { anyhow::bail!("no hit records cross between the two GPUs (placement = deferred, or draw = gbuffer)") };
+        let (Some(edge), Some(_)) = (near.edges.hits().filter(|h| h.holds_records()), far.edges.records()) else { anyhow::bail!("no hit records cross between the two GPUs (placement = deferred, or draw = gbuffer or visbuffer)") };
         let late = g.graph.nodes.get(&edge.to).is_some_and(|n| n.when("hits") == When::Prev);
         tracing::info!("`{}` -> `{}`.hits: {} -> {} ({})", edge.from, edge.to, near.gpu.info.name, far.gpu.info.name, if late { "prev" } else { "now" });
         Ok(Self { staging: staging(near, late), sent: VecDeque::new(), late, near: Captured::default(), nodes: vec![edge.from.clone(), edge.to.clone()], wait_ms: 0.0, upload_ms: 0.0 })

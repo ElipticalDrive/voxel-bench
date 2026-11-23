@@ -143,6 +143,9 @@ pub(crate) struct Draw {
     /// The shading runs on another GPU ([`crate::remote`]): the drawer draws its target only,
     /// compiled without the shading ([`draw_program`]).
     draw_only: bool,
+    /// Draw-only `visbuffer`: its id target, the drawing's own (the hits edge holds the
+    /// records the ids are decoded into, what crosses).
+    ids: Option<wgpu::TextureView>,
 }
 
 /// What a face drawer is compiled from.
@@ -187,22 +190,48 @@ impl DrawParts<'_> {
     /// with meshes are added when a frame needs them ([`Draw::mesh_shade`]).
     fn drawer(&self, draw: &str) -> anyhow::Result<FaceDrawer> {
         let mode = DrawMode::parse(draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`"))?;
-        let vis = if self.draw_only {
-            // Only `pack_hit` records cross between GPUs (visbuffer ids decode with their faces).
-            anyhow::ensure!(mode == DrawMode::Gbuffer, "the shading on another GPU shades hit records: draw = gbuffer, not `{draw}`");
-            draw::target_wgsl(mode.name()).expect("a deferred drawer").to_string()
+        let (vis, shade) = if self.draw_only {
+            // Only `pack_hit` records cross between GPUs: a gbuffer's target, a visbuffer's
+            // ids decoded into the hits edge's records (they decode with their faces).
+            let target = draw::target_wgsl(mode.name()).ok_or_else(|| anyhow::anyhow!("the shading on another GPU shades hit records: draw = gbuffer or visbuffer, not `{draw}`"))?;
+            match mode {
+                DrawMode::Visbuffer => (format!("{target}\n{}", crate::exec::Hits::store_wgsl(0, crate::RECORDS_BINDING)), Some("decode")),
+                _ => (target.to_string(), None),
+            }
         } else {
-            draw_wgsl(mode, self.shading, self.gpu.device.features())
+            (draw_wgsl(mode, self.shading, self.gpu.device.features()), Some("shade"))
         };
         let module = self.module("face drawer", &vis);
-        FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: self.strip, format: self.format, shade: !self.draw_only }, mode, self.images, self.width, self.height)
+        FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: self.strip, format: self.format, shade }, mode, self.images, self.width, self.height)
     }
 }
 
 /// The form of the hits edge from drawer `draw` to the shading: a deferred drawer's target
-/// (forward drawing shades in its own pass: no edge resource).
-fn hits_form(draw: &str) -> Option<crate::exec::Form> {
-    DrawMode::parse(draw).and_then(DrawMode::target).map(crate::exec::Form::Image)
+/// (forward drawing shades in its own pass: no edge resource); `draw_only` (the shading on
+/// another GPU), a visbuffer's records decoded from its ids.
+fn hits_form(draw: &str, draw_only: bool) -> Option<crate::exec::Form> {
+    let mode = DrawMode::parse(draw)?;
+    if draw_only && mode == DrawMode::Visbuffer {
+        return Some(crate::exec::Form::Records);
+    }
+    mode.target().map(crate::exec::Form::Image)
+}
+
+/// A draw-only visbuffer's id target (`None` for any other drawing: its target is the hits
+/// edge's).
+fn own_ids(gpu: &Gpu, draw: &str, draw_only: bool, w: u32, h: u32) -> Option<wgpu::TextureView> {
+    let format = DrawMode::parse(draw).filter(|m| draw_only && *m == DrawMode::Visbuffer)?.target()?;
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("visibility ids"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    Some(texture.create_view(&Default::default()))
 }
 
 /// The draw component's WGSL after `draw_src`: deferred drawers shade in compute, forward
@@ -294,6 +323,8 @@ fn depth_view(gpu: &Gpu, w: u32, h: u32, read: bool) -> wgpu::TextureView {
 
 /// The core and the drawing for a face source's spec.
 fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &CoreOpts, depth_prepass: bool, src: SourceSpec) -> anyhow::Result<(Core, Draw, Option<crate::remote::Far>)> {
+    // The shading on another GPU: the drawer draws its target only.
+    let draw_only = crate::remote::far_slot(g).is_some();
     let spec = CoreSpec {
         gpu: GpuNeeds { experimental: false, required_features: src.features, optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE },
         walks: &src.walks,
@@ -301,7 +332,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         stages: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT,
         max_lod: 0,
         voxels: false,
-        hits: hits_form(o.draw),
+        hits: hits_form(o.draw, draw_only),
         shading: o.shading,
         bounces: o.bounces,
         spp: o.spp,
@@ -318,7 +349,6 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
     let shading = o.shading.to_string();
     // The walks' modules: the roots cast through the discovery rays' kernel and read the
     // exposure storage; shading's rays through theirs.
-    let draw_only = crate::remote::far_slot(g).is_some();
     anyhow::ensure!(!(draw_only && src.draw_meshes), "meshes drawn with the faces are not split over two GPUs yet (the shading on another GPU)");
     let (mut program, deps, mut meshed) = if draw_only {
         let (program, deps) = draw_program(&src.walks, src.lead, src.lookup);
@@ -361,6 +391,7 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         draw_nodes: src.nodes,
         depth_prepass,
         draw_only,
+        ids: own_ids(gpu, o.draw, draw_only, p.width, p.height),
         shading,
         source: src.wgsl,
         varyings: src.varyings,
@@ -392,6 +423,12 @@ impl Draw {
 
     fn drawer(&self, core: &Core, draw: &str) -> anyhow::Result<FaceDrawer> {
         self.parts(core).drawer(draw)
+    }
+
+    /// The deferred drawer's target this frame (`DrawFrame::ids`): its own (a draw-only
+    /// visbuffer's ids) or the hits edge's.
+    fn ids<'a>(&'a self, core: &'a Core) -> Option<&'a wgpu::TextureView> {
+        self.ids.as_ref().or_else(|| core.edges.hits().map(|h| h.view()))
     }
 
     /// Adds a deferred drawer's shade pass for frames that draw meshes, `lit` or unlit, the
@@ -470,9 +507,15 @@ impl Draw {
     /// if `s` is not the drawer.
     fn switch(&mut self, core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
         let draw = s.component.as_deref().filter(|_| s.role == Role::Draw)?;
+        // Split: the transfer and the second GPU keep the edge's form (refused live: the
+        // session builds the pipeline anew).
+        let form = hits_form(draw, self.draw_only);
+        if self.draw_only && form != hits_form(&self.draw, true) {
+            return Some(Err(anyhow::anyhow!("the hits edge between the two GPUs changes form with draw = {draw}")));
+        }
         // The drawer's target is the hits edge's resource: remade in the new drawer's form.
         Some(self.drawer(core, draw).and_then(|d| {
-            core.edges.set_hits(&core.gpu, core.width, core.height, hits_form(draw))?;
+            core.edges.set_hits(&core.gpu, core.width, core.height, form)?;
             self.drawer = d;
             self.draw = draw.into();
             Ok(())
@@ -481,12 +524,14 @@ impl Draw {
 
     fn resize(&mut self, core: &Core) {
         self.depth = depth_view(&core.gpu, core.width, core.height, self.depth_read);
+        self.ids = own_ids(&core.gpu, &self.draw, self.draw_only, core.width, core.height);
         self.drawer.resize(core.width, core.height);
     }
 
-    /// The depth buffer's (the deferred target is the core's edge).
+    /// The depth buffer's and a draw-only visbuffer's ids (any other deferred target is the
+    /// core's edge), 4 bytes per pixel each.
     fn memory_bytes(&self, core: &Core) -> u64 {
-        core.width as u64 * core.height as u64 * 4
+        core.width as u64 * core.height as u64 * 4 * (1 + u64::from(self.ids.is_some()))
     }
 }
 
@@ -517,8 +562,9 @@ mod tests {
         // Draw-only (the shading on another GPU): the deferred drawers' targets alone.
         let (walks, lead, lookup) = draw_only;
         let (program, deps) = super::draw_program(walks, lead, lookup);
+        let store = crate::exec::Hits::store_wgsl(0, crate::RECORDS_BINDING);
         for d in draws.iter().filter_map(|d| mr_components::draw::target_wgsl(d)) {
-            check(&program, &deps, &format!("{draw_src}\n{d}"), &format!("draw-only {what}"));
+            check(&program, &deps, &format!("{draw_src}\n{d}\n{store}"), &format!("draw-only {what}"));
         }
         if let Some(m) = meshed {
             check(&m.forward(), &m.deps, &super::mesh_src(shading, mr_components::shading::state::FRAGMENT_FEATURE), &format!("forward meshes {what}"));

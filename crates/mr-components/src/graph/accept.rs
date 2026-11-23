@@ -179,11 +179,11 @@ fn device_blocker(ck: &Checked) -> Option<String> {
         ));
     }
     let mut why = Vec::new();
-    // What crosses is the records: rays write them deferred, a drawer only as `gbuffer`
-    // (visbuffer ids and forward shading are not records).
+    // What crosses is the records: rays write them deferred, a drawer as `gbuffer` or
+    // `visbuffer` (its ids decoded into records on the first GPU; forward shading has none).
     match hn.role {
-        Role::Draw if hn.component != "gbuffer" => why.push(format!(
-            "`{sid}` on {far} shades the hit records `{hid}` draws on {near}: draw = gbuffer"
+        Role::Draw if !matches!(hn.component.as_str(), "gbuffer" | "visbuffer") => why.push(format!(
+            "`{sid}` on {far} shades the hit records `{hid}` draws on {near}: draw = gbuffer or visbuffer"
         )),
         Role::Draw => {}
         _ if sn.knobs.get("placement").and_then(|v| v.as_str()) != Some("deferred") => why.push(format!(
