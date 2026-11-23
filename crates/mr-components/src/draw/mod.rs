@@ -31,6 +31,12 @@ pub fn target_wgsl(name: &str) -> Option<&'static str> {
     })
 }
 
+/// The ids -> records adapter (entry `decode`): ids a visibility drew (a `visbuffer`'s faces,
+/// splat points) decoded into the common `pack_hit` records on the first of two GPUs, what
+/// crosses to the shading on the second. Expects the ids' `record_*`, `out_tex`, the back
+/// end's `view_ray(px)`, `view_origin()` and `record_store(i, r)`.
+pub const DECODE_WGSL: &str = include_str!("visbuffer/decode.wgsl");
+
 /// The GPU draw components.
 pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {

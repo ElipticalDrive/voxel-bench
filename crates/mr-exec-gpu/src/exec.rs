@@ -293,6 +293,15 @@ pub(crate) fn run<R: Region + 'static>(core: Core, region: R, passes: Vec<Box<dy
     Ok(Box::new(Executor::new(core, region, passes)))
 }
 
+/// The renderer of a region's GPU, alone or (the shading on another GPU, `far`) split with
+/// that GPU's executor.
+pub(crate) fn run_or_split<R: Region + 'static>((core, region, far): (Core, R, Option<crate::remote::Far>), g: &graph::Checked, passes: Vec<Box<dyn Node<R>>>) -> anyhow::Result<Box<dyn Renderer>> {
+    match far {
+        Some(far) => split(g, Executor::new(core, region, passes), far),
+        None => run(core, region, passes),
+    }
+}
+
 impl<R: Region> Executor<R> {
     pub fn new(core: Core, region: R, passes: Vec<Box<dyn Node<R>>>) -> Self {
         Self { core, region, passes, instances: vec![] }

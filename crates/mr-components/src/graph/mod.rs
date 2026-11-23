@@ -1184,6 +1184,15 @@ mod tests {
             .accept()
             .unwrap_err();
         assert!(why.contains("draw = gbuffer or visbuffer"), "{why}");
+        // Splats: their ids are deferred by construction (decoded into records on the first
+        // GPU); the shading's walks go with it.
+        let mut g = file("splat-gpu");
+        g.nodes.get_mut("shading").unwrap().device = Some(Device::Gpu(1));
+        g.accept().unwrap();
+        let ck = g.check().unwrap();
+        assert_eq!((ck.devices["kernel"], ck.devices["visibility"]), (Device::Gpu(1), Device::Gpu(0)));
+        let sched = ck.schedule().unwrap().to_string();
+        assert!(sched.contains("gpu -> gpu1"), "{sched}");
     }
 
     /// Any GPU ray-casting site binds any kernel with a GPU implementation: ray

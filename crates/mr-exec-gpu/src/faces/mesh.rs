@@ -824,7 +824,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checke
             _ => return None,
         })
     })?;
-    super::run(Meshing::new(p, devices, waker, g)?, g, passes)
+    crate::exec::run_or_split(Meshing::new(p, devices, waker, g)?, g, passes)
 }
 
 #[cfg(test)]

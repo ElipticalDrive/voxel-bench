@@ -46,8 +46,9 @@ Each node also has:
 
 Data that is fused (a storage and the kernel walking it) runs with the node that calls it.
 Any other edge may cross devices through a transfer, whose cost is known in advance. So one
-frame can be split over two GPUs, for example with ray casting on one and deferred shading
-on the other (`plans/two-gpus.toml`).
+frame can be split over two GPUs at the hit records, with the visibility (ray casting with
+deferred shading, a `gbuffer` or `visbuffer` drawer, splats) on one and the shading on the
+other (`plans/two-gpus.toml`).
 
 ## Executors and presets
 

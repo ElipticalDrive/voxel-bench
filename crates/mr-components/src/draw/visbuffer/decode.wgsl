@@ -1,8 +1,8 @@
-// The ids -> records adapter of a `visbuffer` drawing whose shading runs on another GPU: one
-// compute thread per pixel decodes the face id its source drew into the common hit record
-// (`pack_hit`), what crosses between GPUs (8 bytes per pixel against the id's 4); the second
-// GPU shades the records like a `gbuffer`'s. The source's diagnostic views do not cross (no
-// instance in a record). Expects the visbuffer's `record_*` and `out_tex` (the frame's size),
+// The ids -> records adapter of a visibility drawing ids (a `visbuffer`'s faces, splat points)
+// whose shading runs on another GPU: one compute thread per pixel decodes the id drawn there
+// into the common hit record (`pack_hit`), what crosses between GPUs (8 bytes per pixel against
+// the id's 4); the second GPU shades the records like a `gbuffer`'s. The source's diagnostic
+// views do not cross (no instance in a record). Expects the ids' `record_*` and `out_tex` (the frame's size),
 // the back end's `view_ray(px)` and `view_origin()`, and `record_store(i, r)` (record `r` of
 // pixel `i` in row-major order, where the back end keeps its records).
 

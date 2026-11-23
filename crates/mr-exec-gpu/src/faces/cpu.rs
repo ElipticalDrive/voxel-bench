@@ -682,5 +682,5 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checke
             _ => return None,
         })
     })?;
-    super::run(CpuSampler::new(p, devices, waker, g, world)?, g, passes)
+    crate::exec::run_or_split(CpuSampler::new(p, devices, waker, g, world)?, g, passes)
 }

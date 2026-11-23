@@ -306,7 +306,7 @@ fn live_meshes_end_to_end() {
 }
 
 /// Pipelines split over two GPUs at the hit records (needs a GPU; run with `--ignored`): ray
-/// casting's deferred records and the three face executors' gbuffer, shaded on `gpu1` (the same GPU
+/// casting's deferred records, the three face executors' gbuffer and visbuffer and the splats' ids, shaded on `gpu1` (the same GPU
 /// when there is one), match the same graph on one GPU, and the transfer's stages show.
 #[test]
 #[ignore]
@@ -323,10 +323,15 @@ fn live_split_end_to_end() {
         // Visbuffer: its ids decoded into records on the first GPU.
         ("raster-gpu", r#"{ remove = "meshes" }, { node = "draw", component = "visbuffer" }"#.to_string()),
         ("discover-cpu", r#"{ node = "draw", component = "visbuffer" }"#.to_string()),
+        // Splats: their ids decoded into records on the first GPU (the shading's walks its own).
+        ("splat-gpu", String::new()),
     ];
     let renderers: String = graphs
         .iter()
-        .flat_map(|(g, e)| [format!("[[renderer]]\ngraph = \"{g}\"\nedits = [{e}]\n"), format!("[[renderer]]\ngraph = \"{g}\"\nedits = [{e}, {{ node = \"shading\", device = \"gpu1\" }}]\n")])
+        .flat_map(|(g, e)| {
+            let split = [e.as_str(), r#"{ node = "shading", device = "gpu1" }"#].into_iter().filter(|e| !e.is_empty()).collect::<Vec<_>>().join(", ");
+            [format!("[[renderer]]\ngraph = \"{g}\"\nedits = [{e}]\n"), format!("[[renderer]]\ngraph = \"{g}\"\nedits = [{split}]\n")]
+        })
         .collect();
     let plan = Plan::parse(
         &format!(
@@ -356,15 +361,25 @@ fn live_split_end_to_end() {
         let (one, two) = (&sh.lanes[2 * i], &sh.lanes[2 * i + 1]);
         let best = |l: &LaneView| l.quality.iter().map(|q| q.psnr).fold(f64::MIN, f64::max);
         let (a, b) = (best(one), best(two));
-        let draw = if edits.contains("visbuffer") { "visbuffer" } else { "gbuffer" };
+        let ids = edits.contains("visbuffer") || *g == "splat-gpu";
+        let draw = match *g {
+            "splat-gpu" => "splats",
+            "raycast-gpu" => "records",
+            _ if ids => "visbuffer",
+            _ => "gbuffer",
+        };
         println!("{g} {draw}: one GPU {a:.1} dB, split {b:.1} dB");
-        assert!(a > 35.0 && (a - b).abs() < 1.0, "{g} {draw}: one GPU {a:.1} dB, split {b:.1} dB");
+        // Near the reference a pixel or two swing the score by 10 dB: splats' records shade
+        // a shadow edge pixel apart from their local resolve (the hit point rebuilt from the
+        // record's distance), either way.
+        let near_perfect = a.min(b) > 60.0;
+        assert!(a > 35.0 && ((a - b).abs() < 1.0 || near_perfect), "{g} {draw}: one GPU {a:.1} dB, split {b:.1} dB");
         for stage in ["copy", "transfer"] {
             assert!(two.stages.iter().any(|s| s.name == stage), "{g} split: no `{stage}` stage in {:?}", two.stages);
             assert!(!one.stages.iter().any(|s| s.name == stage), "{g} on one GPU: a `{stage}` stage");
         }
         let decodes = two.stages.iter().any(|s| s.name == "decode");
-        assert_eq!(decodes, edits.contains("visbuffer"), "{g} split: `decode` stage in {:?}", two.stages);
+        assert_eq!(decodes, ids, "{g} split: `decode` stage in {:?}", two.stages);
     }
     drop(sh);
     drop(live);

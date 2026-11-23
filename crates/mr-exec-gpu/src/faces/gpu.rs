@@ -1881,7 +1881,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checke
             _ => return None,
         })
     })?;
-    super::run(GpuSampler::new(p, devices, waker, g)?, g, passes)
+    crate::exec::run_or_split(GpuSampler::new(p, devices, waker, g)?, g, passes)
 }
 
 /// Screen rectangle, in level-0 tiles, of the world box `[min, min + size)`: `Some(None)`

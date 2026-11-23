@@ -50,15 +50,6 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
     }
 }
 
-/// The executor of a face source's GPU, alone or (the shading on another GPU, `far`) with
-/// that GPU's.
-fn run<R: crate::exec::Region + 'static>((core, region, far): (Core, R, Option<crate::remote::Far>), g: &graph::Checked, passes: Vec<Box<dyn crate::exec::Node<R>>>) -> anyhow::Result<Box<dyn Renderer>> {
-    match far {
-        Some(far) => crate::exec::split(g, crate::exec::Executor::new(core, region, passes), far),
-        None => crate::exec::run(core, region, passes),
-    }
-}
-
 /// What the core and the drawer need of a face source's options.
 struct CoreOpts<'a> {
     shading: &'a str,

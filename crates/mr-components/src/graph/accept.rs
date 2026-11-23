@@ -180,12 +180,16 @@ fn device_blocker(ck: &Checked) -> Option<String> {
     }
     let mut why = Vec::new();
     // What crosses is the records: rays write them deferred, a drawer as `gbuffer` or
-    // `visbuffer` (its ids decoded into records on the first GPU; forward shading has none).
+    // `visbuffer`, splats always (ids decoded into records on the first GPU; forward shading
+    // has none).
     match hn.role {
         Role::Draw if !matches!(hn.component.as_str(), "gbuffer" | "visbuffer") => why.push(format!(
             "`{sid}` on {far} shades the hit records `{hid}` draws on {near}: draw = gbuffer or visbuffer"
         )),
         Role::Draw => {}
+        // Splatting settles visibility only once every point is in: its ids are deferred by
+        // construction, decoded into records on the first GPU as a visbuffer's.
+        Role::Visibility if hn.component == "splat" => {}
         _ if sn.knobs.get("placement").and_then(|v| v.as_str()) != Some("deferred") => why.push(format!(
             "`{sid}` on {far} shades the hit records `{hid}` writes on {near}: placement = deferred"
         )),

@@ -620,6 +620,7 @@ pub const GPU_SPLAT: Builds = Builds {
         SHADOW_WALKED,
         RT,
     ],
+    split: true,
     ..Builds::plain(RegionId::GpuSplat)
 };
 
