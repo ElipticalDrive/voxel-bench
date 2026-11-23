@@ -105,6 +105,11 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
   quadtree's 11 ms. Neither `dilate_below` 4 or 8 (35.0 lit) nor `seed_step` 8 closes the gap.
   While moving, both miss the same amount (about 60 faces, 0.34% of pixels: the one frame
   that `faces~prev` lags behind).
+  What the two changes cost (480x270, idle machine, `direct`, medians of 3 interleaved runs):
+  islands 18.7 -> 12.2 fps lit (-35%), city 12.0 -> 8.5 (-30%); the GPU side is unchanged
+  (+2..3% lit). On islands, `dilate = 0` gives back 15.5 fps, so seed dilation costs ~21% and
+  the smaller sky tile the rest. Both stay the defaults for completeness; `dilate = 0,
+  sky_tile = 16` is the fast setting.
 - Drawing discovered faces one quad each disagrees with a ray about which face owns a pixel
   whose centre lies on, or within float error of, the shared edge of faces smaller than a
   pixel. In a distant forest (`far`, faces ~0.6 px at 480x270, ~460 blocks away) that is ~0.13%

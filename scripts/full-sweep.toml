@@ -19,7 +19,13 @@ renderer = [
         { node = "shading", component = "*" },
         { any = [[], [{ remove = "meshes" }]] },
     ] },
-    { graph = "raster-cpu", vary = [{ node = "geometry", component = "*" }, { node = "draw", component = "*" }, { node = "shading", component = "*" }] },
+    { graph = "raster-cpu", vary = [
+        { node = "storage", component = "*" },
+        { node = "geometry", component = "*" },
+        { node = "draw", component = "*" },
+        { node = "kernel", component = "*" },
+        { node = "shading", component = "*" },
+    ] },
     { graph = "discover-gpu", vary = [{ node = "storage", component = "*" }, { node = "draw", component = "*" }, { node = "kernel", component = "*" }, { node = "shading", component = "*" }] },
     { graph = "discover-cpu", vary = [
         { node = "storage", component = "*" },
@@ -27,6 +33,29 @@ renderer = [
         { node = "draw", component = "*" },
         { node = "shading", component = "*" },
     ] },
+    # The shadow walk's storage beside the CPU visibility (the default `bricks` is in the entry above).
+    { graph = "discover-cpu", vary = [
+        { node = "shadow.storage", component = ["hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap"] },
+        { node = "shadow.kernel", component = "*" },
+    ] },
+    # Holes filled by coverage (as plans/demo-pathtrace-discovery.toml).
+    { graph = "discover-gpu", edits = [
+        { add = "holes", role = "holes", component = "coverage" },
+        { node = "draw", input = "faces", when = { iterate = 2 } },
+        { node = "holes", input = "covered", from = "draw" },
+        { node = "holes", input = "sky", from = "draw" },
+        { node = "holes", input = "sky", when = "prev" },
+        { node = "visibility", input = "where", from = "holes" },
+    ], vary = [{ node = "draw", component = "*" }, { node = "shading", component = "*" }] },
+    # Path-traced bounces walking a voxel storage inside the ray-query pass.
+    { graph = "rayquery-gpu", edits = [
+        { node = "shading", component = "pathtrace" },
+        { add = "walk", role = "traversal", component = "refloor" },
+        { add = "store", role = "storage", component = "bricks" },
+        { node = "store", input = "changes", from = "world" },
+        { node = "walk", input = "storage", from = "store" },
+        { node = "shading", input = "bounce", from = "walk" },
+    ], vary = [{ node = "store", component = "*" }, { node = "walk", component = "*" }] },
     { graph = "splat-gpu", vary = [{ node = "storage", component = "*" }, { node = "kernel", component = "*" }, { node = "shading", component = "*" }] },
     { graph = "columns-gpu", vary = [{ node = "shading", component = "*" }] },
     { graph = "columns-cpu", vary = [{ node = "shading", component = "*" }] },

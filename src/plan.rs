@@ -1537,11 +1537,12 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
         // The full sweep the scripts run, per region.
         let full = include_str!("../scripts/full-sweep.toml").split_once("renderer = ").unwrap().1;
         let all = Plan::parse(base, &[format!("renderer={full}")]).unwrap();
-        each_once(&all, 1787, "the full sweep");
+        each_once(&all, 1883, "the full sweep");
         let n = |b: RegionId| all.renderers.iter().filter(|r| region(r) == Some(b)).count();
         // raycast-gpu: 8 storages x 2 prepasses x 4 kernels x 2 shadings x 2 meshes; the
-        // rasteriser's shadow rays: 8 storages x 4 kernels x 3 geometries x 3 draws x 2 shadings x 2 meshes.
-        assert_eq!((n(RegionId::GpuWalk), n(RegionId::GpuRayQuery), n(RegionId::GpuMeshing), n(RegionId::CpuColumns)), (8 * 2 * 4 * 2 * 2, 3 * 2, 8 * 4 * 3 * 3 * 2 * 2, 1));
+        // rasteriser's shadow rays: 8 storages x 4 kernels x 3 geometries x 3 draws x 2 shadings x 2 meshes;
+        // ray query: 3 geometries x 2 shadings, then the bounce walk's 8 storages x 4 kernels.
+        assert_eq!((n(RegionId::GpuWalk), n(RegionId::GpuRayQuery), n(RegionId::GpuMeshing), n(RegionId::CpuColumns)), (8 * 2 * 4 * 2 * 2, 3 * 2 + 8 * 4, 8 * 4 * 3 * 3 * 2 * 2, 1));
         assert_eq!(mr_components::graph::REGIONS.iter().map(|b| n(b.id)).sum::<usize>(), all.renderers.len(), "every one a region's");
         assert!(mr_components::graph::REGIONS.iter().all(|b| n(b.id) > 0), "every region swept");
         // `plans/stream.toml`: four links, the generator's two places, three clients.
