@@ -110,6 +110,20 @@ pub fn spawn_renderer(
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// This executable, to start as a child (a worker, presenter, check run): `MR_WORKER_EXE`
+/// where set (tests, whose own executable is the test harness), else on Linux
+/// `/proc/self/exe`, the running file even after a rebuild replaced it on disk (its path then
+/// names nothing: a sweep's workers failed so), so parent and child stay one build.
+pub fn self_exe() -> anyhow::Result<PathBuf> {
+    if let Some(e) = std::env::var_os("MR_WORKER_EXE") {
+        return Ok(PathBuf::from(e));
+    }
+    if cfg!(target_os = "linux") {
+        return Ok(PathBuf::from("/proc/self/exe"));
+    }
+    Ok(std::env::current_exe()?)
+}
+
 impl Worker {
     pub fn spawn(cfg: SpawnConfig) -> anyhow::Result<Self> {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -121,10 +135,11 @@ impl Worker {
         let mut thread = None;
         match cfg.isolation {
             Isolation::Process => {
-                // A compiled pipeline's worker, else this executable (`MR_WORKER_EXE`
-                // overrides it, e.g. for tests, whose own executable is the test harness).
+                // A compiled pipeline's worker, else this executable.
                 let exe = match &cfg.exe {
                     Some(e) => e.clone(),
+                    None if cfg.launcher.is_empty() => self_exe()?,
+                    // A launcher runs it by its path (`/proc/self/exe` would be the launcher).
                     None => std::env::var_os("MR_WORKER_EXE").map(PathBuf::from).map_or_else(std::env::current_exe, Ok)?,
                 };
                 let mut cmd = match cfg.launcher.split_first() {

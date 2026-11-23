@@ -24,7 +24,7 @@ impl BenchRun {
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{}.toml", crate::session::sanitize(&plan.name)));
         std::fs::write(&path, plan.to_toml()?)?;
-        let mut child = Command::new(std::env::current_exe()?)
+        let mut child = Command::new(crate::worker::self_exe()?)
             .arg("run")
             .arg(&path)
             .args(overrides.iter().flat_map(|o| ["-s", o.as_str()]))

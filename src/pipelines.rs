@@ -377,7 +377,7 @@ const BREAK_IN: &[(&str, &str, &str, bool)] = &[
 fn fly(b: &Bake, dir: &Path, exe: &Path, options: toml::Table, frames: u32, env: &[(&str, &std::ffi::OsStr)]) -> anyhow::Result<serde_json::Value> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("plan.toml"), check_plan(b, &dir.join("run"), &["off"], options, frames, [960, 540], false)?)?;
-    let mut cmd = Command::new(host_exe()?);
+    let mut cmd = Command::new(crate::worker::self_exe()?);
     cmd.arg("run").arg(dir.join("plan.toml")).env("MR_PIPELINE_CHECK", "1").env("MR_WORKER_EXE", exe);
     for (k, v) in env {
         cmd.env(k, v);
@@ -617,10 +617,6 @@ pub fn trusted(b: &Bake, level: Compile) -> anyhow::Result<Compiled> {
     }
 }
 
-/// This executable (`MR_WORKER_EXE` where the current one is a test harness, as for workers).
-fn host_exe() -> anyhow::Result<PathBuf> {
-    Ok(std::env::var_os("MR_WORKER_EXE").map(PathBuf::from).map_or_else(std::env::current_exe, Ok)?)
-}
 
 /// A terrain flight (lit and unlit) of `b`'s graph under `dir`, one lane per `compile` level
 /// with knobs `options`; with `save`, every frame is saved (the check).
@@ -656,7 +652,7 @@ fn verify(b: &Bake, c: &Compiled, level: Compile) -> anyhow::Result<String> {
     // The pipeline twice, as its graph: the generic build and the compiled one.
     let plan = check_plan(b, &dir.join("run"), &["off", level.name()], toml::Table::new(), 4, [480, 270], true)?;
     std::fs::write(dir.join("check.toml"), &plan)?;
-    let out = Command::new(host_exe()?).arg("run").arg(dir.join("check.toml")).env("MR_PIPELINE_CHECK", "1").output()?;
+    let out = Command::new(crate::worker::self_exe()?).arg("run").arg(dir.join("check.toml")).env("MR_PIPELINE_CHECK", "1").output()?;
     if !out.status.success() {
         bail!("check run failed:\n{}", tail(&out.stderr, 20));
     }

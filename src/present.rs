@@ -49,7 +49,7 @@ impl Presenter {
         let tag = format!("multirenderer-{}-present{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
         let sock = mr_ipc::endpoint(&tag);
         let listener = mr_ipc::listen(&sock)?;
-        let exe = std::env::var_os("MR_WORKER_EXE").map(std::path::PathBuf::from).map_or_else(std::env::current_exe, Ok)?;
+        let exe = crate::worker::self_exe()?;
         let child = Command::new(exe)
             .args(["present", "--socket", &sock, "--title", title])
             .stdin(Stdio::null())
