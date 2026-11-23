@@ -75,14 +75,27 @@ mod tests {
     #[test]
     fn distance_field_matches_brute_force() {
         let mut c = DenseChunk::filled(BlockId::AIR);
-        for p in [IVec3::new(3, 4, 5), IVec3::new(20, 30, 1), IVec3::new(31, 0, 31), IVec3::new(10, 10, 10)] {
+        for p in [
+            IVec3::new(3, 4, 5),
+            IVec3::new(20, 30, 1),
+            IVec3::new(31, 0, 31),
+            IVec3::new(10, 10, 10),
+        ] {
             c.set(p, BlockId(1));
         }
-        let solids: Vec<IVec3> = (0..CHUNK_VOLUME).map(mr_core::chunk::cell_of_index).filter(|p| c.get(*p).is_solid()).collect();
+        let solids: Vec<IVec3> = (0..CHUNK_VOLUME)
+            .map(mr_core::chunk::cell_of_index)
+            .filter(|p| c.get(*p).is_solid())
+            .collect();
         let df = chebyshev_df(&c);
         for i in (0..CHUNK_VOLUME).step_by(37) {
             let p = mr_core::chunk::cell_of_index(i);
-            let want = solids.iter().map(|s| (*s - p).abs().max_element()).min().unwrap().min(32);
+            let want = solids
+                .iter()
+                .map(|s| (*s - p).abs().max_element())
+                .min()
+                .unwrap()
+                .min(32);
             assert_eq!(df[i] as i32, want, "{p}");
         }
     }

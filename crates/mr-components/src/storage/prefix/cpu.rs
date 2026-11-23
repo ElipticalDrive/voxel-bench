@@ -10,7 +10,6 @@ use mr_core::*;
 #[allow(unused_imports)]
 use crate::storage::cpu::{Repr, bit_in_brick, brick_index, brick_set, bricks_of, occupancy_of};
 
-
 /// Interleaves the low 3 bits of `x`, `y`, `z` (Morton order, x lowest).
 #[inline(always)]
 fn morton3(x: u32, y: u32, z: u32) -> u32 {
@@ -105,7 +104,10 @@ impl Repr for Prefix {
     /// One pass in Morton order (bricks, then bits within a brick), which is also the rank
     /// order of the compressed ids, so masks, prefixes and ids come out together.
     fn build(d: &Arc<DenseChunk>) -> Self {
-        let mut h = Box::new(PrefixData { occ: [0; 512], prefix: [0; 513] });
+        let mut h = Box::new(PrefixData {
+            occ: [0; 512],
+            prefix: [0; 513],
+        });
         let mut ids = Vec::with_capacity(CHUNK_VOLUME / 4);
         for (m, &base) in BRICK_BASE.iter().enumerate() {
             let mut w = 0u64;
@@ -119,7 +121,10 @@ impl Repr for Prefix {
             h.occ[m] = w;
             h.prefix[m + 1] = h.prefix[m] + w.count_ones() as u16;
         }
-        Self { h: h.into(), ids: ids.into() }
+        Self {
+            h: h.into(),
+            ids: ids.into(),
+        }
     }
     /// Bottom-up: the cell itself, then the largest empty aligned cube containing it
     /// (emptiness is monotone, so stop at the first occupied level).

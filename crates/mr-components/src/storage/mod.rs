@@ -58,8 +58,14 @@ pub enum RegionBlob {
 /// How a GPU storage's data is held (see the module docs).
 #[derive(Copy, Clone)]
 pub enum Kind {
-    Pool { aux_words: usize, build: fn(&DenseChunk) -> Vec<u32> },
-    Region { shift: u32, build: fn(&dyn Fn(glam::IVec3) -> mr_core::BlockId) -> RegionBlob },
+    Pool {
+        aux_words: usize,
+        build: fn(&DenseChunk) -> Vec<u32>,
+    },
+    Region {
+        shift: u32,
+        build: fn(&dyn Fn(glam::IVec3) -> mr_core::BlockId) -> RegionBlob,
+    },
     /// `svo_dag`: one global DAG shared by all chunks (top cell = chunk).
     Dag,
     /// `clipmap`: toroidal 3D textures around the camera (own `s_top`, bindings 4-7).
@@ -88,7 +94,9 @@ impl GpuStorage {
         const NO_LOD: &str = "const S_HAS_LOD: bool = false;\nfn s_top_lod(key: vec3<i32>, lod: u32) -> u32 { return s_top(key); }\n";
         let (top, aux_words) = match self.kind {
             Kind::Pool { aux_words, .. } => (include_str!("pool_top.wgsl").to_string(), aux_words),
-            Kind::Region { .. } | Kind::Dag => (format!("{}{NO_LOD}", include_str!("region_top.wgsl")), 0),
+            Kind::Region { .. } | Kind::Dag => {
+                (format!("{}{NO_LOD}", include_str!("region_top.wgsl")), 0)
+            }
             Kind::Clipmap => (NO_LOD.to_string(), 0),
         };
         format!(
@@ -104,7 +112,11 @@ impl GpuStorage {
     }
 }
 
-fn pool(wgsl: &'static str, aux_words: usize, build: fn(&DenseChunk) -> Vec<u32>) -> (&'static str, Kind) {
+fn pool(
+    wgsl: &'static str,
+    aux_words: usize,
+    build: fn(&DenseChunk) -> Vec<u32>,
+) -> (&'static str, Kind) {
     (wgsl, Kind::Pool { aux_words, build })
 }
 
@@ -117,11 +129,23 @@ pub fn gpu(name: &str) -> Option<GpuStorage> {
         "rows" => pool(rows::GPU_WGSL, rows::AUX_WORDS, rows::build),
         "clipmap" => (clipmap::GPU_WGSL, Kind::Clipmap),
         "svo_dag" => (svo_dag::GPU_WGSL, Kind::Dag),
-        "tree64" => (tree64::GPU_WGSL, Kind::Region { shift: 6, build: tree64::build }),
+        "tree64" => (
+            tree64::GPU_WGSL,
+            Kind::Region {
+                shift: 6,
+                build: tree64::build,
+            },
+        ),
         _ => return None,
     };
-    let provides = crate::component(crate::Role::Storage, name).and_then(|c| c.on(crate::Kind::Gpu)).map_or(&[][..], |i| i.provides);
-    Some(GpuStorage { wgsl, provides, kind })
+    let provides = crate::component(crate::Role::Storage, name)
+        .and_then(|c| c.on(crate::Kind::Gpu))
+        .map_or(&[][..], |i| i.provides);
+    Some(GpuStorage {
+        wgsl,
+        provides,
+        kind,
+    })
 }
 
 /// Derived from the required interface, for every storage: the block at absolute cell `a`
@@ -138,7 +162,10 @@ const BLOCK_AT: &str = "fn s_block_at(a: vec3<i32>) -> u32 {
 pub fn adapters(provides: &[Cap]) -> String {
     let src = include_str!("adapters.wgsl");
     let mut out = String::new();
-    for a in crate::caps::ADAPTERS.iter().filter(|a| a.role == crate::Role::Storage && !provides.contains(&a.cap)) {
+    for a in crate::caps::ADAPTERS
+        .iter()
+        .filter(|a| a.role == crate::Role::Storage && !provides.contains(&a.cap))
+    {
         let q = a.cap.name();
         let start = src.find(&format!("//@{q}\n")).expect("adapter missing");
         let rest = &src[start..];

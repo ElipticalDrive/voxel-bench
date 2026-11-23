@@ -64,7 +64,14 @@ impl Builder<'_> {
             }
             let first = self.ids.len() as u32;
             self.ids.extend(ids);
-            return Built::Node(Node { mask, child: first, block: 0 }, true);
+            return Built::Node(
+                Node {
+                    mask,
+                    child: first,
+                    block: 0,
+                },
+                true,
+            );
         }
         let mut children = vec![];
         let mut uniform: Option<Option<u16>> = None; // Some(Some(b)) while all children are uniform b
@@ -79,7 +86,13 @@ impl Builder<'_> {
                 Built::Empty => {}
                 Built::Uniform(u) => {
                     mask |= 1 << b;
-                    children.push((Node { block: u as u32, ..Default::default() }, false));
+                    children.push((
+                        Node {
+                            block: u as u32,
+                            ..Default::default()
+                        },
+                        false,
+                    ));
                 }
                 Built::Node(n, leaf) => {
                     mask |= 1 << b;
@@ -95,13 +108,24 @@ impl Builder<'_> {
         }
         let first = self.nodes.len() as u32;
         self.nodes.extend(children);
-        Built::Node(Node { mask, child: first, block: 0 }, false)
+        Built::Node(
+            Node {
+                mask,
+                child: first,
+                block: 0,
+            },
+            false,
+        )
     }
 }
 
 /// Builds one region's blob; `get` reads blocks at region-local coordinates (0..64).
 pub fn build(get: &dyn Fn(IVec3) -> BlockId) -> RegionBlob {
-    let mut b = Builder { get, nodes: vec![], ids: vec![] };
+    let mut b = Builder {
+        get,
+        nodes: vec![],
+        ids: vec![],
+    };
     let (root, leaf) = match b.build(IVec3::ZERO, 64) {
         Built::Empty => return RegionBlob::Empty,
         Built::Uniform(u) => return RegionBlob::Uniform(u),
@@ -110,7 +134,13 @@ pub fn build(get: &dyn Fn(IVec3) -> BlockId) -> RegionBlob {
     // Root at word 0, node k (of `b.nodes`) at word 4 (k + 1), leaf ids after the nodes.
     let ids_word = 4 * (b.nodes.len() as u32 + 1);
     let fix = |n: Node, leaf: bool| -> [u32; 4] {
-        let child = if n.block != 0 { 0 } else if leaf { 2 * ids_word + n.child } else { 4 * (n.child + 1) };
+        let child = if n.block != 0 {
+            0
+        } else if leaf {
+            2 * ids_word + n.child
+        } else {
+            4 * (n.child + 1)
+        };
         [n.mask as u32, (n.mask >> 32) as u32, child, n.block]
     };
     let mut words = Vec::with_capacity(ids_word as usize + b.ids.len().div_ceil(2));
@@ -118,7 +148,11 @@ pub fn build(get: &dyn Fn(IVec3) -> BlockId) -> RegionBlob {
     for &(n, l) in &b.nodes {
         words.extend(fix(n, l));
     }
-    words.extend(b.ids.chunks(2).map(|p| p[0] as u32 | (*p.get(1).unwrap_or(&0) as u32) << 16));
+    words.extend(
+        b.ids
+            .chunks(2)
+            .map(|p| p[0] as u32 | (*p.get(1).unwrap_or(&0) as u32) << 16),
+    );
     RegionBlob::Words(words)
 }
 
@@ -131,7 +165,11 @@ mod tests {
         let mut at = 0usize;
         let mut shift = 6;
         loop {
-            let (mask, child, block) = (w[at] as u64 | (w[at + 1] as u64) << 32, w[at + 2], w[at + 3]);
+            let (mask, child, block) = (
+                w[at] as u64 | (w[at + 1] as u64) << 32,
+                w[at + 2],
+                w[at + 3],
+            );
             if block != 0 {
                 return block as u16;
             }
@@ -153,9 +191,15 @@ mod tests {
     #[test]
     fn region_tree_queries_match_source() {
         let get = |p: IVec3| {
-            if p.y < 10 || (p.x + p.z) % 7 == 0 && p.y < 30 { BlockId(1 + (p.x % 3) as u16) } else { BlockId::AIR }
+            if p.y < 10 || (p.x + p.z) % 7 == 0 && p.y < 30 {
+                BlockId(1 + (p.x % 3) as u16)
+            } else {
+                BlockId::AIR
+            }
         };
-        let RegionBlob::Words(w) = build(&get) else { panic!("expected a tree") };
+        let RegionBlob::Words(w) = build(&get) else {
+            panic!("expected a tree")
+        };
         for y in 0..64 {
             for z in (0..64).step_by(3) {
                 for x in 0..64 {

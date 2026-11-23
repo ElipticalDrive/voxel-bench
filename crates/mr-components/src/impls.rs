@@ -49,7 +49,14 @@ pub enum Api {
 }
 
 impl Api {
-    pub const ALL: [Api; 6] = [Api::Compute, Api::Raster, Api::RayQuery, Api::Scalar, Api::Avx2, Api::Avx512];
+    pub const ALL: [Api; 6] = [
+        Api::Compute,
+        Api::Raster,
+        Api::RayQuery,
+        Api::Scalar,
+        Api::Avx2,
+        Api::Avx512,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -73,7 +80,12 @@ impl Api {
 impl TryFrom<String> for Api {
     type Error = String;
     fn try_from(s: String) -> Result<Self, String> {
-        Api::ALL.into_iter().find(|a| a.name() == s).ok_or_else(|| format!("unknown api `{s}` (have: {})", Api::ALL.map(|a| a.name()).join(", ")))
+        Api::ALL.into_iter().find(|a| a.name() == s).ok_or_else(|| {
+            format!(
+                "unknown api `{s}` (have: {})",
+                Api::ALL.map(|a| a.name()).join(", ")
+            )
+        })
     }
 }
 
@@ -94,7 +106,15 @@ pub struct Impl {
 impl Impl {
     /// `gpu: compute/raster` (for listings and reasons).
     pub fn label(&self) -> String {
-        format!("{}: {}", self.kind.name(), self.apis.iter().map(|a| a.name()).collect::<Vec<_>>().join("/"))
+        format!(
+            "{}: {}",
+            self.kind.name(),
+            self.apis
+                .iter()
+                .map(|a| a.name())
+                .collect::<Vec<_>>()
+                .join("/")
+        )
     }
 }
 
@@ -107,7 +127,15 @@ pub struct Place {
 
 impl Place {
     pub fn label(&self) -> String {
-        format!("{} {}", self.kind.name(), self.apis.iter().map(|a| a.name()).collect::<Vec<_>>().join("/"))
+        format!(
+            "{} {}",
+            self.kind.name(),
+            self.apis
+                .iter()
+                .map(|a| a.name())
+                .collect::<Vec<_>>()
+                .join("/")
+        )
     }
 
     /// Whether `i` runs here: the same kind and every API of the place.
@@ -121,18 +149,39 @@ pub const SHADER: &[Api] = &[Api::Compute, Api::Raster, Api::RayQuery];
 /// CPU code compiled into every hot-loop variant (generic Rust, monomorphised per ISA entry).
 pub const ISAS: &[Api] = &[Api::Scalar, Api::Avx2, Api::Avx512];
 
-pub const GPU_COMPUTE: Place = Place { kind: Kind::Gpu, apis: &[Api::Compute] };
-pub const GPU_RASTER: Place = Place { kind: Kind::Gpu, apis: &[Api::Raster] };
-pub const GPU_RAYQUERY: Place = Place { kind: Kind::Gpu, apis: &[Api::RayQuery] };
+pub const GPU_COMPUTE: Place = Place {
+    kind: Kind::Gpu,
+    apis: &[Api::Compute],
+};
+pub const GPU_RASTER: Place = Place {
+    kind: Kind::Gpu,
+    apis: &[Api::Raster],
+};
+pub const GPU_RAYQUERY: Place = Place {
+    kind: Kind::Gpu,
+    apis: &[Api::RayQuery],
+};
 /// Shading of a face drawer: in the fragment shader (`raster`) or a deferred compute pass
 /// (`visbuffer`, `gbuffer`); with it the storages and kernels its shadow rays walk.
-pub const GPU_DRAWN: Place = Place { kind: Kind::Gpu, apis: &[Api::Raster, Api::Compute] };
+pub const GPU_DRAWN: Place = Place {
+    kind: Kind::Gpu,
+    apis: &[Api::Raster, Api::Compute],
+};
 /// raycast-gpu's walk and its inline shading: a compute thread or a fragment shader per
 /// pixel (knob `dispatch`, or the nodes' `api`).
-pub const GPU_DISPATCH: Place = Place { kind: Kind::Gpu, apis: &[Api::Compute, Api::Raster] };
+pub const GPU_DISPATCH: Place = Place {
+    kind: Kind::Gpu,
+    apis: &[Api::Compute, Api::Raster],
+};
 /// The `raycast-cpu` preset's hot loop: one ISA per run (knob `isa`, or the nodes' `api`).
-pub const CPU_ISAS: Place = Place { kind: Kind::Cpu, apis: ISAS };
-pub const CPU_SCALAR: Place = Place { kind: Kind::Cpu, apis: &[Api::Scalar] };
+pub const CPU_ISAS: Place = Place {
+    kind: Kind::Cpu,
+    apis: ISAS,
+};
+pub const CPU_SCALAR: Place = Place {
+    kind: Kind::Cpu,
+    apis: &[Api::Scalar],
+};
 
 /// A back end's choice of API: the flat option that sets it, the stages it sets (all of
 /// them run with one API), and the option's value per API. Unset, the option's default.

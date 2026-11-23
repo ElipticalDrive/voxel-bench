@@ -31,8 +31,10 @@ use glam::{IVec3, Vec3};
 use mr_core::{Camera, Face};
 use rayon::prelude::*;
 
-use crate::visibility::discover::{FaceMap, Output, Rays, Settings, State, cast, face_key, finalize};
 use crate::visibility::discover::grid::World;
+use crate::visibility::discover::{
+    FaceMap, Output, Rays, Settings, State, cast, face_key, finalize,
+};
 use crate::visibility::quadtree::cpu::dilate_faces;
 
 /// How a face of S was found this frame (`view = kinds` colours them).
@@ -84,7 +86,10 @@ fn corner_visible<G: World>(cx: &Ctx<G>, p: IVec3) -> bool {
     if dist < 1e-4 {
         return true;
     }
-    match cx.grid.trace(cx.rays.cb, cx.rays.o, d / dist, cx.bmin, cx.bmax) {
+    match cx
+        .grid
+        .trace(cx.rays.cb, cx.rays.o, d / dist, cx.bmin, cx.bmax)
+    {
         None => true,
         // A hit before the point (beyond a small tolerance) occludes it.
         Some(h) => h.t >= dist - (1e-3 + 1e-4 * dist),
@@ -101,7 +106,10 @@ fn covered_pixels<G: World>(cx: &Ctx<G>, c: &[IVec3; 4], out: &mut Vec<u32>) -> 
             None => return false,
         }
     }
-    let (lo, hi) = q.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+    let (lo, hi) = q.iter().fold(
+        (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+        |(lo, hi), p| (lo.min(*p), hi.max(*p)),
+    );
     let x0 = (lo.x - 0.5).ceil().max(0.0) as i32;
     let y0 = (lo.y - 0.5).ceil().max(0.0) as i32;
     let x1 = ((hi.x - 0.5).floor() as i32).min(cx.w as i32 - 1);
@@ -114,7 +122,12 @@ fn covered_pixels<G: World>(cx: &Ctx<G>, c: &[IVec3; 4], out: &mut Vec<u32>) -> 
     for y in y0..=y1 {
         for x in x0..=x1 {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let e = [edge(q[0], q[1], px, py), edge(q[1], q[2], px, py), edge(q[2], q[3], px, py), edge(q[3], q[0], px, py)];
+            let e = [
+                edge(q[0], q[1], px, py),
+                edge(q[1], q[2], px, py),
+                edge(q[2], q[3], px, py),
+                edge(q[3], q[0], px, py),
+            ];
             if e.iter().all(|&v| v >= 0.0) || e.iter().all(|&v| v <= 0.0) {
                 out.push(y as u32 * cx.w + x as u32);
             }
@@ -123,11 +136,25 @@ fn covered_pixels<G: World>(cx: &Ctx<G>, c: &[IVec3; 4], out: &mut Vec<u32>) -> 
     true
 }
 
-pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
+pub fn discover<G: World>(
+    mut st: State,
+    grid: &G,
+    cam: &Camera,
+    w: u32,
+    h: u32,
+    set: &Settings,
+) -> Output {
     let start = std::time::Instant::now();
     let rays = Rays::new(cam, w, h, set.margin);
     let (bmin, bmax) = grid.bounds_rel(rays.cb);
-    let cx = Ctx { grid, rays: &rays, bmin, bmax, w, h };
+    let cx = Ctx {
+        grid,
+        rays: &rays,
+        bmin,
+        bmax,
+        w,
+        h,
+    };
     st.frame += 1;
     let frame = st.frame;
     let n = (w * h) as usize;
@@ -139,10 +166,12 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
     let mut done: FaceMap = FaceMap::default();
     // Corner visibility by packed lattice point (fast hasher; points share the face-key
     // packing with face 0).
-    let mut corner_vis: FaceMap = FaceMap::with_capacity_and_hasher(st.kinds.len() * 2, Default::default());
+    let mut corner_vis: FaceMap =
+        FaceMap::with_capacity_and_hasher(st.kinds.len() * 2, Default::default());
     done.reserve(st.kinds.len() * 2);
     let mut kinds: Vec<(u64, u8, u32)> = vec![];
-    let (mut seed_rays, mut corner_rays, mut clusters, mut confirmed, mut partial, mut waves) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut seed_rays, mut corner_rays, mut clusters, mut confirmed, mut partial, mut waves) =
+        (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut found: Vec<u64> = vec![];
     let (mut seed_ms, mut corner_ms, mut fill_ms) = (0f32, 0f32, 0f32);
 
@@ -168,7 +197,12 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
             y += k;
         }
         seed_rays += seeds.len() as u64;
-        let hits: Vec<Option<u64>> = seeds.par_iter().map(|&(x, y)| cast(grid, &rays, bmin, bmax, x as f32 + 0.5, y as f32 + 0.5).map(|(key, _, _)| key)).collect();
+        let hits: Vec<Option<u64>> = seeds
+            .par_iter()
+            .map(|&(x, y)| {
+                cast(grid, &rays, bmin, bmax, x as f32 + 0.5, y as f32 + 0.5).map(|(key, _, _)| key)
+            })
+            .collect();
         // Record this level's misses first (at any level a missed seed keeps SKY_RAY), so the
         // four-corner sky rule sees corners cast at this or a coarser spacing.
         for (&(x, y), hit) in seeds.iter().zip(&hits) {
@@ -176,7 +210,8 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
                 cov[(y * w + x) as usize] = SKY_RAY;
             }
         }
-        let miss_at = |cov: &[u8], x: u32, y: u32| x >= w || y >= h || cov[(y * w + x) as usize] == SKY_RAY;
+        let miss_at =
+            |cov: &[u8], x: u32, y: u32| x >= w || y >= h || cov[(y * w + x) as usize] == SKY_RAY;
         let mut frontier: Vec<(u64, u32)> = vec![];
         for (&(x, y), hit) in seeds.iter().zip(hits) {
             match hit {
@@ -194,7 +229,12 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
                 }
                 // Sky: once the spacing is small, a miss covers its lattice cell (`sparse`),
                 // or only if the seeds at the cell's other three corners miss too.
-                None if k <= set.sky_tile && (set.sky_sparse || (miss_at(&cov, x + k, y) && miss_at(&cov, x, y + k) && miss_at(&cov, x + k, y + k))) => {
+                None if k <= set.sky_tile
+                    && (set.sky_sparse
+                        || (miss_at(&cov, x + k, y)
+                            && miss_at(&cov, x, y + k)
+                            && miss_at(&cov, x + k, y + k))) =>
+                {
                     for yy in y..(y + k).min(h) {
                         for xx in x..(x + k).min(w) {
                             let c = &mut cov[(yy * w + xx) as usize];
@@ -233,7 +273,11 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
             need.dedup();
             need.retain(|c| !corner_vis.contains_key(c));
             corner_rays += need.len() as u64;
-            let vis: Vec<bool> = need.par_iter().with_min_len(MIN_LEN / 4).map(|&c| corner_visible(&cx, crate::visibility::discover::unpack_key(c).0)).collect();
+            let vis: Vec<bool> = need
+                .par_iter()
+                .with_min_len(MIN_LEN / 4)
+                .map(|&c| corner_visible(&cx, crate::visibility::discover::unpack_key(c).0))
+                .collect();
             for (c, v) in need.into_iter().zip(vis) {
                 corner_vis.insert(c, v as u32);
             }
@@ -249,7 +293,9 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
                     let (cell, face) = crate::visibility::discover::unpack_key(key);
                     let c = corners(cell, face);
                     let mut px = vec![];
-                    if !c.iter().all(|p| cv.get(&face_key(*p, 0)) == Some(&1)) || !covered_pixels(&cx, &c, &mut px) {
+                    if !c.iter().all(|p| cv.get(&face_key(*p, 0)) == Some(&1))
+                        || !covered_pixels(&cx, &c, &mut px)
+                    {
                         return (key, id, false, px, vec![]);
                     }
                     let a = (face / 2) as usize;
@@ -300,8 +346,19 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
     st.kinds = kinds;
     let t_disc = start.elapsed().as_secs_f32() * 1e3;
     let faces_found = found.len() as u64;
-    let tag_map: FaceMap = st.kinds.iter().map(|&(k, kind, id)| (k, (kind as u32) << 30 | (id & 0x3fff_ffff))).collect();
-    let records = finalize(&mut st, found, grid, rays.cb, set.keep_frames, Some(&tag_map));
+    let tag_map: FaceMap = st
+        .kinds
+        .iter()
+        .map(|&(k, kind, id)| (k, (kind as u32) << 30 | (id & 0x3fff_ffff)))
+        .collect();
+    let records = finalize(
+        &mut st,
+        found,
+        grid,
+        rays.cb,
+        set.keep_frames,
+        Some(&tag_map),
+    );
     let mut out = Output {
         state: st,
         records,
@@ -320,7 +377,10 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
         ("fill_waves".into(), waves as f64),
         ("faces_confirmed".into(), confirmed as f64),
         ("faces_partial".into(), partial as f64),
-        ("covered_pct".into(), 100.0 * covered as f64 / n.max(1) as f64),
+        (
+            "covered_pct".into(),
+            100.0 * covered as f64 / n.max(1) as f64,
+        ),
         ("seed_ms".into(), seed_ms as f64),
         ("corner_ms".into(), corner_ms as f64),
         ("fill_ms".into(), fill_ms as f64),
@@ -355,12 +415,33 @@ mod tests {
         }
         d.0[cell_index(IVec3::new(20, 8, 18))] = BlockId(2);
         let mut w = CpuWorld::new("bricks").unwrap();
-        w.apply(&[WorldUpdate::ChunkLoad { key: ChunkKey { pos: IVec3::ZERO, lod: 0 }, data: ChunkData::Dense(Arc::new(d)) }]);
+        w.apply(&[WorldUpdate::ChunkLoad {
+            key: ChunkKey {
+                pos: IVec3::ZERO,
+                lod: 0,
+            },
+            data: ChunkData::Dense(Arc::new(d)),
+        }]);
         w.snapshot()
     }
 
     fn settings(seed_step: u32) -> Settings {
-        Settings { tile: 32, face_criterion: false, sky_tile: 8, keep_frames: 1, max_footprint: 4096, strict: true, jitter: false, margin: 0.0, dilate: 0, dilate_below: 2, cluster: true, seed_step, sky_sparse: false, occluders: 0 }
+        Settings {
+            tile: 32,
+            face_criterion: false,
+            sky_tile: 8,
+            keep_frames: 1,
+            max_footprint: 4096,
+            strict: true,
+            jitter: false,
+            margin: 0.0,
+            dilate: 0,
+            dilate_below: 2,
+            cluster: true,
+            seed_step,
+            sky_sparse: false,
+            occluders: 0,
+        }
     }
 
     /// Every face visible at a pixel centre is in S (one pass, from several viewpoints).
@@ -368,14 +449,26 @@ mod tests {
     fn complete_on_occluded_scene() {
         let grid = world();
         let (w, h) = (160, 120);
-        for (pos, target) in [([16.0, 6.0, 2.0], [16.0, 6.0, 24.0]), ([3.0, 12.0, 4.0], [18.0, 4.0, 20.0]), ([28.5, 2.5, 9.0], [10.0, 8.0, 22.0])] {
+        for (pos, target) in [
+            ([16.0, 6.0, 2.0], [16.0, 6.0, 24.0]),
+            ([3.0, 12.0, 4.0], [18.0, 4.0, 20.0]),
+            ([28.5, 2.5, 9.0], [10.0, 8.0, 22.0]),
+        ] {
             let cam = Camera::look_at(DVec3::from_array(pos), DVec3::from_array(target), 70.0);
             for step in [16, 4] {
                 let out = grid.discover(State::default(), &cam, w, h, &settings(step));
                 let (missing, _, _) = grid.audit(&out.state.s, &cam, w, h);
-                assert_eq!(missing, 0, "camera at {pos:?}, seed_step {step}: {missing} pixels see faces missing from S");
+                assert_eq!(
+                    missing, 0,
+                    "camera at {pos:?}, seed_step {step}: {missing} pixels see faces missing from S"
+                );
                 // And it must actually save rays over one per pixel.
-                assert!(out.rays < (w * h) as u64, "{} rays for {} pixels", out.rays, w * h);
+                assert!(
+                    out.rays < (w * h) as u64,
+                    "{} rays for {} pixels",
+                    out.rays,
+                    w * h
+                );
             }
         }
     }

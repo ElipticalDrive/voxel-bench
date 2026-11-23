@@ -82,23 +82,36 @@ fn text(t: &mut toml::Table, k: &str) -> Result<Option<String>, String> {
 }
 
 fn typed<T: DeserializeOwned>(k: &str, v: toml::Value) -> Result<T, String> {
-    v.clone().try_into().map_err(|e| format!("`{k} = {v}`: {}", e.to_string().trim()))
+    v.clone()
+        .try_into()
+        .map_err(|e| format!("`{k} = {v}`: {}", e.to_string().trim()))
 }
 
 /// A value that may be written `"default"` (none set).
 fn or_default<T: DeserializeOwned>(k: &str, v: toml::Value) -> Result<Option<T>, String> {
-    if v.as_str() == Some(DEFAULT) { Ok(None) } else { typed(k, v).map(Some) }
+    if v.as_str() == Some(DEFAULT) {
+        Ok(None)
+    } else {
+        typed(k, v).map(Some)
+    }
 }
 
 fn new_node(k: &str, t: &mut toml::Table) -> Result<(Role, String), String> {
-    let role = typed("role", t.remove("role").ok_or_else(|| format!("`{k}` needs `role` and `component`"))?)?;
-    let component = text(t, "component")?.ok_or_else(|| format!("`{k}` needs `role` and `component`"))?;
+    let role = typed(
+        "role",
+        t.remove("role")
+            .ok_or_else(|| format!("`{k}` needs `role` and `component`"))?,
+    )?;
+    let component =
+        text(t, "component")?.ok_or_else(|| format!("`{k}` needs `role` and `component`"))?;
     Ok((role, component))
 }
 
 fn rest(t: &toml::Table) -> Result<(), String> {
     match t.keys().next() {
-        Some(k) => Err(format!("`{k}` does not belong in this edit (one change per edit)")),
+        Some(k) => Err(format!(
+            "`{k}` does not belong in this edit (one change per edit)"
+        )),
         None => Ok(()),
     }
 }
@@ -116,7 +129,8 @@ impl TryFrom<toml::Table> for Change {
             if let Some(id) = text(&mut t, "remove")? {
                 return Ok(Change::Remove(id));
             }
-            let id = text(&mut t, "node")?.ok_or("an edit names its `node` (or is `add` / `remove`)")?;
+            let id =
+                text(&mut t, "node")?.ok_or("an edit names its `node` (or is `add` / `remove`)")?;
             if let Some(c) = text(&mut t, "component")? {
                 Ok(Change::Component(id, c))
             } else if let Some(p) = text(&mut t, "unbind")? {
@@ -140,14 +154,20 @@ impl TryFrom<toml::Table> for Change {
                         rest(&n)?;
                         Ok(Change::Bind(id, p, Target::New(role, component)))
                     }
-                    Some(v) => Err(format!("`from` is a node's id or a new node (`{{ role, component }}`), not `{v}`")),
-                    None => Err("`input` needs `from` (what it is bound to) or `when` (its timing)".into()),
+                    Some(v) => Err(format!(
+                        "`from` is a node's id or a new node (`{{ role, component }}`), not `{v}`"
+                    )),
+                    None => Err(
+                        "`input` needs `from` (what it is bound to) or `when` (its timing)".into(),
+                    ),
                 }
             } else {
                 Err("what changes on the node: `component`, `input`, `unbind`, `device`, `api`, `knob` or `knobs`".into())
             }
         };
-        read().and_then(|c| rest(&t).map(|_| c)).map_err(|e| format!("edit `{whole}`: {e}"))
+        read()
+            .and_then(|c| rest(&t).map(|_| c))
+            .map_err(|e| format!("edit `{whole}`: {e}"))
     }
 }
 
@@ -218,9 +238,27 @@ impl From<Change> for toml::Table {
 /// As plans write an edit: an inline table, its keys in reading order.
 impl std::fmt::Display for Change {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const ORDER: [&str; 14] = ["add", "remove", "node", "role", "component", "input", "unbind", "from", "when", "device", "api", "knob", "value", "knobs"];
+        const ORDER: [&str; 14] = [
+            "add",
+            "remove",
+            "node",
+            "role",
+            "component",
+            "input",
+            "unbind",
+            "from",
+            "when",
+            "device",
+            "api",
+            "knob",
+            "value",
+            "knobs",
+        ];
         let t: toml::Table = self.clone().into();
-        let parts: Vec<String> = ORDER.iter().filter_map(|k| t.get(*k).map(|v| format!("{k} = {v}"))).collect();
+        let parts: Vec<String> = ORDER
+            .iter()
+            .filter_map(|k| t.get(*k).map(|v| format!("{k} = {v}")))
+            .collect();
         write!(f, "{{ {} }}", parts.join(", "))
     }
 }
@@ -236,7 +274,11 @@ fn added(v: &toml::Value, out: &mut Vec<(String, Role)>) {
     match v {
         toml::Value::Array(a) => a.iter().for_each(|x| added(x, out)),
         toml::Value::Table(t) => {
-            if let (Some(id), Some(role)) = (t.get("add").and_then(|x| x.as_str()), t.get("role").and_then(|r| typed::<Role>("role", r.clone()).ok())) {
+            if let (Some(id), Some(role)) = (
+                t.get("add").and_then(|x| x.as_str()),
+                t.get("role")
+                    .and_then(|r| typed::<Role>("role", r.clone()).ok()),
+            ) {
                 out.push((id.to_string(), role));
             }
             t.get("any").into_iter().for_each(|x| added(x, out));
@@ -247,49 +289,109 @@ fn added(v: &toml::Value, out: &mut Vec<(String, Role)>) {
 
 /// Every value key `k` of edit `t` may be given: what the graph has to offer there
 /// (whether a pipeline takes it is `accept`'s to say, per combination).
-fn every(base: &Graph, new: &[(String, Role)], t: &toml::Table, k: &str) -> Result<Vec<toml::Value>, String> {
-    let node = t.get("node").or(t.get("add")).and_then(|x| x.as_str()).unwrap_or_default();
+fn every(
+    base: &Graph,
+    new: &[(String, Role)],
+    t: &toml::Table,
+    k: &str,
+) -> Result<Vec<toml::Value>, String> {
+    let node = t
+        .get("node")
+        .or(t.get("add"))
+        .and_then(|x| x.as_str())
+        .unwrap_or_default();
     let names = |v: Vec<&str>| Ok(v.into_iter().map(toml::Value::from).collect());
     match k {
         "component" => {
             let role = match t.get("role") {
                 Some(r) => typed::<Role>("role", r.clone())?,
-                None => base.nodes.get(node).map(|n| n.role).or_else(|| new.iter().find(|(id, _)| id == node).map(|(_, r)| *r)).ok_or_else(|| format!("no node `{node}` to vary (the graph has {})", base.nodes.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")))?,
+                None => base
+                    .nodes
+                    .get(node)
+                    .map(|n| n.role)
+                    .or_else(|| new.iter().find(|(id, _)| id == node).map(|(_, r)| *r))
+                    .ok_or_else(|| {
+                        format!(
+                            "no node `{node}` to vary (the graph has {})",
+                            base.nodes
+                                .keys()
+                                .map(|k| format!("`{k}`"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?,
             };
             names(super::role_components(role))
         }
         "api" => names(Api::ALL.map(|a| a.name()).to_vec()),
         "when" => names(vec!["now", "prev"]),
-        "from" => Ok(base.nodes.keys().map(String::as_str).chain(new.iter().map(|(id, _)| id.as_str())).filter(|id| *id != node).map(toml::Value::from).collect()),
-        _ => Err(format!("`{k} = \"*\"`: there is no list of every {k} to ask for; give the values as a list")),
+        "from" => Ok(base
+            .nodes
+            .keys()
+            .map(String::as_str)
+            .chain(new.iter().map(|(id, _)| id.as_str()))
+            .filter(|id| *id != node)
+            .map(toml::Value::from)
+            .collect()),
+        _ => Err(format!(
+            "`{k} = \"*\"`: there is no list of every {k} to ask for; give the values as a list"
+        )),
     }
 }
 
 /// The edits one varied edit stands for: one per value of the key given as a list or `*`.
-fn alternatives(base: &Graph, new: &[(String, Role)], v: &toml::Value) -> Result<Vec<Change>, String> {
-    let t = v.as_table().ok_or_else(|| format!("an edit is a table, not `{v}`"))?;
+fn alternatives(
+    base: &Graph,
+    new: &[(String, Role)],
+    v: &toml::Value,
+) -> Result<Vec<Change>, String> {
+    let t = v
+        .as_table()
+        .ok_or_else(|| format!("an edit is a table, not `{v}`"))?;
     let list = |x: &toml::Value| x.is_array() || x.as_str() == Some("*");
-    let Some(k) = VALUES.into_iter().find(|k| t.get(*k).is_some_and(list)) else { return Change::try_from(t.clone()).map(|c| vec![c]) };
+    let Some(k) = VALUES.into_iter().find(|k| t.get(*k).is_some_and(list)) else {
+        return Change::try_from(t.clone()).map(|c| vec![c]);
+    };
     let values = match &t[k] {
         toml::Value::Array(a) => a.clone(),
         _ => every(base, new, t, k).map_err(|e| format!("edit `{v}`: {e}"))?,
     };
-    values.into_iter().map(|x| {
-        let mut t = t.clone();
-        t.insert(k.into(), x);
-        Change::try_from(t)
-    }).collect()
+    values
+        .into_iter()
+        .map(|x| {
+            let mut t = t.clone();
+            t.insert(k.into(), x);
+            Change::try_from(t)
+        })
+        .collect()
 }
 
 /// Every way of taking one entry of each list, the first list varying slowest.
 fn product(lists: Vec<Vec<Vec<Change>>>) -> Result<Vec<Vec<Change>>, String> {
-    let n = lists.iter().map(Vec::len).try_fold(1usize, |a, b| a.checked_mul(b)).filter(|n| *n <= MAX_VARIED);
+    let n = lists
+        .iter()
+        .map(Vec::len)
+        .try_fold(1usize, |a, b| a.checked_mul(b))
+        .filter(|n| *n <= MAX_VARIED);
     if n.is_none() {
-        return Err(format!("more than {MAX_VARIED} combinations ({}); vary less at once", lists.iter().map(|l| l.len().to_string()).collect::<Vec<_>>().join(" x ")));
+        return Err(format!(
+            "more than {MAX_VARIED} combinations ({}); vary less at once",
+            lists
+                .iter()
+                .map(|l| l.len().to_string())
+                .collect::<Vec<_>>()
+                .join(" x ")
+        ));
     }
     let mut out = vec![vec![]];
     for list in &lists {
-        out = out.iter().flat_map(|c: &Vec<Change>| list.iter().map(move |x| c.iter().chain(x).cloned().collect())).collect();
+        out = out
+            .iter()
+            .flat_map(|c: &Vec<Change>| {
+                list.iter()
+                    .map(move |x| c.iter().chain(x).cloned().collect())
+            })
+            .collect();
     }
     Ok(out)
 }
@@ -312,7 +414,9 @@ fn product(lists: Vec<Vec<Vec<Change>>>) -> Result<Vec<Vec<Change>>, String> {
 pub fn varied(base: &Graph, vary: &[toml::Value]) -> Result<Vec<Vec<Change>>, String> {
     let mut new = vec![];
     vary.iter().for_each(|v| added(v, &mut new));
-    let one = |v: &toml::Value| alternatives(base, &new, v).map(|a| a.into_iter().map(|c| vec![c]).collect::<Vec<_>>());
+    let one = |v: &toml::Value| {
+        alternatives(base, &new, v).map(|a| a.into_iter().map(|c| vec![c]).collect::<Vec<_>>())
+    };
     let mut axes = vec![];
     for v in vary {
         let Some(any) = v.get("any") else {
@@ -320,11 +424,17 @@ pub fn varied(base: &Graph, vary: &[toml::Value]) -> Result<Vec<Vec<Change>>, St
             continue;
         };
         if v.as_table().is_some_and(|t| t.len() != 1) {
-            return Err(format!("`{v}`: `any` stands alone (a choice between lists of edits)"));
+            return Err(format!(
+                "`{v}`: `any` stands alone (a choice between lists of edits)"
+            ));
         }
         let mut axis = vec![];
-        for alt in any.as_array().ok_or_else(|| format!("`{v}`: `any` is a list of alternatives, each a list of edits"))? {
-            let edits = alt.as_array().ok_or_else(|| format!("`{v}`: each alternative of `any` is a list of edits, not `{alt}`"))?;
+        for alt in any.as_array().ok_or_else(|| {
+            format!("`{v}`: `any` is a list of alternatives, each a list of edits")
+        })? {
+            let edits = alt.as_array().ok_or_else(|| {
+                format!("`{v}`: each alternative of `any` is a list of edits, not `{alt}`")
+            })?;
             axis.extend(product(edits.iter().map(one).collect::<Result<_, _>>()?)?);
         }
         axes.push(axis);
@@ -336,13 +446,23 @@ fn fresh_id(g: &Graph, want: &str) -> String {
     if !g.nodes.contains_key(want) {
         return want.to_string();
     }
-    (2..).map(|i| format!("{want}-{i}")).find(|k| !g.nodes.contains_key(k)).unwrap()
+    (2..)
+        .map(|i| format!("{want}-{i}"))
+        .find(|k| !g.nodes.contains_key(k))
+        .unwrap()
 }
 
 impl Graph {
     fn node_mut(&mut self, id: &str) -> Result<&mut Node, String> {
         if !self.nodes.contains_key(id) {
-            return Err(format!("no node `{id}` (the graph has {})", self.nodes.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")));
+            return Err(format!(
+                "no node `{id}` (the graph has {})",
+                self.nodes
+                    .keys()
+                    .map(|k| format!("`{k}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         Ok(self.nodes.get_mut(id).unwrap())
     }
@@ -352,7 +472,12 @@ impl Graph {
         let n = self.node_mut(id)?;
         let ports = inputs(n.role, &n.component);
         if !ports.iter().any(|p| p.name == port) {
-            return Err(format!("`{id}` ({} {}) has no input `{port}` (its inputs: {})", n.role.name(), n.component, ports.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")));
+            return Err(format!(
+                "`{id}` ({} {}) has no input `{port}` (its inputs: {})",
+                n.role.name(),
+                n.component,
+                ports.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")
+            ));
         }
         Ok(n)
     }
@@ -373,7 +498,12 @@ impl Graph {
                 g.node_mut(id)?;
                 g.nodes.remove(id);
                 for n in g.nodes.values_mut() {
-                    let gone: Vec<String> = n.inputs.iter().filter(|(_, s)| *s == id).map(|(p, _)| p.clone()).collect();
+                    let gone: Vec<String> = n
+                        .inputs
+                        .iter()
+                        .filter(|(_, s)| *s == id)
+                        .map(|(p, _)| p.clone())
+                        .collect();
                     for p in gone {
                         n.inputs.remove(&p);
                         n.timing.remove(&p);
@@ -438,7 +568,9 @@ impl Graph {
     pub fn with_edits(&self, edits: &[Change]) -> Result<Graph, String> {
         let mut g = self.clone();
         for (i, c) in edits.iter().enumerate() {
-            g = g.edit(c).map_err(|e| format!("edit {} (`{c}`): {e}", i + 1))?;
+            g = g
+                .edit(c)
+                .map_err(|e| format!("edit {} (`{c}`): {e}", i + 1))?;
         }
         Ok(g)
     }
@@ -459,7 +591,9 @@ impl Graph {
         for (id, t) in &to.nodes {
             match self.nodes.get(id).filter(|n| n.role == t.role) {
                 None => v.push(Change::Add(id.clone(), t.role, t.component.clone())),
-                Some(n) if n.component != t.component => v.push(Change::Component(id.clone(), t.component.clone())),
+                Some(n) if n.component != t.component => {
+                    v.push(Change::Component(id.clone(), t.component.clone()))
+                }
                 Some(_) => {}
             }
         }
@@ -467,17 +601,48 @@ impl Graph {
         for (id, t) in &to.nodes {
             let n = &g.nodes[id];
             let id = || id.clone();
-            v.extend(n.inputs.keys().filter(|p| !t.inputs.contains_key(*p)).map(|p| Change::Bind(id(), p.clone(), Target::Unbound)));
-            v.extend(t.inputs.iter().filter(|(p, s)| n.inputs.get(*p) != Some(s)).map(|(p, s)| Change::Bind(id(), p.clone(), Target::Node(s.clone()))));
+            v.extend(
+                n.inputs
+                    .keys()
+                    .filter(|p| !t.inputs.contains_key(*p))
+                    .map(|p| Change::Bind(id(), p.clone(), Target::Unbound)),
+            );
+            v.extend(
+                t.inputs
+                    .iter()
+                    .filter(|(p, s)| n.inputs.get(*p) != Some(s))
+                    .map(|(p, s)| Change::Bind(id(), p.clone(), Target::Node(s.clone()))),
+            );
             if n.device != t.device {
                 v.push(Change::Device(id(), t.device));
             }
             if n.api != t.api {
                 v.push(Change::Api(id(), t.api));
             }
-            v.extend(n.timing.keys().filter(|p| !t.timing.contains_key(*p)).map(|p| Change::Timing(id(), p.clone(), When::Now)));
-            v.extend(t.timing.iter().filter(|(p, w)| n.timing.get(*p) != Some(w)).map(|(p, w)| Change::Timing(id(), p.clone(), *w)));
-            let knobs: Vec<Change> = n.knobs.keys().filter(|k| !t.knobs.contains_key(*k)).map(|k| Change::Knob(id(), k.clone(), None)).chain(t.knobs.iter().filter(|(k, x)| n.knobs.get(*k) != Some(x)).map(|(k, x)| Change::Knob(id(), k.clone(), Some(x.clone())))).collect();
+            v.extend(
+                n.timing
+                    .keys()
+                    .filter(|p| !t.timing.contains_key(*p))
+                    .map(|p| Change::Timing(id(), p.clone(), When::Now)),
+            );
+            v.extend(
+                t.timing
+                    .iter()
+                    .filter(|(p, w)| n.timing.get(*p) != Some(w))
+                    .map(|(p, w)| Change::Timing(id(), p.clone(), *w)),
+            );
+            let knobs: Vec<Change> = n
+                .knobs
+                .keys()
+                .filter(|k| !t.knobs.contains_key(*k))
+                .map(|k| Change::Knob(id(), k.clone(), None))
+                .chain(
+                    t.knobs
+                        .iter()
+                        .filter(|(k, x)| n.knobs.get(*k) != Some(x))
+                        .map(|(k, x)| Change::Knob(id(), k.clone(), Some(x.clone()))),
+                )
+                .collect();
             match knobs.len() {
                 0 | 1 => v.extend(knobs),
                 _ => v.push(Change::Knobs(id(), t.knobs.clone())),
@@ -509,16 +674,46 @@ impl Graph {
         let region = self.region().ok_or("no region builds the running graph")?;
         to.accept()?;
         if to.region().map(|b| b.id) != Some(region.id) {
-            return Err(format!("the pipeline is no longer one {} builds", region.who()));
+            return Err(format!(
+                "the pipeline is no longer one {} builds",
+                region.who()
+            ));
         }
-        let edits: Vec<Change> = self.diff(to).ok_or("another executor")?.into_iter().filter(|c| !matches!(c, Change::Knob(..) | Change::Knobs(..))).collect();
+        let edits: Vec<Change> = self
+            .diff(to)
+            .ok_or("another executor")?
+            .into_iter()
+            .filter(|c| !matches!(c, Change::Knob(..) | Change::Knobs(..)))
+            .collect();
         let mut switches: Vec<Switch> = vec![];
         for c in &edits {
             match c {
-                Change::Remove(id) if region.replaces(self, id) => switches.push(Switch { node: id.clone(), role: self.nodes[id].role, component: None }),
-                Change::Add(id, role, c) if region.replaces(to, id) => switches.push(Switch { node: id.clone(), role: *role, component: Some(c.clone()) }),
-                Change::Component(id, c) if region.replaces(self, id) && region.replaces(to, id) => switches.push(Switch { node: id.clone(), role: to.nodes[id].role, component: Some(c.clone()) }),
-                Change::Remove(_) | Change::Add(..) | Change::Component(..) => return Err(format!("`{c}` needs a new renderer ({} replaces {} while running)", region.who(), live_roles(region))),
+                Change::Remove(id) if region.replaces(self, id) => switches.push(Switch {
+                    node: id.clone(),
+                    role: self.nodes[id].role,
+                    component: None,
+                }),
+                Change::Add(id, role, c) if region.replaces(to, id) => switches.push(Switch {
+                    node: id.clone(),
+                    role: *role,
+                    component: Some(c.clone()),
+                }),
+                Change::Component(id, c)
+                    if region.replaces(self, id) && region.replaces(to, id) =>
+                {
+                    switches.push(Switch {
+                        node: id.clone(),
+                        role: to.nodes[id].role,
+                        component: Some(c.clone()),
+                    })
+                }
+                Change::Remove(_) | Change::Add(..) | Change::Component(..) => {
+                    return Err(format!(
+                        "`{c}` needs a new renderer ({} replaces {} while running)",
+                        region.who(),
+                        live_roles(region)
+                    ));
+                }
                 _ => {}
             }
         }
@@ -526,12 +721,26 @@ impl Graph {
         let came = |id: &str| replaced(id) && !self.nodes.contains_key(id);
         for c in &edits {
             let ok = match c {
-                Change::Remove(_) | Change::Add(..) | Change::Component(..) | Change::Knob(..) | Change::Knobs(..) => true,
+                Change::Remove(_)
+                | Change::Add(..)
+                | Change::Component(..)
+                | Change::Knob(..)
+                | Change::Knobs(..) => true,
                 Change::Bind(id, port, target) => {
                     let was = self.nodes.get(id).and_then(|n| n.inputs.get(port));
-                    region.replaces(to, id) || was.is_some_and(|s| replaced(s)) || matches!(target, Target::Node(s) if replaced(s))
+                    region.replaces(to, id)
+                        || was.is_some_and(|s| replaced(s))
+                        || matches!(target, Target::Node(s) if replaced(s))
                 }
-                Change::Timing(id, port, _) => came(id) || to.nodes.get(id).is_some_and(|n| region.live.iter().any(|l| l.with.contains(&(n.role, port.as_str())) && switches.iter().any(|s| s.role == l.role))),
+                Change::Timing(id, port, _) => {
+                    came(id)
+                        || to.nodes.get(id).is_some_and(|n| {
+                            region.live.iter().any(|l| {
+                                l.with.contains(&(n.role, port.as_str()))
+                                    && switches.iter().any(|s| s.role == l.role)
+                            })
+                        })
+                }
                 Change::Device(id, _) | Change::Api(id, _) => came(id),
             };
             if !ok {
@@ -545,7 +754,11 @@ impl Graph {
 fn live_roles(region: &super::Builds) -> String {
     match region.live {
         [] => "no node".into(),
-        live => live.iter().map(|l| l.role.name()).collect::<Vec<_>>().join(", "),
+        live => live
+            .iter()
+            .map(|l| l.role.name())
+            .collect::<Vec<_>>()
+            .join(", "),
     }
 }
 
@@ -566,31 +779,78 @@ pub fn live(g: &Graph, text: &str) -> anyhow::Result<(Checked, Vec<Switch>)> {
 /// The graph files shipped with the bench (`pipelines/<name>.toml`), by name: starting
 /// points like any saved graph, built in so an installed copy has them.
 pub const SHIPPED: &[(&str, &str)] = &[
-    ("raycast-gpu", include_str!("../../../../pipelines/raycast-gpu.toml")),
-    ("raycast-cpu", include_str!("../../../../pipelines/raycast-cpu.toml")),
-    ("rayquery-gpu", include_str!("../../../../pipelines/rayquery-gpu.toml")),
-    ("raster-gpu", include_str!("../../../../pipelines/raster-gpu.toml")),
-    ("raster-cpu", include_str!("../../../../pipelines/raster-cpu.toml")),
-    ("discover-gpu", include_str!("../../../../pipelines/discover-gpu.toml")),
-    ("discover-cpu", include_str!("../../../../pipelines/discover-cpu.toml")),
-    ("splat-gpu", include_str!("../../../../pipelines/splat-gpu.toml")),
-    ("columns-gpu", include_str!("../../../../pipelines/columns-gpu.toml")),
-    ("columns-cpu", include_str!("../../../../pipelines/columns-cpu.toml")),
+    (
+        "raycast-gpu",
+        include_str!("../../../../pipelines/raycast-gpu.toml"),
+    ),
+    (
+        "raycast-cpu",
+        include_str!("../../../../pipelines/raycast-cpu.toml"),
+    ),
+    (
+        "rayquery-gpu",
+        include_str!("../../../../pipelines/rayquery-gpu.toml"),
+    ),
+    (
+        "raster-gpu",
+        include_str!("../../../../pipelines/raster-gpu.toml"),
+    ),
+    (
+        "raster-cpu",
+        include_str!("../../../../pipelines/raster-cpu.toml"),
+    ),
+    (
+        "discover-gpu",
+        include_str!("../../../../pipelines/discover-gpu.toml"),
+    ),
+    (
+        "discover-cpu",
+        include_str!("../../../../pipelines/discover-cpu.toml"),
+    ),
+    (
+        "splat-gpu",
+        include_str!("../../../../pipelines/splat-gpu.toml"),
+    ),
+    (
+        "columns-gpu",
+        include_str!("../../../../pipelines/columns-gpu.toml"),
+    ),
+    (
+        "columns-cpu",
+        include_str!("../../../../pipelines/columns-cpu.toml"),
+    ),
 ];
 
 impl Graph {
     /// The components node `id` may be instead, each leaving a pipeline its executor builds
     /// (`accept`); its own among them when the graph is one. Empty: no such node.
     pub fn choices(&self, id: &str) -> Vec<&'static str> {
-        let Some(n) = self.nodes.get(id) else { return vec![] };
-        super::role_components(n.role).into_iter().filter(|c| self.edit(&Change::Component(id.into(), c.to_string())).is_ok_and(|g| g.accept().is_ok())).collect()
+        let Some(n) = self.nodes.get(id) else {
+            return vec![];
+        };
+        super::role_components(n.role)
+            .into_iter()
+            .filter(|c| {
+                self.edit(&Change::Component(id.into(), c.to_string()))
+                    .is_ok_and(|g| g.accept().is_ok())
+            })
+            .collect()
     }
 }
 
 /// The graph files a renderer can be started from (the shipped ones), each with what its
 /// file says of it (its first comment line).
 pub fn start_files() -> impl Iterator<Item = (&'static str, &'static str)> {
-    SHIPPED.iter().map(|(name, text)| (*name, text.lines().next().unwrap_or_default().trim_start_matches('#').trim()))
+    SHIPPED.iter().map(|(name, text)| {
+        (
+            *name,
+            text.lines()
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches('#')
+                .trim(),
+        )
+    })
 }
 
 /// The shipped graph file `name`, if there is one.
@@ -612,11 +872,18 @@ mod tests {
         for (name, _) in SHIPPED {
             let g = shipped(name).unwrap();
             let b = g.region().unwrap();
-            let (id, _) = g.nodes.iter().find(|(_, n)| n.role == Role::Shading).unwrap();
+            let (id, _) = g
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role == Role::Shading)
+                .unwrap();
             let (mut declared, mut choices) = (b.declared(Role::Shading), g.choices(id));
             declared.sort();
             choices.sort();
-            assert!(!choices.is_empty() && declared == choices, "{name}: declares {declared:?}, the node may be {choices:?}");
+            assert!(
+                !choices.is_empty() && declared == choices,
+                "{name}: declares {declared:?}, the node may be {choices:?}"
+            );
         }
     }
 
@@ -629,12 +896,23 @@ mod tests {
             let g = shipped(name).unwrap();
             let region = g.region().unwrap();
             for id in g.nodes.keys() {
-                for c in g.choices(id).into_iter().filter(|c| *c != g.nodes[id].component) {
+                for c in g
+                    .choices(id)
+                    .into_iter()
+                    .filter(|c| *c != g.nodes[id].component)
+                {
                     let to = g.edit(&Change::component(id, c)).unwrap();
                     match g.live_edits(&to) {
                         Ok((edits, switches)) => {
                             assert!(region.replaces(&g, id), "{name} {id}={c}");
-                            assert_eq!(switches, [Switch { node: id.clone(), role: g.nodes[id].role, component: Some(c.to_string()) }]);
+                            assert_eq!(
+                                switches,
+                                [Switch {
+                                    node: id.clone(),
+                                    role: g.nodes[id].role,
+                                    component: Some(c.to_string())
+                                }]
+                            );
                             let (ck, sw) = live(&g, &edits_text(&edits)).unwrap();
                             assert_eq!((ck.graph.key(), sw), (to.key(), switches));
                             replaced.push(format!("{name}.{id}"));
@@ -647,18 +925,45 @@ mod tests {
         replaced.dedup();
         assert_eq!(
             replaced,
-            ["raycast-gpu.kernel", "raycast-gpu.shading", "rayquery-gpu.shading", "raster-gpu.draw", "raster-gpu.geometry", "raster-gpu.shading", "raster-cpu.geometry", "discover-gpu.draw", "discover-cpu.draw", "discover-cpu.visibility"]
+            [
+                "raycast-gpu.kernel",
+                "raycast-gpu.shading",
+                "rayquery-gpu.shading",
+                "raster-gpu.draw",
+                "raster-gpu.geometry",
+                "raster-gpu.shading",
+                "raster-cpu.geometry",
+                "discover-gpu.draw",
+                "discover-cpu.draw",
+                "discover-cpu.visibility"
+            ]
         );
         // A node that comes and goes: the walk's mesh records, with the input that read them.
         let g = shipped("raycast-gpu").unwrap();
         let without = g.edit(&Change::Remove("meshes".into())).unwrap();
-        let gone = |s: &[Switch]| s.iter().map(|s| (s.role, s.component.clone())).collect::<Vec<_>>();
-        assert_eq!(gone(&g.live_edits(&without).unwrap().1), [(Role::Meshes, None)]);
+        let gone = |s: &[Switch]| {
+            s.iter()
+                .map(|s| (s.role, s.component.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            gone(&g.live_edits(&without).unwrap().1),
+            [(Role::Meshes, None)]
+        );
         let (back, switches) = without.live_edits(&g).unwrap();
-        assert_eq!(gone(&switches), [(Role::Meshes, Some("composite".to_string()))]);
+        assert_eq!(
+            gone(&switches),
+            [(Role::Meshes, Some("composite".to_string()))]
+        );
         assert_eq!(without.with_edits(&back).unwrap(), g);
         // A knob alone is no edit (knobs are set as knobs).
-        let knob = g.edit(&Change::Knob("shading".into(), "bounces".into(), Some(toml::Value::Integer(2)))).unwrap();
+        let knob = g
+            .edit(&Change::Knob(
+                "shading".into(),
+                "bounces".into(),
+                Some(toml::Value::Integer(2)),
+            ))
+            .unwrap();
         assert_eq!(g.live_edits(&knob).unwrap().0, vec![]);
     }
 
@@ -667,7 +972,9 @@ mod tests {
         struct One {
             e: Change,
         }
-        toml::from_str::<One>(&format!("e = {s}")).map(|o| o.e).map_err(|e| e.message().to_string())
+        toml::from_str::<One>(&format!("e = {s}"))
+            .map(|o| o.e)
+            .map_err(|e| e.message().to_string())
     }
 
     /// Every region has one shipped file, whose graph it builds; the files' keys are pinned
@@ -678,8 +985,12 @@ mod tests {
         assert_eq!(SHIPPED.len(), REGIONS.len());
         let mut keys = vec![];
         for b in REGIONS {
-            let mut of = SHIPPED.iter().filter(|(n, _)| shipped(n).unwrap().region().map(|r| r.id) == Some(b.id));
-            let (name, _) = of.next().unwrap_or_else(|| panic!("no shipped file of {:?}", b.id));
+            let mut of = SHIPPED
+                .iter()
+                .filter(|(n, _)| shipped(n).unwrap().region().map(|r| r.id) == Some(b.id));
+            let (name, _) = of
+                .next()
+                .unwrap_or_else(|| panic!("no shipped file of {:?}", b.id));
             assert!(of.next().is_none(), "two shipped files of {:?}", b.id);
             let g = shipped(name).unwrap();
             g.accept().unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -687,14 +998,28 @@ mod tests {
         }
         assert_eq!(keys, KEYS);
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pipelines");
-        let mut files: Vec<String> = std::fs::read_dir(dir).unwrap().map(|f| f.unwrap().file_name().into_string().unwrap()).collect();
+        let mut files: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|f| f.unwrap().file_name().into_string().unwrap())
+            .collect();
         files.sort();
         let mut want: Vec<String> = SHIPPED.iter().map(|(n, _)| format!("{n}.toml")).collect();
         want.sort();
         assert_eq!(files, want);
     }
 
-    const KEYS: [&str; 10] = ["raycast-gpu 31c0d9f23d30a0a2", "raycast-cpu 6a27bbb361b1e383", "raster-gpu 0613a802bbaa05be", "rayquery-gpu c3c02c32f259aeb4", "discover-gpu 4a2e30e5e55b6985", "discover-cpu c694a54614af8399", "splat-gpu 9f38ca5f589d987a", "columns-gpu 843d142449bc32b1", "columns-cpu f1107fab9298a785", "raster-cpu 6819619bbf7abf5c"];
+    const KEYS: [&str; 10] = [
+        "raycast-gpu 31c0d9f23d30a0a2",
+        "raycast-cpu 6a27bbb361b1e383",
+        "raster-gpu 0613a802bbaa05be",
+        "rayquery-gpu c3c02c32f259aeb4",
+        "discover-gpu 4a2e30e5e55b6985",
+        "discover-cpu c694a54614af8399",
+        "splat-gpu 9f38ca5f589d987a",
+        "columns-gpu 843d142449bc32b1",
+        "columns-cpu f1107fab9298a785",
+        "raster-cpu 6819619bbf7abf5c",
+    ];
 
     /// Every kind of edit reads from TOML, writes back as it was read, and is refused with
     /// what is wrong.
@@ -725,14 +1050,26 @@ mod tests {
             assert_eq!(change(&back.to_string()).unwrap(), c, "{s} -> {back}");
         }
         assert_eq!(kinds.len(), 9);
-        assert_eq!(change(r#"{ node = "kernel", api = "rayquery" }"#).unwrap(), Change::Api("kernel".into(), Some(Api::RayQuery)));
+        assert_eq!(
+            change(r#"{ node = "kernel", api = "rayquery" }"#).unwrap(),
+            Change::Api("kernel".into(), Some(Api::RayQuery))
+        );
         for (s, why) in [
             (r#"{ component = "tree64" }"#, "names its `node`"),
             (r#"{ node = "storage" }"#, "what changes on the node"),
-            (r#"{ node = "storage", component = "tree64", device = "gpu" }"#, "`device` does not belong"),
-            (r#"{ node = "shading", input = "bounce" }"#, "`input` needs `from`"),
+            (
+                r#"{ node = "storage", component = "tree64", device = "gpu" }"#,
+                "`device` does not belong",
+            ),
+            (
+                r#"{ node = "shading", input = "bounce" }"#,
+                "`input` needs `from`",
+            ),
             (r#"{ node = "shading", device = "moon" }"#, "device"),
-            (r#"{ add = "far", role = "storage" }"#, "`add` needs `role` and `component`"),
+            (
+                r#"{ add = "far", role = "storage" }"#,
+                "`add` needs `role` and `component`",
+            ),
         ] {
             let e = change(s).unwrap_err();
             assert!(e.contains(why), "{s}: {e}");
@@ -744,7 +1081,9 @@ mod tests {
     #[test]
     fn edits_are_exact() {
         let g = shipped("raycast-gpu").unwrap();
-        let h = g.with_edits(&[change(r#"{ node = "storage", component = "tree64" }"#).unwrap()]).unwrap();
+        let h = g
+            .with_edits(&[change(r#"{ node = "storage", component = "tree64" }"#).unwrap()])
+            .unwrap();
         let mut want = g.clone();
         want.nodes.get_mut("storage").unwrap().component = "tree64".into();
         assert_eq!(h, want);
@@ -754,21 +1093,48 @@ mod tests {
         assert_eq!(bound.nodes["shading"].inputs["shadow"], "traversal");
         assert!(bound.nodes["traversal"].inputs.is_empty());
         assert_eq!(bound.nodes.len(), g.nodes.len() + 1);
-        let unbound = g.edit(&change(r#"{ node = "shading", unbind = "shadow" }"#).unwrap()).unwrap();
+        let unbound = g
+            .edit(&change(r#"{ node = "shading", unbind = "shadow" }"#).unwrap())
+            .unwrap();
         assert!(!unbound.nodes["shading"].inputs.contains_key("shadow"));
-        assert_eq!(bound.edit(&Change::Remove("traversal".into())).unwrap(), unbound);
+        assert_eq!(
+            bound.edit(&Change::Remove("traversal".into())).unwrap(),
+            unbound
+        );
         // Add then bind by id is the same as binding a new node.
         let add = r#"{ add = "traversal", role = "traversal", component = "sphere" }"#;
-        let two = g.with_edits(&[change(add).unwrap(), change(r#"{ node = "shading", input = "shadow", from = "traversal" }"#).unwrap()]).unwrap();
+        let two = g
+            .with_edits(&[
+                change(add).unwrap(),
+                change(r#"{ node = "shading", input = "shadow", from = "traversal" }"#).unwrap(),
+            ])
+            .unwrap();
         assert_eq!(two, bound);
         for (s, why) in [
             (r#"{ node = "nowhere", component = "tree64" }"#, "edit 2 (`"),
-            (r#"{ node = "nowhere", component = "tree64" }"#, "no node `nowhere`"),
-            (r#"{ node = "shading", input = "faces", from = "storage" }"#, "has no input `faces`"),
-            (r#"{ node = "shading", input = "shadow", from = "nowhere" }"#, "no node `nowhere`"),
-            (r#"{ add = "storage", role = "storage", component = "tree64" }"#, "already"),
+            (
+                r#"{ node = "nowhere", component = "tree64" }"#,
+                "no node `nowhere`",
+            ),
+            (
+                r#"{ node = "shading", input = "faces", from = "storage" }"#,
+                "has no input `faces`",
+            ),
+            (
+                r#"{ node = "shading", input = "shadow", from = "nowhere" }"#,
+                "no node `nowhere`",
+            ),
+            (
+                r#"{ add = "storage", role = "storage", component = "tree64" }"#,
+                "already",
+            ),
         ] {
-            let e = g.with_edits(&[Change::Knob("shading".into(), "bounces".into(), None), change(s).unwrap()]).unwrap_err();
+            let e = g
+                .with_edits(&[
+                    Change::Knob("shading".into(), "bounces".into(), None),
+                    change(s).unwrap(),
+                ])
+                .unwrap_err();
             assert!(e.contains(why), "{s}: {e}");
         }
     }
@@ -785,10 +1151,26 @@ mod tests {
             for h in crate::graph::edits(&g).into_iter().chain(others) {
                 match g.diff(&h) {
                     Some(d) => {
-                        assert_eq!(g.with_edits(&d).unwrap_or_else(|e| panic!("{name}: {e}")), h, "{name}: {}", d.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", "));
+                        assert_eq!(
+                            g.with_edits(&d).unwrap_or_else(|e| panic!("{name}: {e}")),
+                            h,
+                            "{name}: {}",
+                            d.iter()
+                                .map(|c| c.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
                         n += 1;
                     }
-                    None => assert!(g.executor != h.executor || h.nodes.values().any(|x| x.inputs.keys().any(|p| !inputs(x.role, &x.component).iter().any(|i| i.name == p)))),
+                    None => assert!(
+                        g.executor != h.executor
+                            || h.nodes.values().any(|x| x.inputs.keys().any(|p| !inputs(
+                                x.role,
+                                &x.component
+                            )
+                            .iter()
+                            .any(|i| i.name == p)))
+                    ),
                 }
             }
         }
@@ -798,8 +1180,14 @@ mod tests {
         let mut h = g.clone();
         h.nodes.get_mut("shading").unwrap().knobs = toml::toml! { bounces = 2 paths = 4 };
         let d = g.diff(&h).unwrap();
-        assert_eq!(d.iter().map(|c| c.to_string()).collect::<Vec<_>>(), [r#"{ node = "shading", knobs = { bounces = 2, paths = 4 } }"#]);
-        assert_eq!(Change::Add("far".into(), Role::Storage, "tree64".into()).to_string(), r#"{ add = "far", role = "storage", component = "tree64" }"#);
+        assert_eq!(
+            d.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
+            [r#"{ node = "shading", knobs = { bounces = 2, paths = 4 } }"#]
+        );
+        assert_eq!(
+            Change::Add("far".into(), Role::Storage, "tree64".into()).to_string(),
+            r#"{ add = "far", role = "storage", component = "tree64" }"#
+        );
     }
 
     /// A sweep's edit lists: one choice per entry, the first entry varying slowest.
@@ -808,7 +1196,16 @@ mod tests {
         let g = shipped("raycast-gpu").unwrap();
         let vary = |s: &str| {
             let t: toml::Table = toml::from_str(&format!("v = {s}")).unwrap();
-            varied(&g, t["v"].as_array().unwrap()).map(|v| v.into_iter().map(|c| c.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>())
+            varied(&g, t["v"].as_array().unwrap()).map(|v| {
+                v.into_iter()
+                    .map(|c| {
+                        c.iter()
+                            .map(|c| c.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .collect::<Vec<_>>()
+            })
         };
         assert_eq!(vary("[]").unwrap(), [""]);
         assert_eq!(
@@ -822,22 +1219,58 @@ mod tests {
         );
         // `*`: what the graph offers there, for a node it has, one the sweep adds, and each kind of value.
         let storages = crate::graph::role_components(Role::Storage).len();
-        assert_eq!(vary(r#"[{ node = "storage", component = "*" }]"#).unwrap().len(), storages);
+        assert_eq!(
+            vary(r#"[{ node = "storage", component = "*" }]"#)
+                .unwrap()
+                .len(),
+            storages
+        );
         assert_eq!(vary(r#"[{ any = [[{ add = "far", role = "storage", component = "*" }, { node = "far", component = "*" }]] }]"#).unwrap().len(), storages * storages);
-        assert_eq!(vary(r#"[{ node = "kernel", api = "*" }]"#).unwrap().len(), Api::ALL.len());
-        assert_eq!(vary(r#"[{ node = "shading", input = "hits", when = "*" }]"#).unwrap().len(), 2);
-        assert_eq!(vary(r#"[{ node = "shading", input = "shadow", from = "*" }]"#).unwrap().len(), g.nodes.len() - 1);
+        assert_eq!(
+            vary(r#"[{ node = "kernel", api = "*" }]"#).unwrap().len(),
+            Api::ALL.len()
+        );
+        assert_eq!(
+            vary(r#"[{ node = "shading", input = "hits", when = "*" }]"#)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            vary(r#"[{ node = "shading", input = "shadow", from = "*" }]"#)
+                .unwrap()
+                .len(),
+            g.nodes.len() - 1
+        );
         assert_eq!(vary(r#"[{ node = "shading", device = ["gpu", "gpu1"] }, { node = "shading", knob = "bounces", value = [1, 2, 3] }]"#).unwrap().len(), 6);
         // Alternatives hold lists themselves.
         assert_eq!(vary(r#"[{ any = [[], [{ node = "storage", component = ["tree64", "rows"] }, { node = "kernel", component = ["sphere", "rowrun"] }]] }]"#).unwrap().len(), 5);
         for (s, why) in [
-            (r#"[{ node = "nowhere", component = "*" }]"#, "no node `nowhere` to vary"),
-            (r#"[{ node = "shading", device = "*" }]"#, "give the values as a list"),
-            (r#"[{ node = "storage", component = ["tree64"], device = "gpu" }]"#, "`device` does not belong"),
-            (r#"[{ any = [{ remove = "meshes" }] }]"#, "each alternative of `any` is a list of edits"),
-            (r#"[{ any = [[]], remove = "meshes" }]"#, "`any` stands alone"),
+            (
+                r#"[{ node = "nowhere", component = "*" }]"#,
+                "no node `nowhere` to vary",
+            ),
+            (
+                r#"[{ node = "shading", device = "*" }]"#,
+                "give the values as a list",
+            ),
+            (
+                r#"[{ node = "storage", component = ["tree64"], device = "gpu" }]"#,
+                "`device` does not belong",
+            ),
+            (
+                r#"[{ any = [{ remove = "meshes" }] }]"#,
+                "each alternative of `any` is a list of edits",
+            ),
+            (
+                r#"[{ any = [[]], remove = "meshes" }]"#,
+                "`any` stands alone",
+            ),
             (r#"[3]"#, "an edit is a table"),
-            (r#"[{ add = "a", role = "storage", component = "*" }, { add = "b", role = "storage", component = "*" }, { add = "c", role = "storage", component = "*" }, { add = "d", role = "storage", component = "*" }, { add = "e", role = "storage", component = "*" }]"#, "more than 100000 combinations"),
+            (
+                r#"[{ add = "a", role = "storage", component = "*" }, { add = "b", role = "storage", component = "*" }, { add = "c", role = "storage", component = "*" }, { add = "d", role = "storage", component = "*" }, { add = "e", role = "storage", component = "*" }]"#,
+                "more than 100000 combinations",
+            ),
         ] {
             let e = vary(s).unwrap_err();
             assert!(e.contains(why), "{s}: {e}");

@@ -24,11 +24,24 @@ pub fn layout_entries(visibility: wgpu::ShaderStages) -> [wgpu::BindGroupLayoutE
     let tex = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility,
-        ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false },
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Uint,
+            view_dimension: wgpu::TextureViewDimension::D3,
+            multisampled: false,
+        },
         count: None,
     };
     [
-        wgpu::BindGroupLayoutEntry { binding: 4, visibility, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+        wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
         tex(5),
         tex(6),
         tex(7),
@@ -58,7 +71,11 @@ impl Clipmap {
         let tex = |label, n: i32, format| {
             gpu.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: wgpu::Extent3d { width: (slots.x * n) as u32, height: (slots.y * n) as u32, depth_or_array_layers: (slots.z * n) as u32 },
+                size: wgpu::Extent3d {
+                    width: (slots.x * n) as u32,
+                    height: (slots.y * n) as u32,
+                    depth_or_array_layers: (slots.z * n) as u32,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D3,
@@ -69,22 +86,62 @@ impl Clipmap {
         };
         // Fresh textures are zero-initialised: every slot reads as empty.
         let textures = [
-            tex("clipmap voxels", 32, if wide { wgpu::TextureFormat::R16Uint } else { wgpu::TextureFormat::R8Uint }),
+            tex(
+                "clipmap voxels",
+                32,
+                if wide {
+                    wgpu::TextureFormat::R16Uint
+                } else {
+                    wgpu::TextureFormat::R8Uint
+                },
+            ),
             tex("clipmap bricks", 8, wgpu::TextureFormat::R8Uint),
             tex("clipmap tags", 1, wgpu::TextureFormat::R32Uint),
         ];
-        let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("clipmap params"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        gpu.queue.write_buffer(&uniform, 0, bytemuck::cast_slice(&[slots.x, slots.y, slots.z, 0]));
+        let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("clipmap params"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue.write_buffer(
+            &uniform,
+            0,
+            bytemuck::cast_slice(&[slots.x, slots.y, slots.z, 0]),
+        );
         let [vox, occ, tags] = [0, 1, 2].map(|i| textures[i].create_view(&Default::default()));
-        Self { slots, wide, uniform, vox, occ, tags, textures, owner: HashMap::new(), dropped: 0, scratch: vec![] }
+        Self {
+            slots,
+            wide,
+            uniform,
+            vox,
+            occ,
+            tags,
+            textures,
+            owner: HashMap::new(),
+            dropped: 0,
+            scratch: vec![],
+        }
     }
 
     pub fn bind_entries(&self) -> [wgpu::BindGroupEntry<'_>; 4] {
         [
-            wgpu::BindGroupEntry { binding: 4, resource: self.uniform.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.vox) },
-            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&self.occ) },
-            wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&self.tags) },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: self.uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(&self.vox),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(&self.occ),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::TextureView(&self.tags),
+            },
         ]
     }
 
@@ -98,12 +155,24 @@ impl Clipmap {
             wgpu::TexelCopyTextureInfo {
                 texture: tex,
                 mip_level: 0,
-                origin: wgpu::Origin3d { x: origin.x as u32, y: origin.y as u32, z: origin.z as u32 },
+                origin: wgpu::Origin3d {
+                    x: origin.x as u32,
+                    y: origin.y as u32,
+                    z: origin.z as u32,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             data,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(n * bpp), rows_per_image: Some(n) },
-            wgpu::Extent3d { width: n, height: n, depth_or_array_layers: n },
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(n * bpp),
+                rows_per_image: Some(n),
+            },
+            wgpu::Extent3d {
+                width: n,
+                height: n,
+                depth_or_array_layers: n,
+            },
         );
     }
 

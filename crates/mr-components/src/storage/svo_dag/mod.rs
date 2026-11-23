@@ -34,7 +34,13 @@ impl LocalDag {
             return LEAF | get(origin).0 as u32;
         }
         let h = size / 2;
-        let ch: [u32; 8] = std::array::from_fn(|i| self.build(get, origin + IVec3::new((i & 1) as i32, ((i >> 1) & 1) as i32, (i >> 2) as i32) * h, h));
+        let ch: [u32; 8] = std::array::from_fn(|i| {
+            self.build(
+                get,
+                origin + IVec3::new((i & 1) as i32, ((i >> 1) & 1) as i32, (i >> 2) as i32) * h,
+                h,
+            )
+        });
         if ch[0] & LEAF != 0 && ch.iter().all(|&c| c == ch[0]) {
             return ch[0];
         }
@@ -49,7 +55,10 @@ impl LocalDag {
 }
 
 fn build_chunk(chunk: &ChunkData) -> (Vec<[u32; 8]>, u32) {
-    let mut d = LocalDag { nodes: vec![], map: HashMap::new() };
+    let mut d = LocalDag {
+        nodes: vec![],
+        map: HashMap::new(),
+    };
     let root = d.build(&|p| chunk.get(local_of_block(p)), IVec3::ZERO, 32);
     (d.nodes, root)
 }
@@ -77,12 +86,19 @@ impl Dag {
     /// Rebuilds the `dirty` chunks, then collects garbage if due. Returns the chunks whose
     /// root changed or vanished (every chunk after a compaction, which also resets
     /// `uploaded`: every node is uploaded again).
-    pub fn rebuild<'a>(&mut self, dirty: &mut HashSet<IVec3>, chunk: &(dyn Fn(IVec3) -> Option<&'a ChunkData> + Sync)) -> Vec<IVec3> {
+    pub fn rebuild<'a>(
+        &mut self,
+        dirty: &mut HashSet<IVec3>,
+        chunk: &(dyn Fn(IVec3) -> Option<&'a ChunkData> + Sync),
+    ) -> Vec<IVec3> {
         if dirty.is_empty() {
             return vec![];
         }
         let work: Vec<IVec3> = dirty.drain().collect();
-        let built: Vec<(IVec3, Option<(Vec<[u32; 8]>, u32)>)> = work.par_iter().map(|&c| (c, chunk(c).map(build_chunk))).collect();
+        let built: Vec<(IVec3, Option<(Vec<[u32; 8]>, u32)>)> = work
+            .par_iter()
+            .map(|&c| (c, chunk(c).map(build_chunk)))
+            .collect();
         for (c, tree) in built {
             self.roots.remove(&c);
             self.stale += self.local_nodes.remove(&c).unwrap_or(0) as usize;
@@ -144,10 +160,20 @@ impl Dag {
         for (i, node) in self.nodes.iter().enumerate() {
             if live[i] {
                 renumber[i] = kept.len() as u32;
-                kept.push(node.map(|c| if c & LEAF != 0 { c } else { renumber[c as usize] }));
+                kept.push(node.map(|c| {
+                    if c & LEAF != 0 {
+                        c
+                    } else {
+                        renumber[c as usize]
+                    }
+                }));
             }
         }
-        self.map = kept.iter().enumerate().map(|(i, &k)| (k, i as u32)).collect();
+        self.map = kept
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| (k, i as u32))
+            .collect();
         self.nodes = kept;
         for r in self.roots.values_mut() {
             if *r & LEAF == 0 {
@@ -198,8 +224,15 @@ mod tests {
         let after_one = dag.nodes.len();
         let mut dirty: HashSet<IVec3> = [b].into();
         dag.rebuild(&mut dirty, &|p| (p == a || p == b).then_some(&c));
-        assert_eq!(dag.nodes.len(), after_one, "the second identical chunk adds no nodes");
-        for p in (0..32 * 32 * 32).step_by(7).map(mr_core::chunk::cell_of_index) {
+        assert_eq!(
+            dag.nodes.len(),
+            after_one,
+            "the second identical chunk adds no nodes"
+        );
+        for p in (0..32 * 32 * 32)
+            .step_by(7)
+            .map(mr_core::chunk::cell_of_index)
+        {
             assert_eq!(query(&dag.nodes, dag.roots[&b], p), c.get(p).0, "{p}");
         }
     }
@@ -208,8 +241,14 @@ mod tests {
     fn noise(seed: u32) -> ChunkData {
         let mut c = ChunkData::Uniform(BlockId::AIR);
         for i in 0..32 * 32 * 32u32 {
-            let h = (i ^ seed.wrapping_mul(0x9e37_79b9)).wrapping_mul(0x85eb_ca6b).rotate_left(13).wrapping_mul(0xc2b2_ae35);
-            c.set(mr_core::chunk::cell_of_index(i as usize), BlockId(1 + (h >> 22) as u16));
+            let h = (i ^ seed.wrapping_mul(0x9e37_79b9))
+                .wrapping_mul(0x85eb_ca6b)
+                .rotate_left(13)
+                .wrapping_mul(0xc2b2_ae35);
+            c.set(
+                mr_core::chunk::cell_of_index(i as usize),
+                BlockId(1 + (h >> 22) as u16),
+            );
         }
         c
     }
@@ -218,13 +257,20 @@ mod tests {
     fn reads_back(dag: &Dag, world: &HashMap<IVec3, ChunkData>) {
         assert_eq!(dag.roots.len(), world.len());
         for (p, c) in world {
-            for l in (0..32 * 32 * 32).step_by(5).map(mr_core::chunk::cell_of_index) {
+            for l in (0..32 * 32 * 32)
+                .step_by(5)
+                .map(mr_core::chunk::cell_of_index)
+            {
                 assert_eq!(query(&dag.nodes, dag.roots[p], l), c.get(l).0, "{p} {l}");
             }
         }
     }
 
-    fn step(dag: &mut Dag, world: &HashMap<IVec3, ChunkData>, dirty: impl IntoIterator<Item = IVec3>) -> Vec<IVec3> {
+    fn step(
+        dag: &mut Dag,
+        world: &HashMap<IVec3, ChunkData>,
+        dirty: impl IntoIterator<Item = IVec3>,
+    ) -> Vec<IVec3> {
         let mut dirty: HashSet<IVec3> = dirty.into_iter().collect();
         dag.rebuild(&mut dirty, &|p| world.get(&p))
     }
@@ -262,7 +308,11 @@ mod tests {
             world.insert(p, noise(100 + i as u32));
             step(&mut dag, &world, [p]);
         }
-        assert!(dag.nodes.len() > 1 << 17, "past the margin: {}", dag.nodes.len());
+        assert!(
+            dag.nodes.len() > 1 << 17,
+            "past the margin: {}",
+            dag.nodes.len()
+        );
         assert_eq!(dag.collections, 0);
         reads_back(&dag, &world);
     }
@@ -270,7 +320,9 @@ mod tests {
     /// A chunk that unloads loses its root, and its nodes are collected.
     #[test]
     fn unloaded_chunks_are_collected() {
-        let mut world: HashMap<IVec3, ChunkData> = (0..30).map(|i| (IVec3::new(i, 0, 0), noise(200 + i as u32))).collect();
+        let mut world: HashMap<IVec3, ChunkData> = (0..30)
+            .map(|i| (IVec3::new(i, 0, 0), noise(200 + i as u32)))
+            .collect();
         let mut dag = Dag::default();
         step(&mut dag, &world, world.keys().copied().collect::<Vec<_>>());
         let full = dag.nodes.len();
@@ -282,7 +334,11 @@ mod tests {
         let changed = step(&mut dag, &world, gone.iter().copied().chain([IVec3::ZERO]));
         assert_eq!(changed.len(), 30);
         assert_eq!(dag.collections, 1);
-        assert!(dag.nodes.len() * 10 < full, "{} of {full} nodes kept", dag.nodes.len());
+        assert!(
+            dag.nodes.len() * 10 < full,
+            "{} of {full} nodes kept",
+            dag.nodes.len()
+        );
         reads_back(&dag, &world);
     }
 }

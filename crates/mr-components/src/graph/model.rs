@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Api, Kind, component};
 
-
 /// What a node does: the roles of the pipeline's pieces that exist so far.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -42,7 +41,22 @@ pub enum Role {
 }
 
 impl Role {
-    pub const ALL: [Role; 14] = [Role::World, Role::Generator, Role::Link, Role::Client, Role::Storage, Role::Geometry, Role::Prepass, Role::Traversal, Role::Visibility, Role::Holes, Role::Draw, Role::Shading, Role::Meshes, Role::Post];
+    pub const ALL: [Role; 14] = [
+        Role::World,
+        Role::Generator,
+        Role::Link,
+        Role::Client,
+        Role::Storage,
+        Role::Geometry,
+        Role::Prepass,
+        Role::Traversal,
+        Role::Visibility,
+        Role::Holes,
+        Role::Draw,
+        Role::Shading,
+        Role::Meshes,
+        Role::Post,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -66,7 +80,10 @@ impl Role {
     /// Whether the registry ([`crate::COMPONENTS`]) holds this role's components (not the
     /// world, its generator, the link, the client and the post: their lists are here).
     pub fn registered(self) -> bool {
-        !matches!(self, Role::World | Role::Generator | Role::Link | Role::Client | Role::Post)
+        !matches!(
+            self,
+            Role::World | Role::Generator | Role::Link | Role::Client | Role::Post
+        )
     }
 }
 
@@ -153,7 +170,11 @@ impl TryFrom<String> for Device {
             "cpu" => Ok(Device::Cpu),
             "server" => Ok(Device::Server),
             "gpu" => Ok(Device::Gpu(0)),
-            _ => s.strip_prefix("gpu").and_then(|i| i.parse().ok()).map(Device::Gpu).ok_or_else(|| format!("unknown device `{s}` (cpu, gpu, gpu1, ..., server)")),
+            _ => s
+                .strip_prefix("gpu")
+                .and_then(|i| i.parse().ok())
+                .map(Device::Gpu)
+                .ok_or_else(|| format!("unknown device `{s}` (cpu, gpu, gpu1, ..., server)")),
         }
     }
 }
@@ -175,44 +196,162 @@ pub struct Port {
 }
 
 const fn port(name: &'static str, data: Data, required: bool, description: &'static str) -> Port {
-    Port { name, data, required, casts: matches!(data, Data::Rays), description }
+    Port {
+        name,
+        data,
+        required,
+        casts: matches!(data, Data::Rays),
+        description,
+    }
 }
 
-const CHANGES: &[Port] = &[port("changes", Data::Changes, true, "the world's change log")];
-const SENT: &[Port] = &[port("changes", Data::Changes, true, "the server's stream: the world's change log, the same for every client")];
+const CHANGES: &[Port] = &[port(
+    "changes",
+    Data::Changes,
+    true,
+    "the world's change log",
+)];
+const SENT: &[Port] = &[port(
+    "changes",
+    Data::Changes,
+    true,
+    "the server's stream: the world's change log, the same for every client",
+)];
 const STREAM: &[Port] = &[
-    port("changes", Data::Changes, true, "the server's stream as it arrives over the link"),
-    port("chunks", Data::Chunks, false, "the generator, on the client: chunks generated here (the server then sends edits only)"),
+    port(
+        "changes",
+        Data::Changes,
+        true,
+        "the server's stream as it arrives over the link",
+    ),
+    port(
+        "chunks",
+        Data::Chunks,
+        false,
+        "the generator, on the client: chunks generated here (the server then sends edits only)",
+    ),
 ];
-const GENERATED: &[Port] = &[port("chunks", Data::Chunks, false, "the generator, on the server (unbound: the generator is on the client)")];
+const GENERATED: &[Port] = &[port(
+    "chunks",
+    Data::Chunks,
+    false,
+    "the generator, on the server (unbound: the generator is on the client)",
+)];
 const ON_STORAGE: &[Port] = &[port("storage", Data::Storage, true, "the storage it reads")];
-const ON_GEOMETRY: &[Port] = &[port("geometry", Data::Faces, true, "the faces its acceleration structure is built from")];
+const ON_GEOMETRY: &[Port] = &[port(
+    "geometry",
+    Data::Faces,
+    true,
+    "the faces its acceleration structure is built from",
+)];
 const RAYCAST: &[Port] = &[
     port("primary", Data::Rays, true, "one primary ray per pixel"),
-    port("start", Data::Starts, false, "where rays may start (a prepass)"),
-    port("meshes", Data::Surfaces, false, "meshes capping the rays (mesh mode)"),
+    port(
+        "start",
+        Data::Starts,
+        false,
+        "where rays may start (a prepass)",
+    ),
+    port(
+        "meshes",
+        Data::Surfaces,
+        false,
+        "meshes capping the rays (mesh mode)",
+    ),
 ];
-const DISCOVER: &[Port] = &[port("rays", Data::Rays, true, "discovery rays"), port("exposure", Data::Storage, true, "the storage exposure tests read (which faces are exposed, their blocks)")];
+const DISCOVER: &[Port] = &[
+    port("rays", Data::Rays, true, "discovery rays"),
+    port(
+        "exposure",
+        Data::Storage,
+        true,
+        "the storage exposure tests read (which faces are exposed, their blocks)",
+    ),
+];
 const QUADTREE: &[Port] = &[
     port("rays", Data::Rays, true, "discovery rays"),
-    port("exposure", Data::Storage, true, "the storage exposure tests read (which faces are exposed, their blocks)"),
-    port("where", Data::Tiles, false, "the screen tiles to look at (hole detection; unbound: every tile, every frame)"),
+    port(
+        "exposure",
+        Data::Storage,
+        true,
+        "the storage exposure tests read (which faces are exposed, their blocks)",
+    ),
+    port(
+        "where",
+        Data::Tiles,
+        false,
+        "the screen tiles to look at (hole detection; unbound: every tile, every frame)",
+    ),
 ];
 const COVERAGE: &[Port] = &[
-    port("covered", Data::Hits, true, "what the drawer covers drawing last frame's faces at this camera (in the loop: the drawer's faces iterate twice)"),
-    port("sky", Data::Hits, true, "the previous frame's final image (timing `prev`): sky told apart from holes"),
-    port("changes", Data::Changes, true, "the world's change log: edited blocks and changed chunks mark their tiles"),
+    port(
+        "covered",
+        Data::Hits,
+        true,
+        "what the drawer covers drawing last frame's faces at this camera (in the loop: the drawer's faces iterate twice)",
+    ),
+    port(
+        "sky",
+        Data::Hits,
+        true,
+        "the previous frame's final image (timing `prev`): sky told apart from holes",
+    ),
+    port(
+        "changes",
+        Data::Changes,
+        true,
+        "the world's change log: edited blocks and changed chunks mark their tiles",
+    ),
 ];
-const MESHES: &[Port] = &[port("changes", Data::Changes, true, "the world's change log"), port("shadow", Data::Rays, false, "shadow rays onto meshes (unbound: the shading's)")];
+const MESHES: &[Port] = &[
+    port("changes", Data::Changes, true, "the world's change log"),
+    port(
+        "shadow",
+        Data::Rays,
+        false,
+        "shadow rays onto meshes (unbound: the shading's)",
+    ),
+];
 const FACES: &[Port] = &[port("faces", Data::Faces, true, "the faces to draw")];
 const SPLAT: &[Port] = &[port("points", Data::Faces, true, "the points to splat")];
-const DRAW: &[Port] = &[port("faces", Data::Faces, true, "the faces to draw"), port("meshes", Data::Surfaces, false, "meshes in the same depth buffer (mesh mode)")];
-const DIRECT: &[Port] = &[port("hits", Data::Hits, true, "the visible surface per pixel"), port("shadow", Data::Rays, false, "shadow rays (unbound: the region's own)")];
-const POSTED: &[Port] = &[port("image", Data::Image, true, "the shading's linear colour (compiled into its output)")];
+const DRAW: &[Port] = &[
+    port("faces", Data::Faces, true, "the faces to draw"),
+    port(
+        "meshes",
+        Data::Surfaces,
+        false,
+        "meshes in the same depth buffer (mesh mode)",
+    ),
+];
+const DIRECT: &[Port] = &[
+    port("hits", Data::Hits, true, "the visible surface per pixel"),
+    port(
+        "shadow",
+        Data::Rays,
+        false,
+        "shadow rays (unbound: the region's own)",
+    ),
+];
+const POSTED: &[Port] = &[port(
+    "image",
+    Data::Image,
+    true,
+    "the shading's linear colour (compiled into its output)",
+)];
 const PATHTRACE: &[Port] = &[
     port("hits", Data::Hits, true, "the visible surface per pixel"),
-    port("shadow", Data::Rays, false, "shadow rays (unbound: the region's own)"),
-    port("bounce", Data::Rays, false, "bounce rays (unbound: the region's own)"),
+    port(
+        "shadow",
+        Data::Rays,
+        false,
+        "shadow rays (unbound: the region's own)",
+    ),
+    port(
+        "bounce",
+        Data::Rays,
+        false,
+        "bounce rays (unbound: the region's own)",
+    ),
 ];
 
 /// The inputs of `role` component `name`.
@@ -271,9 +410,13 @@ pub fn state(role: Role, name: &str) -> Option<&'static str> {
         (Role::Geometry, _) => "the faces, remeshed per changed chunk",
         (Role::Meshes, _) => "the mesh instances",
         (Role::Traversal, "rayquery") => "acceleration structures built from its geometry",
-        (Role::Visibility, "quadtree" | "cluster") => "the discovered face set (faces kept `keep_frames` passes)",
+        (Role::Visibility, "quadtree" | "cluster") => {
+            "the discovered face set (faces kept `keep_frames` passes)"
+        }
         (Role::Shading, "pathtrace") => "accumulated radiance (restarted when the view changes)",
-        (Role::Holes, _) => "per-tile reveal radii and the sky mask; when each face last covered a pixel",
+        (Role::Holes, _) => {
+            "per-tile reveal radii and the sky mask; when each face last covered a pixel"
+        }
         _ => return None,
     })
 }
@@ -331,7 +474,6 @@ pub const GENERATORS: &[&str] = &["procedural"];
 /// (no tone mapping) the default, and `hdr` (no limit: a float output for HDR displays).
 pub const POSTS: &[&str] = &["clamp", "reinhard", "aces", "hdr"];
 
-
 /// The components that can fill `role` (the world has none to choose; "none" means the
 /// optional input it would feed is left unbound).
 pub fn role_components(role: Role) -> Vec<&'static str> {
@@ -340,7 +482,10 @@ pub fn role_components(role: Role) -> Vec<&'static str> {
         Role::Link => LINKS.to_vec(),
         Role::Generator => GENERATORS.to_vec(),
         Role::Post => POSTS.to_vec(),
-        r => crate::components(r).map(|c| c.name).filter(|n| *n != "none").collect(),
+        r => crate::components(r)
+            .map(|c| c.name)
+            .filter(|n| *n != "none")
+            .collect(),
     }
 }
 
@@ -366,14 +511,25 @@ pub(super) fn default_device(executor: &str, role: Role, component: &str) -> Dev
         Role::Link | Role::Client => return Device::Cpu,
         _ => {}
     }
-    let want = if executor == "cpu" { Kind::Cpu } else { Kind::Gpu };
-    let on = |k: Kind| if k == Kind::Cpu { Device::Cpu } else { Device::Gpu(0) };
+    let want = if executor == "cpu" {
+        Kind::Cpu
+    } else {
+        Kind::Gpu
+    };
+    let on = |k: Kind| {
+        if k == Kind::Cpu {
+            Device::Cpu
+        } else {
+            Device::Gpu(0)
+        }
+    };
     match crate::component(role, component) {
-        Some(c) if !c.impls.iter().any(|i| i.kind == want) => c.impls.first().map_or(on(want), |i| on(i.kind)),
+        Some(c) if !c.impls.iter().any(|i| i.kind == want) => {
+            c.impls.first().map_or(on(want), |i| on(i.kind))
+        }
         _ => on(want),
     }
 }
-
 
 /// One component instance.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -401,12 +557,21 @@ pub struct Node {
 
 impl Node {
     pub fn new(role: Role, component: &str) -> Self {
-        Self { role, component: component.into(), device: None, api: None, inputs: BTreeMap::new(), timing: BTreeMap::new(), knobs: toml::Table::new() }
+        Self {
+            role,
+            component: component.into(),
+            device: None,
+            api: None,
+            inputs: BTreeMap::new(),
+            timing: BTreeMap::new(),
+            knobs: toml::Table::new(),
+        }
     }
 
     #[cfg(test)]
     pub(super) fn with(mut self, inputs: &[(&str, &str)]) -> Self {
-        self.inputs.extend(inputs.iter().map(|&(p, n)| (p.to_string(), n.to_string())));
+        self.inputs
+            .extend(inputs.iter().map(|&(p, n)| (p.to_string(), n.to_string())));
         self
     }
 
@@ -430,7 +595,11 @@ pub struct Graph {
 impl Graph {
     /// The executor that runs it: `cpu` or `gpu` (also when none is written).
     pub fn runs_on(&self) -> &str {
-        if self.executor.is_empty() { "gpu" } else { &self.executor }
+        if self.executor.is_empty() {
+            "gpu"
+        } else {
+            &self.executor
+        }
     }
 }
 
@@ -446,4 +615,3 @@ pub struct Checked {
     /// The region its shape names ([`Graph::region`]), which builds it.
     pub region: Option<&'static super::Builds>,
 }
-

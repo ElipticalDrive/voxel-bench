@@ -10,7 +10,6 @@ use mr_core::*;
 #[allow(unused_imports)]
 use crate::storage::cpu::{Repr, bit_in_brick, brick_index, brick_set, bricks_of, occupancy_of};
 
-
 /// 1 bit per voxel, brick-major (one u64 per 4^3 brick, so the brick test and the voxel
 /// test read the same word): 4 KiB per chunk. Ids stay in the shared u16 chunk and are
 /// read only on the final hit.
@@ -22,7 +21,10 @@ pub struct Bits {
 
 impl Repr for Bits {
     fn build(d: &Arc<DenseChunk>) -> Self {
-        Self { occ: occupancy_of(d).into(), ids: d.clone() }
+        Self {
+            occ: occupancy_of(d).into(),
+            ids: d.clone(),
+        }
     }
     #[inline(always)]
     fn probe(&self, l: IVec3) -> (u32, i32) {

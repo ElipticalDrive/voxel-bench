@@ -48,7 +48,11 @@ mod tests {
         }
         // The curves compress: bright input stays near or below 1 (ACES's fit reaches 1.003
         // before the encode clamps) and keeps its order.
-        assert_eq!(Tone::Hdr.encode(c), encode_srgb(c), "hdr's 8-bit form is clamp's");
+        assert_eq!(
+            Tone::Hdr.encode(c),
+            encode_srgb(c),
+            "hdr's 8-bit form is clamp's"
+        );
         for t in [Tone::Reinhard, Tone::Aces] {
             let (a, b) = (t.map(Vec3::splat(2.0)), t.map(Vec3::splat(8.0)));
             assert!(a.x < b.x && b.x <= 1.01, "{t:?}: {a} {b}");

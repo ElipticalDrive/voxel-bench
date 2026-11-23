@@ -78,7 +78,6 @@ pub fn brick_set(bricks: &[u64; 8], bi: u32) -> bool {
     bricks[(bi >> 6) as usize] >> (bi & 63) & 1 != 0
 }
 
-
 // ------------------------------------------------------------------------- world
 
 #[derive(Clone)]
@@ -97,7 +96,12 @@ pub struct Grid<R> {
 
 impl<R> Default for Grid<R> {
     fn default() -> Self {
-        Self { min: IVec3::ZERO, dims: IVec3::ZERO, cells: Vec::new(), entries: Vec::new() }
+        Self {
+            min: IVec3::ZERO,
+            dims: IVec3::ZERO,
+            cells: Vec::new(),
+            entries: Vec::new(),
+        }
     }
 }
 
@@ -106,7 +110,13 @@ impl<R: Repr> Grid<R> {
     #[inline(always)]
     pub fn chunk(&self, abs: IVec3) -> u32 {
         let c: IVec3 = (abs >> 5) - self.min;
-        if c.x < 0 || c.y < 0 || c.z < 0 || c.x >= self.dims.x || c.y >= self.dims.y || c.z >= self.dims.z {
+        if c.x < 0
+            || c.y < 0
+            || c.z < 0
+            || c.x >= self.dims.x
+            || c.y >= self.dims.y
+            || c.z >= self.dims.z
+        {
             return 0;
         }
         self.cells[((c.z * self.dims.y + c.y) * self.dims.x + c.x) as usize]
@@ -142,7 +152,6 @@ impl<R: Repr> Grid<R> {
     }
 }
 
-
 /// `floor` without a libm call (the baseline x86-64 target has no SSE4.1 `roundss`, so
 /// `f32::floor` is a function call — it dominated the step loop).
 #[inline(always)]
@@ -150,4 +159,3 @@ pub fn ffloor(x: f32) -> i32 {
     let i = x as i32;
     i - (x < i as f32) as i32
 }
-

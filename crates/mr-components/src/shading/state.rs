@@ -26,9 +26,32 @@ struct Params {
 /// The shading knobs that configure the state (owned by the `pathtrace` component).
 pub fn params() -> Vec<ParamSpec> {
     vec![
-        ParamSpec::int("bounces", "pathtrace shading: diffuse indirect bounces (lit)", 0, 8, 1, true).of("shading", &["pathtrace"]).baked(true),
-        ParamSpec::int("spp", "pathtrace shading: paths per pixel per frame (lit)", 1, 64, 1, true).of("shading", &["pathtrace"]),
-        ParamSpec::bool("accumulate", "pathtrace shading: average frames while camera and world are still", true, true).of("shading", &["pathtrace"]),
+        ParamSpec::int(
+            "bounces",
+            "pathtrace shading: diffuse indirect bounces (lit)",
+            0,
+            8,
+            1,
+            true,
+        )
+        .of("shading", &["pathtrace"])
+        .baked(true),
+        ParamSpec::int(
+            "spp",
+            "pathtrace shading: paths per pixel per frame (lit)",
+            1,
+            64,
+            1,
+            true,
+        )
+        .of("shading", &["pathtrace"]),
+        ParamSpec::bool(
+            "accumulate",
+            "pathtrace shading: average frames while camera and world are still",
+            true,
+            true,
+        )
+        .of("shading", &["pathtrace"]),
     ]
 }
 
@@ -52,15 +75,22 @@ pub fn fragment_wgsl(shading: &str, src: &str, entry: &str, features: wgpu::Feat
         return src.to_string();
     }
     let at = format!("@fragment\nfn {entry}(");
-    assert!(src.contains(&at), "fragment entry point `{entry}` not found");
-    src.replace(&at, &format!("@fragment @early_depth_test(force)\nfn {entry}("))
+    assert!(
+        src.contains(&at),
+        "fragment entry point `{entry}` not found"
+    );
+    src.replace(
+        &at,
+        &format!("@fragment @early_depth_test(force)\nfn {entry}("),
+    )
 }
 
 /// What `shading` in a fragment shader lacks on a device with `features` (`None`: an unknown
 /// device, taken to have it), if anything: lit passes need [`FRAGMENT_FEATURE`] when it keeps
 /// per-pixel state.
 pub fn fragment_lacks(shading: &str, features: Option<wgpu::Features>) -> Option<&'static str> {
-    (stateful(shading) && features.is_some_and(|f| !f.contains(FRAGMENT_FEATURE))).then_some("forced early depth tests (wgpu SHADER_EARLY_DEPTH_TEST)")
+    (stateful(shading) && features.is_some_and(|f| !f.contains(FRAGMENT_FEATURE)))
+        .then_some("forced early depth tests (wgpu SHADER_EARLY_DEPTH_TEST)")
 }
 
 pub struct ShadeState {
@@ -78,7 +108,15 @@ pub struct ShadeState {
 }
 
 impl ShadeState {
-    pub fn new(gpu: &Gpu, width: u32, height: u32, shading: &str, bounces: u32, spp: u32, accumulate: bool) -> Self {
+    pub fn new(
+        gpu: &Gpu,
+        width: u32,
+        height: u32,
+        shading: &str,
+        bounces: u32,
+        spp: u32,
+        accumulate: bool,
+    ) -> Self {
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("shade state"),
             size: size_of::<Params>() as u64,
@@ -86,13 +124,34 @@ impl ShadeState {
             mapped_at_creation: false,
         });
         let accum = Self::accum_buffer(gpu, width, height, shading);
-        Self { uniform, accum, shading: shading.into(), width, height, count: 0, frame: 0, last: None, accumulate, bounces: bounces.min(8), spp: spp.clamp(1, 64) }
+        Self {
+            uniform,
+            accum,
+            shading: shading.into(),
+            width,
+            height,
+            count: 0,
+            frame: 0,
+            last: None,
+            accumulate,
+            bounces: bounces.min(8),
+            spp: spp.clamp(1, 64),
+        }
     }
 
     /// Full size only for shading that accumulates (a placeholder otherwise).
     fn accum_buffer(gpu: &Gpu, width: u32, height: u32, shading: &str) -> wgpu::Buffer {
-        let size = if stateful(shading) { width as u64 * height as u64 * 16 } else { 16 };
-        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("accum"), size: size.max(16), usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
+        let size = if stateful(shading) {
+            width as u64 * height as u64 * 16
+        } else {
+            16
+        };
+        gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("accum"),
+            size: size.max(16),
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        })
     }
 
     /// WGSL declarations at `group`, bindings `binding` and `binding + 1`.
@@ -105,15 +164,39 @@ impl ShadeState {
         )
     }
 
-    pub fn layout_entries(binding: u32, visibility: wgpu::ShaderStages) -> [wgpu::BindGroupLayoutEntry; 2] {
-        let buf = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility, ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None }, count: None };
-        [buf(binding, wgpu::BufferBindingType::Uniform), buf(binding + 1, wgpu::BufferBindingType::Storage { read_only: false })]
+    pub fn layout_entries(
+        binding: u32,
+        visibility: wgpu::ShaderStages,
+    ) -> [wgpu::BindGroupLayoutEntry; 2] {
+        let buf = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility,
+            ty: wgpu::BindingType::Buffer {
+                ty,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        [
+            buf(binding, wgpu::BufferBindingType::Uniform),
+            buf(
+                binding + 1,
+                wgpu::BufferBindingType::Storage { read_only: false },
+            ),
+        ]
     }
 
     pub fn bind_entries(&self, binding: u32) -> [wgpu::BindGroupEntry<'_>; 2] {
         [
-            wgpu::BindGroupEntry { binding, resource: self.uniform.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: binding + 1, resource: self.accum.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding,
+                resource: self.uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: binding + 1,
+                resource: self.accum.as_entire_binding(),
+            },
         ]
     }
 
@@ -153,20 +236,31 @@ impl ShadeState {
         }
         self.last = Some((*camera, mode));
         self.frame = self.frame.wrapping_add(1);
-        let p = Params { width: self.width, frame: self.frame, prev_count: self.count, bounces: self.bounces, spp: self.spp, _pad: [0; 3] };
-        gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&p));
+        let p = Params {
+            width: self.width,
+            frame: self.frame,
+            prev_count: self.count,
+            bounces: self.bounces,
+            spp: self.spp,
+            _pad: [0; 3],
+        };
+        gpu.queue
+            .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&p));
         self.count = self.count.saturating_add(self.spp);
     }
 
     /// `accumulated_spp` after `begin`, for stateful shading in lit mode.
     pub fn counter(&self, mode: RenderMode) -> Option<(String, f64)> {
-        (stateful(&self.shading) && mode == RenderMode::Lit).then(|| ("accumulated_spp".to_string(), self.count as f64))
+        (stateful(&self.shading) && mode == RenderMode::Lit)
+            .then(|| ("accumulated_spp".to_string(), self.count as f64))
     }
 
     /// Handles the knobs of [`params`]; `None` if `name` is not one of them.
     pub fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<()> {
         match name {
-            "bounces" => (self.bounces, self.count) = (value.as_i64().unwrap_or(1).clamp(0, 8) as u32, 0),
+            "bounces" => {
+                (self.bounces, self.count) = (value.as_i64().unwrap_or(1).clamp(0, 8) as u32, 0)
+            }
             "spp" => (self.spp, self.count) = (value.as_i64().unwrap_or(1).clamp(1, 64) as u32, 0),
             "accumulate" => self.accumulate = value.as_bool().unwrap_or(true),
             _ => return None,

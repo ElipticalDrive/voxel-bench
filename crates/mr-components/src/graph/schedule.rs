@@ -30,7 +30,10 @@ pub enum Step {
     Pass(Pass),
     /// An iteration (a cycle closed by an `iterate` edge, `passes` its count): the body
     /// starts at the edge's consumer, which runs `passes` times, the rest `passes - 1`.
-    Loop { passes: u8, body: Vec<Pass> },
+    Loop {
+        passes: u8,
+        body: Vec<Pass>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -76,7 +79,11 @@ impl fmt::Display for Schedule {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let pass = |f: &mut fmt::Formatter, p: &Pass, indent: &str| {
             let api = p.api.map_or(String::new(), |a| format!(":{}", a.name()));
-            let fused = if p.fused.is_empty() { String::new() } else { format!(" [{}]", p.fused.join(", ")) };
+            let fused = if p.fused.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", p.fused.join(", "))
+            };
             let state = p.state.map_or(String::new(), |s| format!("  (keeps {s})"));
             writeln!(f, "{indent}{} @{}{api}{fused}{state}", p.node, p.device)
         };
@@ -91,9 +98,24 @@ impl fmt::Display for Schedule {
                 }
             }
         }
-        let edge = |e: &Edge| format!("{} -> {}.{} ({}, {})", e.from, e.to, e.port, e.data.name(), e.when.label());
+        let edge = |e: &Edge| {
+            format!(
+                "{} -> {}.{} ({}, {})",
+                e.from,
+                e.to,
+                e.port,
+                e.data.name(),
+                e.when.label()
+            )
+        };
         for e in &self.transfers {
-            writeln!(f, "  transfer {}: {} -> {}", edge(e), e.from_device, e.to_device)?;
+            writeln!(
+                f,
+                "  transfer {}: {} -> {}",
+                edge(e),
+                e.from_device,
+                e.to_device
+            )?;
         }
         for e in &self.kept {
             writeln!(f, "  kept across frames: {}", edge(e))?;
@@ -114,33 +136,67 @@ impl Checked {
         // is compiled into the output of the pass making its image.
         let is_pass = |id: &str| {
             let n = &g.nodes[id];
-            n.role != Role::Post && (!out_of(id).fused() || n.inputs.is_empty() || n.inputs.values().any(|s| !out_of(s).fused()))
+            n.role != Role::Post
+                && (!out_of(id).fused()
+                    || n.inputs.is_empty()
+                    || n.inputs.values().any(|s| !out_of(s).fused()))
         };
         let pass = |id: &str| {
             let n = &g.nodes[id];
             let mut fused = Vec::new();
-            let mut stack: Vec<&str> = n.inputs.values().map(String::as_str).filter(|s| out_of(s).fused()).collect();
+            let mut stack: Vec<&str> = n
+                .inputs
+                .values()
+                .map(String::as_str)
+                .filter(|s| out_of(s).fused())
+                .collect();
             while let Some(x) = stack.pop() {
                 if !fused.iter().any(|f| f == x) {
                     fused.push(x.to_string());
-                    stack.extend(g.nodes[x].inputs.values().map(String::as_str).filter(|s| out_of(s).fused()));
+                    stack.extend(
+                        g.nodes[x]
+                            .inputs
+                            .values()
+                            .map(String::as_str)
+                            .filter(|s| out_of(s).fused()),
+                    );
                 }
             }
-            fused.extend(g.nodes.iter().filter(|(_, r)| r.role == Role::Post && r.inputs.values().any(|s| s == id)).map(|(k, _)| k.clone()));
+            fused.extend(
+                g.nodes
+                    .iter()
+                    .filter(|(_, r)| r.role == Role::Post && r.inputs.values().any(|s| s == id))
+                    .map(|(k, _)| k.clone()),
+            );
             fused.sort();
-            Pass { node: id.to_string(), device: self.devices[id], api: self.apis.get(id).copied(), fused, state: state(n.role, &n.component) }
+            Pass {
+                node: id.to_string(),
+                device: self.devices[id],
+                api: self.apis.get(id).copied(),
+                fused,
+                state: state(n.role, &n.component),
+            }
         };
         // Loop bodies: the nodes on this frame's paths from an iterate edge's consumer to its producer.
         let mut loop_of: HashMap<&str, usize> = HashMap::new();
         let mut loops: Vec<(u8, &str)> = Vec::new();
         for (id, n) in &g.nodes {
             for (p, src) in &n.inputs {
-                let When::Iterate(k) = n.when(p) else { continue };
+                let When::Iterate(k) = n.when(p) else {
+                    continue;
+                };
                 let li = loops.len();
                 loops.push((k, id.as_str()));
-                for x in g.nodes.keys().filter(|x| g.depends(x, id) && g.depends(src, x)) {
+                for x in g
+                    .nodes
+                    .keys()
+                    .filter(|x| g.depends(x, id) && g.depends(src, x))
+                {
                     if let Some(other) = loop_of.insert(x.as_str(), li) {
-                        return Err(format!("`{x}` is in two iterations (through `{}` and `{id}`): nested or overlapping iterations are not supported yet", loops[other].1));
+                        return Err(format!(
+                            "`{x}` is in two iterations (through `{}` and `{id}`): nested or overlapping iterations are not supported yet",
+                            loops[other].1
+                        ));
                     }
                 }
             }
@@ -152,8 +208,23 @@ impl Checked {
         let at: HashMap<&str, usize> = order.iter().enumerate().map(|(i, &x)| (x, i)).collect();
         let group = |i: usize| loop_of.get(order[i]).map_or(i, |&li| n + li);
         let members = |gr: usize| -> Vec<usize> { (0..n).filter(|&i| group(i) == gr).collect() };
-        let inputs = |gr: usize| -> Vec<usize> { members(gr).into_iter().flat_map(|m| g.now_inputs(order[m]).map(|(_, s)| group(at[s])).collect::<Vec<_>>()).filter(|&x| x != gr).collect() };
-        fn visit(gr: usize, done: &mut HashSet<usize>, groups: &mut Vec<usize>, inputs: &dyn Fn(usize) -> Vec<usize>) {
+        let inputs = |gr: usize| -> Vec<usize> {
+            members(gr)
+                .into_iter()
+                .flat_map(|m| {
+                    g.now_inputs(order[m])
+                        .map(|(_, s)| group(at[s]))
+                        .collect::<Vec<_>>()
+                })
+                .filter(|&x| x != gr)
+                .collect()
+        };
+        fn visit(
+            gr: usize,
+            done: &mut HashSet<usize>,
+            groups: &mut Vec<usize>,
+            inputs: &dyn Fn(usize) -> Vec<usize>,
+        ) {
             if done.insert(gr) {
                 for i in inputs(gr) {
                     visit(i, done, groups, inputs);
@@ -173,13 +244,28 @@ impl Checked {
                 }
             } else {
                 // In frame order the consumer comes first (every body node depends on it).
-                steps.push(Step::Loop { passes: loops[gr - n].0, body: members(gr).into_iter().filter(|&i| is_pass(order[i])).map(|i| pass(order[i])).collect() });
+                steps.push(Step::Loop {
+                    passes: loops[gr - n].0,
+                    body: members(gr)
+                        .into_iter()
+                        .filter(|&i| is_pass(order[i]))
+                        .map(|i| pass(order[i]))
+                        .collect(),
+                });
             }
         }
         let (mut transfers, mut kept) = (Vec::new(), Vec::new());
         for (id, n) in &g.nodes {
             for (p, src) in &n.inputs {
-                let e = Edge { from: src.clone(), to: id.clone(), port: p.clone(), data: out_of(src), when: n.when(p), from_device: self.devices[src.as_str()], to_device: self.devices[id] };
+                let e = Edge {
+                    from: src.clone(),
+                    to: id.clone(),
+                    port: p.clone(),
+                    data: out_of(src),
+                    when: n.when(p),
+                    from_device: self.devices[src.as_str()],
+                    to_device: self.devices[id],
+                };
                 if e.when != When::Now {
                     kept.push(e.clone());
                 }
@@ -188,6 +274,10 @@ impl Checked {
                 }
             }
         }
-        Ok(Schedule { steps, transfers, kept })
+        Ok(Schedule {
+            steps,
+            transfers,
+            kept,
+        })
     }
 }

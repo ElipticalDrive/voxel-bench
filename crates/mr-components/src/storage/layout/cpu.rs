@@ -44,7 +44,11 @@ pub fn index<const L: u8>(l: IVec3) -> usize {
             let inner = (l.x & 3) | ((l.z & 3) << 2) | ((l.y & 3) << 4);
             ((brick_index(l) << 6) | inner as u32) as usize
         }
-        _ => (MORTON_TABLE[(l.x & 31) as usize] | (MORTON_TABLE[(l.z & 31) as usize] << 1) | (MORTON_TABLE[(l.y & 31) as usize] << 2)) as usize,
+        _ => {
+            (MORTON_TABLE[(l.x & 31) as usize]
+                | (MORTON_TABLE[(l.z & 31) as usize] << 1)
+                | (MORTON_TABLE[(l.y & 31) as usize] << 2)) as usize
+        }
     }) & (CHUNK_VOLUME - 1)
 }
 
@@ -57,7 +61,10 @@ pub struct Laid<const L: u8> {
 
 impl<const L: u8> Repr for Laid<L> {
     fn build(d: &Arc<DenseChunk>) -> Self {
-        let mut ids: Box<[u16; CHUNK_VOLUME]> = vec![0u16; CHUNK_VOLUME].into_boxed_slice().try_into().unwrap();
+        let mut ids: Box<[u16; CHUNK_VOLUME]> = vec![0u16; CHUNK_VOLUME]
+            .into_boxed_slice()
+            .try_into()
+            .unwrap();
         // Source order: x fastest, then z, then y.
         let mut i = 0;
         for y in 0..32 {
@@ -68,7 +75,10 @@ impl<const L: u8> Repr for Laid<L> {
                 }
             }
         }
-        Self { bricks: bricks_of(d), ids: ids.into() }
+        Self {
+            bricks: bricks_of(d),
+            ids: ids.into(),
+        }
     }
     #[inline(always)]
     fn probe(&self, l: IVec3) -> (u32, i32) {

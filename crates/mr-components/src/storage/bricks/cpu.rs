@@ -10,7 +10,6 @@ use mr_core::*;
 #[allow(unused_imports)]
 use crate::storage::cpu::{Repr, bit_in_brick, brick_index, brick_set, bricks_of, occupancy_of};
 
-
 /// cpu-simd's representation: 512-bit brick mask + u16 per voxel (64 KiB).
 #[derive(Clone)]
 pub struct U16 {
@@ -20,7 +19,10 @@ pub struct U16 {
 
 impl Repr for U16 {
     fn build(d: &Arc<DenseChunk>) -> Self {
-        Self { bricks: bricks_of(d), blocks: d.clone() }
+        Self {
+            bricks: bricks_of(d),
+            blocks: d.clone(),
+        }
     }
     #[inline(always)]
     fn probe(&self, l: IVec3) -> (u32, i32) {

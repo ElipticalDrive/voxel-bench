@@ -10,7 +10,6 @@ use mr_core::*;
 #[allow(unused_imports)]
 use crate::storage::cpu::{Repr, bit_in_brick, brick_index, brick_set, bricks_of, occupancy_of};
 
-
 /// Per-chunk palette (index 0 is always air) with indices packed at 1/2/4/8/16 bits in
 /// brick-major voxel order (a brick's 64 indices are contiguous: ≤ 1 cache line up to
 /// 8 bits). Traversal reads packed indices; occupancy = index != 0.
@@ -58,7 +57,12 @@ impl Repr for Palette {
             let bit = v << shift;
             data[(bit >> 6) as usize] |= (lut[b.0 as usize] as u64) << (bit & 63);
         }
-        Self { bricks: bricks_of(d), shift, palette: palette.into(), data: data.into() }
+        Self {
+            bricks: bricks_of(d),
+            shift,
+            palette: palette.into(),
+            data: data.into(),
+        }
     }
     #[inline(always)]
     fn probe(&self, l: IVec3) -> (u32, i32) {

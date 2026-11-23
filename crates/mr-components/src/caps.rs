@@ -112,8 +112,16 @@ pub struct Adapter {
 /// Every adapter. Storage adapters are WGSL sections of `storage/adapters.wgsl`, named by
 /// the capability (`//@s_dist`), appended in this order.
 pub const ADAPTERS: &[Adapter] = &[
-    Adapter { role: Role::Storage, cap: Cap::Dist, description: "`s_dist` from `s_probe`: the distance to the boundary of the empty aligned cube the storage reports" },
-    Adapter { role: Role::Storage, cap: Cap::Row, description: "`s_row` from 32 voxel-level `s_occupied` queries" },
+    Adapter {
+        role: Role::Storage,
+        cap: Cap::Dist,
+        description: "`s_dist` from `s_probe`: the distance to the boundary of the empty aligned cube the storage reports",
+    },
+    Adapter {
+        role: Role::Storage,
+        cap: Cap::Row,
+        description: "`s_row` from 32 voxel-level `s_occupied` queries",
+    },
 ];
 
 pub fn adapter(role: Role, cap: Cap) -> Option<&'static Adapter> {
@@ -122,7 +130,9 @@ pub fn adapter(role: Role, cap: Cap) -> Option<&'static Adapter> {
 
 /// Whether component `name` in `role` provides `cap` natively on device kind `kind`.
 pub fn provides(kind: Kind, role: Role, name: &str, cap: Cap) -> bool {
-    component(role, name).and_then(|c| c.on(kind)).is_some_and(|i| i.provides.contains(&cap))
+    component(role, name)
+        .and_then(|c| c.on(kind))
+        .is_some_and(|i| i.provides.contains(&cap))
 }
 
 #[cfg(test)]
@@ -136,11 +146,21 @@ mod tests {
         let mut used = 0u32;
         for c in RECORD_CAPS {
             for b in c.bits.clone().into_iter().flatten() {
-                assert!(b > 22 && b < 32 && used & (1 << b) == 0, "{} bit {b}", c.name);
+                assert!(
+                    b > 22 && b < 32 && used & (1 << b) == 0,
+                    "{} bit {b}",
+                    c.name
+                );
                 used |= 1 << b;
             }
         }
         let mesh = RECORD_CAPS.iter().find(|c| c.name == "meshes").unwrap();
-        assert!(mesh.built && mr_gpu::voxels::VOXELS_WGSL.contains(&format!("const REC_MESH: u32 = {:#x}u;", 1u32 << mesh.bits.clone().unwrap().start())));
+        assert!(
+            mesh.built
+                && mr_gpu::voxels::VOXELS_WGSL.contains(&format!(
+                    "const REC_MESH: u32 = {:#x}u;",
+                    1u32 << mesh.bits.clone().unwrap().start()
+                ))
+        );
     }
 }

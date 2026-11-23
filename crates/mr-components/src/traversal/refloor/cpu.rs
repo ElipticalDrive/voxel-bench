@@ -24,7 +24,18 @@ pub const NOWHERE: (IVec3, IVec3) = (IVec3::splat(1 << 29), IVec3::splat((1 << 2
 /// Lanes with `d.x == NaN` are inactive. Each lane ignores the start cell (like the
 /// reference) and stops at `tfar`.
 #[inline(always)]
-pub fn trace_packet<R: Repr, const N: usize>(grid: &Grid<R>, cam: IVec3, o: Vec3, dx: &[f32; N], dy: &[f32; N], dz: &[f32; N], max_t: f32, bmin: IVec3, bmax: IVec3, out: &mut [Option<Hit>; N]) -> u32 {
+pub fn trace_packet<R: Repr, const N: usize>(
+    grid: &Grid<R>,
+    cam: IVec3,
+    o: Vec3,
+    dx: &[f32; N],
+    dy: &[f32; N],
+    dz: &[f32; N],
+    max_t: f32,
+    bmin: IVec3,
+    bmax: IVec3,
+    out: &mut [Option<Hit>; N],
+) -> u32 {
     let mut iterations = 0u32;
     let mut inv = [[0f32; N]; 3];
     let mut stp = [[0i32; N]; 3];
@@ -61,7 +72,13 @@ pub fn trace_packet<R: Repr, const N: usize>(grid: &Grid<R>, cam: IVec3, o: Vec3
             cell[a][l] = ffloor(o[a] + d[a] * tnear).clamp(bmin[a], bmax[a] - 1);
         }
         if tnear > 0.0 {
-            axis[l] = if tlo[0] >= tlo[1] && tlo[0] >= tlo[2] { 0 } else if tlo[1] >= tlo[2] { 1 } else { 2 };
+            axis[l] = if tlo[0] >= tlo[1] && tlo[0] >= tlo[2] {
+                0
+            } else if tlo[1] >= tlo[2] {
+                1
+            } else {
+                2
+            };
         }
         t[l] = tnear;
         tfar[l] = tf;
@@ -87,7 +104,11 @@ pub fn trace_packet<R: Repr, const N: usize>(grid: &Grid<R>, cam: IVec3, o: Vec3
             }
             let (b, s) = grid.probe_in(cached_idx[l], abs);
             if b != 0 && c != start {
-                out[l] = Some(Hit { t: t[l], cell: c, axis: axis[l] });
+                out[l] = Some(Hit {
+                    t: t[l],
+                    cell: c,
+                    axis: axis[l],
+                });
                 active[l] = false;
                 continue;
             }
@@ -110,7 +131,13 @@ pub fn trace_packet<R: Repr, const N: usize>(grid: &Grid<R>, cam: IVec3, o: Vec3
                 bound[a] = base[a] + if stp[a][l] > 0 { s } else { 0 };
                 tb[a] = (bound[a] as f32 - o[a]) * inv[a][l];
             }
-            let a = if tb[0] <= tb[1] && tb[0] <= tb[2] { 0 } else if tb[1] <= tb[2] { 1 } else { 2 };
+            let a = if tb[0] <= tb[1] && tb[0] <= tb[2] {
+                0
+            } else if tb[1] <= tb[2] {
+                1
+            } else {
+                2
+            };
             let tn = tb[a];
             let d = [dx[l], dy[l], dz[l]];
             for k in 0..3 {

@@ -10,7 +10,6 @@ use mr_core::*;
 #[allow(unused_imports)]
 use crate::storage::cpu::{Repr, bit_in_brick, brick_index, brick_set, bricks_of, occupancy_of};
 
-
 /// `Bits` plus a 64-bit summary, one bit per 8^3 region, so empty regions skip 8 cells.
 #[derive(Clone)]
 pub struct Hier {
@@ -35,7 +34,11 @@ impl Repr for Hier {
                 summary |= 1 << region_index(b * 4);
             }
         }
-        Self { summary, occ: occ.into(), ids: d.clone() }
+        Self {
+            summary,
+            occ: occ.into(),
+            ids: d.clone(),
+        }
     }
     #[inline(always)]
     fn probe(&self, l: IVec3) -> (u32, i32) {

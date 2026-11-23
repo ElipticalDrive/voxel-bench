@@ -24,10 +24,18 @@ pub fn mesh(center: &ChunkData, neighbors: [Option<&ChunkData>; 6], slot: u16, c
                     continue;
                 }
                 let b = center.get(p);
-                if !b.is_solid() || (cull && Face::ALL.iter().all(|f| !super::get(center, &neighbors, p + f.normal()).is_air())) {
+                if !b.is_solid()
+                    || (cull
+                        && Face::ALL
+                            .iter()
+                            .all(|f| !super::get(center, &neighbors, p + f.normal()).is_air()))
+                {
                     continue;
                 }
-                quads.push([x as u32 | (y as u32) << 5 | (z as u32) << 10, b.0 as u32 | (slot as u32) << 16]);
+                quads.push([
+                    x as u32 | (y as u32) << 5 | (z as u32) << 10,
+                    b.0 as u32 | (slot as u32) << 16,
+                ]);
             }
         }
     }

@@ -88,7 +88,11 @@ impl Points {
     /// Rebuilds the points of the `changed` chunks and of their 6 neighbours (exposure
     /// depends on them); `chunk` gives a chunk's data (absent = air). A chunk whose points
     /// did not change is not written.
-    pub fn update<'a>(&mut self, changed: impl IntoIterator<Item = IVec3>, chunk: impl Fn(IVec3) -> Option<&'a ChunkData>) {
+    pub fn update<'a>(
+        &mut self,
+        changed: impl IntoIterator<Item = IVec3>,
+        chunk: impl Fn(IVec3) -> Option<&'a ChunkData>,
+    ) {
         let mut todo = HashSet::new();
         for c in changed {
             todo.insert(c);
@@ -99,7 +103,9 @@ impl Points {
         let mut todo: Vec<IVec3> = todo.into_iter().collect();
         todo.sort_unstable_by_key(|c| (c.x, c.y, c.z));
         for c in todo {
-            let pts = chunk(c).map_or(vec![], |center| build(center, Face::ALL.map(|f| chunk(c + f.normal())), c));
+            let pts = chunk(c).map_or(vec![], |center| {
+                build(center, Face::ALL.map(|f| chunk(c + f.normal())), c)
+            });
             self.set(c, pts);
         }
         // Holes past a quarter of the array (the room to grow is at most a ninth): packed again,
@@ -120,7 +126,13 @@ impl Points {
                 self.all[s.off + pts.len()..s.off + s.len.max(pts.len())].fill(DEAD);
                 self.dirty.push(s.off..s.off + s.len.max(pts.len()));
                 self.live = self.live + pts.len() - s.len;
-                self.slots.insert(c, Slot { len: pts.len(), ..s });
+                self.slots.insert(
+                    c,
+                    Slot {
+                        len: pts.len(),
+                        ..s
+                    },
+                );
             }
             old => {
                 if let Some(s) = old {
@@ -145,7 +157,11 @@ impl Points {
     /// A slot for `n` points and `room` more: the first hole it fits, else the end.
     fn place(&mut self, n: usize, room: usize) -> Slot {
         let cap = n + room;
-        let hole = self.free.iter().find(|&(_, &len)| len >= cap).map(|(&off, &len)| (off, len));
+        let hole = self
+            .free
+            .iter()
+            .find(|&(_, &len)| len >= cap)
+            .map(|(&off, &len)| (off, len));
         let off = match hole {
             Some((off, len)) => {
                 self.free.remove(&off);
@@ -197,7 +213,14 @@ impl Points {
             let (off, room) = (self.all.len(), if s.cap > s.len { s.len / 8 } else { 0 });
             self.all.extend_from_slice(&old[s.off..s.off + s.len]);
             self.all.resize(off + s.len + room, DEAD);
-            self.slots.insert(c, Slot { off, cap: s.len + room, len: s.len });
+            self.slots.insert(
+                c,
+                Slot {
+                    off,
+                    cap: s.len + room,
+                    len: s.len,
+                },
+            );
         }
         self.whole = true;
     }
@@ -226,7 +249,10 @@ impl Points {
             }
         }
         self.uploaded += merged.iter().map(|r| r.len() as u64).sum::<u64>();
-        Some(Changes { all: &self.all, ranges: merged })
+        Some(Changes {
+            all: &self.all,
+            ranges: merged,
+        })
     }
 
     /// Entries in the array (points and holes): what the splat passes run over.
@@ -323,26 +349,50 @@ mod tests {
                 _ => {
                     let l = IVec3::new(next(32) as i32, next(12) as i32, next(32) as i32);
                     let d = world.get_mut(&c).unwrap();
-                    let b = if d.get(l).is_air() { BlockId(2) } else { BlockId::AIR };
+                    let b = if d.get(l).is_air() {
+                        BlockId(2)
+                    } else {
+                        BlockId::AIR
+                    };
                     d.set(l, b);
                 }
             }
             p.update([c], |k| world.get(&k));
             apply(&mut gpu, &mut p);
             if edit && step >= 50 {
-                (edits_wrote, edits_all) = (edits_wrote + p.uploaded - before, edits_all + p.live() as u64);
+                (edits_wrote, edits_all) = (
+                    edits_wrote + p.uploaded - before,
+                    edits_all + p.live() as u64,
+                );
             }
             if step % 10 != 9 {
                 continue;
             }
-            let mut want: Vec<Point> = world.keys().flat_map(|&k| build(&world[&k], Face::ALL.map(|f| world.get(&(k + f.normal()))), k)).collect();
+            let mut want: Vec<Point> = world
+                .keys()
+                .flat_map(|&k| {
+                    build(
+                        &world[&k],
+                        Face::ALL.map(|f| world.get(&(k + f.normal()))),
+                        k,
+                    )
+                })
+                .collect();
             let mut have: Vec<Point> = gpu.iter().copied().filter(|q| *q != DEAD).collect();
             assert!(gpu.iter().all(|q| *q != [9; 4]), "an entry never written");
             want.sort_unstable();
             have.sort_unstable();
             assert_eq!(have.len(), p.live());
-            assert!(have == want, "step {step}: the GPU's points differ ({} vs {})", have.len(), want.len());
+            assert!(
+                have == want,
+                "step {step}: the GPU's points differ ({} vs {})",
+                have.len(),
+                want.len()
+            );
         }
-        assert!(edits_wrote * 10 < edits_all, "edits wrote {edits_wrote} points of {edits_all}");
+        assert!(
+            edits_wrote * 10 < edits_all,
+            "edits wrote {edits_wrote} points of {edits_all}"
+        );
     }
 }

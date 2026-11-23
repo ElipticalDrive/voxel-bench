@@ -77,6 +77,9 @@ enum Cmd {
     },
     /// List available renderers.
     List,
+    /// What each component can be used for: per device kind, its implemented APIs and the
+    /// shipped graphs that accept it there (Markdown), then the gaps.
+    Audit,
     /// A pipeline as a graph: its nodes (TOML, for a plan's
     /// `[renderer.graph]`), label, canonical form, cache key and schedule. The renderer as for
     /// `view -r`: a graph file and edits (`raycast-gpu,storage=prefix,kernel=incremental`).
@@ -155,6 +158,10 @@ fn main() -> anyhow::Result<()> {
             let schedule = g.check().and_then(|c| c.schedule()).map_err(anyhow::Error::msg)?;
             println!("# schedule (passes in frame order, [fused nodes compiled in]):");
             print!("{}", schedule.to_string().lines().map(|l| format!("#{l}\n")).collect::<String>());
+            Ok(())
+        }
+        Cmd::Audit => {
+            print!("{}", mr_components::graph::audit_markdown());
             Ok(())
         }
         Cmd::List => {

@@ -5,7 +5,10 @@ the world to the image. No fixed list of stages exists. Any valid path from inpu
 is a pipeline, and pipelines need not use the same kinds of component. `multirenderer list`
 prints every shipped graph file with its label and every component by the role of the node it
 fills (with the devices and APIs it is implemented for, and the files whose nodes may be it),
-and `multirenderer graph <renderer>` prints a renderer as its graph.
+`multirenderer audit` tabulates, per component and device kind, the APIs it is implemented with
+and the shipped files (or graphs one node-adding or -removing edit from one) that accept it there,
+then lists the implementations no such graph reaches and the components implemented on one kind
+only, and `multirenderer graph <renderer>` prints a renderer as its graph.
 
 ## Nodes
 

@@ -20,7 +20,6 @@ pub struct Hit {
     pub axis: u8,
 }
 
-
 /// Work done by `trace_incremental`: DDA steps, and occupancy tests made while
 /// climbing (ascent attempts) and after descending.
 #[derive(Copy, Clone, Default)]
@@ -29,4 +28,3 @@ pub struct Tally {
     pub up: u32,
     pub down: u32,
 }
-

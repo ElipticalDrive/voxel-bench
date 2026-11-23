@@ -52,7 +52,14 @@ impl Heightmap {
     pub fn new(view_radius: u32) -> Self {
         let size = (((2 * view_radius + 2) * CHUNK_SIZE as u32).next_power_of_two()) as i32;
         let tiles = size / CHUNK_SIZE;
-        Self { hm: vec![0; (size * size + tiles * tiles) as usize], size, tiles, reach: (view_radius + 1) * CHUNK_SIZE as u32, top: 0, columns: HashMap::new() }
+        Self {
+            hm: vec![0; (size * size + tiles * tiles) as usize],
+            size,
+            tiles,
+            reach: (view_radius + 1) * CHUNK_SIZE as u32,
+            top: 0,
+            columns: HashMap::new(),
+        }
     }
 
     pub fn mask(&self) -> u32 {
@@ -62,7 +69,12 @@ impl Heightmap {
     /// `hm_info` for the GPU: ring mask, reach (blocks), tile base (words), the highest top
     /// in the ring (entry encoding; 0 = all empty).
     pub fn info(&self) -> [u32; 4] {
-        [self.mask(), self.reach, (self.size * self.size) as u32, self.top]
+        [
+            self.mask(),
+            self.reach,
+            (self.size * self.size) as u32,
+            self.top,
+        ]
     }
 
     fn tile_index(&self, c: IVec2) -> usize {
@@ -81,7 +93,10 @@ impl Heightmap {
 
     /// The storage's frame counters.
     pub fn counters(&self) -> [(String, f64); 2] {
-        [("heightmap_size".into(), self.size as f64), ("chunk_columns".into(), self.columns() as f64)]
+        [
+            ("heightmap_size".into(), self.size as f64),
+            ("chunk_columns".into(), self.columns() as f64),
+        ]
     }
 
     /// The entry of absolute column (x, z).
@@ -93,7 +108,11 @@ impl Heightmap {
 
     /// After world updates: rebuilds the chunk columns of the `changed` LOD-0 chunk
     /// positions from `chunk` (the chunks now held); returns the rebuilt chunk columns.
-    pub fn apply<'a>(&mut self, changed: impl IntoIterator<Item = IVec3>, chunk: impl Fn(IVec3) -> Option<&'a ChunkData>) -> Vec<IVec2> {
+    pub fn apply<'a>(
+        &mut self,
+        changed: impl IntoIterator<Item = IVec3>,
+        chunk: impl Fn(IVec3) -> Option<&'a ChunkData>,
+    ) -> Vec<IVec2> {
         let mut tiles = vec![];
         for pos in changed {
             let c = IVec2::new(pos.x, pos.z);
@@ -117,7 +136,11 @@ impl Heightmap {
         }
         if !tiles.is_empty() {
             let base = (self.size * self.size) as usize;
-            self.top = self.hm[base..].iter().map(|e| e & 0xffff).max().unwrap_or(0);
+            self.top = self.hm[base..]
+                .iter()
+                .map(|e| e & 0xffff)
+                .max()
+                .unwrap_or(0);
         }
         tiles
     }
@@ -160,7 +183,10 @@ impl Heightmap {
         (0..CHUNK_SIZE)
             .map(move |lz| {
                 let wz = c.y * CHUNK_SIZE + lz;
-                (((wz & mask) * self.size + ((c.x * CHUNK_SIZE) & mask)) as usize, CHUNK_SIZE as usize)
+                (
+                    ((wz & mask) * self.size + ((c.x * CHUNK_SIZE) & mask)) as usize,
+                    CHUNK_SIZE as usize,
+                )
             })
             .chain(std::iter::once((self.tile_index(c), 1)))
     }
@@ -168,18 +194,39 @@ impl Heightmap {
     /// The first column a ray from camera-relative `o` along `d` hits within `max_t`:
     /// (t, camera-relative cell, axis of the face entered, block). As `hm_trace` in
     /// `gpu.wgsl` (see there).
-    pub fn trace(&self, cam: IVec3, o: Vec3, d: Vec3, max_t: f32) -> Option<(f32, IVec3, usize, u16)> {
-        let rel_top = |e: u32| -> f32 { if e & 0xffff == 0 { -1e6 } else { ((e & 0xffff) as i32 - 32768 + 1 - cam.y) as f32 } };
+    pub fn trace(
+        &self,
+        cam: IVec3,
+        o: Vec3,
+        d: Vec3,
+        max_t: f32,
+    ) -> Option<(f32, IVec3, usize, u16)> {
+        let rel_top = |e: u32| -> f32 {
+            if e & 0xffff == 0 {
+                -1e6
+            } else {
+                ((e & 0xffff) as i32 - 32768 + 1 - cam.y) as f32
+            }
+        };
         let global = rel_top(self.top);
         let dxz = Vec2::new(d.x, d.z);
         let oxz = Vec2::new(o.x, o.z);
         let hlen = dxz.length();
-        let stp = IVec2::new(if dxz.x > 0.0 { 1 } else { -1 }, if dxz.y > 0.0 { 1 } else { -1 });
+        let stp = IVec2::new(
+            if dxz.x > 0.0 { 1 } else { -1 },
+            if dxz.y > 0.0 { 1 } else { -1 },
+        );
         let inv = Vec2::ONE / dxz.abs().max(Vec2::splat(1e-9));
         let bound = |cell: IVec2| -> Vec2 {
             let mut t = Vec2::ZERO;
             for a in 0..2 {
-                t[a] = if dxz[a].abs() < 1e-9 { f32::INFINITY } else { ((if dxz[a] > 0.0 { cell[a] + 1 } else { cell[a] }) as f32 - oxz[a]) * dxz[a].signum() * inv[a] };
+                t[a] = if dxz[a].abs() < 1e-9 {
+                    f32::INFINITY
+                } else {
+                    ((if dxz[a] > 0.0 { cell[a] + 1 } else { cell[a] }) as f32 - oxz[a])
+                        * dxz[a].signum()
+                        * inv[a]
+                };
             }
             t
         };
@@ -200,7 +247,13 @@ impl Heightmap {
             let abs = cell + IVec2::new(cam.x, cam.z);
             let tile_top = rel_top(self.hm[self.tile_index(IVec2::new(abs.x >> 5, abs.y >> 5))]);
             let tile_min = IVec2::new((abs.x >> 5) * 32 - cam.x, (abs.y >> 5) * 32 - cam.z);
-            let tb = bound(tile_min + IVec2::new(if stp.x > 0 { 31 } else { 0 }, if stp.y > 0 { 31 } else { 0 }));
+            let tb = bound(
+                tile_min
+                    + IVec2::new(
+                        if stp.x > 0 { 31 } else { 0 },
+                        if stp.y > 0 { 31 } else { 0 },
+                    ),
+            );
             let t_exit = tb.x.min(tb.y);
             if y0.min(o.y + d.y * t_exit) >= tile_top {
                 first = false;
@@ -208,8 +261,13 @@ impl Heightmap {
                 axis = if tb.x < tb.y { 0 } else { 1 };
                 t0 = t_exit;
                 let p = oxz + dxz * t0;
-                let mut next = IVec2::new(p.x.floor() as i32, p.y.floor() as i32).clamp(tile_min, tile_min + IVec2::splat(31));
-                next[axis] = if stp[axis] > 0 { tile_min[axis] + 32 } else { tile_min[axis] - 1 };
+                let mut next = IVec2::new(p.x.floor() as i32, p.y.floor() as i32)
+                    .clamp(tile_min, tile_min + IVec2::splat(31));
+                next[axis] = if stp[axis] > 0 {
+                    tile_min[axis] + 32
+                } else {
+                    tile_min[axis] - 1
+                };
                 cell = next;
                 tmax = bound(cell);
                 continue;
@@ -219,12 +277,24 @@ impl Heightmap {
             let hh = rel_top(e);
             if !first && y0 < hh {
                 let y = (y0.floor() as i32).min(hh as i32 - 1);
-                return Some((t0, IVec3::new(cell.x, y, cell.y), if axis == 0 { 0 } else { 2 }, (e >> 16) as u16));
+                return Some((
+                    t0,
+                    IVec3::new(cell.x, y, cell.y),
+                    if axis == 0 { 0 } else { 2 },
+                    (e >> 16) as u16,
+                ));
             }
             if d.y < 0.0 && (!first || o.y >= hh) {
                 let tt = (hh - o.y) / d.y;
                 if tt >= t0 && tt < t1 {
-                    return (tt <= max_t).then(|| (tt, IVec3::new(cell.x, hh as i32 - 1, cell.y), 1, (e >> 16) as u16));
+                    return (tt <= max_t).then(|| {
+                        (
+                            tt,
+                            IVec3::new(cell.x, hh as i32 - 1, cell.y),
+                            1,
+                            (e >> 16) as u16,
+                        )
+                    });
                 }
             }
             first = false;
@@ -260,7 +330,13 @@ mod tests {
         }
         held.push(IVec3::new(1, 1, 0));
         let lookup = |p: IVec3| -> Option<&ChunkData> {
-            if p == IVec3::new(1, 1, 0) { Some(&tower) } else if p.y == 0 && p.x.abs() <= 4 && p.z.abs() <= 4 { Some(&ground) } else { None }
+            if p == IVec3::new(1, 1, 0) {
+                Some(&tower)
+            } else if p.y == 0 && p.x.abs() <= 4 && p.z.abs() <= 4 {
+                Some(&ground)
+            } else {
+                None
+            }
         };
         hm.apply(held.clone(), lookup);
         hm
@@ -271,18 +347,43 @@ mod tests {
         let hm = world();
         let cam = IVec3::ZERO;
         // Straight down from above the ground: the top at y = 32.
-        let (t, cell, axis, block) = hm.trace(cam, Vec3::new(-10.5, 40.0, 5.5), Vec3::NEG_Y, 1e7).unwrap();
-        assert!((t - 8.0).abs() < 1e-4 && cell == IVec3::new(-11, 31, 5) && axis == 1 && block == 1);
+        let (t, cell, axis, block) = hm
+            .trace(cam, Vec3::new(-10.5, 40.0, 5.5), Vec3::NEG_Y, 1e7)
+            .unwrap();
+        assert!(
+            (t - 8.0).abs() < 1e-4 && cell == IVec3::new(-11, 31, 5) && axis == 1 && block == 1
+        );
         // Horizontally towards the tower (x from 32): its side, block 2.
-        let (t, cell, axis, block) = hm.trace(cam, Vec3::new(10.5, 50.0, 10.5), Vec3::X, 1e7).unwrap();
-        assert!((t - 21.5).abs() < 1e-4 && cell.x == 32 && axis == 0 && block == 2, "{t} {cell} {axis} {block}");
+        let (t, cell, axis, block) = hm
+            .trace(cam, Vec3::new(10.5, 50.0, 10.5), Vec3::X, 1e7)
+            .unwrap();
+        assert!(
+            (t - 21.5).abs() < 1e-4 && cell.x == 32 && axis == 0 && block == 2,
+            "{t} {cell} {axis} {block}"
+        );
         // Upwards and slanted over the ground: nothing (stops above the highest top).
-        assert!(hm.trace(cam, Vec3::new(-50.0, 33.0, -50.0), Vec3::new(1.0, 0.2, 0.3).normalize(), 1e7).is_none());
+        assert!(
+            hm.trace(
+                cam,
+                Vec3::new(-50.0, 33.0, -50.0),
+                Vec3::new(1.0, 0.2, 0.3).normalize(),
+                1e7
+            )
+            .is_none()
+        );
         // Shallow descent across many tiles: lands on the ground, past the skipped tiles.
         let d = Vec3::new(1.0, -0.02, 0.0).normalize();
-        let (t, cell, axis, _) = hm.trace(cam, Vec3::new(-120.5, 33.0, -100.5), d, 1e7).unwrap();
-        assert!(axis == 1 && cell.y == 31 && (t * d.x - 50.0).abs() < 1.0, "{t} {cell}");
+        let (t, cell, axis, _) = hm
+            .trace(cam, Vec3::new(-120.5, 33.0, -100.5), d, 1e7)
+            .unwrap();
+        assert!(
+            axis == 1 && cell.y == 31 && (t * d.x - 50.0).abs() < 1.0,
+            "{t} {cell}"
+        );
         // Short shadow ray (max_t) stops before the ground.
-        assert!(hm.trace(cam, Vec3::new(0.5, 40.0, 0.5), Vec3::NEG_Y, 5.0).is_none());
+        assert!(
+            hm.trace(cam, Vec3::new(0.5, 40.0, 0.5), Vec3::NEG_Y, 5.0)
+                .is_none()
+        );
     }
 }

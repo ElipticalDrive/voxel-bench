@@ -16,12 +16,22 @@ pub const GPU_WGSL: &str = include_str!("gpu.wgsl");
 
 /// [`GPU_WGSL`] with the constants it reads (`CHUNK_BITS`).
 pub fn gpu_wgsl() -> String {
-    format!("const CHUNK_BITS: u32 = {}u;\n{GPU_WGSL}", mr_core::chunk::CHUNK_BITS)
+    format!(
+        "const CHUNK_BITS: u32 = {}u;\n{GPU_WGSL}",
+        mr_core::chunk::CHUNK_BITS
+    )
 }
 
 /// The entry points in dispatch order: clear (per pixel), the depth splats (per point, then
 /// per large point), the id splats (the same), the resolve (per pixel).
-pub const ENTRIES: [&str; 6] = ["clear", "splat_depth", "splat_big_depth", "splat_id", "splat_big_id", "shade"];
+pub const ENTRIES: [&str; 6] = [
+    "clear",
+    "splat_depth",
+    "splat_big_depth",
+    "splat_id",
+    "splat_big_id",
+    "shade",
+];
 
 /// Workgroups of the large points' passes (each takes every `BIG_GROUPS`-th large point).
 pub const BIG_GROUPS: u32 = 1024;

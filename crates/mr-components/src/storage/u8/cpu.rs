@@ -10,7 +10,6 @@ use mr_core::*;
 #[allow(unused_imports)]
 use crate::storage::cpu::{Repr, bit_in_brick, brick_index, brick_set, bricks_of, occupancy_of};
 
-
 /// Brick mask + u8 per voxel (32 KiB); only valid with ≤ 256 block types.
 #[derive(Clone)]
 pub struct U8 {
@@ -20,7 +19,10 @@ pub struct U8 {
 
 impl Repr for U8 {
     fn build(d: &Arc<DenseChunk>) -> Self {
-        Self { bricks: bricks_of(d), ids: d.0.iter().map(|b| b.0 as u8).collect() }
+        Self {
+            bricks: bricks_of(d),
+            ids: d.0.iter().map(|b| b.0 as u8).collect(),
+        }
     }
     #[inline(always)]
     fn probe(&self, l: IVec3) -> (u32, i32) {

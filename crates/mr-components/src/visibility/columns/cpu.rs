@@ -45,7 +45,19 @@ impl<'a> March<'a> {
     /// The march of a `w` x `h` image from `cam`, crossing at most `max_cells` columns.
     pub fn new(hm: &'a Heightmap, cam: &Camera, w: usize, h: usize, max_cells: usize) -> Self {
         let (cam_block, o) = cam.split_position();
-        Self { hm, cam: cam_block, o, fwd: cam.forward(), right: cam.right(), up: cam.up(), thf: (cam.fov_y * 0.5).tan(), aspect: w as f32 / h as f32, w: w as f32, h, max_cells }
+        Self {
+            hm,
+            cam: cam_block,
+            o,
+            fwd: cam.forward(),
+            right: cam.right(),
+            up: cam.up(),
+            thf: (cam.fov_y * 0.5).tan(),
+            aspect: w as f32 / h as f32,
+            w: w as f32,
+            h,
+            max_cells,
+        }
     }
 
     #[inline]
@@ -90,7 +102,8 @@ impl<'a> March<'a> {
     /// below its top of that block's kind would).
     #[inline]
     fn local(p: Vec3, cell: IVec2) -> Vec3 {
-        Vec3::new(p.x - cell.x as f32, p.y - p.y.floor(), p.z - cell.y as f32).clamp(Vec3::ZERO, Vec3::splat(0.999))
+        Vec3::new(p.x - cell.x as f32, p.y - p.y.floor(), p.z - cell.y as f32)
+            .clamp(Vec3::ZERO, Vec3::splat(0.999))
     }
 
     /// Marches screen column `gx` front to back, handing its rows to `out`.
@@ -108,14 +121,26 @@ impl<'a> March<'a> {
         let hd = hd.normalize();
         let mut ybuf = h as i32;
         let mut cell = IVec2::new(o.x.floor() as i32, o.z.floor() as i32);
-        let stp = IVec2::new(if hd.x > 0.0 { 1 } else { -1 }, if hd.y > 0.0 { 1 } else { -1 });
+        let stp = IVec2::new(
+            if hd.x > 0.0 { 1 } else { -1 },
+            if hd.y > 0.0 { 1 } else { -1 },
+        );
         let inv = Vec2::ONE / hd.abs().max(Vec2::splat(1e-9));
         let oxz = Vec2::new(o.x, o.z);
         let edge = Vec2::new(
-            if hd.x > 0.0 { (cell.x + 1) as f32 } else { cell.x as f32 },
-            if hd.y > 0.0 { (cell.y + 1) as f32 } else { cell.y as f32 },
+            if hd.x > 0.0 {
+                (cell.x + 1) as f32
+            } else {
+                cell.x as f32
+            },
+            if hd.y > 0.0 {
+                (cell.y + 1) as f32
+            } else {
+                cell.y as f32
+            },
         );
-        let mut tmax = ((edge - oxz) * Vec2::new(hd.x.signum(), hd.y.signum()) * inv).max(Vec2::ZERO);
+        let mut tmax =
+            ((edge - oxz) * Vec2::new(hd.x.signum(), hd.y.signum()) * inv).max(Vec2::ZERO);
         let mut t0 = 0.0f32;
         let mut axis = 0usize;
         let mut first = true;
@@ -139,7 +164,11 @@ impl<'a> March<'a> {
                     let mut side = false;
                     if !first {
                         let a = if axis == 1 { 2 } else { 0 };
-                        let wall = if stp[axis] < 0 { cell[axis] + 1 } else { cell[axis] } as f32;
+                        let wall = if stp[axis] < 0 {
+                            cell[axis] + 1
+                        } else {
+                            cell[axis]
+                        } as f32;
                         if d[a].abs() > 1e-6 {
                             let tw = (wall - o[a]) / d[a];
                             if tw > 0.0 && o.y + d.y * tw <= hh {
@@ -150,10 +179,24 @@ impl<'a> March<'a> {
                         }
                     }
                     if !side {
-                        t = if d.y < -1e-6 { (hh - o.y) / d.y } else { t0 / Vec2::new(d.x, d.z).length().max(1e-4) };
+                        t = if d.y < -1e-6 {
+                            (hh - o.y) / d.y
+                        } else {
+                            t0 / Vec2::new(d.x, d.z).length().max(1e-4)
+                        };
                     }
                     let p = o + d * t;
-                    out.hit(row as usize, t, Surface { p, n: face.normal().as_vec3(), local: Self::local(p, cell), block, face });
+                    out.hit(
+                        row as usize,
+                        t,
+                        Surface {
+                            p,
+                            n: face.normal().as_vec3(),
+                            local: Self::local(p, cell),
+                            block,
+                            face,
+                        },
+                    );
                 }
                 ybuf = ybuf.min(rtop);
             }
@@ -190,14 +233,25 @@ impl<'a, S, P> Inline<'a, S, P> {
     /// Shades into `col` (a column of pixels) with `shade`; `lit` tops take the heightmap
     /// slope as their normal.
     pub fn new(col: &'a mut [P], m: &'a March<'a>, shade: &'a S, lit: bool, sky: P) -> Self {
-        Self { col, m, shade, lit, top_n: Vec3::Y, sky }
+        Self {
+            col,
+            m,
+            shade,
+            lit,
+            top_n: Vec3::Y,
+            sky,
+        }
     }
 }
 
 impl<P: Pixel, S: Fn(&Surface) -> P> Out for Inline<'_, S, P> {
     #[inline]
     fn cell(&mut self, cell: IVec2) {
-        self.top_n = if self.lit { self.m.slope(cell) } else { Vec3::Y };
+        self.top_n = if self.lit {
+            self.m.slope(cell)
+        } else {
+            Vec3::Y
+        };
     }
     #[inline]
     fn hit(&mut self, row: usize, _: f32, mut s: Surface) {
@@ -242,7 +296,9 @@ pub struct Deferred<'a, S, P> {
     pub sky: P,
 }
 
-impl<P: Pixel, S: Fn(&Surface) -> P + Sync> crate::shading::deferred::Records for Deferred<'_, S, P> {
+impl<P: Pixel, S: Fn(&Surface) -> P + Sync> crate::shading::deferred::Records
+    for Deferred<'_, S, P>
+{
     type Record = Record;
     type Px = P;
     #[inline]

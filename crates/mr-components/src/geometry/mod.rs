@@ -31,7 +31,10 @@ pub struct Knobs {
 
 impl Default for Knobs {
     fn default() -> Self {
-        Self { merge: Merge::Block, cull: true }
+        Self {
+            merge: Merge::Block,
+            cull: true,
+        }
     }
 }
 
@@ -51,8 +54,14 @@ pub enum RtKind {
 pub fn rt(name: &str) -> Option<(&'static str, RtKind)> {
     let quads = include_str!("greedy/rt.wgsl");
     Some(match name {
-        "greedy" => (quads, RtKind::Triangles(|c, n, slot, k| mr_mesh::mesh_chunk_merge(c, n, slot, k.merge))),
-        "naive" => (quads, RtKind::Triangles(|c, n, slot, k| naive::mesh(c, n, slot, k.cull))),
+        "greedy" => (
+            quads,
+            RtKind::Triangles(|c, n, slot, k| mr_mesh::mesh_chunk_merge(c, n, slot, k.merge)),
+        ),
+        "naive" => (
+            quads,
+            RtKind::Triangles(|c, n, slot, k| naive::mesh(c, n, slot, k.cull)),
+        ),
         "boxes" => (include_str!("boxes/rt.wgsl"), RtKind::Boxes),
         _ => return None,
     })
@@ -73,16 +82,38 @@ const QUADS_WGSL: &str = include_str!("greedy/gpu.wgsl");
 
 pub fn gpu(name: &str) -> Option<GpuGeometry> {
     Some(match name {
-        "greedy" => GpuGeometry { wgsl: QUADS_WGSL, verts: 4, strip: true, per_face: true, mesh: |c, n, slot, k| mr_mesh::mesh_chunk_merge(c, n, slot, k.merge) },
+        "greedy" => GpuGeometry {
+            wgsl: QUADS_WGSL,
+            verts: 4,
+            strip: true,
+            per_face: true,
+            mesh: |c, n, slot, k| mr_mesh::mesh_chunk_merge(c, n, slot, k.merge),
+        },
         // One-block quads in the greedy encoding (w = h = 1): the same vertex code.
-        "naive" => GpuGeometry { wgsl: QUADS_WGSL, verts: 4, strip: true, per_face: true, mesh: |c, n, slot, k| naive::mesh(c, n, slot, k.cull) },
-        "cubes" => GpuGeometry { wgsl: include_str!("cubes/gpu.wgsl"), verts: 36, strip: false, per_face: false, mesh: |c, n, slot, k| cubes::mesh(c, n, slot, k.cull) },
+        "naive" => GpuGeometry {
+            wgsl: QUADS_WGSL,
+            verts: 4,
+            strip: true,
+            per_face: true,
+            mesh: |c, n, slot, k| naive::mesh(c, n, slot, k.cull),
+        },
+        "cubes" => GpuGeometry {
+            wgsl: include_str!("cubes/gpu.wgsl"),
+            verts: 36,
+            strip: false,
+            per_face: false,
+            mesh: |c, n, slot, k| cubes::mesh(c, n, slot, k.cull),
+        },
         _ => return None,
     })
 }
 
 /// Block at `p` (chunk-local, may step one block into a neighbour; absent = air).
-fn get(center: &ChunkData, neighbors: &[Option<&ChunkData>; 6], p: glam::IVec3) -> mr_core::BlockId {
+fn get(
+    center: &ChunkData,
+    neighbors: &[Option<&ChunkData>; 6],
+    p: glam::IVec3,
+) -> mr_core::BlockId {
     use mr_core::Face;
     let out = |v: i32| !(0..32).contains(&v);
     if !(out(p.x) || out(p.y) || out(p.z)) {
@@ -109,7 +140,10 @@ fn get(center: &ChunkData, neighbors: &[Option<&ChunkData>; 6], p: glam::IVec3) 
 
 /// With culling, a uniform solid chunk buried in uniform solid neighbours has no faces.
 fn buried(center: &ChunkData, neighbors: &[Option<&ChunkData>; 6]) -> bool {
-    matches!(center, ChunkData::Uniform(_)) && neighbors.iter().all(|n| matches!(n, Some(ChunkData::Uniform(b)) if b.is_solid()))
+    matches!(center, ChunkData::Uniform(_))
+        && neighbors
+            .iter()
+            .all(|n| matches!(n, Some(ChunkData::Uniform(b)) if b.is_solid()))
 }
 
 #[cfg(test)]
@@ -137,11 +171,19 @@ mod tests {
         assert_eq!(total(&mesh("greedy", k)), 6);
         let n = mesh("naive", k);
         assert_eq!(n.quads.len() as u32, total(&n));
-        assert!(n.quads.iter().all(|q| q[1] == 1 | 7 << 16 && (q[0] >> 15) & 0x3ff == 0));
+        assert!(
+            n.quads
+                .iter()
+                .all(|q| q[1] == 1 | 7 << 16 && (q[0] >> 15) & 0x3ff == 0)
+        );
         // A buried solid chunk has nothing to draw.
         let solid = ChunkData::Uniform(BlockId(2));
         for g in ["greedy", "naive", "cubes"] {
-            assert_eq!(total(&(gpu(g).unwrap().mesh)(&solid, [Some(&solid); 6], 0, k)), 0, "{g}");
+            assert_eq!(
+                total(&(gpu(g).unwrap().mesh)(&solid, [Some(&solid); 6], 0, k)),
+                0,
+                "{g}"
+            );
         }
     }
 }

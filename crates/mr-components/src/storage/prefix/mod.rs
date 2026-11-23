@@ -92,13 +92,20 @@ mod tests {
             }
         }
         let w = build(&d);
-        assert_eq!(prefix(&w, 512) as usize, d.0.iter().filter(|b| b.is_solid()).count());
+        assert_eq!(
+            prefix(&w, 512) as usize,
+            d.0.iter().filter(|b| b.is_solid()).count()
+        );
         for level in 0..5 {
             let (n, size) = (32 >> level, 1i32 << level);
             for i in 0..n * n * n {
                 let c = IVec3::new(i % n, i / n % n, i / (n * n));
                 let base = c * size;
-                let solid = (0..size).any(|z| (0..size).any(|y| (0..size).any(|x| d.0[cell_index(base + IVec3::new(x, y, z))].is_solid())));
+                let solid = (0..size).any(|z| {
+                    (0..size).any(|y| {
+                        (0..size).any(|x| d.0[cell_index(base + IVec3::new(x, y, z))].is_solid())
+                    })
+                });
                 let l = base.as_uvec3();
                 let m = morton3(l.x >> 2, l.y >> 2, l.z >> 2) as usize;
                 let k = morton3(l.x & 3, l.y & 3, l.z & 3);

@@ -23,7 +23,12 @@ pub fn mesh(center: &ChunkData, neighbors: [Option<&ChunkData>; 6], slot: u16, c
                     let p = IVec3::new(x, y, z);
                     // Uniform solid chunks: only boundary blocks can have visible faces.
                     let q = p + n;
-                    if cull && uniform && (0..32).contains(&q.x) && (0..32).contains(&q.y) && (0..32).contains(&q.z) {
+                    if cull
+                        && uniform
+                        && (0..32).contains(&q.x)
+                        && (0..32).contains(&q.y)
+                        && (0..32).contains(&q.z)
+                    {
                         continue;
                     }
                     let b = center.get(p);

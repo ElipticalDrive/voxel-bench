@@ -22,12 +22,22 @@ pub struct Build {
 impl Build {
     /// One node of `role`, one of `components`, run `at`.
     pub const fn one(role: Role, components: &'static [&'static str], at: Place) -> Build {
-        Build { role, components, at, least: 1, most: 1 }
+        Build {
+            role,
+            components,
+            at,
+            least: 1,
+            most: 1,
+        }
     }
 
     /// Between `least` and `most` nodes.
     pub const fn count(self, least: usize, most: usize) -> Build {
-        Build { least, most, ..self }
+        Build {
+            least,
+            most,
+            ..self
+        }
     }
 }
 
@@ -64,12 +74,19 @@ pub struct Live {
 impl Live {
     /// Any node of `role`.
     pub const fn of(role: Role) -> Live {
-        Live { role, at: None, with: &[] }
+        Live {
+            role,
+            at: None,
+            with: &[],
+        }
     }
 
     /// The node of the role that input `port` of the `reader` node reads.
     pub const fn read_by(self, reader: Role, port: &'static str) -> Live {
-        Live { at: Some((reader, port)), ..self }
+        Live {
+            at: Some((reader, port)),
+            ..self
+        }
     }
 
     /// The timings of these edges (a role's input) change with it.
@@ -125,18 +142,40 @@ pub struct Builds {
 impl Builds {
     /// Region `id` with nothing built and no choices: the base the declarations fill in.
     const fn plain(id: RegionId) -> Builds {
-        Builds { id, nodes: &[], same: &[], only: &[], free: &[], timing_knobs: &[], split: false, api_choice: None, live: &[] }
+        Builds {
+            id,
+            nodes: &[],
+            same: &[],
+            only: &[],
+            free: &[],
+            timing_knobs: &[],
+            split: false,
+            api_choice: None,
+            live: &[],
+        }
     }
 
     /// The timings it runs the edge into `port` of a `role` node with, if the graph may choose.
     pub fn free_at(&self, role: Role, port: &str) -> Option<&'static [When]> {
-        self.free.iter().find(|(r, p, _)| *r == role && *p == port).map(|f| f.2)
+        self.free
+            .iter()
+            .find(|(r, p, _)| *r == role && *p == port)
+            .map(|f| f.2)
     }
 
     /// Whether it replaces node `id` of graph `g` while running.
     pub fn replaces(&self, g: &Graph, id: &str) -> bool {
-        let Some(n) = g.nodes.get(id) else { return false };
-        self.live.iter().any(|l| l.role == n.role && l.at.is_none_or(|(reader, port)| g.nodes.values().any(|r| r.role == reader && r.inputs.get(port).is_some_and(|s| s == id))))
+        let Some(n) = g.nodes.get(id) else {
+            return false;
+        };
+        self.live.iter().any(|l| {
+            l.role == n.role
+                && l.at.is_none_or(|(reader, port)| {
+                    g.nodes
+                        .values()
+                        .any(|r| r.role == reader && r.inputs.get(port).is_some_and(|s| s == id))
+                })
+        })
     }
 
     /// Whether its API choice sets the nodes of `role`.
@@ -148,7 +187,12 @@ impl Builds {
     /// nodes changed with one of them: what a node may be is [`Graph::choices`]).
     pub fn declared(&self, role: Role) -> Vec<&'static str> {
         let mut v: Vec<&'static str> = vec![];
-        for c in self.nodes.iter().filter(|b| b.role == role).flat_map(|b| b.components) {
+        for c in self
+            .nodes
+            .iter()
+            .filter(|b| b.role == role)
+            .flat_map(|b| b.components)
+        {
             if !v.contains(c) {
                 v.push(c);
             }
@@ -160,7 +204,10 @@ impl Builds {
     /// marks `shadows` as owned by the shadings it declares, so UIs show it there.
     pub fn lighting_knobs(&self, mut params: Vec<mr_core::ParamSpec>) -> Vec<mr_core::ParamSpec> {
         let shading = self.declared(Role::Shading);
-        for p in params.iter_mut().filter(|p| p.name == "shadows" && p.owner.is_none()) {
+        for p in params
+            .iter_mut()
+            .filter(|p| p.name == "shadows" && p.owner.is_none())
+        {
             *p = p.clone().of(Role::Shading.name(), &shading);
         }
         params
@@ -186,7 +233,12 @@ impl Builds {
     /// The executor (device kind: `cpu`, `gpu`) it is a region of: where its image is made,
     /// its shading's device.
     pub fn executor(&self) -> &'static str {
-        match self.nodes.iter().find(|b| b.role == Role::Shading).map(|b| b.at.kind) {
+        match self
+            .nodes
+            .iter()
+            .find(|b| b.role == Role::Shading)
+            .map(|b| b.at.kind)
+        {
             Some(Kind::Cpu) => "cpu",
             _ => "gpu",
         }
@@ -200,26 +252,71 @@ impl Builds {
 }
 
 /// Every region, in the order listings and sweeps go through them.
-pub const REGIONS: &[&Builds] = &[&GPU_WALK, &CPU_RAYCAST, &GPU_MESHING, &GPU_RAYQUERY, &GPU_SAMPLER, &CPU_SAMPLER, &GPU_SPLAT, &GPU_COLUMNS, &CPU_COLUMNS, &CPU_RASTER];
+pub const REGIONS: &[&Builds] = &[
+    &GPU_WALK,
+    &CPU_RAYCAST,
+    &GPU_MESHING,
+    &GPU_RAYQUERY,
+    &GPU_SAMPLER,
+    &CPU_SAMPLER,
+    &GPU_SPLAT,
+    &GPU_COLUMNS,
+    &CPU_COLUMNS,
+    &CPU_RASTER,
+];
 
 /// The stages one API choice sets, and hit records shaded now or a frame late on a second GPU.
-const CAST_ROLES: &[Role] = &[Role::Storage, Role::Visibility, Role::Traversal, Role::Shading];
+const CAST_ROLES: &[Role] = &[
+    Role::Storage,
+    Role::Visibility,
+    Role::Traversal,
+    Role::Shading,
+];
 const HITS_LATE: &[(Role, &str, &[When])] = &[(Role::Shading, "hits", &[When::Now, When::Prev])];
 
 /// The GPU storages and walking kernels, the geometries ray queries trace, the face drawers.
-const GPU_STORAGES: &[&str] = &["bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap"];
+const GPU_STORAGES: &[&str] = &[
+    "bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap",
+];
 const GPU_WALKS: &[&str] = &["refloor", "incremental", "sphere", "rowrun"];
 const GPU_KERNELS: &[&str] = &["refloor", "incremental", "sphere", "rowrun", "rayquery"];
 const RT_GEOMETRY: &[&str] = &["greedy", "naive", "boxes"];
 const DRAWERS: &[&str] = &["raster", "visbuffer", "gbuffer"];
-const CPU_STORAGES: &[&str] = &["bricks", "u8", "bits", "hier", "prefix", "palette", "brickmajor", "morton"];
+const CPU_STORAGES: &[&str] = &[
+    "bricks",
+    "u8",
+    "bits",
+    "hier",
+    "prefix",
+    "palette",
+    "brickmajor",
+    "morton",
+];
 const CPU_WALKS: &[&str] = &["refloor", "incremental"];
 
 /// Ray queries trace an acceleration structure built from one of `RT_GEOMETRY`.
-const RT: Only = Only { role: Role::Traversal, of: &["rayquery"], port: "geometry", components: RT_GEOMETRY, bound: false };
+const RT: Only = Only {
+    role: Role::Traversal,
+    of: &["rayquery"],
+    port: "geometry",
+    components: RT_GEOMETRY,
+    bound: false,
+};
 /// The shading's shadow rays, walked (`bound`: the executor casts no rays of its own there).
-const SHADOW_WALKED: Only = Only { role: Role::Shading, of: &[], port: "shadow", components: GPU_WALKS, bound: true };
-const SHADOW_BOUND: Only = Only { role: Role::Shading, of: &[], port: "shadow", components: GPU_KERNELS, bound: true };
+const SHADOW_WALKED: Only = Only {
+    role: Role::Shading,
+    of: &[],
+    port: "shadow",
+    components: GPU_WALKS,
+    bound: true,
+};
+const SHADOW_BOUND: Only = Only {
+    role: Role::Shading,
+    of: &[],
+    port: "shadow",
+    components: GPU_KERNELS,
+    bound: true,
+};
 
 /// `raycast-cpu`: one storage (one monomorphised instance; the shadow rays walk it too),
 /// its primary and shadow kernels, the ray caster and the shading.
@@ -232,7 +329,16 @@ pub const CPU_RAYCAST: Builds = Builds {
     ],
     same: &[],
     only: &[],
-    api_choice: Some(ApiChoice { knob: "isa", roles: CAST_ROLES, values: &[(Api::Scalar, "scalar"), (Api::Avx2, "avx2"), (Api::Avx512, "avx512")], default: None }),
+    api_choice: Some(ApiChoice {
+        knob: "isa",
+        roles: CAST_ROLES,
+        values: &[
+            (Api::Scalar, "scalar"),
+            (Api::Avx2, "avx2"),
+            (Api::Avx512, "avx512"),
+        ],
+        default: None,
+    }),
     ..Builds::plain(RegionId::CpuRaycast)
 };
 
@@ -248,7 +354,13 @@ pub const CPU_RASTER: Builds = Builds {
         Build::one(Role::Shading, &["direct"], impls::CPU_SCALAR),
     ],
     same: &[],
-    only: &[Only { role: Role::Shading, of: &[], port: "shadow", components: CPU_WALKS, bound: true }],
+    only: &[Only {
+        role: Role::Shading,
+        of: &[],
+        port: "shadow",
+        components: CPU_WALKS,
+        bound: true,
+    }],
     live: &[Live::of(Role::Geometry)],
     ..Builds::plain(RegionId::CpuRaster)
 };
@@ -280,12 +392,25 @@ pub const GPU_WALK: Builds = Builds {
         Build::one(Role::Visibility, &["raycast"], impls::GPU_DISPATCH),
         Build::one(Role::Shading, &["direct", "pathtrace"], impls::GPU_DISPATCH),
     ],
-    same: &[Same { a: (Role::Prepass, &["storage"]), b: (Role::Visibility, &["primary", "storage"]) }],
+    same: &[Same {
+        a: (Role::Prepass, &["storage"]),
+        b: (Role::Visibility, &["primary", "storage"]),
+    }],
     only: &[],
     free: HITS_LATE,
     split: true,
-    api_choice: Some(ApiChoice { knob: "dispatch", roles: CAST_ROLES, values: &[(Api::Compute, "compute"), (Api::Raster, "fragment")], default: Some(Api::Compute) }),
-    live: &[Live::of(Role::Traversal).read_by(Role::Visibility, "primary"), Live::of(Role::Shading), Live::of(Role::Prepass), Live::of(Role::Meshes)],
+    api_choice: Some(ApiChoice {
+        knob: "dispatch",
+        roles: CAST_ROLES,
+        values: &[(Api::Compute, "compute"), (Api::Raster, "fragment")],
+        default: Some(Api::Compute),
+    }),
+    live: &[
+        Live::of(Role::Traversal).read_by(Role::Visibility, "primary"),
+        Live::of(Role::Shading),
+        Live::of(Role::Prepass),
+        Live::of(Role::Meshes),
+    ],
     ..Builds::plain(RegionId::GpuWalk)
 };
 
@@ -313,7 +438,12 @@ pub const GPU_RAYQUERY: Builds = Builds {
 /// walks, and the shading, whose shadow rays (and the meshes') are walks.
 pub const GPU_MESHING: Builds = Builds {
     nodes: &[
-        Build::one(Role::Geometry, &["greedy", "naive", "cubes", "boxes"], impls::CPU_SCALAR).count(1, 2),
+        Build::one(
+            Role::Geometry,
+            &["greedy", "naive", "cubes", "boxes"],
+            impls::CPU_SCALAR,
+        )
+        .count(1, 2),
         Build::one(Role::Visibility, &["faces"], impls::GPU_RASTER),
         Build::one(Role::Draw, DRAWERS, impls::GPU_RASTER),
         Build::one(Role::Meshes, &["depth"], impls::GPU_RASTER).count(0, 1),
@@ -323,13 +453,36 @@ pub const GPU_MESHING: Builds = Builds {
     ],
     same: &[],
     only: &[
-        Only { role: Role::Visibility, of: &[], port: "faces", components: &["greedy", "naive", "cubes"], bound: true },
-        Only { role: Role::Draw, of: &[], port: "faces", components: &["faces"], bound: true },
-        Only { role: Role::Meshes, of: &[], port: "shadow", components: GPU_WALKS, bound: false },
+        Only {
+            role: Role::Visibility,
+            of: &[],
+            port: "faces",
+            components: &["greedy", "naive", "cubes"],
+            bound: true,
+        },
+        Only {
+            role: Role::Draw,
+            of: &[],
+            port: "faces",
+            components: &["faces"],
+            bound: true,
+        },
+        Only {
+            role: Role::Meshes,
+            of: &[],
+            port: "shadow",
+            components: GPU_WALKS,
+            bound: false,
+        },
         SHADOW_WALKED,
         RT,
     ],
-    live: &[Live::of(Role::Geometry).read_by(Role::Visibility, "faces"), Live::of(Role::Draw), Live::of(Role::Shading), Live::of(Role::Meshes)],
+    live: &[
+        Live::of(Role::Geometry).read_by(Role::Visibility, "faces"),
+        Live::of(Role::Draw),
+        Live::of(Role::Shading),
+        Live::of(Role::Meshes),
+    ],
     ..Builds::plain(RegionId::GpuMeshing)
 };
 
@@ -348,15 +501,33 @@ pub const GPU_SAMPLER: Builds = Builds {
     ],
     same: &[],
     only: &[
-        Only { role: Role::Draw, of: &[], port: "faces", components: &["quadtree"], bound: true },
-        Only { role: Role::Visibility, of: &[], port: "rays", components: GPU_WALKS, bound: true },
+        Only {
+            role: Role::Draw,
+            of: &[],
+            port: "faces",
+            components: &["quadtree"],
+            bound: true,
+        },
+        Only {
+            role: Role::Visibility,
+            of: &[],
+            port: "rays",
+            components: GPU_WALKS,
+            bound: true,
+        },
         SHADOW_BOUND,
         RT,
     ],
     // Hole detection closes a cycle through the drawer, which draws twice a frame, and reads
     // the last frame's sky mask.
-    free: &[(Role::Draw, "faces", &[When::Now, When::Iterate(2)]), (Role::Holes, "sky", &[When::Prev])],
-    live: &[Live::of(Role::Holes).with(&[(Role::Draw, "faces")]), Live::of(Role::Draw)],
+    free: &[
+        (Role::Draw, "faces", &[When::Now, When::Iterate(2)]),
+        (Role::Holes, "sky", &[When::Prev]),
+    ],
+    live: &[
+        Live::of(Role::Holes).with(&[(Role::Draw, "faces")]),
+        Live::of(Role::Draw),
+    ],
     ..Builds::plain(RegionId::GpuSampler)
 };
 
@@ -367,15 +538,32 @@ pub const CPU_SAMPLER: Builds = Builds {
     nodes: &[
         Build::one(Role::Storage, CPU_STORAGES, impls::CPU_SCALAR),
         Build::one(Role::Traversal, &["refloor"], impls::CPU_SCALAR),
-        Build::one(Role::Visibility, &["quadtree", "cluster"], impls::CPU_SCALAR),
+        Build::one(
+            Role::Visibility,
+            &["quadtree", "cluster"],
+            impls::CPU_SCALAR,
+        ),
         Build::one(Role::Draw, DRAWERS, impls::GPU_RASTER),
         Build::one(Role::Storage, GPU_STORAGES, impls::GPU_DRAWN).count(0, 2),
         Build::one(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(1, 2),
         Build::one(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR).count(0, 1),
         Build::one(Role::Shading, &["direct", "pathtrace"], impls::GPU_DRAWN),
     ],
-    same: &[Same { a: (Role::Visibility, &["exposure"]), b: (Role::Visibility, &["rays", "storage"]) }],
-    only: &[Only { role: Role::Draw, of: &[], port: "faces", components: &["quadtree", "cluster"], bound: true }, SHADOW_BOUND, RT],
+    same: &[Same {
+        a: (Role::Visibility, &["exposure"]),
+        b: (Role::Visibility, &["rays", "storage"]),
+    }],
+    only: &[
+        Only {
+            role: Role::Draw,
+            of: &[],
+            port: "faces",
+            components: &["quadtree", "cluster"],
+            bound: true,
+        },
+        SHADOW_BOUND,
+        RT,
+    ],
     // Discovery a frame ahead of the drawer, or within its frame.
     free: &[(Role::Draw, "faces", &[When::Now, When::Prev])],
     timing_knobs: &[("pipelined", Role::Draw, "faces", When::Prev, When::Now)],
@@ -387,14 +575,29 @@ pub const CPU_SAMPLER: Builds = Builds {
 /// splat passes, the shading (its shadow rays walked).
 pub const GPU_SPLAT: Builds = Builds {
     nodes: &[
-        Build::one(Role::Geometry, &["points", "greedy", "naive", "boxes"], impls::CPU_SCALAR).count(1, 2),
+        Build::one(
+            Role::Geometry,
+            &["points", "greedy", "naive", "boxes"],
+            impls::CPU_SCALAR,
+        )
+        .count(1, 2),
         Build::one(Role::Visibility, &["splat"], impls::GPU_COMPUTE),
         Build::one(Role::Storage, GPU_STORAGES, impls::GPU_COMPUTE).count(1, 2),
         Build::one(Role::Traversal, GPU_KERNELS, impls::GPU_COMPUTE).count(1, 2),
         Build::one(Role::Shading, &["direct", "pathtrace"], impls::GPU_COMPUTE),
     ],
     same: &[],
-    only: &[Only { role: Role::Visibility, of: &[], port: "points", components: &["points"], bound: true }, SHADOW_WALKED, RT],
+    only: &[
+        Only {
+            role: Role::Visibility,
+            of: &[],
+            port: "points",
+            components: &["points"],
+            bound: true,
+        },
+        SHADOW_WALKED,
+        RT,
+    ],
     ..Builds::plain(RegionId::GpuSplat)
 };
 
@@ -414,7 +617,13 @@ pub const GPU_COLUMNS: Builds = Builds {
 
 /// The roles the worker runs in front of every executor (the world's side), and the post every
 /// executor compiles into its shading.
-const AROUND: &[Role] = &[Role::World, Role::Generator, Role::Link, Role::Client, Role::Post];
+const AROUND: &[Role] = &[
+    Role::World,
+    Role::Generator,
+    Role::Link,
+    Role::Client,
+    Role::Post,
+];
 
 impl Checked {
     /// The region of the graph's executor that builds this graph (the one the graph's shape
@@ -422,7 +631,9 @@ impl Checked {
     /// another device's executor runs. GPU ray casting runs on the
     /// ray-query caster when the primary rays' kernel is a ray query, else on the walk.
     pub fn builder(&self) -> Option<Builds> {
-        self.region.filter(|b| b.executor() == self.graph.runs_on()).copied()
+        self.region
+            .filter(|b| b.executor() == self.graph.runs_on())
+            .copied()
     }
 
     /// Whether the node executor running this graph builds it (see [`Self::built_by`]).
@@ -438,52 +649,134 @@ impl Checked {
     /// with the reason.
     pub fn built_by(&self, builds: Builds) -> Result<(), String> {
         let executor = builds.who();
-        let Builds { nodes: builds, same, only, .. } = builds;
-        let list = |v: &[&str]| v.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ");
-        for (id, n) in self.graph.nodes.iter().filter(|(_, n)| !AROUND.contains(&n.role)) {
+        let Builds {
+            nodes: builds,
+            same,
+            only,
+            ..
+        } = builds;
+        let list = |v: &[&str]| {
+            v.iter()
+                .map(|c| format!("`{c}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        for (id, n) in self
+            .graph
+            .nodes
+            .iter()
+            .filter(|(_, n)| !AROUND.contains(&n.role))
+        {
             let of_role: Vec<&Build> = builds.iter().filter(|b| b.role == n.role).collect();
             if of_role.is_empty() {
                 let mut roles: Vec<&str> = builds.iter().map(|b| b.role.name()).collect();
                 roles.dedup();
-                return Err(format!("`{id}`: {executor} builds no {} node (only {})", n.role.name(), roles.join(", ")));
+                return Err(format!(
+                    "`{id}`: {executor} builds no {} node (only {})",
+                    n.role.name(),
+                    roles.join(", ")
+                ));
             }
             let kind = self.devices[id.as_str()].kind();
             let Some(b) = of_role.iter().find(|b| b.at.kind == kind) else {
                 let kinds: Vec<&str> = of_role.iter().map(|b| b.at.kind.name()).collect();
-                return Err(format!("`{id}`: {executor} builds {} on {}, not on {}", n.role.name(), kinds.join(" and "), kind.name()));
+                return Err(format!(
+                    "`{id}`: {executor} builds {} on {}, not on {}",
+                    n.role.name(),
+                    kinds.join(" and "),
+                    kind.name()
+                ));
             };
             if !b.components.contains(&n.component.as_str()) {
-                return Err(format!("`{id}`: {executor} builds {} {}{}, not `{}`", n.role.name(), list(b.components), if of_role.len() > 1 { format!(" on {}", kind.name()) } else { String::new() }, n.component));
+                return Err(format!(
+                    "`{id}`: {executor} builds {} {}{}, not `{}`",
+                    n.role.name(),
+                    list(b.components),
+                    if of_role.len() > 1 {
+                        format!(" on {}", kind.name())
+                    } else {
+                        String::new()
+                    },
+                    n.component
+                ));
             }
         }
         for b in builds {
-            let ids: Vec<&str> = self.graph.nodes.iter().filter(|(id, n)| n.role == b.role && self.devices[id.as_str()].kind() == b.at.kind).map(|(id, _)| id.as_str()).collect();
+            let ids: Vec<&str> = self
+                .graph
+                .nodes
+                .iter()
+                .filter(|(id, n)| n.role == b.role && self.devices[id.as_str()].kind() == b.at.kind)
+                .map(|(id, _)| id.as_str())
+                .collect();
             if ids.len() < b.least || ids.len() > b.most {
-                let want = if b.least == b.most { format!("{}", b.least) } else if ids.len() < b.least { format!("at least {}", b.least) } else { format!("at most {}", b.most) };
-                let here = if ids.is_empty() { "none".into() } else { list(&ids) };
-                let on = if builds.iter().filter(|o| o.role == b.role).count() > 1 { format!(" on {}", b.at.kind.name()) } else { String::new() };
+                let want = if b.least == b.most {
+                    format!("{}", b.least)
+                } else if ids.len() < b.least {
+                    format!("at least {}", b.least)
+                } else {
+                    format!("at most {}", b.most)
+                };
+                let here = if ids.is_empty() {
+                    "none".into()
+                } else {
+                    list(&ids)
+                };
+                let on = if builds.iter().filter(|o| o.role == b.role).count() > 1 {
+                    format!(" on {}", b.at.kind.name())
+                } else {
+                    String::new()
+                };
                 let plural = if ids.len() < b.least { b.least } else { b.most } != 1;
-                return Err(format!("{executor} builds {want} {} node{}{on} (here: {here})", b.role.name(), if plural { "s" } else { "" }));
+                return Err(format!(
+                    "{executor} builds {want} {} node{}{on} (here: {here})",
+                    b.role.name(),
+                    if plural { "s" } else { "" }
+                ));
             }
         }
         for o in only {
-            for (id, n) in self.graph.nodes.iter().filter(|(_, n)| n.role == o.role && (o.of.is_empty() || o.of.contains(&n.component.as_str()))) {
+            for (id, n) in self.graph.nodes.iter().filter(|(_, n)| {
+                n.role == o.role && (o.of.is_empty() || o.of.contains(&n.component.as_str()))
+            }) {
                 match n.inputs.get(o.port) {
-                    None if o.bound => return Err(format!("`{id}`.{}: not bound, and {executor} has nothing of its own to read there", o.port)),
-                    Some(src) if !o.components.contains(&self.graph.nodes[src].component.as_str()) => {
-                        return Err(format!("`{id}`.{} → `{src}`: {executor} reads {} here, not `{}`", o.port, list(o.components), self.graph.nodes[src].component));
+                    None if o.bound => {
+                        return Err(format!(
+                            "`{id}`.{}: not bound, and {executor} has nothing of its own to read there",
+                            o.port
+                        ));
+                    }
+                    Some(src)
+                        if !o
+                            .components
+                            .contains(&self.graph.nodes[src].component.as_str()) =>
+                    {
+                        return Err(format!(
+                            "`{id}`.{} → `{src}`: {executor} reads {} here, not `{}`",
+                            o.port,
+                            list(o.components),
+                            self.graph.nodes[src].component
+                        ));
                     }
                     _ => {}
                 }
             }
         }
-        let path = |s: (Role, &[&str])| -> Option<&str> { s.1.iter().try_fold(self.find(s.0)?, |id, p| self.graph.nodes[id].inputs.get(*p).map(String::as_str)) };
+        let path = |s: (Role, &[&str])| -> Option<&str> {
+            s.1.iter().try_fold(self.find(s.0)?, |id, p| {
+                self.graph.nodes[id].inputs.get(*p).map(String::as_str)
+            })
+        };
         let name = |s: (Role, &[&str])| format!("{}.{}", s.0.name(), s.1.join("."));
         for s in same {
             if let (Some(a), Some(b)) = (path(s.a), path(s.b))
                 && a != b
             {
-                return Err(format!("{executor} reads {} and {} as one node (here: `{a}` and `{b}`)", name(s.a), name(s.b)));
+                return Err(format!(
+                    "{executor} reads {} and {} as one node (here: `{a}` and `{b}`)",
+                    name(s.a),
+                    name(s.b)
+                ));
             }
         }
         Ok(())
@@ -505,14 +798,29 @@ pub fn edits(g: &Graph) -> Vec<Graph> {
             h
         };
         for p in inputs(n.role, &n.component) {
-            for src in ids.iter().filter(|s| **s != id && n.inputs.get(p.name) != Some(**s) && out(s) == p.data) {
-                v.push(with(&|h| _ = h.nodes.get_mut(id).unwrap().inputs.insert(p.name.into(), src.to_string())));
+            for src in ids
+                .iter()
+                .filter(|s| **s != id && n.inputs.get(p.name) != Some(**s) && out(s) == p.data)
+            {
+                v.push(with(&|h| {
+                    _ = h
+                        .nodes
+                        .get_mut(id)
+                        .unwrap()
+                        .inputs
+                        .insert(p.name.into(), src.to_string())
+                }));
             }
             if !p.required && n.inputs.contains_key(p.name) {
-                v.push(with(&|h| _ = h.nodes.get_mut(id).unwrap().inputs.remove(p.name)));
+                v.push(with(&|h| {
+                    _ = h.nodes.get_mut(id).unwrap().inputs.remove(p.name)
+                }));
             }
             for role in Role::ALL {
-                for comp in role_components(role).into_iter().filter(|c| output(role, c) == p.data) {
+                for comp in role_components(role)
+                    .into_iter()
+                    .filter(|c| output(role, c) == p.data)
+                {
                     let nid = format!("new-{comp}");
                     if g.nodes.contains_key(&nid) {
                         continue;
@@ -525,13 +833,22 @@ pub fn edits(g: &Graph) -> Vec<Graph> {
                     }
                     v.push(with(&|h| {
                         h.nodes.insert(nid.clone(), nn.clone());
-                        h.nodes.get_mut(id).unwrap().inputs.insert(p.name.into(), nid.clone());
+                        h.nodes
+                            .get_mut(id)
+                            .unwrap()
+                            .inputs
+                            .insert(p.name.into(), nid.clone());
                     }));
                 }
             }
         }
-        for comp in role_components(n.role).into_iter().filter(|c| *c != n.component) {
-            v.push(with(&|h| h.nodes.get_mut(id).unwrap().component = comp.into()));
+        for comp in role_components(n.role)
+            .into_iter()
+            .filter(|c| *c != n.component)
+        {
+            v.push(with(&|h| {
+                h.nodes.get_mut(id).unwrap().component = comp.into()
+            }));
         }
     }
     v
@@ -541,23 +858,38 @@ pub fn edits(g: &Graph) -> Vec<Graph> {
 /// from those with each other shading their shading node may be), checked, with the region
 /// each lands on among them; each once.
 pub fn near(regions: &[&Builds]) -> Vec<Checked> {
-    let ours = |g: &Graph| g.region().is_some_and(|b| regions.iter().any(|r| r.id == b.id));
+    let ours = |g: &Graph| {
+        g.region()
+            .is_some_and(|b| regions.iter().any(|r| r.id == b.id))
+    };
     let mut bases = vec![];
     for (name, _) in super::SHIPPED {
         let g = super::shipped(name).expect("a shipped file");
         if !ours(&g) {
             continue;
         }
-        let shading = g.check().expect("a shipped graph is valid").shading().to_string();
-        let others = g.choices(&shading).into_iter().filter(|c| *c != g.nodes[&shading].component);
+        let shading = g
+            .check()
+            .expect("a shipped graph is valid")
+            .shading()
+            .to_string();
+        let others = g
+            .choices(&shading)
+            .into_iter()
+            .filter(|c| *c != g.nodes[&shading].component);
         // An input only the other shading has (path tracing's bounce rays) reads what the
         // node's input of the same type reads.
         let others: Vec<Graph> = others
             .map(|c| {
-                let mut h = g.edit(&super::Change::Component(shading.clone(), c.into())).expect("a choice");
+                let mut h = g
+                    .edit(&super::Change::Component(shading.clone(), c.into()))
+                    .expect("a choice");
                 let n = h.nodes.get_mut(&shading).expect("the shading");
                 for p in inputs(n.role, c) {
-                    let like = inputs(n.role, c).iter().find(|q| q.data == p.data && n.inputs.contains_key(q.name)).map(|q| n.inputs[q.name].clone());
+                    let like = inputs(n.role, c)
+                        .iter()
+                        .find(|q| q.data == p.data && n.inputs.contains_key(q.name))
+                        .map(|q| n.inputs[q.name].clone());
                     if let Some(src) = like.filter(|_| !n.inputs.contains_key(p.name)) {
                         n.inputs.insert(p.name.into(), src);
                     }

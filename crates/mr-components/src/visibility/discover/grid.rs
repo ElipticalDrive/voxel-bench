@@ -11,10 +11,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use glam::{IVec3, Vec3};
 use super::{FaceSet, Output, Settings, State};
 use crate::storage::cpu::{Entry, Grid as StorageGrid, Repr};
 use crate::traversal::refloor::cpu::trace_packet;
+use glam::{IVec3, Vec3};
 use mr_core::chunk::local_of_block;
 use mr_core::*;
 
@@ -60,8 +60,23 @@ impl<R: Repr> World for StorageGrid<R> {
     #[inline]
     fn trace(&self, cam: IVec3, o: Vec3, d: Vec3, bmin: IVec3, bmax: IVec3) -> Option<Hit> {
         let mut out = [None];
-        trace_packet::<R, 1>(self, cam, o, &[d.x], &[d.y], &[d.z], 1e7, bmin, bmax, &mut out);
-        out[0].map(|h| Hit { t: h.t, cell: h.cell, axis: h.axis })
+        trace_packet::<R, 1>(
+            self,
+            cam,
+            o,
+            &[d.x],
+            &[d.y],
+            &[d.z],
+            1e7,
+            bmin,
+            bmax,
+            &mut out,
+        );
+        out[0].map(|h| Hit {
+            t: h.t,
+            cell: h.cell,
+            axis: h.axis,
+        })
     }
 
     #[inline]
@@ -120,7 +135,9 @@ impl<R: Repr> Store for Chunks<R> {
                         let data = match touched.get_mut(&pos) {
                             Some(d) => d,
                             None => {
-                                let Some(entry) = self.chunks.get(&pos) else { continue };
+                                let Some(entry) = self.chunks.get(&pos) else {
+                                    continue;
+                                };
                                 let d = match entry {
                                     Entry::Uniform(b) => ChunkData::Uniform(BlockId(*b)),
                                     Entry::Dense(r) => ChunkData::Dense(Arc::new(r.to_dense())),
@@ -162,9 +179,15 @@ impl<R: Repr> Store for Chunks<R> {
                     for (pos, e) in &self.chunks {
                         entries.push(e.clone());
                         let c = *pos - lo;
-                        cells[((c.z * dims.y + c.y) * dims.x + c.x) as usize] = entries.len() as u32;
+                        cells[((c.z * dims.y + c.y) * dims.x + c.x) as usize] =
+                            entries.len() as u32;
                     }
-                    StorageGrid { min: lo, dims, cells, entries }
+                    StorageGrid {
+                        min: lo,
+                        dims,
+                        cells,
+                        entries,
+                    }
                 }
             });
         }
@@ -172,7 +195,17 @@ impl<R: Repr> Store for Chunks<R> {
     }
 
     fn memory(&self) -> u64 {
-        let dense: u64 = self.chunks.values().map(|e| if let Entry::Dense(r) = e { r.total_bytes() as u64 } else { 0 }).sum();
+        let dense: u64 = self
+            .chunks
+            .values()
+            .map(|e| {
+                if let Entry::Dense(r) = e {
+                    r.total_bytes() as u64
+                } else {
+                    0
+                }
+            })
+            .sum();
         dense + self.grid.cells.len() as u64 * 4
     }
 }
@@ -183,7 +216,11 @@ pub struct CpuWorld {
 }
 
 fn store<R: Repr>() -> Box<dyn Store> {
-    Box::new(Chunks::<R> { chunks: HashMap::new(), grid: Arc::new(StorageGrid::default()), dirty: false })
+    Box::new(Chunks::<R> {
+        chunks: HashMap::new(),
+        grid: Arc::new(StorageGrid::default()),
+        dirty: false,
+    })
 }
 
 impl CpuWorld {
@@ -206,7 +243,9 @@ impl CpuWorld {
 
     /// The world in storage `R` (a pipeline compiled for one storage names it).
     pub fn of<R: Repr>() -> Self {
-        Self { store: store::<R>() }
+        Self {
+            store: store::<R>(),
+        }
     }
 
     pub fn apply(&mut self, updates: &[WorldUpdate]) {

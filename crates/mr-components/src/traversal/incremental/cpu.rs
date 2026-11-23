@@ -40,7 +40,16 @@ pub fn level_below(mask: u32, level: u32) -> u32 {
 /// parent is the one already known to be occupied). Levels a representation can't test
 /// (`!R::LEVELS`) are skipped over in one go. Returns the hit and the occupancy tests made.
 #[inline(always)]
-pub fn trace_incremental<R: Repr, const EXACT: bool>(grid: &Grid<R>, levels: u32, cam: IVec3, o: Vec3, d: Vec3, max_t: f32, bmin: IVec3, bmax: IVec3) -> (Option<Hit>, Tally) {
+pub fn trace_incremental<R: Repr, const EXACT: bool>(
+    grid: &Grid<R>,
+    levels: u32,
+    cam: IVec3,
+    o: Vec3,
+    d: Vec3,
+    max_t: f32,
+    bmin: IVec3,
+    bmax: IVec3,
+) -> (Option<Hit>, Tally) {
     const TOP: u32 = 5;
     let mask = R::LEVELS & levels | 1 | 1 << TOP;
     let (bminf, bmaxf) = (bmin.as_vec3(), bmax.as_vec3());
@@ -64,7 +73,13 @@ pub fn trace_incremental<R: Repr, const EXACT: bool>(grid: &Grid<R>, levels: u32
     }
     let mut axis = 3u8;
     if t > 0.0 {
-        axis = if tlo[0] >= tlo[1] && tlo[0] >= tlo[2] { 0 } else if tlo[1] >= tlo[2] { 1 } else { 2 };
+        axis = if tlo[0] >= tlo[1] && tlo[0] >= tlo[2] {
+            0
+        } else if tlo[1] >= tlo[2] {
+            1
+        } else {
+            2
+        };
     }
     let start = o.floor().as_ivec3() + cam;
     let mut c = [0i32; 3];
@@ -80,7 +95,9 @@ pub fn trace_incremental<R: Repr, const EXACT: bool>(grid: &Grid<R>, levels: u32
     let mut may_ascend = true;
     let mut tally = Tally::default();
     // Exit time along axis `b` of the level-`level` cell `cb`, from integers (no drift).
-    let exit = |b: usize, cb: i32, level: u32| ((((cb + (stp[b] > 0) as i32) << level) - cam[b]) as f32 - o[b]) * inv[b];
+    let exit = |b: usize, cb: i32, level: u32| {
+        ((((cb + (stp[b] > 0) as i32) << level) - cam[b]) as f32 - o[b]) * inv[b]
+    };
     let mut cached_chunk = IVec3::splat(i32::MIN);
     let mut cached_idx = 0u32;
     let mut occupied = |level: u32, c: [i32; 3]| -> bool {
@@ -109,7 +126,11 @@ pub fn trace_incremental<R: Repr, const EXACT: bool>(grid: &Grid<R>, levels: u32
                     for b in 0..3 {
                         tdelta[b] *= 0.5;
                         // Exit of the first child in the ray's direction (the midplane).
-                        let tmid = if EXACT { exit(b, c[b] * 2 + (stp[b] < 0) as i32, level - 1) } else { tmax[b] - tdelta[b] };
+                        let tmid = if EXACT {
+                            exit(b, c[b] * 2 + (stp[b] < 0) as i32, level - 1)
+                        } else {
+                            tmax[b] - tdelta[b]
+                        };
                         let second = t >= tmid;
                         if !second {
                             tmax[b] = tmid;
@@ -123,7 +144,14 @@ pub fn trace_incremental<R: Repr, const EXACT: bool>(grid: &Grid<R>, levels: u32
                 continue;
             }
             if c != start.to_array() {
-                return (Some(Hit { t, cell: IVec3::from_array(c) - cam, axis }), tally);
+                return (
+                    Some(Hit {
+                        t,
+                        cell: IVec3::from_array(c) - cam,
+                        axis,
+                    }),
+                    tally,
+                );
             }
         } else {
             // Climb while the parent is empty, then step at the highest empty level.
@@ -153,7 +181,13 @@ pub fn trace_incremental<R: Repr, const EXACT: bool>(grid: &Grid<R>, levels: u32
             }
         }
         // Step at the current level.
-        let a = if tmax[0] <= tmax[1] && tmax[0] <= tmax[2] { 0 } else if tmax[1] <= tmax[2] { 1 } else { 2 };
+        let a = if tmax[0] <= tmax[1] && tmax[0] <= tmax[2] {
+            0
+        } else if tmax[1] <= tmax[2] {
+            1
+        } else {
+            2
+        };
         t = tmax[a];
         if t > tfar {
             return (None, tally);
@@ -161,7 +195,11 @@ pub fn trace_incremental<R: Repr, const EXACT: bool>(grid: &Grid<R>, levels: u32
         tally.steps += 1;
         let old = c[a];
         c[a] += stp[a];
-        tmax[a] = if EXACT { exit(a, c[a], level) } else { tmax[a] + tdelta[a] };
+        tmax[a] = if EXACT {
+            exit(a, c[a], level)
+        } else {
+            tmax[a] + tdelta[a]
+        };
         axis = a as u8;
         let k = (level_above(mask, level).min(TOP + 1) - level) as i32;
         may_ascend = level < TOP && (old >> k) != (c[a] >> k);

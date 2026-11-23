@@ -44,21 +44,45 @@ mod tests {
     /// valid shader as modules, without renaming (as raycast-gpu assembles them).
     #[test]
     fn secondary_walks_compile_next_to_the_primary() {
-        let storages = ["bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap"];
+        let storages = [
+            "bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap",
+        ];
         let kernels = ["refloor", "incremental", "sphere", "rowrun"];
         for primary in storages {
             for secondary in storages {
                 for k in kernels {
                     let mut p = Program::world(Some("shadow::rays"));
-                    let w = shaders::walk(&mut p, "primary", &crate::storage::gpu(primary).unwrap(), 2, "refloor", &KernelConsts::defaults(false));
-                    shaders::walk(&mut p, "shadow", &crate::storage::gpu(secondary).unwrap(), 4, k, &KernelConsts::defaults(false));
+                    let w = shaders::walk(
+                        &mut p,
+                        "primary",
+                        &crate::storage::gpu(primary).unwrap(),
+                        2,
+                        "refloor",
+                        &KernelConsts::defaults(false),
+                    );
+                    shaders::walk(
+                        &mut p,
+                        "shadow",
+                        &crate::storage::gpu(secondary).unwrap(),
+                        4,
+                        k,
+                        &KernelConsts::defaults(false),
+                    );
                     let root = "@group(0) @binding(0) var<storage, read_write> out: array<u32>;\n\
                                 @compute @workgroup_size(8) fn main(@builtin(global_invocation_id) id: vec3<u32>) {\n\
                                 let h = ctrace(vec3<f32>(0.5), vec3<f32>(1.0, 0.0, 0.0), 100.0);\n\
                                 out[id.x] = select(0u, 1u, h.hit) + select(0u, 2u, occluded(vec3<f32>(0.5), vec3<f32>(0.0, 1.0, 0.0), 100.0));\n}\n";
-                    let m = p.naga(root, &[&w.kernel, "shadow::rays", LIGHTING, VOXELS, COMMON]).unwrap_or_else(|e| panic!("{primary} + refloor, shadows {secondary} + {k}: {e}"));
+                    let m = p
+                        .naga(root, &[&w.kernel, "shadow::rays", LIGHTING, VOXELS, COMMON])
+                        .unwrap_or_else(|e| {
+                            panic!("{primary} + refloor, shadows {secondary} + {k}: {e}")
+                        });
                     use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
-                    Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{primary} + refloor, shadows {secondary} + {k}: {e:?}"));
+                    Validator::new(ValidationFlags::all(), Capabilities::all())
+                        .validate(&m)
+                        .unwrap_or_else(|e| {
+                            panic!("{primary} + refloor, shadows {secondary} + {k}: {e:?}")
+                        });
                 }
             }
         }

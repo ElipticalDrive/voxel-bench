@@ -81,7 +81,13 @@ impl Record {
                 cell[k] += if p[k] - cell[k] > 0.5 { 1.0 } else { -1.0 };
             }
         }
-        Surface { p, n: face.normal().as_vec3(), local: p - cell, block: (id >> 4) as u16, face }
+        Surface {
+            p,
+            n: face.normal().as_vec3(),
+            local: p - cell,
+            block: (id >> 4) as u16,
+            face,
+        }
     }
 }
 
@@ -99,7 +105,11 @@ mod tests {
         let s = r.surface(o, d);
         assert_eq!((s.block, s.face), (513, Face::NegX));
         assert!((s.p - Vec3::new(3.0, 0.5, 0.75)).length() < 1e-6);
-        assert!((s.local - Vec3::new(0.0, 0.5, 0.75)).length() < 1e-6, "{:?}", s.local);
+        assert!(
+            (s.local - Vec3::new(0.0, 0.5, 0.75)).length() < 1e-6,
+            "{:?}",
+            s.local
+        );
         // The +X face of the cell at x = 2 on the same plane.
         let s = Record::hit(2.75, 1, Face::PosX, IVec3::new(2, 0, 0)).surface(o, d);
         assert!((s.local.x - 1.0).abs() < 1e-6, "{:?}", s.local);
@@ -117,7 +127,10 @@ mod tests {
             let l = r.layer(i, exit);
             assert_eq!((l.index(), l.is_exit(), l.is_hit()), (i, exit, true));
             let (a, b) = (r.surface(o, d), l.layer_surface(o, d));
-            assert_eq!((a.block, a.face, a.p, a.local), (b.block, b.face, b.p, b.local));
+            assert_eq!(
+                (a.block, a.face, a.p, a.local),
+                (b.block, b.face, b.p, b.local)
+            );
             assert_eq!(b.n, if exit { -a.n } else { a.n });
         }
         assert_eq!(r.index(), 0);

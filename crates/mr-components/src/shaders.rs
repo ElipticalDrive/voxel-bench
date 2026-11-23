@@ -30,26 +30,53 @@ pub const MAX_STEPS: u32 = 2048;
 impl KernelConsts {
     /// The kernel's knobs at their defaults.
     pub fn defaults(lod: bool) -> Self {
-        Self { lod, exact: true, levels: u32::MAX, max_steps: MAX_STEPS }
+        Self {
+            lod,
+            exact: true,
+            levels: u32::MAX,
+            max_steps: MAX_STEPS,
+        }
     }
 
     /// A kernel node's knobs (`exact`, `skip2`..`skip16`), the rest at their defaults.
     pub fn of(node: &Node, lod: bool) -> Self {
         let on = |k: &str| node.knobs.get(k).and_then(|v| v.as_bool());
         let skips = [(1, "skip2"), (2, "skip4"), (3, "skip8"), (4, "skip16")];
-        let levels = if skips.iter().any(|(_, k)| on(k).is_some()) { skips.iter().fold(0, |m, &(i, k)| m | (on(k).unwrap_or(true) as u32) << i) } else { u32::MAX };
-        Self { lod, exact: on("exact").unwrap_or(true), levels, max_steps: MAX_STEPS }
+        let levels = if skips.iter().any(|(_, k)| on(k).is_some()) {
+            skips
+                .iter()
+                .fold(0, |m, &(i, k)| m | (on(k).unwrap_or(true) as u32) << i)
+        } else {
+            u32::MAX
+        };
+        Self {
+            lod,
+            exact: on("exact").unwrap_or(true),
+            levels,
+            max_steps: MAX_STEPS,
+        }
     }
 
     fn wgsl(&self) -> String {
-        let mask = if self.levels == u32::MAX { "S_LEVELS".to_string() } else { format!("(S_LEVELS & {:#x}u)", self.levels) };
-        format!("const LOD: bool = {};\nconst EXACT: bool = {};\nconst LEVEL_MASK: u32 = {mask} | 1u | (1u << S_TOP);\nconst MAX_STEPS: u32 = {}u;\n", self.lod, self.exact, self.max_steps)
+        let mask = if self.levels == u32::MAX {
+            "S_LEVELS".to_string()
+        } else {
+            format!("(S_LEVELS & {:#x}u)", self.levels)
+        };
+        format!(
+            "const LOD: bool = {};\nconst EXACT: bool = {};\nconst LEVEL_MASK: u32 = {mask} | 1u | (1u << S_TOP);\nconst MAX_STEPS: u32 = {}u;\n",
+            self.lod, self.exact, self.max_steps
+        )
     }
 }
 
 /// Adds storage instance `path`, its bindings at bind group `group`.
 pub fn storage(p: &mut Program, path: &str, st: &GpuStorage, group: u32) {
-    p.add(path, format!("const S_GROUP: u32 = {group}u;\n{}", st.source()), &[VOXELS]);
+    p.add(
+        path,
+        format!("const S_GROUP: u32 = {group}u;\n{}", st.source()),
+        &[VOXELS],
+    );
 }
 
 /// Adds kernel instance `path` (traversal component `kernel`) walking the storage module
@@ -64,7 +91,11 @@ pub fn kernel(p: &mut Program, path: &str, storage: &str, kernel: &str, consts: 
 pub fn rays(p: &mut Program, path: &str, kernel: &str) {
     let src = "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(p, d, max_t).hit; }\n\
                fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit { return ctrace(o, d, max_t); }\n";
-    p.add(path, format!("{src}{}", btrace_wgsl(false)), &[kernel, VOXELS]);
+    p.add(
+        path,
+        format!("{src}{}", btrace_wgsl(false)),
+        &[kernel, VOXELS],
+    );
 }
 
 /// A walk kernel's `vox_transmit` (the shadow rays' light through see-through blocks, the
@@ -154,14 +185,21 @@ pub struct Walks {
 
 /// A module path for node `id` under `kind` (`kernel::shadow_kernel`).
 fn node_path(kind: &str, id: &str) -> String {
-    let id: String = id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let id: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
     format!("{kind}::n_{id}")
 }
 
 impl Walks {
     /// No walks yet, for graph `ck` (its post node's tone mapper).
     pub fn of(ck: &Checked) -> Self {
-        Self { post: ck.tone(), max_steps: MAX_STEPS, ..Self::default() }
+        Self {
+            post: ck.tone(),
+            max_steps: MAX_STEPS,
+            ..Self::default()
+        }
     }
 
     /// Sets every kernel's iteration limit (those added later too).
@@ -177,8 +215,14 @@ impl Walks {
         if let Some(i) = self.storages.iter().position(|s| s.node == node) {
             return i;
         }
-        let group = *groups.get(self.storages.len()).unwrap_or_else(|| panic!("more storages than bind groups ({groups:?})"));
-        self.storages.push(StorageInst { node: node.into(), component: ck.node(node).component.clone(), group });
+        let group = *groups
+            .get(self.storages.len())
+            .unwrap_or_else(|| panic!("more storages than bind groups ({groups:?})"));
+        self.storages.push(StorageInst {
+            node: node.into(),
+            component: ck.node(node).component.clone(),
+            group,
+        });
         self.storages.len() - 1
     }
 
@@ -190,23 +234,47 @@ impl Walks {
         }
         let n = ck.node(site.kernel);
         let st = if traversal::rt_wgsl(&n.component).is_some() {
-            let g = QueryGeometry { node: site.storage.into(), component: ck.node(site.storage).component.clone() };
+            let g = QueryGeometry {
+                node: site.storage.into(),
+                component: ck.node(site.storage).component.clone(),
+            };
             match &self.geometry {
-                Some(have) => assert!(*have == g, "ray queries over two geometry nodes (`{}`, `{}`): one acceleration structure per pipeline", have.node, g.node),
+                Some(have) => assert!(
+                    *have == g,
+                    "ray queries over two geometry nodes (`{}`, `{}`): one acceleration structure per pipeline",
+                    have.node,
+                    g.node
+                ),
                 None => self.geometry = Some(g),
             }
             None
         } else {
             Some(self.storage(ck, site.storage, groups))
         };
-        self.kernels.push(KernelInst { node: site.kernel.into(), component: n.component.clone(), storage: st, consts: KernelConsts { max_steps: self.max_steps, ..KernelConsts::of(n, lod) } });
+        self.kernels.push(KernelInst {
+            node: site.kernel.into(),
+            component: n.component.clone(),
+            storage: st,
+            consts: KernelConsts {
+                max_steps: self.max_steps,
+                ..KernelConsts::of(n, lod)
+            },
+        });
         self.kernels.len() - 1
     }
 
     /// Kernel `k` and what it walks or traces, for logs (`refloor over bricks`).
     pub fn label(&self, k: usize) -> String {
         let ki = &self.kernels[k];
-        let over = ki.storage.map_or_else(|| self.geometry.as_ref().map_or("-", |g| g.component.as_str()).to_string(), |st| self.storages[st].component.clone());
+        let over = ki.storage.map_or_else(
+            || {
+                self.geometry
+                    .as_ref()
+                    .map_or("-", |g| g.component.as_str())
+                    .to_string()
+            },
+            |st| self.storages[st].component.clone(),
+        );
         format!("{} over {over}", ki.component)
     }
 
@@ -223,7 +291,15 @@ impl Walks {
     /// also, only with shader def `LAYERS` (transparency), `transmit()`: the light they
     /// carry through see-through blocks (the layer walk over a walk kernel; a ray query
     /// stops at the first surface). Programs without it compile none of this.
-    pub fn services(&self, p: &mut Program, path: &str, k: usize, occluded: bool, strace: bool, meshes: bool) {
+    pub fn services(
+        &self,
+        p: &mut Program,
+        path: &str,
+        k: usize,
+        occluded: bool,
+        strace: bool,
+        meshes: bool,
+    ) {
         const OCCLUDED: &str = "fn vox_occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool";
         const STRACE: &str = "fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit";
         let mut src = String::new();
@@ -234,28 +310,49 @@ impl Walks {
             if occluded {
                 src += &format!("virtual {OCCLUDED} {{ return false; }}\n");
                 src += &format!("#ifdef LAYERS\n{TRANSMIT_QUERY}#endif\n");
-                over += &format!("override {} {{ return g_rt_trace(p, d, max_t, true).hit; }}\n", OCCLUDED.replacen("fn ", &format!("fn {path}::"), 1));
+                over += &format!(
+                    "override {} {{ return g_rt_trace(p, d, max_t, true).hit; }}\n",
+                    OCCLUDED.replacen("fn ", &format!("fn {path}::"), 1)
+                );
             }
             if strace {
                 src += &format!("virtual {STRACE} {{ var h: Hit; return h; }}\n");
-                over += &format!("override {} {{ return g_rt_trace(o, d, max_t, false); }}\n", STRACE.replacen("fn ", &format!("fn {path}::"), 1));
+                over += &format!(
+                    "override {} {{ return g_rt_trace(o, d, max_t, false); }}\n",
+                    STRACE.replacen("fn ", &format!("fn {path}::"), 1)
+                );
             }
             p.root(over);
         } else {
             if occluded {
                 src += &format!("{OCCLUDED} {{ return ctrace(p, d, max_t).hit; }}\n");
-                src += &format!("#ifdef LAYERS\n{}{TRANSMIT_WALK}#endif\n", crate::visibility::LAYER_WALK_WGSL);
+                src += &format!(
+                    "#ifdef LAYERS\n{}{TRANSMIT_WALK}#endif\n",
+                    crate::visibility::LAYER_WALK_WGSL
+                );
             }
             if strace {
                 src += &format!("{STRACE} {{ return ctrace(o, d, max_t); }}\n");
             }
             deps.insert(0, &kernel);
         }
-        let mesh_occ = if meshes { "mesh_occluded(p, d, max_t) || " } else { "" };
+        let mesh_occ = if meshes {
+            "mesh_occluded(p, d, max_t) || "
+        } else {
+            ""
+        };
         if occluded {
-            src += &format!("fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool {{ return {mesh_occ}vox_occluded(p, d, max_t); }}\n");
-            let mesh = if meshes { "    if (mesh_occluded(p, d, max_t)) { return 0.0; }\n" } else { "" };
-            src += &format!("#ifdef LAYERS\nfn transmit(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> f32 {{\n{mesh}    return vox_transmit(p, d, max_t);\n}}\n#endif\n");
+            src += &format!(
+                "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool {{ return {mesh_occ}vox_occluded(p, d, max_t); }}\n"
+            );
+            let mesh = if meshes {
+                "    if (mesh_occluded(p, d, max_t)) { return 0.0; }\n"
+            } else {
+                ""
+            };
+            src += &format!(
+                "#ifdef LAYERS\nfn transmit(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> f32 {{\n{mesh}    return vox_transmit(p, d, max_t);\n}}\n#endif\n"
+            );
         }
         if strace {
             src += &btrace_wgsl(meshes);
@@ -267,7 +364,8 @@ impl Walks {
     }
 
     pub fn gpu_storage(&self, i: usize) -> GpuStorage {
-        crate::storage::gpu(&self.storages[i].component).unwrap_or_else(|| panic!("no GPU storage `{}`", self.storages[i].component))
+        crate::storage::gpu(&self.storages[i].component)
+            .unwrap_or_else(|| panic!("no GPU storage `{}`", self.storages[i].component))
     }
 
     pub fn storage_path(&self, i: usize) -> String {
@@ -286,7 +384,13 @@ impl Walks {
         }
         for (i, k) in self.kernels.iter().enumerate() {
             if let Some(st) = k.storage {
-                kernel(p, &self.kernel_path(i), &self.storage_path(st), &k.component, &k.consts);
+                kernel(
+                    p,
+                    &self.kernel_path(i),
+                    &self.storage_path(st),
+                    &k.component,
+                    &k.consts,
+                );
             }
         }
     }
@@ -294,12 +398,22 @@ impl Walks {
     /// Every storage has LOD chunks and every kernel walks them, else why not.
     pub fn lod_blocker(&self) -> Option<String> {
         use crate::{Cap, Kind::Gpu, Role, caps::provides};
-        let why: Vec<String> = (self.storages.iter().filter(|s| !provides(Gpu, Role::Storage, &s.component, Cap::Lod)).map(|s| format!("storage `{}` (`{}`) lacks lod", s.component, s.node)))
-            .chain(self.kernels.iter().filter(|k| k.storage.is_none() || !provides(Gpu, Role::Traversal, &k.component, Cap::Lod)).map(|k| format!("traversal `{}` (`{}`) lacks lod", k.component, k.node)))
-            .collect();
+        let why: Vec<String> = (self
+            .storages
+            .iter()
+            .filter(|s| !provides(Gpu, Role::Storage, &s.component, Cap::Lod))
+            .map(|s| format!("storage `{}` (`{}`) lacks lod", s.component, s.node)))
+        .chain(
+            self.kernels
+                .iter()
+                .filter(|k| {
+                    k.storage.is_none() || !provides(Gpu, Role::Traversal, &k.component, Cap::Lod)
+                })
+                .map(|k| format!("traversal `{}` (`{}`) lacks lod", k.component, k.node)),
+        )
+        .collect();
         (!why.is_empty()).then(|| why.join("; "))
     }
-
 }
 
 /// The ray services of a shading node's sites through `walks`' kernels: shadow rays and
@@ -322,9 +436,22 @@ pub fn shading_rays(p: &mut Program, walks: &Walks, shadow: usize, bounce: usize
 /// mesh-shadow site's meet the triangles too (meshes cast shadows and take bounces);
 /// without, they see voxels only (programs whose stage lacks the triangles' binding).
 /// Returns the modules' paths for the root's dependencies.
-pub fn meshes(p: &mut Program, walks: &Walks, shading: &str, [shadow, bounce]: [usize; 2], mesh_shadow: usize, group: u32, binding: u32, rays: bool) -> Vec<String> {
+pub fn meshes(
+    p: &mut Program,
+    walks: &Walks,
+    shading: &str,
+    [shadow, bounce]: [usize; 2],
+    mesh_shadow: usize,
+    group: u32,
+    binding: u32,
+    rays: bool,
+) -> Vec<String> {
     use mr_gpu::meshes::{MESH_SURFACE, surface_wgsl};
-    p.add(MESH_SURFACE, surface_wgsl(group, binding), &[VOXELS, mr_gpu::program::COMMON]);
+    p.add(
+        MESH_SURFACE,
+        surface_wgsl(group, binding),
+        &[VOXELS, mr_gpu::program::COMMON],
+    );
     if rays {
         walks.services(p, "rays::shadow", shadow, true, false, true);
         walks.services(p, "rays::bounce", bounce, false, true, true);
@@ -333,11 +460,25 @@ pub fn meshes(p: &mut Program, walks: &Walks, shading: &str, [shadow, bounce]: [
         SHADING
     } else {
         walks.services(p, "rays::mesh", mesh_shadow, true, false, rays);
-        p.add("lighting::mesh", mr_gpu::voxels::LIGHTING_WGSL, &["rays::mesh", VOXELS, mr_gpu::program::POST]);
-        shading_instance(p, "shading::meshlit", shading, &["rays::mesh", "rays::bounce"], "lighting::mesh");
+        p.add(
+            "lighting::mesh",
+            mr_gpu::voxels::LIGHTING_WGSL,
+            &["rays::mesh", VOXELS, mr_gpu::program::POST],
+        );
+        shading_instance(
+            p,
+            "shading::meshlit",
+            shading,
+            &["rays::mesh", "rays::bounce"],
+            "lighting::mesh",
+        );
         "shading::meshlit"
     };
-    p.add(SHADING_MESH, crate::shading::SHADE_MESH_WGSL, &[shade, MESH_SURFACE]);
+    p.add(
+        SHADING_MESH,
+        crate::shading::SHADE_MESH_WGSL,
+        &[shade, MESH_SURFACE],
+    );
     p.define("MESHES");
     vec![SHADING_MESH.to_string(), MESH_SURFACE.to_string()]
 }
@@ -347,10 +488,17 @@ pub fn meshes(p: &mut Program, walks: &Walks, shading: &str, [shadow, bounce]: [
 /// theirs: the world, every walk of `walks`, the rays' services and lighting through the
 /// shadow rays. Returns the program and the root's dependencies (nearest first: the root's
 /// own kernel and storage).
-pub fn sites_program(walks: &Walks, lead: Option<(usize, usize)>, shadow: usize, bounce: usize) -> (Program, Vec<String>) {
+pub fn sites_program(
+    walks: &Walks,
+    lead: Option<(usize, usize)>,
+    shadow: usize,
+    bounce: usize,
+) -> (Program, Vec<String>) {
     let mut p = Program::world(Some("rays::shadow"));
     walks.add_to(&mut p);
-    let mut deps: Vec<String> = lead.map_or(vec![], |(k, st)| vec![walks.kernel_path(k), walks.storage_path(st)]);
+    let mut deps: Vec<String> = lead.map_or(vec![], |(k, st)| {
+        vec![walks.kernel_path(k), walks.storage_path(st)]
+    });
     deps.extend(shading_rays(&mut p, walks, shadow, bounce));
     deps.extend([LIGHTING, VOXELS, mr_gpu::program::COMMON].map(String::from));
     (p, deps)
@@ -365,13 +513,24 @@ pub struct Walk {
 
 impl Walk {
     pub fn at(prefix: &str) -> Self {
-        Self { storage: format!("{prefix}::storage"), kernel: format!("{prefix}::kernel"), rays: format!("{prefix}::rays") }
+        Self {
+            storage: format!("{prefix}::storage"),
+            kernel: format!("{prefix}::kernel"),
+            rays: format!("{prefix}::rays"),
+        }
     }
 }
 
 /// Adds one walk under `prefix` (`<prefix>::storage` at bind group `group`, `::kernel`,
 /// `::rays`).
-pub fn walk(p: &mut Program, prefix: &str, st: &GpuStorage, group: u32, k: &str, consts: &KernelConsts) -> Walk {
+pub fn walk(
+    p: &mut Program,
+    prefix: &str,
+    st: &GpuStorage,
+    group: u32,
+    k: &str,
+    consts: &KernelConsts,
+) -> Walk {
     let w = Walk::at(prefix);
     storage(p, &w.storage, st, group);
     kernel(p, &w.kernel, &w.storage, k, consts);
@@ -399,7 +558,11 @@ pub const SHADING: &str = "shading";
 pub const SHADING_MESH: &str = "shading::mesh";
 
 pub fn shading(p: &mut Program, name: &str, rays: &[&str], group: u32, binding: u32) {
-    p.add(STATE, crate::shading::state::ShadeState::wgsl(group, binding), &[]);
+    p.add(
+        STATE,
+        crate::shading::state::ShadeState::wgsl(group, binding),
+        &[],
+    );
     shading_instance(p, SHADING, name, rays, LIGHTING);
 }
 
@@ -416,6 +579,13 @@ fn shading_instance(p: &mut Program, path: &str, name: &str, rays: &[&str], ligh
 /// The root's usual dependencies with a walk: what it casts and shades with.
 pub fn root_deps<'a>(w: &'a Walk, extra: &[&'a str]) -> Vec<&'a str> {
     let mut d: Vec<&str> = extra.to_vec();
-    d.extend([w.kernel.as_str(), w.storage.as_str(), w.rays.as_str(), LIGHTING, VOXELS, mr_gpu::program::COMMON]);
+    d.extend([
+        w.kernel.as_str(),
+        w.storage.as_str(),
+        w.rays.as_str(),
+        LIGHTING,
+        VOXELS,
+        mr_gpu::program::COMMON,
+    ]);
     d
 }

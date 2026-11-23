@@ -31,16 +31,33 @@ impl Graph {
         let g = &c.graph;
         let knobs = |n: &Node| -> toml::Table {
             match n.role {
-                Role::Client if !region => n.knobs.iter().filter(|(k, _)| !CLIENT_KNOBS.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect(),
+                Role::Client if !region => n
+                    .knobs
+                    .iter()
+                    .filter(|(k, _)| !CLIENT_KNOBS.contains(&k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
                 Role::Link => link_spec(n).map(|l| link_knobs(&l)).unwrap_or_default(),
                 _ => n.knobs.clone(),
             }
         };
         let plain = |id: &str| {
             let n = &g.nodes[id];
-            matches!((n.role, n.component.as_str()), (Role::Client, "pick") | (Role::Link, "free")) && knobs(n).is_empty() && n.timing.is_empty() && n.api.is_none() && n.device.is_none_or(|d| d == Device::Cpu) && !n.inputs.contains_key("chunks")
+            matches!(
+                (n.role, n.component.as_str()),
+                (Role::Client, "pick") | (Role::Link, "free")
+            ) && knobs(n).is_empty()
+                && n.timing.is_empty()
+                && n.api.is_none()
+                && n.device.is_none_or(|d| d == Device::Cpu)
+                && !n.inputs.contains_key("chunks")
         };
-        let served = |id: &str| g.nodes[id].role == Role::Generator && c.devices[id] == Device::Server && g.nodes[id].component == "procedural" && knobs(&g.nodes[id]).is_empty();
+        let served = |id: &str| {
+            g.nodes[id].role == Role::Generator
+                && c.devices[id] == Device::Server
+                && g.nodes[id].component == "procedural"
+                && knobs(&g.nodes[id]).is_empty()
+        };
         let src = |s: &'_ str| -> String {
             let mut s = s;
             while plain(s) {
@@ -51,20 +68,42 @@ impl Graph {
         let mut seen: HashSet<String> = HashSet::new();
         let mut order: Vec<String> = Vec::new();
         let out = &g.nodes[&c.output];
-        let start = if out.role == Role::Post && out.component == "clamp" && out.device.is_none_or(|d| d == c.devices[&out.inputs["image"]]) && out.api.is_none() && out.timing.is_empty() { out.inputs["image"].clone() } else { c.output.clone() };
+        let start = if out.role == Role::Post
+            && out.component == "clamp"
+            && out
+                .device
+                .is_none_or(|d| d == c.devices[&out.inputs["image"]])
+            && out.api.is_none()
+            && out.timing.is_empty()
+        {
+            out.inputs["image"].clone()
+        } else {
+            c.output.clone()
+        };
         let mut stack = vec![start];
         while let Some(id) = stack.pop() {
             if !seen.insert(id.clone()) {
                 continue;
             }
             // Reversed so the first port by name is visited first.
-            stack.extend(g.nodes[&id].inputs.values().filter(|s| !served(s)).rev().map(|s| src(s)));
+            stack.extend(
+                g.nodes[&id]
+                    .inputs
+                    .values()
+                    .filter(|s| !served(s))
+                    .rev()
+                    .map(|s| src(s)),
+            );
             order.push(id);
         }
         // APIs only where the executor offers a choice (elsewhere a set API is checked to be
         // the one it runs, so it says nothing more).
         // (and not the choice's default: an API set to it is the same pipeline as one unset).
-        let chosen = |n: &Node, a: &Api| c.region.is_some_and(|b| b.chooses(n.role) && b.api_choice.is_some_and(|ch| ch.default != Some(*a)));
+        let chosen = |n: &Node, a: &Api| {
+            c.region.is_some_and(|b| {
+                b.chooses(n.role) && b.api_choice.is_some_and(|ch| ch.default != Some(*a))
+            })
+        };
         Ok(order
             .into_iter()
             .map(|id| {
@@ -74,7 +113,12 @@ impl Graph {
                     component: n.component.clone(),
                     device: c.devices[&id],
                     api: c.apis.get(&id).filter(|a| chosen(n, a)).copied(),
-                    ins: n.inputs.iter().filter(|(_, s)| !served(s)).map(|(p, s)| (p.clone(), src(s), n.when(p))).collect(),
+                    ins: n
+                        .inputs
+                        .iter()
+                        .filter(|(_, s)| !served(s))
+                        .map(|(p, s)| (p.clone(), src(s), n.when(p)))
+                        .collect(),
                     knobs: knobs(n),
                     id,
                 }
@@ -87,10 +131,18 @@ impl Graph {
     /// that differ only in node ids.
     pub fn canonical(&self) -> Result<String, String> {
         let entries = self.entries(false)?;
-        let ids: HashMap<&str, usize> = entries.iter().enumerate().map(|(i, e)| (e.id.as_str(), i)).collect();
+        let ids: HashMap<&str, usize> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.id.as_str(), i))
+            .collect();
         let mut s = format!("{}|", self.runs_on());
         for e in &entries {
-            let ins: Vec<String> = e.ins.iter().map(|(p, s, w)| format!("{p}=n{}{}", ids[s.as_str()], late(*w))).collect();
+            let ins: Vec<String> = e
+                .ins
+                .iter()
+                .map(|(p, s, w)| format!("{p}=n{}{}", ids[s.as_str()], late(*w)))
+                .collect();
             let knobs: Vec<String> = e.knobs.iter().map(|(k, v)| format!("{k}={v}")).collect();
             let api = e.api.map_or(String::new(), |a| format!(":{}", a.name()));
             // (The server is written `cpu`, the world's device before the server was modelled, which keeps
@@ -99,14 +151,27 @@ impl Graph {
                 Device::Server => Device::Cpu,
                 d => d,
             };
-            s += &format!("n{}={}.{}@{}{api}({}){{{}}};", ids[e.id.as_str()], e.role.name(), e.component, dev, ins.join(","), knobs.join(","));
+            s += &format!(
+                "n{}={}.{}@{}{api}({}){{{}}};",
+                ids[e.id.as_str()],
+                e.role.name(),
+                e.component,
+                dev,
+                ins.join(","),
+                knobs.join(",")
+            );
         }
         Ok(s)
     }
 
     /// A stable hash of the canonical form (FNV-1a, 64 bits): the cache key.
     pub fn key(&self) -> Result<String, String> {
-        let h = self.canonical()?.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
+        let h = self
+            .canonical()?
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+                (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
+            });
         Ok(format!("{h:016x}"))
     }
 
@@ -124,27 +189,51 @@ impl Graph {
         let entries = self.entries(true)?;
         let by: HashMap<&str, &Entry> = entries.iter().map(|e| (e.id.as_str(), e)).collect();
         let on = self.runs_on();
-        fn visit<'a>(e: &'a Entry, by: &HashMap<&str, &'a Entry>, seen: &mut HashSet<&'a str>, order: &mut Vec<&'a Entry>) {
+        fn visit<'a>(
+            e: &'a Entry,
+            by: &HashMap<&str, &'a Entry>,
+            seen: &mut HashSet<&'a str>,
+            order: &mut Vec<&'a Entry>,
+        ) {
             if seen.insert(&e.id) {
                 // Inputs in the order the component declares them: the main path first.
                 let ports = inputs(e.role, &e.component);
                 let mut ins: Vec<&(String, String, When)> = e.ins.iter().collect();
                 ins.sort_by_key(|(p, ..)| ports.iter().position(|x| x.name == p));
-                ins.into_iter().for_each(|(_, s, _)| visit(by[s.as_str()], by, seen, order));
+                ins.into_iter()
+                    .for_each(|(_, s, _)| visit(by[s.as_str()], by, seen, order));
                 order.push(e);
             }
         }
         let (mut seen, mut order) = (HashSet::new(), Vec::new());
-        entries.first().into_iter().for_each(|e| visit(e, &by, &mut seen, &mut order));
+        entries
+            .first()
+            .into_iter()
+            .for_each(|e| visit(e, &by, &mut seen, &mut order));
         let parts: Vec<String> = order
             .into_iter()
             .filter(|e| e.role != Role::World)
             .map(|e| {
-                let dev = if matches!(e.role, Role::Link | Role::Client) || e.device.to_string() == on { String::new() } else { format!("@{}", e.device) };
+                let dev =
+                    if matches!(e.role, Role::Link | Role::Client) || e.device.to_string() == on {
+                        String::new()
+                    } else {
+                        format!("@{}", e.device)
+                    };
                 let api = e.api.map_or(String::new(), |a| format!(":{}", a.name()));
-                let ins = e.ins.iter().filter(|(_, _, w)| *w != When::Now).map(|(p, _, w)| format!("{p}{}", late(*w)));
-                let inner: Vec<String> = ins.chain(e.knobs.iter().map(|(k, v)| format!("{k}={v}"))).collect();
-                let inner = if inner.is_empty() { String::new() } else { format!("({})", inner.join(", ")) };
+                let ins = e
+                    .ins
+                    .iter()
+                    .filter(|(_, _, w)| *w != When::Now)
+                    .map(|(p, _, w)| format!("{p}{}", late(*w)));
+                let inner: Vec<String> = ins
+                    .chain(e.knobs.iter().map(|(k, v)| format!("{k}={v}")))
+                    .collect();
+                let inner = if inner.is_empty() {
+                    String::new()
+                } else {
+                    format!("({})", inner.join(", "))
+                };
                 format!("{}{dev}{api}{inner}", e.component)
             })
             .collect();

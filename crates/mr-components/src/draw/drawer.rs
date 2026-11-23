@@ -75,10 +75,18 @@ pub struct DrawerSpec<'a> {
 }
 
 enum Pipes {
-    Forward { fill: wgpu::RenderPipeline, depth: wgpu::RenderPipeline, equal: wgpu::RenderPipeline },
+    Forward {
+        fill: wgpu::RenderPipeline,
+        depth: wgpu::RenderPipeline,
+        equal: wgpu::RenderPipeline,
+    },
     /// `mesh_shade`: the shade pass of frames that draw meshes, unlit and lit, once added
     /// ([`FaceDrawer::add_mesh_shade`]).
-    Deferred { ids: wgpu::RenderPipeline, shade: wgpu::ComputePipeline, mesh_shade: [Option<wgpu::ComputePipeline>; 2] },
+    Deferred {
+        ids: wgpu::RenderPipeline,
+        shade: wgpu::ComputePipeline,
+        mesh_shade: [Option<wgpu::ComputePipeline>; 2],
+    },
 }
 
 pub struct FaceDrawer {
@@ -134,41 +142,70 @@ impl FaceDrawer {
     /// The deferred shade pass's images group: ids or hit records (0), output (1) and, with
     /// `meshes`, the mesh triangles (2; `mr_gpu::meshes::surface_wgsl(3, 2)`); `format`: the
     /// output's.
-    pub fn images_layout(device: &wgpu::Device, meshes: bool, format: wgpu::TextureFormat) -> wgpu::BindGroupLayout {
+    pub fn images_layout(
+        device: &wgpu::Device,
+        meshes: bool,
+        format: wgpu::TextureFormat,
+    ) -> wgpu::BindGroupLayout {
         let compute = wgpu::ShaderStages::COMPUTE;
         let tex = |binding, sample_type| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: compute,
-            ty: wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            ty: wgpu::BindingType::Texture {
+                sample_type,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
             count: None,
         };
         let mut entries = vec![
-                tex(0, wgpu::TextureSampleType::Uint),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: compute,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
+            tex(0, wgpu::TextureSampleType::Uint),
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: compute,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format,
+                    view_dimension: wgpu::TextureViewDimension::D2,
                 },
+                count: None,
+            },
         ];
         if meshes {
             entries.push(wgpu::BindGroupLayoutEntry {
                 binding: 2,
                 visibility: compute,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             });
         }
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("deferred images"), entries: &entries })
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("deferred images"),
+            entries: &entries,
+        })
     }
 
     /// `images_layout` is the one the shade layout was built with.
-    pub fn new(gpu: &Gpu, spec: &DrawerSpec, mode: DrawMode, images_layout: &wgpu::BindGroupLayout, width: u32, height: u32) -> anyhow::Result<Self> {
-        Ok(Self { mode, pipes: Self::pipes(gpu, spec, mode)?, shade_layout: spec.shade_layout.clone(), images_layout: images_layout.clone(), width, height })
+    pub fn new(
+        gpu: &Gpu,
+        spec: &DrawerSpec,
+        mode: DrawMode,
+        images_layout: &wgpu::BindGroupLayout,
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            mode,
+            pipes: Self::pipes(gpu, spec, mode)?,
+            shade_layout: spec.shade_layout.clone(),
+            images_layout: images_layout.clone(),
+            width,
+            height,
+        })
     }
 
     pub fn mode(&self) -> DrawMode {
@@ -206,33 +243,56 @@ impl FaceDrawer {
 
     fn pipes(gpu: &Gpu, spec: &DrawerSpec, mode: DrawMode) -> anyhow::Result<Pipes> {
         let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let render = |label, targets: &[Option<wgpu::ColorTargetState>], write: bool, compare, fragment: bool| {
-            gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(spec.render_layout),
-                vertex: wgpu::VertexState { module: spec.module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-                primitive: wgpu::PrimitiveState {
-                    topology: if spec.strip { wgpu::PrimitiveTopology::TriangleStrip } else { wgpu::PrimitiveTopology::TriangleList },
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: Some(wgpu::Face::Back),
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(write),
-                    depth_compare: Some(compare),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                fragment: fragment.then(|| wgpu::FragmentState { module: spec.module, entry_point: Some("fs"), compilation_options: Default::default(), targets }),
-                multiview_mask: None,
-                cache: gpu.cache(),
-            })
+        let render = |label,
+                      targets: &[Option<wgpu::ColorTargetState>],
+                      write: bool,
+                      compare,
+                      fragment: bool| {
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(spec.render_layout),
+                    vertex: wgpu::VertexState {
+                        module: spec.module,
+                        entry_point: Some("vs"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        topology: if spec.strip {
+                            wgpu::PrimitiveTopology::TriangleStrip
+                        } else {
+                            wgpu::PrimitiveTopology::TriangleList
+                        },
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: Some(wgpu::Face::Back),
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(write),
+                        depth_compare: Some(compare),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: fragment.then(|| wgpu::FragmentState {
+                        module: spec.module,
+                        entry_point: Some("fs"),
+                        compilation_options: Default::default(),
+                        targets,
+                    }),
+                    multiview_mask: None,
+                    cache: gpu.cache(),
+                })
         };
         use wgpu::CompareFunction::{Equal, Greater};
         use wgpu::TextureFormat::{R32Uint, Rg32Uint};
-        let color = [Some(wgpu::ColorTargetState { format: spec.format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+        let color = [Some(wgpu::ColorTargetState {
+            format: spec.format,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
         let pipes = match mode {
             DrawMode::Raster => Pipes::Forward {
                 fill: render("fill", &color, true, Greater, true),
@@ -243,9 +303,19 @@ impl FaceDrawer {
                 let ids = if mode == DrawMode::Gbuffer {
                     render("hit records", &[Some(Rg32Uint.into())], true, Greater, true)
                 } else {
-                    render("visibility ids", &[Some(R32Uint.into())], true, Greater, true)
+                    render(
+                        "visibility ids",
+                        &[Some(R32Uint.into())],
+                        true,
+                        Greater,
+                        true,
+                    )
                 };
-                Pipes::Deferred { ids, shade: shade_pipeline(gpu, spec.shade_layout, spec.module), mesh_shade: [None, None] }
+                Pipes::Deferred {
+                    ids,
+                    shade: shade_pipeline(gpu, spec.shade_layout, spec.module),
+                    mesh_shade: [None, None],
+                }
             }
         };
         if let Some(e) = pollster::block_on(scope.pop()) {
@@ -268,8 +338,20 @@ impl FaceDrawer {
         extra: Option<&dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass)>,
         main: Option<&wgpu::RenderPipeline>,
     ) {
-        let depth_attachment = |load, store| Some(wgpu::RenderPassDepthStencilAttachment { view: f.depth, depth_ops: Some(wgpu::Operations { load, store }), stencil_ops: None });
-        let keep = |keep: bool| if keep { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard };
+        let depth_attachment = |load, store| {
+            Some(wgpu::RenderPassDepthStencilAttachment {
+                view: f.depth,
+                depth_ops: Some(wgpu::Operations { load, store }),
+                stencil_ops: None,
+            })
+        };
+        let keep = |keep: bool| {
+            if keep {
+                wgpu::StoreOp::Store
+            } else {
+                wgpu::StoreOp::Discard
+            }
+        };
         let run = |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline| {
             pass.set_pipeline(pipeline);
             for (i, g) in f.binds.iter().enumerate() {
@@ -283,15 +365,28 @@ impl FaceDrawer {
         match &self.pipes {
             Pipes::Forward { fill, depth, equal } => {
                 let n = f.nodes;
-                let nodes: Vec<String> = n.draw.iter().chain(&n.shade).chain(extra.map_or(&[][..], |_| &n.extra[..])).cloned().collect();
+                let nodes: Vec<String> = n
+                    .draw
+                    .iter()
+                    .chain(&n.shade)
+                    .chain(extra.map_or(&[][..], |_| &n.extra[..]))
+                    .cloned()
+                    .collect();
                 f.ring.stage(enc, f.ticket, "draw+shade", &nodes);
                 let prepass = f.prepass && main.is_none();
                 if prepass {
                     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("depth prepass"),
                         color_attachments: &[],
-                        depth_stencil_attachment: depth_attachment(wgpu::LoadOp::Clear(0.0), wgpu::StoreOp::Store),
-                        timestamp_writes: if f.ts.0 { f.ring.render_timestamps(f.ticket, true, false) } else { None },
+                        depth_stencil_attachment: depth_attachment(
+                            wgpu::LoadOp::Clear(0.0),
+                            wgpu::StoreOp::Store,
+                        ),
+                        timestamp_writes: if f.ts.0 {
+                            f.ring.render_timestamps(f.ticket, true, false)
+                        } else {
+                            None
+                        },
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
@@ -307,37 +402,90 @@ impl FaceDrawer {
                         view: f.out,
                         depth_slice: None,
                         resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(f.clear), store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(f.clear),
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
-                    depth_stencil_attachment: depth_attachment(if prepass { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(0.0) }, keep(f.keep_depth)),
-                    timestamp_writes: if begin || f.ts.1 { f.ring.render_timestamps(f.ticket, begin, f.ts.1) } else { None },
+                    depth_stencil_attachment: depth_attachment(
+                        if prepass {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(0.0)
+                        },
+                        keep(f.keep_depth),
+                    ),
+                    timestamp_writes: if begin || f.ts.1 {
+                        f.ring.render_timestamps(f.ticket, begin, f.ts.1)
+                    } else {
+                        None
+                    },
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                run(&mut pass, main.unwrap_or(if prepass { equal } else { fill }));
+                run(
+                    &mut pass,
+                    main.unwrap_or(if prepass { equal } else { fill }),
+                );
                 if let Some(extra) = extra {
-                    extra(&mut pass, if prepass { MeshPass::Equal } else { MeshPass::Fill });
+                    extra(
+                        &mut pass,
+                        if prepass {
+                            MeshPass::Equal
+                        } else {
+                            MeshPass::Fill
+                        },
+                    );
                 }
             }
             Pipes::Deferred { ids, .. } => {
                 let n = f.nodes;
-                let nodes: Vec<String> = n.draw.iter().chain(extra.map_or(&[][..], |_| &n.extra[..])).cloned().collect();
+                let nodes: Vec<String> = n
+                    .draw
+                    .iter()
+                    .chain(extra.map_or(&[][..], |_| &n.extra[..]))
+                    .cloned()
+                    .collect();
                 f.ring.stage(enc, f.ticket, "draw", &nodes);
                 {
                     let attach = |view| {
-                        Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })
+                        Some(wgpu::RenderPassColorAttachment {
+                            view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })
                     };
                     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("visibility ids"),
-                        color_attachments: &[attach(f.ids.expect("a deferred drawer draws into DrawFrame::ids"))],
-                        depth_stencil_attachment: depth_attachment(wgpu::LoadOp::Clear(0.0), keep(f.keep_depth)),
-                        timestamp_writes: if f.ts.0 { f.ring.render_timestamps(f.ticket, true, false) } else { None },
+                        color_attachments: &[attach(
+                            f.ids.expect("a deferred drawer draws into DrawFrame::ids"),
+                        )],
+                        depth_stencil_attachment: depth_attachment(
+                            wgpu::LoadOp::Clear(0.0),
+                            keep(f.keep_depth),
+                        ),
+                        timestamp_writes: if f.ts.0 {
+                            f.ring.render_timestamps(f.ticket, true, false)
+                        } else {
+                            None
+                        },
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
                     run(&mut pass, ids);
                     if let Some(extra) = extra {
-                        extra(&mut pass, if self.mode == DrawMode::Gbuffer { MeshPass::Records } else { MeshPass::Ids });
+                        extra(
+                            &mut pass,
+                            if self.mode == DrawMode::Gbuffer {
+                                MeshPass::Records
+                            } else {
+                                MeshPass::Ids
+                            },
+                        );
                     }
                 }
             }
@@ -347,19 +495,56 @@ impl FaceDrawer {
     /// The shading node's pass (after [`encode_draw`](Self::encode_draw)): deferred, shading the ids or
     /// records (`meshes`: with the meshes drawn into them, `lit`: the frame is lit); nothing
     /// when forward.
-    pub fn encode_shade(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, f: &DrawFrame, meshes: bool, lit: bool) {
+    pub fn encode_shade(
+        &self,
+        gpu: &Gpu,
+        enc: &mut wgpu::CommandEncoder,
+        f: &DrawFrame,
+        meshes: bool,
+        lit: bool,
+    ) {
         match &self.pipes {
             Pipes::Forward { .. } => {}
-            Pipes::Deferred { shade, mesh_shade, .. } => {
-                let shade = if meshes { mesh_shade[lit as usize].as_ref().expect("deferred meshes need FaceDrawer::add_mesh_shade") } else { shade };
+            Pipes::Deferred {
+                shade, mesh_shade, ..
+            } => {
+                let shade = if meshes {
+                    mesh_shade[lit as usize]
+                        .as_ref()
+                        .expect("deferred meshes need FaceDrawer::add_mesh_shade")
+                } else {
+                    shade
+                };
                 let mut entries = vec![
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(f.ids.expect("a deferred drawer shades DrawFrame::ids")) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(f.out) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            f.ids.expect("a deferred drawer shades DrawFrame::ids"),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(f.out),
+                    },
                 ];
-                entries.extend(f.mesh_verts.map(|b| wgpu::BindGroupEntry { binding: 2, resource: b.as_entire_binding() }));
-                let images = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("deferred images"), layout: &self.images_layout, entries: &entries });
+                entries.extend(f.mesh_verts.map(|b| wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: b.as_entire_binding(),
+                }));
+                let images = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("deferred images"),
+                    layout: &self.images_layout,
+                    entries: &entries,
+                });
                 f.ring.stage(enc, f.ticket, "shade", &f.nodes.shade);
-                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("deferred shade"), timestamp_writes: if f.ts.1 { f.ring.compute_timestamps(f.ticket, false, true) } else { None } });
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("deferred shade"),
+                    timestamp_writes: if f.ts.1 {
+                        f.ring.compute_timestamps(f.ticket, false, true)
+                    } else {
+                        None
+                    },
+                });
                 pass.set_pipeline(shade);
                 for (i, g) in f.binds.iter().enumerate() {
                     pass.set_bind_group(i as u32, *g, &[]);
@@ -375,13 +560,18 @@ impl FaceDrawer {
 }
 
 /// A deferred drawer's shade pass over `module`.
-fn shade_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule) -> wgpu::ComputePipeline {
-    gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("deferred shade"),
-        layout: Some(layout),
-        module,
-        entry_point: Some("shade"),
-        compilation_options: Default::default(),
-        cache: gpu.cache(),
-    })
+fn shade_pipeline(
+    gpu: &Gpu,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+) -> wgpu::ComputePipeline {
+    gpu.device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("deferred shade"),
+            layout: Some(layout),
+            module,
+            entry_point: Some("shade"),
+            compilation_options: Default::default(),
+            cache: gpu.cache(),
+        })
 }

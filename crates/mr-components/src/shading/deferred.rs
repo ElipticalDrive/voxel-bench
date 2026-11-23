@@ -29,11 +29,18 @@ pub trait Records: Sync {
 
 /// Shades every pixel of the `w`-wide image `pixels` from its record.
 pub fn shade<R: Records>(records: &R, w: u32, pixels: &mut [R::Px]) {
-    pixels.par_chunks_mut(w as usize).enumerate().for_each(|(y, row)| {
-        for (x, px) in row.iter_mut().enumerate() {
-            let (x, y) = (x as u32, y as u32);
-            let r = records.record_at(x, y);
-            *px = if R::hit(r) { records.shade(r, x, y) } else { records.miss(x, y) };
-        }
-    });
+    pixels
+        .par_chunks_mut(w as usize)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for (x, px) in row.iter_mut().enumerate() {
+                let (x, y) = (x as u32, y as u32);
+                let r = records.record_at(x, y);
+                *px = if R::hit(r) {
+                    records.shade(r, x, y)
+                } else {
+                    records.miss(x, y)
+                };
+            }
+        });
 }

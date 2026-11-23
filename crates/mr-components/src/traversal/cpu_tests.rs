@@ -47,7 +47,9 @@ mod tests {
                     let mut d = DenseChunk(Box::new([BlockId::AIR; CHUNK_VOLUME]));
                     for i in 0..CHUNK_VOLUME {
                         let w = pos * 32 + cell_of(i);
-                        let h = (8.0 * ((w.x as f32 * 0.21).sin() + (w.z as f32 * 0.17).cos())) as i32 - 12;
+                        let h = (8.0 * ((w.x as f32 * 0.21).sin() + (w.z as f32 * 0.17).cos()))
+                            as i32
+                            - 12;
                         if w.y < h || rng(&mut s).is_multiple_of(400) {
                             d.0[i] = BlockId(1 + (rng(&mut s) % 4) as u16);
                         }
@@ -65,7 +67,12 @@ mod tests {
             let c = pos - lo;
             cells[((c.z * dims.y + c.y) * dims.x + c.x) as usize] = entries.len() as u32;
         }
-        Grid { min: lo, dims, cells, entries }
+        Grid {
+            min: lo,
+            dims,
+            cells,
+            entries,
+        }
     }
 
     fn cell_of(i: usize) -> IVec3 {
@@ -103,7 +110,18 @@ mod tests {
             let d = d.normalize();
             let (bmin, bmax) = (bmin_abs - cam, bmax_abs - cam);
             let mut out = [None];
-            trace_packet::<R, 1>(&g, cam, o, &[d.x], &[d.y], &[d.z], 1e7, bmin, bmax, &mut out);
+            trace_packet::<R, 1>(
+                &g,
+                cam,
+                o,
+                &[d.x],
+                &[d.y],
+                &[d.z],
+                1e7,
+                bmin,
+                bmax,
+                &mut out,
+            );
             let (inc, _) = trace_incremental::<R, EXACT>(&g, LEVELS, cam, o, d, 1e7, bmin, bmax);
             if let Some(h) = inc {
                 assert!(solid(&g, h.cell + cam), "incremental hit an air cell");
@@ -114,10 +132,21 @@ mod tests {
                 (Some(a), Some(b)) if a.cell == b.cell => {}
                 (None, None) => {}
                 (Some(a), Some(b)) => {
-                    assert!((a.t - b.t).abs() < 1e-3 * a.t.max(1.0), "hits differ: {:?}/{} vs {:?}/{}", a.cell, a.t, b.cell, b.t);
+                    assert!(
+                        (a.t - b.t).abs() < 1e-3 * a.t.max(1.0),
+                        "hits differ: {:?}/{} vs {:?}/{}",
+                        a.cell,
+                        a.t,
+                        b.cell,
+                        b.t
+                    );
                     differ += 1;
                 }
-                (a, b) => panic!("hit vs miss: {:?} vs {:?} (cam {cam}, o {o}, d {d})", a.map(|h| (h.cell, h.t)), b.map(|h| (h.cell, h.t))),
+                (a, b) => panic!(
+                    "hit vs miss: {:?} vs {:?} (cam {cam}, o {o}, d {d})",
+                    a.map(|h| (h.cell, h.t)),
+                    b.map(|h| (h.cell, h.t))
+                ),
             }
         }
         assert!(differ * 1000 <= n, "{differ}/{n} rays differ");

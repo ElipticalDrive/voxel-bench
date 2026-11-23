@@ -40,7 +40,13 @@ impl Surface {
     /// A ray walk's hit: point `p` on `face` of `block` in `cell` (camera-relative).
     #[inline]
     pub fn at_cell(block: u16, face: Face, cell: IVec3, p: Vec3) -> Self {
-        Self { p, n: face.normal().as_vec3(), local: p - cell.as_vec3(), block, face }
+        Self {
+            p,
+            n: face.normal().as_vec3(),
+            local: p - cell.as_vec3(),
+            block,
+            face,
+        }
     }
 }
 
@@ -66,7 +72,11 @@ where
 {
     let texel = texel_of(ctx.blocks, s);
     if mode == RenderMode::Unlit {
-        return Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
+        return Vec3::new(
+            srgb_to_linear(texel[0]),
+            srgb_to_linear(texel[1]),
+            srgb_to_linear(texel[2]),
+        );
     }
     lit(ctx, s, texel)
 }
@@ -75,14 +85,19 @@ where
 #[inline]
 fn texel_of(blocks: &BlockRegistry, s: &Surface) -> [u8; 4] {
     let uv = s.face.uv(s.local);
-    blocks.texture_of(BlockId(s.block), s.face).texel(texel_coord(uv.x), texel_coord(uv.y))
+    blocks
+        .texture_of(BlockId(s.block), s.face)
+        .texel(texel_coord(uv.x), texel_coord(uv.y))
 }
 
 /// How much of the light surface `s` stops: its texel's coverage (1 for an opaque block).
 #[inline]
 pub fn coverage(blocks: &BlockRegistry, s: &Surface) -> f32 {
     let uv = s.face.uv(s.local);
-    blocks.texture_of(BlockId(s.block), s.face).alpha(texel_coord(uv.x), texel_coord(uv.y)) as f32 / 255.0
+    blocks
+        .texture_of(BlockId(s.block), s.face)
+        .alpha(texel_coord(uv.x), texel_coord(uv.y)) as f32
+        / 255.0
 }
 
 /// The lit colour (linear, exposed) of `s` with `texel`.
@@ -92,14 +107,22 @@ where
     L: Fn(IVec3) -> Option<&'a [Light]>,
     O: Fn(Vec3, Vec3, f32) -> f32,
 {
-    let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
+    let albedo = Vec3::new(
+        srgb_to_linear(texel[0]),
+        srgb_to_linear(texel[1]),
+        srgb_to_linear(texel[2]),
+    );
     let n = s.n;
     let ps = s.p + n * 1e-3;
     let mut light = ctx.env.ambient;
     if let Some(sun) = ctx.env.sun {
         let ndl = n.dot(-sun.direction);
         if ndl > 0.0 {
-            let v = if ctx.sun_shadows { (ctx.transmit)(ps, -sun.direction, 1e7) } else { 1.0 };
+            let v = if ctx.sun_shadows {
+                (ctx.transmit)(ps, -sun.direction, 1e7)
+            } else {
+                1.0
+            };
             if v > 0.0 {
                 light += sun.color * ndl * v;
             }
@@ -112,7 +135,11 @@ where
             let c = point_light(n, to, l);
             if c != Vec3::ZERO {
                 let dist = to.length();
-                let v = if ctx.light_shadows { (ctx.transmit)(ps, to / dist, dist) } else { 1.0 };
+                let v = if ctx.light_shadows {
+                    (ctx.transmit)(ps, to / dist, dist)
+                } else {
+                    1.0
+                };
                 if v > 0.0 {
                     light += c * v;
                 }

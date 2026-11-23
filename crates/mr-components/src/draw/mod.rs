@@ -11,7 +11,11 @@ pub mod drawer;
 /// `fragment_hit`), for every back end that rasterises block faces. Fragment data comes
 /// from flat `varyings` (plane, block) or from the face source's records.
 pub fn faces_wgsl(varyings: bool) -> String {
-    let fragment = if varyings { include_str!("faces_varyings.wgsl") } else { include_str!("faces_records.wgsl") };
+    let fragment = if varyings {
+        include_str!("faces_varyings.wgsl")
+    } else {
+        include_str!("faces_records.wgsl")
+    };
     format!("{}\n{fragment}", include_str!("faces.wgsl"))
 }
 
@@ -19,8 +23,18 @@ pub fn faces_wgsl(varyings: bool) -> String {
 pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {
         "raster" => include_str!("raster/gpu.wgsl"),
-        "visbuffer" => concat!(include_str!("visbuffer/gpu.wgsl"), "\n", include_str!("../shading/deferred.wgsl")),
-        "gbuffer" => concat!(include_str!("gbuffer/gpu.wgsl"), "\n", include_str!("../shading/deferred.wgsl"), "\n", include_str!("../shading/packed.wgsl")),
+        "visbuffer" => concat!(
+            include_str!("visbuffer/gpu.wgsl"),
+            "\n",
+            include_str!("../shading/deferred.wgsl")
+        ),
+        "gbuffer" => concat!(
+            include_str!("gbuffer/gpu.wgsl"),
+            "\n",
+            include_str!("../shading/deferred.wgsl"),
+            "\n",
+            include_str!("../shading/packed.wgsl")
+        ),
         _ => return None,
     })
 }

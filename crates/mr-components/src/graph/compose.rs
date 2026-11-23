@@ -11,15 +11,23 @@ impl Graph {
     /// CPU, by ray queries when its primary rays are ray queries (the kernel's component or
     /// API), else the GPU walk; columns; splats). `None` for a shape no region has.
     pub fn region(&self) -> Option<&'static Builds> {
-        let dev = |n: &Node| n.device.unwrap_or_else(|| default_device(&self.executor, n.role, &n.component)).kind();
+        let dev = |n: &Node| {
+            n.device
+                .unwrap_or_else(|| default_device(&self.executor, n.role, &n.component))
+                .kind()
+        };
         let shading = self.nodes.values().find(|n| n.role == Role::Shading)?;
         let hits = self.nodes.get(shading.inputs.get("hits")?)?;
         let gpu = |n: &Node| dev(n) == Kind::Gpu;
         if hits.role == Role::Draw {
             let src = self.nodes.get(hits.inputs.get("faces")?)?;
             return match (src.role, src.component.as_str()) {
-                (Role::Visibility, "quadtree" | "cluster") if gpu(hits) => Some(if gpu(src) { &GPU_SAMPLER } else { &CPU_SAMPLER }),
-                (Role::Visibility, "faces") => Some(if gpu(hits) { &GPU_MESHING } else { &CPU_RASTER }),
+                (Role::Visibility, "quadtree" | "cluster") if gpu(hits) => {
+                    Some(if gpu(src) { &GPU_SAMPLER } else { &CPU_SAMPLER })
+                }
+                (Role::Visibility, "faces") => {
+                    Some(if gpu(hits) { &GPU_MESHING } else { &CPU_RASTER })
+                }
                 _ => None,
             };
         }
@@ -31,7 +39,13 @@ impl Graph {
             ("splat", true) => Some(&GPU_SPLAT),
             ("raycast", false) => Some(&CPU_RAYCAST),
             ("raycast", true) => {
-                let rq = hits.inputs.get("primary").and_then(|k| self.nodes.get(k)).is_some_and(|k| k.component == "rayquery" || k.api == Some(crate::Api::RayQuery));
+                let rq = hits
+                    .inputs
+                    .get("primary")
+                    .and_then(|k| self.nodes.get(k))
+                    .is_some_and(|k| {
+                        k.component == "rayquery" || k.api == Some(crate::Api::RayQuery)
+                    });
                 Some(if rq { &GPU_RAYQUERY } else { &GPU_WALK })
             }
             _ => None,
@@ -45,8 +59,14 @@ impl Graph {
         let mut g = self;
         let knobs = g.region().map_or(&[][..], |b| b.timing_knobs);
         for &(knob, role, port, on, off) in knobs {
-            let Some(v) = options.get(knob).and_then(|v| v.as_bool()) else { continue };
-            for n in g.nodes.values_mut().filter(|n| n.role == role && n.inputs.contains_key(port)) {
+            let Some(v) = options.get(knob).and_then(|v| v.as_bool()) else {
+                continue;
+            };
+            for n in g
+                .nodes
+                .values_mut()
+                .filter(|n| n.role == role && n.inputs.contains_key(port))
+            {
                 n.timing.insert(port.into(), if v { on } else { off });
                 n.timing.retain(|_, w| *w != When::Now);
             }
@@ -59,7 +79,11 @@ impl Graph {
         let g = self;
         let mut v = Vec::new();
         for &(knob, role, port, on, _) in g.region().map_or(&[][..], |b| b.timing_knobs) {
-            if let Some(n) = g.nodes.values().find(|n| n.role == role && n.inputs.contains_key(port)) {
+            if let Some(n) = g
+                .nodes
+                .values()
+                .find(|n| n.role == role && n.inputs.contains_key(port))
+            {
                 v.push((knob, n.when(port) == on));
             }
         }
@@ -71,7 +95,13 @@ impl Graph {
     pub fn preset_options(&self) -> Result<toml::Table, String> {
         let mut t = toml::Table::new();
         if let Some((b, ch)) = self.region().and_then(|b| b.api_choice.map(|ch| (b, ch)))
-            && let Some(v) = self.nodes.values().filter(|n| b.chooses(n.role)).find_map(|n| n.api).and_then(|a| ch.value(a)) {
+            && let Some(v) = self
+                .nodes
+                .values()
+                .filter(|n| b.chooses(n.role))
+                .find_map(|n| n.api)
+                .and_then(|a| ch.value(a))
+        {
             t.insert(ch.knob.into(), v.into());
         }
         for (k, v) in self.normalised()?.timing_options() {
@@ -88,11 +118,26 @@ impl Graph {
     /// of them); the result is for comparing, not for running.
     pub fn told_apart(&self, m: mr_core::PassMode) -> Graph {
         let unlit = m.lighting == mr_core::RenderMode::Unlit;
-        let read = |g: &Graph| g.nodes.values().flat_map(|n| n.inputs.values().cloned()).collect::<std::collections::HashSet<_>>();
+        let read = |g: &Graph| {
+            g.nodes
+                .values()
+                .flat_map(|n| n.inputs.values().cloned())
+                .collect::<std::collections::HashSet<_>>()
+        };
         // What nothing reads in the graph as it is stays (the output, an unread world).
-        let ends: Vec<String> = self.nodes.keys().filter(|k| !read(self).contains(*k)).cloned().collect();
+        let ends: Vec<String> = self
+            .nodes
+            .keys()
+            .filter(|k| !read(self).contains(*k))
+            .cloned()
+            .collect();
         let mut g = self.clone();
-        let meshes: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == Role::Meshes).map(|(k, _)| k.clone()).collect();
+        let meshes: Vec<String> = g
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.role == Role::Meshes)
+            .map(|(k, _)| k.clone())
+            .collect();
         for n in g.nodes.values_mut() {
             if unlit && n.role == Role::Shading {
                 n.inputs.retain(|p, _| p == "hits");
@@ -111,7 +156,8 @@ impl Graph {
         let mut todo = ends;
         while let Some(k) = todo.pop() {
             if let Some(n) = g.nodes.get(&k)
-                && kept.insert(k) {
+                && kept.insert(k)
+            {
                 todo.extend(n.inputs.values().cloned());
             }
         }
@@ -127,7 +173,11 @@ impl Graph {
         let g = self.normalised()?;
         let stages = g.stage_nodes();
         let mut t = toml::Table::new();
-        for (_, n) in g.nodes.iter().filter(|(id, n)| stages.contains(*id) && n.role.registered()) {
+        for (_, n) in g
+            .nodes
+            .iter()
+            .filter(|(id, n)| stages.contains(*id) && n.role.registered())
+        {
             for (k, v) in &n.knobs {
                 t.entry(k.clone()).or_insert_with(|| v.clone());
             }
@@ -141,12 +191,18 @@ impl Graph {
     /// nodes on sites of their own keep their own knobs). A knob whose owner is not
     /// in the graph is moot here and left out;
     /// a knob without an owner (the preset's own) has no node and is an error.
-    pub fn with_knobs(&self, knobs: &[(&mr_core::ParamSpec, toml::Value)]) -> Result<Graph, String> {
+    pub fn with_knobs(
+        &self,
+        knobs: &[(&mr_core::ParamSpec, toml::Value)],
+    ) -> Result<Graph, String> {
         let mut g = self.normalised()?;
         let stages = g.stage_nodes();
         for (spec, v) in knobs {
             let Some((slot, comps)) = &spec.owner else {
-                return Err(format!("knob `{}` belongs to the preset, not to a node", spec.name));
+                return Err(format!(
+                    "knob `{}` belongs to the preset, not to a node",
+                    spec.name
+                ));
             };
             for (_, n) in g.nodes.iter_mut().filter(|(id, _)| stages.contains(*id)) {
                 if n.role.name() == slot && comps.contains(&n.component) {

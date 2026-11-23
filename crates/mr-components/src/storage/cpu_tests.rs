@@ -7,7 +7,10 @@ use glam::IVec3;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{bits::cpu::Bits, bricks::cpu::U16, hier::cpu::Hier, palette::cpu::Palette, prefix::cpu::Prefix, u8::cpu::U8};
+    use crate::storage::{
+        bits::cpu::Bits, bricks::cpu::U16, hier::cpu::Hier, palette::cpu::Palette,
+        prefix::cpu::Prefix, u8::cpu::U8,
+    };
     use mr_core::chunk::{cell_index, cell_of_index};
     use mr_core::*;
     use std::sync::Arc;
@@ -68,7 +71,10 @@ mod tests {
         for z in 0..step {
             for y in 0..step {
                 for x in 0..step {
-                    assert!(d.0[cell_index(base + IVec3::new(x, y, z))].is_air(), "step {step} at {l} skips a solid cell");
+                    assert!(
+                        d.0[cell_index(base + IVec3::new(x, y, z))].is_air(),
+                        "step {step} at {l} skips a solid cell"
+                    );
                 }
             }
         }
@@ -78,22 +84,43 @@ mod tests {
     /// larger aligned cube (up to 16) is empty — the probe never under-skips.
     fn check_prefix(d: &Arc<DenseChunk>) {
         let r = Prefix::build(d);
-        assert!(r.to_dense().0.iter().zip(d.0.iter()).all(|(a, b)| a == b), "to_dense round trip");
-        let empty = |base: IVec3, s: i32| (0..s).all(|z| (0..s).all(|y| (0..s).all(|x| d.0[cell_index(base + IVec3::new(x, y, z))].is_air())));
+        assert!(
+            r.to_dense().0.iter().zip(d.0.iter()).all(|(a, b)| a == b),
+            "to_dense round trip"
+        );
+        let empty = |base: IVec3, s: i32| {
+            (0..s).all(|z| {
+                (0..s).all(|y| (0..s).all(|x| d.0[cell_index(base + IVec3::new(x, y, z))].is_air()))
+            })
+        };
         for i in 0..CHUNK_VOLUME {
             let l = cell_of_index(i);
             assert_eq!(r.block(l), d.0[i].0, "block at {l}");
             let (solid, step) = r.probe(l);
             assert_empty_cube(d, l, step, solid);
             if solid == 0 && step < 16 {
-                assert!(!empty(l & !(2 * step - 1), 2 * step), "under-skip at {l}: step {step}");
+                assert!(
+                    !empty(l & !(2 * step - 1), 2 * step),
+                    "under-skip at {l}: step {step}"
+                );
             }
         }
     }
 
     #[test]
     fn prefix_hierarchy_is_exact() {
-        for (seed, distinct, air) in [(1, 1, 50), (2, 3, 90), (3, 15, 30), (4, 200, 70), (5, 1000, 50), (6, 1, 0), (7, 2, 100), (9, 5, 99), (11, 4, 97), (12, 7, 100)] {
+        for (seed, distinct, air) in [
+            (1, 1, 50),
+            (2, 3, 90),
+            (3, 15, 30),
+            (4, 200, 70),
+            (5, 1000, 50),
+            (6, 1, 0),
+            (7, 2, 100),
+            (9, 5, 99),
+            (11, 4, 97),
+            (12, 7, 100),
+        ] {
             check_prefix(&random_chunk(seed, distinct, air));
         }
         // Structured: one solid voxel, and a half-filled chunk.
@@ -118,7 +145,11 @@ mod tests {
             for i in 0..n * n * n {
                 let c = IVec3::new(i % n, i / n % n, i / (n * n));
                 let base = c * s;
-                let solid = (0..s).any(|z| (0..s).any(|y| (0..s).any(|x| d.0[cell_index(base + IVec3::new(x, y, z))].is_solid())));
+                let solid = (0..s).any(|z| {
+                    (0..s).any(|y| {
+                        (0..s).any(|x| d.0[cell_index(base + IVec3::new(x, y, z))].is_solid())
+                    })
+                });
                 assert_eq!(r.occupied(level as u32, c), solid, "level {level} at {c}");
             }
         }
@@ -126,7 +157,16 @@ mod tests {
 
     #[test]
     fn occupied_is_exact() {
-        for (seed, distinct, air) in [(1, 1, 50), (2, 3, 90), (3, 15, 30), (6, 1, 0), (7, 2, 100), (9, 5, 99), (11, 4, 97), (12, 7, 100)] {
+        for (seed, distinct, air) in [
+            (1, 1, 50),
+            (2, 3, 90),
+            (3, 15, 30),
+            (6, 1, 0),
+            (7, 2, 100),
+            (9, 5, 99),
+            (11, 4, 97),
+            (12, 7, 100),
+        ] {
             let d = random_chunk(seed, distinct, air);
             check_occupied::<U16>(&d);
             check_occupied::<U8>(&d);
@@ -141,7 +181,16 @@ mod tests {
 
     #[test]
     fn representations_agree() {
-        for (seed, distinct, air) in [(1, 1, 50), (2, 3, 90), (3, 15, 30), (4, 200, 70), (5, 1000, 50), (6, 1, 0), (7, 2, 100), (9, 5, 99)] {
+        for (seed, distinct, air) in [
+            (1, 1, 50),
+            (2, 3, 90),
+            (3, 15, 30),
+            (4, 200, 70),
+            (5, 1000, 50),
+            (6, 1, 0),
+            (7, 2, 100),
+            (9, 5, 99),
+        ] {
             let d = random_chunk(seed, distinct, air);
             check::<U16>(&d);
             check::<Bits>(&d);
@@ -161,6 +210,9 @@ mod tests {
             .iter()
             .map(|&(seed, n)| Palette::build(&random_chunk(seed + 10, n, 0)).traversal_bytes())
             .collect();
-        assert_eq!(sizes, vec![64 + 4096, 64 + 8192, 64 + 16384, 64 + 32768, 64 + 65536]);
+        assert_eq!(
+            sizes,
+            vec![64 + 4096, 64 + 8192, 64 + 16384, 64 + 32768, 64 + 65536]
+        );
     }
 }

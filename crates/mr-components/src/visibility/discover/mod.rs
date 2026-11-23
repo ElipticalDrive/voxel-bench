@@ -74,13 +74,23 @@ const COORD_MASK: u64 = (1 << COORD_BITS) - 1;
 /// Packs absolute cell + face into a u64 key (20 bits per axis, two's complement).
 #[inline]
 pub fn face_key(cell: IVec3, face: u32) -> u64 {
-    (cell.x as u64 & COORD_MASK) | (cell.y as u64 & COORD_MASK) << 20 | (cell.z as u64 & COORD_MASK) << 40 | (face as u64) << 60
+    (cell.x as u64 & COORD_MASK)
+        | (cell.y as u64 & COORD_MASK) << 20
+        | (cell.z as u64 & COORD_MASK) << 40
+        | (face as u64) << 60
 }
 
 #[inline]
 pub fn unpack_key(k: u64) -> (IVec3, u32) {
     let s = |v: u64| ((v as i64) << (64 - COORD_BITS) >> (64 - COORD_BITS)) as i32;
-    (IVec3::new(s(k & COORD_MASK), s(k >> 20 & COORD_MASK), s(k >> 40 & COORD_MASK)), (k >> 60) as u32)
+    (
+        IVec3::new(
+            s(k & COORD_MASK),
+            s(k >> 20 & COORD_MASK),
+            s(k >> 40 & COORD_MASK),
+        ),
+        (k >> 60) as u32,
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -195,7 +205,10 @@ pub(crate) fn record(rel: IVec3, face: u32, block: u16) -> Option<[u32; 2]> {
     if b.x < 0 || b.y < 0 || b.z < 0 || b.x >= lim || b.y >= lim || b.z >= lim {
         return None;
     }
-    Some([b.x as u32 | (b.z as u32) << 15 | (face & 3) << 30, block as u32 | (b.y as u32) << 16 | (face >> 2) << 31])
+    Some([
+        b.x as u32 | (b.z as u32) << 15 | (face & 3) << 30,
+        block as u32 | (b.y as u32) << 16 | (face >> 2) << 31,
+    ])
 }
 
 /// Camera basis + widened FOV used to place discovery rays.
@@ -223,13 +236,27 @@ impl Rays {
         }
         let sx = v.dot(self.r) / (z * self.tx);
         let sy = v.dot(self.u) / (z * self.ty);
-        Some(Vec3::new((sx + 1.0) * 0.5 * self.w, (1.0 - sy) * 0.5 * self.h, z))
+        Some(Vec3::new(
+            (sx + 1.0) * 0.5 * self.w,
+            (1.0 - sy) * 0.5 * self.h,
+            z,
+        ))
     }
 
     pub fn new(cam: &Camera, w: u32, h: u32, margin: f32) -> Self {
         let (cb, o) = cam.split_position();
         let ty = (cam.fov_y * 0.5).tan() * (1.0 + margin);
-        Self { cb, o, f: cam.forward(), r: cam.right(), u: cam.up(), tx: ty * w as f32 / h as f32, ty, w: w as f32, h: h as f32 }
+        Self {
+            cb,
+            o,
+            f: cam.forward(),
+            r: cam.right(),
+            u: cam.up(),
+            tx: ty * w as f32 / h as f32,
+            ty,
+            w: w as f32,
+            h: h as f32,
+        }
     }
 
     /// Direction through image position (x, y) in pixels (same formula as the ray casters).
@@ -243,7 +270,14 @@ impl Rays {
 
 /// Traces one ray; returns (face key, plane id, hit point) or a miss.
 #[inline]
-pub fn cast<G: World>(grid: &G, rays: &Rays, bmin: IVec3, bmax: IVec3, x: f32, y: f32) -> Option<(u64, u64, Vec3)> {
+pub fn cast<G: World>(
+    grid: &G,
+    rays: &Rays,
+    bmin: IVec3,
+    bmax: IVec3,
+    x: f32,
+    y: f32,
+) -> Option<(u64, u64, Vec3)> {
     let d = rays.dir(x, y);
     let h = grid.trace(rays.cb, rays.o, d, bmin, bmax)?;
     if h.axis > 2 {
@@ -261,7 +295,14 @@ pub(crate) enum Verdict {
     Split,
 }
 
-pub fn discover<G: World>(st: State, grid: &G, cam: &Camera, w: u32, h: u32, set: &Settings) -> Output {
+pub fn discover<G: World>(
+    st: State,
+    grid: &G,
+    cam: &Camera,
+    w: u32,
+    h: u32,
+    set: &Settings,
+) -> Output {
     if set.cluster {
         return crate::visibility::cluster::cpu::discover(st, grid, cam, w, h, set);
     }
@@ -276,12 +317,24 @@ pub fn discover<G: World>(st: State, grid: &G, cam: &Camera, w: u32, h: u32, set
 /// range but not out of `cam`'s (the camera block's), then moves to `cam` and every record is
 /// written; faces out of range of both are not drawn. With `tags`, also each slot's tag (0 if
 /// absent).
-pub fn finalize<G: World>(st: &mut State, mut found: Vec<u64>, grid: &G, cam: IVec3, keep_frames: u32, tags: Option<&FaceMap>) -> Records {
+pub fn finalize<G: World>(
+    st: &mut State,
+    mut found: Vec<u64>,
+    grid: &G,
+    cam: IVec3,
+    keep_frames: u32,
+    tags: Option<&FaceMap>,
+) -> Records {
     let frame = st.frame;
     found.par_sort_unstable();
     found.dedup();
     for k in found {
-        st.s.entry(k).and_modify(|e| e.frame = frame).or_insert(Known { frame, slot: NO_SLOT });
+        st.s.entry(k)
+            .and_modify(|e| e.frame = frame)
+            .or_insert(Known {
+                frame,
+                slot: NO_SLOT,
+            });
     }
     let keep = keep_frames.max(1);
     let keys = &mut st.keys;
@@ -313,7 +366,9 @@ pub fn finalize<G: World>(st: &mut State, mut found: Vec<u64>, grid: &G, cam: IV
             e.slot = NO_SLOT;
         }
     }
-    let mut holes: Vec<u32> = (0..st.keys.len() as u32).filter(|&i| st.keys[i as usize] == MISS).collect();
+    let mut holes: Vec<u32> = (0..st.keys.len() as u32)
+        .filter(|&i| st.keys[i as usize] == MISS)
+        .collect();
     holes.reverse();
     loop {
         while st.keys.last() == Some(&MISS) {
@@ -346,24 +401,51 @@ pub fn finalize<G: World>(st: &mut State, mut found: Vec<u64>, grid: &G, cam: IV
     written.sort_unstable();
     written.dedup();
     let count = st.recs.len() as u32;
-    let writes = written.into_iter().take_while(|&s| s < count).map(|s| (s, st.recs[s as usize])).collect();
-    let tags = tags.map_or_else(Vec::new, |t| st.keys.par_iter().map(|k| t.get(k).copied().unwrap_or(0)).collect());
-    Records { writes, count, anchor: st.anchor.expect("placed"), tags }
+    let writes = written
+        .into_iter()
+        .take_while(|&s| s < count)
+        .map(|s| (s, st.recs[s as usize]))
+        .collect();
+    let tags = tags.map_or_else(Vec::new, |t| {
+        st.keys
+            .par_iter()
+            .map(|k| t.get(k).copied().unwrap_or(0))
+            .collect()
+    });
+    Records {
+        writes,
+        count,
+        anchor: st.anchor.expect("placed"),
+        tags,
+    }
 }
 
 /// The faces of S whose drawn record changes with `anchor`: `Some` = its record (newly
 /// exposed or changed block), `None` = no longer exposed (or out of range). `Err` when an
 /// exposed face is out of the records' range but in range of `cam`.
-fn changes<G: World>(st: &State, grid: &G, anchor: IVec3, cam: Option<IVec3>) -> Result<Vec<(u64, Option<[u32; 2]>)>, ()> {
-    st.s
-        .par_iter()
+fn changes<G: World>(
+    st: &State,
+    grid: &G,
+    anchor: IVec3,
+    cam: Option<IVec3>,
+) -> Result<Vec<(u64, Option<[u32; 2]>)>, ()> {
+    st.s.par_iter()
         .filter_map(|(&k, e)| {
             let (cell, face) = unpack_key(k);
             let block = grid.block(cell);
-            let exposed = block != 0 && grid.block(cell + Face::from_index(face as usize).normal()) == 0;
-            let rec = if exposed { record(cell - anchor, face, block) } else { None };
+            let exposed =
+                block != 0 && grid.block(cell + Face::from_index(face as usize).normal()) == 0;
+            let rec = if exposed {
+                record(cell - anchor, face, block)
+            } else {
+                None
+            };
             match (rec, e.slot) {
-                (None, _) if exposed && cam.is_some_and(|c| record(cell - c, face, block).is_some()) => Some(Err(())),
+                (None, _)
+                    if exposed && cam.is_some_and(|c| record(cell - c, face, block).is_some()) =>
+                {
+                    Some(Err(()))
+                }
                 (None, NO_SLOT) => None,
                 (None, _) => Some(Ok((k, None))),
                 (Some(r), s) if s != NO_SLOT && st.recs[s as usize] == r => None,
@@ -383,7 +465,9 @@ pub fn audit<G: World>(grid: &G, s: &FaceSet, cam: &Camera, w: u32, h: u32) -> (
         .map(|y| {
             let (mut miss, mut hit, mut keys) = (0u64, 0u64, vec![]);
             for x in 0..w {
-                if let Some((k, _, _)) = cast(grid, &rays, bmin, bmax, x as f32 + 0.5, y as f32 + 0.5) {
+                if let Some((k, _, _)) =
+                    cast(grid, &rays, bmin, bmax, x as f32 + 0.5, y as f32 + 0.5)
+                {
                     hit += 1;
                     if !s.contains_key(&k) {
                         miss += 1;
@@ -393,10 +477,13 @@ pub fn audit<G: World>(grid: &G, s: &FaceSet, cam: &Camera, w: u32, h: u32) -> (
             }
             (miss, hit, keys)
         })
-        .reduce(|| (0, 0, vec![]), |mut a, mut b| {
-            a.2.append(&mut b.2);
-            (a.0 + b.0, a.1 + b.1, a.2)
-        });
+        .reduce(
+            || (0, 0, vec![]),
+            |mut a, mut b| {
+                a.2.append(&mut b.2);
+                (a.0 + b.0, a.1 + b.1, a.2)
+            },
+        );
     keys.sort_unstable();
     keys.dedup();
     (px, keys.len() as u64, hit)
@@ -442,7 +529,9 @@ mod tests {
             world.0.insert(c, 1 + rnd(5) as u16);
         }
         let cells: Vec<IVec3> = world.0.keys().copied().collect();
-        let far: Vec<IVec3> = (0..200).map(|i| IVec3::new(20_000 + i % 10, i / 10, 0)).collect();
+        let far: Vec<IVec3> = (0..200)
+            .map(|i| IVec3::new(20_000 + i % 10, i / 10, 0))
+            .collect();
         for &c in &far {
             world.0.insert(c, 1);
         }
@@ -453,9 +542,15 @@ mod tests {
             // (the faces near the origin out of range of both are not drawn, and the anchor
             // stays), then back.
             let away = (100..104).contains(&pass);
-            let cam = if away { IVec3::new(20_000, 0, 0) } else { IVec3::new(rnd(8) as i32, 0, 0) };
+            let cam = if away {
+                IVec3::new(20_000, 0, 0)
+            } else {
+                IVec3::new(rnd(8) as i32, 0, 0)
+            };
             let at = if away { &far } else { &cells };
-            let found: Vec<u64> = (0..300).map(|_| face_key(at[rnd(at.len() as u32) as usize], rnd(6))).collect();
+            let found: Vec<u64> = (0..300)
+                .map(|_| face_key(at[rnd(at.len() as u32) as usize], rnd(6)))
+                .collect();
             for _ in 0..20 {
                 let c = cells[rnd(cells.len() as u32) as usize];
                 world.0.insert(c, rnd(6) as u16);
@@ -469,24 +564,33 @@ mod tests {
             anchors.push(r.anchor);
             if pass == 103 {
                 assert_eq!(r.count as usize, gpu.len());
-                assert!(st.s.keys().any(|&k| unpack_key(k).0.x < 100), "near faces still in S, not drawn");
+                assert!(
+                    st.s.keys().any(|&k| unpack_key(k).0.x < 100),
+                    "near faces still in S, not drawn"
+                );
             }
-            let mut want: Vec<[u32; 2]> = st
-                .s
-                .keys()
-                .filter_map(|&k| {
-                    let (cell, face) = unpack_key(k);
-                    let block = world.block(cell);
-                    (block != 0 && world.block(cell + Face::from_index(face as usize).normal()) == 0).then(|| record(cell - r.anchor, face, block)).flatten()
-                })
-                .collect();
+            let mut want: Vec<[u32; 2]> =
+                st.s.keys()
+                    .filter_map(|&k| {
+                        let (cell, face) = unpack_key(k);
+                        let block = world.block(cell);
+                        (block != 0
+                            && world.block(cell + Face::from_index(face as usize).normal()) == 0)
+                            .then(|| record(cell - r.anchor, face, block))
+                            .flatten()
+                    })
+                    .collect();
             let mut have = gpu.clone();
             want.sort_unstable();
             have.sort_unstable();
             assert_eq!(have, want, "pass {pass}");
         }
         anchors.dedup();
-        assert_eq!(anchors.len(), 3, "the anchor moved away and back: {anchors:?}");
+        assert_eq!(
+            anchors.len(),
+            3,
+            "the anchor moved away and back: {anchors:?}"
+        );
         assert!(written * 3 < full, "{written} records written of {full}");
     }
 }

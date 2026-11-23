@@ -38,20 +38,32 @@ pub fn layout(gpu: &Gpu, st: &GpuStorage, visibility: wgpu::ShaderStages) -> wgp
     let entry = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility,
-        ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
         count: None,
     };
     let head = wgpu::BindGroupLayoutEntry {
         binding: 3,
         visibility,
-        ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
         count: None,
     };
     let mut entries = vec![entry(0), entry(1), entry(2), head];
     if let Kind::Clipmap = st.kind {
         entries.extend(super::clipmap::layout_entries(visibility));
     }
-    gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("storage"), entries: &entries })
+    gpu.device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("storage"),
+            entries: &entries,
+        })
 }
 
 /// What a storage needs to know about the run.
@@ -92,16 +104,34 @@ impl StorageData {
     pub fn new(gpu: &Gpu, st: GpuStorage, limits: Limits) -> Self {
         let limit_mb = limits.mb;
         let max = match st.kind {
-            Kind::Pool { aux_words, .. } => (limit_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1) * aux_words as u64 * 4,
+            Kind::Pool { aux_words, .. } => {
+                (limit_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1) * aux_words as u64 * 4
+            }
             Kind::Region { .. } | Kind::Dag => limit_mb as u64 * 1024 * 1024,
             Kind::Clipmap => 256,
         };
-        let aux = GrowableBuffer::new(gpu, "storage aux", 1 << 16, max.max(256), wgpu::BufferUsages::STORAGE);
+        let aux = GrowableBuffer::new(
+            gpu,
+            "storage aux",
+            1 << 16,
+            max.max(256),
+            wgpu::BufferUsages::STORAGE,
+        );
         let regions_buf = Self::table_buffer(gpu, 16 * 16);
-        let head_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("storage region head"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let head_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("storage region head"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         // An empty table (mask 0, nothing found) until the first upload.
-        gpu.queue.write_buffer(&regions_buf, 0, bytemuck::cast_slice(&[[0u32, 0, 0, EMPTY]]));
-        gpu.queue.write_buffer(&head_buf, 0, bytemuck::cast_slice(&[0u32; 4]));
+        gpu.queue.write_buffer(
+            &regions_buf,
+            0,
+            bytemuck::cast_slice(&[[0u32, 0, 0, EMPTY]]),
+        );
+        gpu.queue
+            .write_buffer(&head_buf, 0, bytemuck::cast_slice(&[0u32; 4]));
         Self {
             alloc: RangeAlloc::new((aux.size() / 16) as u32),
             st,
@@ -114,12 +144,18 @@ impl StorageData {
             table_dirty: true,
             rebuilt: 0,
             dag: Dag::default(),
-            clip: matches!(st.kind, Kind::Clipmap).then(|| Clipmap::new(gpu, limits.view_radius, limits.wide_ids)),
+            clip: matches!(st.kind, Kind::Clipmap)
+                .then(|| Clipmap::new(gpu, limits.view_radius, limits.wide_ids)),
         }
     }
 
     fn table_buffer(gpu: &Gpu, size: u64) -> wgpu::Buffer {
-        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("storage regions"), size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+        gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("storage regions"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
     }
 
     /// Whether this storage reads the shared voxel pool (`VoxelWorldConfig::upload_voxels`).
@@ -130,19 +166,32 @@ impl StorageData {
     /// After `VoxelWorld::apply`: brings the side data of the `changed` chunks up to date
     /// (pool storages) or marks their regions dirty (region storages; rebuilt in
     /// `prepare`).
-    pub fn update(&mut self, gpu: &Gpu, world: &VoxelWorld, changed: &[IVec3]) -> anyhow::Result<()> {
+    pub fn update(
+        &mut self,
+        gpu: &Gpu,
+        world: &VoxelWorld,
+        changed: &[IVec3],
+    ) -> anyhow::Result<()> {
         match self.st.kind {
             Kind::Pool { aux_words: 0, .. } => {}
             Kind::Pool { aux_words, build } => {
                 let unit = aux_words as u64 * 4;
                 // Keep the side data indexed like the pool: every changed dense chunk (at any
                 // LOD) rewrites its slot (slots of unloaded chunks are simply no longer read).
-                if self.aux.reserve(gpu, world.pool_slots() as u64 * unit, "`pool_mb`").ok_or_else(|| anyhow::anyhow!("the storage's side data does not fit"))? {
+                if self
+                    .aux
+                    .reserve(gpu, world.pool_slots() as u64 * unit, "`pool_mb`")
+                    .ok_or_else(|| anyhow::anyhow!("the storage's side data does not fit"))?
+                {
                     self.bind = None;
                 }
                 for &key in world.changed_keys() {
                     if let (Some(slot), Some(ChunkData::Dense(d))) = world.slot_and_chunk(key) {
-                        gpu.queue.write_buffer(self.aux.buffer(), slot as u64 * unit, bytemuck::cast_slice(&build(d)));
+                        gpu.queue.write_buffer(
+                            self.aux.buffer(),
+                            slot as u64 * unit,
+                            bytemuck::cast_slice(&build(d)),
+                        );
                     }
                 }
             }
@@ -163,7 +212,12 @@ impl StorageData {
     }
 
     /// Rebuilds dirty regions, uploads the region table and returns the bind group.
-    pub fn prepare(&mut self, gpu: &Gpu, world: &VoxelWorld, layout: &wgpu::BindGroupLayout) -> &wgpu::BindGroup {
+    pub fn prepare(
+        &mut self,
+        gpu: &Gpu,
+        world: &VoxelWorld,
+        layout: &wgpu::BindGroupLayout,
+    ) -> &wgpu::BindGroup {
         self.rebuilt = 0;
         match self.st.kind {
             Kind::Pool { .. } | Kind::Clipmap => {}
@@ -175,20 +229,42 @@ impl StorageData {
         }
         if self.bind.is_none() {
             let mut entries = vec![
-                wgpu::BindGroupEntry { binding: 0, resource: self.aux.buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.regions_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.aux.buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.head_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.aux.buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.regions_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.aux.buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.head_buf.as_entire_binding(),
+                },
             ];
             if let Some(clip) = &self.clip {
                 entries.extend(clip.bind_entries());
             }
-            self.bind = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("storage"), layout, entries: &entries }));
+            self.bind = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("storage"),
+                layout,
+                entries: &entries,
+            }));
         }
         self.bind.as_ref().unwrap()
     }
 
-    fn rebuild(&mut self, gpu: &Gpu, world: &VoxelWorld, shift: u32, build: fn(&dyn Fn(IVec3) -> BlockId) -> RegionBlob) {
+    fn rebuild(
+        &mut self,
+        gpu: &Gpu,
+        world: &VoxelWorld,
+        shift: u32,
+        build: fn(&dyn Fn(IVec3) -> BlockId) -> RegionBlob,
+    ) {
         if self.dirty.is_empty() {
             return;
         }
@@ -199,13 +275,25 @@ impl StorageData {
             .map(|&r| {
                 // The region's chunks, x-fastest.
                 let n = per as usize;
-                let chunks: Vec<Option<&ChunkData>> = (0..n * n * n).map(|i| world.chunk(r * per + IVec3::new((i % n) as i32, (i / n % n) as i32, (i / (n * n)) as i32))).collect();
+                let chunks: Vec<Option<&ChunkData>> = (0..n * n * n)
+                    .map(|i| {
+                        world.chunk(
+                            r * per
+                                + IVec3::new(
+                                    (i % n) as i32,
+                                    (i / n % n) as i32,
+                                    (i / (n * n)) as i32,
+                                ),
+                        )
+                    })
+                    .collect();
                 if chunks.iter().all(|c| c.is_none()) {
                     return (r, RegionBlob::Empty);
                 }
                 let get = |p: IVec3| {
                     let c: IVec3 = p >> 5;
-                    chunks[(c.x + (c.y + c.z * per) * per) as usize].map_or(BlockId::AIR, |ch| ch.get(local_of_block(p)))
+                    chunks[(c.x + (c.y + c.z * per) * per) as usize]
+                        .map_or(BlockId::AIR, |ch| ch.get(local_of_block(p)))
                 };
                 (r, build(&get))
             })
@@ -213,22 +301,37 @@ impl StorageData {
         self.rebuilt = built.len();
         for (r, blob) in built {
             if let Some(old) = self.regions.remove(&r)
-                && let Some((off, n)) = old.words {
+                && let Some((off, n)) = old.words
+            {
                 self.alloc.free(off, n);
             }
             self.table_dirty = true;
             let region = match blob {
                 RegionBlob::Empty => continue,
-                RegionBlob::Uniform(b) => Region { words: None, handle: UNIFORM_BIT | b as u32 },
+                RegionBlob::Uniform(b) => Region {
+                    words: None,
+                    handle: UNIFORM_BIT | b as u32,
+                },
                 RegionBlob::Words(w) => {
                     // In 16-byte units: blobs start 16-byte aligned (`aux_v4`).
                     let units = w.len().div_ceil(4) as u32;
-                    let Some((off, grew)) = self.aux.alloc(gpu, &mut self.alloc, units, 16, "`pool_mb`") else { continue };
+                    let Some((off, grew)) =
+                        self.aux.alloc(gpu, &mut self.alloc, units, 16, "`pool_mb`")
+                    else {
+                        continue;
+                    };
                     if grew {
                         self.bind = None;
                     }
-                    gpu.queue.write_buffer(self.aux.buffer(), off as u64 * 16, bytemuck::cast_slice(&w));
-                    Region { words: Some((off, units)), handle: off * 4 }
+                    gpu.queue.write_buffer(
+                        self.aux.buffer(),
+                        off as u64 * 16,
+                        bytemuck::cast_slice(&w),
+                    );
+                    Region {
+                        words: Some((off, units)),
+                        handle: off * 4,
+                    }
                 }
             };
             self.regions.insert(r, region);
@@ -245,7 +348,13 @@ impl StorageData {
         for c in changed {
             match self.dag.roots.get(&c) {
                 // A uniform root is an inline block: LEAF == UNIFORM_BIT.
-                Some(&root) => self.regions.insert(c, Region { words: None, handle: root }),
+                Some(&root) => self.regions.insert(
+                    c,
+                    Region {
+                        words: None,
+                        handle: root,
+                    },
+                ),
                 None => self.regions.remove(&c),
             };
         }
@@ -257,7 +366,11 @@ impl StorageData {
             None => return,
         }
         if self.dag.uploaded < n {
-            gpu.queue.write_buffer(self.aux.buffer(), self.dag.uploaded as u64 * 32, bytemuck::cast_slice(&self.dag.nodes[self.dag.uploaded..]));
+            gpu.queue.write_buffer(
+                self.aux.buffer(),
+                self.dag.uploaded as u64 * 32,
+                bytemuck::cast_slice(&self.dag.nodes[self.dag.uploaded..]),
+            );
             self.dag.uploaded = n;
         }
     }
@@ -278,13 +391,18 @@ impl StorageData {
             probe = probe.max(n);
             table[i] = [r.x as u32, r.y as u32, r.z as u32, reg.handle];
         }
-        gpu.queue.write_buffer(&self.head_buf, 0, bytemuck::cast_slice(&[cap as u32 - 1, probe, 0, 0]));
+        gpu.queue.write_buffer(
+            &self.head_buf,
+            0,
+            bytemuck::cast_slice(&[cap as u32 - 1, probe, 0, 0]),
+        );
         let bytes = (table.len() * 16) as u64;
         if bytes > self.regions_buf.size() {
             self.regions_buf = Self::table_buffer(gpu, bytes.next_power_of_two());
             self.bind = None;
         }
-        gpu.queue.write_buffer(&self.regions_buf, 0, bytemuck::cast_slice(&table));
+        gpu.queue
+            .write_buffer(&self.regions_buf, 0, bytemuck::cast_slice(&table));
         self.table_dirty = false;
     }
 
@@ -294,7 +412,14 @@ impl StorageData {
         match self.st.kind {
             Kind::Pool { aux_words: 0, .. } => 0,
             Kind::Pool { .. } => self.aux.size(),
-            Kind::Region { .. } => self.regions.values().filter_map(|r| r.words).map(|(_, n)| n as u64 * 16).sum::<u64>() + self.regions_buf.size(),
+            Kind::Region { .. } => {
+                self.regions
+                    .values()
+                    .filter_map(|r| r.words)
+                    .map(|(_, n)| n as u64 * 16)
+                    .sum::<u64>()
+                    + self.regions_buf.size()
+            }
             Kind::Dag => self.dag.nodes.len() as u64 * 32 + self.regions_buf.size(),
             Kind::Clipmap => self.clip.as_ref().map_or(0, |c| c.memory_bytes()),
         }
@@ -304,7 +429,10 @@ impl StorageData {
     pub fn counters(&self) -> Vec<(String, f64)> {
         match self.st.kind {
             Kind::Pool { .. } => vec![],
-            Kind::Region { .. } => vec![("regions".into(), self.regions.len() as f64), ("regions_rebuilt".into(), self.rebuilt as f64)],
+            Kind::Region { .. } => vec![
+                ("regions".into(), self.regions.len() as f64),
+                ("regions_rebuilt".into(), self.rebuilt as f64),
+            ],
             Kind::Dag => vec![
                 ("chunks".into(), self.regions.len() as f64),
                 ("dag_nodes".into(), self.dag.nodes.len() as f64),
@@ -312,7 +440,10 @@ impl StorageData {
                 ("dag_collections".into(), self.dag.collections as f64),
                 ("chunks_rebuilt".into(), self.rebuilt as f64),
             ],
-            Kind::Clipmap => vec![("clipmap_evictions".into(), self.clip.as_ref().map_or(0.0, |c| c.dropped as f64))],
+            Kind::Clipmap => vec![(
+                "clipmap_evictions".into(),
+                self.clip.as_ref().map_or(0.0, |c| c.dropped as f64),
+            )],
         }
     }
 }
@@ -350,7 +481,10 @@ impl Bound {
     /// The first storage's bind group (none when every site is a ray query) and the
     /// others' by group (a face drawer's `binds` and `more`).
     pub fn split(&self) -> (Option<&wgpu::BindGroup>, Vec<(u32, &wgpu::BindGroup)>) {
-        (self.0.first().map(|(_, b)| b), self.0.iter().skip(1).map(|(g, b)| (*g, b)).collect())
+        (
+            self.0.first().map(|(_, b)| b),
+            self.0.iter().skip(1).map(|(g, b)| (*g, b)).collect(),
+        )
     }
 
     /// Storage `i`'s bind group.
@@ -360,15 +494,29 @@ impl Bound {
 }
 
 impl StorageSet {
-    pub fn new(gpu: &Gpu, walks: &crate::shaders::Walks, visibility: wgpu::ShaderStages, limits: Limits) -> Self {
+    pub fn new(
+        gpu: &Gpu,
+        walks: &crate::shaders::Walks,
+        visibility: wgpu::ShaderStages,
+        limits: Limits,
+    ) -> Self {
         let items = walks
             .storages
             .iter()
             .enumerate()
             .map(|(i, s)| {
                 let st = walks.gpu_storage(i);
-                let prefix = if i == 0 { String::new() } else { format!("{}_", s.node.split('.').next().unwrap_or(&s.node)) };
-                Instance { layout: layout(gpu, &st, visibility), data: StorageData::new(gpu, st, limits), group: s.group, prefix }
+                let prefix = if i == 0 {
+                    String::new()
+                } else {
+                    format!("{}_", s.node.split('.').next().unwrap_or(&s.node))
+                };
+                Instance {
+                    layout: layout(gpu, &st, visibility),
+                    data: StorageData::new(gpu, st, limits),
+                    group: s.group,
+                    prefix,
+                }
             })
             .collect();
         Self { items }
@@ -384,7 +532,10 @@ impl StorageSet {
     }
 
     /// `base` (a pipeline's bind group layouts) with the storages' at their groups.
-    pub fn layouts<'a>(&'a self, base: &[Option<&'a wgpu::BindGroupLayout>]) -> Vec<Option<&'a wgpu::BindGroupLayout>> {
+    pub fn layouts<'a>(
+        &'a self,
+        base: &[Option<&'a wgpu::BindGroupLayout>],
+    ) -> Vec<Option<&'a wgpu::BindGroupLayout>> {
         let mut v = base.to_vec();
         for it in &self.items {
             let g = it.group as usize;
@@ -401,12 +552,24 @@ impl StorageSet {
         self.items.iter().map(|i| i.group + 1).max().unwrap_or(0)
     }
 
-    pub fn update(&mut self, gpu: &Gpu, world: &VoxelWorld, changed: &[IVec3]) -> anyhow::Result<()> {
-        self.items.iter_mut().try_for_each(|it| it.data.update(gpu, world, changed))
+    pub fn update(
+        &mut self,
+        gpu: &Gpu,
+        world: &VoxelWorld,
+        changed: &[IVec3],
+    ) -> anyhow::Result<()> {
+        self.items
+            .iter_mut()
+            .try_for_each(|it| it.data.update(gpu, world, changed))
     }
 
     pub fn prepare(&mut self, gpu: &Gpu, world: &VoxelWorld) -> Bound {
-        Bound(self.items.iter_mut().map(|it| (it.group, it.data.prepare(gpu, world, &it.layout).clone())).collect())
+        Bound(
+            self.items
+                .iter_mut()
+                .map(|it| (it.group, it.data.prepare(gpu, world, &it.layout).clone()))
+                .collect(),
+        )
     }
 
     pub fn memory_bytes(&self) -> u64 {
@@ -414,6 +577,14 @@ impl StorageSet {
     }
 
     pub fn counters(&self) -> Vec<(String, f64)> {
-        self.items.iter().flat_map(|it| it.data.counters().into_iter().map(|(k, v)| (format!("{}{k}", it.prefix), v))).collect()
+        self.items
+            .iter()
+            .flat_map(|it| {
+                it.data
+                    .counters()
+                    .into_iter()
+                    .map(|(k, v)| (format!("{}{k}", it.prefix), v))
+            })
+            .collect()
     }
 }

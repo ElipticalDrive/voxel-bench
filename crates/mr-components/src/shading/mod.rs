@@ -21,7 +21,11 @@ pub mod state;
 pub const DEFERRED_WGSL: &str = include_str!("deferred.wgsl");
 /// The deferred pass over the common packed record (`pack_hit`; the back end provides
 /// `record_at`, its view and `view_surface`).
-pub const DEFERRED_PACKED_WGSL: &str = concat!(include_str!("deferred.wgsl"), "\n", include_str!("packed.wgsl"));
+pub const DEFERRED_PACKED_WGSL: &str = concat!(
+    include_str!("deferred.wgsl"),
+    "\n",
+    include_str!("packed.wgsl")
+);
 /// Mesh surfaces through the shading component (`shade_mesh`; module `shaders::SHADING_MESH`).
 pub const SHADE_MESH_WGSL: &str = include_str!("mesh.wgsl");
 
