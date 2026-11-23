@@ -250,7 +250,7 @@ fn occluded<G: World>(grid: &G, cb: IVec3, cell: IVec3, n: IVec3, o: Vec3, cells
 /// pixel's ray grazes a side face of a block whose front face was found), of its 6
 /// neighbours too (2) or of its 3x3x3 neighbourhood (3): sub-pixel faces that the next
 /// frame's slightly different rays land on.
-fn dilate_faces<G: World>(grid: &G, key: u64, cb: IVec3, o: Vec3, level: u32, out: &mut Vec<u64>) {
+pub(crate) fn dilate_faces<G: World>(grid: &G, key: u64, cb: IVec3, o: Vec3, level: u32, out: &mut Vec<u64>) {
     let (cell, _) = unpack_key(key);
     let mut visit = |c: IVec3| {
         if grid.block(c) == 0 {

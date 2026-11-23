@@ -94,6 +94,10 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
   changed neither showcase (36.7 dB) nor city lit (35.7) at that size. Its cost (idle, 300
   frames, against `occluders = 0`): GPU discovery+draw +6% lit / +11% unlit on showcase, +2% /
   +5% on terrain; CPU quadtree -12% fps on showcase, -3% on terrain.)
+  `cluster` missed small distant blocks (islands lit 34.0 dB settled at 480x270): a lattice
+  cell up to `sky_tile` (then 16 px) whose four corner seeds missed was sky, and an island
+  between seeds was never cast. `sky_tile` is now 8 for both, and `dilate` applies to seeds
+  cast at spacing <= `dilate_below`: islands lit settled 34.0 -> 43.7, unlit 37.8 -> 45.5.
 - Drawing discovered faces one quad each disagrees with a ray about which face owns a pixel
   whose centre lies on, or within float error of, the shared edge of faces smaller than a
   pixel. In a distant forest (`far`, faces ~0.6 px at 480x270, ~460 blocks away) that is ~0.13%

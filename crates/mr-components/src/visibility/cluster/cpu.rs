@@ -18,6 +18,9 @@
 //!    occluded corner is added to S but neither covers nor continues the fill.
 //! 4. Repeat until every pixel is covered or has been sampled by a seed ray.
 //!
+//! Seeds cast at spacing <= `dilate_below` also add the camera-facing faces around their
+//! hit (`dilate`, as the quadtree's fine samples): small distant blocks between seeds.
+//!
 //! Completeness: an occluder in front of a face projects onto the face's plane as a region
 //! containing a square of side > 1, and any such square overlapping a unit face
 //! contains one of that face's corners. The occluder's full shadow is the hull of its near
@@ -30,6 +33,7 @@ use rayon::prelude::*;
 
 use crate::visibility::discover::{FaceMap, Output, Rays, Settings, State, cast, face_key, finalize};
 use crate::visibility::discover::grid::World;
+use crate::visibility::quadtree::cpu::dilate_faces;
 
 /// How a face of S was found this frame (`view = kinds` colours them).
 pub const KIND_CONFIRMED: u8 = 1;
@@ -178,6 +182,9 @@ pub fn discover<G: World>(mut st: State, grid: &G, cam: &Camera, w: u32, h: u32,
             match hit {
                 Some(key) => {
                     found.push(key);
+                    if k <= set.dilate_below && set.dilate > 0 {
+                        dilate_faces(grid, key, rays.cb, rays.o, set.dilate, &mut found);
+                    }
                     cov[(y * w + x) as usize] = 1;
                     if let std::collections::hash_map::Entry::Vacant(e) = done.entry(key) {
                         e.insert(clusters as u32);
@@ -353,7 +360,7 @@ mod tests {
     }
 
     fn settings(seed_step: u32) -> Settings {
-        Settings { tile: 32, face_criterion: false, sky_tile: 16, keep_frames: 1, max_footprint: 4096, strict: true, jitter: false, margin: 0.0, dilate: 0, dilate_below: 2, cluster: true, seed_step, sky_sparse: false, occluders: 0 }
+        Settings { tile: 32, face_criterion: false, sky_tile: 8, keep_frames: 1, max_footprint: 4096, strict: true, jitter: false, margin: 0.0, dilate: 0, dilate_below: 2, cluster: true, seed_step, sky_sparse: false, occluders: 0 }
     }
 
     /// Every face visible at a pixel centre is in S (one pass, from several viewpoints).
