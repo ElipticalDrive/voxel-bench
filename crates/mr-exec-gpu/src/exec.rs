@@ -272,6 +272,9 @@ pub(crate) trait Region: State {
     fn quantities(&self) -> &'static [mr_core::Quantity] {
         &[]
     }
+    /// While a view is chosen, after the frame's passes: its own passes writing the viewed
+    /// quantity (`core.view`) where its frame's programs do not.
+    fn view(&mut self, _core: &Core, _enc: &mut wgpu::CommandEncoder, _ticket: Ticket) {}
 }
 
 /// The nodes of `g`'s passes on GPU slot `slot` in frame order, each by its node's role
@@ -320,11 +323,17 @@ impl<R: Region> Executor<R> {
         let start = std::time::Instant::now();
         let mut enc = core.gpu.device.create_command_encoder(&Default::default());
         region.setup(core, req);
+        if let Some(v) = &core.view {
+            v.clear(&mut enc);
+        }
         let mut cx = Cx { core, region, enc: &mut enc, ticket, req };
         for pass in &mut self.passes {
             pass.run(&mut cx);
         }
         // The post's view over the passes' image (its legend for the region's).
+        if core.view.is_some() {
+            region.view(core, &mut enc, ticket);
+        }
         let format = core.output_format();
         let viewed = core.view.as_mut().map(|v| {
             v.encode(&core.gpu, &mut enc, &core.output, format, core.view_max);
@@ -354,6 +363,8 @@ impl<R: Region> Executor<R> {
                 if let Err(e) = self.core.set_view(value.as_str().unwrap_or(""), qs) {
                     return Some(Err(e));
                 }
+                // A region whose own passes write its quantities has nothing to recompile.
+                return Some(self.region.set_param(&mut self.core, name, value).unwrap_or(Ok(())));
             }
             "view_max" => {
                 self.core.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32;

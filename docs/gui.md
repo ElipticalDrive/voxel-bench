@@ -143,9 +143,13 @@ colour ramp (Turbo), on a scale from 0 to `view_max` (white above it). `distance
 primary hit's distance in blocks (linear; the sky is white): where the far field starts, how
 deep a scene is, and with a LOD run where the coarse rings begin. Category views
 (discover-gpu `tiles` / `rays` / `churn` / `quads`, discover-cpu `clusters` / `kinds`) use
-fixed colours. On raycast-gpu and raycast-cpu the view is the post node's knob (`view`, `view_max`): its
-choices are the per-pixel quantities the graph's nodes write, and the frame is still shaded
-underneath; the others are still their own node's knobs. The renderer sends a legend with every frame. The viewport draws the legend in
+fixed colours. On raycast-gpu, raycast-cpu and discover-gpu the view is the post node's knob (`view`,
+`view_max`): its choices are the per-pixel quantities the graph's nodes write, and the frame
+is still shaded underneath; a category view tints the greyed image with its colours (sky
+and other pixels outside its categories keep the image). discover-gpu's `overdraw` counts
+the fragments of a separate raster of the drawn face list in its order (depth-tested, or
+all of them with `order = painter`), so it works with every drawer. The others are still
+their own node's knobs (discover-cpu's). The renderer sends a legend with every frame. The viewport draws the legend in
 the lane's corner and, over a numeric view, shows the value under the cursor.
 
 ## Quality probes

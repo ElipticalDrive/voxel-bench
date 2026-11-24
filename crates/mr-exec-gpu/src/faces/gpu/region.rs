@@ -11,7 +11,6 @@ use mr_gpu::voxels::hash3;
 use mr_gpu::wgpu;
 
 use super::buffers::{LevelUniform, Params, make_sized};
-use super::knobs::view_code;
 use super::*;
 use crate::Core;
 use crate::exec::Region;
@@ -103,7 +102,7 @@ impl exec::State for GpuSampler {
         self.sized = make_sized(&core.gpu, core.width, core.height);
         self.bind_faces(core);
         self.bind_disc = None;
-        self.bind_ov = None;
+        self.views = None;
         self.force_full = true;
     }
 
@@ -116,8 +115,8 @@ impl exec::State for GpuSampler {
 
 impl Region for GpuSampler {
     fn compile(&mut self, _: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
-        if self.drawing.drawer.mode().deferred() && (self.order == "painter" || view_code(&self.vis.view) == 4) {
-            anyhow::bail!("order = painter and view = overdraw need draw = raster (both draw forward)");
+        if self.drawing.drawer.mode().deferred() && self.order == "painter" {
+            anyhow::bail!("order = painter needs draw = raster (it draws forward)");
         }
         self.drawing.check_state(req.mode, Some(self.order == "painter"))
     }
@@ -138,8 +137,7 @@ impl Region for GpuSampler {
             // shading runs: lights may move).
             self.last_kind = FrameKind::Static;
             self.kind_counts[FrameKind::Static as usize] += 1;
-            // Nothing is new in a static frame.
-            self.drawing.write_frame(core, c, req.mode, if view_code(&self.vis.view) == 5 { 2 } else { 0 }, IVec3::ZERO);
+            self.drawing.write_frame(core, c, req.mode, 0, IVec3::ZERO);
             let tile = self.vis.tile;
             let world = Some(core.world.prepare(&core.gpu, c).clone());
             self.now = Frame { redraw: true, parity: (self.frame & 1) as usize, cols: core.width.div_ceil(tile), rows: core.height.div_ceil(tile), world, out: Some(core.output.create_view(&Default::default())), ..Frame::default() };
@@ -269,12 +267,7 @@ impl Region for GpuSampler {
             };
         }
         core.gpu.queue.write_buffer(&self.level_buf, 0, bytemuck::cast_slice(&lvls));
-        let view = match view_code(&self.vis.view) {
-            1 => 1,
-            5 => 2,
-            _ => 0,
-        };
-        self.drawing.write_frame(core, c, req.mode, view, IVec3::ZERO);
+        self.drawing.write_frame(core, c, req.mode, 0, IVec3::ZERO);
         let world = core.world.prepare(&core.gpu, c).clone();
         if self.bind_disc.is_none() {
             self.bind_disc = Some(self.make_bind_disc(core));
@@ -297,14 +290,22 @@ impl Region for GpuSampler {
     }
 
     fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
-        (self.counters(core, req.mode), self.legend(), core.accel_stats().1)
+        (self.counters(core, req.mode), None, core.accel_stats().1)
+    }
+
+    fn quantities(&self) -> &'static [Quantity] {
+        super::report::QUANTITIES
+    }
+
+    fn view(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket) {
+        self.encode_view(core, enc, ticket);
     }
 
     /// After the timed passes: hole detection's sky mask (from this frame's drawing, for the
-    /// next), the diagnostic overlay, the audit (so it does not inflate gpu_ms) and the
-    /// counters' copy into the staging buffer.
+    /// next), the audit (so it does not inflate gpu_ms) and the counters' copy into the
+    /// staging buffer.
     fn finish(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket) {
-        let Frame { redraw, parity, off, cols, rows, stage, .. } = self.now;
+        let Frame { redraw, parity, stage, .. } = self.now;
         let (width, height) = (core.width, core.height);
         if !redraw {
             let (world_bg, storage_bg, bind_disc) = self.groups();
@@ -321,7 +322,6 @@ impl Region for GpuSampler {
                 pixels(&mut enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sky mask"), timestamp_writes: None }), &self.pipe_sky);
             }
         }
-        self.encode_overlay(core, enc, ticket, if redraw { 0 } else { self.frame }, off.0, off.1, cols, rows);
         if redraw {
             return;
         }

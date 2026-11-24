@@ -1,7 +1,6 @@
 // The GPU face set's face source for the face drawer (`visibility/faces.wgsl`): one
-// instanced quad per face or merged run of the list built on the GPU (`view`: 1 churn
-// (tint faces new this frame), 2 quads (colour per drawn quad)). The drawer's visibility
-// component shades (`shade_surface`); lit-mode shadow rays walk their storage.
+// instanced quad per face or merged run of the list built on the GPU. The drawer's
+// visibility component shades (`shade_surface`); lit-mode shadow rays walk their storage.
 
 @group(0) @binding(8) var<storage, read> faces: array<vec4<u32>>; // key, table index, block, fresh | run length << 1 (merged runs; 0 = one face)
 @group(0) @binding(9) var<storage, read> chunk_pos: array<vec4<i32>>;
@@ -60,18 +59,6 @@ fn src_lookup(ii: u32, face: u32, h: Hit, d: vec3<f32>) -> u32 {
 }
 
 fn src_view(ii: u32, color: vec4<f32>) -> vec4<f32> {
-    if (fr.view == 2u) {
-        // Quads: one colour per drawn instance (a face, or a merged run of faces).
-        var h = (ii + 1u) * 0x9E3779B1u;
-        h ^= h >> 15u; h *= 0x85EBCA77u; h ^= h >> 13u;
-        let c = vec3<f32>(f32(h & 255u), f32((h >> 8u) & 255u), f32((h >> 16u) & 255u)) / 255.0;
-        return vec4<f32>(mix(color.rgb, c, 0.75), 1.0);
-    }
-    if (fr.view == 1u) {
-        // Churn: faces discovered this frame red, faces carried over greyed.
-        let g = dot(color.rgb, vec3<f32>(0.3, 0.5, 0.2));
-        return select(vec4<f32>(vec3<f32>(g * 0.6), 1.0), vec4<f32>(1.0, 0.15, 0.1, 1.0), (faces[ii].w & 1u) != 0u);
-    }
     return color;
 }
 
@@ -81,9 +68,28 @@ fn fs_id(in: VOut) -> @location(0) u32 {
     return in.info.y + 1u;
 }
 
-// `view = overdraw`: every rasterised fragment adds 1/255 to red (additive blending), so
-// red counts how many times each pixel was shaded (up to 255); the overlay pass colours it.
+// The post's category views of the drawn list, rasterised on their own and copied into its
+// quantity buffer. `churn`: faces new to the set this frame (category 1), carried over (2).
+// `quads`: one id per drawn instance (a face, or a merged run of faces).
 @fragment
-fn fs_overdraw(in: VOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0 / 255.0, 0.0, 0.0, 1.0);
+fn fs_churn(in: VOut) -> @location(0) u32 {
+    return select(2u, 1u, (faces[in.info.y].w & 1u) != 0u);
 }
+
+@fragment
+fn fs_quads(in: VOut) -> @location(0) u32 {
+    return (in.info.y + 1u) << 8u | 1u;
+}
+
+#ifdef VIEW_OVERDRAW
+// The post's `overdraw` view: every fragment passing the depth test (forced early where the
+// device can) counts in its quantity buffer.
+#ifdef EARLY_DEPTH
+@fragment @early_depth_test(force)
+#else
+@fragment
+#endif
+fn fs_overdraw(in: VOut) {
+    atomicAdd(&quantity[u32(in.pos.y) * fr.width + u32(in.pos.x)], 1u);
+}
+#endif

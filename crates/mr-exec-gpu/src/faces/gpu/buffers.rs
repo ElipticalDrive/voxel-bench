@@ -75,8 +75,7 @@ pub(super) struct LevelUniform {
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-pub(super) struct OverlayUniform {
-    pub(super) view: u32,
+pub(super) struct ViewUniform {
     pub(super) frame: u32,
     pub(super) tile: u32,
     pub(super) cols: u32,
@@ -85,7 +84,8 @@ pub(super) struct OverlayUniform {
     pub(super) lat_w: u32,
     pub(super) off_x: u32,
     pub(super) off_y: u32,
-    pub(super) view_max: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
     pub(super) _p: [u32; 2],
 }
 
@@ -100,8 +100,6 @@ pub(super) struct Sized {
     pub(super) cast_frame: wgpu::Buffer,
     pub(super) rayq: wgpu::Buffer,
     pub(super) tileq: wgpu::Buffer,
-    /// `view = overdraw`: a copy of the counts (red, in 1/255 steps) the overlay ramps.
-    pub(super) counts: wgpu::Texture,
     /// Incremental mode: last frame's faces rasterised at the current camera (list index + 1).
     pub(super) idtex: wgpu::TextureView,
     /// Per level-0 tile: reveal radius + 1, then (from `need_off`) why it was discovered
@@ -143,16 +141,6 @@ pub(super) fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
         cast_frame: storage(gpu, "ray cast frames", n * 4, none),
         rayq: storage(gpu, "ray queue", n * 4, none),
         tileq: storage(gpu, "tile queues", 2 * n * 4, none),
-        counts: gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("overdraw counts"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        }),
         idtex: gpu
             .device
             .create_texture(&wgpu::TextureDescriptor {

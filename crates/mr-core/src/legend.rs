@@ -18,7 +18,8 @@ pub enum Legend {
 }
 
 /// A per-pixel quantity a node can write for a diagnostic view: the post node's `view`
-/// shows one, through the shared ramp, instead of the image.
+/// shows one instead of the image: a ramp's value through the shared ramp, a category as a
+/// tint of the greyed image.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Quantity {
     /// The view's value (`view = "<name>"`).
@@ -31,12 +32,31 @@ pub struct Quantity {
     pub float: bool,
     /// On a log scale (`log2(1 + v)`).
     pub log: bool,
+    /// A category view's categories (empty: a ramp) and their colours (`None`: one colour
+    /// per id). A pixel holds 0 (the image as it is) or its category's index + 1 in the low
+    /// 8 bits, an id above them.
+    pub categories: &'static [(&'static str, Option<[u8; 3]>)],
 }
 
 impl Quantity {
-    /// Its legend with the scale's top at `max` (`view_max`).
+    /// A ramp view's quantity.
+    pub const fn ramp(name: &'static str, about: &'static str, help: &'static str, float: bool, log: bool) -> Self {
+        Self { name, about, help, float, log, categories: &[] }
+    }
+
+    /// A category view's quantity.
+    pub const fn categorical(name: &'static str, about: &'static str, help: &'static str, categories: &'static [(&'static str, Option<[u8; 3]>)]) -> Self {
+        Self { name, about, help, float: false, log: false, categories }
+    }
+
+    /// A category view (else a ramp).
+    pub fn is_categorical(&self) -> bool {
+        !self.categories.is_empty()
+    }
+
+    /// Its legend with the scale's top at `max` (`view_max`; ramps only).
     pub fn legend(&self, max: f64) -> Legend {
-        Legend::ramp(self.about, max, self.log)
+        if self.is_categorical() { Legend::categories(self.categories) } else { Legend::ramp(self.about, max, self.log) }
     }
 }
 

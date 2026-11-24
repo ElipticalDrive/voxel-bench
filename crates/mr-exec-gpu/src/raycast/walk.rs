@@ -53,8 +53,8 @@ fn steps_walks() -> Vec<&'static str> {
 
 /// What the walk writes for the post's view (`View::Steps`, `View::Distance`).
 const QUANTITIES: &[Quantity] = &[
-    Quantity { name: "steps", about: "loop iterations (primary ray)", help: "primary-ray loop iterations per pixel (log)", float: false, log: true },
-    Quantity { name: "distance", about: "distance to the primary hit (blocks)", help: "the primary hit's distance in blocks (linear; white for the sky)", float: true, log: false },
+    Quantity::ramp("steps", "loop iterations (primary ray)", "primary-ray loop iterations per pixel (log)", false, true),
+    Quantity::ramp("distance", "distance to the primary hit (blocks)", "the primary hit's distance in blocks (linear; white for the sky)", true, false),
 ];
 
 fn params() -> Vec<ParamSpec> {
@@ -68,7 +68,7 @@ fn params() -> Vec<ParamSpec> {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("traversal", &["incremental"]));
     }
     p.push(ParamSpec::choice("dispatch", "How pixels are run: `compute` (one compute thread per pixel) or `fragment` (a fragment shader over a full-screen triangle; was gpu-frag-dda)", &["compute", "fragment"], "compute", true));
-    let [view, view_max] = crate::view::knobs(QUANTITIES);
+    let [view, view_max] = mr_components::post::view_knobs(QUANTITIES);
     p.push(view.needs("steps", "visibility", Some("primary"), &steps_walks(), "steps"));
     p.push(view_max);
     p.extend([
@@ -317,7 +317,7 @@ pub(crate) struct Walk {
 impl Walk {
     pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String, Option<crate::remote::Far>)> {
         let mut opts: Options = p.options()?;
-        (opts.view, opts.view_max) = crate::view::chosen(g, &opts.view, opts.view_max);
+        (opts.view, opts.view_max) = mr_components::post::view_chosen(g, &opts.view, opts.view_max);
         let comp = Composition::of(g, &opts, p.max_lod)?;
         if let Some(why) = feature_blocker(&comp) {
             anyhow::bail!(why);

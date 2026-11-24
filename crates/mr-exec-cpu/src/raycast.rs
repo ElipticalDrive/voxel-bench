@@ -143,10 +143,10 @@ fn params() -> Vec<ParamSpec> {
 /// incremental's (steps differ in what they count).
 const QUANTITIES: [[Quantity; 2]; 2] = {
     const STEPS: &str = "the walk's work per pixel (log): refloor = lockstep iterations of the pixel's packet, incremental = occupancy tests of the pixel's ray";
-    const DISTANCE: Quantity = Quantity { name: "distance", about: "distance to the primary hit (blocks)", help: "the primary hit's distance in blocks (linear; white for the sky)", float: true, log: false };
+    const DISTANCE: Quantity = Quantity::ramp("distance", "distance to the primary hit (blocks)", "the primary hit's distance in blocks (linear; white for the sky)", true, false);
     [
-        [Quantity { name: "steps", about: "lockstep loop iterations (packet)", help: STEPS, float: false, log: true }, DISTANCE],
-        [Quantity { name: "steps", about: "occupancy tests (ray)", help: STEPS, float: false, log: true }, DISTANCE],
+        [Quantity::ramp("steps", "lockstep loop iterations (packet)", STEPS, false, true), DISTANCE],
+        [Quantity::ramp("steps", "occupancy tests (ray)", STEPS, false, true), DISTANCE],
     ]
 };
 

@@ -46,8 +46,9 @@
 //! a frame late); *moving* (translation) runs the incremental passes; *full* re-discovers
 //! everything. World changes mark the screen tiles of edited blocks (exactly) and of
 //! loaded chunks. Holes (uncovered pixels that were neither sky nor discovered) are told
-//! apart from sky after the raster and re-discovered. `view` shows why tiles were
-//! discovered (`tiles`), where rays were cast (`rays`) and which faces are new (`churn`).
+//! apart from sky after the raster and re-discovered. The post's `view` shows why tiles
+//! were discovered (`tiles`), where rays were cast (`rays`), which faces are new (`churn`),
+//! the drawn quads (`quads`) and fragments per pixel (`overdraw`).
 
 mod buffers;
 mod init;
@@ -147,8 +148,6 @@ pub(crate) struct GpuSampler {
     pipe_sort_scatter: wgpu::ComputePipeline,
     /// None when drawing only (the shading on another GPU: painter order draws forward).
     pipe_paint: Option<wgpu::RenderPipeline>,
-    pipe_over_depth: wgpu::RenderPipeline,
-    pipe_over_paint: wgpu::RenderPipeline,
     /// Painter order: bucket counts / offsets, and this frame's list sorted far to near.
     hist: wgpu::Buffer,
     sorted: wgpu::Buffer,
@@ -158,16 +157,16 @@ pub(crate) struct GpuSampler {
     /// Row merge: this frame's runs (start key, length, block, fresh); count in lcount[2].
     merged: wgpu::Buffer,
     bind_merged: wgpu::BindGroup,
-    pipe_overlay: wgpu::RenderPipeline,
-    layout_ov: wgpu::BindGroupLayout,
-    overlay_buf: wgpu::Buffer,
-    bind_ov: Option<wgpu::BindGroup>,
+    /// The post's view of a quantity of the sampler's: its passes and their uniform.
+    views: Option<report::ViewPasses>,
+    view_buf: wgpu::Buffer,
     /// Frames of each kind so far (static, still, moving, full) and the last one's kind.
     kind_counts: [u64; 4],
     last_kind: FrameKind,
-    /// Hole detection's face-id raster; painter order and the overdraw view replace the
-    /// face drawer's forward pipeline.
+    /// Hole detection's face-id raster.
     pipe_id: wgpu::RenderPipeline,
+    /// The sampler's raster module (painter order's fragments, the face-id and view rasters).
+    draw_mod: wgpu::ShaderModule,
     layout_disc: wgpu::BindGroupLayout,
     params_buf: wgpu::Buffer,
     level_buf: wgpu::Buffer,

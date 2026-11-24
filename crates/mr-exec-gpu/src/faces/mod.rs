@@ -361,8 +361,10 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         count: None,
     };
     // The core's group 0 (the camera, the shading state, the acceleration structures; the
-    // output is the drawer's render attachment, not bound) and the face source's two buffers.
+    // output is the drawer's render attachment, not bound) and the face source's two buffers;
+    // without the post's quantity buffer, which a source's own view passes bind.
     let mut entries = core.layout_entries_with(false);
+    entries.retain(|e| e.binding != crate::view::QUANTITY_BINDING);
     entries.extend([buf(crate::REGION_BINDING), buf(crate::REGION_BINDING + 1)]);
     let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("face draw"), entries: &entries });
     let images = FaceDrawer::images_layout(dev, meshed.is_some(), core.output_format());
@@ -460,9 +462,11 @@ impl Draw {
         Ok(rebound)
     }
 
-    /// A draw bind group: the core's group 0 and the face source's two buffers.
+    /// A draw bind group: the core's group 0 (without the quantity buffer) and the face
+    /// source's two buffers.
     fn bind(&self, core: &Core, a: &wgpu::Buffer, b: &wgpu::Buffer) -> wgpu::BindGroup {
         let mut entries = core.bind_entries_with(None);
+        entries.retain(|e| e.binding != crate::view::QUANTITY_BINDING);
         entries.extend([wgpu::BindGroupEntry { binding: crate::REGION_BINDING, resource: a.as_entire_binding() }, wgpu::BindGroupEntry { binding: crate::REGION_BINDING + 1, resource: b.as_entire_binding() }]);
         core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("face draw"), layout: &self.layout_draw, entries: &entries })
     }

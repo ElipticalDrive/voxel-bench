@@ -61,17 +61,22 @@ mod tests {
 }
 
 /// The post node's knobs over the per-pixel quantities `qs` the graph's nodes write: `view`
-/// (the image or one of them) and `view_max` (the scale's top). Both executors' views; the
+/// (the image or one of them) and `view_max` (the ramps' top). Both executors' views; the
 /// view is chosen at run time, never compiled into a pipeline.
 pub fn view_knobs(qs: &[mr_core::Quantity]) -> [mr_core::ParamSpec; 2] {
     use mr_core::ParamSpec;
     let mut names = vec!["image"];
     names.extend(qs.iter().map(|q| q.name));
     let help: Vec<String> = std::iter::once("image: the rendered scene".to_string()).chain(qs.iter().map(|q| format!("{}: {}", q.name, q.help))).collect();
-    let tops: Vec<&str> = qs.iter().map(|q| q.name).collect();
+    let tops: Vec<&str> = qs.iter().filter(|q| !q.is_categorical()).map(|q| q.name).collect();
+    let how = match (tops.is_empty(), qs.iter().any(mr_core::Quantity::is_categorical)) {
+        (false, true) => "Values are drawn on the shared colour scale (white above view_max), categories as tints of the greyed image",
+        (false, false) => "Drawn on the shared colour scale (white above view_max)",
+        _ => "Drawn as tints of the greyed image",
+    };
     let posts = crate::graph::POSTS;
     [
-        ParamSpec::choice("view", &format!("{}. Drawn on the shared colour scale (white above view_max); the frame is still shaded", help.join(". ")), &names, "image", true).of("post", posts).baked(false),
+        ParamSpec::choice("view", &format!("{}. {how}; the frame is still shaded", help.join(". ")), &names, "image", true).of("post", posts).baked(false),
         ParamSpec::int("view_max", &format!("{} view: the top of the colour scale", tops.join(" / ")), 1, 16384, 256, true).of("post", posts),
     ]
 }

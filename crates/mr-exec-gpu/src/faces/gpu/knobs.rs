@@ -29,8 +29,6 @@ pub(super) fn params() -> Vec<ParamSpec> {
         ParamSpec::choice("merge", "Faces drawn as: none = one quad per face; rows = runs of same-block faces along each face's u axis merged into one quad (one GPU pass over S; ignored with order = painter)", &["none", "rows"], "none", true).of("visibility", &["quadtree"]),
         ParamSpec::choice("order", "Face drawing order. depth: any order, depth-tested (lit mode adds a depth pre-pass). painter: sorted back to front by Manhattan distance from the camera cell (an exact order for voxels; GPU counting sort), drawn without depth testing, so every fragment is shaded", &["depth", "painter"], "depth", true).of("draw", &["raster"]),
         ParamSpec::choice("still_holes", "Events, rotation-only frames: now = rasterise the old face list first and discover holes (faces that rotation moved onto a pixel centre) in the same frame; late = skip that raster and discover them next frame (cheaper, holes visible for one frame)", &["now", "late"], "now", true).of("holes", &["coverage"]),
-        ParamSpec::choice("view", "image: the rendered scene. quads: one colour per drawn quad (shows merging). overdraw: fragments shaded per pixel on a colour scale (linear; white above view_max; compare order = depth vs painter). tiles: level-0 tiles tinted by why they were discovered this frame (white full, blue edited block / changed chunk, cyan entering strip (still_holes = late), red uncovered or hole, yellow parallax, green refresh; dark = skipped). rays: a dot per ray cast this frame. churn: faces new to the set this frame in red, carried-over faces grey", &["image", "tiles", "rays", "churn", "overdraw", "quads"], "image", true).of("visibility", &["quadtree"]),
-        ParamSpec::int("view_max", "overdraw view: the top of the colour scale (fragments per pixel)", 1, 255, 8, true).of("visibility", &["quadtree"]),
         ParamSpec::int("reveal_tiles", "Incremental: largest reveal radius around an edge, in level-0 tiles", 1, 16, 4, true).of("holes", &["coverage"]),
         ParamSpec::bool("audit", "Also cast one ray per pixel and count pixels whose face is missing from S", false, true).of("visibility", &["quadtree"]),
         shadows_param(),
@@ -41,6 +39,7 @@ pub(super) fn params() -> Vec<ParamSpec> {
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ]
     .into_iter()
+    .chain(mr_components::post::view_knobs(super::report::QUANTITIES))
     .chain(shade_state::params())
     .collect()
 }
@@ -79,8 +78,6 @@ pub(super) struct VisibilityKnobs {
     pub(super) block_faces: bool,
     pub(super) jitter: bool,
     pub(super) merge: String,
-    pub(super) view: String,
-    pub(super) view_max: u32,
     pub(super) audit: bool,
     pub(super) max_faces: u32,
 }
@@ -102,8 +99,6 @@ impl Default for VisibilityKnobs {
             block_faces: true,
             jitter: true,
             merge: "none".into(),
-            view: "image".into(),
-            view_max: 8,
             audit: false,
             max_faces: 1 << 20,
         }
@@ -157,18 +152,6 @@ impl Default for ShadingKnobs {
     }
 }
 
-/// `view` knob: 0 image, 1 churn (raster tint), 2 tiles, 3 rays (overlays).
-pub(super) fn view_code(v: &str) -> u32 {
-    match v {
-        "churn" => 1,
-        "tiles" => 2,
-        "rays" => 3,
-        "overdraw" => 4,
-        "quads" => 5,
-        _ => 0,
-    }
-}
-
 impl GpuSampler {
     /// Its own knobs; `None` if `name` is not one.
     pub(super) fn set_knob(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
@@ -197,12 +180,10 @@ impl GpuSampler {
             // Drawing and display only: the face set is unaffected.
             "merge" => self.vis.merge = value.as_str().unwrap_or("none").into(),
             "order" => self.order = value.as_str().unwrap_or("depth").into(),
-            "view" => self.vis.view = value.as_str().unwrap_or("image").into(),
-            "view_max" => self.vis.view_max = int(8).clamp(1, 255),
             _ => return None,
         }
         // Any discovery setting can change what is discoverable: start over from a full frame.
-        if !matches!(name, "merge" | "order" | "view" | "view_max") {
+        if !matches!(name, "merge" | "order") {
             self.force_full = true;
         }
         Some(Ok(()))

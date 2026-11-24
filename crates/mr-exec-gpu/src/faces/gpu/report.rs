@@ -1,16 +1,202 @@
-//! Diagnostics: the counters read back, the `view` legends and overlays.
+//! Diagnostics: the counters read back and the quantities the post's views show, with the
+//! passes that write them (all only while one is viewed).
 
 use std::sync::atomic::Ordering;
 
 use mr_core::*;
 use mr_gpu::wgpu;
 
-use super::buffers::OverlayUniform;
-use super::knobs::view_code;
+use super::buffers::ViewUniform;
 use super::*;
 use crate::Core;
 
+/// What the sampler writes for the post's view.
+pub(super) const QUANTITIES: &[Quantity] = &[
+    Quantity::categorical(
+        "tiles",
+        "why level-0 tiles were discovered this frame",
+        "level-0 tiles by why they were discovered this frame (white full, blue edited block / changed chunk, cyan entering strip (still_holes = late), red uncovered or hole, yellow parallax, green refresh; dark = skipped)",
+        &[
+            ("full frame", Some([255, 255, 255])),
+            ("edited block / changed chunk", Some([64, 102, 255])),
+            ("entering strip", Some([26, 230, 255])),
+            ("uncovered or hole", Some([255, 51, 38])),
+            ("parallax", Some([255, 217, 26])),
+            ("refresh", Some([51, 230, 77])),
+            ("skipped (darkened)", Some([0, 0, 0])),
+        ],
+    ),
+    Quantity::categorical("rays", "where discovery cast rays this frame", "a dot per ray cast this frame", &[("ray cast this frame", Some([255, 255, 51])), ("no ray (darkened)", Some([0, 0, 0]))]),
+    Quantity::categorical("churn", "faces new to the set", "faces new to the set this frame in red, carried-over faces grey", &[("face new to the set this frame", Some([255, 38, 26])), ("carried over (grey)", Some([128, 128, 128]))]),
+    Quantity::ramp("overdraw", "fragments drawn per pixel", "fragments drawn per pixel by the face list in its order (linear; depth-tested, so compare order = depth vs painter)", false, false),
+    Quantity::categorical("quads", "drawn quads", "one colour per drawn quad (shows merging)", &[("one random colour per drawn quad", None)]),
+];
+
+/// The passes of the view chosen, made on its first frame.
+pub(super) struct ViewPasses {
+    name: &'static str,
+    size: (u32, u32),
+    /// `tiles`, `rays`, `copy_ids` (`view.wgsl`).
+    writer: Option<wgpu::ComputePipeline>,
+    /// `churn`, `quads`: the list's category raster, its target and depth.
+    raster: Option<(wgpu::RenderPipeline, wgpu::TextureView, wgpu::TextureView)>,
+    /// `overdraw`: group 0 with the quantity buffer, the counting raster (depth-tested,
+    /// painter) and its depth.
+    count: Option<(wgpu::BindGroupLayout, [wgpu::RenderPipeline; 2], wgpu::TextureView)>,
+}
+
+/// A raster of a face list over `layout` (`vs` and fragment `entry` of `module`) into
+/// `target` (none: side effects only), depth-tested with `compare`.
+pub(super) fn face_raster(core: &Core, label: &str, layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry: &str, target: Option<wgpu::TextureFormat>, compare: wgpu::CompareFunction) -> wgpu::RenderPipeline {
+    let targets = [target.map(|format| wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+    core.gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState { module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, front_face: wgpu::FrontFace::Ccw, cull_mode: Some(wgpu::Face::Back), ..Default::default() },
+        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true), depth_compare: Some(compare), stencil: Default::default(), bias: Default::default() }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState { module, entry_point: Some(entry), compilation_options: Default::default(), targets: if target.is_some() { &targets[..] } else { &[] } }),
+        multiview_mask: None,
+        cache: core.gpu.cache(),
+    })
+}
+
 impl GpuSampler {
+    /// The passes of view `name` at the core's size.
+    fn view_passes(&self, core: &Core, name: &'static str) -> ViewPasses {
+        let (gpu, dev) = (&core.gpu, &core.gpu.device);
+        let (w, h) = (core.width, core.height);
+        let mut v = ViewPasses { name, size: (w, h), writer: None, raster: None, count: None };
+        let writer = |entry: &str| {
+            let src = format!("{}{}", crate::view::wgsl(), include_str!("../view.wgsl"));
+            let module = mr_gpu::shader(dev, "discover view", src);
+            // Its own layout: the bindings the entry point uses.
+            dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(entry), layout: None, module: &module, entry_point: Some(entry), compilation_options: Default::default(), cache: gpu.cache() })
+        };
+        match name {
+            "tiles" | "rays" => v.writer = Some(writer(name)),
+            "churn" | "quads" => {
+                let ids = gpu
+                    .device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("view categories"),
+                        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::R32Uint,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default());
+                let entry = if name == "churn" { "fs_churn" } else { "fs_quads" };
+                let pipe = face_raster(core, entry, &self.drawing.pl_draw, &self.draw_mod, entry, Some(wgpu::TextureFormat::R32Uint), wgpu::CompareFunction::Greater);
+                v.raster = Some((pipe, ids, crate::faces::depth_view(gpu, w, h, false)));
+                v.writer = Some(writer("copy_ids"));
+            }
+            "overdraw" => {
+                // The drawing's group 0 with the quantity buffer, and its program counting.
+                let mut entries = core.layout_entries_with(false);
+                let buf = |binding| crate::storage_entry(binding, true, wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE);
+                entries.extend([buf(crate::REGION_BINDING), buf(crate::REGION_BINDING + 1)]);
+                let layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("overdraw"), entries: &entries });
+                let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("overdraw"), bind_group_layouts: &core.storages.layouts(&[Some(&layout), Some(core.world.layout())]), immediate_size: 0 });
+                let d = &self.drawing;
+                let mut program = d.program.clone();
+                program.define("VIEW_OVERDRAW");
+                if dev.features().contains(mr_components::shading::state::FRAGMENT_FEATURE) {
+                    program.define("EARLY_DEPTH");
+                }
+                let module = crate::faces::DrawParts::compile(gpu, "overdraw", &program, &d.deps, &format!("{}\n{}", d.draw_src, crate::view::atomic_wgsl()));
+                let pipes = [wgpu::CompareFunction::Greater, wgpu::CompareFunction::Always].map(|c| face_raster(core, "overdraw", &pl, &module, "fs_overdraw", None, c));
+                v.count = Some((layout, pipes, crate::faces::depth_view(gpu, w, h, false)));
+            }
+            _ => {}
+        }
+        v
+    }
+
+    /// The post's view's quantity, where it is the sampler's: the drawn list's category
+    /// raster or overdraw count, the discovery's tiles or rays (a static frame's: none).
+    pub(super) fn encode_view(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket) {
+        let Some(viewing) = &core.view else { return };
+        let name = viewing.quantity.name;
+        if !QUANTITIES.iter().any(|q| q.name == name) {
+            return;
+        }
+        if self.views.as_ref().is_none_or(|v| v.name != name || v.size != (core.width, core.height)) {
+            self.views = Some(self.view_passes(core, name));
+        }
+        // A diagnostic, not a node's work.
+        core.ring.stage(enc, ticket, "view", &[]);
+        let f = &self.now;
+        let v = self.views.as_ref().unwrap();
+        let (world, bound) = (f.world.as_ref().expect("set up"), f.bound.as_ref().expect("stored"));
+        let (bind_list, list, draw_ofs) = self.drawn();
+        let raster = |enc: &mut wgpu::CommandEncoder, target: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, pipe: &wgpu::RenderPipeline, bind: &wgpu::BindGroup| {
+            let colors: Vec<_> = target.map(|view| wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }).into_iter().map(Some).collect();
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("view raster"),
+                color_attachments: &colors,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }), stencil_ops: None }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipe);
+            pass.set_bind_group(0, bind, &[]);
+            pass.set_bind_group(1, world, &[]);
+            bound.render(&mut pass);
+            pass.draw_indirect(&self.args, draw_ofs);
+        };
+        if let Some((layout, pipes, depth)) = &v.count {
+            let mut entries = core.bind_entries_with(None);
+            entries.extend([wgpu::BindGroupEntry { binding: crate::REGION_BINDING, resource: list.as_entire_binding() }, wgpu::BindGroupEntry { binding: crate::REGION_BINDING + 1, resource: self.cpos.as_entire_binding() }]);
+            let bind = core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("overdraw"), layout, entries: &entries });
+            raster(enc, None, depth, &pipes[(self.order == "painter") as usize], &bind);
+            return;
+        }
+        // Nothing is new in a static frame.
+        if name == "churn" && f.redraw {
+            return;
+        }
+        let ids = v.raster.as_ref().map(|(pipe, ids, depth)| {
+            raster(enc, Some(ids), depth, pipe, bind_list);
+            ids
+        });
+        let Some(writer) = &v.writer else { return };
+        let u = ViewUniform {
+            frame: if f.redraw { 0 } else { self.frame },
+            tile: self.vis.tile,
+            cols: f.cols,
+            rows: f.rows,
+            need_off: self.sized.need_off,
+            lat_w: self.sized.lat_w,
+            off_x: f.off.0,
+            off_y: f.off.1,
+            width: core.width,
+            height: core.height,
+            _p: [0; 2],
+        };
+        core.gpu.queue.write_buffer(&self.view_buf, 0, bytemuck::bytes_of(&u));
+        let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: self.view_buf.as_entire_binding() }, viewing.bind_entry()];
+        let ids_view;
+        match name {
+            "tiles" => entries.push(wgpu::BindGroupEntry { binding: 1, resource: self.sized.need.as_entire_binding() }),
+            "rays" => entries.push(wgpu::BindGroupEntry { binding: 2, resource: self.sized.cast_frame.as_entire_binding() }),
+            _ => {
+                ids_view = ids.expect("category raster");
+                entries.push(wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(ids_view) });
+            }
+        }
+        let bind = core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("discover view"), layout: &writer.get_bind_group_layout(0), entries: &entries });
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover view"), timestamp_writes: None });
+        pass.set_pipeline(writer);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.dispatch_workgroups(core.width.div_ceil(8), core.height.div_ceil(8), 1);
+    }
+
     /// Takes counters of the most recent finished frame from the staging buffers.
     pub(super) fn harvest(&mut self) {
         let mut newest: Option<(u32, Vec<u32>)> = None;
@@ -34,26 +220,6 @@ impl GpuSampler {
             self.last_stats = Some(w);
             self.last_parity = parity as usize;
         }
-    }
-
-    /// What the active `view`'s colours mean.
-    pub(super) fn legend(&self) -> Option<Legend> {
-        Some(match self.vis.view.as_str() {
-            "overdraw" => Legend::ramp("fragments shaded per pixel", self.vis.view_max.clamp(1, 255) as f64, false),
-            "tiles" => Legend::categories(&[
-                ("full frame", Some([255, 255, 255])),
-                ("edited block / changed chunk", Some([64, 102, 255])),
-                ("entering strip", Some([26, 230, 255])),
-                ("uncovered or hole", Some([255, 51, 38])),
-                ("parallax", Some([255, 217, 26])),
-                ("refresh", Some([51, 230, 77])),
-                ("skipped (darkened)", Some([0, 0, 0])),
-            ]),
-            "rays" => Legend::categories(&[("ray cast this frame", Some([255, 255, 51])), ("no ray (darkened)", Some([0, 0, 0]))]),
-            "churn" => Legend::categories(&[("face new to the set this frame", Some([255, 38, 26])), ("carried over (grey)", Some([128, 128, 128]))]),
-            "quads" => Legend::categories(&[("one random colour per drawn quad", None)]),
-            _ => return None,
-        })
     }
 
     pub(super) fn counters(&self, core: &Core, mode: RenderMode) -> Vec<(String, f64)> {
@@ -135,53 +301,5 @@ impl GpuSampler {
             out.push(("audit_hit_px".into(), w[36] as f64));
         }
         out
-    }
-
-    /// `view = tiles | rays`: blends the diagnostic overlay over the output (`overdraw`:
-    /// replaces the counts with their colours). `frame` is the
-    /// discovery frame to show (0: nothing was discovered this frame).
-    pub(super) fn encode_overlay(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, frame: u32, off_x: u32, off_y: u32, cols: u32, rows: u32) {
-        let view = view_code(&self.vis.view);
-        if view < 2 {
-            return;
-        }
-        // A diagnostic, not a node's work.
-        core.ring.stage(enc, ticket, "view", &[]);
-        let u = OverlayUniform { view, frame, tile: self.vis.tile, cols, rows, need_off: self.sized.need_off, lat_w: self.sized.lat_w, off_x, off_y, view_max: self.vis.view_max.clamp(1, 255), _p: [0; 2] };
-        if view == 4 {
-            // The overlay ramps the counts, so it reads them from a copy of the output.
-            let size = wgpu::Extent3d { width: core.width, height: core.height, depth_or_array_layers: 1 };
-            enc.copy_texture_to_texture(core.output.as_image_copy(), self.sized.counts.as_image_copy(), size);
-        }
-        core.gpu.queue.write_buffer(&self.overlay_buf, 0, bytemuck::bytes_of(&u));
-        if self.bind_ov.is_none() {
-            self.bind_ov = Some(core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("discover overlay"),
-                layout: &self.layout_ov,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.overlay_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: self.sized.need.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: self.sized.cast_frame.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.sized.counts.create_view(&Default::default())) },
-                ],
-            }));
-        }
-        let out_view = core.output.create_view(&Default::default());
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("discover overlay"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &out_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.pipe_overlay);
-        pass.set_bind_group(0, self.bind_ov.as_ref(), &[]);
-        pass.draw(0..3, 0..1);
     }
 }

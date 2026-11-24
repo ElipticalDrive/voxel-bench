@@ -52,7 +52,12 @@ fn programs_compose() {
                 let bounce = with_bounce.site(&ck, ck.site(Role::Shading, "bounce").unwrap(), STORAGE_GROUPS, false);
                 for (walks, bounce, shading) in [(walks, shadow, "direct"), (with_bounce, bounce, "pathtrace")] {
                     let (mut program, deps, _) = crate::faces::programs(&walks, Some((rays, exposure)), None, [shadow, bounce], None, shading);
-                    crate::faces::tests::drawers(&program, &deps, None, &crate::faces::draw_src(include_str!("../set_faces.wgsl"), true), shading, &format!("discover-gpu {st} {k} {shading}"), &base.choices("draw"), (&walks, Some((rays, exposure)), None));
+                    let draw_src = crate::faces::draw_src(include_str!("../set_faces.wgsl"), true);
+                    crate::faces::tests::drawers(&program, &deps, None, &draw_src, shading, &format!("discover-gpu {st} {k} {shading}"), &base.choices("draw"), (&walks, Some((rays, exposure)), None));
+                    // The overdraw view's counting raster.
+                    let mut counting = program.clone();
+                    counting.define("VIEW_OVERDRAW").define("EARLY_DEPTH");
+                    check(&counting, &format!("{draw_src}\n{}", crate::view::atomic_wgsl()), &deps, &format!("overdraw {st} {k} {shading}"));
                     // Discovery's pieces: the sampler and hole detection over the shared set.
                     program.add(quadtree::SET, quadtree::SET_WGSL, &deps.iter().map(String::as_str).collect::<Vec<_>>());
                     let disc_deps: Vec<String> = std::iter::once(quadtree::SET.to_string()).chain(deps.iter().cloned()).collect();
@@ -64,4 +69,12 @@ fn programs_compose() {
             }
         }
     }
+}
+
+/// The view writers validate.
+#[test]
+fn view_writers_validate() {
+    use wgpu::naga::{front::wgsl, valid};
+    let m = wgsl::parse_str(&format!("{}{}", crate::view::wgsl(), include_str!("../view.wgsl"))).unwrap_or_else(|e| panic!("{e}"));
+    valid::Validator::new(valid::ValidationFlags::all(), valid::Capabilities::all()).validate(&m).unwrap();
 }

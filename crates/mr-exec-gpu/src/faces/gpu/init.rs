@@ -13,7 +13,7 @@ use mr_components::draw::{self, drawer::DrawNodes};
 use mr_components::visibility::quadtree;
 use mr_gpu::wgpu;
 
-use super::buffers::{OverlayUniform, Params, make_sized, storage};
+use super::buffers::{ViewUniform, Params, make_sized, storage};
 use super::knobs::{DrawKnobs, HolesKnobs, Options, ShadingKnobs, VisibilityKnobs};
 use super::*;
 use crate::Core;
@@ -42,7 +42,7 @@ impl GpuSampler {
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: k.bounces, spp: k.spp, accumulate: k.accumulate, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
-        let (core, drawing, far) = crate::faces::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
+        let (mut core, drawing, far) = crate::faces::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("../set_faces.wgsl").into(),
             walks,
             lead: Some((rays, exposure)),
@@ -56,6 +56,10 @@ impl GpuSampler {
             depth_read: true,
             nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
         })?;
+        // The post's view (the drawing's group 0 never binds its quantity buffer).
+        let (view, view_max) = mr_components::post::view_chosen(g, "image", 256);
+        core.set_view(&view, super::report::QUANTITIES)?;
+        core.view_max = view_max.clamp(1, 16384);
         let (gpu, dev) = (&core.gpu, &core.gpu.device);
         let out_format = core.output_format();
         let module = |label, src: String| mr_gpu::shader(dev, label, src);
@@ -71,8 +75,8 @@ impl GpuSampler {
         let disc_mods = [discovery("quadtree", quadtree::GPU_WGSL, &program), discovery("quadtree holes", quadtree::GPU_WGSL, &with_holes)];
         let holes_mod = discovery("holes", mr_components::holes::coverage::GPU_WGSL, &with_holes);
         let args_mod = module("discover args", include_str!("../args.wgsl").to_string());
-        // The forward raster's fragment stage, for painter order, the overdraw view and the
-        // face-id raster.
+        // The forward raster's fragment stage, for painter order and the face-id and view
+        // rasters.
         // Drawing only (the shading on another GPU), no shading fragment stage (`fs`).
         let fs = if drawing.draw_only { String::new() } else { shade_state::fragment_wgsl(&shading, draw::gpu_wgsl("raster").unwrap(), "fs", dev.features()) };
         let draw_mod = drawing.module(&core, "discover raster", &fs);
@@ -150,37 +154,6 @@ impl GpuSampler {
         let pipe_sort_scatter = compute(&pl_disc, disc_mod, "sort_scatter");
         let pipe_merge = compute(&pl_disc, disc_mod, "merge_rows");
         let pipe_merge_args = compute(&pl_args, &args_mod, "merge_args");
-        // Diagnostic overlays (`view = tiles | rays`), alpha-blended over the image.
-        let ov_mod = module("discover overlay", format!("{}{}", mr_core::legend::ramp_wgsl(), include_str!("../overlay.wgsl")));
-        let f = wgpu::ShaderStages::FRAGMENT;
-        let counts_entry = wgpu::BindGroupLayoutEntry {
-            binding: 3,
-            visibility: f,
-            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-            count: None,
-        };
-        let layout_ov = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("discover overlay"),
-            entries: &[buf(0, uni, f, false), buf(1, ro, f, false), buf(2, ro, f, false), counts_entry],
-        });
-        let pl_ov = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover overlay"), bind_group_layouts: &[Some(&layout_ov)], immediate_size: 0 });
-        let pipe_overlay = dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("discover overlay"),
-            layout: Some(&pl_ov),
-            vertex: wgpu::VertexState { module: &ov_mod, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &ov_mod,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: out_format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
-            }),
-            multiview_mask: None,
-            cache: gpu.cache(),
-        });
-
         let pl_draw = &drawing.pl_draw;
         let pipeline = |label, write: bool, compare, fragment: bool| {
             let targets = [Some(wgpu::ColorTargetState { format: out_format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
@@ -210,44 +183,7 @@ impl GpuSampler {
         // Painter order: no depth test, but depth is still written (the last fragment is the
         // nearest), since incremental mode reads it.
         let pipe_paint = (!drawing.draw_only).then(|| pipeline("painter", true, wgpu::CompareFunction::Always, true));
-        let overdraw = |label, compare| {
-            let targets = [Some(wgpu::ColorTargetState {
-                format: out_format,
-                blend: Some(wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add }, alpha: wgpu::BlendComponent::OVER }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })];
-            dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(pl_draw),
-                vertex: wgpu::VertexState { module: &draw_mod, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, front_face: wgpu::FrontFace::Ccw, cull_mode: Some(wgpu::Face::Back), ..Default::default() },
-                depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true), depth_compare: Some(compare), stencil: Default::default(), bias: Default::default() }),
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState { module: &draw_mod, entry_point: Some("fs_overdraw"), compilation_options: Default::default(), targets: &targets }),
-                multiview_mask: None,
-                cache: gpu.cache(),
-            })
-        };
-        let pipe_over_depth = overdraw("overdraw depth", wgpu::CompareFunction::Greater);
-        let pipe_over_paint = overdraw("overdraw painter", wgpu::CompareFunction::Always);
-        let id_targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL })];
-        let pipe_id = dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("face ids"),
-            layout: Some(pl_draw),
-            vertex: wgpu::VertexState { module: &draw_mod, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, front_face: wgpu::FrontFace::Ccw, cull_mode: Some(wgpu::Face::Back), ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState { module: &draw_mod, entry_point: Some("fs_id"), compilation_options: Default::default(), targets: &id_targets }),
-            multiview_mask: None,
-            cache: gpu.cache(),
-        });
+        let pipe_id = super::report::face_raster(&core, "face ids", pl_draw, &draw_mod, "fs_id", Some(wgpu::TextureFormat::R32Uint), wgpu::CompareFunction::Greater);
 
         let list_cap = vis.max_faces.clamp(1 << 16, 1 << 24);
         let table_cap = (list_cap * 2).next_power_of_two();
@@ -255,7 +191,7 @@ impl GpuSampler {
         let uniform = |label, size| dev.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let params_buf = uniform("discover params", size_of::<Params>() as u64);
         let level_buf = uniform("discover levels", LEVEL_STRIDE * (MAX_LEVELS as u64 + 1));
-        let overlay_buf = uniform("discover overlay", size_of::<OverlayUniform>() as u64);
+        let view_buf = uniform("discover view", size_of::<ViewUniform>() as u64);
         let stats = storage(gpu, "discover counters", STATS_WORDS * 4, wgpu::BufferUsages::COPY_SRC);
         let args = storage(gpu, "discover args", ARGS_WORDS * 4, wgpu::BufferUsages::INDIRECT);
         let lcount = storage(gpu, "list counts", 16, wgpu::BufferUsages::COPY_SRC);
@@ -315,8 +251,6 @@ impl GpuSampler {
             pipe_sort_scan,
             pipe_sort_scatter,
             pipe_paint,
-            pipe_over_depth,
-            pipe_over_paint,
             hist,
             sorted,
             bind_sorted,
@@ -324,13 +258,12 @@ impl GpuSampler {
             pipe_merge_args,
             merged,
             bind_merged,
-            pipe_overlay,
-            layout_ov,
-            overlay_buf,
-            bind_ov: None,
+            view_buf,
+            views: None,
             kind_counts: [0; 4],
             last_kind: FrameKind::Full,
             pipe_id,
+            draw_mod,
             layout_disc,
             params_buf,
             level_buf,

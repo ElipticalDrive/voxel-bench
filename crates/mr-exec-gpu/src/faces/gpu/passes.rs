@@ -5,7 +5,6 @@ use mr_components::draw::drawer::DrawFrame;
 use mr_components::storage::gpu_data::Bound;
 use mr_gpu::wgpu;
 
-use super::knobs::view_code;
 use super::*;
 use crate::Core;
 
@@ -233,25 +232,16 @@ impl GpuSampler {
     fn encode(&self, core: &Core, ticket: mr_gpu::Ticket, req: &FrameRequest, pass: impl FnOnce(&DrawFrame, &dyn Fn(&mut wgpu::RenderPass<'_>), Option<&wgpu::RenderPipeline>)) {
         let f = &self.now;
         let painter = self.order == "painter";
-        let overdraw = view_code(&self.vis.view) == 4;
-        let sky = if overdraw { [0.0, 0.0, 0.0, 1.0] } else { core.sky() };
+        let sky = core.sky();
         let clear = wgpu::Color { r: sky[0], g: sky[1], b: sky[2], a: 1.0 };
-        let merging = self.merging();
-        let draw_ofs = if merging { 108 * 4 } else { (72 + f.parity as u64 * 4) * 4 };
-        let bind_draw = if painter {
-            &self.bind_sorted
-        } else if merging {
-            &self.bind_merged
-        } else {
-            &self.bind_draw[f.parity]
-        };
+        let (bind_draw, _, draw_ofs) = self.drawn();
         let (st, more) = f.bound.as_ref().expect("stored").split();
         let frame = DrawFrame {
             out: f.out.as_ref().expect("set up"),
             depth: &self.drawing.depth,
             ids: self.drawing.ids(core),
             clear,
-            prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit && !painter && !overdraw,
+            prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit && !painter,
             keep_depth: self.incremental,
             binds: &[bind_draw, f.world.as_ref().expect("set up"), st.expect("discovery rays walk a storage")],
             more: &more,
@@ -262,13 +252,21 @@ impl GpuSampler {
             nodes: &self.drawing.draw_nodes,
         };
         let draw = |pass: &mut wgpu::RenderPass<'_>| pass.draw_indirect(&self.args, draw_ofs);
-        let main = match (overdraw, painter) {
-            (true, true) => Some(&self.pipe_over_paint),
-            (true, false) => Some(&self.pipe_over_depth),
-            (false, true) => Some(self.pipe_paint.as_ref().expect("painter order draws forward (refused when drawing only)")),
-            (false, false) => None,
-        };
+        let main = painter.then(|| self.pipe_paint.as_ref().expect("painter order draws forward (refused when drawing only)"));
         pass(&frame, &draw, main);
+    }
+
+    /// The list the drawer draws this frame (painter order's sorted, the row merge's runs or
+    /// the frame's list): its draw bind group, its buffer and its indirect arguments' offset.
+    pub(super) fn drawn(&self) -> (&wgpu::BindGroup, &wgpu::Buffer, u64) {
+        let parity = self.now.parity;
+        if self.order == "painter" {
+            (&self.bind_sorted, &self.sorted, (72 + parity as u64 * 4) * 4)
+        } else if self.merging() {
+            (&self.bind_merged, &self.merged, 108 * 4)
+        } else {
+            (&self.bind_draw[parity], &self.lists[parity], (72 + parity as u64 * 4) * 4)
+        }
     }
 
     /// The draw node: painter order's sort (far to near), then one instanced quad per face of

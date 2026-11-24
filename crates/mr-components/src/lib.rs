@@ -282,7 +282,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo {
         role: Role::Visibility,
         name: "quadtree",
-        description: "Discovery (the user's idea): an adaptive screen-space quadtree of corner rays; coherent tiles add every exposed face of the hit plane in their footprint to a face set kept across frames, which is rasterised. Knobs: tile, criterion, incremental, events, merge, order, views tiles/rays/churn/overdraw/quads, ...",
+        description: "Discovery (the user's idea): an adaptive screen-space quadtree of corner rays; coherent tiles add every exposed face of the hit plane in their footprint to a face set kept across frames, which is rasterised. Knobs: tile, criterion, incremental, events, merge, order, ...; writes the post views tiles/rays/churn/overdraw/quads",
         impls: &[
             Impl {
                 kind: Kind::Gpu,

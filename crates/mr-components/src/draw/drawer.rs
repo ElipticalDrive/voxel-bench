@@ -341,7 +341,7 @@ impl FaceDrawer {
     /// The frame's draw passes (the draw node's): `draw` issues the face draws into a pass
     /// whose pipeline and groups are set; `extra` draws more into the same depth (raster-gpu's
     /// meshes: in each forward pass, into the ids or records when deferred); `main` replaces
-    /// the forward main pipeline (discover-gpu's painter order and overdraw view; no prepass).
+    /// the forward main pipeline (discover-gpu's painter order; no prepass).
     /// Forward, drawing and shading the faces (shading fused into the fragments); deferred,
     /// their ids or records.
     pub fn encode_draw(

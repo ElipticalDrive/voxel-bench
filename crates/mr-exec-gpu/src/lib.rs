@@ -450,13 +450,7 @@ impl Core {
     /// The view `name` (`image`: none) among the quantities `qs` the region writes. The
     /// region's program and group 0 follow at its next frame.
     fn set_view(&mut self, name: &str, qs: &[mr_core::Quantity]) -> anyhow::Result<()> {
-        let q = match name {
-            "image" => None,
-            _ => Some(*qs.iter().find(|q| q.name == name).ok_or_else(|| {
-                let names: Vec<&str> = qs.iter().map(|q| q.name).collect();
-                anyhow::anyhow!("view `{name}`: this pipeline writes {}", if names.is_empty() { "no quantities".into() } else { format!("only `{}`", names.join("`, `")) })
-            })?),
-        };
+        let q = mr_components::post::view_quantity(name, qs)?;
         if self.view.as_ref().map(|v| v.quantity) != q {
             self.view = q.map(|q| view::Viewing::new(&self.gpu, q, self.width, self.height));
         }
