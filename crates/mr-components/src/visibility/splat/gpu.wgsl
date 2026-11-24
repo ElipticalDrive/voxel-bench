@@ -200,7 +200,6 @@ fn splat_big_id(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) g
 
 fn record_at(px: vec2<u32>) -> u32 { return atomicLoad(&idbuf[px.y * cam.width + px.x]); }
 fn record_hit(id: u32) -> bool { return id != 0u; }
-fn record_view(id: u32, color: vec4<f32>) -> vec4<f32> { return color; }
 fn view_ray(px: vec2<u32>) -> vec3<f32> {
     return camera_ray(cam.forward, cam.right, cam.up, cam.tan_half_fov, cam.aspect, vec2<f32>(px) + 0.5, vec2<f32>(f32(cam.width), f32(cam.height)));
 }

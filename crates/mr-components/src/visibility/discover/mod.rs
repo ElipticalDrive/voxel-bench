@@ -121,6 +121,9 @@ pub struct Settings {
     /// free of solid blocks, else the tile splits (a block floating in front of the plane
     /// that the corners' rays passed by); 0 = off.
     pub occluders: u32,
+    /// Cluster discovery: also each record's tag (how its face was found, its cluster) for
+    /// the post's views; off, none is computed.
+    pub tags: bool,
 }
 
 #[derive(Copy, Clone, Default)]

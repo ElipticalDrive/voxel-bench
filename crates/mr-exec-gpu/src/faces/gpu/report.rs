@@ -7,6 +7,7 @@ use mr_core::*;
 use mr_gpu::wgpu;
 
 use super::buffers::ViewUniform;
+use crate::faces::category::CategoryRaster;
 use super::*;
 use crate::Core;
 
@@ -36,30 +37,13 @@ pub(super) const QUANTITIES: &[Quantity] = &[
 pub(super) struct ViewPasses {
     name: &'static str,
     size: (u32, u32),
-    /// `tiles`, `rays`, `copy_ids` (`view.wgsl`).
+    /// `tiles`, `rays` (`view.wgsl`).
     writer: Option<wgpu::ComputePipeline>,
-    /// `churn`, `quads`: the list's category raster, its target and depth.
-    raster: Option<(wgpu::RenderPipeline, wgpu::TextureView, wgpu::TextureView)>,
+    /// `churn`, `quads`: the list's category raster.
+    raster: Option<CategoryRaster>,
     /// `overdraw`: group 0 with the quantity buffer, the counting raster (depth-tested,
     /// painter) and its depth.
     count: Option<(wgpu::BindGroupLayout, [wgpu::RenderPipeline; 2], wgpu::TextureView)>,
-}
-
-/// A raster of a face list over `layout` (`vs` and fragment `entry` of `module`) into
-/// `target` (none: side effects only), depth-tested with `compare`.
-pub(super) fn face_raster(core: &Core, label: &str, layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry: &str, target: Option<wgpu::TextureFormat>, compare: wgpu::CompareFunction) -> wgpu::RenderPipeline {
-    let targets = [target.map(|format| wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
-    core.gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
-        layout: Some(layout),
-        vertex: wgpu::VertexState { module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, front_face: wgpu::FrontFace::Ccw, cull_mode: Some(wgpu::Face::Back), ..Default::default() },
-        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true), depth_compare: Some(compare), stencil: Default::default(), bias: Default::default() }),
-        multisample: Default::default(),
-        fragment: Some(wgpu::FragmentState { module, entry_point: Some(entry), compilation_options: Default::default(), targets: if target.is_some() { &targets[..] } else { &[] } }),
-        multiview_mask: None,
-        cache: core.gpu.cache(),
-    })
 }
 
 impl GpuSampler {
@@ -77,23 +61,8 @@ impl GpuSampler {
         match name {
             "tiles" | "rays" => v.writer = Some(writer(name)),
             "churn" | "quads" => {
-                let ids = gpu
-                    .device
-                    .create_texture(&wgpu::TextureDescriptor {
-                        label: Some("view categories"),
-                        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::R32Uint,
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                        view_formats: &[],
-                    })
-                    .create_view(&Default::default());
                 let entry = if name == "churn" { "fs_churn" } else { "fs_quads" };
-                let pipe = face_raster(core, entry, &self.drawing.pl_draw, &self.draw_mod, entry, Some(wgpu::TextureFormat::R32Uint), wgpu::CompareFunction::Greater);
-                v.raster = Some((pipe, ids, crate::faces::depth_view(gpu, w, h, false)));
-                v.writer = Some(writer("copy_ids"));
+                v.raster = Some(CategoryRaster::new(core, name, &self.drawing.pl_draw, &self.draw_mod, entry));
             }
             "overdraw" => {
                 // The drawing's group 0 with the quantity buffer, and its program counting.
@@ -109,7 +78,7 @@ impl GpuSampler {
                     program.define("EARLY_DEPTH");
                 }
                 let module = crate::faces::DrawParts::compile(gpu, "overdraw", &program, &d.deps, &format!("{}\n{}", d.draw_src, crate::view::atomic_wgsl()));
-                let pipes = [wgpu::CompareFunction::Greater, wgpu::CompareFunction::Always].map(|c| face_raster(core, "overdraw", &pl, &module, "fs_overdraw", None, c));
+                let pipes = [wgpu::CompareFunction::Greater, wgpu::CompareFunction::Always].map(|c| crate::faces::category::face_raster(core, "overdraw", &pl, &module, "fs_overdraw", None, c));
                 v.count = Some((layout, pipes, crate::faces::depth_view(gpu, w, h, false)));
             }
             _ => {}
@@ -134,37 +103,33 @@ impl GpuSampler {
         let v = self.views.as_ref().unwrap();
         let (world, bound) = (f.world.as_ref().expect("set up"), f.bound.as_ref().expect("stored"));
         let (bind_list, list, draw_ofs) = self.drawn();
-        let raster = |enc: &mut wgpu::CommandEncoder, target: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, pipe: &wgpu::RenderPipeline, bind: &wgpu::BindGroup| {
-            let colors: Vec<_> = target.map(|view| wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }).into_iter().map(Some).collect();
+        if let Some((layout, pipes, depth)) = &v.count {
+            let mut entries = core.bind_entries_with(None);
+            entries.extend([wgpu::BindGroupEntry { binding: crate::REGION_BINDING, resource: list.as_entire_binding() }, wgpu::BindGroupEntry { binding: crate::REGION_BINDING + 1, resource: self.cpos.as_entire_binding() }]);
+            let bind = core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("overdraw"), layout, entries: &entries });
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("view raster"),
-                color_attachments: &colors,
+                label: Some("overdraw"),
+                color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }), stencil_ops: None }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(pipe);
-            pass.set_bind_group(0, bind, &[]);
+            pass.set_pipeline(&pipes[(self.order == "painter") as usize]);
+            pass.set_bind_group(0, &bind, &[]);
             pass.set_bind_group(1, world, &[]);
             bound.render(&mut pass);
             pass.draw_indirect(&self.args, draw_ofs);
-        };
-        if let Some((layout, pipes, depth)) = &v.count {
-            let mut entries = core.bind_entries_with(None);
-            entries.extend([wgpu::BindGroupEntry { binding: crate::REGION_BINDING, resource: list.as_entire_binding() }, wgpu::BindGroupEntry { binding: crate::REGION_BINDING + 1, resource: self.cpos.as_entire_binding() }]);
-            let bind = core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("overdraw"), layout, entries: &entries });
-            raster(enc, None, depth, &pipes[(self.order == "painter") as usize], &bind);
             return;
         }
         // Nothing is new in a static frame.
         if name == "churn" && f.redraw {
             return;
         }
-        let ids = v.raster.as_ref().map(|(pipe, ids, depth)| {
-            raster(enc, Some(ids), depth, pipe, bind_list);
-            ids
-        });
+        if let Some(r) = &v.raster {
+            r.encode(core, enc, bind_list, world, bound, |pass| pass.draw_indirect(&self.args, draw_ofs));
+            return;
+        }
         let Some(writer) = &v.writer else { return };
         let u = ViewUniform {
             frame: if f.redraw { 0 } else { self.frame },
@@ -181,14 +146,9 @@ impl GpuSampler {
         };
         core.gpu.queue.write_buffer(&self.view_buf, 0, bytemuck::bytes_of(&u));
         let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: self.view_buf.as_entire_binding() }, viewing.bind_entry()];
-        let ids_view;
         match name {
             "tiles" => entries.push(wgpu::BindGroupEntry { binding: 1, resource: self.sized.need.as_entire_binding() }),
-            "rays" => entries.push(wgpu::BindGroupEntry { binding: 2, resource: self.sized.cast_frame.as_entire_binding() }),
-            _ => {
-                ids_view = ids.expect("category raster");
-                entries.push(wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(ids_view) });
-            }
+            _ => entries.push(wgpu::BindGroupEntry { binding: 2, resource: self.sized.cast_frame.as_entire_binding() }),
         }
         let bind = core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("discover view"), layout: &writer.get_bind_group_layout(0), entries: &entries });
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover view"), timestamp_writes: None });

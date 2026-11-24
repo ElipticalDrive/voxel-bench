@@ -1,10 +1,9 @@
 // The CPU sampler's face source for the face drawer (`visibility/faces.wgsl`): one unit
-// quad (4-vertex strip) per face record uploaded from the CPU (`view`: 1 clusters, 2 kinds,
-// cluster discovery). The drawer's visibility component shades (`shade_surface`); lit-mode
-// shadow rays walk their GPU storage.
+// quad (4-vertex strip) per face record uploaded from the CPU. The drawer's visibility
+// component shades (`shade_surface`); lit-mode shadow rays walk their GPU storage.
 
 @group(0) @binding(8) var<storage, read> quads: array<vec2<u32>>;
-@group(0) @binding(9) var<storage, read> tags: array<u32>;  // views: kind << 30 | cluster id
+@group(0) @binding(9) var<storage, read> tags: array<u32>;  // views: kind << 30 | cluster id (while viewed)
 
 // Record: x(15) | z(15) << 15 | face.lo(2) << 30 ; block(16) | y(15) << 16 | face.hi(1) << 31
 fn rec_face(q: vec2<u32>) -> u32 {
@@ -36,22 +35,18 @@ fn src_lookup(ii: u32, face: u32, h: Hit, d: vec3<f32>) -> u32 {
     return h.block;
 }
 
-fn src_view(ii: u32, color: vec4<f32>) -> vec4<f32> {
-    if (fr.view == 0u) { return color; }
-    let tag = tags[ii];
-    let kind = tag >> 30u;
-    let g = dot(color.rgb, vec3<f32>(0.3, 0.5, 0.2));
-    if (fr.view == 1u) {
-        // Clusters: one colour per cluster (grey for faces carried over from earlier passes).
-        var h = (tag & 0x3fffffffu) * 0x9E3779B1u;
-        h ^= h >> 15u; h *= 0x85EBCA77u; h ^= h >> 13u;
-        let c = vec3<f32>(f32(h & 255u), f32((h >> 8u) & 255u), f32((h >> 16u) & 255u)) / 255.0;
-        return select(vec4<f32>(vec3<f32>(g * 0.5), 1.0), vec4<f32>(mix(color.rgb, c, 0.7), 1.0), kind != 0u);
-    }
-    // Kinds: confirmed (all corners visible) green, partial (an occluded corner) yellow,
-    // carried over grey.
-    var c = vec3<f32>(g * 0.5);
-    if (kind == 1u) { c = mix(vec3<f32>(g), vec3<f32>(0.2, 0.9, 0.3), 0.6); }
-    if (kind == 2u) { c = mix(vec3<f32>(g), vec3<f32>(1.0, 0.85, 0.1), 0.7); }
-    return vec4<f32>(c, 1.0);
+// The post's category views of cluster discovery, rasterised on their own (`tags`, uploaded
+// only while one is viewed) and copied into its quantity buffer. `clusters`: an id per
+// cluster found this pass (category 1), carried over (2). `kinds`: confirmed (1), partial
+// (2), carried over (3).
+@fragment
+fn fs_clusters(in: VOut) -> @location(0) u32 {
+    let tag = tags[in.info.y];
+    return select(2u, ((tag & 0x3fffffu) + 1u) << 8u | 1u, (tag >> 30u) != 0u);
+}
+
+@fragment
+fn fs_kinds(in: VOut) -> @location(0) u32 {
+    let kind = tags[in.info.y] >> 30u;
+    return select(kind, 3u, kind == 0u);
 }

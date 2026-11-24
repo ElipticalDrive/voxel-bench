@@ -16,5 +16,5 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     } else {
         color = shade_surface(s, d, false, vec2<u32>(in.pos.xy));
     }
-    return src_view(in.info.y, color);
+    return color;
 }

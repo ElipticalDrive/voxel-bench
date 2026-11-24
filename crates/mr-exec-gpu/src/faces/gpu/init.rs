@@ -183,7 +183,7 @@ impl GpuSampler {
         // Painter order: no depth test, but depth is still written (the last fragment is the
         // nearest), since incremental mode reads it.
         let pipe_paint = (!drawing.draw_only).then(|| pipeline("painter", true, wgpu::CompareFunction::Always, true));
-        let pipe_id = super::report::face_raster(&core, "face ids", pl_draw, &draw_mod, "fs_id", Some(wgpu::TextureFormat::R32Uint), wgpu::CompareFunction::Greater);
+        let pipe_id = crate::faces::category::face_raster(&core, "face ids", pl_draw, &draw_mod, "fs_id", Some(wgpu::TextureFormat::R32Uint), wgpu::CompareFunction::Greater);
 
         let list_cap = vis.max_faces.clamp(1 << 16, 1 << 24);
         let table_cap = (list_cap * 2).next_power_of_two();

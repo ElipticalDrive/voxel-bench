@@ -346,18 +346,19 @@ pub fn discover<G: World>(
     st.kinds = kinds;
     let t_disc = start.elapsed().as_secs_f32() * 1e3;
     let faces_found = found.len() as u64;
-    let tag_map: FaceMap = st
-        .kinds
-        .iter()
-        .map(|&(k, kind, id)| (k, (kind as u32) << 30 | (id & 0x3fff_ffff)))
-        .collect();
+    let tag_map: Option<FaceMap> = set.tags.then(|| {
+        st.kinds
+            .iter()
+            .map(|&(k, kind, id)| (k, (kind as u32) << 30 | (id & 0x3fff_ffff)))
+            .collect()
+    });
     let records = finalize(
         &mut st,
         found,
         grid,
         rays.cb,
         set.keep_frames,
-        Some(&tag_map),
+        tag_map.as_ref(),
     );
     let mut out = Output {
         state: st,
@@ -441,6 +442,7 @@ mod tests {
             seed_step,
             sky_sparse: false,
             occluders: 0,
+            tags: false,
         }
     }
 

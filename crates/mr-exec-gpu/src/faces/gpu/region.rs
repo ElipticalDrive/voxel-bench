@@ -137,7 +137,7 @@ impl Region for GpuSampler {
             // shading runs: lights may move).
             self.last_kind = FrameKind::Static;
             self.kind_counts[FrameKind::Static as usize] += 1;
-            self.drawing.write_frame(core, c, req.mode, 0, IVec3::ZERO);
+            self.drawing.write_frame(core, c, req.mode, IVec3::ZERO);
             let tile = self.vis.tile;
             let world = Some(core.world.prepare(&core.gpu, c).clone());
             self.now = Frame { redraw: true, parity: (self.frame & 1) as usize, cols: core.width.div_ceil(tile), rows: core.height.div_ceil(tile), world, out: Some(core.output.create_view(&Default::default())), ..Frame::default() };
@@ -267,7 +267,7 @@ impl Region for GpuSampler {
             };
         }
         core.gpu.queue.write_buffer(&self.level_buf, 0, bytemuck::cast_slice(&lvls));
-        self.drawing.write_frame(core, c, req.mode, 0, IVec3::ZERO);
+        self.drawing.write_frame(core, c, req.mode, IVec3::ZERO);
         let world = core.world.prepare(&core.gpu, c).clone();
         if self.bind_disc.is_none() {
             self.bind_disc = Some(self.make_bind_disc(core));

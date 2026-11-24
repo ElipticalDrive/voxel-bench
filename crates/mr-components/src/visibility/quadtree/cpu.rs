@@ -434,6 +434,7 @@ mod tests {
             seed_step: 16,
             sky_sparse: false,
             occluders,
+            tags: false,
         }
     }
 

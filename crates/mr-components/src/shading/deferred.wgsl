@@ -6,7 +6,7 @@
 // `packed.wgsl`), or an id its source decodes (`visbuffer`'s face ids, `splat`'s point
 // ids). Expects, from the encoding: `record_at(px)` (the pixel's record, wherever the
 // strategy stored it), `record_hit(r)`, `record_decode(r, d)` (the surface on primary ray
-// `d`) and `record_view(r, color)` (the source's diagnostic views, or `color`); from the
+// `d`); from the
 // back end, its view of the frame: `view_ray(px)` (the pixel's unit primary ray),
 // `view_origin()`, `view_miss(px)` (the colour where no surface was hit: the sky, or what
 // the back end composites there), `view_lit()`, and the output `out_tex`. With meshes
@@ -30,5 +30,5 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 #endif
-    textureStore(out_tex, vec2<i32>(gid.xy), record_view(r, shade_surface(record_decode(r, d), d, view_lit(), gid.xy)));
+    textureStore(out_tex, vec2<i32>(gid.xy), shade_surface(record_decode(r, d), d, view_lit(), gid.xy));
 }

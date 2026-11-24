@@ -30,6 +30,7 @@ use mr_gpu::{Gpu, GpuNeeds, wgpu};
 
 use crate::{Core, CoreSpec};
 
+mod category;
 pub(crate) mod cpu;
 pub(crate) mod gpu;
 pub(crate) mod mesh;
@@ -471,10 +472,9 @@ impl Draw {
         core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("face draw"), layout: &self.layout_draw, entries: &entries })
     }
 
-    /// Writes the core's camera uniform for `c` (`view`: the face source's tint, the region's
-    /// first word; `anchor`: the CPU records' origin).
-    fn write_frame(&self, core: &Core, c: &Camera, mode: RenderMode, view: u32, anchor: IVec3) {
-        core.write_camera_at(c, mode, [view, 0], anchor);
+    /// Writes the core's camera uniform for `c` (`anchor`: the CPU records' origin).
+    fn write_frame(&self, core: &Core, c: &Camera, mode: RenderMode, anchor: IVec3) {
+        core.write_camera_at(c, mode, [0, 0], anchor);
     }
 
     /// Lit `stateful` shading drawn forward may update its state once per pixel only

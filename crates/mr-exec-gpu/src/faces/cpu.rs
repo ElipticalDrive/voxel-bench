@@ -46,6 +46,7 @@ use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{DEVICE_BOUND, GrowableBuffer, wgpu};
 use serde::Deserialize;
 
+use super::category::CategoryRaster;
 use super::{CoreOpts, Draw, SourceSpec};
 use crate::exec::{self, Cx, Node, Region};
 use crate::Core;
@@ -66,9 +67,7 @@ fn params() -> Vec<ParamSpec> {
     vec![
         ParamSpec::int("seed_step", "Cluster: coarsest seed lattice spacing (px, rounded to a power of two)", 1, 256, 16, true).of("visibility", &["cluster"]),
         ParamSpec::choice("sky", "Cluster: corners = a lattice cell at spacing <= sky_tile is sky when all four corner seeds miss; sparse = one missed seed covers its cell (cheaper; thin things may take a few frames to appear)", &["corners", "sparse"], "corners", true).of("visibility", &["cluster"]),
-        ParamSpec::choice("view", "image: the rendered scene. Cluster discovery only: clusters = one colour per cluster found this pass; kinds = confirmed faces (all corners visible) green, faces with an occluded corner yellow, faces carried over from earlier passes grey", &["image", "clusters", "kinds"], "image", true)
-            .needs("clusters", "visibility", None, &["cluster"], "clusters")
-            .needs("kinds", "visibility", None, &["cluster"], "clusters"),
+        view_knob(),
         ParamSpec::int("tile", "Initial quadtree tile size (px)", 2, 256, 32, true).of("visibility", &["quadtree"]),
         ParamSpec::choice("criterion", "Tile coherence test: all corners on one face plane (then enumerate the plane's faces in the footprint) or on one face", &["plane", "face"], "plane", true).of("visibility", &["quadtree"]),
         ParamSpec::int("sky_tile", "All-miss tiles at most this size (px) are accepted as sky", 1, 256, 8, true),
@@ -95,11 +94,32 @@ fn params() -> Vec<ParamSpec> {
     .collect()
 }
 
+/// What cluster discovery writes for the post's view (its tags, rasterised).
+const QUANTITIES: &[Quantity] = &[
+    Quantity::categorical("clusters", "clusters found this pass", "one colour per cluster found this pass, faces carried over from earlier passes dark grey (cluster discovery)", &[("one random colour per cluster found this pass", None), ("carried over from earlier passes (dark grey)", Some([64, 64, 64]))]),
+    Quantity::categorical(
+        "kinds",
+        "how each face was found",
+        "confirmed faces (all corners visible) green, faces with an occluded corner yellow, faces carried over from earlier passes dark grey (cluster discovery)",
+        &[("confirmed: all corners visible", Some([51, 230, 77])), ("partial: an occluded corner", Some([255, 217, 26])), ("carried over from earlier passes (dark grey)", Some([64, 64, 64]))],
+    ),
+];
+
+/// The quantities discovery `visibility` writes.
+fn quantities(visibility: &str) -> &'static [Quantity] {
+    if visibility == "cluster" { QUANTITIES } else { &[] }
+}
+
+/// The post's `view` over them (no ramps: no `view_max`), each needing cluster discovery.
+fn view_knob() -> ParamSpec {
+    let [view, _] = mr_components::post::view_knobs(QUANTITIES);
+    QUANTITIES.iter().fold(view, |k, q| k.needs(q.name, "visibility", None, &["cluster"], "clusters"))
+}
+
 /// The region's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
 #[serde(default)]
 struct Options {
-    view: String,
     sky_tile: Option<u32>,
     keep_frames: u32,
     predict: bool,
@@ -116,7 +136,6 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            view: "image".into(),
             sky_tile: None,
             keep_frames: 8,
             predict: true,
@@ -194,9 +213,11 @@ pub(crate) struct CpuSampler {
     dirty: Vec<u32>,
     /// Records written to the GPU this frame.
     uploaded: u32,
-    /// Per-record tags for the diagnostic views (cluster discovery).
+    /// Per-record tags for the post's views (cluster discovery; while one is viewed) and the
+    /// view's raster.
     tag_buf: GrowableBuffer,
     tags_valid: bool,
+    views: Option<CategoryRaster>,
     bind0: Option<wgpu::BindGroup>,
     /// The nodes of the timed stage: discovery on the CPU.
     vis_nodes: Vec<String>,
@@ -215,10 +236,9 @@ struct Frame {
     world: Option<wgpu::BindGroup>,
     bound: Option<Bound>,
     out: Option<wgpu::TextureView>,
-    /// Discovery's counters and view legend; its own time (pipelined: overlapping the
-    /// previous frame's drawing).
+    /// Discovery's counters; its own time (pipelined: overlapping the previous frame's
+    /// drawing).
     counters: Vec<(String, f64)>,
-    legend: Option<Legend>,
     discovery_ms: f32,
 }
 
@@ -264,7 +284,7 @@ impl CpuSampler {
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
         let o = CoreOpts { shading: &shading, draw: &draw, bounces: k.bounces, spp: k.spp, accumulate: k.accumulate, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
-        let (core, drawing, far) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
+        let (mut core, drawing, far) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("records.wgsl").into(),
             walks,
             lead: None,
@@ -278,6 +298,10 @@ impl CpuSampler {
             depth_read: false,
             nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
         })?;
+        // The post's view (the drawing's group 0 never binds its quantity buffer).
+        let (view, view_max) = mr_components::post::view_chosen(g, "image", 256);
+        core.set_view(&view, quantities(&visibility))?;
+        core.view_max = view_max;
         let rec_buf = GrowableBuffer::new(&core.gpu, "face records", 1 << 22, u64::MAX, wgpu::BufferUsages::STORAGE);
         let tag_buf = GrowableBuffer::new(&core.gpu, "face tags", 1 << 21, u64::MAX, wgpu::BufferUsages::STORAGE);
         let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(p.devices.cpu_threads(opts.threads)).thread_name(|i| format!("discover-{i}")).build()?);
@@ -299,6 +323,7 @@ impl CpuSampler {
             uploaded: 0,
             tag_buf,
             tags_valid: false,
+            views: None,
             bind0: None,
             vis_nodes: g.ids(&[Role::Visibility]),
             drawing,
@@ -357,10 +382,10 @@ impl CpuSampler {
                 self.uploaded += recs.len() as u32;
             }
         }
-        // Tags for the views, when the algorithm provides them.
+        // Tags for the post's view, when the algorithm provides them.
         let tags = &out.records.tags;
         self.tags_valid = false;
-        if tags.len() == n as usize && !tags.is_empty() && self.opts.view != "image"
+        if tags.len() == n as usize && !tags.is_empty()
             && let Some(grew) = self.tag_buf.reserve(&core.gpu, tags.len() as u64 * 4, DEVICE_BOUND) {
             if grew {
                 self.bind0 = None;
@@ -373,7 +398,8 @@ impl CpuSampler {
 }
 
 impl CpuSampler {
-    fn settings(&self) -> Settings {
+    /// Discovery's settings (`tags`: for the post's view).
+    fn settings(&self, tags: bool) -> Settings {
         let (o, v) = (&self.opts, &self.vis);
         Settings {
             tile: v.tile.max(1),
@@ -390,6 +416,7 @@ impl CpuSampler {
             seed_step: v.seed_step,
             sky_sparse: v.sky == "sparse",
             occluders: v.occluders,
+            tags,
         }
     }
 
@@ -400,7 +427,6 @@ impl CpuSampler {
             "tile" => self.vis.tile = int(32),
             "seed_step" => self.vis.seed_step = int(16),
             "sky" => self.vis.sky = value.as_str().unwrap_or("corners").to_string(),
-            "view" => self.opts.view = value.as_str().unwrap_or("image").to_string(),
             "criterion" => self.vis.criterion = value.as_str().unwrap_or("plane").to_string(),
             "sky_tile" => self.opts.sky_tile = Some(int(8)),
             "keep_frames" => self.opts.keep_frames = int(8),
@@ -538,7 +564,8 @@ impl Region for CpuSampler {
         let start = Instant::now();
         let (w, h) = (core.width, core.height);
         let grid = self.cpu.snapshot();
-        let settings = self.settings();
+        let viewed = core.view.as_ref().is_some_and(|v| self.quantities().contains(&v.quantity));
+        let settings = self.settings(viewed);
         let c = req.camera;
 
         // 1. The face set for this frame: from the job launched last frame, or (first
@@ -583,17 +610,8 @@ impl Region for CpuSampler {
             self.pending = Some(rx);
         }
 
-        // 5. The frame's camera (the views' tint) and world for drawing S.
-        let view = if self.tags_valid {
-            match self.opts.view.as_str() {
-                "clusters" => 1,
-                "kinds" => 2,
-                _ => 0,
-            }
-        } else {
-            0
-        };
-        self.drawing.write_frame(core, &c, req.mode, view, out.records.anchor);
+        // 5. The frame's camera and world for drawing S.
+        self.drawing.write_frame(core, &c, req.mode, out.records.anchor);
         let world = core.world.prepare(&core.gpu, &c).clone();
         core.accum.begin(&core.gpu, &c, req.mode);
         let pixels = (w as f64) * (h as f64);
@@ -623,16 +641,7 @@ impl Region for CpuSampler {
             counters.push(("audit_ms".into(), ms));
         }
         counters.extend(out.extra);
-        let legend = match (self.tags_valid, self.opts.view.as_str()) {
-            (true, "clusters") => Some(Legend::categories(&[("one random colour per cluster found this pass", None), ("carried over from earlier passes (dark grey)", Some([64, 64, 64]))])),
-            (true, "kinds") => Some(Legend::categories(&[
-                ("confirmed: all corners visible (green tint)", Some([51, 230, 77])),
-                ("partial: an occluded corner (yellow tint)", Some([255, 217, 26])),
-                ("carried over from earlier passes (dark grey)", Some([64, 64, 64])),
-            ])),
-            _ => None,
-        };
-        self.frame = Frame { n, world: Some(world), out: Some(core.output.create_view(&Default::default())), counters, legend, discovery_ms: out.ms, ..Frame::default() };
+        self.frame = Frame { n, world: Some(world), out: Some(core.output.create_view(&Default::default())), counters, discovery_ms: out.ms, ..Frame::default() };
     }
 
     fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
@@ -640,7 +649,31 @@ impl Region for CpuSampler {
         let (accel, accel_stages) = core.accel_stats();
         let counters = f.counters.iter().cloned().chain(core.accum.counter(req.mode)).chain(core.storages.counters()).chain(accel).collect();
         let stages = [StageTime::cpu("discover", &self.vis_nodes, f.discovery_ms)].into_iter().chain(accel_stages).collect();
-        (counters, f.legend.clone(), stages)
+        (counters, None, stages)
+    }
+
+    fn quantities(&self) -> &'static [Quantity] {
+        quantities(&self.visibility)
+    }
+
+    /// The viewed quantity, where it is cluster discovery's: its tags rasterised.
+    fn view(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket) {
+        let Some(name) = core.view.as_ref().map(|v| v.quantity.name).filter(|_| self.tags_valid) else { return };
+        let Some(&q) = self.quantities().iter().find(|q| q.name == name) else { return };
+        if self.views.as_ref().is_none_or(|v| !v.is(core, q.name)) {
+            let module = self.drawing.module(core, "discover view", "");
+            self.views = Some(CategoryRaster::new(core, q.name, &self.drawing.pl_draw, &module, &format!("fs_{}", q.name)));
+        }
+        // A diagnostic, not a node's work.
+        core.ring.stage(enc, ticket, "view", &[]);
+        let f = &self.frame;
+        let (Some(bind), Some(world), Some(bound)) = (self.bind0.as_ref(), f.world.as_ref(), f.bound.as_ref()) else { return };
+        let n = f.n;
+        self.views.as_ref().unwrap().encode(core, enc, bind, world, bound, |pass| {
+            if n > 0 {
+                pass.draw(0..4, 0..n);
+            }
+        });
     }
 
     fn finish(&mut self, _: &Core, _: &mut wgpu::CommandEncoder, _: mr_gpu::Ticket) {}

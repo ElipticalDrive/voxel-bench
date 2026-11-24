@@ -58,10 +58,6 @@ fn src_lookup(ii: u32, face: u32, h: Hit, d: vec3<f32>) -> u32 {
     return select(faces[ii].z, b, b != 0u);
 }
 
-fn src_view(ii: u32, color: vec4<f32>) -> vec4<f32> {
-    return color;
-}
-
 // Face-id raster (incremental mode): which list entry covers each pixel.
 @fragment
 fn fs_id(in: VOut) -> @location(0) u32 {

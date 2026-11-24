@@ -10,8 +10,7 @@
 // * `src_origin(ii, face) -> vec3<f32>`: the face's origin (`face_origin`, camera-block
 //   relative), on its plane;
 // * `src_block(ii) -> u32`: the instance's block, or `LOOKUP_BLOCK` if it spans several
-//   (merged quads), and then `src_lookup(ii, face, h, d) -> u32`: the block at hit `h` of ray `d`;
-// * `src_view(ii, color) -> vec4<f32>`: the source's diagnostic views (or `color`).
+//   (merged quads), and then `src_lookup(ii, face, h, d) -> u32`: the block at hit `h` of ray `d`.
 // Compute passes read the records (`face_hit`). Fragment shaders (`fragment_hit`) either
 // read them too (`faces_records.wgsl`: raster-gpu, whose cubes pay 8-15% for extra
 // vertex outputs) or take the plane and the block from flat varyings and read a record

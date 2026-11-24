@@ -48,7 +48,3 @@ fn src_lookup(ii: u32, face: u32, h: Hit, d: vec3<f32>) -> u32 {
     return h.block;
 }
 #endif
-
-fn src_view(ii: u32, color: vec4<f32>) -> vec4<f32> {
-    return color;
-}

@@ -733,7 +733,7 @@ impl Region for Meshing {
         }
         let mesh_ms = start.elapsed().as_secs_f64() * 1e3;
         let c = &req.camera;
-        self.drawing.write_frame(core, c, req.mode, 0, IVec3::ZERO);
+        self.drawing.write_frame(core, c, req.mode, IVec3::ZERO);
         core.accum.begin(&core.gpu, c, req.mode);
         self.frame = Frame {
             want_meshes: req.meshes && self.live.meshes != "none",
