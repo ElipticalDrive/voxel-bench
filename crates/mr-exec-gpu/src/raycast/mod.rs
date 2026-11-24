@@ -121,7 +121,7 @@ trait Cast: Sized {
     /// The registry's name of this configuration.
     const REGION: &'static mr_components::graph::Builds;
     /// The ray flags of ray queries that are not shadow rays (a WGSL expression; see
-    /// `Core::trace_root`).
+    /// `Core::bind_program`).
     const RT_FLAGS: &'static str = "0u";
     /// Group 0's entries from `REGION_BINDING`.
     fn layout_entries(&self, stages: wgpu::ShaderStages) -> Vec<wgpu::BindGroupLayoutEntry>;
@@ -256,7 +256,7 @@ impl Passes {
         let dev = &core.gpu.device;
         let deferred = core.edges.records().is_some() && cast.view() == View::Image;
         let mut lp = cast.program(shading, meshed);
-        core.trace_root(&mut lp.program, C::RT_FLAGS);
+        core.bind_program(&mut lp.program, C::RT_FLAGS);
         let lp = shader(lp, deferred, cast.view(), cast.fragment(), layered);
         let deps: Vec<&str> = lp.deps.iter().map(String::as_str).collect();
         let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);

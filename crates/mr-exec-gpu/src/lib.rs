@@ -378,9 +378,12 @@ impl Core {
         }
     }
 
-    /// Adds the ray queries' root code to `p` (the bindings and the trace; `flags`: the ray
-    /// flags of rays that are not shadow rays, a WGSL expression), if the pipeline has them.
-    fn trace_root(&self, p: &mut mr_gpu::program::Program, flags: &str) {
+    /// Binds `p` to this core's world and device before it is compiled: the voxel pool's pages
+    /// (`VoxelWorld::pages`) and the ray queries' root code (the bindings and the trace;
+    /// `flags`: the ray flags of rays that are not shadow rays, a WGSL expression), if the
+    /// pipeline has them.
+    fn bind_program(&self, p: &mut mr_gpu::program::Program, flags: &str) {
+        p.pool(self.world.pages());
         if let Some(a) = &self.accel {
             p.root(format!("enable wgpu_ray_query;\n{}", a.wgsl(flags)));
         }

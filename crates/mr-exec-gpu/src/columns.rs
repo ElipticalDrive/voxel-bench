@@ -101,8 +101,10 @@ struct Variant {
 }
 
 impl Columns {
-    fn variant(&self, gpu: &mr_gpu::Gpu, lit: bool) -> Variant {
-        let (program, root, deps) = program(&self.shading, self.deferred, lit, self.tone);
+    fn variant(&self, core: &Core, lit: bool) -> Variant {
+        let gpu = &core.gpu;
+        let (mut program, root, deps) = program(&self.shading, self.deferred, lit, self.tone);
+        core.bind_program(&mut program, "0u");
         let module = mr_gpu::program::compile(&gpu.device, if lit { "voxelspace lit" } else { "voxelspace" }, &program, &root, &deps);
         let pipe = |e: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&self.pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
         Variant { march: pipe("main"), shade: self.deferred.then(|| pipe("shade")) }
@@ -200,7 +202,7 @@ impl Region for Columns {
         let lit = req.mode == RenderMode::Lit;
         self.mode = lit as usize;
         if self.variants[self.mode].is_none() {
-            self.variants[self.mode] = Some(self.variant(&core.gpu, lit));
+            self.variants[self.mode] = Some(self.variant(core, lit));
         }
         Ok(())
     }

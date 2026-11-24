@@ -349,10 +349,10 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         programs(&src.walks, src.lead, src.lookup, src.sites, src.meshes, &shading)
     };
     // Ray queries at the sites: their bindings and trace in every root.
-    core.trace_root(&mut program, "0u");
+    core.bind_program(&mut program, "0u");
     if let Some(m) = &mut meshed {
-        core.trace_root(&mut m.program, "0u");
-        core.trace_root(&mut m.rays_voxels, "0u");
+        core.bind_program(&mut m.program, "0u");
+        core.bind_program(&mut m.rays_voxels, "0u");
     }
     let draw_src = draw_src(&src.wgsl, src.varyings);
     let buf = |binding| wgpu::BindGroupLayoutEntry {

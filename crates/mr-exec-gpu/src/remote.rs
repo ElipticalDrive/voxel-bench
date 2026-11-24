@@ -238,7 +238,7 @@ fn program(walks: &Walks, shadow: usize, bounce: usize, shading: &str) -> (mr_gp
 
 fn compile(core: &Core, layout: &wgpu::PipelineLayout, walks: &Walks, shadow: usize, bounce: usize, shading: &str) -> anyhow::Result<wgpu::ComputePipeline> {
     let (mut program, root, deps) = program(walks, shadow, bounce, shading);
-    core.trace_root(&mut program, "0u");
+    core.bind_program(&mut program, "0u");
     let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
     let dev = &core.gpu.device;
     let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);

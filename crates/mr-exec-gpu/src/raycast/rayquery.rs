@@ -258,7 +258,7 @@ impl Cast for RayQuery {
 /// The shader: the world, lighting and the shading component as modules, the shading's ray
 /// services through their sites (ray queries: virtual functions the root code overrides,
 /// see `Walks::services`); the root casts the primary rays with the ray-query kernel's
-/// `ctrace` over the trace the core's root code holds (`Core::trace_root`).
+/// `ctrace` over the trace the core's root code holds (`Core::bind_program`).
 fn program(walks: &Walks, shadow: usize, bounce: usize, shading: &str) -> CastProgram {
     use mr_components::shaders;
     let mut program = mr_gpu::program::Program::world(Some("rays::shadow"));

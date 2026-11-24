@@ -166,7 +166,7 @@ impl Splat {
         let core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
         // The shading on another GPU: that GPU's executor, shading the records decoded here.
         let far = crate::remote::create(p, devices, waker, g, &core, &spec)?;
-        core.trace_root(&mut program, "0u");
+        core.bind_program(&mut program, "0u");
         let gpu = &core.gpu;
         let module = mr_gpu::program::compile(&gpu.device, "splat", &program, &own, &deps.iter().map(String::as_str).collect::<Vec<_>>());
         let mut entries = core.layout_entries();

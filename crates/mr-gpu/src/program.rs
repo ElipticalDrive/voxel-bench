@@ -37,6 +37,9 @@ pub struct Program {
     /// which naga cannot write back into a module (the acceleration structures' bindings
     /// and trace, the ray services it overrides).
     root_code: Vec<String>,
+    /// How the voxel pool is bound ([`Program::pool`]); unset, one page, and [`compile`]
+    /// refuses a shader that reads the pool.
+    pool: Option<crate::voxels::PoolPages>,
 }
 
 /// The shared modules: `mr::common` (colour, camera, face helpers), `mr::voxels` (the
@@ -67,6 +70,16 @@ impl Program {
             p.add(LIGHTING, crate::voxels::LIGHTING_WGSL, &[r, VOXELS, POST]);
         }
         p
+    }
+
+    /// Binds the voxel pool as `pages` (the world's, `VoxelWorld::pages`): every program
+    /// whose shaders read the pool is compiled with it.
+    pub fn pool(&mut self, pages: crate::voxels::PoolPages) -> &mut Self {
+        self.pool = Some(pages);
+        if self.has(VOXELS) {
+            self.add(VOXELS, pages.wgsl(), &[COMMON]);
+        }
+        self
     }
 
     /// Adds (or replaces) the module at `path`.
@@ -200,6 +213,8 @@ pub fn compile(dev: &wgpu::Device, label: &str, p: &Program, root: &str, deps: &
         crate::dump_wgsl(&dir, label, &text);
     }
     let module = p.naga(root, deps).unwrap_or_else(|e| panic!("shader `{label}`: {e}"));
+    let reads_pool = module.global_variables.iter().any(|(_, g)| g.binding == Some(naga::ResourceBinding { group: 1, binding: 2 }));
+    assert!(p.pool.is_some() || !reads_pool, "shader `{label}` reads the voxel pool, but its program was not given the pool's pages (`Program::pool`)");
     dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)) })
 }
 
