@@ -23,7 +23,8 @@ What it puts down (and removes again):
 - the compiled-pipeline cache (`~/.cache/multirenderer`; Windows: inside `<data>`);
 - prerequisites when missing, each only after asking: the Rust toolchain (rustup, with
   llvm-tools for profile-guided builds), a C compiler (Linux: the distribution's package;
-  Windows: Visual Studio Build Tools with C++ and ATL, which the linked-in DXC needs).
+  Windows: Visual Studio Build Tools with C++, ATL, which the linked-in DXC needs, and a
+  Windows SDK; an existing Visual Studio is checked on disk and completed or repaired).
 """
 import argparse
 import hashlib
@@ -44,7 +45,6 @@ WINDOWS = os.name == "nt"
 EXE = "multirenderer.exe" if WINDOWS else "multirenderer"
 HERE = Path(__file__).resolve().parent
 VSWHERE = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
-VS_PARTS = ["Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "Microsoft.VisualStudio.Component.VC.ATL"]
 LINUX_CC = {"dnf": ["gcc"], "apt-get": ["build-essential"], "pacman": ["base-devel"], "zypper": ["gcc"]}
 
 
@@ -164,43 +164,155 @@ def pin_toolchain():
 
 
 # --- a C compiler --------------------------------------------------------------------------
+#
+# On Windows the build needs, in the Visual Studio instance cargo picks (the newest one with the
+# C++ tools): link.exe, ATL's headers (the linked-in DXC) and a Windows SDK's libraries. Each is
+# checked on disk, since an instance can be registered and still lack them (a part not chosen,
+# an install cut short, a toolset version without ATL).
 
-def vs_ready():
+VC_TOOLS = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+VC_ATL = "Microsoft.VisualStudio.Component.VC.ATL"
+WIN_SDK = "Microsoft.VisualStudio.Component.Windows11SDK.22621"
+# The Visual Studio installer's exit codes worth explaining (learn.microsoft.com, "command-line
+# parameter ... error codes").
+VS_EXIT = {
+    1001: "the Visual Studio Installer is already running: close it and run this again",
+    1003: "Visual Studio is in use: close it and run this again",
+    1618: "another installation is in progress: wait for it, then run this again",
+    5004: "the Visual Studio Installer was cancelled",
+    5007: "the Visual Studio Installer needs administrator rights: allow its prompt, or run this from an administrator terminal",
+    8006: "Visual Studio processes are running: close them and run this again",
+}
+RESTART = (1641, 3010)
+
+
+def msvc_dirs():
+    """The host and target directory names of MSVC's bin and the SDK's lib for this machine."""
+    arm = host_triple().startswith("aarch64")
+    return ("HostARM64", "arm64") if arm else ("Hostx64", "x64")
+
+
+def vs_instances():
+    """Every Visual Studio instance vswhere knows, incomplete ones too, newest first:
+    [{path, name, complete}]."""
     if not VSWHERE.exists():
-        return None, False
-    out = subprocess.run([str(VSWHERE), "-products", "*", "-latest", "-property", "installationPath"], capture_output=True, text=True).stdout.strip()
-    if not out:
-        return None, False
-    full = subprocess.run([str(VSWHERE), "-products", "*", "-latest", "-requires", *VS_PARTS, "-property", "installationPath"], capture_output=True, text=True).stdout.strip()
-    return out, bool(full)
+        return []
+    r = subprocess.run([str(VSWHERE), "-all", "-products", "*", "-sort", "-format", "json", "-utf8"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        found = json.loads(r.stdout or "[]")
+    except ValueError:
+        return []
+    return [{"path": i.get("installationPath", ""), "name": i.get("displayName") or i.get("productId", "Visual Studio"),
+             "complete": bool(i.get("isComplete", True))} for i in found if i.get("installationPath")]
+
+
+def version_key(p):
+    return tuple(int(x) if x.isdigit() else 0 for x in p.name.split("."))
+
+
+def vc_missing(path):
+    """What the newest MSVC toolset in this instance lacks for the build ([] = nothing)."""
+    host, target = msvc_dirs()
+    tools = sorted((Path(path) / "VC" / "Tools" / "MSVC").glob("*"), key=version_key, reverse=True)
+    if not tools:
+        return ["the C++ tools (MSVC)"]
+    newest = tools[0]
+    missing = []
+    if not (newest / "bin" / host / target / "link.exe").exists():
+        missing.append(f"the C++ linker (link.exe in {newest / 'bin' / host / target})")
+    if not (newest / "atlmfc" / "include" / "atlbase.h").exists():
+        missing.append(f"ATL for MSVC {newest.name} (atlbase.h)")
+    return missing
+
+
+def kits_root():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows Kits\Installed Roots", 0,
+                            winreg.KEY_READ | winreg.KEY_WOW64_32KEY) as k:
+            return Path(winreg.QueryValueEx(k, "KitsRoot10")[0])
+    except (ImportError, OSError):
+        return Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Windows Kits" / "10"
+
+
+def sdk_missing(root=None):
+    """Whether a Windows 10/11 SDK with this machine's libraries is installed ([] = yes)."""
+    _, target = msvc_dirs()
+    lib = (root or kits_root()) / "Lib"
+    for v in sorted(lib.glob("10.*"), key=version_key, reverse=True):
+        if (v / "um" / target / "kernel32.lib").exists() and (v / "ucrt" / target / "ucrt.lib").exists():
+            return []
+    return [f"a Windows SDK (kernel32.lib, ucrt.lib under {lib})"]
+
+
+def vs_state():
+    """(the instance to build with or to complete, what it and the SDK lack, broken instances).
+    The instance is the newest complete one with C++ tools (the one cargo picks), else the
+    newest complete one, else None."""
+    insts = vs_instances()
+    done = [i for i in insts if i["complete"]]
+    with_vc = [i for i in done if (Path(i["path"]) / "VC" / "Tools" / "MSVC").is_dir()]
+    pick = (with_vc or done or [None])[0]
+    missing = (vc_missing(pick["path"]) if pick else ["Visual Studio or its Build Tools"]) + sdk_missing()
+    return pick, missing, [i for i in insts if not i["complete"]]
+
+
+def vs_installer(*cmd):
+    """Runs the Visual Studio installer (shown, no questions); stops with the reason if it fails."""
+    rc = run(*cmd, "--passive", "--norestart", check=False)
+    if rc in RESTART:
+        say("Windows wants a restart for the C++ tools; if the build fails, restart and run this again")
+    elif rc:
+        sys.exit(f"the Visual Studio Installer failed (exit {rc}): {VS_EXIT.get(rc, 'see its log in %TEMP% (dd_*.log)')}")
+
+
+def msvc_report(pick, missing, broken):
+    lines = [f"  using {pick['name']} at {pick['path']}" if pick else "  no complete Visual Studio instance"]
+    lines += [f"  missing: {m}" for m in missing]
+    lines += [f"  incomplete: {b['name']} at {b['path']} (repair or remove it in the Visual Studio Installer)" for b in broken]
+    return "\n".join(lines)
+
+
+def ensure_msvc(m):
+    pick, missing, broken = vs_state()
+    if not missing:
+        return
+    setup = VSWHERE.parent / "setup.exe"
+    if broken and not pick:
+        b = broken[0]
+        if ask(f"{b['name']} at {b['path']} is installed only partly (an install cut short). Repair it?"):
+            vs_installer(setup, "repair", "--installPath", b["path"])
+            pick, missing, broken = vs_state()
+    if missing and pick:
+        adds = [VC_TOOLS] if any("MSVC" in x or "link.exe" in x for x in missing) else []
+        adds += [VC_ATL] if any("ATL" in x or "MSVC)" in x for x in missing) else []
+        adds += [WIN_SDK] if any("Windows SDK" in x for x in missing) else []
+        if not ask(f"{pick['name']} at {pick['path']} lacks parts the build needs:\n{msvc_report(pick, missing, [])}\nAdd them?"):
+            sys.exit("the C++ tools with ATL and a Windows SDK are needed")
+        vs_installer(setup, "modify", "--installPath", pick["path"], *sum((["--add", p] for p in adds), []))
+        m.setdefault("vs_added", []).extend(a for a in adds if a not in m.get("vs_added", []))
+        m["vs_path"] = pick["path"]
+    elif missing:
+        if not ask("No C++ build tools found. Install Visual Studio Build Tools (C++, ATL, Windows SDK; several GB, asks for administrator)?"):
+            sys.exit("C++ build tools are needed: https://visualstudio.microsoft.com/visual-cpp-build-tools/")
+        with tempfile.TemporaryDirectory() as t:
+            boot = Path(t) / "vs_buildtools.exe"
+            download("https://aka.ms/vs/17/release/vs_buildtools.exe", boot)
+            vs_installer(boot, "--wait", "--nocache", "--add", "Microsoft.VisualStudio.Workload.VCTools",
+                         "--add", VC_ATL, "--add", WIN_SDK, "--includeRecommended")
+        m["vs_installed"] = (vs_state()[0] or {}).get("path")
+    pick, missing, broken = vs_state()
+    if missing:
+        sys.exit("the C++ build tools are still incomplete:\n" + msvc_report(pick, missing, broken)
+                 + "\nOpen the Visual Studio Installer, choose Modify, and add \"Desktop development with C++\" with"
+                 " \"C++ ATL\" and a Windows 11 SDK; then run this again")
 
 
 def ensure_cc(m):
     if WINDOWS:
-        path, ready = vs_ready()
-        if ready:
-            return
-        setup = VSWHERE.parent / "setup.exe"
-        adds = sum((["--add", p] for p in VS_PARTS), [])
-        if path:
-            if not ask(f"Visual Studio at {path} lacks C++ or ATL (DXC is linked in and needs ATL). Add them?"):
-                sys.exit("C++ build tools with ATL are needed")
-            run(setup, "modify", "--installPath", path, *adds, "--quiet", "--norestart")
-            m.setdefault("vs_added", []).extend(VS_PARTS)
-            m["vs_path"] = path
-        else:
-            if not ask("No C++ build tools found. Install Visual Studio Build Tools (C++, ATL; several GB, asks for administrator)?"):
-                sys.exit("C++ build tools are needed: https://visualstudio.microsoft.com/visual-cpp-build-tools/")
-            with tempfile.TemporaryDirectory() as t:
-                boot = Path(t) / "vs_buildtools.exe"
-                download("https://aka.ms/vs/17/release/vs_buildtools.exe", boot)
-                rc = run(boot, "--quiet", "--wait", "--norestart", "--nocache", "--add", "Microsoft.VisualStudio.Workload.VCTools", *adds, "--includeRecommended", check=False)
-                if rc not in (0, 3010):
-                    sys.exit(f"Build Tools installer failed (exit {rc})")
-            m["vs_installed"] = vs_ready()[0]
-        if not vs_ready()[1]:
-            sys.exit("the C++ build tools are still incomplete; see the Visual Studio Installer")
-    elif not (shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")):
+        return ensure_msvc(m)
+    if not (shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")):
         pm = next((p for p in LINUX_CC if shutil.which(p)), None)
         if pm is None:
             sys.exit("no C compiler found; install gcc or clang with your package manager")
@@ -210,6 +322,27 @@ def ensure_cc(m):
             sys.exit("a C compiler is needed")
         run("sudo", pm, *verb, *pkgs)
         m["packages"] = {"manager": pm, "names": pkgs}
+
+
+def wsl():
+    """Whether this Linux is WSL (its kernel says so)."""
+    try:
+        return not WINDOWS and "microsoft" in Path("/proc/sys/kernel/osrelease").read_text().lower()
+    except OSError:
+        return False
+
+
+def warn_wsl():
+    if not wsl():
+        return
+    display = os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")
+    say("this is WSL. Installing on Windows itself is better: run `py install.py` from a Windows terminal "
+        "(the GPU is used directly there; in WSL it goes through Mesa's D3D12 layer, slower and with fewer features).")
+    if not display:
+        say("WSL has no graphical session here (neither WAYLAND_DISPLAY nor DISPLAY is set), so the GUI cannot open; "
+            "benchmarks (`multirenderer run`) still work. WSLg brings one: `wsl --update` in Windows, then `wsl --shutdown` and reopen.")
+    if not ask("Install in WSL anyway?"):
+        sys.exit("stopped; run the installer on Windows")
 
 
 # --- sources ---------------------------------------------------------------------------------
@@ -269,7 +402,13 @@ def clear_sources():
 def build(m):
     cargo = tool("cargo")
     env = dict(os.environ, PATH=f"{cargo.parent}{os.pathsep}{os.environ.get('PATH', '')}")
-    run(cargo, "build", "--release", "--locked", cwd=SRC, env=env)
+    rc = run(cargo, "build", "--release", "--locked", cwd=SRC, env=env, check=False)
+    if rc:
+        if WINDOWS:
+            pick, missing, broken = vs_state()
+            sys.exit(f"the build failed (exit {rc}). The C++ tools as found:\n" + msvc_report(pick, missing, broken)
+                     + ("\nNothing seems missing; if Windows asked for a restart, restart and run this again." if not missing else ""))
+        sys.exit(f"the build failed (exit {rc})")
     BIN.mkdir(parents=True, exist_ok=True)
     try:
         shutil.copy2(SRC / "target" / "release" / EXE, BIN / EXE)
@@ -382,6 +521,7 @@ def install(args):
     say(f"installing MultiRenderer from {m['source']} into {DATA}")
     DATA.mkdir(parents=True, exist_ok=True)
     save_manifest(m)  # from here on uninstall can clean up whatever follows
+    warn_wsl()
     ensure_cc(m)
     save_manifest(m)
     ensure_rust(m)
@@ -462,9 +602,9 @@ def remove_prerequisites(m, purge):
     if WINDOWS:
         setup = VSWHERE.parent / "setup.exe"
         if m.get("vs_installed") and (purge or ask("Visual Studio Build Tools were installed for MultiRenderer. Remove them?", default=False)):
-            run(setup, "uninstall", "--installPath", m["vs_installed"], "--quiet", "--norestart", check=False)
+            run(setup, "uninstall", "--installPath", m["vs_installed"], "--passive", "--norestart", check=False)
         elif m.get("vs_added") and (purge or ask("C++ / ATL were added to Visual Studio for MultiRenderer. Remove them?", default=False)):
-            run(setup, "modify", "--installPath", m["vs_path"], *sum((["--remove", p] for p in m["vs_added"]), []), "--quiet", "--norestart", check=False)
+            run(setup, "modify", "--installPath", m["vs_path"], *sum((["--remove", p] for p in m["vs_added"]), []), "--passive", "--norestart", check=False)
     elif m.get("packages"):
         pm, names = m["packages"]["manager"], m["packages"]["names"]
         if purge or ask(f"{' '.join(names)} was installed for MultiRenderer. Remove it with sudo {pm}?", default=False):
@@ -480,8 +620,10 @@ def status(_args=None):
     cargo = tool("cargo")
     print(f"  cargo     {cargo or 'missing'}")
     if WINDOWS:
-        path, ready = vs_ready()
-        print(f"  C++/ATL   {'ok' if ready else ('incomplete at ' + path if path else 'missing')}  {path or ''}")
+        pick, missing, broken = vs_state()
+        print(f"  C++/ATL   {'ok' if not missing else 'incomplete'}  {pick['path'] if pick else ''}")
+        if missing or broken:
+            print(msvc_report(pick, missing, broken))
     else:
         print(f"  cc        {shutil.which('cc') or shutil.which('gcc') or shutil.which('clang') or 'missing'}")
     return m

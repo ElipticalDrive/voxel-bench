@@ -27,7 +27,9 @@ python3 install.py uninstall    # --purge also removes your plans, runs and the 
 ```
 
 The installer asks before it installs anything that is missing: the Rust toolchain (rustup,
-with `llvm-tools`) and a C compiler (on Windows, Visual Studio Build Tools with C++ and ATL).
+with `llvm-tools`) and a C compiler (on Windows, Visual Studio Build Tools with C++, ATL and a
+Windows SDK; an existing Visual Studio is checked for these on disk and completed, or repaired
+when its install was cut short; `python3 install.py status` lists what is missing).
 It then builds from this checkout (or from `--source <git URL or directory>`) into
 `~/.local/share/multirenderer` (Windows: `%LOCALAPPDATA%\multirenderer`). It puts
 `multirenderer` on your PATH and adds a desktop or Start menu entry. The sources and the
@@ -35,6 +37,9 @@ toolchain stay installed, because pipelines are compiled against them when they 
 
 To build by hand, run `cargo build --release`. On Windows this also needs ATL, because DX12's
 shader compiler is linked into the binary.
+
+In WSL the GUI needs WSLg's graphical session (`wsl --update`); installing on Windows itself is
+better, since WSL reaches the GPU only through Mesa's D3D12 layer.
 
 ## Run
 

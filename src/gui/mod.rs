@@ -31,12 +31,60 @@ const DEFAULT_PLAN: &str = include_str!("../../plans/playground.toml");
 const SCENE_FPS: f64 = 60.0;
 
 pub fn run(initial: Option<PathBuf>) -> anyhow::Result<()> {
-    let options = eframe::NativeOptions {
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1700.0, 1000.0]).with_title("MultiRenderer"),
         ..Default::default()
     };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if display::x11_only()? {
+        options.event_loop_builder = Some(Box::new(|b| {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            b.with_x11();
+        }));
+    }
     eframe::run_native("MultiRenderer", options, Box::new(move |cc| Ok(Box::new(App::new(&cc.egui_ctx, initial)))))
         .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// The graphical session on Linux, checked before the window opens so a missing one says why.
+#[cfg(all(unix, not(target_os = "macos")))]
+mod display {
+    use std::path::PathBuf;
+
+    fn set(var: &str) -> Option<String> {
+        std::env::var(var).ok().filter(|v| !v.is_empty())
+    }
+
+    fn wsl() -> bool {
+        std::fs::read_to_string("/proc/sys/kernel/osrelease").is_ok_and(|r| r.to_lowercase().contains("microsoft"))
+    }
+
+    /// Whether to open the window through X11 alone: a Wayland display is named but its socket
+    /// is not there (WSLg with systemd, a stale variable) while an X display is. An error when
+    /// there is no display at all.
+    pub fn x11_only() -> anyhow::Result<bool> {
+        let wayland = set("WAYLAND_DISPLAY").map(|d| {
+            let p = PathBuf::from(&d);
+            if p.is_absolute() { p } else { PathBuf::from(set("XDG_RUNTIME_DIR").unwrap_or_default()).join(p) }
+        });
+        let wayland_up = set("WAYLAND_SOCKET").is_some() || wayland.as_ref().is_some_and(|p| p.exists());
+        let x11 = set("DISPLAY").is_some();
+        if wayland_up {
+            return Ok(false);
+        }
+        if x11 {
+            if let Some(p) = wayland {
+                eprintln!("WAYLAND_DISPLAY names {}, which does not exist; using X11 (DISPLAY)", p.display());
+            }
+            return Ok(true);
+        }
+        let mut msg = String::from("no graphical session: neither a Wayland display (WAYLAND_DISPLAY) nor an X display (DISPLAY) is available, so the GUI cannot open. Benchmarks without a window still work (`multirenderer run <plan>`).");
+        if wsl() {
+            msg.push_str(" This is WSL: WSLg provides the session (`wsl --update` in Windows, then `wsl --shutdown` and reopen); running MultiRenderer on Windows itself uses the GPU directly and is the better choice.");
+        }
+        anyhow::bail!(msg)
+    }
 }
 
 struct LaneTex {
