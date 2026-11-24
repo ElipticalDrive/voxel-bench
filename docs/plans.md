@@ -269,6 +269,10 @@ Python, for Linux and Windows (`scripts/`):
 - `sweep.py [plans…]`: the full sweep over every scenario plan (one night's work at each
   plan's own length; `FRAMES=120` for shorter, faster camera paths), into
   `target/sweep/<time>/`, then the catalogue there.
+- `frozen.py [-r REV] -- CMD…`: runs CMD in a copy of one commit (`git archive` into
+  `target/frozen/<commit>/`, its own cargo target), so a long job such as a baseline sweep
+  measures that commit while the tree changes; a relative `OUT` set before it still lands in
+  this tree (`OUT=target/sweep/base scripts/frozen.py -r abc123 -- scripts/sweep.py`).
 - `check.py [only] [build|clippy|test|gpu|windows|wine|all]`: quiet verification (builds and clippy
   without warnings, tests, the GPU end-to-end tests, Windows cross-checks; `gpu`, `windows`, `wine`
   add to the default build clippy test, `only` runs just what is named); prints only problems and
