@@ -412,6 +412,13 @@ fn product(lists: Vec<Vec<Vec<Change>>>) -> Result<Vec<Vec<Change>>, String> {
 /// ]
 /// ```
 pub fn varied(base: &Graph, vary: &[toml::Value]) -> Result<Vec<Vec<Change>>, String> {
+    product(varied_axes(base, vary)?)
+}
+
+/// The choices of each entry of `vary` ([`varied`]), one list of edit lists per entry:
+/// [`varied`] is every way of taking one of each, the first entry varying slowest (so its
+/// combination `n` takes, of each entry, the digit of `n` in the mixed radix of their lengths).
+pub fn varied_axes(base: &Graph, vary: &[toml::Value]) -> Result<Vec<Vec<Vec<Change>>>, String> {
     let mut new = vec![];
     vary.iter().for_each(|v| added(v, &mut new));
     let one = |v: &toml::Value| {
@@ -439,7 +446,7 @@ pub fn varied(base: &Graph, vary: &[toml::Value]) -> Result<Vec<Vec<Change>>, St
         }
         axes.push(axis);
     }
-    product(axes)
+    Ok(axes)
 }
 
 fn fresh_id(g: &Graph, want: &str) -> String {

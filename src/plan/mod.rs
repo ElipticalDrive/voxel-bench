@@ -7,7 +7,10 @@
 //! lists of edits (`mr_components::graph::varied`). It expands into one renderer per
 //! combination that can be made and that `accept` takes, each distinct pipeline once
 //! (`RendererSpec::swept`); the entry's `options` go to each pipeline whose executor
-//! declares them. In each pass, swept combinations that the pass
+//! declares them. `cover = "pairs"` (on the entry, or `[sweep] cover` for all) keeps only
+//! some, holding every value and every pair of two entries' values (`sweep::cover`;
+//! `[sweep] part`, `parts`: the pairs spread over several runs, each with every value).
+//! In each pass, swept combinations that the pass
 //! mode cannot tell apart run once (`RendererSpec::told_apart`).
 
 mod cli;
@@ -118,6 +121,26 @@ impl Plan {
                 }
             }
         }
+    }
+
+    /// The renderers a pass of mode `m` runs, in order: those that support it (`standalone`:
+    /// the standalone renderers' infos), and of the swept pipelines it cannot tell apart
+    /// ([`RendererSpec::told_apart`]) the first; with how many swept ones that leaves out.
+    pub fn passes(&self, m: mr_core::PassMode, standalone: &[mr_core::RendererInfo]) -> (Vec<RendererSpec>, usize) {
+        let mut seen = std::collections::HashSet::new();
+        let mut moot = 0;
+        let specs = self
+            .renderers
+            .iter()
+            .filter(|s| s.info(&self.run, standalone).is_some_and(|i| s.supports(&i, m)))
+            .filter(|s| {
+                let first = !s.swept || seen.insert(s.told_apart(m));
+                moot += usize::from(!first);
+                first
+            })
+            .cloned()
+            .collect();
+        (specs, moot)
     }
 
     /// TOML of the plan, every renderer as [`RendererSpec::written`].

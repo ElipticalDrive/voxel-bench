@@ -52,6 +52,10 @@ enum Cmd {
         /// Remove plan values, e.g. `-u output.save` (no saved frames).
         #[arg(short = 'u', long = "unset")]
         unset: Vec<String>,
+        /// Render nothing: list the plan's renderers (sweeps expanded), then per mode how
+        /// many passes it would run.
+        #[arg(long)]
+        list: bool,
     },
     /// What each renderer is good at: reads the observations of any number of runs (run
     /// directories, or directories containing them) and writes a catalogue (Markdown and
@@ -240,7 +244,22 @@ fn main() -> anyhow::Result<()> {
             println!("{} observations from {} files{older} → {}", obs.len(), files.len(), out.join("catalogue.md").display());
             Ok(())
         }
-        Cmd::Run { plan: path, overrides, unset } => {
+        Cmd::Run { plan: path, overrides, unset, list: true } => {
+            let mut plan = Plan::load_with(&path, &overrides, &unset)?;
+            plan.distinct_labels();
+            let infos = mr_worker::infos();
+            for r in &plan.renderers {
+                println!("{}", r.label());
+            }
+            let swept = plan.renderers.iter().filter(|s| s.swept).count();
+            println!("# {}: {} renderers ({swept} swept)", plan.name, plan.renderers.len());
+            for &mode in &plan.run.modes {
+                let (specs, moot) = plan.passes(mode, &infos);
+                println!("# {} mode: {} passes ({moot} more swept pipelines the same in this mode)", mode.name(), specs.len());
+            }
+            Ok(())
+        }
+        Cmd::Run { plan: path, overrides, unset, .. } => {
             let mut plan = Plan::load_with(&path, &overrides, &unset)?;
             plan.distinct_labels();
             let run_dir = make_run_dir(&plan)?;
@@ -546,31 +565,10 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
             out.references.retain(|k, _| k.1 != mode);
             reports.extend(ctx.reference(None, mode, &base, &mut out)?);
         }
-        // Of the swept pipelines this mode cannot tell apart, the first runs.
-        let mut seen = std::collections::HashSet::new();
-        let mut moot = 0;
-        let specs: Vec<RendererSpec> = plan
-            .renderers
-            .iter()
-            .filter(|s| {
-                let ok = s.info(&plan.run, &infos).is_some_and(|i| s.supports(&i, mode));
-                if !ok && !s.swept {
-                    tracing::warn!("{} does not support {} mode; skipped", s.label(), mode.name());
-                }
-                ok
-            })
-            .filter_map(|s| {
-                if !s.swept {
-                    return Some(s.clone());
-                }
-                if seen.insert(s.told_apart(mode)) {
-                    Some(s.clone())
-                } else {
-                    moot += 1;
-                    None
-                }
-            })
-            .collect();
+        let (specs, moot) = plan.passes(mode, &infos);
+        for s in plan.renderers.iter().filter(|s| !s.swept && !s.info(&plan.run, &infos).is_some_and(|i| s.supports(&i, mode))) {
+            tracing::warn!("{} does not support {} mode; skipped", s.label(), mode.name());
+        }
         if moot > 0 {
             tracing::info!("{} mode: {} swept pipelines run, {moot} more are the same in this mode", mode.name(), specs.iter().filter(|s| s.swept).count());
         }
