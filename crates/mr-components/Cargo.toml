@@ -22,5 +22,10 @@ serde_json.workspace = true
 pollster.workspace = true
 tracing.workspace = true
 
+[features]
+# A per-thread addition to the registry for tests (`register_on_this_thread`); no release
+# build has it.
+test-hooks = []
+
 [dev-dependencies]
 toml.workspace = true

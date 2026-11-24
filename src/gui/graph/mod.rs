@@ -106,7 +106,7 @@ fn description(role: Role, component: &str) -> String {
 }
 
 /// The component choices for node `id`.
-fn component_options(g: &Graph, id: &str) -> Vec<(String, Change, bool, String)> {
+pub(crate) fn component_options(g: &Graph, id: &str) -> Vec<(String, Change, bool, String)> {
     let n = &g.nodes[id];
     role_components(n.role).into_iter().map(|c| (c.to_string(), Change::Component(id.into(), c.into()), n.component == c, description(n.role, c))).collect()
 }

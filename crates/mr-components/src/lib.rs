@@ -672,11 +672,35 @@ pub fn refused(role: Role, name: &str, k: Kind) -> Option<&'static str> {
 }
 
 pub fn component(role: Role, name: &str) -> Option<&'static ComponentInfo> {
-    COMPONENTS.iter().find(|c| c.role == role && c.name == name)
+    registry().find(|c| c.role == role && c.name == name)
 }
 
 pub fn components(role: Role) -> impl Iterator<Item = &'static ComponentInfo> {
-    COMPONENTS.iter().filter(move |c| c.role == role)
+    registry().filter(move |c| c.role == role)
+}
+
+/// Every registered component: [`COMPONENTS`], and with the `test-hooks` feature those a
+/// test registered on its own thread (`register_on_this_thread`).
+fn registry() -> impl Iterator<Item = &'static ComponentInfo> {
+    #[cfg(feature = "test-hooks")]
+    let added = ADDED.with(std::cell::Cell::get);
+    #[cfg(not(feature = "test-hooks"))]
+    let added: &[ComponentInfo] = &[];
+    COMPONENTS.iter().chain(added)
+}
+
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    static ADDED: std::cell::Cell<&'static [ComponentInfo]> = const { std::cell::Cell::new(&[]) };
+}
+
+/// Adds `components` to the registry for the calling thread only (other threads, and so
+/// other tests, never see them): how a test checks that registering a component is all it
+/// takes for every listing to offer it. Test builds only (the `test-hooks` feature, which
+/// the host enables as a dev-dependency).
+#[cfg(feature = "test-hooks")]
+pub fn register_on_this_thread(components: &'static [ComponentInfo]) {
+    ADDED.with(|a| a.set(components));
 }
 
 /// Parses a placement value: `true` for deferred.
