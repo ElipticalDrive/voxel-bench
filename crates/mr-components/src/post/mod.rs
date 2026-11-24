@@ -59,3 +59,44 @@ mod tests {
         }
     }
 }
+
+/// The post node's knobs over the per-pixel quantities `qs` the graph's nodes write: `view`
+/// (the image or one of them) and `view_max` (the scale's top). Both executors' views; the
+/// view is chosen at run time, never compiled into a pipeline.
+pub fn view_knobs(qs: &[mr_core::Quantity]) -> [mr_core::ParamSpec; 2] {
+    use mr_core::ParamSpec;
+    let mut names = vec!["image"];
+    names.extend(qs.iter().map(|q| q.name));
+    let help: Vec<String> = std::iter::once("image: the rendered scene".to_string()).chain(qs.iter().map(|q| format!("{}: {}", q.name, q.help))).collect();
+    let tops: Vec<&str> = qs.iter().map(|q| q.name).collect();
+    let posts = crate::graph::POSTS;
+    [
+        ParamSpec::choice("view", &format!("{}. Drawn on the shared colour scale (white above view_max); the frame is still shaded", help.join(". ")), &names, "image", true).of("post", posts).baked(false),
+        ParamSpec::int("view_max", &format!("{} view: the top of the colour scale", tops.join(" / ")), 1, 16384, 256, true).of("post", posts),
+    ]
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct ViewKnobs {
+    view: Option<String>,
+    view_max: Option<u32>,
+}
+
+/// The view and its scale's top at creation: the post node's knobs (where a plan's or the
+/// editor's land) over the options' `view` / `max`.
+pub fn view_chosen(g: &crate::graph::Checked, view: &str, max: u32) -> (String, u32) {
+    let post = (g.node(&g.output).role == crate::graph::Role::Post).then(|| g.knobs::<ViewKnobs>(&g.output).ok()).flatten().unwrap_or_default();
+    (post.view.unwrap_or_else(|| view.into()), post.view_max.unwrap_or(max).clamp(1, 16384))
+}
+
+/// The quantity `name` among `qs` (`image`: none), or why not.
+pub fn view_quantity(name: &str, qs: &[mr_core::Quantity]) -> anyhow::Result<Option<mr_core::Quantity>> {
+    if name == "image" {
+        return Ok(None);
+    }
+    qs.iter().find(|q| q.name == name).copied().map(Some).ok_or_else(|| {
+        let names: Vec<&str> = qs.iter().map(|q| q.name).collect();
+        anyhow::anyhow!("view `{name}`: this pipeline writes {}", if names.is_empty() { "no quantities".into() } else { format!("only `{}`", names.join("`, `")) })
+    })
+}

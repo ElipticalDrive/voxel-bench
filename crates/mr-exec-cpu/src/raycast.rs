@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::time::Instant;
 
 use mr_reference::{Pool, Shadows, World};
@@ -134,10 +135,20 @@ fn params() -> Vec<ParamSpec> {
     p.push(ParamSpec::choice("tile_order", "schedule = tiles: order tiles are handed out in", &["morton", "hilbert", "linear"], "morton", true));
     p.push(ParamSpec::int("tile", "schedule = tiles: tile edge in pixels", 4, 256, 16, true));
     p.push(ParamSpec::bool("perf", "Hardware counters per frame (Linux: perf_event_open; cycles, instructions, cache misses per pixel)", false, true));
-    p.push(ParamSpec::choice("view", "image: the rendered scene. steps: the walk's work per pixel on a colour scale (log; white above view_max): refloor = lockstep iterations of the pixel's packet, incremental = occupancy tests of the pixel's ray. distance: the primary hit's distance in blocks (linear; white above view_max and for the sky)", &["image", "steps", "distance"], "image", true));
-    p.push(ParamSpec::int("view_max", "steps / distance view: the top of the colour scale", 1, 16384, 256, true));
+    p.extend(mr_components::post::view_knobs(&QUANTITIES[0]));
     p
 }
+
+/// What the primary rays' cast writes for the post's view, by kernel: refloor's, then
+/// incremental's (steps differ in what they count).
+const QUANTITIES: [[Quantity; 2]; 2] = {
+    const STEPS: &str = "the walk's work per pixel (log): refloor = lockstep iterations of the pixel's packet, incremental = occupancy tests of the pixel's ray";
+    const DISTANCE: Quantity = Quantity { name: "distance", about: "distance to the primary hit (blocks)", help: "the primary hit's distance in blocks (linear; white for the sky)", float: true, log: false };
+    [
+        [Quantity { name: "steps", about: "lockstep loop iterations (packet)", help: STEPS, float: false, log: true }, DISTANCE],
+        [Quantity { name: "steps", about: "occupancy tests (ray)", help: STEPS, float: false, log: true }, DISTANCE],
+    ]
+};
 
 /// The region's own knobs (the nodes' are read from the graph).
 #[derive(Deserialize)]
@@ -149,13 +160,11 @@ struct Options {
     tile_order: String,
     tile: u32,
     perf: bool,
-    view: String,
-    view_max: u32,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { threads: 0, isa: "auto".into(), schedule: "rows".into(), tile_order: "morton".into(), tile: 16, perf: false, view: "image".into(), view_max: 256 }
+        Self { threads: 0, isa: "auto".into(), schedule: "rows".into(), tile_order: "morton".into(), tile: 16, perf: false }
     }
 }
 
@@ -207,21 +216,11 @@ pub enum Traversal {
     IncrementalExact,
 }
 
-/// What the pixels show (`view`).
+/// Which quantity the cast writes for the post's view.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum View {
-    Image,
     Steps,
     Distance,
-}
-
-fn parse_view(s: &str) -> anyhow::Result<View> {
-    match s {
-        "image" => Ok(View::Image),
-        "steps" => Ok(View::Steps),
-        "distance" => Ok(View::Distance),
-        _ => anyhow::bail!("view must be `image`, `steps` or `distance`, got `{s}`"),
-    }
 }
 
 fn parse_schedule(s: &str) -> anyhow::Result<bool> {
@@ -723,19 +722,13 @@ struct Cast<S, P> {
     tile_order: TileOrder,
     tile: u32,
     rects: Vec<Rect>,
-    /// The view and the top of its scale.
-    view: View,
-    view_max: u32,
 }
 
 /// What a cast did.
 struct Casted {
     work: RowWork,
-    legend: Option<Legend>,
     /// Hardware counters, with the `perf` knob.
     hw: Option<Vec<f64>>,
-    /// Wrote hit records (else pixels).
-    deferred: bool,
     /// [`LAYERS`] records per pixel.
     layered: bool,
     ms: f32,
@@ -782,8 +775,6 @@ impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
                 packet: k.packet.parse().unwrap_or(1),
                 isa,
                 isa_choice: o.isa,
-                view: parse_view(&o.view)?,
-                view_max: o.view_max.clamp(1, 16384),
             },
             scene: Scene {
                 chunks: HashMap::new(),
@@ -845,9 +836,9 @@ struct Job<'a, R, P> {
     packet: usize,
     /// Packets as 2D pixel blocks (tiles) instead of runs along a row.
     two_d: bool,
-    /// A diagnostic view: pixels show the walk's work (`View::Steps`) or the hit's
-    /// distance on this scale instead of the image.
-    steps: Option<(Legend, View)>,
+    /// The post's view: per pixel the walk's work (`View::Steps`) or the hit's distance
+    /// (an `f32`'s bits), into these values.
+    view: Option<(View, &'a [AtomicU32])>,
     out: OutPtr<P>,
     /// Where deferred rectangles write their records instead of pixels.
     records: RecPtr,
@@ -905,7 +896,7 @@ fn render_rect<R: Repr, S: Spec, P: Pixel, const N: usize, const D: bool, const 
             if kernel == Traversal::Refloor {
                 let it = trace_packet::<R, N>(&scene.grid, cam_block, o, &dx, &dy, &dz, 1e7, bmin, bmax, &mut hits);
                 work.lane_steps += it as u64 * N as u64;
-                if job.steps.is_some() {
+                if job.view.is_some() {
                     lane_work = [it; N];
                 }
             } else {
@@ -919,7 +910,7 @@ fn render_rect<R: Repr, S: Spec, P: Pixel, const N: usize, const D: bool, const 
                         // Occupancy tests: one per step and per descent, plus the first
                         // cell and the ascent attempts.
                         work.lane_steps += (t.steps + t.down + t.up + 1) as u64;
-                        if job.steps.is_some() {
+                        if job.view.is_some() {
                             lane_work[l] = t.steps + t.down + t.up + 1;
                         }
                         work.steps += t.steps as u64;
@@ -963,13 +954,11 @@ fn render_rect<R: Repr, S: Spec, P: Pixel, const N: usize, const D: bool, const 
                 // SAFETY: pix < w * h, and each pixel belongs to exactly one rectangle.
                 unsafe { *job.out.0.add(pix[l] as usize) = px };
             }
-            if let Some((scale, view)) = &job.steps {
+            if let Some((view, values)) = job.view {
                 for l in 0..N {
                     if pix[l] != u32::MAX {
-                        let v = if *view == View::Steps { lane_work[l] as f64 } else { hits[l].as_ref().map_or(f64::INFINITY, |h| h.t as f64) };
-                        let [r, g, b] = scale.color(v);
-                        // SAFETY: as above.
-                        unsafe { *job.out.0.add(pix[l] as usize) = P::from_rgba8([r, g, b, 255]) };
+                        let v = if view == View::Steps { lane_work[l] } else { hits[l].as_ref().map_or(f32::INFINITY, |h| h.t).to_bits() };
+                        values[pix[l] as usize].store(v, Relaxed);
                     }
                 }
             }
@@ -1211,8 +1200,10 @@ fn dense_of<R: Repr>(r: &R) -> DenseChunk {
 
 impl<S: Spec, P: Pixel> Cast<S, P> {
     /// Casts the frame's primary rays through `scene`: shaded pixels into `pixels`, or with
-    /// `records` (deferred, unless a diagnostic view shows the walk) one hit record per pixel.
-    fn run<R: Repr>(&mut self, scene: &Scene<R>, pool: &Pool, world: &World, req: &FrameRequest, w: u32, h: u32, pixels: &mut [P], records: Option<&mut Vec<Record>>) -> Casted {
+    /// `records` (deferred) one hit record per pixel; with `view` (the post's) also that
+    /// quantity per pixel.
+    #[allow(clippy::too_many_arguments)]
+    fn run<R: Repr>(&mut self, scene: &Scene<R>, pool: &Pool, world: &World, req: &FrameRequest, w: u32, h: u32, pixels: &mut [P], records: Option<&mut Vec<Record>>, view: Option<(&str, &[AtomicU32])>) -> Casted {
         let (isa, packet) = (self.isa, self.packet);
         let (cam, mode) = (req.camera, req.mode);
         if self.perf && self.counters.is_none() {
@@ -1225,23 +1216,16 @@ impl<S: Spec, P: Pixel> Cast<S, P> {
         if self.rects.is_empty() {
             self.rects = rects(w, h, self.tiles, self.tile, self.tile_order);
         }
-        let legend = match self.view {
-            View::Image => None,
-            View::Steps => {
-                let quantity = if scene.traversal == Traversal::Refloor { "lockstep loop iterations (packet)" } else { "occupancy tests (ray)" };
-                Some(Legend::ramp(quantity, self.view_max as f64, true))
-            }
-            View::Distance => Some(Legend::ramp("distance to the primary hit (blocks)", self.view_max as f64, false)),
-        };
-        // A diagnostic view shows the walk itself, so it runs inline whatever the placement.
-        // Layers when the world asks them, only in the image: a view shows the first hit's walk.
-        let layered = req.layers && legend.is_none();
-        let records = records.filter(|_| legend.is_none()).map(|r| {
+        // Another node's quantity: none of the cast's.
+        let view = view.and_then(|(name, values)| Some((if name == "steps" { View::Steps } else if name == "distance" { View::Distance } else { return None }, values)));
+        // Layers when the world asks them (a view shows the first hit's walk).
+        let layered = req.layers;
+        let records = records.map(|r| {
             r.resize((w * h) as usize * if layered { LAYERS } else { 1 }, Record::SKY);
             RecPtr(r.as_mut_ptr())
         });
         let deferred = records.is_some();
-        let job = Job { scene, world, cam, w, h, mode, packet, two_d: self.tiles, steps: legend.clone().map(|l| (l, self.view)), out: OutPtr(pixels.as_mut_ptr()), records: records.unwrap_or(RecPtr(std::ptr::null_mut())) };
+        let job = Job { scene, world, cam, w, h, mode, packet, two_d: self.tiles, view, out: OutPtr(pixels.as_mut_ptr()), records: records.unwrap_or(RecPtr(std::ptr::null_mut())) };
         let cast = Instant::now();
         // The variant with layers runs only in frames whose world asks transparency.
         let rect: fn(Isa, &Job<R, P>, Rect) -> RowWork = match (deferred, layered) {
@@ -1252,15 +1236,13 @@ impl<S: Spec, P: Pixel> Cast<S, P> {
         };
         let work: RowWork = self.rects.par_iter().map(|&r| rect(isa, &job, r)).reduce(RowWork::default, |a, b| a + b);
         let ms = cast.elapsed().as_secs_f32() * 1e3;
-        Casted { work, legend, hw: counters.map(|c| c.stop()), deferred, layered, ms }
+        Casted { work, hw: counters.map(|c| c.stop()), layered, ms }
     }
 
     /// Sets knob `name`; `false` if it is not one of the cast's.
     fn set(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<bool> {
         match name {
             "perf" => self.perf = perf::allowed(value.as_bool().unwrap_or(false))?,
-            "view" => self.view = parse_view(value.as_str().unwrap_or(""))?,
-            "view_max" => self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32,
             "packet" => {
                 self.packet = value.as_str().and_then(|s| s.parse().ok()).unwrap_or(8);
             }
@@ -1362,12 +1344,9 @@ mod nodes {
         }
     }
 
-    /// The hit records, or with a diagnostic view (`shown`) the pixels showing the walk
-    /// (the buffer kept across frames).
-    struct Hits<P> {
+    /// The hit records.
+    struct Hits {
         records: Vec<Record>,
-        pixels: Vec<P>,
-        shown: bool,
         /// [`LAYERS`] records per pixel.
         layered: bool,
     }
@@ -1377,29 +1356,33 @@ mod nodes {
         cast: Cast<S, P>,
         fused: bool,
         nodes: Vec<String>,
+        /// The last frame's kernel was refloor (what its steps count).
+        refloor: bool,
         storage: std::marker::PhantomData<R>,
     }
 
     impl<R: Repr, S: Spec, P: Pixel> Node for Visibility<R, S, P> {
         fn output(&mut self, w: u32, h: u32) -> Res {
-            if self.fused { exec::image::<P>(w, h) } else { Box::new(Hits::<P> { records: vec![], pixels: vec![], shown: false, layered: false }) }
+            if self.fused { exec::image::<P>(w, h) } else { Box::new(Hits { records: vec![], layered: false }) }
         }
         fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
             let scene = scene::<R>(ins[0]);
             let (w, h) = (cx.width, cx.height);
             let cast = if self.fused {
                 let pixels = out.downcast_mut::<Vec<P>>().expect("an image");
-                self.cast.run(scene, cx.pool, cx.world, cx.req, w, h, pixels, None)
+                self.cast.run(scene, cx.pool, cx.world, cx.req, w, h, pixels, None, cx.view)
             } else {
-                let hits = out.downcast_mut::<Hits<P>>().expect("hit records");
-                hits.pixels.resize((w * h) as usize, P::zeroed());
-                let cast = self.cast.run(scene, cx.pool, cx.world, cx.req, w, h, &mut hits.pixels, Some(&mut hits.records));
-                (hits.shown, hits.layered) = (!cast.deferred, cast.layered);
+                let hits = out.downcast_mut::<Hits>().expect("hit records");
+                let cast = self.cast.run(scene, cx.pool, cx.world, cx.req, w, h, &mut [], Some(&mut hits.records), cx.view);
+                hits.layered = cast.layered;
                 cast
             };
+            self.refloor = scene.traversal == Traversal::Refloor;
             report.stages.push(StageTime::cpu(if self.fused { "cast+shade" } else { "cast" }, &self.nodes, cast.ms));
             report.counters.extend(cast.counters(scene.traversal, (w * h) as f64));
-            report.legend = cast.legend;
+        }
+        fn quantities(&self) -> &'static [Quantity] {
+            &QUANTITIES[if self.refloor { 0 } else { 1 }]
         }
         fn set_param(&mut self, _: &mut Res, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
             self.cast.set(name, value).map(|k| k.then_some(())).transpose()
@@ -1411,7 +1394,7 @@ mod nodes {
             }
         }
         fn memory(&self, out: &Res) -> u64 {
-            out.downcast_ref::<Hits<P>>().map_or(0, |h| (std::mem::size_of_val(&h.records[..]) + std::mem::size_of_val(&h.pixels[..])) as u64)
+            out.downcast_ref::<Hits>().map_or(0, |h| std::mem::size_of_val(&h.records[..]) as u64)
         }
     }
 
@@ -1426,12 +1409,8 @@ mod nodes {
             exec::image::<P>(w, h)
         }
         fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
-            let (hits, scene) = (ins[0].downcast_ref::<Hits<P>>().expect("hit records"), scene::<R>(ins[1]));
+            let (hits, scene) = (ins[0].downcast_ref::<Hits>().expect("hit records"), scene::<R>(ins[1]));
             let pixels = out.downcast_mut::<Vec<P>>().expect("an image");
-            if hits.shown {
-                pixels.copy_from_slice(&hits.pixels);
-                return;
-            }
             let start = Instant::now();
             shade_records::<R, S, P>(scene, cx.world, &hits.records, hits.layered, cx.req, cx.width, cx.height, pixels);
             report.stages.push(StageTime::cpu("shade", &self.nodes, start.elapsed().as_secs_f32() * 1e3));
@@ -1446,6 +1425,7 @@ mod nodes {
     /// compiled pipeline baked in.
     pub(crate) fn executor<R: Repr, S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
         let parts = Parts::<R, S, P>::new(p, g)?;
+        let refloor = parts.scene.traversal == Traversal::Refloor;
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
         let mut cast = Some(parts.cast);
         let mut store = Some((parts.scene, parts.kernel));
@@ -1461,7 +1441,7 @@ mod nodes {
                 Role::Visibility => {
                     let fused = !parts.deferred;
                     let nodes = if fused { g.ids(&[Role::Visibility, Role::Shading]) } else { vec![id.to_string()] };
-                    Box::new(Visibility::<R, S, P> { cast: cast.take().expect("one visibility node"), fused, nodes, storage: std::marker::PhantomData })
+                    Box::new(Visibility::<R, S, P> { cast: cast.take().expect("one visibility node"), fused, nodes, refloor, storage: std::marker::PhantomData })
                 }
                 // Fused into the visibility pass.
                 Role::Shading if !parts.deferred => continue,

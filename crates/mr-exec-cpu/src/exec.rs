@@ -4,8 +4,13 @@
 //! resource the executor owns, one per producing pass (its output; any number of consumers
 //! read it). Dispatch is per pass (a few virtual calls and downcasts per frame); all
 //! per-ray and per-pixel work happens inside a node, monomorphised as before.
+//!
+//! The post node's diagnostic view (`view`) is the executor's: while one is chosen it keeps
+//! one value per pixel, which the node writing that quantity fills as it runs (and still
+//! shades), and after the passes maps it through the shared colour ramp into the image.
 
 use std::any::Any;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 use std::collections::HashMap;
 
@@ -25,6 +30,9 @@ pub(crate) struct Cx<'a> {
     pub req: &'a FrameRequest,
     pub width: u32,
     pub height: u32,
+    /// The post's view: the quantity's name and the per-pixel values its writer fills
+    /// (row-major; a `u32` count or an `f32`'s bits).
+    pub view: Option<(&'a str, &'a [AtomicU32])>,
 }
 
 /// What a pass reports for the frame (merged into its [`FrameStats`]).
@@ -61,12 +69,30 @@ pub(crate) trait Node: Send {
     fn memory(&self, _out: &Res) -> u64 {
         0
     }
+    /// The per-pixel quantities it can write for the post's view (as it is now).
+    fn quantities(&self) -> &'static [Quantity] {
+        &[]
+    }
 }
 
 /// One pass: its node and the passes whose outputs it reads.
 pub(crate) struct Pass {
     pub node: Box<dyn Node>,
     pub ins: Vec<usize>,
+}
+
+/// The view's knobs among the options (where the post node's knobs come over them).
+#[derive(serde::Deserialize)]
+#[serde(default)]
+struct ViewOptions {
+    view: String,
+    view_max: u32,
+}
+
+impl Default for ViewOptions {
+    fn default() -> Self {
+        Self { view: "image".into(), view_max: 256 }
+    }
 }
 
 /// The executor: the passes in frame order; the last one's output is the image (`Vec<P>`).
@@ -83,6 +109,11 @@ pub(crate) struct Executor<P> {
     baked: mr_core::baked::Knobs,
     /// Compiled for this machine ([`crate::Spec::NATIVE`]).
     native: bool,
+    /// The post's view (`image`: none), its scale's top and, while one is chosen, the
+    /// per-pixel values.
+    view: String,
+    view_max: u32,
+    values: Vec<AtomicU32>,
     _px: std::marker::PhantomData<P>,
 }
 
@@ -90,8 +121,43 @@ impl<P: Pixel> Executor<P> {
     pub fn new(p: &InitParams, threads: usize, world: World, mut passes: Vec<Pass>) -> anyhow::Result<Self> {
         anyhow::ensure!(passes.iter().enumerate().all(|(i, s)| s.ins.iter().all(|&j| j < i)), "a pass reads a later pass's output");
         let outs = passes.iter_mut().map(|s| s.node.output(p.width, p.height)).collect();
-        let graph = mr_components::graph::of_init("cpu", p)?.graph;
-        Ok(Self { graph, pool: Pool::new(p.devices.cpu_threads(threads))?, world, width: p.width, height: p.height, passes, outs, baked: &[], native: false, _px: std::marker::PhantomData })
+        let g = mr_components::graph::of_init("cpu", p)?;
+        let o: ViewOptions = p.options()?;
+        let (view, view_max) = mr_components::post::view_chosen(&g, &o.view, o.view_max);
+        let mut e = Self { graph: g.graph, pool: Pool::new(p.devices.cpu_threads(threads))?, world, width: p.width, height: p.height, passes, outs, baked: &[], native: false, view: String::new(), view_max, values: vec![], _px: std::marker::PhantomData };
+        e.set_view(&view)?;
+        Ok(e)
+    }
+
+    /// Every pass's quantities.
+    fn quantities(&self) -> Vec<Quantity> {
+        self.passes.iter().flat_map(|p| p.node.quantities()).copied().collect()
+    }
+
+    /// The view `name` (`image`: none), if a pass writes it.
+    fn set_view(&mut self, name: &str) -> anyhow::Result<()> {
+        let viewed = mr_components::post::view_quantity(name, &self.quantities())?.is_some();
+        self.view = name.to_string();
+        self.values = if viewed { (0..self.width * self.height).map(|_| AtomicU32::new(0)).collect() } else { vec![] };
+        Ok(())
+    }
+
+    /// Maps the view's values into the image; its legend (`None`: no view).
+    fn show(&mut self) -> Option<Legend> {
+        let q = mr_components::post::view_quantity(&self.view, &self.quantities()).ok()??;
+        let legend = q.legend(self.view_max as f64);
+        let image = self.outs.last_mut()?.downcast_mut::<Vec<P>>()?;
+        let pool = &self.pool;
+        let values = &self.values;
+        pool.install(|| {
+            use rayon::prelude::*;
+            image.par_iter_mut().zip(values.par_iter()).for_each(|(px, v)| {
+                let v = v.load(Relaxed);
+                let [r, g, b] = legend.color(if q.float { f32::from_bits(v) as f64 } else { v as f64 });
+                *px = P::from_rgba8([r, g, b, 255]);
+            });
+        });
+        Some(legend)
     }
 
     /// A compiled pipeline's: refuses its `baked` knobs, says when it is `native`.
@@ -118,7 +184,8 @@ impl<P: Pixel> Renderer for Executor<P> {
         let start = std::time::Instant::now();
         let mut report = Report::default();
         let (passes, outs) = (&mut self.passes, &mut self.outs);
-        let cx = Cx { pool: &self.pool, world: &self.world, req, width: self.width, height: self.height };
+        let view = (!self.values.is_empty()).then_some((self.view.as_str(), self.values.as_slice()));
+        let cx = Cx { pool: &self.pool, world: &self.world, req, width: self.width, height: self.height, view };
         self.pool.install(|| {
             for (i, pass) in passes.iter_mut().enumerate() {
                 // Inputs come before `i` (checked at creation): split there.
@@ -127,6 +194,9 @@ impl<P: Pixel> Renderer for Executor<P> {
                 pass.node.run(&cx, &ins, &mut rest[0], &mut report);
             }
         });
+        if let Some(legend) = self.show() {
+            report.legend = Some(legend);
+        }
         if self.native {
             // A pipeline compiled for this machine (observations tell it from the generic build).
             report.counters.push(("compiled_native".into(), 1.0));
@@ -148,6 +218,15 @@ impl<P: Pixel> Renderer for Executor<P> {
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
         mr_core::baked::refuse(self.baked, name, &value.to_json())?;
+        // The post's view.
+        match name {
+            "view" => return self.set_view(value.as_str().unwrap_or("")),
+            "view_max" => {
+                self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32;
+                return Ok(());
+            }
+            _ => {}
+        }
         for (s, out) in self.passes.iter_mut().zip(&mut self.outs) {
             if let Some(r) = s.node.set_param(out, name, value) {
                 return r;
@@ -175,6 +254,9 @@ impl<P: Pixel> Renderer for Executor<P> {
 
     fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
         (self.width, self.height) = (width, height);
+        if !self.values.is_empty() {
+            self.values = (0..width * height).map(|_| AtomicU32::new(0)).collect();
+        }
         for (s, out) in self.passes.iter_mut().zip(&mut self.outs) {
             s.node.resize(out, width, height);
         }
@@ -182,7 +264,7 @@ impl<P: Pixel> Renderer for Executor<P> {
     }
 
     fn memory(&self) -> MemoryReport {
-        let cpu_bytes = self.passes.iter().zip(&self.outs).map(|(s, o)| s.node.memory(o)).sum::<u64>() + std::mem::size_of_val(self.image()) as u64;
+        let cpu_bytes = self.passes.iter().zip(&self.outs).map(|(s, o)| s.node.memory(o)).sum::<u64>() + std::mem::size_of_val(self.image()) as u64 + self.values.len() as u64 * 4;
         MemoryReport { cpu_bytes, gpu_bytes: 0 }
     }
 }

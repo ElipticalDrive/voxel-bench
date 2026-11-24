@@ -97,13 +97,17 @@ New techniques go in as components, not as new renderers:
    `Renderer::set_param`. The GUI and the tuner pick them up automatically. A node whose component
    an executor can replace while running is declared in its region (`graph::Builds.live`) and
    replaced in the region's `switch`: the host sends the graph's edits (`Renderer::edit`), never a knob.
-4. A diagnostic `view` on the GPU: a component declares the per-pixel quantities it can write
-   (`mr_core::Quantity`; the post node's `view` knob lists them, `mr_exec_gpu` `view::knobs`).
-   While one is viewed the core binds a buffer of one `u32` per pixel (group 0,
-   `view::QUANTITY_BINDING`), the writer's program fills it under its define, and the
-   executor's view pass maps it through `mr_core::legend`'s ramp into the output and reports
-   its `Legend` in `FrameStats::legend`. Views not yet moved to this write their colours
-   themselves (`ramp_wgsl()` in a shader, `Legend::color` on the CPU) and return the legend.
+4. A diagnostic `view`: a component declares the per-pixel quantities it can write
+   (`mr_core::Quantity`; the post node's `view` knob lists them,
+   `mr_components::post::view_knobs`). On the GPU, while one is viewed the core binds a
+   buffer of one `u32` per pixel (group 0, `view::QUANTITY_BINDING`), the writer's program
+   fills it under its define, and the executor's view pass maps it through
+   `mr_core::legend`'s ramp into the output. On the CPU the executor keeps the values
+   (`exec::Cx::view`, while one is viewed), the writing node (`Node::quantities`) fills them
+   and the executor maps them into the image after the passes. Either way the frame is still
+   shaded and the executor reports the `Legend` in `FrameStats::legend`. Views not yet moved
+   to this write their colours themselves (`ramp_wgsl()` in a shader, `Legend::color` on the
+   CPU) and return the legend.
 
 GPU code never opens a device: an executor's `create(params, devices, waker)` receives the
 host's devices, and `mr_gpu::gpu(devices, slot, &GpuNeeds { .. })` returns one with the

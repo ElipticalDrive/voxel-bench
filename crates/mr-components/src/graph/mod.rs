@@ -1013,7 +1013,13 @@ mod tests {
             .unwrap()
             .knobs
             .insert("white".into(), toml::Value::Float(4.0));
-        assert!(g.check().unwrap_err().contains("no knobs"));
+        assert!(g.check().unwrap_err().contains("the post's knobs are `view`"));
+        // Its diagnostic view's knobs are its own.
+        let knobs = &mut g.nodes.get_mut("post").unwrap().knobs;
+        knobs.clear();
+        knobs.insert("view".into(), toml::Value::String("steps".into()));
+        knobs.insert("view_max".into(), toml::Value::Integer(64));
+        assert!(g.check().is_ok());
     }
 
     /// The generator: on the server it feeds the world and is left out of the key; on the
