@@ -21,16 +21,19 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
   (`raster-gpu` 1.1 ms, `raster-cpu` 72 ms); `city` costs `raster-gpu` 3.6 ms of CPU meshing
   per frame while streaming.
 - `rows` + `rowrun` is 5–15% slower than `bricks` + `refloor`.
-- `tree64` matches `bricks` in speed with about 15% of the VRAM. `svo_dag` deduplicates about 3×
+- `tree64` runs 5–6% behind `bricks` with about 15% of the VRAM (re-measured 2026-11-23; the
+  same gap as the former tree64 renderer had to its own `bricks`). `svo_dag` deduplicates about 3×
   on terrain and has the smallest footprint. `clipmap` reads textures only (no hash table), and
   its slot wrap happens once per chunk.
-- `incremental` is 3.5–8× slower than `refloor` on NVIDIA, for reasons not yet known (1.3× on
-  AMD).
+- `incremental` is 2.0× (unlit) / 2.4× (lit) slower than `refloor` over `bricks` on NVIDIA and
+  1.5× over `tree64` (2026-11-23; earlier 3.5–8×, and 1.3× on AMD). Where the block read sits in
+  the loop swings it per storage, so it is the compiler's code for the loop, not extra work.
 - LOD at the same far view distance (768 blocks): 136 MB of VRAM against 1037 MB at full
   resolution, and faster. The quality loss is concentrated in pixel-scale foliage in the
   distance. Against the full-resolution reference at the same reach (radius × 2^max_lod) it
   scores 13–25 dB, 7–25% bad pixels: the coarse cells' loss, which per-pixel PSNR counts in
-  full; on `lattice` thin beams alias or vanish at coarse levels.
+  full; on `lattice` thin beams alias or vanish at coarse levels. Reports also score LOD against
+  a reference at the same LOD (`quality_like`), which is what the catalogue's floor uses.
 - The `beam` prepass is exact but still a net loss: chunk-level skipping already makes empty
   space cheap.
 - `dispatch = "fragment"` (the walk in a fragment shader) runs at the same speed as compute.
@@ -42,8 +45,8 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
 - SIMD packets do not help, and **not** because of memory: hardware counters show ~80 cycles
   and ~220 instructions per DDA step at IPC 2.6, with L2 misses costing at most 3% of the
   time. Shrinking the world data 7–16× (`bits`, `palette`) leaves cycles per pixel unchanged.
-  `brickmajor` and `morton` halve L1 misses, but cycles do not drop, so they run 3–4% behind
-  `bricks`.
+  `brickmajor` and `morton` halve L1 misses, but cycles do not drop, so they run 2.5–3.3%
+  behind `bricks` (2026-11-23: the index math on every probe).
 - What helps is fewer steps: `hier` skips empty 8³ regions (20–34% fewer steps, up to +29%
   fps). `prefix` takes the fewest steps of all (−31 to −51%) but is 3–9% behind `hier` per
   pixel, because big steps cost more than unit steps in this walk. `incremental` with `exact`
@@ -141,7 +144,8 @@ described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/on
 ## Shading
 
 - `pathtrace` with `bounces = 0` reproduces `direct`.
-- Running deferred shading on a second GPU, a frame behind, is possible (`plans/two-gpus.toml`).
+- Running deferred shading on a second GPU, a frame behind, is possible (`plans/two-gpus.toml`)
+  for ray casting, the face drawers and the splats: the hit records cross between the GPUs.
 
 ## Metrics
 
@@ -158,4 +162,3 @@ for PSNR does the opposite.
 - Mesh shaders, GPU-driven occlusion culling (Hi-Z), and GPU meshing.
 - LOD for the rasterisers and the trees, and LOD that reflects edits.
 - Baked or flood-filled lighting against ray-traced shadows on the quality / speed curve.
-- HDR: the view and presenter windows take no camera input; F5 closes and reopens them.

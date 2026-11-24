@@ -170,14 +170,16 @@ compared against anything; their slowness is their own.
 
 The migration below is done (2026-11-04 to 2026-11-09): every pipeline runs as nodes on the
 generic executor of its device, "back end" means device + API, and the editor edits any graph
-exactly. What still differs from the target:
+exactly. Edge resources are the executor's (`exec::Edges`, `exec::Form`, and `exec::Split` for a
+pipeline over two GPUs, whose hit records cross between them in each of the hits edge's forms;
+on the CPU the passes read only what their graph edges reach, `exec::reads`); the regions keep
+their programs, group 0 and internal buffers, and the generator specialises CPU regions only,
+both by design (below). What still differs from the target:
 
 | Target | Today |
 |---|---|
-| Edge resources owned by the executor | On the GPU, nodes compiled into one program share a *region* (ray casting, faces, splats, columns, discovery) that owns the frame's state and bindings. What a visibility node or a drawer finds for a shading in a later pass is an edge resource the executor allocates from the graph, in the form its writer encodes (`exec::Edges`, `exec::Form`: ray casting's and columns' hit records, the deferred face drawers' id or record target, the splats' ids), and each program attaches it where it chooses; a pipeline over two GPUs runs an executor per GPU slot, each its device's passes, with the hit records' transfer between them the executors' own (`exec::Split`, `transfer.rs`); hit records cross between GPUs, as a buffer (rays, and the `visbuffer` drawer's ids decoded into records on the first GPU by a pass after its drawing: the Ids -> Records adapter, so the second GPU shades records whatever drew them) or the `gbuffer` drawer's target (its rows unpadded on arrival); the splats' ids are decoded the same way as the visbuffer's. The regions still own what is not an edge of the graph: their programs, group 0 and their nodes' internal buffers (depths, the splats' depth buffer). On the CPU, the passes read only what their graph edges reach (`exec::reads`, through fused kernels): raster-cpu's shading (inline: in the draw pass) casts its shadow rays through its `shadow` kernel over a CPU storage of the ray caster's, as raster-gpu's does. |
 | Fusion is attempted, not pre-judged | Each executor declares the nodes it builds (`graph::Builds`: per role the components, device kind and count), and `Graph::accept` refuses, with the reason, any valid graph outside the declarations at creation instead of trying it. The declarations are the regions' shapes, so a graph is accepted exactly when a region builds it. The ten presets named by technique and device (`raycast-gpu`, `raster-cpu`, ...) are those regions' names: derived from the graph, offered as starting points, never chosen. |
-| Graph-driven program generator | `src/pipelines.rs` is keyed by the graph and its executor alone (the knobs declared specialisable valued on their nodes) and generates one crate per executor, but only the CPU regions are specialised: the GPU executor's crate builds its CPU work natively and bakes no knob (the shaders compile their own constants in). |
-| Diagnostics on the node or edge at fault | A graph that does not run is a draft with its reason as text; the canvas does not mark the node at fault, draft steps are not in the undo stack, and nothing suggests a fix. |
+| Diagnostics on the node or edge at fault | A graph that does not run is a draft with its reason as text; the canvas does not mark the node at fault, draft steps are not in the undo stack, and nothing suggests a fix (the graph editing work). |
 
 Decided for the GPU rows (2026-11-23):
 
