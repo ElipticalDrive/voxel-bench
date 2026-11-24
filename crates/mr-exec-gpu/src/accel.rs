@@ -203,7 +203,15 @@ impl Accel {
     }
 
     pub fn counters(&self) -> Vec<(String, f64)> {
-        vec![("instances".into(), self.instances as f64), ("blas_rebuilt".into(), self.rebuilt as f64), ("build_ms".into(), self.build_ms)]
+        // Primitives in all BLASes: a quad is two words of the geometry buffer, a box one.
+        let words: u64 = self.chunks.values().map(|c| c.range.1 as u64).sum();
+        let primitives = if matches!(self.rt, RtKind::Boxes) { words } else { words / 2 };
+        vec![
+            ("instances".into(), self.instances as f64),
+            ("blas_rebuilt".into(), self.rebuilt as f64),
+            ("build_ms".into(), self.build_ms),
+            ("primitives".into(), primitives as f64),
+        ]
     }
 
     /// Its knobs; `None` if `name` is not one.
