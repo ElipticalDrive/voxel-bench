@@ -283,3 +283,12 @@ Python, for Linux and Windows (`scripts/`):
   pixel by pixel (`cmp.py` compares two run directories' frames); `wgsl.py` dumps and
   compares every shader both builds assemble; `sweepcmp.py` compares two sweeps' records,
   matched by pipeline key.
+- `ab/guard.py NEW [--base DIR]`: the regression guard. It compares a sweep with the baseline
+  (the newest `baselines/sweep-*`), pass by pass (plan, mode, graph key, knobs). It prints
+  only what moved beyond noise: passes slower or faster (GPU ms, else fps; default ±10 %, since
+  a sweep runs each pass once, so a pass's verdict is a candidate to confirm with `perf.py`),
+  scores worse or better (the score the catalogue's floor uses; 0.5 dB, or crossing the floor),
+  passes failing or passing now. It also prints the per-component speed medians that moved
+  more than 2 % against the median over all passes: a feature that costs pipelines without it
+  shows here. Exits 1 on a regression. A new baseline is a full sweep copied to
+  `baselines/sweep-<date>/` with its `observations.jsonl` gzipped (both scripts read either).
