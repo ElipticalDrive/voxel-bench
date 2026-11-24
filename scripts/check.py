@@ -30,6 +30,13 @@ else:
 if "all" in what:
     what = ["build", "clippy", "test", "gpu", "windows"]
 
+# A timing job of `.agent/bin/idle` is running: this build is load from outside it, which gets
+# the job stopped and redone. Said, not refused (the queue may be waiting, not timing).
+if not os.environ.get("MR_IDLE_JOB"):
+    busy = subprocess.run([str(ROOT / ".agent" / "bin" / "idle"), "busy"], capture_output=True, text=True)
+    if busy.returncode == 0:
+        print(f"warning: {busy.stdout.strip()}; building now disturbs it", flush=True)
+
 
 def cargo(args, log):
     with open(log, "w") as f:
