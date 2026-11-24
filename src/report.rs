@@ -257,8 +257,8 @@ pub fn table(reports: &[PassReport]) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "{:<22} {:<6} {:>8} {:>9} {:>9} {:>9} {:>8} {:>9} {:>8} {:>7} {:>7} {:>8}",
-        "renderer", "mode", "fps", "frame ms", "p99 ms", "gpu ms", "init ms", "load ms", "PSNR dB", "bad %", "RSS MB", "GPU MB"
+        "{:<22} {:<6} {:>8} {:>9} {:>9} {:>9} {:>8} {:>9} {:>8} {:>7} {:>7} {:>8} {:>8}",
+        "renderer", "mode", "fps", "frame ms", "p99 ms", "gpu ms", "init ms", "load ms", "PSNR dB", "bad %", "RSS MB", "GPU MB", "dev MB"
     );
     for r in reports {
         let mode = r.mode.map(|m| m.name()).unwrap_or("-");
@@ -270,7 +270,7 @@ pub fn table(reports: &[PassReport]) -> String {
         let interval = r.frame_interval_ms.as_ref();
         let _ = writeln!(
             s,
-            "{:<22} {:<6} {:>8.1} {:>9} {:>9} {:>9} {:>8.0} {:>9.0} {:>8} {:>7} {:>7} {:>8}{}",
+            "{:<22} {:<6} {:>8.1} {:>9} {:>9} {:>9} {:>8.0} {:>9.0} {:>8} {:>7} {:>7} {:>8} {:>8}{}",
             r.label,
             mode,
             r.fps,
@@ -283,6 +283,7 @@ pub fn table(reports: &[PassReport]) -> String {
             o(r.quality.as_ref().map(|q| q.bad_pct.mean), 2),
             o(r.peak_rss_mb, 0),
             o((r.memory.gpu_bytes > 0).then(|| r.memory.gpu_bytes as f64 / 1048576.0), 0),
+            o((r.memory.gpu_device_bytes > 0).then(|| r.memory.gpu_device_bytes as f64 / 1048576.0), 0),
             [
                 r.quality_like.as_ref().map(|q| format!("  like {}: {:.1} dB, {:.2} % bad", r.like.as_deref().unwrap_or("-"), q.psnr.mean, q.bad_pct.mean)),
                 r.quality_settled.as_ref().map(|q| format!("  settled ({}): {:.1} dB, {:.2} % bad", settled_why(r), q.psnr.mean, q.bad_pct.mean)),

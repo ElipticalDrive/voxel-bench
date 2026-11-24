@@ -161,6 +161,14 @@ impl Gpu {
         }
     }
 
+    /// What the device's memory allocator holds now (every buffer, texture and acceleration
+    /// structure, rounded as allocated): the driver's figure, not a count of what the renderer
+    /// sized. 0 where the backend gives no report (GL, WebGPU). The device is this process's
+    /// own unless a [`GpuPool`] shares it.
+    pub fn allocated_bytes(&self) -> u64 {
+        self.device.generate_allocator_report().map_or(0, |r| r.total_allocated_bytes)
+    }
+
     /// Records that frames from here on would be wrong (`why`: what was lost and the knob
     /// that would hold it): data that did not fit a buffer, a table out of slots, a failed
     /// read-back. The renderer fails with it at its next frame; nothing is dropped quietly.
@@ -1108,6 +1116,25 @@ mod tests {
         for want in ["test buffer", "max_storage_buffer_binding_size", "the test's knob"] {
             assert!(e.contains(want), "{e} lacks {want}");
         }
+    }
+
+    /// The device's allocator counts a buffer once created and not once dropped (Vulkan /
+    /// DX12 / Metal report; a backend without a report reads 0 and is skipped). Needs a GPU.
+    #[test]
+    #[ignore]
+    fn allocated_bytes_follow_buffers() {
+        let gpu = GpuPool::new(&[]).gpu(0, &GpuNeeds::default()).unwrap();
+        let size = 64 << 20;
+        let before = gpu.allocated_bytes();
+        let buf = gpu.storage("measured", size, wgpu::BufferUsages::STORAGE, || unreachable!());
+        let during = gpu.allocated_bytes();
+        if during == 0 {
+            return;
+        }
+        assert!(during >= before + size, "{before} -> {during} after {size} bytes");
+        drop(buf);
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        assert!(gpu.allocated_bytes() < during, "still {} after the drop", gpu.allocated_bytes());
     }
 
     /// A growable buffer grows to its maximum, holds what fits, and fails the device (never

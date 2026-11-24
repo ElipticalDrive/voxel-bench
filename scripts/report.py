@@ -3,7 +3,7 @@
 
   scripts/report.py [DIR|report.json]...
 
-Columns: label mode fps p99 gpu-ms cpu-ms psnr bad% repeat; then the pass's stages:
+Columns: label mode fps p99 gpu-ms cpu-ms psnr bad% repeat (mem: GPU MiB counted/measured); then the pass's stages:
 name[nodes] g<gpu ms> c<cpu ms> (frames that ran it, if not all)."""
 import glob
 import json
@@ -35,6 +35,7 @@ for a in args:
         ps = q.get("psnr", {}).get("mean"); bad = q.get("bad_pct", {}).get("mean")
         print(f"{r['label']:44} {r['mode']:6} fps {r['fps']:7.1f} p99 {fi.get('p99', 0):6.2f} gpu {g.get('mean', 0) or 0:6.2f} cpu {c.get('mean', 0) or 0:6.2f}"
               + (f" psnr {ps:5.1f} bad {bad:5.2f}%" if ps is not None else "") + f" r{r.get('repeat', 0)}"
+              + (f" mem {m['gpu_bytes'] / 2**20:.0f}/{m['gpu_device_bytes'] / 2**20:.0f}M" if (m := r.get("memory") or {}).get("gpu_device_bytes") else "")
               + (f"  like {r.get('like')}: {r['quality_like']['psnr']['mean']:.1f} dB {r['quality_like']['bad_pct']['mean']:.2f}%" if r.get("quality_like") else "")
               + (f"  settled ({settled_why(r)}): {r['quality_settled']['psnr']['mean']:.1f} dB {r['quality_settled']['bad_pct']['mean']:.2f}%" if r.get("quality_settled") else "")
               + (f"  ! beside failed: {', '.join(r['beside_failed'])}" if r.get("beside_failed") else "")

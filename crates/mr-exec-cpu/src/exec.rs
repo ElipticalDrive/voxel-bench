@@ -265,7 +265,7 @@ impl<P: Pixel> Renderer for Executor<P> {
 
     fn memory(&self) -> MemoryReport {
         let cpu_bytes = self.passes.iter().zip(&self.outs).map(|(s, o)| s.node.memory(o)).sum::<u64>() + std::mem::size_of_val(self.image()) as u64 + self.values.len() as u64 * 4;
-        MemoryReport { cpu_bytes, gpu_bytes: 0 }
+        MemoryReport { cpu_bytes, gpu_bytes: 0, gpu_device_bytes: 0 }
     }
 }
 

@@ -108,7 +108,10 @@ pub struct Observation {
     pub init_ms: f64,
     pub initial_load_ms: f64,
     pub peak_rss_mb: Option<f64>,
+    /// Counted by the renderer (what it sizes) and measured (its devices' allocators).
     pub gpu_mb: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_device_mb: Option<f64>,
     /// Against the reference: mean and worst PSNR, mean share of bad pixels.
     pub psnr: Option<f64>,
     pub psnr_min: Option<f64>,
@@ -217,6 +220,7 @@ impl Observation {
             initial_load_ms: r.initial_load_ms,
             peak_rss_mb: r.peak_rss_mb,
             gpu_mb: (r.memory.gpu_bytes > 0).then(|| r.memory.gpu_bytes as f64 / 1048576.0),
+            gpu_device_mb: (r.memory.gpu_device_bytes > 0).then(|| r.memory.gpu_device_bytes as f64 / 1048576.0),
             psnr: q.map(|q| q.psnr.mean),
             psnr_min: q.map(|q| q.psnr.min),
             bad_pct: q.map(|q| q.bad_pct.mean),

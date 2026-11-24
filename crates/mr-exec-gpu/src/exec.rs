@@ -461,7 +461,7 @@ impl<R: Region> Renderer for Executor<R> {
 
     fn memory(&self) -> MemoryReport {
         let (cpu, gpu) = self.region.memory(&self.core);
-        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu }
+        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu, gpu_device_bytes: self.core.gpu.allocated_bytes() }
     }
 }
 
@@ -552,6 +552,6 @@ impl<R: Region, F: Region> Renderer for Split<R, F> {
 
     fn memory(&self) -> MemoryReport {
         let (near, far) = (self.near.memory(), self.far.memory());
-        MemoryReport { cpu_bytes: near.cpu_bytes + far.cpu_bytes, gpu_bytes: near.gpu_bytes + far.gpu_bytes + self.transfer.memory_bytes() }
+        MemoryReport { cpu_bytes: near.cpu_bytes + far.cpu_bytes, gpu_bytes: near.gpu_bytes + far.gpu_bytes + self.transfer.memory_bytes(), gpu_device_bytes: if std::sync::Arc::ptr_eq(&self.near.core.gpu, &self.far.core.gpu) { near.gpu_device_bytes } else { near.gpu_device_bytes + far.gpu_device_bytes } }
     }
 }

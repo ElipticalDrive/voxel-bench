@@ -199,8 +199,13 @@ pub trait FrameSink {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MemoryReport {
+    /// Counted by the renderer: the bytes of what it holds (its inputs and the buffers it
+    /// sizes), not what the driver allocates for it.
     pub cpu_bytes: u64,
     pub gpu_bytes: u64,
+    /// Measured: what its GPU devices' allocators hold (every buffer, texture and acceleration
+    /// structure, with the allocator's rounding), 0 where the API does not say.
+    pub gpu_device_bytes: u64,
 }
 
 /// Lets a renderer's background threads (e.g. a GPU fence waiter) ask the worker to call

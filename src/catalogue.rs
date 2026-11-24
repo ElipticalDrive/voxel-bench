@@ -34,7 +34,9 @@ pub struct Entry {
     /// Once its late edges caught up (pipelines with an edge a frame late; else none).
     pub psnr_settled: Option<f64>,
     pub bad_pct: Option<f64>,
+    /// Counted by the renderer, and measured (its devices' allocators; older records lack it).
     pub gpu_mb: Option<f64>,
+    pub gpu_device_mb: Option<f64>,
     pub rss_mb: Option<f64>,
     pub samples: usize,
     pub error: Option<String>,
@@ -226,6 +228,7 @@ impl Catalogue {
                         psnr_settled,
                         bad_pct: m(&|o| o.bad_pct),
                         gpu_mb: m(&|o| o.gpu_mb),
+                        gpu_device_mb: m(&|o| o.gpu_device_mb),
                         rss_mb: m(&|o| o.peak_rss_mb),
                         samples: ok.len(),
                         error: if ok.is_empty() { os.iter().find_map(|o| o.error.clone()) } else { None },
@@ -410,16 +413,16 @@ impl Catalogue {
         let _ = writeln!(s, "## Scenarios\n");
         for sc in &self.scenarios {
             let feats = sc.features.as_ref().map(|f| format!(" {}.", f.describe())).unwrap_or_default();
-            let _ = writeln!(s, "### {}\n\n{}×{}.{feats}\n\n| # | renderer | fps | rel | p99 ms | gpu ms | cpu ms | PSNR | bad % | GPU MB | RSS MB |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|", sc.name, sc.resolution[0], sc.resolution[1]);
+            let _ = writeln!(s, "### {}\n\n{}×{}.{feats}\n\n| # | renderer | fps | rel | p99 ms | gpu ms | cpu ms | PSNR | bad % | GPU MB | dev MB | RSS MB |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|", sc.name, sc.resolution[0], sc.resolution[1]);
             for (i, e) in sc.entries.iter().enumerate() {
                 if let Some(err) = &e.error {
-                    let _ = writeln!(s, "| {} | {} | FAILED: {} | | | | | | | | |", i + 1, e.label, err.lines().next().unwrap_or("").replace('|', "/"));
+                    let _ = writeln!(s, "| {} | {} | FAILED: {} | | | | | | | | | |", i + 1, e.label, err.lines().next().unwrap_or("").replace('|', "/"));
                     continue;
                 }
                 let flag = if e.valid { "" } else { " (incorrect)" };
                 let _ = writeln!(
                     s,
-                    "| {} | {}{flag} | {:.1} | {:.2} | {} | {} | {} | {} | {} | {} | {} |",
+                    "| {} | {}{flag} | {:.1} | {:.2} | {} | {} | {} | {} | {} | {} | {} | {} |",
                     i + 1,
                     e.label,
                     e.fps,
@@ -430,6 +433,7 @@ impl Catalogue {
                     opt(e.psnr, 1),
                     opt(e.bad_pct, 2),
                     opt(e.gpu_mb, 0),
+                    opt(e.gpu_device_mb, 0),
                     opt(e.rss_mb, 0)
                 );
             }
@@ -440,7 +444,7 @@ impl Catalogue {
 
     /// One row per (scenario, renderer), for spreadsheets and scripts.
     pub fn csv(&self) -> String {
-        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,executor,graph_key,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,psnr_like,psnr_settled,bad_pct,gpu_mb,rss_mb,samples,error\n");
+        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,executor,graph_key,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,psnr_like,psnr_settled,bad_pct,gpu_mb,gpu_device_mb,rss_mb,samples,error\n");
         let q = |x: &str| format!("\"{}\"", x.replace('"', "\"\""));
         for sc in &self.scenarios {
             // The scenario's columns, including its measured features (empty if unknown).
@@ -455,7 +459,7 @@ impl Catalogue {
             for e in &sc.entries {
                 let _ = writeln!(
                     s,
-                    "{scenario},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{},{},{}",
+                    "{scenario},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                     q(&e.label),
                     e.graph.as_ref().map_or("", |g| g.runs_on()),
                     e.graph_key.as_deref().unwrap_or(""),
@@ -471,6 +475,7 @@ impl Catalogue {
                     opt(e.psnr_settled, 2),
                     opt(e.bad_pct, 3),
                     opt(e.gpu_mb, 1),
+                    opt(e.gpu_device_mb, 1),
                     opt(e.rss_mb, 1),
                     e.samples,
                     q(e.error.as_deref().unwrap_or(""))

@@ -16,7 +16,7 @@ pub use interprocess::local_socket::{Listener, Stream};
 use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {

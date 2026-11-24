@@ -1161,7 +1161,7 @@ impl Renderer for CpuReference {
     }
 
     fn memory(&self) -> MemoryReport {
-        MemoryReport { cpu_bytes: self.chunks.dense_bytes() + self.pixels.len() as u64, gpu_bytes: 0 }
+        MemoryReport { cpu_bytes: self.chunks.dense_bytes() + self.pixels.len() as u64, gpu_bytes: 0, gpu_device_bytes: 0 }
     }
 }
 

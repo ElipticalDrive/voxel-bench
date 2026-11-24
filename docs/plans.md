@@ -253,7 +253,9 @@ rays it casts make no difference; without meshes: the meshes node and its shadow
   records of pipelines from before version 6 (a flat `composition`) are no longer read: `catalogue`
   leaves them out and says how many;
 - the results: fps, frame interval (mean, p50, p99), GPU and CPU ms, latency, init and load
-  time, memory, PSNR (mean and minimum), bad pixels, the same against the like reference
+  time, memory (`peak_rss_mb`; `gpu_mb`, what the renderer counts it sizes; `gpu_device_mb`,
+  measured: what its GPU devices' allocators hold at the pass's end, every buffer, texture and
+  acceleration structure, where the backend reports it: Vulkan, DX12, Metal), PSNR (mean and minimum), bad pixels, the same against the like reference
   (`like`, `psnr_like`, `bad_pct_like`) and settled (`late`, `psnr_settled`,
   `bad_pct_settled`), stage times, stream counters and the
   renderer's own counters; a read-back frame also counts its host-side copies,
