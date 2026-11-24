@@ -3,6 +3,8 @@
 
 mod bayes;
 mod compare;
+#[cfg(test)]
+mod contract;
 mod features;
 mod catalogue;
 mod gui;
@@ -165,32 +167,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::List => {
-            println!("A renderer is a pipeline graph: a graph file and the edits made to it.\n  plan: graph = \"raycast-gpu\", edits = [{{ node = \"storage\", component = \"tree64\" }}] (`vary` sweeps them; docs/plans.md)\n  CLI:  -r <graph>[,<edit>,...] with <graph> a shipped file's name or a path, and an edit one of\n          node=component          -r raycast-gpu,storage=prefix,kernel=incremental\n          node.input=source       an existing node, or a new one as role:component (its id: the role's name); empty: unbound\n                                  -r raycast-gpu,shading=pathtrace,shading.bounce=traversal:sphere,traversal.storage=storage\n          node.knob=value         -r raycast-gpu,shading=pathtrace,shading.bounces=2\n          node@device             -r raycast-gpu,shading@gpu1\n          -node                   -r raycast-gpu,-meshes\n          {{...}}                   any edit as the plan's inline table: -r 'raycast-gpu,{{node=\"kernel\",api=\"rayquery\"}}'\n  `multirenderer graph <renderer>` prints the graph, its label, key and schedule.\n\nShipped graph files (pipelines/*.toml; starting points: the pipeline is the graph, which may take any valid shape), each with its label:");
-            // Each file's graph and, per node, what the node may be instead.
-            let files: Vec<_> = mr_components::graph::start_files().map(|(name, about)| (name, about, mr_components::graph::shipped(name).expect("a shipped file"))).collect();
-            let choices: Vec<Vec<(mr_components::graph::Role, Vec<&str>)>> = files.iter().map(|(.., g)| g.nodes.iter().map(|(id, n)| (n.role, g.choices(id))).collect()).collect();
-            for (name, about, g) in &files {
-                println!("  {name:<12} {about}\n               {}", g.label().map_err(anyhow::Error::msg)?);
-            }
-            println!("\nComponents, by the role of the node they fill (in: the shipped files with a node that may be it; others take it by an edit that adds the node):");
-            for role in mr_components::graph::Role::ALL {
-                let names = mr_components::graph::role_components(role);
-                if !names.is_empty() {
-                    println!("\n{}:", role.name());
-                }
-                for c in names {
-                    let on: Vec<&str> = files.iter().zip(&choices).filter(|(_, ch)| ch.iter().any(|(r, of)| *r == role && of.contains(&c))).map(|((name, ..), _)| *name).collect();
-                    let on = if on.is_empty() { String::new() } else { format!(" (in {})", on.join(",")) };
-                    match mr_components::component(role, c) {
-                        Some(i) => println!("  {c:<12} [{}]{on} {}", i.impls_label(), i.description),
-                        None => println!("{}", format!("  {c:<12}{on}").trim_end()),
-                    }
-                }
-            }
-            println!("\nStandalone renderers (-r name; cpu-reference defines the reference images):");
-            for i in mr_worker::infos() {
-                println!("  {:<16} [{}] {}\n      {}", i.name, i.tags.join(","), i.features.describe(), i.description);
-            }
+            print!("{}", list()?);
             Ok(())
         }
         Cmd::Cache { clear } => {
@@ -290,6 +267,40 @@ fn main() -> anyhow::Result<()> {
             window::run_with_window("multirenderer", move |ui| view(&plan, ui))
         }
     }
+}
+
+/// What `multirenderer list` prints: how a renderer is written, the shipped graph files, the
+/// components by role (with the files that offer each) and the standalone renderers.
+fn list() -> anyhow::Result<String> {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    writeln!(s, "A renderer is a pipeline graph: a graph file and the edits made to it.\n  plan: graph = \"raycast-gpu\", edits = [{{ node = \"storage\", component = \"tree64\" }}] (`vary` sweeps them; docs/plans.md)\n  CLI:  -r <graph>[,<edit>,...] with <graph> a shipped file's name or a path, and an edit one of\n          node=component          -r raycast-gpu,storage=prefix,kernel=incremental\n          node.input=source       an existing node, or a new one as role:component (its id: the role's name); empty: unbound\n                                  -r raycast-gpu,shading=pathtrace,shading.bounce=traversal:sphere,traversal.storage=storage\n          node.knob=value         -r raycast-gpu,shading=pathtrace,shading.bounces=2\n          node@device             -r raycast-gpu,shading@gpu1\n          -node                   -r raycast-gpu,-meshes\n          {{...}}                   any edit as the plan's inline table: -r 'raycast-gpu,{{node=\"kernel\",api=\"rayquery\"}}'\n  `multirenderer graph <renderer>` prints the graph, its label, key and schedule.\n\nShipped graph files (pipelines/*.toml; starting points: the pipeline is the graph, which may take any valid shape), each with its label:")?;
+    // Each file's graph and, per node, what the node may be instead.
+    let files: Vec<_> = mr_components::graph::start_files().map(|(name, about)| (name, about, mr_components::graph::shipped(name).expect("a shipped file"))).collect();
+    let choices: Vec<Vec<(mr_components::graph::Role, Vec<&str>)>> = files.iter().map(|(.., g)| g.nodes.iter().map(|(id, n)| (n.role, g.choices(id))).collect()).collect();
+    for (name, about, g) in &files {
+        writeln!(s, "  {name:<12} {about}\n               {}", g.label().map_err(anyhow::Error::msg)?)?;
+    }
+    writeln!(s, "\nComponents, by the role of the node they fill (in: the shipped files with a node that may be it; others take it by an edit that adds the node):")?;
+    for role in mr_components::graph::Role::ALL {
+        let names = mr_components::graph::role_components(role);
+        if !names.is_empty() {
+            writeln!(s, "\n{}:", role.name())?;
+        }
+        for c in names {
+            let on: Vec<&str> = files.iter().zip(&choices).filter(|(_, ch)| ch.iter().any(|(r, of)| *r == role && of.contains(&c))).map(|((name, ..), _)| *name).collect();
+            let on = if on.is_empty() { String::new() } else { format!(" (in {})", on.join(",")) };
+            match mr_components::component(role, c) {
+                Some(i) => writeln!(s, "  {c:<12} [{}]{on} {}", i.impls_label(), i.description)?,
+                None => writeln!(s, "{}", format!("  {c:<12}{on}").trim_end())?,
+            }
+        }
+    }
+    writeln!(s, "\nStandalone renderers (-r name; cpu-reference defines the reference images):")?;
+    for i in mr_worker::infos() {
+        writeln!(s, "  {:<16} [{}] {}\n      {}", i.name, i.tags.join(","), i.features.describe(), i.description)?;
+    }
+    Ok(s)
 }
 
 fn make_run_dir(plan: &Plan) -> anyhow::Result<PathBuf> {

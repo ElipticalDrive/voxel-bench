@@ -5,7 +5,7 @@
 mod bench;
 mod dock;
 mod editor;
-mod graph;
+pub(crate) mod graph;
 mod input;
 mod knobs;
 mod legend;

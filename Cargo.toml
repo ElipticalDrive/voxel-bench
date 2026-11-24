@@ -96,6 +96,10 @@ eframe.workspace = true
 egui.workspace = true
 egui_plot.workspace = true
 
+[dev-dependencies]
+# Tests register components of their own (`mr_components::register_on_this_thread`).
+mr-components = { workspace = true, features = ["test-hooks"] }
+
 [profile.release]
 debug = "line-tables-only"
 codegen-units = 16
