@@ -211,6 +211,19 @@ vary = [
 - In each pass, combinations that the pass mode cannot tell apart run only once: shading in
   unlit passes, the meshes stage without meshes, and a rasteriser's storage (which only its
   shadow rays walk) in unlit passes.
+- `cover = "pairs"` on the entry (or `[sweep] cover = "pairs"` for every entry of the plan;
+  `"all"`, the default, is the full product) keeps only some of the pipelines, in the same
+  order and written alike: together they have every value of every entry of `vary` and, of
+  any two entries, every pair of values that some pipeline has together (pairwise
+  coverage). Greedy and deterministic: the pipeline adding most of what is still missing,
+  the first of equals. It grows with the pairs, not the product: the full sweep is 1883
+  pipelines, pairwise 260. `[sweep] part = k, parts = n` (k from 0) spreads the pairs over
+  n runs, each still with every value: the k-th, (k+n)-th, ... pipeline the greedy choice
+  picks, completed with every value; the n parts together have every pair (the full sweep in
+  15 parts: about 80 pipelines each).
+
+`multirenderer run PLAN --list` (with the same `-s` / `-u`) renders nothing: it prints the
+plan's renderers, sweeps expanded, and per mode how many passes it would run.
 
 The full sweep the scripts run (`sweep.py`, `ab/wgsl.py`) is `scripts/full-sweep.toml`: every
 shipped graph with each node given every component it takes and its optional nodes present
@@ -273,6 +286,12 @@ Python, for Linux and Windows (`scripts/`):
   `target/frozen/<commit>/`, its own cargo target), so a long job such as a baseline sweep
   measures that commit while the tree changes; a relative `OUT` set before it still lands in
   this tree (`OUT=target/sweep/base scripts/frozen.py -r abc123 -- scripts/sweep.py`).
+- `turn-sweep.py [plans…]`: the same graphs covered pairwise (`[sweep] cover = "pairs"`)
+  into `target/turn/<time>/`: every component on every scenario plan, the pairs spread over
+  the plans (plan i of sweep.py's list takes part i of 15, the same each time; `--whole`:
+  every pair on every plan). A baseline per change and the guard's input, the full sweep
+  kept for overnight runs. Same environment variables and records; `--list` prints per plan
+  the renderers and passes against the full sweep's, rendering nothing.
 - `check.py [only] [build|clippy|test|gpu|windows|wine|all]`: quiet verification (builds and clippy
   without warnings, tests, the GPU end-to-end tests, Windows cross-checks; `gpu`, `windows`, `wine`
   add to the default build clippy test, `only` runs just what is named); prints only problems and
@@ -294,5 +313,7 @@ Python, for Linux and Windows (`scripts/`):
   scores worse or better (the score the catalogue's floor uses; 0.5 dB, or crossing the floor),
   passes failing or passing now. It also prints the per-component speed medians that moved
   more than 2 % against the median over all passes: a feature that costs pipelines without it
-  shows here. Exits 1 on a regression. A new baseline is a full sweep copied to
+  shows here. Exits 1 on a regression. It compares only the passes both sides have, and
+  counts the rest (`only base`, `only new`; `--all` lists them): a turn sweep against a full
+  baseline compares its own passes, the rest of the baseline's counted as `only base`. A new baseline is a full sweep copied to
   `baselines/sweep-<date>/` with its `observations.jsonl` gzipped (both scripts read either).

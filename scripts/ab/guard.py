@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """guard.py [--base DIR] NEW [--speed PCT] [--abs-ms MS] [--fps PCT] [--db DB] [--floor DB] [--all]
 
-The regression guard: compares a sweep (NEW, a directory of runs such as target/sweep/<time>,
-written by sweep.py) with the baseline sweep, pass by pass (plan, mode, pipeline by graph key,
-knobs), and prints only what moved beyond noise:
+The regression guard: compares a sweep (NEW, a directory of runs such as target/sweep/<time>
+written by sweep.py, or target/turn/<time> by turn-sweep.py) with the baseline sweep (either
+kind), pass by pass (plan, mode, pipeline by graph key, knobs), and prints only what moved
+beyond noise:
 
 - speed: GPU ms where both sides measured it, else fps (CPU pipelines). Beyond noise means
   slower by more than --speed % (default 10) and --abs-ms (default 0.01 ms, timer granularity

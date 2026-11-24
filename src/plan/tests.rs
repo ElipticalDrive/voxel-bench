@@ -555,6 +555,122 @@ fn varied_sweeps() {
     }
 }
 
+/// The covering selection itself: of combinations some of which are no pipeline, the chosen
+/// hold every value and every pair the valid ones hold, are valid, fewer, and the same each time.
+#[test]
+fn pairs_cover_what_the_valid_hold() {
+    use std::collections::HashSet;
+    use super::sweep::{Held, cover, held};
+    let lens = [4, 3, 3, 2, 2];
+    let total: usize = lens.iter().product();
+    // No pipeline: entry 0's value 1 with entry 1's value 2, and every seventh combination.
+    let valid: Vec<usize> = (0..total).filter(|&n| !(held(n, &lens).contains(&(0, 1, 1, 2)) || n % 7 == 0)).collect();
+    let candidates: Vec<HashSet<Held>> = valid.iter().map(|&n| held(n, &lens).into_iter().collect()).collect();
+    let chosen = cover(&candidates, None);
+    let want: HashSet<Held> = candidates.iter().flatten().copied().collect();
+    let got: HashSet<Held> = chosen.iter().flat_map(|&i| candidates[i].iter().copied()).collect();
+    assert_eq!(got, want, "every value and every pair the valid combinations hold");
+    assert!(!want.contains(&(0, 1, 1, 2)), "a pair no pipeline holds is not asked for");
+    assert!(want.contains(&(0, 1, 0, 1)) && want.contains(&(1, 2, 1, 2)), "its values alone are");
+    assert!(chosen.windows(2).all(|w| w[0] < w[1]), "in order, each once");
+    assert!(chosen.len() < valid.len() / 4, "{} of {}", chosen.len(), valid.len());
+    assert_eq!(cover(&candidates, None), chosen, "deterministic");
+    // One entry: each value once; none: nothing to hold, one pipeline.
+    let one: Vec<HashSet<Held>> = (0..5).map(|n| held(n, &[5]).into_iter().collect()).collect();
+    assert_eq!(cover(&one, None), [0, 1, 2, 3, 4]);
+    assert_eq!(held(0, &[]), []);
+    // In parts: each with every value, together with every pair.
+    let values: HashSet<Held> = want.iter().copied().filter(|h| h.0 == h.2).collect();
+    let mut union = HashSet::new();
+    for k in 0..6 {
+        let part = cover(&candidates, Some((k, 6)));
+        let got: HashSet<Held> = part.iter().flat_map(|&i| candidates[i].iter().copied()).collect();
+        assert!(values.is_subset(&got), "part {k}: every value");
+        assert!(part.windows(2).all(|w| w[0] < w[1]) && part.len() < chosen.len(), "part {k}: {} of {}", part.len(), chosen.len());
+        assert_eq!(cover(&candidates, Some((k, 6))), part, "deterministic");
+        union.extend(got);
+    }
+    assert_eq!(union, want, "the parts together: every pair");
+}
+
+/// `cover = "pairs"` over the full sweep, entry by entry: a few of the full product's
+/// renderers, written alike and in its order, all pipelines, the same each time, and
+/// together with every node's every component (or absence) and every two of them that the
+/// full product has together.
+#[test]
+fn pair_covering_sweeps() {
+    use std::collections::BTreeSet;
+    let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
+    let sweep: toml::Table = toml::from_str(include_str!("../../scripts/full-sweep.toml")).unwrap();
+    let written = |p: &Plan| p.renderers.iter().map(|r| toml::to_string(r).unwrap()).collect::<Vec<_>>();
+    let (mut full_n, mut pairs_n, mut parts_n) = (0, 0, [0; 15]);
+    for e in sweep["renderer"].as_array().unwrap() {
+        let one = format!("renderer=[{e}]");
+        let full = Plan::parse(base, std::slice::from_ref(&one)).unwrap();
+        let pairs = Plan::parse(base, &[one.clone(), "sweep.cover=\"pairs\"".into()]).unwrap();
+        assert_eq!(written(&Plan::parse(base, &[one.clone(), "sweep.cover=\"all\"".into()]).unwrap()), written(&full), "{e}: `all` is the default");
+        assert_eq!(written(&Plan::parse(base, &[one.clone(), "sweep.cover=\"pairs\"".into()]).unwrap()), written(&pairs), "{e}: deterministic");
+        // A subsequence of the full product.
+        let (w, mut rest) = (written(&full), written(&pairs).into_iter().peekable());
+        for x in &w {
+            if rest.peek() == Some(x) {
+                rest.next();
+            }
+        }
+        assert!(rest.next().is_none(), "{e}: the pairs are some of the full product, in its order");
+        assert!(pairs.renderers.iter().all(|r| r.swept && r.pipeline().unwrap().accept().is_ok()), "{e}");
+        // What each graph has: every node's component, or that it lacks a node others have.
+        let ids: BTreeSet<String> = full.renderers.iter().flat_map(|r| r.pipeline().unwrap().nodes.into_keys()).collect();
+        let has = |r: &RendererSpec| {
+            let g = r.pipeline().unwrap();
+            ids.iter().map(|id| format!("{id}={}", g.nodes.get(id).map_or("none", |n| n.component.as_str()))).collect::<Vec<_>>()
+        };
+        let together = |p: &Plan| {
+            p.renderers.iter().flat_map(|r| {
+                let f = has(r);
+                (0..f.len()).flat_map(move |i| (i..f.len()).map({
+                    let f = f.clone();
+                    move |j| (f[i].clone(), f[j].clone())
+                })).collect::<Vec<_>>()
+            }).collect::<BTreeSet<_>>()
+        };
+        assert_eq!(together(&pairs), together(&full), "{e}: every value and pair of values the full product has");
+        // Spread over 15 runs (one per world): each with every value, together every pair.
+        let values: BTreeSet<_> = together(&full).into_iter().filter(|(a, b)| a == b).collect();
+        let mut union = BTreeSet::new();
+        for (k, n) in parts_n.iter_mut().enumerate() {
+            let part = Plan::parse(base, &[one.clone(), "sweep.cover=\"pairs\"".into(), format!("sweep.part={k}"), "sweep.parts=15".into()]).unwrap();
+            let t = together(&part);
+            assert!(values.is_subset(&t), "{e}: part {k} has every value");
+            assert!(part.renderers.iter().all(|r| r.pipeline().unwrap().accept().is_ok()), "{e}");
+            *n += part.renderers.len();
+            union.extend(t);
+        }
+        assert_eq!(union, together(&full), "{e}: the parts together have every pair");
+        (full_n, pairs_n) = (full_n + full.renderers.len(), pairs_n + pairs.renderers.len());
+    }
+    assert_eq!(full_n, 1883, "the full sweep");
+    eprintln!("the full sweep: {full_n} renderers, pairs: {pairs_n}, in 15 parts: {parts_n:?}");
+    assert!(pairs_n * 4 < full_n, "{pairs_n} of {full_n}");
+    assert!(parts_n.iter().all(|&n| n * 2 < pairs_n), "{parts_n:?} of {pairs_n}");
+    // Per entry, over the default; refused with the reason.
+    let one = |r: &str, more: &str| Plan::parse(&format!("{base}{more}[[renderer]]\n{r}\n"), &[]);
+    let vary = "graph = \"raycast-gpu\"\nvary = [{ node = \"storage\", component = \"*\" }, { node = \"kernel\", component = \"*\" }, { node = \"shading\", component = \"*\" }]";
+    let n = |r: &str, more: &str| one(r, more).unwrap().renderers.len();
+    assert!(n(&format!("{vary}\ncover = \"pairs\""), "") < n(vary, ""));
+    assert_eq!(n(&format!("{vary}\ncover = \"all\""), "[sweep]\ncover = \"pairs\"\n"), n(vary, ""));
+    for (r, more, why) in [
+        (format!("{vary}\ncover = \"some\""), "", "\"all\" (every pipeline"),
+        ("graph = \"raycast-gpu\"\ncover = \"pairs\"".to_string(), "", "this renderer has no `vary`"),
+        (vary.to_string(), "[sweep]\nlimit = 3\n", "`sweep.limit`"),
+        (vary.to_string(), "[sweep]\ncover = \"pairs\"\npart = 15\nparts = 15\n", "the part counted from 0"),
+        (vary.to_string(), "[sweep]\ncover = \"pairs\"\npart = 1\n", "both"),
+    ] {
+        let e = format!("{:#}", one(&r, more).unwrap_err());
+        assert!(e.contains(why), "{r}: {e}");
+    }
+}
+
 /// Every shipped plan parses, and its compositions validate and resolve.
 #[test]
 fn shipped_plans_load() {
