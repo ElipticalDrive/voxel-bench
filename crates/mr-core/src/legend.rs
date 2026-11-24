@@ -17,6 +17,29 @@ pub enum Legend {
     Categories(Vec<(String, Option<[u8; 3]>)>),
 }
 
+/// A per-pixel quantity a node can write for a diagnostic view: the post node's `view`
+/// shows one, through the shared ramp, instead of the image.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Quantity {
+    /// The view's value (`view = "<name>"`).
+    pub name: &'static str,
+    /// What a pixel's value measures (the legend's title).
+    pub about: &'static str,
+    /// The knob's help text for this value.
+    pub help: &'static str,
+    /// A pixel holds an `f32`'s bits (else a `u32` count).
+    pub float: bool,
+    /// On a log scale (`log2(1 + v)`).
+    pub log: bool,
+}
+
+impl Quantity {
+    /// Its legend with the scale's top at `max` (`view_max`).
+    pub fn legend(&self, max: f64) -> Legend {
+        Legend::ramp(self.about, max, self.log)
+    }
+}
+
 /// What a pixel of a ramp view says.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Reading {

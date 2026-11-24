@@ -268,6 +268,10 @@ pub(crate) trait Region: State {
     fn finish(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket);
     /// After the frame's submission (readbacks' mapping).
     fn submitted(&mut self, _core: &Core) {}
+    /// The per-pixel quantities its programs can write for the post's view.
+    fn quantities(&self) -> &'static [mr_core::Quantity] {
+        &[]
+    }
 }
 
 /// The nodes of `g`'s passes on GPU slot `slot` in frame order, each by its node's role
@@ -320,7 +324,14 @@ impl<R: Region> Executor<R> {
         for pass in &mut self.passes {
             pass.run(&mut cx);
         }
+        // The post's view over the passes' image (its legend for the region's).
+        let format = core.output_format();
+        let viewed = core.view.as_mut().map(|v| {
+            v.encode(&core.gpu, &mut enc, &core.output, format, core.view_max);
+            v.legend(core.view_max)
+        });
         let (counters, legend, stages) = region.stats(core, req);
+        let legend = viewed.or(legend);
         let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
         region.finish(core, &mut enc, ticket);
         Ok((enc, ticket, stats))
@@ -336,6 +347,20 @@ impl<R: Region> Executor<R> {
 
     /// Knob `name` set where it is one of the region's or the core's (`None`: of neither).
     fn offer(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        // The post's view: the core's, then the region's (which recompiles its writer).
+        match name {
+            "view" => {
+                let qs = self.region.quantities();
+                if let Err(e) = self.core.set_view(value.as_str().unwrap_or(""), qs) {
+                    return Some(Err(e));
+                }
+            }
+            "view_max" => {
+                self.core.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32;
+                return Some(Ok(()));
+            }
+            _ => {}
+        }
         if let Some(r) = self.region.set_param(&mut self.core, name, value) {
             // A region rebuilds its pipelines lazily, at its next frame; they reach the file
             // with the next change or at exit.

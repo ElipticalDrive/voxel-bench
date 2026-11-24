@@ -40,6 +40,7 @@ mod raycast;
 mod remote;
 mod splat;
 mod transfer;
+mod view;
 
 pub use mr_components::visibility::discover::grid::CpuWorld;
 
@@ -261,6 +262,10 @@ pub(crate) struct Core {
     /// The post's tone mapper (the walks'): in the programs' `display`, and
     /// here for the sky.
     tone: mr_core::lighting::Tone,
+    /// The post's diagnostic view, if one is chosen (`view`), and its scale's top
+    /// (`view_max`, kept while none is).
+    view: Option<view::Viewing>,
+    view_max: u32,
 }
 
 /// The hit records' declaration where the core's programs attach their edge (group 0).
@@ -334,6 +339,8 @@ impl Core {
             height: p.height,
             waker,
             tone: s.walks.post,
+            view: None,
+            view_max: 256,
             storages,
             accel_nodes: s.walks.geometry.iter().map(|g| g.node.clone()).collect(),
             accel,
@@ -421,6 +428,7 @@ impl Core {
         e.extend(ShadeState::layout_entries(STATE_BINDING, writable));
         e.extend(self.edges.records().map(|h| h.layout_entry(RECORDS_BINDING, writable)));
         e.extend(self.accel.iter().flat_map(|a| a.layout_entries(self.stages)));
+        e.extend(self.view.iter().map(|v| v.layout_entry(writable)));
         e
     }
 
@@ -435,7 +443,24 @@ impl Core {
         e.extend(self.accum.bind_entries(STATE_BINDING));
         e.extend(self.edges.records().map(|h| h.bind_entry(RECORDS_BINDING)));
         e.extend(self.accel.iter().flat_map(|a| a.bind_entries()));
+        e.extend(self.view.iter().map(|v| v.bind_entry()));
         e
+    }
+
+    /// The view `name` (`image`: none) among the quantities `qs` the region writes. The
+    /// region's program and group 0 follow at its next frame.
+    fn set_view(&mut self, name: &str, qs: &[mr_core::Quantity]) -> anyhow::Result<()> {
+        let q = match name {
+            "image" => None,
+            _ => Some(*qs.iter().find(|q| q.name == name).ok_or_else(|| {
+                let names: Vec<&str> = qs.iter().map(|q| q.name).collect();
+                anyhow::anyhow!("view `{name}`: this pipeline writes {}", if names.is_empty() { "no quantities".into() } else { format!("only `{}`", names.join("`, `")) })
+            })?),
+        };
+        if self.view.as_ref().map(|v| v.quantity) != q {
+            self.view = q.map(|q| view::Viewing::new(&self.gpu, q, self.width, self.height));
+        }
+        Ok(())
     }
 
     /// Writes the camera uniform for `c` (`region`: the region's two words).
@@ -478,10 +503,13 @@ impl Core {
         self.output = mr_gpu::output_texture(&self.gpu, width, height, self.tone.format());
         self.accum.resize(&self.gpu, width, height);
         self.edges.resize(&self.gpu, width, height);
+        if let Some(v) = &mut self.view {
+            v.resize(&self.gpu, width, height);
+        }
         self.ring = FrameRing::new(&self.gpu, width, height, self.tone.format(), self.frames_in_flight, self.waker.clone()).with_stages(self.ring.stages());
     }
 
     fn memory_bytes(&self) -> u64 {
-        self.world.memory_bytes() + self.storages.memory_bytes() + self.accel.as_ref().map_or(0, |a| a.memory_bytes()) + self.accum.memory_bytes() + self.edges.memory_bytes() + self.width as u64 * self.height as u64 * self.tone.format().bytes() as u64
+        self.world.memory_bytes() + self.storages.memory_bytes() + self.accel.as_ref().map_or(0, |a| a.memory_bytes()) + self.accum.memory_bytes() + self.edges.memory_bytes() + self.view.as_ref().map_or(0, |v| v.memory_bytes()) + self.width as u64 * self.height as u64 * self.tone.format().bytes() as u64
     }
 }

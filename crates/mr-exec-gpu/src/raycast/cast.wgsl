@@ -13,8 +13,9 @@ fn pixel_mesh_t(px: vec2<u32>, d: vec3<f32>) -> f32 {
 #endif
 }
 
-// The colour of pixel `px` (or, `VIEW_STEPS`, its primary ray's loop iterations;
-// `VIEW_DISTANCE`, its hit's distance), shaded inline.
+// The colour of pixel `px`, shaded inline. For the post's view it also writes its
+// quantity: `VIEW_STEPS` its primary ray's loop iterations, `VIEW_DISTANCE` its hit's
+// distance (the sky, and meshes, which this view leaves out: 1e30, above any scale).
 fn pixel_color(px: vec2<u32>) -> vec4<f32> {
     let d = view_ray(px);
 #ifdef VIEW_STEPS
@@ -23,13 +24,11 @@ fn pixel_color(px: vec2<u32>) -> vec4<f32> {
     let mt = pixel_mesh_t(px, d);
     let h = pixel_hit(px, d, mt);
 #ifdef VIEW_STEPS
-    // On the shared colour scale (log; white above the top).
-    return ramp_value(f32(ct_iters), f32(cam.view_max), true);
-#else
+    quantity[px.y * cam.width + px.x] = ct_iters;
+#endif
 #ifdef VIEW_DISTANCE
-    // Sky (and meshes, which this view leaves out) above the top: white.
-    return ramp_value(select(1e30, h.t, h.hit), f32(cam.view_max), false);
-#else
+    quantity[px.y * cam.width + px.x] = bitcast<u32>(select(1e30, h.t, h.hit));
+#endif
 #ifdef LAYERS
     return pixel_layers(px, d, mt, h);
 #else
@@ -43,8 +42,6 @@ fn pixel_color(px: vec2<u32>) -> vec4<f32> {
 #endif
     if (h.hit) { color = shade_surface(surface_of(h, cam.origin, d), d, cam.mode == 1u, px); }
     return color;
-#endif
-#endif
 #endif
 }
 

@@ -51,6 +51,12 @@ fn steps_walks() -> Vec<&'static str> {
     mr_components::components(Role::Traversal).filter(|c| caps::provides(mr_components::Kind::Gpu, Role::Traversal, c.name, Cap::Steps)).map(|c| c.name).collect()
 }
 
+/// What the walk writes for the post's view (`View::Steps`, `View::Distance`).
+const QUANTITIES: &[Quantity] = &[
+    Quantity { name: "steps", about: "loop iterations (primary ray)", help: "primary-ray loop iterations per pixel (log)", float: false, log: true },
+    Quantity { name: "distance", about: "distance to the primary hit (blocks)", help: "the primary hit's distance in blocks (linear; white for the sky)", float: true, log: false },
+];
+
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
         ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
@@ -62,8 +68,9 @@ fn params() -> Vec<ParamSpec> {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("traversal", &["incremental"]));
     }
     p.push(ParamSpec::choice("dispatch", "How pixels are run: `compute` (one compute thread per pixel) or `fragment` (a fragment shader over a full-screen triangle; was gpu-frag-dda)", &["compute", "fragment"], "compute", true));
-    p.push(ParamSpec::choice("view", "image: the rendered scene. steps: primary-ray loop iterations per pixel on a colour scale (log; white above view_max). distance: the primary hit's distance in blocks (linear; white above view_max and for the sky)", &["image", "steps", "distance"], "image", true).needs("steps", "visibility", Some("primary"), &steps_walks(), "steps"));
-    p.push(ParamSpec::int("view_max", "steps / distance view: the top of the colour scale (iterations / blocks)", 1, 16384, 256, true));
+    let [view, view_max] = crate::view::knobs(QUANTITIES);
+    p.push(view.needs("steps", "visibility", Some("primary"), &steps_walks(), "steps"));
+    p.push(view_max);
     p.extend([
         shadows_param(),
         ParamSpec::int("max_steps", "Loop iteration limit per ray (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
@@ -250,13 +257,12 @@ impl Composition {
         let root = format!(
             "// Composition: storage = {}, prepass = {}, traversal = {}, shading = {shading}\n\
              const PREPASS_TILE: u32 = {}u;\n\
-             {}\n{}\n{}\n{pre}",
+             {}\n{}\n{pre}",
             self.walks.storages[primary_storage].component,
             self.prepass(),
             primary.component,
             self.tile.max(1),
             if meshed != Meshed::No { MESH_RECORDS_WGSL } else { "" },
-            if self.view != View::Image { mr_core::legend::ramp_wgsl() } else { String::new() },
             include_str!("walk.wgsl"),
         );
         let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string(), self.walks.kernel_path(0), self.walks.storage_path(primary_storage)];
@@ -304,15 +310,14 @@ pub(crate) struct Walk {
     beam: Beam,
     prepass: bool,
     copy_stats: bool,
-    /// `view = steps`: the top of the colour scale.
-    view_max: u32,
     /// The nodes of the caster's timed stages: meshes and prepass.
     stage_nodes: [Vec<String>; 2],
 }
 
 impl Walk {
     pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String, Option<crate::remote::Far>)> {
-        let opts: Options = p.options()?;
+        let mut opts: Options = p.options()?;
+        (opts.view, opts.view_max) = crate::view::chosen(g, &opts.view, opts.view_max);
         let comp = Composition::of(g, &opts, p.max_lod)?;
         if let Some(why) = feature_blocker(&comp) {
             anyhow::bail!(why);
@@ -340,7 +345,9 @@ impl Walk {
                 pool_mb: opts.pool_mb,
                 frames_in_flight: opts.frames_in_flight,
         };
-        let core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
+        let mut core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
+        core.set_view(&opts.view, QUANTITIES)?;
+        core.view_max = opts.view_max.clamp(1, 16384);
         let far = crate::remote::create(p, devices, waker, g, &core, &spec)?;
         let walk = |k: usize| comp.walks.label(k);
         tracing::info!("raycast-gpu: primary {}, shadow {}, bounce {}, shading {shading}", walk(0), walk(comp.shadow), walk(comp.bounce));
@@ -352,7 +359,6 @@ impl Walk {
             beam: Beam::new(&core.gpu, p.width, p.height),
             prepass: false,
             copy_stats: false,
-            view_max: opts.view_max.clamp(1, 16384),
             stage_nodes: [g.ids(&[Role::Meshes]), g.ids(&[Role::Prepass])],
         };
         Ok((core, walk, shading, far))
@@ -408,12 +414,16 @@ impl Cast for Walk {
         self.comp.view
     }
 
+    fn quantities(&self) -> &'static [Quantity] {
+        QUANTITIES
+    }
+
     fn entries(&self) -> &'static [&'static str] {
         if mr_components::prepass::has_pass(self.comp.prepass()) { &["prepass"] } else { &[] }
     }
 
     fn camera(&self) -> [u32; 2] {
-        [self.view_max, 0]
+        [0, 0]
     }
 
     fn updated(&mut self, _core: &Core, _changed: &[IVec3]) -> anyhow::Result<()> {
@@ -466,12 +476,7 @@ impl Cast for Walk {
             .into_iter()
             .chain(self.prepass.then(|| ("avg_skip_blocks".to_string(), self.beam.avg_skip)))
             .collect();
-        let legend = match self.built.view {
-            View::Image => None,
-            View::Steps => Some(Legend::ramp("loop iterations (primary ray)", self.view_max as f64, true)),
-            View::Distance => Some(Legend::ramp("distance to the primary hit (blocks)", self.view_max as f64, false)),
-        };
-        (counters, legend, Vec::new())
+        (counters, None, Vec::new())
     }
 
     fn finish(&mut self, enc: &mut wgpu::CommandEncoder) {
@@ -520,10 +525,6 @@ impl Cast for Walk {
             "tile" | "view" => {
                 let mut c = self.comp.clone();
                 set(&mut c).map(|_| self.comp = c)
-            }
-            "view_max" => {
-                self.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32;
-                Ok(())
             }
             "dispatch" => parse_dispatch(value.as_str().unwrap_or("")).map(|f| self.comp.fragment = f),
             "exact" => {

@@ -150,6 +150,10 @@ trait Cast: Sized {
     fn view(&self) -> View {
         View::Image
     }
+    /// The per-pixel quantities its program can write for the post's view (`view` names one).
+    fn quantities(&self) -> &'static [mr_core::Quantity] {
+        &[]
+    }
     /// The caster's own compute entry points in the module (the prepass's).
     fn entries(&self) -> &'static [&'static str] {
         &[]
@@ -233,6 +237,8 @@ pub(crate) struct Passes {
     /// Group 0 for `dispatch = "fragment"`: a 1x1 stand-in instead of the output texture.
     bind0_frag: Option<wgpu::BindGroup>,
     stand_in: Option<wgpu::Texture>,
+    /// Group 0 has the post's quantity buffer (a view is chosen).
+    viewing: bool,
 }
 
 impl Passes {
@@ -243,7 +249,7 @@ impl Passes {
         let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("raycast"), entries: &entries });
         let pipeline_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("raycast"), bind_group_layouts: &cast.layouts(core, [&layout0, core.world.layout()]), immediate_size: 0 });
         let (plain, extra) = Self::variant(core, &pipeline_layout, cast, shading, Meshed::No, remote, false)?;
-        Ok(Self { layout0, pipeline_layout, remote, plain, layered: false, meshed: [None, None], extra, bind0: None, bind0_frag: None, stand_in: None })
+        Ok(Self { layout0, pipeline_layout, remote, plain, layered: false, meshed: [None, None], extra, bind0: None, bind0_frag: None, stand_in: None, viewing: core.view.is_some() })
     }
 
     fn variant<C: Cast>(core: &Core, layout: &wgpu::PipelineLayout, cast: &C, shading: &str, meshed: Meshed, remote: bool, layered: bool) -> anyhow::Result<(Variant, Vec<wgpu::ComputePipeline>)> {
@@ -321,6 +327,7 @@ impl Passes {
 fn shader(mut lp: CastProgram, deferred: bool, view: View, fragment: bool, layered: bool) -> CastProgram {
     if let Some(d) = view.define() {
         lp.program.define(d);
+        lp.root = format!("{}\n{}", lp.root, crate::view::wgsl());
     }
     if layered {
         lp.program.define("LAYERS");
@@ -470,6 +477,15 @@ impl<C: Cast> Raycast<C> {
 impl<C: Cast> crate::exec::Region for Raycast<C> {
     fn compile(&mut self, core: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
         let (passes, cast) = (&mut self.passes, &mut self.cast);
+        // The post's view came or went: group 0 gains or loses its quantity buffer.
+        if passes.viewing != core.view.is_some() {
+            *passes = Passes::new(core, cast, &self.shading, passes.remote)?;
+            if core.accum.set_shading(&core.gpu, &self.shading) {
+                passes.unbind();
+            }
+            self.built_shading = self.shading.clone();
+            cast.compiled();
+        }
         if cast.stale() || self.shading != self.built_shading {
             (passes.plain, passes.extra) = Passes::variant(core, &passes.pipeline_layout, cast, &self.shading, Meshed::No, passes.remote, passes.layered)?;
             passes.meshed = [None, None];
@@ -520,6 +536,10 @@ impl<C: Cast> crate::exec::Region for Raycast<C> {
 
     fn submitted(&mut self, _core: &Core) {
         self.cast.submitted();
+    }
+
+    fn quantities(&self) -> &'static [mr_core::Quantity] {
+        self.cast.quantities()
     }
 }
 

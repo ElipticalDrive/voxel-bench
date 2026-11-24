@@ -23,7 +23,7 @@ pub use camera::Camera;
 pub use chunk::{BlockId, CHUNK_SIZE, CHUNK_VOLUME, ChunkData, ChunkKey, DenseChunk};
 pub use face::Face;
 pub use features::{Feature, Features};
-pub use legend::{Legend, Reading};
+pub use legend::{Legend, Quantity, Reading};
 pub use lighting::{Environment, Light, PassMode, RenderMode, Sun};
 pub use mesh::{MeshData, MeshInstance, MeshUpdate};
 pub use params::{ParamKind, ParamSpec, ParamValue, ValueNeed};

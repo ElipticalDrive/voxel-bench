@@ -278,10 +278,20 @@ impl Graph {
                         }
                     }
                 }
-                Role::Post if !n.knobs.is_empty() => why.push(format!(
-                    "`{id}`: the post has no knobs (its component is the tone mapper: {})",
-                    POSTS.join(", ")
-                )),
+                // Its diagnostic view (which values exist is the pipeline's: its knob's
+                // choices); the tone mapper is its component.
+                Role::Post => {
+                    for (k, v) in &n.knobs {
+                        match (k.as_str(), v) {
+                            ("view", toml::Value::String(_)) => {}
+                            ("view_max", toml::Value::Integer(1..=16384)) => {}
+                            _ => why.push(format!(
+                                "`{id}`.{k} = {v}: the post's knobs are `view` (a name) and `view_max` (1 to 16384); its component is the tone mapper ({})",
+                                POSTS.join(", ")
+                            )),
+                        }
+                    }
+                }
                 _ => {}
             }
             let ports = inputs(n.role, &n.component);
