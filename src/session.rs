@@ -502,6 +502,9 @@ pub fn run_pass(
         if live(lanes).next().is_none() {
             break;
         }
+        if crate::pause::requested() {
+            return Err(crate::pause::Paused.into());
+        }
         // Mesh mode: geometry once, instances whenever they change.
         let instances = input.meshes.filter(|i| sent_instances.as_ref() != Some(i));
         let edits = resolve_edits(world, input.events.edits);

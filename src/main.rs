@@ -9,6 +9,7 @@ mod features;
 mod catalogue;
 mod gui;
 mod observe;
+mod pause;
 mod pipelines;
 mod plan;
 mod present;
@@ -457,7 +458,23 @@ impl Ctx<'_> {
     /// `only_every`, only the compared frames are rendered; with `settle`, the compared
     /// frames that many more times, held still, and the last recorded. Every pass has the
     /// plan's warm-up: what a budgeted stream has sent by a frame depends on it.
+    /// A pause asked for while it runs (`pause`) drops it; it runs again on resume.
     fn pass(&self, specs: &[RendererSpec], mode: PassMode, base: &World, out: &mut Outputs, only_every: Option<u32>, settle: u32) -> anyhow::Result<Vec<PassReport>> {
+        // The references these lanes recorded, kept when the pass is redone (not recorded again).
+        let mut refs = vec![];
+        loop {
+            pause::hold();
+            if let Some(mut reports) = self.attempt(specs, mode, base, out, only_every, settle, &mut refs)? {
+                refs.append(&mut reports);
+                return Ok(refs);
+            }
+            tracing::info!("pass dropped by a pause; it runs again");
+        }
+    }
+
+    /// One attempt at `pass`; None when a pause dropped it.
+    #[allow(clippy::too_many_arguments)]
+    fn attempt(&self, specs: &[RendererSpec], mode: PassMode, base: &World, out: &mut Outputs, only_every: Option<u32>, settle: u32, refs: &mut Vec<PassReport>) -> anyhow::Result<Option<Vec<PassReport>>> {
         let run = &self.plan.run;
         let mut world = base.clone();
         let scene = Scene::new(self.plan.scene.clone(), self.blocks.clone(), &mut world, run.frames)?;
@@ -465,13 +482,13 @@ impl Ctx<'_> {
         let mesh_data = if mode.meshes { scene.mesh_data() } else { vec![] };
         let (mut lanes, mut reports) = self.spawn_lanes(specs, Some(mode), &world.asks(&self.blocks));
         if lanes.is_empty() {
-            return Ok(reports);
+            return Ok(Some(reports));
         }
         // The references given what these lanes are given, recorded before the lanes run.
         if !out.recording_reference && out.compare_every.is_some() {
             for like in lanes.iter().filter_map(|l| l.like).collect::<Vec<_>>() {
                 if !out.references.keys().any(|k| k.0 == Some(like) && k.1 == mode) {
-                    reports.extend(self.reference(Some(like), mode, base, out)?);
+                    refs.extend(self.reference(Some(like), mode, base, out)?);
                 }
             }
         }
@@ -481,6 +498,12 @@ impl Ctx<'_> {
         let mut driver = ScriptedDriver::new(scene, mode, run.warmup, run.frames, only_every, run.clock_fps);
         driver.settle = out.compare_every.filter(|_| settle > 0).map(|every| (every, settle));
         let result = run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, &self.blocks, run, out);
+        if result.as_ref().is_err_and(pause::is) {
+            for lane in lanes {
+                lane.worker.shutdown();
+            }
+            return Ok(None);
+        }
         if let Err(e) = &result {
             tracing::error!("pass failed: {e:#}");
         }
@@ -513,7 +536,7 @@ impl Ctx<'_> {
             }
         }
         println!("{}", report::table(&reports).lines().skip(1).collect::<Vec<_>>().join("\n"));
-        Ok(reports)
+        Ok(Some(reports))
     }
 }
 

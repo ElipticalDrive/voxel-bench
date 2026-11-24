@@ -176,6 +176,11 @@ Each run writes `runs/<timestamp>-<name>/`: `plan.toml` (with the overrides appl
 `report.json` (every metric, including per-frame records), `summary.txt`, `observations.jsonl`,
 `logs/` (one per worker) and `frames/` (saved frames and diff images).
 
+A long run can be paused from outside: with `MR_PAUSE_FILE` set, the run holds between passes
+while that file exists (its worker gone, so nothing on the GPU), writing `<file>.held` (its pid)
+meanwhile; a pass under way when the file appears is dropped and run again on resume, so no
+measurement spans a pause. Unset, nothing is checked.
+
 ## Sweeps
 
 A renderer written as a graph may `vary` its edits. It then expands into one renderer per
