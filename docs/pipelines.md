@@ -239,6 +239,13 @@ empties it.
 GPU pipelines also keep the driver's pipeline cache per adapter and graph
 (`MR_GPU_CACHE=0` turns it off).
 
+A big GPU can stand in for a small one: `MR_GPU_LIMITS=sizes` opens every device with its
+buffer, binding and texture sizes clamped to WebGPU's baseline (128 MiB a binding, 256 MiB a
+buffer, 8192 texels; lavapipe's), `MR_GPU_LIMITS=webgpu` clamps every limit (8 storage buffers a
+stage, which no shipped GPU pipeline fits yet). A buffer over a limit fails the pipeline naming
+the buffer, the device, the limit and what sets its size (a knob, the world, the resolution);
+the voxel pool instead spans several bindings.
+
 ## Meshes
 
 Scenes can contain animated triangle meshes (`scene.meshes`: box, sphere and torus with

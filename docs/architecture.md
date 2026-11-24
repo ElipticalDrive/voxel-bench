@@ -135,7 +135,10 @@ features asked for. Asynchronous renderers call the `Waker` when work may have f
 - GPU tests, `scripts/check.py gpu`: the host's end-to-end live sessions, the tuner and
   scale-curve demos (briefly: `SECONDS=8`), and `mr-gpu`'s device pool and growable buffer, all `#[ignore]`d so
   the workspace tests run without a GPU. Only `gui_screenshot` stays manual (it saves a
-  picture to look at).
+  picture to look at). It also runs `scripts/limits.py`: every shipped GPU graph with
+  `MR_GPU_LIMITS=sizes`, on a small world (renders, the same pixels as unclamped) and a big
+  one at 4K (renders or fails naming a `max_...` limit), so a new node cannot quietly assume a
+  big binding.
 - The architecture guard, `cargo test -q --test architecture`: no WGSL function defined twice
   across executors or redefining shared code, no bodies copied under other names, and
   lighting only through the shading component. Exceptions are listed in the test with their

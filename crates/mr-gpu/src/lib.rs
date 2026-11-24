@@ -293,10 +293,42 @@ impl GpuPool {
             bail!("no handed-in GPU device serves this renderer{}", if why.is_empty() { format!(" (no device in slot {slot})") } else { format!(": {}", why.join("; ")) });
         }
         let adapter = self.adapters.get(slot).map(String::as_str).filter(|a| !a.is_empty());
-        let gpu = Arc::new(Gpu::new(GpuRequest { experimental: needs.experimental, adapter, required_features: needs.required_features, optional_features: needs.optional_features, limits: &|a| a.clone() })?);
+        let clamp = std::env::var("MR_GPU_LIMITS").ok();
+        let clamp = clamp.as_deref().filter(|c| !c.is_empty());
+        let gpu = Arc::new(Gpu::new(GpuRequest {
+            experimental: needs.experimental,
+            adapter,
+            required_features: needs.required_features,
+            optional_features: needs.optional_features,
+            limits: &|a| clamped_limits(clamp, a).unwrap_or_else(|e| panic!("{e}")),
+        })?);
         open.push((slot, gpu.clone()));
         Ok(gpu)
     }
+}
+
+/// The limits a device opened by a [`GpuPool`] asks for: the adapter's, or with
+/// `$MR_GPU_LIMITS` set, clamped to WebGPU's baseline (`wgpu::Limits::defaults()`, what
+/// lavapipe and most small GPUs offer) so a big GPU shows what a small one would refuse:
+/// `webgpu` clamps every limit (the ray-query ones stay the adapter's); `sizes` only the
+/// buffer, binding and texture sizes, the axis a world or a resolution grows along.
+pub fn clamped_limits(clamp: Option<&str>, adapter: &wgpu::Limits) -> anyhow::Result<wgpu::Limits> {
+    let base = wgpu::Limits::defaults();
+    Ok(match clamp {
+        None => adapter.clone(),
+        Some("webgpu") => base.or_worse_values_from(adapter).using_acceleration_structure_values(adapter.clone()),
+        Some("sizes") => wgpu::Limits {
+            max_storage_buffer_binding_size: adapter.max_storage_buffer_binding_size.min(base.max_storage_buffer_binding_size),
+            max_uniform_buffer_binding_size: adapter.max_uniform_buffer_binding_size.min(base.max_uniform_buffer_binding_size),
+            max_buffer_size: adapter.max_buffer_size.min(base.max_buffer_size),
+            max_texture_dimension_1d: adapter.max_texture_dimension_1d.min(base.max_texture_dimension_1d),
+            max_texture_dimension_2d: adapter.max_texture_dimension_2d.min(base.max_texture_dimension_2d),
+            max_texture_dimension_3d: adapter.max_texture_dimension_3d.min(base.max_texture_dimension_3d),
+            max_compute_workgroup_storage_size: adapter.max_compute_workgroup_storage_size.min(base.max_compute_workgroup_storage_size),
+            ..adapter.clone()
+        },
+        Some(other) => bail!("MR_GPU_LIMITS = {other:?}: expected `webgpu` or `sizes`"),
+    })
 }
 
 /// The GPU of slot `slot` from the devices handed to a renderer.
@@ -802,7 +834,7 @@ impl GrowableBuffer {
     pub fn reserve(&mut self, gpu: &Gpu, bytes: u64, limit: &str) -> Option<bool> {
         let r = self.grow_to(gpu, bytes);
         if r.is_none() {
-            gpu.fail(format!("{}: more than {} MiB needed; the limit is {limit}; frames would miss data", self.label, self.max >> 20));
+            gpu.fail(format!("{}: more than {} MiB needed; the limit is {}; frames would miss data", self.label, self.max >> 20, named_limit(gpu, limit)));
         }
         r
     }
@@ -838,7 +870,7 @@ impl GrowableBuffer {
     pub fn alloc(&mut self, gpu: &Gpu, alloc: &mut RangeAlloc, n: u32, unit: u64, limit: &str) -> Option<(u32, bool)> {
         let r = self.alloc_within(gpu, alloc, n, unit);
         if r.is_none() {
-            gpu.fail(format!("{}: more than {} MiB needed; the limit is {limit}; frames would miss data", self.label, self.max >> 20));
+            gpu.fail(format!("{}: more than {} MiB needed; the limit is {}; frames would miss data", self.label, self.max >> 20, named_limit(gpu, limit)));
         }
         r
     }
@@ -860,6 +892,16 @@ impl GrowableBuffer {
             alloc.grow((self.buf.size() / unit).min(u32::MAX as u64) as u32);
         }
     }
+}
+
+/// A growable buffer's `limit` for its failure: [`DEVICE_BOUND`] spelled out with the
+/// adapter, the size and the limit's name, as [`Gpu::storage`] names them.
+fn named_limit(gpu: &Gpu, limit: &str) -> String {
+    if limit != DEVICE_BOUND {
+        return limit.into();
+    }
+    let bind = gpu.device.limits().max_storage_buffer_binding_size;
+    format!("what {} binds ({:.1} MiB, `max_storage_buffer_binding_size`)", gpu.info.name, bind as f64 / (1u64 << 20) as f64)
 }
 
 /// The failure of a buffer over a device limit ([`Gpu::storage`]).
@@ -931,7 +973,7 @@ impl PagedBuffer {
         let bytes = n as u64 * unit;
         if left < 256 || bytes > left.min(self.page_max) {
             let why = if bytes > self.page_max { format!("{} bytes in one range, more than a page holds ({} MiB)", bytes, self.page_max >> 20) } else { format!("more than {} MiB needed", self.max >> 20) };
-            gpu.fail(format!("{}: {why}; the limit is {limit}; frames would miss data", self.label));
+            gpu.fail(format!("{}: {why}; the limit is {}; frames would miss data", self.label, named_limit(gpu, limit)));
             return None;
         }
         let size = (self.page_max / 4).max(bytes).min(left).min(self.page_max);
@@ -1034,6 +1076,19 @@ mod tests {
         let err = fixed.gpu(0, &rt).err().expect("a fixed pool cannot open a device").to_string();
         assert!(err.contains("no handed-in GPU device serves"), "{err}");
         assert!(fixed.gpu(1, &plain).is_err(), "no device in slot 1");
+    }
+
+    /// `$MR_GPU_LIMITS`: none keeps the adapter's limits; `sizes` clamps the sizes alone,
+    /// `webgpu` every limit but the ray-query ones; anything else is refused by name.
+    #[test]
+    fn limits_clamped() {
+        let big = wgpu::Limits { max_storage_buffer_binding_size: 2 << 30, max_storage_buffers_per_shader_stage: 64, max_tlas_instance_count: 1000, ..wgpu::Limits::defaults().using_resolution(wgpu::Limits { max_texture_dimension_2d: 32768, ..Default::default() }) };
+        assert_eq!(clamped_limits(None, &big).unwrap(), big);
+        let sizes = clamped_limits(Some("sizes"), &big).unwrap();
+        assert_eq!((sizes.max_storage_buffer_binding_size, sizes.max_texture_dimension_2d, sizes.max_storage_buffers_per_shader_stage), (128 << 20, 8192, 64));
+        let web = clamped_limits(Some("webgpu"), &big).unwrap();
+        assert_eq!((web.max_storage_buffer_binding_size, web.max_storage_buffers_per_shader_stage, web.max_tlas_instance_count), (128 << 20, 8, 1000));
+        assert!(clamped_limits(Some("tiny"), &big).unwrap_err().to_string().contains("tiny"));
     }
 
     /// A storage buffer over the device's binding limit fails the device naming the label,
