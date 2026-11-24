@@ -6,6 +6,7 @@ or failed (the bugs and missing `accept` rules a sweep finds).
   scripts/sweep.py                     # every scenario plan, at each plan's own length
   FRAMES=120 scripts/sweep.py terrain  # shorter camera paths (faster flight), one plan
   RES=480x270 EVERY=20 FRAMES=60 scripts/sweep.py terrain  # a quick correctness pass
+  OUT=target/sweep/base scripts/sweep.py terrain           # into a given directory (adds to it)
 
 Results: target/sweep/<time>/<run>/observations.jsonl (one record per renderer and pass,
 tagged with this machine), and target/sweep/<time>/catalogue.md / .csv. Re-run the
@@ -19,7 +20,7 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 from mr import ROOT, build_release, full_sweep, release, run_logged
 
-out = f"target/sweep/{time.strftime('%Y%m%d-%H%M')}"
+out = os.environ.get("OUT") or f"target/sweep/{time.strftime('%Y%m%d-%H%M')}"
 plans = sys.argv[1:] or "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker meshes".split()
 sweep = full_sweep()
 args = ["-s", sweep, "-s", "run.repeats=1", "-s", "run.parallel=false", "-s", f"output.compare.every={os.environ.get('EVERY', 50)}", "-s", f'output.dir="{out}"', "-u", "output.save", "-u", "output.window"]
