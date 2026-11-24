@@ -41,15 +41,17 @@ struct Sink<'a> {
 }
 
 impl FrameSink for Sink<'_> {
-    fn complete(&mut self, frame: CompletedFrame<'_>) {
+    fn complete(&mut self, mut frame: CompletedFrame<'_>) {
         let (slot, arrivals) = self.slots.remove(&frame.frame_id).unwrap_or_default();
         if let (Some(s), Some(px)) = (slot, frame.pixels) {
+            let t0 = std::time::Instant::now();
             let dst = self.shm.slot_mut(s);
             if px.len() > dst.len() {
                 self.error.get_or_insert(anyhow::anyhow!("frame of {} bytes exceeds slot", px.len()));
                 return;
             }
             dst[..px.len()].copy_from_slice(px);
+            frame.stats.counters.push(("readback_shm_ms".into(), t0.elapsed().as_secs_f64() * 1e3));
         }
         let msg = WorkerMsg::FrameDone {
             frame_id: frame.frame_id,

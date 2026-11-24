@@ -399,10 +399,14 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
         bail!("[{}] frames completed out of order ({} before {})", lane.report.label, frame_id, f.id);
     }
     let latency_ms = f.sent.elapsed().as_secs_f64() * 1e3;
+    let mut stats = stats;
     let quality = match slot {
         Some(s) => {
+            let t0 = Instant::now();
             let px = lane.worker.take_frame(s, (lane.width * lane.height) as usize);
-            out.deliver(lane, f.frame, f.mode, f.recorded, px)
+            let q = out.deliver(lane, f.frame, f.mode, f.recorded, px);
+            stats.counters.push(("readback_host_ms".into(), t0.elapsed().as_secs_f64() * 1e3));
+            q
         }
         None => None,
     };

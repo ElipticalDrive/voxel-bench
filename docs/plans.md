@@ -238,7 +238,9 @@ rays it casts make no difference; without meshes: the meshes node and its shadow
   time, memory, PSNR (mean and minimum), bad pixels, the same against the like reference
   (`like`, `psnr_like`, `bad_pct_like`) and settled (`late`, `psnr_settled`,
   `bad_pct_settled`), stage times, stream counters and the
-  renderer's own counters.
+  renderer's own counters; a read-back frame also counts its host-side copies,
+  `readback_copy_ms` (out of the GPU's mapping), `readback_shm_ms` (into the shared memory, a
+  worker's) and `readback_host_ms` (out of it, with the hand-off to window, saver and comparer).
 
 `multirenderer catalogue <dirs…> [--out DIR] [--min-psnr 35]` reads any number of runs and
 writes `catalogue.md` and `catalogue.csv` (the CSV has the scene features as columns, and a

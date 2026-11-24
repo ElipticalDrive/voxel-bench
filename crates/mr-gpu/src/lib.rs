@@ -614,6 +614,7 @@ impl FrameRing {
                 read.unmap();
             }
             if p.readback {
+                let t0 = std::time::Instant::now();
                 {
                     let v = slot.readback.get_mapped_range(..)?;
                     let row = (self.width * self.bpp) as usize;
@@ -623,6 +624,7 @@ impl FrameRing {
                     }
                 }
                 slot.readback.unmap();
+                p.stats.counters.push(("readback_copy_ms".into(), t0.elapsed().as_secs_f64() * 1e3));
             }
             self.free.push(p.slot);
             sink.complete(CompletedFrame { frame_id: p.frame_id, stats: p.stats, pixels: p.readback.then_some(&self.pixels[..]) });
