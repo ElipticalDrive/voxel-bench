@@ -168,6 +168,31 @@ impl Gpu {
         self.failure.set(why.into());
     }
 
+    /// A buffer of `size` bytes, checked against what this device allows: over
+    /// `max_buffer_size`, or over `max_storage_buffer_binding_size` when `usage` binds it as
+    /// storage, it fails the device naming the label, the size, the limit, the adapter and
+    /// `set_by` (what sets the size: a knob, the resolution, the world), and returns a
+    /// 16-byte placeholder (nothing renders past the failure; what the caller then does with
+    /// it at most adds wgpu errors after the named one, which stays first).
+    /// Every storage buffer is created here (`tests/architecture.rs`): a node cannot assume
+    /// one GPU's big bindings.
+    pub fn storage(&self, label: &str, size: u64, usage: wgpu::BufferUsages, set_by: impl FnOnce() -> String) -> wgpu::Buffer {
+        let limits = self.device.limits();
+        let (limit, name) = if usage.contains(wgpu::BufferUsages::STORAGE) && limits.max_storage_buffer_binding_size < limits.max_buffer_size {
+            (limits.max_storage_buffer_binding_size, "max_storage_buffer_binding_size")
+        } else {
+            (limits.max_buffer_size, "max_buffer_size")
+        };
+        let size = size.max(16).next_multiple_of(4);
+        let size = if size > limit {
+            self.fail(over_limit(label, size, limit, name, &self.info.name, &set_by()));
+            16
+        } else {
+            size
+        };
+        self.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
+    }
+
     /// The failure slot, for callbacks that outlive a borrow of the device.
     pub fn failure(&self) -> Failure {
         self.failure.clone()
@@ -837,6 +862,12 @@ impl GrowableBuffer {
     }
 }
 
+/// The failure of a buffer over a device limit ([`Gpu::storage`]).
+fn over_limit(label: &str, size: u64, limit: u64, name: &str, adapter: &str, set_by: &str) -> String {
+    let mib = |b: u64| b as f64 / (1u64 << 20) as f64;
+    format!("{label}: {:.1} MiB is over what {adapter} allows ({:.1} MiB, `{name}`); its size is set by {set_by}", mib(size), mib(limit))
+}
+
 /// A buffer whose creation, when the device is out of memory, fails the device naming it
 /// and `doing` (rare creations only: it waits for the error scope).
 fn create_named(gpu: &Gpu, label: &str, size: u64, usage: wgpu::BufferUsages, doing: impl FnOnce() -> String) -> Option<wgpu::Buffer> {
@@ -1003,6 +1034,25 @@ mod tests {
         let err = fixed.gpu(0, &rt).err().expect("a fixed pool cannot open a device").to_string();
         assert!(err.contains("no handed-in GPU device serves"), "{err}");
         assert!(fixed.gpu(1, &plain).is_err(), "no device in slot 1");
+    }
+
+    /// A storage buffer over the device's binding limit fails the device naming the label,
+    /// the limit and what sets the size (a placeholder comes back); one within it does not.
+    /// Needs a GPU.
+    #[test]
+    #[ignore]
+    fn storage_over_the_limit_fails_by_name() {
+        let gpu = GpuPool::new(&[]).gpu(0, &GpuNeeds::default()).unwrap();
+        let limit = gpu.device.limits().max_storage_buffer_binding_size;
+        let ok = gpu.storage("small", 1000, wgpu::BufferUsages::STORAGE, || unreachable!());
+        assert_eq!(ok.size(), 1000);
+        assert!(gpu.check().is_ok());
+        let big = gpu.storage("test buffer", limit + 16, wgpu::BufferUsages::STORAGE, || "the test's knob".into());
+        assert_eq!(big.size(), 16);
+        let e = gpu.check().unwrap_err().to_string();
+        for want in ["test buffer", "max_storage_buffer_binding_size", "the test's knob"] {
+            assert!(e.contains(want), "{e} lacks {want}");
+        }
     }
 
     /// A growable buffer grows to its maximum, holds what fits, and fails the device (never

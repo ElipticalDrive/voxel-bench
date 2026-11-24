@@ -13,6 +13,9 @@ use mr_components::draw::{self, drawer::DrawNodes};
 use mr_components::visibility::quadtree;
 use mr_gpu::wgpu;
 
+/// What sets the face lists' sizes (named when one is over the device's limit).
+const FACES_SET_BY: &str = "`max_faces` (the face lists' capacity)";
+
 use super::buffers::{ViewUniform, Params, make_sized, storage};
 use super::knobs::{DrawKnobs, HolesKnobs, Options, ShadingKnobs, VisibilityKnobs};
 use super::*;
@@ -192,18 +195,18 @@ impl GpuSampler {
         let params_buf = uniform("discover params", size_of::<Params>() as u64);
         let level_buf = uniform("discover levels", LEVEL_STRIDE * (MAX_LEVELS as u64 + 1));
         let view_buf = uniform("discover view", size_of::<ViewUniform>() as u64);
-        let stats = storage(gpu, "discover counters", STATS_WORDS * 4, wgpu::BufferUsages::COPY_SRC);
-        let args = storage(gpu, "discover args", ARGS_WORDS * 4, wgpu::BufferUsages::INDIRECT);
-        let lcount = storage(gpu, "list counts", 16, wgpu::BufferUsages::COPY_SRC);
-        let keys = [0, 1].map(|_| storage(gpu, "face set keys", table_cap as u64 * 4, none));
-        let vals = [0, 1].map(|_| storage(gpu, "face set frames", table_cap as u64 * 4, none));
-        let lists = [0, 1].map(|_| storage(gpu, "face lists", list_cap as u64 * 16, none));
-        let hist = storage(gpu, "sort buckets", 2048 * 4, none);
-        let merged = storage(gpu, "merged quads", list_cap as u64 * 16, none);
-        let sorted = storage(gpu, "sorted faces", list_cap as u64 * 16, none);
-        let ctable = storage(gpu, "chunk slot table", CHUNK_TABLE as u64 * 16, none);
+        let stats = storage(gpu, "discover counters", STATS_WORDS * 4, wgpu::BufferUsages::COPY_SRC, "fixed sizes");
+        let args = storage(gpu, "discover args", ARGS_WORDS * 4, wgpu::BufferUsages::INDIRECT, "fixed sizes");
+        let lcount = storage(gpu, "list counts", 16, wgpu::BufferUsages::COPY_SRC, "fixed sizes");
+        let keys = [0, 1].map(|_| storage(gpu, "face set keys", table_cap as u64 * 4, none, FACES_SET_BY));
+        let vals = [0, 1].map(|_| storage(gpu, "face set frames", table_cap as u64 * 4, none, FACES_SET_BY));
+        let lists = [0, 1].map(|_| storage(gpu, "face lists", list_cap as u64 * 16, none, FACES_SET_BY));
+        let hist = storage(gpu, "sort buckets", 2048 * 4, none, "fixed sizes");
+        let merged = storage(gpu, "merged quads", list_cap as u64 * 16, none, FACES_SET_BY);
+        let sorted = storage(gpu, "sorted faces", list_cap as u64 * 16, none, FACES_SET_BY);
+        let ctable = storage(gpu, "chunk slot table", CHUNK_TABLE as u64 * 16, none, "fixed sizes");
         gpu.queue.write_buffer(&ctable, 0, bytemuck::cast_slice(&vec![[0i32, 0, 0, -1]; CHUNK_TABLE]));
-        let cpos = storage(gpu, "slot chunk positions", MAX_SLOTS as u64 * 16, none);
+        let cpos = storage(gpu, "slot chunk positions", MAX_SLOTS as u64 * 16, none, "fixed sizes");
         let bind_merged = drawing.bind(&core, &merged, &cpos);
         let bind_sorted = drawing.bind(&core, &sorted, &cpos);
         let bind_args = dev.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -270,13 +273,13 @@ impl GpuSampler {
             stats,
             args,
             lcount,
-            jobs: storage(gpu, "footprint jobs", JOB_CAP * 32, wgpu::BufferUsages::empty()),
+            jobs: storage(gpu, "footprint jobs", JOB_CAP * 32, wgpu::BufferUsages::empty(), "fixed sizes"),
             keys,
             vals,
             lists,
             ctable,
             cpos,
-            seen: storage(gpu, "seen", list_cap as u64 * 4, none),
+            seen: storage(gpu, "seen", list_cap as u64 * 4, none, FACES_SET_BY),
             pending: vec![],
             prev_pos: None,
             prev_cam: None,

@@ -141,7 +141,7 @@ impl Columns {
         )?;
         let gpu = &core.gpu;
         let hm = Heightmap::new(p.view_radius_chunks);
-        let hm_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("heightmap"), size: hm.hm.len() as u64 * 4, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let hm_buf = gpu.storage("heightmap", hm.hm.len() as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || format!("the world's columns ({} of them, 4 bytes each)", hm.hm.len()));
         let hm_info = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("heightmap info"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         gpu.queue.write_buffer(&hm_info, 0, bytemuck::cast_slice(&hm.info()));
         let mut entries = core.layout_entries();

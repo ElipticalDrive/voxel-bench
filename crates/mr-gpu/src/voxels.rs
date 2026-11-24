@@ -201,19 +201,26 @@ struct GrowBuf {
     label: &'static str,
 }
 
+/// What sets the chunk table's size (named when it is over the device's limit).
+const TABLE_SET_BY: &str = "the view radius and the LOD levels (`radius`, `max_lod`)";
+
+/// What sets the lights' buffers' sizes.
+const LIGHTS_SET_BY: &str = "the world's lights (their count and the light grid)";
+
 impl GrowBuf {
     fn new(gpu: &Gpu, label: &'static str, size: u64) -> Self {
-        Self { buf: storage(gpu, label, size.max(256)), label }
+        Self { buf: storage(gpu, label, size.max(256), LIGHTS_SET_BY), label }
     }
 
     /// Uploads `data`, reallocating if needed. Returns true if the buffer was replaced.
     fn write(&mut self, gpu: &Gpu, data: &[u8]) -> bool {
         let mut grew = false;
         if data.len() as u64 > self.buf.size() {
-            // Doubling, but never past what the device binds while the data itself fits.
+            // Doubling, but never past what the device binds while the data itself fits (the
+            // data past it fails the device, naming the limit).
             let limits = gpu.device.limits();
-            let max = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size) & !3;
-            self.buf = storage(gpu, self.label, (data.len() as u64).next_power_of_two().min(max).max(data.len() as u64));
+            let max = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size) & !15;
+            self.buf = storage(gpu, self.label, (data.len() as u64).next_power_of_two().min(max).max(data.len() as u64), LIGHTS_SET_BY);
             grew = true;
         }
         if !data.is_empty() {
@@ -223,13 +230,8 @@ impl GrowBuf {
     }
 }
 
-fn storage(gpu: &Gpu, label: &str, size: u64) -> wgpu::Buffer {
-    gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: size.next_multiple_of(16),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
+fn storage(gpu: &Gpu, label: &str, size: u64, set_by: &str) -> wgpu::Buffer {
+    gpu.storage(label, size.next_multiple_of(16), wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || set_by.to_string())
 }
 
 /// Chunk-table key of a chunk at a LOD: the LOD is folded into y (`y * 8 + lod`).
@@ -302,7 +304,7 @@ impl VoxelWorld {
         let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel world"), entries: &entries });
 
         let mk = |label, data: &[u8]| {
-            let b = storage(gpu, label, data.len() as u64);
+            let b = storage(gpu, label, data.len() as u64, "the block registry");
             gpu.queue.write_buffer(&b, 0, data);
             b
         };
@@ -319,7 +321,7 @@ impl VoxelWorld {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
-            table_buf: storage(gpu, "chunk table", (table.entries.len() * 16) as u64),
+            table_buf: storage(gpu, "chunk table", (table.entries.len() * 16) as u64, TABLE_SET_BY),
             table,
             pool: GrowableBuffer::new(gpu, "voxel pool", pool_slots as u64 * CHUNK_BYTES, max_slots as u64 * CHUNK_BYTES, wgpu::BufferUsages::STORAGE),
             bricks: GrowableBuffer::new(gpu, "bricks", pool_slots as u64 * BRICK_WORDS as u64 * 4, max_slots as u64 * BRICK_WORDS as u64 * 4, wgpu::BufferUsages::STORAGE),
@@ -576,7 +578,7 @@ impl VoxelWorld {
         if self.table.full_upload {
             let size = (self.table.entries.len() * 16) as u64;
             if self.table_buf.size() != size {
-                self.table_buf = storage(gpu, "chunk table", size);
+                self.table_buf = storage(gpu, "chunk table", size, TABLE_SET_BY);
                 rebind = true;
             }
             gpu.queue.write_buffer(&self.table_buf, 0, bytemuck::cast_slice(&self.table.entries));

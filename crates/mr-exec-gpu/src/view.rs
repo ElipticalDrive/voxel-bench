@@ -39,7 +39,7 @@ impl Viewing {
         // Per category: its colour, alpha 0 for one colour per id.
         let palette = quantity.is_categorical().then(|| {
             let colors: Vec<[f32; 4]> = quantity.categories.iter().map(|(_, c)| c.map_or([0.0; 4], |c| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0])).collect();
-            let b = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("view palette"), size: colors.len() as u64 * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            let b = gpu.storage("view palette", colors.len() as u64 * 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || "the view's palette".into());
             gpu.queue.write_buffer(&b, 0, bytemuck::cast_slice(&colors));
             b
         });
@@ -48,7 +48,7 @@ impl Viewing {
 
     fn buffer(gpu: &Gpu, width: u32, height: u32) -> wgpu::Buffer {
         let size = (width as u64 * height as u64 * 4).max(16);
-        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("quantity"), size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+        gpu.storage("quantity", size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || format!("the resolution ({width}x{height})"))
     }
 
     pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) {

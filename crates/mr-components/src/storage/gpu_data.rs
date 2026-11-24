@@ -150,11 +150,8 @@ impl StorageData {
     }
 
     fn table_buffer(gpu: &Gpu, size: u64) -> wgpu::Buffer {
-        gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("storage regions"),
-            size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
+        gpu.storage("storage regions", size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || {
+            "the chunks in view (the region table)".into()
         })
     }
 

@@ -146,11 +146,8 @@ impl ShadeState {
         } else {
             16
         };
-        gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("accum"),
-            size: size.max(16),
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
+        gpu.storage("accum", size, wgpu::BufferUsages::STORAGE, || {
+            format!("the resolution ({width}x{height}, 16 bytes a pixel for accumulating shading)")
         })
     }
 

@@ -110,7 +110,7 @@ impl Accel {
         let (_, rt) = mr_components::geometry::rt(&s.geometry).ok_or_else(|| anyhow::anyhow!("geometry `{}` builds no acceleration structure (have: greedy, naive, boxes)", s.geometry))?;
         let geo_buf = GrowableBuffer::new(gpu, "geometry", 1 << 20, u64::MAX, wgpu::BufferUsages::STORAGE);
         let geo_words = (geo_buf.size() / 4) as u32;
-        let chunk_info = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("chunk info"), size: MAX_SLOTS as u64 * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let chunk_info = gpu.storage("chunk info", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || "the BLAS slots (fixed)".into());
         let tlas_cap = 4096;
         Ok(Self {
             tlas: tlas(gpu, tlas_cap),

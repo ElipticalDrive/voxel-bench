@@ -135,7 +135,8 @@ impl Hits {
             Form::Records | Form::Ids => {
                 // The records are copied out and written by the transfers between GPUs.
                 let usage = if form == Form::Records { wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::STORAGE };
-                Resource::Buffer(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(if form == Form::Records { "hit records" } else { "hit ids" }), size: form.bytes(width, height) * layers as u64, usage, mapped_at_creation: false }))
+                let label = if form == Form::Records { "hit records" } else { "hit ids" };
+                Resource::Buffer(gpu.storage(label, form.bytes(width, height) * layers as u64, usage, || format!("the resolution ({width}x{height}, {layers} layer(s))")))
             }
             Form::Image(format) => {
                 let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {

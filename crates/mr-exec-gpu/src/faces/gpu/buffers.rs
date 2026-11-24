@@ -113,13 +113,9 @@ pub(super) struct Sized {
     pub(super) sky: [wgpu::Buffer; 2],
 }
 
-pub(super) fn storage(gpu: &Gpu, label: &str, size: u64, extra: wgpu::BufferUsages) -> wgpu::Buffer {
-    gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: size.max(16),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra,
-        mapped_at_creation: false,
-    })
+/// A storage buffer; `set_by` names what sets its size (when over the device's limit).
+pub(super) fn storage(gpu: &Gpu, label: &str, size: u64, extra: wgpu::BufferUsages, set_by: &str) -> wgpu::Buffer {
+    gpu.storage(label, size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra, || set_by.to_string())
 }
 
 fn tiles_max(lat_w: u32, lat_h: u32) -> u32 {
@@ -132,15 +128,16 @@ pub(super) fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
     let lat_h = h + 2 * MAX_TILE + 1;
     let n = lat_w as u64 * lat_h as u64;
     let none = wgpu::BufferUsages::empty();
+    let res = &format!("the resolution ({w}x{h})");
     Sized {
         lat_w,
         lat_h,
-        cache_c: storage(gpu, "ray cache cells", n * 16, none),
-        cache_t: storage(gpu, "ray cache t", n * 4, none),
-        claim: storage(gpu, "ray claims", n * 4, none),
-        cast_frame: storage(gpu, "ray cast frames", n * 4, none),
-        rayq: storage(gpu, "ray queue", n * 4, none),
-        tileq: storage(gpu, "tile queues", 2 * n * 4, none),
+        cache_c: storage(gpu, "ray cache cells", n * 16, none, res),
+        cache_t: storage(gpu, "ray cache t", n * 4, none, res),
+        claim: storage(gpu, "ray claims", n * 4, none, res),
+        cast_frame: storage(gpu, "ray cast frames", n * 4, none, res),
+        rayq: storage(gpu, "ray queue", n * 4, none, res),
+        tileq: storage(gpu, "tile queues", 2 * n * 4, none, res),
         idtex: gpu
             .device
             .create_texture(&wgpu::TextureDescriptor {
@@ -155,9 +152,9 @@ pub(super) fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
             })
             .create_view(&Default::default()),
         // Tiles are at least 2 px, so the lattice has at most (lat_w/2) x (lat_h/2) tiles.
-        need: storage(gpu, "tile needs", 4 * tiles_max(lat_w, lat_h) as u64 * 4, none),
+        need: storage(gpu, "tile needs", 4 * tiles_max(lat_w, lat_h) as u64 * 4, none, res),
         need_off: tiles_max(lat_w, lat_h),
-        changed_tiles: storage(gpu, "changed tiles", tiles_max(lat_w, lat_h) as u64 * 4, none),
-        sky: [0, 1].map(|_| storage(gpu, "sky mask", w as u64 * h as u64 * 4, none)),
+        changed_tiles: storage(gpu, "changed tiles", tiles_max(lat_w, lat_h) as u64 * 4, none, res),
+        sky: [0, 1].map(|_| storage(gpu, "sky mask", w as u64 * h as u64 * 4, none, res)),
     }
 }

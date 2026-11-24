@@ -116,16 +116,16 @@ pub(crate) struct Splat {
 }
 
 fn pixel_buffer(gpu: &Gpu, w: u32, h: u32) -> wgpu::Buffer {
-    gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("splat fb"), size: w as u64 * h as u64 * 4, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
+    gpu.storage("splat fb", w as u64 * h as u64 * 4, wgpu::BufferUsages::STORAGE, || format!("the resolution ({w}x{h})"))
 }
 
 fn points_buffer(gpu: &Gpu, n: u64) -> wgpu::Buffer {
-    gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("points"), size: n.max(1) * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+    gpu.storage("points", n.max(1) * 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || format!("the world's points ({n} in view)"))
 }
 
 /// The large points' list for a points buffer of `points_bytes`: a count and one id per point.
 fn big_buffer(gpu: &Gpu, points_bytes: u64) -> wgpu::Buffer {
-    gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("big points"), size: 4 + points_bytes / 4, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false })
+    gpu.storage("big points", 4 + points_bytes / 4, wgpu::BufferUsages::STORAGE, || "the world's points (a quarter of the points' buffer)".into())
 }
 
 impl Splat {

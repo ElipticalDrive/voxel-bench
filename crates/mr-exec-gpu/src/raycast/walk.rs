@@ -568,11 +568,11 @@ struct Beam {
 
 impl Beam {
     fn new(gpu: &Gpu, width: u32, height: u32) -> Self {
-        let buf = |label, size: u64, usage| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
+        let res = || format!("the resolution ({width}x{height})");
         Self {
-            tiles: buf("beam tiles", (width as u64 * height as u64 * 4).max(16), wgpu::BufferUsages::STORAGE),
-            stats: buf("beam stats", 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST),
-            read: buf("beam stats readback", 16, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST),
+            tiles: gpu.storage("beam tiles", width as u64 * height as u64 * 4, wgpu::BufferUsages::STORAGE, res),
+            stats: gpu.storage("beam stats", 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, res),
+            read: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("beam stats readback"), size: 16, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
             state: Arc::new(AtomicU32::new(0)),
             avg_skip: 0.0,
         }

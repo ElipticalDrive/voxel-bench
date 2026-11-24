@@ -343,3 +343,32 @@ fn the_guard_catches_what_it_should() {
     fs::remove_dir_all(&dir).ok();
     assert_eq!(functions(&w).first().map(|f| f.0.as_str()), Some("occluded"), "WGSL in Rust literals is read: {w}");
 }
+
+/// Every storage buffer goes through `Gpu::storage` (its size checked against the device's
+/// own limits, failing by name): outside `mr-gpu`, a raw `create_buffer` must spell its usage
+/// out (no variable that could hold `STORAGE`) and not bind it as storage.
+#[test]
+fn storage_buffers_are_checked_against_the_device() {
+    let mut paths = vec![];
+    files(&root().join("crates"), "rs", &mut paths);
+    files(&root().join("src"), "rs", &mut paths);
+    let mut problems = vec![];
+    for p in &paths {
+        let file = rel(p);
+        if file.starts_with("crates/mr-gpu/") {
+            continue;
+        }
+        let src = fs::read_to_string(p).unwrap();
+        for (at, _) in src.match_indices("create_buffer(") {
+            let rest = &src[at..];
+            let desc = &rest[..rest.find("mapped_at_creation").unwrap_or(rest.len().min(600))];
+            let line = src[..at].lines().count();
+            if desc.contains("STORAGE") {
+                problems.push(format!("{file}:{line} creates a storage buffer (use `Gpu::storage`)"));
+            } else if !desc.contains("usage: wgpu::BufferUsages::") {
+                problems.push(format!("{file}:{line} creates a buffer of a usage not spelled out"));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "storage buffers past the device check:\n  {}", problems.join("\n  "));
+}

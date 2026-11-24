@@ -186,7 +186,7 @@ impl GpuMeshes {
 
     /// Vertices are drawn and, as storage, read by [`surface_wgsl`]'s decoding.
     fn vertex_buffer(gpu: &Gpu, size: u64) -> wgpu::Buffer {
-        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh vertices"), size, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+        gpu.storage("mesh vertices", size, wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || "the meshes in view (their vertices and instances)".into())
     }
 
     /// The two-level buffer ([`layout`]) for [`surface_wgsl`]'s binding. It may be replaced by [`Self::prepare`].

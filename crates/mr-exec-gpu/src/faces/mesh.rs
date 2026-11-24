@@ -311,14 +311,7 @@ impl Meshing {
             },
         )?;
         let gpu = &core.gpu;
-        let storage = |label, size: u64, extra| {
-            gpu.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra,
-                mapped_at_creation: false,
-            })
-        };
+        let storage = |label, size: u64, extra| gpu.storage(label, size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra, || "fixed sizes (the BLAS slots, the first draws)".into());
         // Pages hold fewer than 2^32 quads (offsets and instance indices are u32).
         let quads = PagedBuffer::new(gpu, "quads", 1 << 20, u32::MAX as u64 * QUAD_BYTES, (opts.quad_buffer_mb as u64) << 20, wgpu::BufferUsages::STORAGE);
         let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
@@ -507,11 +500,8 @@ impl Meshing {
         let draws = if pages.len() == 1 { pages.pop().unwrap() } else { pages.concat() };
         let bytes = (draws.len() * 16) as u64;
         if bytes > self.indirect.size() {
-            self.indirect = core.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("indirect"),
-                size: bytes.next_power_of_two(),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDIRECT,
-                mapped_at_creation: false,
+            self.indirect = core.gpu.storage("indirect", bytes.next_power_of_two(), wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDIRECT, || {
+                format!("the draws in view ({}, 16 bytes each)", draws.len())
             });
         }
         if !draws.is_empty() {
