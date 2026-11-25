@@ -147,6 +147,30 @@ fn region_lives_in_nodes() {
     assert_eq!(none.graph, free.graph, "nothing to unset: nothing added");
 }
 
+/// A plan past a size the pipelines can address is refused at load, naming the limit: a
+/// resolution past `u32::MAX` pixels, a camera past the world's reach (2^30 blocks: a camera
+/// 64 blocks short of `i32::MAX` rendered the far side of the world, with no error), a
+/// generator size past it.
+#[test]
+fn sizes_past_the_limits_are_refused() {
+    let text = r#"
+        [scene]
+        generator = { type = "flat" }
+        camera = { type = "static", position = [1073741824.0, 10.0, -1073741824.0] }
+        [[renderer]]
+        name = "cpu-reference"
+    "#;
+    assert!(Plan::parse(text, &[]).is_ok(), "at the reach");
+    let e = Plan::parse(text, &["run.resolution=[65536, 65536]".into()]).unwrap_err().to_string();
+    assert!(e.contains("u32"), "{e}");
+    let e = Plan::parse(&text.replace("1073741824.0, 10", "1073741825.0, 10"), &[]).unwrap_err().to_string();
+    assert!(e.contains("2^30"), "{e}");
+    let e = Plan::parse(&text.replace("camera = { type = \"static\", ", "camera = { type = \"orbit\", center = [0.0, 0.0, 0.0], radius = 2e9, period = 9, ").replace("position = [1073741824.0, 10.0, -1073741824.0] ", ""), &[]).unwrap_err().to_string();
+    assert!(e.contains("2^30"), "{e}");
+    let e = Plan::parse(&text.replace("{ type = \"flat\" }", "{ type = \"menger\", level = 19 }"), &[]).unwrap_err().to_string();
+    assert!(e.contains("2^30"), "{e}");
+}
+
 #[test]
 fn parse_with_overrides() {
     let text = r#"

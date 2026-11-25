@@ -566,7 +566,7 @@ impl FrameRing {
             height,
             bpp,
             padded_row,
-            pixels: vec![0; (width * height * bpp) as usize],
+            pixels: vec![0; width as usize * height as usize * bpp as usize],
             submitted: Some(submitted),
             waiter: Some(waiter),
         }

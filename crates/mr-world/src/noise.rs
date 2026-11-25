@@ -50,25 +50,28 @@ fn grad3(h: u64, x: f32, y: f32, z: f32) -> f32 {
     }
 }
 
-/// 2D Perlin noise, roughly in `[-1, 1]`.
-pub fn perlin2(seed: u64, x: f32, y: f32) -> f32 {
+/// 2D Perlin noise, roughly in `[-1, 1]`. The coordinates are `f64` and the lattice cell is
+/// found in them, so the noise keeps its detail out to the world's reach: an `f32` block
+/// coordinate is whole only up to 2^24, and terrain from it had 8 % of columns wrong there,
+/// 63 % at 2^28.
+pub fn perlin2(seed: u64, x: f64, y: f64) -> f32 {
     let (x0, y0) = (x.floor(), y.floor());
-    let (fx, fy) = (x - x0, y - y0);
+    let (fx, fy) = ((x - x0) as f32, (y - y0) as f32);
     let (ix, iy) = (x0 as i32, y0 as i32);
-    let g = |dx: i32, dy: i32| grad2(hash3(seed, ix + dx, iy + dy, 0), fx - dx as f32, fy - dy as f32);
+    let g = |dx: i32, dy: i32| grad2(hash3(seed, ix.wrapping_add(dx), iy.wrapping_add(dy), 0), fx - dx as f32, fy - dy as f32);
     let (u, v) = (fade(fx), fade(fy));
     let a = g(0, 0) + u * (g(1, 0) - g(0, 0));
     let b = g(0, 1) + u * (g(1, 1) - g(0, 1));
     (a + v * (b - a)) * std::f32::consts::SQRT_2
 }
 
-/// 3D Perlin noise, roughly in `[-1, 1]`.
-pub fn perlin3(seed: u64, x: f32, y: f32, z: f32) -> f32 {
+/// 3D Perlin noise, roughly in `[-1, 1]`, at `f64` coordinates (see [`perlin2`]).
+pub fn perlin3(seed: u64, x: f64, y: f64, z: f64) -> f32 {
     let (x0, y0, z0) = (x.floor(), y.floor(), z.floor());
-    let (fx, fy, fz) = (x - x0, y - y0, z - z0);
+    let (fx, fy, fz) = ((x - x0) as f32, (y - y0) as f32, (z - z0) as f32);
     let (ix, iy, iz) = (x0 as i32, y0 as i32, z0 as i32);
     let g = |dx: i32, dy: i32, dz: i32| {
-        grad3(hash3(seed, ix + dx, iy + dy, iz + dz), fx - dx as f32, fy - dy as f32, fz - dz as f32)
+        grad3(hash3(seed, ix.wrapping_add(dx), iy.wrapping_add(dy), iz.wrapping_add(dz)), fx - dx as f32, fy - dy as f32, fz - dz as f32)
     };
     let (u, v, w) = (fade(fx), fade(fy), fade(fz));
     let l = |a: f32, b: f32, t: f32| a + t * (b - a);
@@ -79,8 +82,9 @@ pub fn perlin3(seed: u64, x: f32, y: f32, z: f32) -> f32 {
     l(l(x00, x10, v), l(x01, x11, v), w)
 }
 
-pub fn fbm2(seed: u64, x: f32, y: f32, octaves: u32) -> f32 {
-    let (mut sum, mut amp, mut freq, mut norm) = (0.0, 1.0, 1.0, 0.0);
+/// Fractal sum of [`perlin2`] octaves, at `f64` coordinates.
+pub fn fbm2(seed: u64, x: f64, y: f64, octaves: u32) -> f32 {
+    let (mut sum, mut amp, mut freq, mut norm) = (0.0, 1.0, 1.0f64, 0.0);
     for o in 0..octaves {
         sum += amp * perlin2(seed.wrapping_add(o as u64 * 7919), x * freq, y * freq);
         norm += amp;

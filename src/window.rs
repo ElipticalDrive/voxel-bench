@@ -335,7 +335,7 @@ impl Gpu {
             PixelFormat::Rgba8 => (wgpu::TextureFormat::Rgba8Unorm, 4),
             PixelFormat::Rgba16F => (wgpu::TextureFormat::Rgba16Float, 8),
         };
-        if f.pixels.len() != (f.width * f.height * bpp) as usize {
+        if f.pixels.len() != f.width as usize * f.height as usize * bpp as usize {
             return;
         }
         if self.textures[lane].as_ref().is_none_or(|(k, ..)| *k != key) {

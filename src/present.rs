@@ -212,7 +212,7 @@ fn serve(stream: mr_ipc::Stream, ui: UiHandle) -> anyhow::Result<()> {
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(PresentMsg::Shm(spec)) => shm = Some(FrameSlots::open(&spec)?),
             Ok(PresentMsg::Frame { width, height, format }) => {
-                let n = (width * height * format.bytes()) as usize;
+                let n = format.frame_bytes(width, height);
                 let Some(s) = &shm else { bail!("a frame before the frame region") };
                 let pixels = std::sync::Arc::new(s.slot(0)[..n].to_vec());
                 tx.send(&PresentReply::Shown)?;

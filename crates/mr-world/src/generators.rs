@@ -78,13 +78,24 @@ pub enum GenSpec {
         checker: bool,
     },
     /// Menger sponge of `3^level` blocks per side with its minimum corner at the origin.
-    Menger { level: u32 },
+    Menger {
+        #[serde(deserialize_with = "menger_level")]
+        level: u32,
+    },
     /// Closed room (white floor/ceiling, red/green side walls, blue back) with some
     /// blocks inside: the voxel Cornell box. Inner size `size` blocks.
-    Room { size: i32 },
+    Room {
+        #[serde(deserialize_with = "within_world")]
+        size: i32,
+    },
     /// Cube of side `size` centred at the origin, each block solid with probability
     /// `density`. Worst case for many renderers.
-    Random { size: i32, density: f32, seed: u64 },
+    Random {
+        #[serde(deserialize_with = "within_world")]
+        size: i32,
+        density: f32,
+        seed: u64,
+    },
     /// Every block type on a row, plus debug-textured blocks, for checking textures/UVs.
     Showcase,
     /// Infinite street grid of hollow towers (floors every 5 blocks, window openings):
@@ -93,9 +104,9 @@ pub enum GenSpec {
         #[serde(default)]
         seed: u64,
         /// Street grid period in blocks (a 10-block street, the rest one plot).
-        #[serde(default = "default_city_block")]
+        #[serde(default = "default_city_block", deserialize_with = "within_world")]
         block: i32,
-        #[serde(default = "default_city_height")]
+        #[serde(default = "default_city_height", deserialize_with = "within_world")]
         max_height: i32,
     },
     /// Floating islands scattered through a 3D grid of cells (at most one per cell) from
@@ -104,9 +115,9 @@ pub enum GenSpec {
         #[serde(default)]
         seed: u64,
         /// Cell size in blocks; islands are up to about a third of it across.
-        #[serde(default = "default_islands_spacing")]
+        #[serde(default = "default_islands_spacing", deserialize_with = "within_world")]
         spacing: i32,
-        #[serde(default = "default_islands_height")]
+        #[serde(default = "default_islands_height", deserialize_with = "within_world")]
         height: i32,
         /// Fraction of cells holding an island.
         #[serde(default = "default_islands_fill")]
@@ -115,30 +126,31 @@ pub enum GenSpec {
     /// Infinite jungle gym of beams `thickness` blocks thick every `period` blocks along all
     /// three axes, from y = 0 to `height`: every ray grazes thin geometry.
     Lattice {
-        #[serde(default = "default_lattice_period")]
+        #[serde(default = "default_lattice_period", deserialize_with = "within_world")]
         period: i32,
-        #[serde(default = "default_one")]
+        #[serde(default = "default_one", deserialize_with = "within_world")]
         thickness: i32,
-        #[serde(default = "default_lattice_height")]
+        #[serde(default = "default_lattice_height", deserialize_with = "within_world")]
         height: i32,
     },
     /// Sheet gyroid (a triply periodic minimal surface) from y = 0 to `height`, infinite in
     /// x and z: two interleaved cave networks of curved walls nothing can merge.
     Gyroid {
         /// Period in blocks.
-        #[serde(default = "default_gyroid_period")]
+        #[serde(default = "default_gyroid_period", deserialize_with = "within_world")]
         period: i32,
         /// Wall half-thickness in units of the gyroid function (about 0.1 to 0.8).
         #[serde(default = "default_gyroid_thickness")]
         thickness: f32,
-        #[serde(default = "default_gyroid_height")]
+        #[serde(default = "default_gyroid_height", deserialize_with = "within_world")]
         height: i32,
     },
     /// 3D checkerboard of `cell`-block cubes filling a cube of side `size` from the origin:
     /// every solid block shows all its faces, yet the pattern is perfectly regular.
     Checker {
+        #[serde(deserialize_with = "within_world")]
         size: i32,
-        #[serde(default = "default_one")]
+        #[serde(default = "default_one", deserialize_with = "within_world")]
         cell: i32,
     },
     /// See-through blocks in a `size`-block yard: `panes` parallel walls of clear and stained
@@ -146,11 +158,35 @@ pub enum GenSpec {
     /// hollow glass cube around a glowing block, a grate (cutout) cube around a red one,
     /// opaque pillars and a back wall behind, a checkered floor that takes their shadows.
     Glass {
-        #[serde(default = "default_glass_size")]
+        #[serde(default = "default_glass_size", deserialize_with = "within_world")]
         size: i32,
-        #[serde(default = "default_glass_panes")]
+        #[serde(default = "default_glass_panes", deserialize_with = "within_world")]
         panes: i32,
     },
+}
+
+/// A generator's size (blocks, or a count) within [`mr_core::chunk::WORLD_LIMIT`]: past it
+/// the world's own arithmetic overflows `i32` or the world reaches past what a camera can see.
+fn within_world<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+    let v = i32::deserialize(d)?;
+    if v.unsigned_abs() > mr_core::chunk::WORLD_LIMIT as u32 {
+        return Err(serde::de::Error::custom(format!("{v} is past the world's reach of {} blocks (2^30) from the origin", mr_core::chunk::WORLD_LIMIT)));
+    }
+    Ok(v)
+}
+
+/// The deepest Menger sponge within [`mr_core::chunk::WORLD_LIMIT`]: 3^18 blocks across.
+pub const MENGER_MAX_LEVEL: u32 = 18;
+
+fn menger_level<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let v = u32::deserialize(d)?;
+    if v > MENGER_MAX_LEVEL {
+        return Err(serde::de::Error::custom(format!(
+            "level {v}: 3^{v} blocks is past the world's reach of {} blocks (2^30); the deepest is level {MENGER_MAX_LEVEL}",
+            mr_core::chunk::WORLD_LIMIT
+        )));
+    }
+    Ok(v)
 }
 
 fn default_glass_size() -> i32 {
@@ -464,9 +500,9 @@ impl WorldGen for RoomGen {
         if inside(p.x) && inside(p.y) && inside(p.z) {
             // A tall pillar, a short box and a floating debug block.
             let (a, b) = (s / 4, s / 2);
-            let pillar = (a..a + s / 5).contains(&p.x) && (a..a + s / 5).contains(&p.z) && p.y < s * 3 / 5;
+            let pillar = (a..a + s / 5).contains(&p.x) && (a..a + s / 5).contains(&p.z) && p.y < (s as i64 * 3 / 5) as i32;
             let boxb = (b + 1..b + 1 + s / 4).contains(&p.x) && (b..b + s / 4).contains(&p.z) && p.y < s / 4;
-            let float = p == IVec3::new(s / 2, s * 3 / 4, s / 4);
+            let float = p == IVec3::new(s / 2, (s as i64 * 3 / 4) as i32, s / 4);
             return if pillar { WHITE } else if boxb { PLANKS } else if float { DEBUG } else { AIR };
         }
         if p.x == -1 {
@@ -678,7 +714,7 @@ impl IslandsGen {
     /// A grassy dome on top, a rough stone cone beneath.
     fn island_block(&self, i: &Island, p: IVec3) -> BlockId {
         let d = (p - i.centre).as_vec3();
-        let n = perlin3(self.seed ^ 0x15, p.x as f32 / 9.0, p.y as f32 / 9.0, p.z as f32 / 9.0);
+        let n = perlin3(self.seed ^ 0x15, p.x as f64 / 9.0, p.y as f64 / 9.0, p.z as f64 / 9.0);
         let re = i.r * (1.0 + 0.15 * n.clamp(-1.0, 1.0));
         let across = (d.x * d.x + d.z * d.z).sqrt();
         if across >= re {
@@ -807,7 +843,11 @@ impl WorldGen for GyroidGen {
     fn spawn(&self) -> DVec3 {
         // Deepest in a channel along a line at mid height.
         let y = self.height / self.period / 2 * self.period + self.period / 4;
-        let x = (0..self.period).max_by(|&a, &b| self.f(IVec3::new(a, y, 0)).abs().total_cmp(&self.f(IVec3::new(b, y, 0)).abs())).unwrap_or(0);
+        // Every block of one period, or 4096 evenly spaced ones of a longer period (scanning
+        // all of a 2^30 period took 31 s).
+        let n = self.period.clamp(1, 4096) as i64;
+        let xs = (0..n).map(|i| (i * self.period as i64 / n) as i32);
+        let x = xs.max_by(|&a, &b| self.f(IVec3::new(a, y, 0)).abs().total_cmp(&self.f(IVec3::new(b, y, 0)).abs())).unwrap_or(0);
         IVec3::new(x, y, 0).as_dvec3() + 0.5
     }
 }
@@ -919,7 +959,7 @@ const SEA: i32 = 12;
 
 impl TerrainGen {
     pub fn height(&self, x: i32, z: i32) -> i32 {
-        let (fx, fz) = (x as f32, z as f32);
+        let (fx, fz) = (x as f64, z as f64);
         let base = fbm2(self.seed, fx / 400.0, fz / 400.0, 5) * 40.0;
         let m = fbm2(self.seed ^ 0xabc, fx / 900.0, fz / 900.0, 3);
         let mountain = (m - 0.1).max(0.0).powf(1.5) * 450.0;
@@ -932,8 +972,9 @@ impl TerrainGen {
             return false;
         }
         let s = 1.0 / 28.0;
-        let a = perlin3(self.seed ^ 0xcafe, p.x as f32 * s, p.y as f32 * s * 1.6, p.z as f32 * s);
-        let b = perlin3(self.seed ^ 0xbeef, p.x as f32 * s, p.y as f32 * s * 1.6, p.z as f32 * s);
+        let (x, y, z) = (p.x as f64 * s, p.y as f64 * s * 1.6, p.z as f64 * s);
+        let a = perlin3(self.seed ^ 0xcafe, x, y, z);
+        let b = perlin3(self.seed ^ 0xbeef, x, y, z);
         // Intersection of two noise "sheets" gives long spaghetti tunnels.
         a.abs() < 0.07 && b.abs() < 0.07
     }
@@ -1238,4 +1279,56 @@ mod tests {
         assert!(g.block(IVec3::new(13, 13, 0)).is_air());
         assert!(g.block(IVec3::new(4, 4, 0)).is_air());
     }
+
+    /// Every size of every generator holds out to the world's reach (2^30): built, sampled
+    /// at its spawn, the origin and its top, with overflow checks on (a test build), and one
+    /// past it is refused naming the reach. Before, room overflowed from 715827883 (its
+    /// `s * 3 / 5`), menger from level 20, the others near `i32::MAX`.
+    #[test]
+    fn generator_sizes_hold_out_to_the_worlds_reach() {
+        let l = mr_core::chunk::WORLD_LIMIT as i64;
+        let with = |info: &GenInfo, f: &str, v: i64| {
+            let mut t = toml::Table::try_from((info.default)()).unwrap();
+            t.insert(f.into(), toml::Value::Integer(v));
+            t.try_into::<GenSpec>()
+        };
+        let mut fields = 0;
+        for info in GENERATORS {
+            for f in info.fields {
+                // (A seed is a number, not a size.)
+                if f.name == "seed" || !toml::Table::try_from((info.default)()).unwrap()[f.name].is_integer() {
+                    continue;
+                }
+                let (ok, past) = if f.name == "level" { (MENGER_MAX_LEVEL as i64, MENGER_MAX_LEVEL as i64 + 1) } else { (l, l + 1) };
+                let e = with(info, f.name, past).unwrap_err().to_string();
+                assert!(e.contains("2^30"), "{} {}: {e}", info.name, f.name);
+                for v in [ok, -ok, 0] {
+                    let Ok(spec) = with(info, f.name, v) else { continue };
+                    let g = spec.build();
+                    let (y0, y1) = g.chunk_y_range();
+                    assert!(crate::World::new(g.clone()).may_contain_blocks(ChunkKey::lod0(IVec3::new(0, y0, 0))) || y0 >= y1);
+                    for p in [IVec3::ZERO, g.spawn().floor().as_ivec3(), IVec3::new(0, y1.saturating_mul(CHUNK_SIZE) - 1, 0)] {
+                        let _ = g.chunk(ChunkKey::of_block(p));
+                    }
+                }
+                fields += 1;
+            }
+        }
+        assert!(fields >= 15, "{fields} size fields");
+    }
+
+    /// The terrain's noise resolves single blocks out to the world's reach: with `f32`
+    /// coordinates neighbouring columns merged from 2^24 blocks out (8 % of terrain heights
+    /// wrong there, 63 % at 2^28).
+    #[test]
+    fn noise_resolves_blocks_out_to_the_worlds_reach() {
+        for e in [24, 28, 30] {
+            let x = (1i64 << e) as f64;
+            let v: Vec<f32> = (0..64).map(|i| crate::noise::fbm2(7, (x + i as f64) / 40.0, 0.3, 3)).collect();
+            assert!(v.windows(2).all(|w| w[0] != w[1]), "2^{e}: neighbouring columns merge");
+            let c: Vec<f32> = (0..64).map(|i| crate::noise::perlin3(7, (x + i as f64) / 28.0, 0.3, 0.7)).collect();
+            assert!(c.windows(2).all(|w| w[0] != w[1]), "2^{e}: neighbouring cave cells merge");
+        }
+    }
 }
+

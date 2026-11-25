@@ -261,7 +261,7 @@ pub fn discover<G: World>(
                 .par_iter()
                 .with_min_len(MIN_LEN)
                 .flat_map_iter(|&(key, _)| {
-                    let (cell, face) = crate::visibility::discover::unpack_key(key);
+                    let (cell, face) = crate::visibility::discover::unpack_key(key, cx.rays.cb);
                     corners(cell, face).map(|c| face_key(c, 0))
                 })
                 .collect();
@@ -276,7 +276,7 @@ pub fn discover<G: World>(
             let vis: Vec<bool> = need
                 .par_iter()
                 .with_min_len(MIN_LEN / 4)
-                .map(|&c| corner_visible(&cx, crate::visibility::discover::unpack_key(c).0))
+                .map(|&c| corner_visible(&cx, crate::visibility::discover::unpack_key(c, cx.rays.cb).0))
                 .collect();
             for (c, v) in need.into_iter().zip(vis) {
                 corner_vis.insert(c, v as u32);
@@ -290,7 +290,7 @@ pub fn discover<G: World>(
                 .par_iter()
                 .with_min_len(MIN_LEN)
                 .map(|&(key, id)| {
-                    let (cell, face) = crate::visibility::discover::unpack_key(key);
+                    let (cell, face) = crate::visibility::discover::unpack_key(key, cx.rays.cb);
                     let c = corners(cell, face);
                     let mut px = vec![];
                     if !c.iter().all(|p| cv.get(&face_key(*p, 0)) == Some(&1))

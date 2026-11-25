@@ -154,6 +154,29 @@ pub enum CameraPathSpec {
     },
 }
 
+impl CameraPathSpec {
+    /// Refuses a path that leaves [`mr_core::chunk::WORLD_LIMIT`] on any axis (past it the
+    /// view wraps with no error); a flythrough's curve stays near its points.
+    pub fn check(&self) -> Result<(), String> {
+        let mut at: Vec<V3> = vec![];
+        match self {
+            CameraPathSpec::Static { position, target, .. } => at.extend(position.iter().chain(target)),
+            CameraPathSpec::Orbit { center, radius, height, .. } => {
+                let r = radius.abs();
+                at.extend([[center[0] + r, center[1] + height, center[2] + r], [center[0] - r, center[1] + height, center[2] - r]]);
+            }
+            CameraPathSpec::Line { from, to, look_at } => at.extend(from.iter().chain([to]).chain(look_at)),
+            CameraPathSpec::Flythrough { points } => at.extend(points),
+            CameraPathSpec::Spin { position, .. } => at.extend(position),
+        }
+        let limit = mr_core::chunk::WORLD_LIMIT as f64;
+        match at.iter().find(|p| p.iter().any(|c| c.is_nan() || c.abs() > limit)) {
+            Some(p) => Err(format!("camera: {p:?} is past the world's reach of {limit} blocks (2^30) from the origin on an axis")),
+            None => Ok(()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EventSpec {

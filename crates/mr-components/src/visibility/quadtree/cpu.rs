@@ -353,7 +353,7 @@ pub(crate) fn dilate_faces<G: World>(
     level: u32,
     out: &mut Vec<u64>,
 ) {
-    let (cell, _) = unpack_key(key);
+    let (cell, _) = unpack_key(key, cb);
     let mut visit = |c: IVec3| {
         if grid.block(c) == 0 {
             return;

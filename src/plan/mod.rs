@@ -95,6 +95,9 @@ impl Plan {
         if plan.run.frames == 0 {
             bail!("run.frames must be > 0");
         }
+        let [w, h] = plan.run.resolution;
+        mr_core::lighting::check_resolution(w, h).map_err(|e| anyhow::anyhow!("run.{e}"))?;
+        plan.scene.camera.check().map_err(|e| anyhow::anyhow!("scene.{e}"))?;
         Ok(plan)
     }
 }
