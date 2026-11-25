@@ -85,6 +85,8 @@ the break (tests named).
 |---|---|---|
 | A camera within 2^30 blocks of the origin on each axis (`WORLD_LIMIT`) | plan load: every point of the camera path (`scene.camera: ... past the world's reach`) | at `i32::MAX` less the view reach, every pipeline rendered the far side of the world, no error (`sizes_past_the_limits_are_refused`) |
 | A generator size (blocks or counts) within 2^30; menger level ≤ 18 (3^18 blocks) | plan load and the editor's fields (the spec does not parse) | room overflowed `i32` from size 715827883, menger from level 20, the others near `i32::MAX`; gyroid's spawn scanned the whole period (31 s at 2^30) (`generator_sizes_hold_out_to_the_worlds_reach`) |
+| Free flight (GUI, interactive window) within 2^30 blocks on each axis | the camera stops at it, each axis clamped, and says so (the GUI's message line, the window title) | flew on past the reach unchecked, so the view wrapped as a path past it did (`free_flight_stops_at_the_worlds_reach`) |
+| A frame side at most the device's `max_texture_dimension_2d` (32768 on the RTX 5060, 8192 at WebGPU's baseline) | the GPU executor's build and a live resize, naming the limit | a bare `wgpu error: Validation Error` (`a_frame_past_the_texture_limit_is_refused_naming_it`) |
 | A frame of at most `u32::MAX` pixels, both sides ≥ 1 | plan load, a live resize | pixel indices are `u32` in the shaders and the CPU frame buffers; byte sizes were `u32` products too, so an RGBA16F frame of 23171² sized its shared memory slot 3 MiB (`frame_sizes_are_counted_wide`) |
 
 Inside these, pipelines render the same image anywhere: a flat world seen from the origin,
@@ -104,10 +106,27 @@ is `f64`). Two things did not, fixed:
 Frames between processes: a message is refused past 4 GiB (its `u32` length); frames go
 through shared memory slots sized in `u64`.
 
+## Big buffers, big frames, many instances (measured)
+
+On the RTX 5060 (8 GiB), each run pixel-compared with the CPU reference:
+
+- Voxel pool past 4 GiB: terrain at radius 64 with `pool_mb = 5000` (68331 chunks, 4.43 GB of
+  pool over three bindings) renders on raycast-gpu with bricks, hier, prefix and rows at
+  57.7 dB, as at radius 32 (59.4 dB; the difference is far-field detail). No offset
+  overflows: the pool pages at 2 GiB a binding and slots index within a page. distance (its
+  distance field beside the pool), rayquery-gpu boxes and splat-gpu stop earlier, each named:
+  device memory, and the splats' points over `max_storage_buffer_binding_size` (3467 MiB for
+  227 M points in view).
+- Frames: 16384² renders on raycast-gpu (65.1 dB, 70 ms GPU; the host held 10.7 GB with the
+  reference). 23200² and 32768² run out of device memory, named (frame-sized targets cost
+  about 31 bytes a pixel on raycast-gpu: output, readback ring, hits, accumulation: 8.4 GB of
+  device memory at 16384²); 32769 is past `max_texture_dimension_2d`, refused (above).
+- Mesh instances: 100 000 boxes render on raster-gpu and raycast-gpu (42 dB against the
+  reference, both alike: the boxes are smaller than a pixel); 4 million (48 M triangles) are
+  refused naming the limit, 4194304 (2^22) triangles a hit record can name.
+
 ## Not yet covered
 
-Byte offsets past 4 GiB in one buffer (no buffer reaches it: bindings stop at 2 GiB and pools
-page), frames at the largest resolutions a GPU takes (16384² and up: only the arithmetic is
-checked, no such frame was rendered), instance, point and face counts (the meshes'
-instances, the splats' points), `max_lod > 0` (the view reach at LOD is radius x 2^max_lod
-chunks; checked only through the reach above), and lavapipe's limits.
+`max_lod > 0` (the view reach at LOD is radius x 2^max_lod chunks; checked only through the
+reach above), lavapipe's limits, host and worker world at the memory cap, and points, faces
+and instances on the other drawers (counts above are raycast-gpu, raster-gpu and splat-gpu).

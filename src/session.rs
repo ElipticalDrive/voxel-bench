@@ -158,6 +158,10 @@ impl Driver for InteractiveDriver {
             }
             let boost = if inp.held.contains(&K::ControlLeft) { 5.0 } else { 1.0 };
             self.camera.position += (m.normalize_or_zero() * self.speed * boost * dt).as_dvec3();
+            if let Some((p, why)) = mr_core::chunk::within_reach(self.camera.position) {
+                self.camera.position = p;
+                self.ui.send(UiEvent::Title(format!("multirenderer — {why}")));
+            }
             if std::mem::take(&mut inp.print_camera) {
                 let p = self.camera.position;
                 println!(

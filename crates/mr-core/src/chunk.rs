@@ -15,6 +15,18 @@ pub const CHUNK_VOLUME: usize = (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize;
 /// view radius. Generator sizes and camera paths past it are refused naming it.
 pub const WORLD_LIMIT: i32 = 1 << 30;
 
+/// A camera position held inside [`WORLD_LIMIT`]: `None` when `p` is within it, else the
+/// nearest position within it (each axis clamped) and the reason, for free flight, which
+/// stops at the world's reach rather than wrap.
+pub fn within_reach(p: glam::DVec3) -> Option<(glam::DVec3, String)> {
+    let l = WORLD_LIMIT as f64;
+    if p.abs().max_element() <= l {
+        return None;
+    }
+    let q = p.clamp(glam::DVec3::splat(-l), glam::DVec3::splat(l));
+    Some((q, format!("the camera stops at the world's reach, {l} blocks (2^30) from the origin on an axis")))
+}
+
 /// Block type index into the [`crate::BlockRegistry`]. `0` is air (empty, transparent);
 /// every other block is an opaque unit cube.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

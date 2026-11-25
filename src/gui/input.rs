@@ -110,6 +110,10 @@ impl App {
         }
         let boost = if mods.ctrl { 5.0 } else { 1.0 };
         self.cam.position += (m.normalize_or_zero() * self.speed * boost * dt).as_dvec3();
+        if let Some((p, why)) = mr_core::chunk::within_reach(self.cam.position) {
+            self.cam.position = p;
+            self.message = why;
+        }
         self.cam.fov_y = self.plan.scene.fov_deg.to_radians();
     }
 }
