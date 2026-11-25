@@ -17,9 +17,11 @@ cross-checks for both Windows targets (`rustup target add x86_64-pc-windows-gnu
 x86_64-pc-windows-msvc`). `wine`: the unit and GPU end-to-end tests of the `-gnu` build under
 Wine (mingw64-gcc, wine); not in `all`."""
 import os
+import json
 import re
 import subprocess
 import sys
+import time
 
 from mr import ROOT
 
@@ -74,8 +76,17 @@ def compiled(name, s, t):
     return s != 0 or bool(warn)
 
 
+# Each step's wall time, for the build guard (scripts/ab/buildguard.py): target/logs/times.json,
+# with the commit, whether the tree had changes, and whether the machine was quiet
+# (`.agent/bin/quiet`; None where it is absent, as on CI), since times only compare when quiet.
+quiet = ROOT / ".agent" / "bin" / "quiet"
+times = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "argv": what, "steps": {},
+         "commit": subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip(),
+         "dirty": bool(subprocess.run(["git", "status", "--porcelain", "--", "crates", "src", "Cargo.toml", "Cargo.lock"], cwd=ROOT, capture_output=True, text=True).stdout),
+         "quiet": subprocess.run([str(quiet)], capture_output=True).returncode == 0 if quiet.exists() else None}
 rc = 0
 for w in what:
+    started = time.monotonic()
     if w == "build":
         for prof, args in (("dev", ["build", "--workspace", "--all-targets", "--message-format=short"]), ("release", ["build", "--release", "--workspace", "--message-format=short"])):
             s, t = cargo(args, logs / f"build-{prof}.log")
@@ -137,4 +148,7 @@ for w in what:
     else:
         print(f"unknown: {w}")
         rc = 2
+    times["steps"][w] = round(time.monotonic() - started, 1)
+times["ok"] = not rc
+(logs / "times.json").write_text(json.dumps(times, indent=1))
 sys.exit(rc)

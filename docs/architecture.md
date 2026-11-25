@@ -216,6 +216,17 @@ Measured 2026-11-24: the narrowest, `packets= isa=` (packet 1, scalar), takes th
 binary from 272.4 to 252.2 MB and `.text` from 44.3 to 32.3 MB (-27 %), 170 functions fewer,
 all in `mr-exec-cpu`.
 
+**Tracking the build's figures.** `scripts/ab/buildguard.py record` appends a commit's figures
+to `baselines/build.jsonl`: release binary and `.text` bytes and functions (from
+`buildcost.py figures`), the rebuild after a component edit when `buildcost.py --time` measured
+it, `check.py`'s wall time per step (check.py writes `target/logs/times.json` each run, with the
+commit, whether the tree had changes and whether the machine was quiet), and CI's job minutes
+(`gh`, the newest successful run of the commit). `buildguard.py` alone compares the tree with the
+last record and prints every delta: sizes are flagged past `--pct` (default 5 %), times past
+`--time-pct` (default 10 %) only when both records were taken on a quiet machine; CI times are
+shown, never flagged (one tree's jobs took 15-24 and 8-16 minutes). `buildguard.py show` lists
+the records.
+
 **GPU shaders per graph.** A GPU graph's shaders are composed and compiled when its renderer
 is built: each pass's report carries `shaders`, the part of `init_ms` spent making shader
 modules (`module_ms`: naga_oil composition, naga validation and translation) and pipelines

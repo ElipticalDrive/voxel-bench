@@ -174,6 +174,10 @@ def main():
         sys.exit("buildcost: crates/ or src/ has uncommitted changes; the scaffold must be undone cleanly")
     res = {"mode": mode, "timed": timed, "commit": sh(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
                                                     text=True).stdout.strip(), "at": datetime.now().isoformat()}
+    if timed:
+        # times compare only between quiet runs (scripts/ab/buildguard.py); absent tool: unknown
+        q = ROOT / ".agent/bin/quiet"
+        res["quiet"] = subprocess.run([str(q)], capture_output=True).returncode == 0 if q.exists() else None
     res["before"] = figures(timed)
     if mode == "storage":
         sh([sys.executable, "scripts/new.py", "storage", NAME], stdout=subprocess.DEVNULL)
