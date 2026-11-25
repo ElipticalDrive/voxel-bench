@@ -36,8 +36,10 @@ if "all" in what:
 
 # A timing job of `.agent/bin/idle` is running: this build is load from outside it, which gets
 # the job stopped and redone. Said, not refused (the queue may be waiting, not timing).
-if not os.environ.get("MR_IDLE_JOB"):
-    busy = subprocess.run([str(ROOT / ".agent" / "bin" / "idle"), "busy"], capture_output=True, text=True)
+# `.agent/` is local (git-ignored): absent on CI and in fresh checkouts.
+idle = ROOT / ".agent" / "bin" / "idle"
+if not os.environ.get("MR_IDLE_JOB") and idle.exists():
+    busy = subprocess.run([str(idle), "busy"], capture_output=True, text=True)
     if busy.returncode == 0:
         print(f"warning: {busy.stdout.strip()}; building now disturbs it", flush=True)
 
