@@ -1,0 +1,10 @@
+# Names changed between turns, read by scripts/ab/records.py (so guard.py and sweepcmp.py): each pair
+# is applied to the records of runs before its date, so a baseline keys a renamed component or knob as
+# the new turn does. A turn that renames writes its pairs here, dated the day it renames; the format is
+# in records.py's header. A component removed outright needs nothing here: its records are left out and
+# counted by name.
+#
+# [[rename]]
+# date = 2026-11-24
+# role = "storage"
+# component = "old=new"

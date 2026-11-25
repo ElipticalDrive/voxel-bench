@@ -91,7 +91,8 @@ enum Cmd {
     /// `[renderer.graph]`), label, canonical form, cache key and schedule. The renderer as for
     /// `view -r`: a graph file and edits (`raycast-gpu,storage=prefix,kernel=incremental`).
     /// With `--keys`: reads observations (JSON lines) on stdin and prints each one's graph
-    /// key (`-` if it has none), for records written before they carried one.
+    /// key and label, tab-separated (`-`, nothing and the reason if it has none: a form or a
+    /// component this build no longer reads).
     Graph {
         renderer: Option<String>,
         #[arg(long)]
@@ -153,9 +154,17 @@ fn main() -> anyhow::Result<()> {
                 if let Some(why) = observe::newer(&line) {
                     bail!("record {}: {why}", i + 1);
                 }
-                let g = observe::Observation::parse(&line).ok().flatten().and_then(|o| o.pipeline());
-                let key = g.as_ref().and_then(|g| g.key().ok());
-                println!("{}\t{}", key.as_deref().unwrap_or("-"), g.and_then(|g| g.label().ok()).unwrap_or_default());
+                // No key: `-`, no label, and why (the third column), e.g. a component since removed.
+                let o = observe::Observation::parse(&line).map_err(|e| e.to_string());
+                let g = match o {
+                    Ok(Some(o)) => o.pipeline().ok_or_else(|| "a standalone renderer".to_string()),
+                    Ok(None) => Err(format!("a pipeline record older than version {} (a form this build no longer reads)", observe::VERSION)),
+                    Err(e) => Err(e),
+                };
+                match g.and_then(|g| Ok((g.key()?, g.label()?))) {
+                    Ok((key, label)) => println!("{key}\t{label}"),
+                    Err(why) => println!("-\t\t{}", why.replace(['\t', '\n'], " ")),
+                }
             }
             Ok(())
         }

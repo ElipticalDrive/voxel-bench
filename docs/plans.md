@@ -339,3 +339,10 @@ Python, for Linux and Windows (`scripts/`):
   counts the rest (`only base`, `only new`; `--all` lists them): a turn sweep against a full
   baseline compares its own passes, the rest of the baseline's counted as `only base`. A new baseline is a full sweep copied to
   `baselines/sweep-<date>/` with its `observations.jsonl` gzipped (both scripts read either).
+  Across turns (both scripts read records through `ab/records.py`): every record's graph key
+  is recomputed by the binary, so a knob or component added since leaves the old keys alone. A
+  component or knob renamed is a dated pair in `baselines/renames.toml` (format in
+  `records.py`), applied to the records of runs before that day; the guard prints each pair it
+  applied and how often. Records the binary cannot key (a component since removed, a form no
+  longer read) are left out and counted by the binary's reason (`unknown traversal component
+  ...`); records newer than the binary reads are refused, naming both versions (rebuild).

@@ -5,7 +5,7 @@
 
 Default: build clippy test. `gpu`, `windows` and `wine` add to the default (`check.py gpu` runs
 build clippy test gpu); `only` runs just what is named (`check.py only gpu`). `build`: dev and release builds, warnings count as failures.
-`clippy`: clippy over the workspace, every warning a failure. `test`: the workspace's tests. `gpu`: the tests that need a GPU (the
+`clippy`: clippy over the workspace, every warning a failure. `test`: the workspace's tests, then the scripts' (`scripts/ab/test_*.py`). `gpu`: the tests that need a GPU (the
 host's end-to-end live sessions, the tuner and scale-curve demos run briefly, the device pool, and `limits.py`: every shipped
 GPU graph on a device clamped to WebGPU's baseline sizes);
 only `gui_screenshot` stays manual. `lavapipe`: the GPU tests that fit Mesa's software Vulkan
@@ -86,6 +86,15 @@ for w in what:
     elif w == "test":
         s, t = cargo(["test", "-q", "--workspace"], logs / "test.log")
         rc |= tests("tests", s, t)
+        # The scripts' own tests (records.py), on the dev build's binary the cargo tests built.
+        env = {**os.environ, "MR_BIN": os.environ.get("MR_BIN", str(ROOT / "target" / "debug" / "multirenderer"))}
+        with open(logs / "test-scripts.log", "w") as f:
+            s = subprocess.run([sys.executable, "-W", "error::ResourceWarning", "-m", "unittest", "discover", "-s", "scripts/ab", "-p", "test_*.py"], cwd=ROOT, env=env, stdout=f, stderr=subprocess.STDOUT).returncode
+        t = (logs / "test-scripts.log").read_text(errors="replace")
+        n = re.search(r"Ran (\d+) test", t)
+        print(f"script tests: {'ok' if s == 0 else 'FAILED'} ran={n[1] if n else 0}")
+        if s: print(t[-3000:])
+        rc |= s != 0
     elif w == "gpu":
         subprocess.run(["cargo", "build", "--release", "-q"], cwd=ROOT, capture_output=True)
         os.environ.setdefault("SECONDS", "8")  # the tuner demo's run, long enough for trials

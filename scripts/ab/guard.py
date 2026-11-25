@@ -27,7 +27,9 @@ pipelines. Passes in only one side are counted and, with --all, listed.
 
 The baseline is the newest `baselines/sweep-*` unless --base names one. Exit 0 when nothing
 regressed, 1 when something did, 2 when nothing could be compared. Records are read by
-records.py (MR_BIN names the binary that recomputes graph keys).
+records.py (MR_BIN names the binary that recomputes graph keys): it prints the observation
+versions read (newer than the binary: refused by name), the rename pairs of
+baselines/renames.toml it applied, and the records it left out with the reason.
 """
 import argparse, collections, glob, os, statistics as st, sys
 
