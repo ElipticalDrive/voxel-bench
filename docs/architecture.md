@@ -206,6 +206,26 @@ Measured 2026-11-24: the narrowest, `packets= isa=` (packet 1, scalar), takes th
 binary from 272.4 to 252.2 MB and `.text` from 44.3 to 32.3 MB (-27 %), 170 functions fewer,
 all in `mr-exec-cpu`.
 
+**GPU shaders per graph.** A GPU graph's shaders are composed and compiled when its renderer
+is built: each pass's report carries `shaders`, the part of `init_ms` spent making shader
+modules (`module_ms`: naga_oil composition, naga validation and translation) and pipelines
+(`pipeline_ms`: the driver's compile), with their counts (`mr_core::shader_clock`, per thread;
+renderers create pipelines through `mr_gpu::Pipelines`). Two caches stand between a graph and
+the driver's compile: ours (`$MR_GPU_CACHE`, a file per adapter and graph key) and the
+driver's own (NVIDIA: `__GL_SHADER_DISK_CACHE`). Measured 2026-11-24 (NVIDIA, one run each,
+not an idle machine; default graphs):
+
+| graph | modules | pipelines | `module_ms` | `pipeline_ms` cached | `pipeline_ms` cold | `init_ms` cold |
+|---|---|---|---|---|---|---|
+| raycast-gpu | 2 | 3 | 22-25 | 1 | 117 | 324-348 |
+| raster-gpu | 3 | 8 | 39-44 | 4 | 273-306 | 491-527 |
+| splat-gpu | 1 | 6 | 16-20 | | 244-322 | 445-563 |
+| discover-gpu | 6 | 26 | 86-113 | | 1837-3099 | 2107-3435 |
+
+Cold, the driver's compile is most of a GPU build (87 % for discover-gpu); cached, it is a
+few milliseconds and composition (ours) is the larger part. Each pipeline one more component
+adds costs a driver compile once per graph key, then nothing.
+
 ## Verifying a change
 
 - `cargo build --release` with no warnings; `cargo test -q --workspace` (unit tests,

@@ -12,6 +12,7 @@
 //! ids -> records adapter, `mr_components::draw::DECODE_WGSL`) writes `pack_hit` records into
 //! the hits edge, what crosses.
 
+use mr_gpu::Pipelines as _;
 use glam::IVec3;
 use mr_components::geometry::points::Points;
 use mr_components::graph::{self, Role};
@@ -173,7 +174,7 @@ impl Splat {
         entries.extend([storage_entry(REGION_BINDING, true, core.stages), storage_entry(REGION_BINDING + 1, false, core.stages), storage_entry(REGION_BINDING + 2, false, core.stages), storage_entry(REGION_BINDING + 3, false, core.stages)]);
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("splat"), entries: &entries });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("splat"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
-        let pipe = |e: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
+        let pipe = |e: &str| gpu.device.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
         let pipes = splat::ENTRIES.map(|e| pipe(if draw_only && e == "shade" { "decode" } else { e }));
         let (points_buf, zbuf) = (points_buffer(gpu, 1024), pixel_buffer(gpu, p.width, p.height));
         let big_buf = big_buffer(gpu, points_buf.size());

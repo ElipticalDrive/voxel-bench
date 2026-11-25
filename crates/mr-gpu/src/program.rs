@@ -208,6 +208,10 @@ impl Program {
 /// ([`Program::text`]) is written to `dir/<label>-<hash>.wgsl` (zero-cost checks: a refactor
 /// that must not change what runs leaves the set of files identical).
 pub fn compile(dev: &wgpu::Device, label: &str, p: &Program, root: &str, deps: &[&str]) -> wgpu::ShaderModule {
+    mr_core::shader_clock::module(|| compile_untimed(dev, label, p, root, deps))
+}
+
+fn compile_untimed(dev: &wgpu::Device, label: &str, p: &Program, root: &str, deps: &[&str]) -> wgpu::ShaderModule {
     if let Some(dir) = std::env::var_os("MR_DUMP_WGSL") {
         let text = p.text(root, deps).unwrap_or_else(|e| e);
         crate::dump_wgsl(&dir, label, &text);

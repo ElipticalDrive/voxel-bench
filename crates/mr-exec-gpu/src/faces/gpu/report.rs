@@ -1,6 +1,7 @@
 //! Diagnostics: the counters read back and the quantities the post's views show, with the
 //! passes that write them (all only while one is viewed).
 
+use mr_gpu::Pipelines as _;
 use std::sync::atomic::Ordering;
 
 use mr_core::*;
@@ -56,7 +57,7 @@ impl GpuSampler {
             let src = format!("{}{}", crate::view::wgsl(), include_str!("../view.wgsl"));
             let module = mr_gpu::shader(dev, "discover view", src);
             // Its own layout: the bindings the entry point uses.
-            dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(entry), layout: None, module: &module, entry_point: Some(entry), compilation_options: Default::default(), cache: gpu.cache() })
+            dev.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(entry), layout: None, module: &module, entry_point: Some(entry), compilation_options: Default::default(), cache: gpu.cache() })
         };
         match name {
             "tiles" | "rays" => v.writer = Some(writer(name)),

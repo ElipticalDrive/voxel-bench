@@ -6,6 +6,7 @@
 //! output: a ramp's value through the shared colour ramp, a category as a tint of the greyed
 //! image. Unviewed, nothing is compiled or bound.
 
+use mr_gpu::Pipelines as _;
 use mr_core::{Legend, Quantity};
 use mr_gpu::Gpu;
 
@@ -136,9 +137,9 @@ fn pipeline(gpu: &Gpu, format: wgpu::TextureFormat, categorical: bool) -> (wgpu:
         entries.push(crate::storage_entry(4, true, c));
     }
     let layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("view"), entries: &entries });
-    let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("view"), source: wgpu::ShaderSource::Wgsl(shader(format, categorical).into()) });
+    let module = mr_gpu::shader(dev, "view", shader(format, categorical));
     let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("view"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
-    let pipeline = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("view"), layout: Some(&pl), module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: gpu.cache() });
+    let pipeline = dev.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("view"), layout: Some(&pl), module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: gpu.cache() });
     (layout, pipeline)
 }
 

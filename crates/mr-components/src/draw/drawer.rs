@@ -19,6 +19,7 @@
 //! records) is the executor's, the resource of the edge from the drawer to the shading
 //! ([`DrawMode::target`] its format, [`DrawFrame::ids`] the frame's).
 
+use mr_gpu::Pipelines as _;
 use mr_gpu::meshes::MeshPass;
 use mr_gpu::{FrameRing, Gpu, Ticket, wgpu};
 
@@ -256,7 +257,7 @@ impl FaceDrawer {
                       compare,
                       fragment: bool| {
             gpu.device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                .render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(label),
                     layout: Some(spec.render_layout),
                     vertex: wgpu::VertexState {
@@ -612,7 +613,7 @@ fn shade_pipeline(
     entry: &str,
 ) -> wgpu::ComputePipeline {
     gpu.device
-        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        .compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(entry),
             layout: Some(layout),
             module,

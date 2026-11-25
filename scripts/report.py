@@ -40,6 +40,8 @@ for a in args:
               + (f"  settled ({settled_why(r)}): {r['quality_settled']['psnr']['mean']:.1f} dB {r['quality_settled']['bad_pct']['mean']:.2f}%" if r.get("quality_settled") else "")
               + (f"  ! beside failed: {', '.join(r['beside_failed'])}" if r.get("beside_failed") else "")
               + (f"  ! not supported: {'; '.join(r['not_supported'])}" if r.get("not_supported") else ""))
+        if (sh := r.get("shaders")):
+            print(f"    build: init {r['init_ms']:.0f} ms, shaders {sh['module_ms']:.1f} ms ({sh['modules']} modules) + pipelines {sh['pipeline_ms']:.1f} ms ({sh['pipelines']})")
         st = r.get("stages") or []
         if st:
             def ms(x, k):

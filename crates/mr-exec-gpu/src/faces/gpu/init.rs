@@ -1,5 +1,6 @@
 //! Construction: the discovery's programs, pipelines, buffers and bind groups.
 
+use mr_gpu::Pipelines as _;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 
@@ -128,7 +129,7 @@ impl GpuSampler {
         let pl_disc = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover"), bind_group_layouts: &core.storages.layouts(&[Some(&layout_disc), Some(core.world.layout())]), immediate_size: 0 });
         let pl_args = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("discover args"), bind_group_layouts: &[Some(&layout_args)], immediate_size: 0 });
         let compute = |pl: &wgpu::PipelineLayout, m: &wgpu::ShaderModule, entry: &str| {
-            dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            dev.compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(entry),
                 layout: Some(pl),
                 module: m,
@@ -160,7 +161,7 @@ impl GpuSampler {
         let pl_draw = &drawing.pl_draw;
         let pipeline = |label, write: bool, compare, fragment: bool| {
             let targets = [Some(wgpu::ColorTargetState { format: out_format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
-            dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            dev.render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(pl_draw),
                 vertex: wgpu::VertexState { module: &draw_mod, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },

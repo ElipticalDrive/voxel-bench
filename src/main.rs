@@ -394,6 +394,7 @@ impl Ctx<'_> {
             match spawn() {
                 Ok(worker) => {
                     report.init_ms = worker.init_ms;
+                    report.shaders = worker.shaders;
                     report.tags = worker.info.tags.clone();
                     let i = lanes.len();
                     let region = spec.region(run, worker.info.features.max_lod());

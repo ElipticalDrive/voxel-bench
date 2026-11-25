@@ -16,6 +16,7 @@
 //! the rays' pass and the deferred shading pass (the shading on another GPU: that GPU's
 //! executor's, [`crate::remote`]; this region's rays then only write the records).
 
+use mr_gpu::Pipelines as _;
 use glam::IVec3;
 use mr_components::Api;
 use mr_components::caps::{self, Cap};
@@ -262,14 +263,14 @@ impl Passes {
         let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = mr_gpu::program::compile(dev, "raycast", &lp.program, &lp.root, &deps);
         let entry = |name| {
-            dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(name), layout: Some(layout), module: &module, entry_point: Some(name), compilation_options: Default::default(), cache: core.gpu.cache() })
+            dev.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(name), layout: Some(layout), module: &module, entry_point: Some(name), compilation_options: Default::default(), cache: core.gpu.cache() })
         };
         let main = if cast.fragment() {
             // Deferred: the fragments write records, not colour (the output is attached
             // untouched).
             let write_mask = if deferred { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::ALL };
             let targets = [Some(wgpu::ColorTargetState { format: core.output_format(), blend: None, write_mask })];
-            Main::Fragment(dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            Main::Fragment(dev.render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("raycast fragment"),
                 layout: Some(layout),
                 vertex: wgpu::VertexState { module: &module, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },

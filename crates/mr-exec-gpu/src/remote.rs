@@ -7,6 +7,7 @@
 //! storage. The records reach its edge through the edge's transfer ([`crate::transfer`]), the
 //! executors' own; the image is this GPU's.
 
+use mr_gpu::Pipelines as _;
 use mr_components::graph::{self, Device, Role};
 use mr_components::shaders::{self, Walks};
 use mr_components::storage::gpu_data::Bound;
@@ -243,7 +244,7 @@ fn compile(core: &Core, layout: &wgpu::PipelineLayout, walks: &Walks, shadow: us
     let dev = &core.gpu.device;
     let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = mr_gpu::program::compile(dev, "remote shading", &program, &root, &deps);
-    let pipeline = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("remote shade"), layout: Some(layout), module: &module, entry_point: Some("shade"), compilation_options: Default::default(), cache: core.gpu.cache() });
+    let pipeline = dev.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("remote shade"), layout: Some(layout), module: &module, entry_point: Some("shade"), compilation_options: Default::default(), cache: core.gpu.cache() });
     if let Some(e) = pollster::block_on(scope.pop()) {
         anyhow::bail!("compiling the remote shading pass: {e}");
     }

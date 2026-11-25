@@ -9,6 +9,7 @@
 //! change log's transfer to the GPU). The march and the deferred shading are nodes sharing
 //! the [`Columns`] region.
 
+use mr_gpu::Pipelines as _;
 use glam::IVec3;
 use mr_components::graph::{self, Role};
 use mr_components::shading::state::{self as shade_state, ShadeState};
@@ -106,7 +107,7 @@ impl Columns {
         let (mut program, root, deps) = program(&self.shading, self.deferred, lit, self.tone);
         core.bind_program(&mut program, "0u");
         let module = mr_gpu::program::compile(&gpu.device, if lit { "voxelspace lit" } else { "voxelspace" }, &program, &root, &deps);
-        let pipe = |e: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&self.pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
+        let pipe = |e: &str| gpu.device.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&self.pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
         Variant { march: pipe("main"), shade: self.deferred.then(|| pipe("shade")) }
     }
 }

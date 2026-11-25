@@ -303,7 +303,23 @@ pub fn shader(dev: &wgpu::Device, label: &str, src: String) -> wgpu::ShaderModul
     if let Some(dir) = std::env::var_os("MR_DUMP_WGSL") {
         dump_wgsl(&dir, label, &src);
     }
-    dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(src.into()) })
+    mr_core::shader_clock::module(|| dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(src.into()) }))
+}
+
+/// Pipeline creation counted by [`mr_core::shader_clock`] (the driver's compile, reported
+/// beside a renderer's build time). Renderers create their pipelines through these.
+pub trait Pipelines {
+    fn compute_pipeline(&self, d: &wgpu::ComputePipelineDescriptor) -> wgpu::ComputePipeline;
+    fn render_pipeline(&self, d: &wgpu::RenderPipelineDescriptor) -> wgpu::RenderPipeline;
+}
+
+impl Pipelines for wgpu::Device {
+    fn compute_pipeline(&self, d: &wgpu::ComputePipelineDescriptor) -> wgpu::ComputePipeline {
+        mr_core::shader_clock::pipeline(|| self.create_compute_pipeline(d))
+    }
+    fn render_pipeline(&self, d: &wgpu::RenderPipelineDescriptor) -> wgpu::RenderPipeline {
+        mr_core::shader_clock::pipeline(|| self.create_render_pipeline(d))
+    }
 }
 
 /// Writes `src` to `dir/<label>-<hash>.wgsl` (`MR_DUMP_WGSL`).

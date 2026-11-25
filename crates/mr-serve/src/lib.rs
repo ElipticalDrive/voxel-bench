@@ -136,6 +136,7 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let info = (entry.info)(&params)?;
     tracing::info!("initialising {name} at {}x{}", params.width, params.height);
     let t = Instant::now();
+    mr_core::shader_clock::take();
     // The process's devices, handed to the renderer.
     let devices = devices(&params.devices);
     // The renderer's region: its radius, and the levels it asked for that it supports.
@@ -160,7 +161,7 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
         renderer = Box::new(fault::Faulty::new(renderer, f));
     }
     let mut shm = FrameSlots::open(&shm)?;
-    out.send(&WorkerMsg::Ready { info, init_ms: t.elapsed().as_secs_f32() * 1e3 })?;
+    out.send(&WorkerMsg::Ready { info, init_ms: t.elapsed().as_secs_f32() * 1e3, shaders: mr_core::shader_clock::take() })?;
 
     let mut slots = HashMap::new();
     let mut update_ms = 0f32;

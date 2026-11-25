@@ -17,6 +17,7 @@ pub mod mesh;
 pub mod baked;
 pub mod params;
 pub mod renderer;
+pub mod shader_clock;
 pub mod texture;
 
 pub use camera::Camera;

@@ -152,6 +152,9 @@ pub struct PassReport {
     pub tags: Vec<String>,
     pub resolution: [u32; 2],
     pub init_ms: f32,
+    /// The part of `init_ms` spent making shader modules and pipelines (GPU renderers).
+    #[serde(default, skip_serializing_if = "mr_core::shader_clock::ShaderTime::is_zero")]
+    pub shaders: mr_core::shader_clock::ShaderTime,
     pub initial_load_ms: f64,
     pub frames: usize,
     pub wall_s: f64,

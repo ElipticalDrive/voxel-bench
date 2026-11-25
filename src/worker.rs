@@ -26,6 +26,8 @@ pub struct Worker {
     pub info: RendererInfo,
     pub pid: u32,
     pub init_ms: f32,
+    /// The part of `init_ms` spent making shader modules and pipelines.
+    pub shaders: mr_core::shader_clock::ShaderTime,
     pub shm: FrameSlots,
     /// The frames' pixel format (the pipeline's post: `hdr` is float).
     pub format: PixelFormat,
@@ -238,8 +240,8 @@ impl Worker {
                 None => hung(e),
             }
         });
-        let (info, init_ms) = match ready? {
-            WorkerMsg::Ready { info, init_ms } => (info, init_ms),
+        let (info, init_ms, shaders) = match ready? {
+            WorkerMsg::Ready { info, init_ms, shaders } => (info, init_ms, shaders),
             m => bail!("[{}] expected Ready, got {m:?}", cfg.label),
         };
         // Both sides have it mapped now; unlinking means nothing leaks if we're killed.
@@ -249,6 +251,7 @@ impl Worker {
             info,
             pid,
             init_ms,
+            shaders,
             free_slots: (0..cfg.slots).rev().collect(),
             shm,
             format,

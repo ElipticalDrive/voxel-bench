@@ -16,7 +16,7 @@ pub use interprocess::local_socket::{Listener, Stream};
 use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {
@@ -64,7 +64,8 @@ pub enum HostMsg {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum WorkerMsg {
     Hello { pid: u32, protocol: u32, renderers: Vec<String> },
-    Ready { info: RendererInfo, init_ms: f32 },
+    /// `shaders`: the part of `init_ms` spent making shader modules and pipelines.
+    Ready { info: RendererInfo, init_ms: f32, shaders: mr_core::shader_clock::ShaderTime },
     /// `update_ms` is time spent applying world updates since the previous frame;
     /// `arrivals` what had reached its client when the frame was requested.
     FrameDone { frame_id: u64, stats: FrameStats, slot: Option<u32>, update_ms: f32, arrivals: mr_core::link::Arrivals },

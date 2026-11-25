@@ -13,6 +13,7 @@
 //! the shading component shades the mesh surface. Back faces are not culled: meshes may be
 //! open or inconsistently wound.
 
+use crate::Pipelines as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -95,7 +96,7 @@ fn pipeline(gpu: &Gpu, label: &str, module: &wgpu::ShaderModule, layout: &wgpu::
     let inst = [attr(3, Float32x4, 0), attr(4, Float32x4, 4), attr(5, Float32x4, 8), attr(6, Uint32x2, layout::INST_FIRST_VERTEX)];
     const _: () = assert!(layout::INST_BASE == layout::INST_FIRST_VERTEX + 1);
     let targets = [Some(wgpu::ColorTargetState { format: target, blend: None, write_mask: wgpu::ColorWrites::ALL })];
-    gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    gpu.device.render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState {

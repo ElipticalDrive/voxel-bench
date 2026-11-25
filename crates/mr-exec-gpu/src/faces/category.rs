@@ -3,6 +3,7 @@
 //! target of its own, then copied into the post's quantity buffer. Built on the view's first
 //! frame; nothing exists while no category view of the source is chosen.
 
+use mr_gpu::Pipelines as _;
 use mr_components::storage::gpu_data::Bound;
 use mr_gpu::wgpu;
 
@@ -12,7 +13,7 @@ use crate::Core;
 /// `target` (none: side effects only), depth-tested with `compare`.
 pub(crate) fn face_raster(core: &Core, label: &str, layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry: &str, target: Option<wgpu::TextureFormat>, compare: wgpu::CompareFunction) -> wgpu::RenderPipeline {
     let targets = [target.map(|format| wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
-    core.gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    core.gpu.device.render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState { module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
@@ -69,7 +70,7 @@ impl CategoryRaster {
         let pipe = face_raster(core, entry, layout, module, entry, Some(wgpu::TextureFormat::R32Uint), wgpu::CompareFunction::Greater);
         let src = format!("{}{COPY_WGSL}", crate::view::wgsl());
         let copy_mod = mr_gpu::shader(&gpu.device, "view copy", src);
-        let copy = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("view copy"), layout: None, module: &copy_mod, entry_point: Some("main"), compilation_options: Default::default(), cache: gpu.cache() });
+        let copy = gpu.device.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("view copy"), layout: None, module: &copy_mod, entry_point: Some("main"), compilation_options: Default::default(), cache: gpu.cache() });
         Self { name, size: (w, h), pipe, ids, depth: super::depth_view(gpu, w, h, false), copy }
     }
 
