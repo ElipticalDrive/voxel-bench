@@ -72,9 +72,9 @@ fn a_runs_memory_does_not_grow_with_its_passes() {
     let d = dir("records-memory");
     let frames = 600;
     let (small, small_bytes) = peak(&d, 6, frames);
-    let (big, big_bytes) = peak(&d, 30, frames);
+    let (big, big_bytes) = peak(&d, 60, frames);
     let more_mb = (big_bytes - small_bytes) as f64 / 1048576.0;
-    // Held in memory, the 24 more passes' frames took about twice their size in the report
+    // Held in memory, the 54 more passes' frames took about twice their size in the report
     // (0.46 MB a pass of 600 frames against 0.21 MB on disk); now each is dropped once journaled.
     assert!(big - small < more_mb / 2.0, "the host's peak grew {:.1} MB ({small:.0} -> {big:.0}) for {more_mb:.1} MB more frames in the report", big - small);
 }
