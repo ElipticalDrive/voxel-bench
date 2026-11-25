@@ -126,6 +126,7 @@ What a renderer, a pass and the registry report, and where the GUI shows it.
 | fps, frame interval (mean / p99), latency, GPU / CPU / update ms per frame | panel, `stats` (last 2 s) |
 | time per stage, with the graph nodes it runs | panel, one row per stage |
 | quality at the last probe (PSNR, SSIM, MS-SSIM, bad pixels) | panel, and the probe plot |
+| the settled score: the last probe taken with the view held still, nothing new sent, for the renders its pipeline needs (late edges: `compare.settle`; accumulating: `compare.converge` paths per pixel), and how long ago; before one, how many renders to hold still. Not shown for a pipeline whose every frame is settled | panel, `settled (last)` |
 | memory: RSS; GPU the renderer counts, now (peak since it started); device peak, measured from the GPU allocators | panel, `memory` |
 | build: start-up ms, of it shader modules and pipelines (ms, count) | panel, `build` |
 | chunks sent and pending, bytes arrived and sent over its link, holes | panel, `streaming` / `arrivals` |
@@ -139,7 +140,13 @@ What a renderer, a pass and the registry report, and where the GUI shows it.
 
 **A finished benchmark** (the Benchmark tab, one row per pass): fps, frame ms (mean, p99), GPU
 and CPU ms, latency, PSNR, the settled PSNR, bad pixels, start-up ms and its shader part
-(modules + pipelines), peak RSS, the GPU memory the renderer counts and the device peak; a
+(modules + pipelines), peak RSS, the GPU memory the renderer counts and the device peak. Then
+the columns only some passes fill, shown when a pass that ran reports them: the like score
+(against a reference given the pass's LOD region; its `like` on hover), the converged paths
+per pixel, update ms (ns per byte arrived on hover), missed deadlines (a paced pass), and,
+where a pass streamed over a link that is not free, had holes or was complete only after its
+first frame, wire MB (arrived bytes and chunks on hover), holes (mean / max; frames with any
+on hover) and the first complete frame (or never). Each header says on hover what it is. A
 failed pass reads FAILED with its reason on hover; ⚠ beside a label lists, on hover, what the
 pass left out, a fault while its worker stopped, and lanes that failed beside it.
 
@@ -201,6 +208,13 @@ reference at the same moment, without pausing anything. Each probe records PSNR,
 MS-SSIM (multi-scale structural similarity), plotted over time. Lanes that render at a lower
 resolution are upscaled bilinearly before scoring, so the loss of resolution counts as a loss
 of quality.
+
+A probe scores the frame as shown. A pipeline with late edges or one that accumulates lit
+frames shows less while the view changes than once it has caught up; a probe taken after the
+lane rendered the same view, with nothing new sent to it (no stream, edits, knobs or mesh
+updates), for the renders a benchmark's settled pass holds it (`CompareSpec::held`, from the
+plan's `[output.compare]`, else its defaults) is marked settled, and the lane panel shows the
+last such score beside the last probe's: the live counterpart of a benchmark's settled dB.
 
 The choice of metric matters. These worlds have texture detail at the scale of single pixels,
 so PSNR drops from about 59 dB to about 26 dB at *any* change of resolution (even 0.98×) and

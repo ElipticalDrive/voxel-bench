@@ -97,6 +97,12 @@ pub struct QualitySample {
     pub ssim_db: f64,
     pub ms_ssim_db: f64,
     pub bad_pct: f64,
+    /// Renders the probed frame had to follow with the same view and nothing new sent for
+    /// its score to be settled (`CompareSpec::held`: late edges caught up, accumulation
+    /// converged); 0 for a pipeline whose every frame is settled.
+    pub held: u32,
+    /// It did: the score is the settled one, as a benchmark's `quality_settled`.
+    pub settled: bool,
 }
 
 #[derive(Clone)]
@@ -453,9 +459,23 @@ struct Runner {
     in_flight: VecDeque<Flight>,
     next_id: u64,
     res: [u32; 2],
+    /// The view of its last render and how many renders in a row had it with nothing new
+    /// sent in between (the first of them included): what a settled score needs.
+    last_view: Option<(Camera, PassMode)>,
+    still: u32,
 }
 
 impl Runner {
+    /// A render of `camera` in `mode` now would show what its last one did, nothing new sent.
+    fn unchanged(&self, camera: Camera, mode: PassMode) -> bool {
+        self.last_view == Some((camera, mode)) && self.pending.is_empty() && self.pending_meshes.is_empty() && self.pending_edits.is_empty() && self.pending_params.is_empty()
+    }
+
+    /// A render of `camera` in `mode` now follows at least `held` (> 0) renders of the same view.
+    fn settled(&self, camera: Camera, mode: PassMode, held: u32) -> bool {
+        held > 0 && self.unchanged(camera, mode) && self.still >= held
+    }
+
     /// Queues the server's messages for its client.
     fn take(&mut self, stream: &[WorldUpdate]) {
         self.chunks_sent += stream.iter().filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. })).count() as u64;
@@ -463,6 +483,7 @@ impl Runner {
     }
 
     fn submit(&mut self, camera: Camera, mode: PassMode, layers: bool, readback: bool, purpose: Purpose) -> anyhow::Result<bool> {
+        let unchanged = self.unchanged(camera, mode);
         let Some(w) = self.worker.as_mut() else { return Ok(false) };
         let slot = if readback {
             match w.take_slot() {
@@ -473,6 +494,8 @@ impl Runner {
         } else {
             None
         };
+        self.still = if unchanged { self.still + 1 } else { 1 };
+        self.last_view = Some((camera, mode));
         let time = clock();
         crate::session::send_stream(w, std::mem::take(&mut self.pending), camera.position, time)?;
         for m in std::mem::take(&mut self.pending_meshes) {
@@ -525,6 +548,8 @@ struct Probe {
     started: bool,
     reference: Option<Arc<Vec<u8>>>,
     lanes: HashMap<usize, ([u32; 2], Arc<Vec<u8>>)>,
+    /// Per lane: the renders its probed frame needed held still, and whether it had them.
+    settled: HashMap<usize, (u32, bool)>,
     waiting: usize,
 }
 

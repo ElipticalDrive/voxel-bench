@@ -22,6 +22,7 @@ impl Session {
             started: false,
             reference: None,
             lanes: HashMap::new(),
+            settled: HashMap::new(),
             waiting: 0,
         });
     }
@@ -65,10 +66,13 @@ impl Session {
             Ok(false) => {}
             Err(e) => failures.push((REFERENCE, e)),
         }
+        let compare = self.plan.output.compare.clone().unwrap_or_default();
         for (i, lane) in self.lanes.iter_mut().enumerate() {
             if lane.run.worker.is_none() || lane.want_res.is_some() {
                 continue;
             }
+            let held = compare.held(&lane.run.spec, mode);
+            probe.settled.insert(i, (held, lane.run.settled(cam, mode, held)));
             match lane.run.submit(cam, mode, layers, true, Purpose::Probe(id)) {
                 Ok(true) => probe.waiting += 1,
                 Ok(false) => {}
@@ -95,7 +99,7 @@ impl Session {
             let px = if *res != ref_res { Arc::new(compare::resample(px, *res, ref_res, true)) } else { px.clone() };
             let q = compare::compare(&reference, &px, ref_res[0]);
             if let Some(v) = sh.lanes.get_mut(i) {
-                v.quality.push_back(QualitySample { t, psnr: q.psnr.min(99.0), ssim_db: q.ssim_db, ms_ssim_db: q.ms_ssim_db, bad_pct: q.bad_pct });
+                v.quality.push_back(QualitySample { t, psnr: q.psnr.min(99.0), ssim_db: q.ssim_db, ms_ssim_db: q.ms_ssim_db, bad_pct: q.bad_pct, held: p.settled.get(&i).map_or(0, |s| s.0), settled: p.settled.get(&i).is_some_and(|s| s.1) });
                 if v.quality.len() > 2000 {
                     v.quality.pop_front();
                 }

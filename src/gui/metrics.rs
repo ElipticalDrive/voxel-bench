@@ -206,6 +206,11 @@ impl App {
                         ui.monospace(format!("PSNR {:.1} · SSIM {:.1} · MS-SSIM {:.1} dB · {:.2}% bad", q.psnr, q.ssim_db, q.ms_ssim_db, q.bad_pct));
                         ui.end_row();
                     }
+                    if let Some(text) = settled_text(l) {
+                        ui.label("settled (last)").on_hover_text("The last probe taken once the pipeline had settled: its view held still, nothing new sent, for the renders its late edges need to catch up (compare.settle) or its accumulation to reach compare.converge paths per pixel. The score a benchmark reports as settled, and the catalogue's floor uses. Probes taken while moving score the frames as shown.");
+                        ui.monospace(text);
+                        ui.end_row();
+                    }
                     let mb = |x: Option<f64>| x.map(|x| format!("{x:.0}")).unwrap_or("-".into());
                     ui.label("memory").on_hover_text("RSS: the renderer process's resident memory (with thread isolation: the whole program's). GPU: the buffers and textures it counts holding, now (peak since it started). Device peak: measured, the most its GPU devices' allocators have held (rounding and transient memory included; - where the API does not say).");
                     ui.monospace(format!("RSS {} MB · GPU {} ({}) MB · device peak {} MB", mb(l.rss_mb), mb(l.gpu_mb), mb(l.gpu_peak_mb), mb(l.device_peak_mb)));
@@ -476,4 +481,19 @@ fn lane_color(i: usize) -> Color32 {
         Color32::from_rgb(120, 220, 220),
     ];
     C[i % C.len()]
+}
+
+/// The lane panel's settled score: the last probe taken settled, with its age; or, when
+/// none was, how long the view must be held still for one. None for a pipeline whose every
+/// frame is settled (its last probe is its settled score) or before any probe.
+pub(super) fn settled_text(l: &super::live::LaneView) -> Option<String> {
+    let last = l.quality.back()?;
+    if last.held == 0 {
+        return None;
+    }
+    let now = l.samples.back().map_or(last.t, |s| s.t).max(last.t);
+    Some(match l.quality.iter().rev().find(|q| q.settled) {
+        Some(q) => format!("PSNR {:.1} · MS-SSIM {:.1} dB · {:.2}% bad ({:.0} s ago)", q.psnr, q.ms_ssim_db, q.bad_pct, now - q.t),
+        None => format!("none yet: hold the view still for {} renders before a probe", last.held),
+    })
 }

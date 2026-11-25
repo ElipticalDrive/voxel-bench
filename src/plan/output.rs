@@ -94,6 +94,13 @@ pub struct CompareSpec {
     pub converge: u32,
 }
 
+impl Default for CompareSpec {
+    /// What `[output.compare]` with nothing in it means.
+    fn default() -> Self {
+        Self { reference: default_reference(), reference_options: Default::default(), every: default_every(), settle: default_settle(), converge: default_converge() }
+    }
+}
+
 impl CompareSpec {
     /// Renders a compared frame of `spec` is held still in its settled pass in mode `m`
     /// (0: no settled pass): `settle` for late edges, enough for `converge` paths per pixel

@@ -123,6 +123,141 @@ fn f(v: &Value, path: &[&str]) -> Option<f64> {
     cur.as_f64()
 }
 
+/// One cell of the report table: its text and, where it has more to say, a hover.
+pub struct Cell {
+    pub text: String,
+    pub hover: Option<String>,
+}
+
+fn cell(text: String) -> Cell {
+    Cell { text, hover: None }
+}
+
+fn num(v: Option<f64>, d: usize) -> Option<Cell> {
+    v.map(|x| cell(format!("{x:.d$}")))
+}
+
+/// A column of the report table after the label and mode: its header, the header's hover,
+/// and a pass's cell (None: "-").
+pub struct Column {
+    pub name: &'static str,
+    pub hover: &'static str,
+    pub cell: fn(&Value) -> Option<Cell>,
+}
+
+/// The columns `passes` fill: every pass has the first ones; the rest (the like score,
+/// convergence, world updates, deadlines, streaming) show only when some pass that ran
+/// reports them.
+pub fn columns(passes: &[Value]) -> Vec<Column> {
+    let ok: Vec<&Value> = passes.iter().filter(|p| p.get("error").is_none_or(Value::is_null)).collect();
+    let always = [
+        Column { name: "fps", hover: "Frames completed per second of wall time over the pass", cell: |p| num(f(p, &["fps"]), 1) },
+        Column { name: "frame ms", hover: "Mean time between completed frames", cell: |p| num(f(p, &["frame_interval_ms", "mean"]), 2) },
+        Column { name: "p99 ms", hover: "99th-percentile time between completed frames (hitches)", cell: |p| num(f(p, &["frame_interval_ms", "p99"]), 2) },
+        Column { name: "gpu ms", hover: "Mean GPU execution time per frame (timestamp queries)", cell: |p| num(f(p, &["gpu_ms", "mean"]), 2) },
+        Column { name: "cpu ms", hover: "Mean renderer-process CPU time per frame", cell: |p| num(f(p, &["cpu_ms", "mean"]), 2) },
+        Column { name: "latency ms", hover: "Mean time from a frame's request to its completion", cell: |p| num(f(p, &["latency_ms", "mean"]), 2) },
+        Column { name: "PSNR", hover: "Mean PSNR vs the reference renderer in dB (higher is better, 99 = exact)", cell: |p| num(f(p, &["quality", "psnr", "mean"]), 1) },
+        Column {
+            name: "settled dB",
+            hover: "PSNR of the frames rendered with the camera held still long enough to settle (accumulating pipelines: converged); the score the catalogue's floor uses where present",
+            cell: |p| num(f(p, &["quality_settled", "psnr", "mean"]), 1),
+        },
+        Column { name: "bad %", hover: "Mean share of pixels off by more than 16/255 vs the reference", cell: |p| num(f(p, &["quality", "bad_pct", "mean"]), 2) },
+        Column { name: "init ms", hover: "Renderer start-up time (device, pipelines)", cell: |p| num(f(p, &["init_ms"]), 0) },
+        Column {
+            name: "shaders ms",
+            hover: "The part of init ms spent on shaders: composing and validating modules, and creating pipelines (the driver's compile)",
+            cell: |p| {
+                let s = [f(p, &["shaders", "module_ms"]), f(p, &["shaders", "pipeline_ms"])];
+                let n = |v: Option<f64>| v.map_or("-".into(), |x| format!("{x:.0}"));
+                (!s.iter().all(Option::is_none)).then(|| Cell { text: format!("{} + {}", n(s[0]), n(s[1])), hover: Some("modules + pipelines".into()) })
+            },
+        },
+        Column { name: "RSS MB", hover: "Peak resident memory of the renderer process", cell: |p| num(f(p, &["peak_rss_mb"]), 0) },
+        Column { name: "GPU MB", hover: "GPU memory the renderer counts holding", cell: |p| num(f(p, &["memory", "gpu_bytes"]).filter(|x| *x > 0.0).map(|x| x / 1048576.0), 0) },
+        Column {
+            name: "device MB",
+            hover: "Measured: the most its GPU devices' allocators held (rounding and transient memory included)",
+            cell: |p| num(f(p, &["memory", "gpu_device_bytes"]).filter(|x| *x > 0.0).map(|x| x / 1048576.0), 0),
+        },
+    ];
+    let optional = [
+        Column {
+            name: "like dB",
+            hover: "PSNR against a reference given what the pipeline was given (its LOD region, `like`): a lossy pipeline scores low in PSNR and high here, a wrong one low in both",
+            cell: |p| {
+                let v = f(p, &["quality_like", "psnr", "mean"])?;
+                Some(Cell { text: format!("{v:.1}"), hover: p.get("like").and_then(Value::as_str).map(|l| format!("like {l}")) })
+            },
+        },
+        Column {
+            name: "spp",
+            hover: "Paths per pixel its settled frames accumulated (pipelines that accumulate lit frames, held still to reach compare.converge)",
+            cell: |p| num(f(p, &["converged_spp"]), 0),
+        },
+        Column { name: "update ms", hover: "Mean time applying world updates per frame (chunk uploads, edits, lights); per byte arrived on hover", cell: update_cell },
+        Column {
+            name: "missed",
+            hover: "Frames not done by their deadline in a paced pass (`run.pacing` at a fixed fps)",
+            cell: |p| num(f(p, &["missed_deadlines"]), 0),
+        },
+        Column {
+            name: "wire MB",
+            hover: "Bytes sent over its link in the pass, resends and warm-up included; arrived bytes and chunks on hover. Shown for passes over a link that is not free, with holes, or complete only after their first frame",
+            cell: |p| {
+                stream(p)?;
+                let mb = |k| f(p, &[k]).unwrap_or(0.0) / 1048576.0;
+                Some(Cell { text: format!("{:.1}", mb("wire_bytes")), hover: Some(format!("{:.1} MB arrived, {:.0} chunks sent", mb("arrived_bytes"), f(p, &["chunks_sent"]).unwrap_or(0.0))) })
+            },
+        },
+        Column {
+            name: "holes",
+            hover: "Chunks of its region missing when a frame was requested (the server's backlog, on the link, not generated yet): mean / max per frame; frames with any on hover",
+            cell: |p| {
+                stream(p)?;
+                let (mean, max) = (f(p, &["holes", "mean"]).unwrap_or(0.0), f(p, &["holes", "max"]).unwrap_or(0.0));
+                Some(Cell { text: format!("{mean:.1} / {max:.0}"), hover: Some(format!("{:.0} frames with holes", f(p, &["frames_with_holes"]).unwrap_or(0.0))) })
+            },
+        },
+        Column {
+            name: "first complete",
+            hover: "The first frame requested with nothing of its region missing: its number, and the wall time from the pass's start (initial load included)",
+            cell: |p| {
+                stream(p)?;
+                Some(match p.get("first_complete").filter(|c| !c.is_null()) {
+                    Some(c) => Cell {
+                        text: format!("#{:.0} {:.0} ms", f(c, &["frame"]).unwrap_or(0.0), f(c, &["ms"]).unwrap_or(0.0)),
+                        hover: Some(format!("at {:.2} s on the run's clock", f(c, &["clock_s"]).unwrap_or(0.0))),
+                    },
+                    None => cell("never".into()),
+                })
+            },
+        },
+    ];
+    let mut cols: Vec<Column> = always.into_iter().collect();
+    cols.extend(optional.into_iter().filter(|c| ok.iter().any(|p| (c.cell)(p).is_some())));
+    cols
+}
+
+/// Some(()) when the pass's streaming is worth showing: over a link that is not free, with
+/// holes, or complete only after its first recorded frame (or never).
+fn stream(p: &Value) -> Option<()> {
+    let link = p.get("link").is_some_and(|l| !l.is_null());
+    let holes = f(p, &["frames_with_holes"]).unwrap_or(0.0) > 0.0;
+    let first = p.get("per_frame").and_then(|v| v.get(0)).and_then(|v| f(v, &["frame"]));
+    let late = match p.get("first_complete").filter(|c| !c.is_null()) {
+        Some(c) => first.is_some_and(|first| f(c, &["frame"]).unwrap_or(0.0) > first),
+        None => true,
+    };
+    (link || holes || late).then_some(())
+}
+
+fn update_cell(p: &Value) -> Option<Cell> {
+    let mean = f(p, &["update_ms", "mean"]).filter(|x| *x > 0.0)?;
+    Some(Cell { text: format!("{mean:.2}"), hover: f(p, &["update_ns_per_byte"]).map(|x| format!("{x:.2} ns per byte arrived")) })
+}
+
 pub fn report_ui(ui: &mut Ui, r: &Report) {
     ui.horizontal(|ui| {
         ui.label(r.path.display().to_string());
@@ -131,33 +266,17 @@ pub fn report_ui(ui: &mut Ui, r: &Report) {
             let _ = Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(d).spawn();
         }
     });
-    let cols = ["renderer", "mode", "fps", "frame ms", "p99 ms", "gpu ms", "cpu ms", "latency ms", "PSNR", "settled dB", "bad %", "init ms", "shaders ms", "RSS MB", "GPU MB", "device MB"];
+    let cols = columns(&r.passes);
     egui::ScrollArea::horizontal().id_salt("report-table").show(ui, |ui| {
         egui::Grid::new("report").striped(true).show(ui, |ui| {
-            for c in cols {
-                ui.strong(c).on_hover_text(match c {
-                    "renderer" => "Renderer label from the plan",
-                    "mode" => "Unlit (textures only) or lit (sun, sky, point lights, shadows)",
-                    "fps" => "Frames completed per second of wall time over the pass",
-                    "frame ms" => "Mean time between completed frames",
-                    "p99 ms" => "99th-percentile time between completed frames (hitches)",
-                    "gpu ms" => "Mean GPU execution time per frame (timestamp queries)",
-                    "cpu ms" => "Mean renderer-process CPU time per frame",
-                    "latency ms" => "Mean time from a frame's request to its completion",
-                    "PSNR" => "Mean PSNR vs the reference renderer in dB (higher is better, 99 = exact)",
-                    "settled dB" => "PSNR of the frames rendered with the camera held still long enough to settle (accumulating pipelines: converged); the score the catalogue's floor uses where present",
-                    "bad %" => "Mean share of pixels off by more than 16/255 vs the reference",
-                    "init ms" => "Renderer start-up time (device, pipelines)",
-                    "shaders ms" => "The part of init ms spent on shaders: composing and validating modules, and creating pipelines (the driver's compile)",
-                    "RSS MB" => "Peak resident memory of the renderer process",
-                    "GPU MB" => "GPU memory the renderer counts holding",
-                    _ => "Measured: the most its GPU devices' allocators held (rounding and transient memory included)",
-                });
+            ui.strong("renderer").on_hover_text("Renderer label from the plan");
+            ui.strong("mode").on_hover_text("Unlit (textures only) or lit (sun, sky, point lights, shadows)");
+            for c in &cols {
+                ui.strong(c.name).on_hover_text(c.hover);
             }
             ui.end_row();
             for p in &r.passes {
                 let s = |k: &str| p.get(k).and_then(|x| x.as_str()).unwrap_or("-").to_string();
-                let n = |v: Option<f64>, d: usize| v.map(|x| format!("{x:.d$}")).unwrap_or_else(|| "-".into());
                 // What else the pass says of itself: what it left out, a fault while stopping,
                 // lanes that failed beside it.
                 let list = |k: &str| p.get(k).and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("; ")).filter(|x| !x.is_empty());
@@ -180,23 +299,13 @@ pub fn report_ui(ui: &mut Ui, r: &Report) {
                     ui.end_row();
                     continue;
                 }
-                ui.label(n(f(p, &["fps"]), 1));
-                ui.label(n(f(p, &["frame_interval_ms", "mean"]), 2));
-                ui.label(n(f(p, &["frame_interval_ms", "p99"]), 2));
-                ui.label(n(f(p, &["gpu_ms", "mean"]), 2));
-                ui.label(n(f(p, &["cpu_ms", "mean"]), 2));
-                ui.label(n(f(p, &["latency_ms", "mean"]), 2));
-                ui.label(n(f(p, &["quality", "psnr", "mean"]), 1));
-                ui.label(n(f(p, &["quality_settled", "psnr", "mean"]), 1));
-                ui.label(n(f(p, &["quality", "bad_pct", "mean"]), 2));
-                ui.label(n(f(p, &["init_ms"]), 0));
-                let shader = [f(p, &["shaders", "module_ms"]), f(p, &["shaders", "pipeline_ms"])];
-                ui.label(if shader.iter().all(Option::is_none) { "-".into() } else { format!("{} + {}", n(shader[0], 0), n(shader[1], 0)) })
-                    .on_hover_text("modules + pipelines");
-                ui.label(n(f(p, &["peak_rss_mb"]), 0));
-                let mb = |k: &str| n(f(p, &["memory", k]).filter(|x| *x > 0.0).map(|x| x / 1048576.0), 0);
-                ui.label(mb("gpu_bytes"));
-                ui.label(mb("gpu_device_bytes"));
+                for c in &cols {
+                    match (c.cell)(p) {
+                        Some(Cell { text, hover: Some(h) }) => ui.label(text).on_hover_text(h),
+                        Some(Cell { text, hover: None }) => ui.label(text),
+                        None => ui.label("-"),
+                    };
+                }
                 ui.end_row();
             }
         });

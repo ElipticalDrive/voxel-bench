@@ -514,3 +514,66 @@ label = "healthy"
     }
     assert!(!sh.log.iter().any(|l| l.starts_with("lane 1 ")), "the healthy lane: {:?}", sh.log);
 }
+
+/// A probe scores a lane settled when its view was held still, nothing new sent, for the
+/// renders its pipeline needs (`CompareSpec::held`: here an accumulating path tracer, 4 paths
+/// per pixel at 1 spp: 3 renders after the first), and the panel shows the last settled score;
+/// a probe while the camera moves is not settled; a pipeline whose every frame is settled
+/// shows no settled row. Needs a GPU (the CPU executor has neither late edges nor stateful
+/// shading); run with `--ignored`.
+#[test]
+#[ignore]
+fn live_probes_score_settled_frames() {
+    let plan = Plan::parse(
+        r#"
+        [scene]
+        generator = { type = "flat" }
+        camera = { type = "static", position = [0, 20, 0], pitch_deg = -30 }
+        [run]
+        resolution = [32, 18]
+        view_radius = 1
+        isolation = "thread"
+        [output.compare]
+        converge = 4
+        [[renderer]]
+        graph = "raycast-gpu"
+        label = "pt"
+        edits = [{ node = "shading", component = "pathtrace" }]
+        [[renderer]]
+        graph = "raycast-gpu"
+        "#,
+        &[],
+    )
+    .unwrap();
+    let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 0, events: false, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.2, windows: 0, paper_white: 1.0 };
+    let live = LiveHandle::start(plan, vec![], control, || {});
+    wait(&live.shared, "a settled probe of the path tracer", 120, |s| s.lanes.len() == 2 && s.lanes[0].quality.iter().any(|q| q.settled));
+    {
+        let sh = live.shared.lock().unwrap();
+        let (pt, plain) = (&sh.lanes[0], &sh.lanes[1]);
+        assert!(pt.quality.iter().all(|q| q.held == 3), "{:?}", pt.quality);
+        assert!(plain.quality.iter().all(|q| q.held == 0 && !q.settled), "{:?}", plain.quality);
+        let text = crate::gui::metrics::settled_text(pt).unwrap();
+        assert!(text.starts_with("PSNR"), "{text}");
+        assert_eq!(crate::gui::metrics::settled_text(plain), None);
+    }
+    // Moving: the probes are of frames as shown.
+    let cam = live.shared.lock().unwrap().camera.unwrap();
+    let probes = live.shared.lock().unwrap().lanes[0].quality.len();
+    let t = Instant::now();
+    let mut step = 0.0;
+    loop {
+        step += 0.01;
+        live.control.lock().unwrap().camera = CameraControl::Free(Camera { position: cam.position + DVec3::new(step, 0.0, 0.0), ..cam });
+        let sh = live.shared.lock().unwrap();
+        if sh.lanes[0].quality.iter().skip(probes).any(|q| !q.settled) {
+            break;
+        }
+        assert!(t.elapsed() < Duration::from_secs(60), "no unsettled probe while moving: {:?}", sh.lanes[0].quality);
+        drop(sh);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Still again: settled once more.
+    let n = live.shared.lock().unwrap().lanes[0].quality.len();
+    wait(&live.shared, "a settled probe after moving", 60, |s| s.lanes[0].quality.iter().skip(n).any(|q| q.settled));
+}
