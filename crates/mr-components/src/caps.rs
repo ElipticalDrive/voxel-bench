@@ -43,6 +43,13 @@ pub enum Cap {
     /// pixel), of the primary rays' kernel (it resumes a walk from any cell) and of the
     /// shading (each surface's colour in linear light, to composite).
     Layers,
+    /// Draw: writes a hit record (or a face id) per pixel, which a deferred pass shades (so the
+    /// records can cross to a second GPU, and the shading runs in a compute pass); a drawer
+    /// without it shades forward, in its fragment shader.
+    Records,
+    /// Shading: path traces: bounce rays (a `bounce` input), per-pixel state accumulated
+    /// over frames, the knobs `bounces`, `spp` and `accumulate`; its reference traces paths.
+    Paths,
 }
 
 impl Cap {
@@ -56,6 +63,8 @@ impl Cap {
             Cap::Steps => "steps",
             Cap::MeshRays => "mesh_rays",
             Cap::Layers => "layers",
+            Cap::Records => "records",
+            Cap::Paths => "paths",
         }
     }
 }
@@ -133,6 +142,12 @@ pub fn provides(kind: Kind, role: Role, name: &str, cap: Cap) -> bool {
     component(role, name)
         .and_then(|c| c.on(kind))
         .is_some_and(|i| i.provides.contains(&cap))
+}
+
+/// Whether component `name` in `role` provides `cap` on some device kind (what a component is,
+/// wherever it runs: a drawer writing records, a path-tracing shading).
+pub fn declares(role: Role, name: &str, cap: Cap) -> bool {
+    component(role, name).is_some_and(|c| c.impls.iter().any(|i| i.provides.contains(&cap)))
 }
 
 #[cfg(test)]
