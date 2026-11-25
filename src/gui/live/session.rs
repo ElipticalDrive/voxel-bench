@@ -120,6 +120,8 @@ impl Session {
             pending_params: vec![],
             in_flight: VecDeque::new(),
             next_id: 0,
+            last_view: None,
+            still: 0,
             res,
         }
     }

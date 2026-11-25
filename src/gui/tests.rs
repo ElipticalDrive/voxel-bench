@@ -498,3 +498,46 @@ fn gui_device_lost_hands_over() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
+
+/// The benchmark table shows a column only where a pass that ran reports it: a plain pass
+/// fills the fixed ones; the like score, convergence, world updates, missed deadlines and
+/// streaming (wire bytes, holes, first complete) appear with a pass that has them, never for
+/// a failed pass's leftovers; the table draws headless.
+#[test]
+fn report_columns_follow_what_passes_report() {
+    use serde_json::json;
+    let names = |passes: &[serde_json::Value]| bench::columns(passes).iter().map(|c| c.name).collect::<Vec<_>>();
+    let fixed = ["fps", "frame ms", "p99 ms", "gpu ms", "cpu ms", "latency ms", "PSNR", "settled dB", "bad %", "init ms", "shaders ms", "RSS MB", "GPU MB", "device MB"];
+    // Complete at its first frame, no link, no updates: nothing optional.
+    let plain = json!({ "label": "a", "mode": "unlit", "fps": 60.0, "update_ms": { "mean": 0.0 }, "missed_deadlines": null, "first_complete": { "frame": 0, "ms": 12.0, "clock_s": 0.0 }, "per_frame": [{ "frame": 0 }], "wire_bytes": 1000 });
+    assert_eq!(names(std::slice::from_ref(&plain)), fixed);
+    let rich = json!({
+        "label": "b", "mode": "lit", "fps": 30.0,
+        "quality_like": { "psnr": { "mean": 41.0 } }, "like": "lod 2",
+        "converged_spp": 64, "update_ms": { "mean": 0.5 }, "update_ns_per_byte": 2.0, "missed_deadlines": 3,
+        "link": { "bandwidth_mbps": 10.0 }, "wire_bytes": 3145728, "arrived_bytes": 2097152, "chunks_sent": 40,
+        "holes": { "mean": 1.5, "max": 7.0 }, "frames_with_holes": 4,
+        "first_complete": { "frame": 9, "ms": 900.0, "clock_s": 0.15 }, "per_frame": [{ "frame": 0 }],
+    });
+    let both = [plain.clone(), rich.clone()];
+    let extra = ["like dB", "spp", "update ms", "missed", "wire MB", "holes", "first complete"];
+    assert_eq!(names(&both), fixed.iter().chain(&extra).copied().collect::<Vec<_>>());
+    let cols = bench::columns(&both);
+    let cell = |name: &str, p: &serde_json::Value| cols.iter().find(|c| c.name == name).and_then(|c| (c.cell)(p)).map(|c| (c.text, c.hover));
+    assert_eq!(cell("like dB", &rich), Some(("41.0".into(), Some("like lod 2".into()))));
+    assert_eq!(cell("wire MB", &rich).unwrap().0, "3.0");
+    assert_eq!(cell("holes", &rich).unwrap(), ("1.5 / 7".into(), Some("4 frames with holes".into())));
+    assert_eq!(cell("first complete", &rich).unwrap().0, "#9 900 ms");
+    assert_eq!(cell("holes", &plain), None, "a pass with nothing streamed late shows -");
+    // Never complete: the streaming columns show, saying so.
+    let never = json!({ "label": "c", "mode": "unlit", "first_complete": null, "per_frame": [{ "frame": 0 }] });
+    assert_eq!(bench::columns(std::slice::from_ref(&never)).iter().find(|c| c.name == "first complete").and_then(|c| (c.cell)(&never)).map(|c| c.text), Some("never".into()));
+    // A failed pass's figures add nothing.
+    let mut failed = rich.clone();
+    failed["error"] = json!("boom");
+    assert_eq!(names(&[plain.clone(), failed.clone()]), fixed);
+    // Drawn headless.
+    let ctx = egui::Context::default();
+    let report = bench::Report { path: "runs/x/report.json".into(), passes: vec![plain, rich, never, failed] };
+    ctx.run_ui(Default::default(), |ui| bench::report_ui(ui, &report)).textures_delta.clear();
+}
