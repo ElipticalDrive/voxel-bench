@@ -145,8 +145,15 @@ pub struct LaneView {
     /// What the colours of the latest frame mean (a diagnostic `view` is active).
     pub legend: Option<mr_core::Legend>,
     pub rss_mb: Option<f64>,
+    /// What the renderer counts it holds on the GPU (`MemoryReport::gpu_bytes`), now and the
+    /// most seen since it started.
     pub gpu_mb: Option<f64>,
+    pub gpu_peak_mb: Option<f64>,
+    /// Measured: the most its GPU devices' allocators have held (`gpu_device_bytes`).
+    pub device_peak_mb: Option<f64>,
+    /// Its start (creation to first frame ready) and the part spent on shaders.
     pub init_ms: f32,
+    pub shaders: mr_core::shader_clock::ShaderTime,
     pub frames: u64,
     pub chunks_sent: u64,
     pub pending_chunks: usize,
@@ -214,7 +221,10 @@ impl LaneView {
             legend: None,
             rss_mb: None,
             gpu_mb: None,
+            gpu_peak_mb: None,
+            device_peak_mb: None,
             init_ms: 0.0,
+            shaders: Default::default(),
             frames: 0,
             chunks_sent: 0,
             pending_chunks: 0,

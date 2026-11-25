@@ -1002,6 +1002,18 @@ mod tests {
             .map_err(|e| e.message().to_string())
     }
 
+    /// Every component of a role outside the registry says what it does (the editor shows it).
+    #[test]
+    fn host_components_are_described() {
+        use crate::graph::{host_description, role_components};
+        for role in [Role::Generator, Role::Link, Role::Client, Role::Post] {
+            for c in role_components(role) {
+                assert!(host_description(role, c).is_some_and(|d| !d.is_empty()), "{} `{c}` has no description", role.name());
+            }
+        }
+        assert!(host_description(Role::World, "world").is_some());
+    }
+
     /// Every region has one shipped file, whose graph it builds; the files' keys are pinned
     /// (the files are the source: a changed key is a changed default); the directory holds no
     /// file the binary lacks.

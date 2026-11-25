@@ -91,17 +91,7 @@ fn choices(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, selected: &s
 fn description(role: Role, component: &str) -> String {
     match mr_components::component(role, component) {
         Some(c) => c.description.to_string(),
-        None => match (role, component) {
-            (Role::World, _) => "The authoritative world on the server: chunks and their change log".into(),
-            (Role::Generator, _) => "Generates the world's chunks from its spec (a shared seed): on the server, or on the client's cpu".into(),
-            (Role::Link, "free") => "Everything the server sends arrives at once, in order".into(),
-            (Role::Link, _) => "A modelled network: latency, jitter, bandwidth, loss, reordering".into(),
-            (Role::Client, "pick") => "Holds what arrived: the server's LOD levels, picked by its radius and levels".into(),
-            (Role::Client, _) => "Holds what arrived and derives its coarser LOD levels from LOD 0 itself".into(),
-            (Role::Post, "clamp") => "Linear colour clamped to the output range".into(),
-            (Role::Post, c) => format!("Tone mapping `{c}` of the linear colour, compiled into the shading's output"),
-            _ => String::new(),
-        },
+        None => mr_components::graph::host_description(role, component).unwrap_or_default().to_string(),
     }
 }
 

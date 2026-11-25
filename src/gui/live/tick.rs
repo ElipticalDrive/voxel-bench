@@ -167,7 +167,7 @@ impl Session {
             match result {
                 Ok(w) => {
                     let info = w.info.clone();
-                    let init_ms = w.init_ms;
+                    let (init_ms, shaders) = (w.init_ms, w.shaders);
                     // Renderer knob values as its spec sets them (else defaults).
                     let values = lane.run.spec.knob_values();
                     for p in info.params.iter().chain(&lane.run.spec.component_knobs()) {
@@ -194,6 +194,7 @@ impl Session {
                             if let Some(v) = sh.lanes.get_mut(i) {
                                 v.status = LaneStatus::Running;
                                 v.init_ms = init_ms;
+                                v.shaders = shaders;
                             }
                         }
                         self.publish_params(i);
@@ -296,8 +297,12 @@ impl Session {
             if let Some(old) = std::mem::replace(&mut lane.run, sb).worker {
                 std::thread::spawn(move || old.shutdown());
             }
-            let info = lane.run.worker.as_ref().map(|w| w.info.clone());
-            if let Some(info) = info {
+            let info = lane.run.worker.as_ref().map(|w| (w.info.clone(), w.init_ms, w.shaders));
+            if let Some((info, init_ms, shaders)) = info {
+                if let Some(v) = self.shared.lock().unwrap().lanes.get_mut(i) {
+                    // The replacement's own start and memory from here on.
+                    (v.init_ms, v.shaders, v.gpu_peak_mb, v.device_peak_mb) = (init_ms, shaders, None, None);
+                }
                 let values = lane.run.spec.knob_values();
                 for p in info.params.iter().chain(&lane.run.spec.component_knobs()) {
                     let v = values.get(&p.name).and_then(|t| serde_json::to_value(t).ok()).and_then(|j| p.from_json(&j)).unwrap_or(p.default.clone());
@@ -371,7 +376,10 @@ impl Session {
             match msg {
                 WorkerMsg::Memory(m) => {
                     if let Some(v) = shared.lock().unwrap().lanes.get_mut(i) {
-                        v.gpu_mb = (m.gpu_bytes > 0).then(|| m.gpu_bytes as f64 / 1048576.0);
+                        let mb = |b: u64| (b > 0).then(|| b as f64 / 1048576.0);
+                        v.gpu_mb = mb(m.gpu_bytes);
+                        v.gpu_peak_mb = [v.gpu_mb, v.gpu_peak_mb].into_iter().flatten().reduce(f64::max);
+                        v.device_peak_mb = mb(m.gpu_device_bytes);
                     }
                 }
                 WorkerMsg::ParamError { name, error } => {

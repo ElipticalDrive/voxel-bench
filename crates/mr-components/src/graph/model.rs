@@ -501,6 +501,25 @@ pub const GENERATORS: &[&str] = &["procedural"];
 /// (no tone mapping) the default, and `hdr` (no limit: a float output for HDR displays).
 pub const POSTS: &[&str] = &["clamp", "reinhard", "aces", "hdr"];
 
+/// What a component of a role outside the registry (world, generator, link, client, post)
+/// does, as the editor shows it; `None` for a name the role does not have. Registry
+/// components carry theirs (`ComponentInfo::description`).
+pub fn host_description(role: Role, name: &str) -> Option<&'static str> {
+    Some(match (role, name) {
+        (Role::World, "world") => "The authoritative world on the server: chunks and their change log",
+        (Role::Generator, "procedural") => "Generates the world's chunks from its spec (a shared seed): on the server, or on the client's cpu",
+        (Role::Link, "free") => "Everything the server sends arrives at once, in order",
+        (Role::Link, "net") => "A modelled network: latency, jitter, bandwidth, loss, reordering",
+        (Role::Client, "pick") => "Holds what arrived: the server's LOD levels, picked by its radius and levels",
+        (Role::Client, "derive") => "Holds what arrived and derives its coarser LOD levels from LOD 0 itself",
+        (Role::Post, "clamp") => "Linear colour clamped to the output range",
+        (Role::Post, "reinhard") => "Reinhard tone mapping of the linear colour, compiled into the shading's output",
+        (Role::Post, "aces") => "ACES filmic tone mapping of the linear colour, compiled into the shading's output",
+        (Role::Post, "hdr") => "No limit: a float output for HDR displays",
+        _ => return None,
+    })
+}
+
 /// The components that can fill `role` (the world has none to choose; "none" means the
 /// optional input it would feed is left unbound).
 pub fn role_components(role: Role) -> Vec<&'static str> {

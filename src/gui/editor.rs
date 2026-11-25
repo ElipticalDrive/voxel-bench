@@ -3,6 +3,7 @@
 use egui::{ComboBox, DragValue, Ui};
 use mr_core::{Camera, PassMode, RendererInfo};
 use mr_world::GenSpec;
+use mr_world::generators::GENERATORS;
 use mr_world::scenario::{CameraPathSpec, EnvSpec, EventSpec, LightSpec};
 
 use crate::plan::{CompareSpec, Compile, Isolation, Pacing, Plan, Readback, RendererSpec, SaveSpec, Streaming};
@@ -140,98 +141,64 @@ pub fn plan_editor(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed
     c
 }
 
+/// The world's generator: picked from `mr_world::generators::GENERATORS`, its knobs drawn from
+/// the entry's fields (a number, a slider where the entry gives a range, a checkbox for a
+/// bool), written back through the spec's serde form.
 fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
     let g = &mut plan.scene.generator;
-    let name = match g {
-        GenSpec::Empty => "empty",
-        GenSpec::Terrain { .. } => "terrain",
-        GenSpec::Flat { .. } => "flat",
-        GenSpec::Menger { .. } => "menger",
-        GenSpec::Room { .. } => "room",
-        GenSpec::Random { .. } => "random",
-        GenSpec::Showcase => "showcase",
-        GenSpec::City { .. } => "city",
-        GenSpec::Islands { .. } => "islands",
-        GenSpec::Lattice { .. } => "lattice",
-        GenSpec::Gyroid { .. } => "gyroid",
-        GenSpec::Checker { .. } => "checker",
-        GenSpec::Glass { .. } => "glass",
-    };
+    let info = g.info();
     let mut c = ui
         .horizontal(|ui| {
             ui.label("Generator").on_hover_text("How the world's blocks are generated (deterministic; chunks stream in around the camera)");
-            variant_combo(
-                ui,
-                "gen",
-                name,
-                g,
-                &[
-                    ("terrain", || GenSpec::Terrain { seed: 0, caves: true, trees: true }, "Infinite noise terrain with caves and trees: the streaming workload"),
-                    ("flat", || GenSpec::Flat { checker: false }, "Infinite flat ground"),
-                    ("menger", || GenSpec::Menger { level: 4 }, "Menger sponge fractal: many holes, worst case for traversal"),
-                    ("room", || GenSpec::Room { size: 48 }, "A closed room: indoor lighting, everything in view is near"),
-                    ("random", || GenSpec::Random { size: 128, density: 0.1, seed: 0 }, "A cube of random blocks: incoherent rays, no large empty spaces"),
-                    ("city", || GenSpec::City { seed: 0, block: 48, max_height: 240 }, "Street grid of hollow towers with windows: long rays down the streets, deep overdraw behind the facades"),
-                    ("islands", || GenSpec::Islands { seed: 0, spacing: 96, height: 512, fill: 0.35 }, "Floating islands in a tall volume: mostly empty space, most rays hit nothing"),
-                    ("lattice", || GenSpec::Lattice { period: 24, thickness: 1, height: 160 }, "Jungle gym of thin beams: every ray grazes geometry; thin features at LOD"),
-                    ("gyroid", || GenSpec::Gyroid { period: 48, thickness: 0.3, height: 192 }, "Gyroid caves: curved walls nothing can merge, two interleaved tunnel networks"),
-                    ("checker", || GenSpec::Checker { size: 96, cell: 1 }, "3D checkerboard cube: every block shows all six faces, yet perfectly regular"),
-                    ("glass", || GenSpec::Glass { size: 48, panes: 6 }, "Glass panes, a glass cube and a grate: see-through blocks, several surfaces per pixel"),
-                    ("showcase", || GenSpec::Showcase, "One of every block type, for checking textures"),
-                    ("empty", || GenSpec::Empty, "No blocks (sky only)"),
-                ],
-            )
+            let mut c = false;
+            ComboBox::from_id_salt("gen")
+                .selected_text(info.name)
+                .show_ui(ui, |ui| {
+                    for e in GENERATORS {
+                        if ui.selectable_label(e.name == info.name, e.name).on_hover_text(e.description).clicked() && e.name != info.name {
+                            *g = (e.default)();
+                            c = true;
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(info.description);
+            c
         })
         .inner;
-    match g {
-        GenSpec::Terrain { seed, caves, trees } => {
-            c |= num(ui, "seed", seed, 1.0, "Random seed: a different seed gives a different landscape");
-            c |= ui.checkbox(caves, "caves").on_hover_text("Carve caves underground (hidden geometry renderers must skip)").changed();
-            c |= ui.checkbox(trees, "trees").on_hover_text("Place trees on the surface (fine detail at a distance)").changed();
-        }
-        GenSpec::Flat { checker } => c |= ui.checkbox(checker, "checkerboard of all blocks").on_hover_text("Alternate every block type across the ground instead of one").changed(),
-        GenSpec::Menger { level } => {
-            c |= ui.add(egui::Slider::new(level, 1..=7).text("level (3^level blocks)").update_while_editing(false)).on_hover_text("Recursion depth; each level triples the size (level 5 = 243 blocks across)").changed();
-        }
-        GenSpec::Room { size } => c |= num(ui, "inner size", size, 1.0, "Interior width of the room in blocks"),
-        GenSpec::Random { size, density, seed } => {
-            c |= num(ui, "size", size, 1.0, "Edge length of the random cube in blocks");
-            c |= ui.add(egui::Slider::new(density, 0.0..=1.0).text("density").update_while_editing(false)).on_hover_text("Fraction of cells that are solid").changed();
-            c |= num(ui, "seed", seed, 1.0, "Random seed");
-        }
-        GenSpec::City { seed, block, max_height } => {
-            c |= num(ui, "seed", seed, 1.0, "Random seed: building heights and materials");
-            c |= num(ui, "block", block, 1.0, "Street grid period in blocks (a 10-block street, the rest one building plot)");
-            c |= num(ui, "max height", max_height, 1.0, "Tallest possible tower; most buildings are much lower");
-        }
-        GenSpec::Islands { seed, spacing, height, fill } => {
-            c |= num(ui, "seed", seed, 1.0, "Random seed");
-            c |= num(ui, "spacing", spacing, 1.0, "Cell size in blocks: at most one island per cell, up to about a third of it across");
-            c |= num(ui, "height", height, 1.0, "Height of the island volume in blocks (from y = 0)");
-            c |= ui.add(egui::Slider::new(fill, 0.0..=1.0).text("fill").update_while_editing(false)).on_hover_text("Fraction of cells holding an island").changed();
-        }
-        GenSpec::Lattice { period, thickness, height } => {
-            c |= num(ui, "period", period, 1.0, "Distance between beams in blocks");
-            c |= num(ui, "thickness", thickness, 1.0, "Beam thickness in blocks (less than the period)");
-            c |= num(ui, "height", height, 1.0, "Height of the lattice in blocks");
-        }
-        GenSpec::Gyroid { period, thickness, height } => {
-            c |= num(ui, "period", period, 1.0, "Repeat length of the gyroid in blocks");
-            c |= ui.add(egui::Slider::new(thickness, 0.05..=1.2).text("thickness").update_while_editing(false)).on_hover_text("Wall half-thickness in units of the gyroid function; above about 1 the caves close up").changed();
-            c |= num(ui, "height", height, 1.0, "Height of the cave volume in blocks");
-        }
-        GenSpec::Checker { size, cell } => {
-            c |= num(ui, "size", size, 1.0, "Edge length of the cube in blocks");
-            c |= num(ui, "cell", cell, 1.0, "Checker cell size in blocks (1 = every other block)");
-        }
-        GenSpec::Glass { size, panes } => {
-            c |= num(ui, "size", size, 1.0, "Edge length of the yard in blocks");
-            c |= num(ui, "panes", panes, 1.0, "Parallel glass walls one behind the other (a ray through all crosses twice as many surfaces)");
-        }
-        GenSpec::Empty | GenSpec::Showcase => {}
-    }
+    c |= gen_fields(ui, g);
     c |= ui.add(egui::Slider::new(&mut plan.scene.fov_deg, 20.0..=140.0).text("FOV°").update_while_editing(false)).on_hover_text("Vertical field of view in degrees").changed();
     c
+}
+
+/// The generator's knobs, from its entry's fields; a value its spec refuses is not taken.
+fn gen_fields(ui: &mut Ui, g: &mut GenSpec) -> Changed {
+    let info = g.info();
+    let Ok(mut table) = toml::Table::try_from(&*g) else { return false };
+    let mut c = false;
+    for f in info.fields {
+        let Some(v) = table.get_mut(f.name) else { continue };
+        c |= match v {
+            toml::Value::Boolean(b) => ui.checkbox(b, f.name).on_hover_text(f.help).changed(),
+            toml::Value::Integer(i) => match f.range {
+                Some((lo, hi)) => ui.add(egui::Slider::new(i, lo as i64..=hi as i64).text(f.name).update_while_editing(false)).on_hover_text(f.help).changed(),
+                None => num(ui, f.name, i, 1.0, f.help),
+            },
+            toml::Value::Float(x) => match f.range {
+                Some((lo, hi)) => ui.add(egui::Slider::new(x, lo..=hi).text(f.name).update_while_editing(false)).on_hover_text(f.help).changed(),
+                None => num(ui, f.name, x, 0.01, f.help),
+            },
+            other => {
+                ui.label(format!("{}: {other}", f.name)).on_hover_text(f.help);
+                false
+            }
+        };
+    }
+    if c && let Ok(new) = table.try_into::<GenSpec>() {
+        *g = new;
+        return true;
+    }
+    false
 }
 
 fn camera(ui: &mut Ui, plan: &mut Plan, cam: Option<Camera>) -> Changed {
@@ -771,4 +738,33 @@ fn output(ui: &mut Ui, plan: &mut Plan, infos: &[RendererInfo]) -> Changed {
         }
     });
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The plan editor's generator section, drawn headlessly for every generator the registry
+    /// lists: each is offered by its registry name, its knobs are its entry's fields (all in
+    /// the spec's serde form, which the editor writes back through), and drawing changes nothing.
+    #[test]
+    fn every_generator_is_offered_and_edited_from_the_registry() {
+        let ctx = egui::Context::default();
+        let mut plan = Plan::parse(crate::gui::DEFAULT_PLAN, &[]).unwrap();
+        for g in GENERATORS {
+            plan.scene.generator = (g.default)();
+            let before = format!("{:?}", plan.scene.generator);
+            let mut changed = false;
+            ctx.run_ui(egui::RawInput::default(), |ui| changed = world(ui, &mut plan)).textures_delta.clear();
+            assert!(!changed, "{}: drawing changed it", g.name);
+            assert_eq!(format!("{:?}", plan.scene.generator), before);
+            assert_eq!(plan.scene.generator.name(), g.name);
+            let table = toml::Table::try_from(&plan.scene.generator).unwrap();
+            for f in g.fields {
+                assert!(table.contains_key(f.name), "{}: field {} not in its spec", g.name, f.name);
+            }
+            let back: GenSpec = table.try_into().unwrap();
+            assert_eq!(format!("{back:?}"), before);
+        }
+    }
 }

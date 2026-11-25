@@ -115,6 +115,40 @@ when it changes only nodes the lane's executor replaces while running (the worke
 edits), and otherwise as a hot swap. Trying the choices is cheap: every
 choice the editor lists on every shipped graph file (1,110) is answered in 0.07 ms each.
 
+## What the GUI shows
+
+What a renderer, a pass and the registry report, and where the GUI shows it.
+
+**A live lane** (its tile in the viewport, its panel in the Metrics tab):
+
+| Figure | Where |
+| --- | --- |
+| fps, frame interval (mean / p99), latency, GPU / CPU / update ms per frame | panel, `stats` (last 2 s) |
+| time per stage, with the graph nodes it runs | panel, one row per stage |
+| quality at the last probe (PSNR, SSIM, MS-SSIM, bad pixels) | panel, and the probe plot |
+| memory: RSS; GPU the renderer counts, now (peak since it started); device peak, measured from the GPU allocators | panel, `memory` |
+| build: start-up ms, of it shader modules and pipelines (ms, count) | panel, `build` |
+| chunks sent and pending, bytes arrived and sent over its link, holes | panel, `streaming` / `arrivals` |
+| what the view asks that its pipeline leaves out (meshes, LOD levels, transparency, knobs) | tile |
+| events (started, edits, refusals, hot swaps) of the last seconds | tile |
+| a failure: the error, a dead worker's exit status or signal, the watchdog's verdict on a hung one | tile (first line) and panel (whole) |
+| a hot swap in progress | panel |
+
+**A finished benchmark** (the Benchmark tab, one row per pass): fps, frame ms (mean, p99), GPU
+and CPU ms, latency, PSNR, the settled PSNR, bad pixels, start-up ms and its shader part
+(modules + pipelines), peak RSS, the GPU memory the renderer counts and the device peak; a
+failed pass reads FAILED with its reason on hover; ⚠ beside a label lists, on hover, what the
+pass left out, a fault while its worker stopped, and lanes that failed beside it.
+
+**Choices.** The editor's components per node come from the registry and the graph model
+(`role_components`, tried with `accept` before they are offered); their descriptions from the
+registry (`ComponentInfo::description`) or, for the roles outside it (world, generator, link,
+client, post), from `graph::host_description`. Knobs are the components' declarations; views are
+the quantities the graph's nodes write. The world's generators, their descriptions and their
+knobs come from `mr_world::generators::GENERATORS`. The reference renderer list is the
+registry's renderers. Fixed in the GUI: camera paths, the tuner's goals, metrics and
+algorithms, read-back, isolation and compile modes, input timings (`now`, `prev`, `iterate`).
+
 ## Knobs and hot swaps
 
 Each component declares its knobs: name, type, range, and whether the knob can change live.

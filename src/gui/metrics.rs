@@ -204,12 +204,17 @@ impl App {
                         ui.monospace(format!("PSNR {:.1} · SSIM {:.1} · MS-SSIM {:.1} dB · {:.2}% bad", q.psnr, q.ssim_db, q.ms_ssim_db, q.bad_pct));
                         ui.end_row();
                     }
-                    ui.label("memory").on_hover_text("RSS: the renderer process's resident memory. GPU: buffers and textures it reports allocating.");
-                    ui.monospace(format!(
-                        "RSS {} MB · GPU {} MB",
-                        l.rss_mb.map(|x| format!("{x:.0}")).unwrap_or("-".into()),
-                        l.gpu_mb.map(|x| format!("{x:.0}")).unwrap_or("-".into())
-                    ));
+                    let mb = |x: Option<f64>| x.map(|x| format!("{x:.0}")).unwrap_or("-".into());
+                    ui.label("memory").on_hover_text("RSS: the renderer process's resident memory (with thread isolation: the whole program's). GPU: the buffers and textures it counts holding, now (peak since it started). Device peak: measured, the most its GPU devices' allocators have held (rounding and transient memory included; - where the API does not say).");
+                    ui.monospace(format!("RSS {} MB · GPU {} ({}) MB · device peak {} MB", mb(l.rss_mb), mb(l.gpu_mb), mb(l.gpu_peak_mb), mb(l.device_peak_mb)));
+                    ui.end_row();
+                    let s = &l.shaders;
+                    ui.label("build").on_hover_text("Its start, from creation to ready, and the part spent on shaders: composing and validating modules (naga_oil, naga), and creating pipelines (the driver compiles there; fast when its cache has them)");
+                    ui.monospace(if s.is_zero() {
+                        format!("{:.0} ms", l.init_ms)
+                    } else {
+                        format!("{:.0} ms · modules {:.0} ms ({}) · pipelines {:.0} ms ({})", l.init_ms, s.module_ms, s.modules, s.pipeline_ms, s.pipelines)
+                    });
                     ui.end_row();
                     ui.label("streaming").on_hover_text("Chunks sent to this renderer so far, and chunks queued for it (limited per frame)");
                     ui.monospace(format!("{} chunks sent · {} pending", l.chunks_sent, l.pending_chunks));

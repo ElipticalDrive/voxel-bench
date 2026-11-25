@@ -2218,6 +2218,7 @@ dependencies = [
  "mr-core",
  "rayon",
  "serde",
+ "toml",
 ]
 
 [[package]]

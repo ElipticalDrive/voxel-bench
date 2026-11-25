@@ -198,7 +198,144 @@ fn default_true() -> bool {
     true
 }
 
+/// One knob of a generator: a field of its [`GenSpec`] variant (its serde name), what it
+/// does, and the range a slider offers (`None`: a free number, or a checkbox for a bool).
+pub struct GenField {
+    pub name: &'static str,
+    pub help: &'static str,
+    pub range: Option<(f64, f64)>,
+}
+
+const fn field(name: &'static str, help: &'static str) -> GenField {
+    GenField { name, help, range: None }
+}
+
+const fn ranged(name: &'static str, help: &'static str, lo: f64, hi: f64) -> GenField {
+    GenField { name, help, range: Some((lo, hi)) }
+}
+
+/// A world generator as the GUI and the tests list it: its name (the spec's `type`), what it
+/// makes, its default spec and its knobs in display order.
+pub struct GenInfo {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub default: fn() -> GenSpec,
+    pub fields: &'static [GenField],
+}
+
+/// Every generator, in the order offered. A [`GenSpec`] variant missing here is caught by the
+/// test `every_generator_is_listed` (it reads serde's list of variants).
+pub const GENERATORS: &[GenInfo] = &[
+    GenInfo {
+        name: "terrain",
+        description: "Infinite noise terrain with caves and trees: the streaming workload",
+        default: || GenSpec::Terrain { seed: 0, caves: true, trees: true },
+        fields: &[
+            field("seed", "Random seed: a different seed gives a different landscape"),
+            field("caves", "Carve caves underground (hidden geometry renderers must skip)"),
+            field("trees", "Place trees on the surface (fine detail at a distance)"),
+        ],
+    },
+    GenInfo {
+        name: "flat",
+        description: "Infinite flat ground",
+        default: || GenSpec::Flat { checker: false },
+        fields: &[field("checker", "Alternate every block type across the ground instead of one")],
+    },
+    GenInfo {
+        name: "menger",
+        description: "Menger sponge fractal: many holes, worst case for traversal",
+        default: || GenSpec::Menger { level: 4 },
+        fields: &[ranged("level", "Recursion depth (3^level blocks across): each level triples the size (level 5 = 243 blocks)", 1.0, 7.0)],
+    },
+    GenInfo {
+        name: "room",
+        description: "A closed room: indoor lighting, everything in view is near",
+        default: || GenSpec::Room { size: 48 },
+        fields: &[field("size", "Interior width of the room in blocks")],
+    },
+    GenInfo {
+        name: "random",
+        description: "A cube of random blocks: incoherent rays, no large empty spaces",
+        default: || GenSpec::Random { size: 128, density: 0.1, seed: 0 },
+        fields: &[
+            field("size", "Edge length of the random cube in blocks"),
+            ranged("density", "Fraction of cells that are solid", 0.0, 1.0),
+            field("seed", "Random seed"),
+        ],
+    },
+    GenInfo {
+        name: "city",
+        description: "Street grid of hollow towers with windows: long rays down the streets, deep overdraw behind the facades",
+        default: || GenSpec::City { seed: 0, block: default_city_block(), max_height: default_city_height() },
+        fields: &[
+            field("seed", "Random seed: building heights and materials"),
+            field("block", "Street grid period in blocks (a 10-block street, the rest one building plot)"),
+            field("max_height", "Tallest possible tower; most buildings are much lower"),
+        ],
+    },
+    GenInfo {
+        name: "islands",
+        description: "Floating islands in a tall volume: mostly empty space, most rays hit nothing",
+        default: || GenSpec::Islands { seed: 0, spacing: default_islands_spacing(), height: default_islands_height(), fill: default_islands_fill() },
+        fields: &[
+            field("seed", "Random seed"),
+            field("spacing", "Cell size in blocks: at most one island per cell, up to about a third of it across"),
+            field("height", "Height of the island volume in blocks (from y = 0)"),
+            ranged("fill", "Fraction of cells holding an island", 0.0, 1.0),
+        ],
+    },
+    GenInfo {
+        name: "lattice",
+        description: "Jungle gym of thin beams: every ray grazes geometry; thin features at LOD",
+        default: || GenSpec::Lattice { period: default_lattice_period(), thickness: default_one(), height: default_lattice_height() },
+        fields: &[
+            field("period", "Distance between beams in blocks"),
+            field("thickness", "Beam thickness in blocks (less than the period)"),
+            field("height", "Height of the lattice in blocks"),
+        ],
+    },
+    GenInfo {
+        name: "gyroid",
+        description: "Gyroid caves: curved walls nothing can merge, two interleaved tunnel networks",
+        default: || GenSpec::Gyroid { period: default_gyroid_period(), thickness: default_gyroid_thickness(), height: default_gyroid_height() },
+        fields: &[
+            field("period", "Repeat length of the gyroid in blocks"),
+            ranged("thickness", "Wall half-thickness in units of the gyroid function; above about 1 the caves close up", 0.05, 1.2),
+            field("height", "Height of the cave volume in blocks"),
+        ],
+    },
+    GenInfo {
+        name: "checker",
+        description: "3D checkerboard cube: every block shows all six faces, yet perfectly regular",
+        default: || GenSpec::Checker { size: 96, cell: default_one() },
+        fields: &[field("size", "Edge length of the cube in blocks"), field("cell", "Checker cell size in blocks (1 = every other block)")],
+    },
+    GenInfo {
+        name: "glass",
+        description: "Glass panes, a glass cube and a grate: see-through blocks, several surfaces per pixel",
+        default: || GenSpec::Glass { size: default_glass_size(), panes: default_glass_panes() },
+        fields: &[
+            field("size", "Edge length of the yard in blocks"),
+            field("panes", "Parallel glass walls one behind the other (a ray through all crosses twice as many surfaces)"),
+        ],
+    },
+    GenInfo { name: "showcase", description: "One of every block type, for checking textures", default: || GenSpec::Showcase, fields: &[] },
+    GenInfo { name: "empty", description: "No blocks (sky only)", default: || GenSpec::Empty, fields: &[] },
+];
+
 impl GenSpec {
+    /// Its entry in [`GENERATORS`] (by variant).
+    pub fn info(&self) -> &'static GenInfo {
+        let d = std::mem::discriminant(self);
+        GENERATORS.iter().find(|g| std::mem::discriminant(&(g.default)()) == d).expect("every GenSpec variant is in GENERATORS (test every_generator_is_listed)")
+    }
+
+    /// Its name, the spec's `type`.
+    pub fn name(&self) -> &'static str {
+        self.info().name
+    }
+
     pub fn build(&self) -> Arc<dyn WorldGen> {
         match self.clone() {
             GenSpec::Empty => Arc::new(EmptyGen),
@@ -960,6 +1097,30 @@ impl WorldGen for TerrainGen {
 mod tests {
     use super::*;
 
+    /// `GENERATORS` lists every `GenSpec` variant once, by its serde name, with its default
+    /// spec, and names each default's fields exactly (serde's own lists are the reference).
+    #[test]
+    fn every_generator_is_listed() {
+        let err = toml::from_str::<GenSpec>("type = \"no such generator\"").unwrap_err().to_string();
+        let variants: Vec<&str> = err.split("expected one of ").nth(1).expect(&err).split(", ").map(|v| v.trim().trim_matches('`')).filter(|v| !v.is_empty()).collect();
+        let mut listed: Vec<&str> = GENERATORS.iter().map(|g| g.name).collect();
+        let mut want = variants.clone();
+        listed.sort();
+        want.sort();
+        assert_eq!(listed, want, "GENERATORS against GenSpec's variants");
+        for g in GENERATORS {
+            let spec = (g.default)();
+            assert_eq!(spec.name(), g.name);
+            let table = toml::Table::try_from(&spec).unwrap();
+            assert_eq!(table["type"].as_str(), Some(g.name), "{}: its default is another variant", g.name);
+            let mut fields: Vec<&str> = table.keys().map(String::as_str).filter(|k| *k != "type").collect();
+            let mut named: Vec<&str> = g.fields.iter().map(|f| f.name).collect();
+            fields.sort();
+            named.sort();
+            assert_eq!(fields, named, "{}: its knobs against its spec's fields", g.name);
+        }
+    }
+
     #[test]
     fn terrain_fast_path_matches_block() {
         let g = TerrainGen { seed: 3, caves: true, trees: true };
@@ -1048,21 +1209,7 @@ mod tests {
     fn generators_ask_for_the_blocks_they_place() {
         let blocks = crate::textures::default_registry();
         // (`Empty` has no chunks at all.)
-        let gens = [
-            GenSpec::Terrain { seed: 0, caves: true, trees: true },
-            GenSpec::Flat { checker: false },
-            GenSpec::Flat { checker: true },
-            GenSpec::Menger { level: 4 },
-            GenSpec::Room { size: 48 },
-            GenSpec::Random { size: 128, density: 0.1, seed: 0 },
-            GenSpec::City { seed: 0, block: 48, max_height: 240 },
-            GenSpec::Islands { seed: 0, spacing: 96, height: 512, fill: 0.35 },
-            GenSpec::Lattice { period: 24, thickness: 1, height: 160 },
-            GenSpec::Gyroid { period: 48, thickness: 0.3, height: 192 },
-            GenSpec::Checker { size: 96, cell: 1 },
-            GenSpec::Glass { size: 48, panes: 6 },
-            GenSpec::Showcase,
-        ];
+        let gens = GENERATORS.iter().map(|g| (g.default)()).filter(|g| !matches!(g, GenSpec::Empty)).chain([GenSpec::Flat { checker: true }]);
         let mut asking = 0;
         for spec in gens {
             let g = spec.build();

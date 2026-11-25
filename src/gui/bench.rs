@@ -131,7 +131,7 @@ pub fn report_ui(ui: &mut Ui, r: &Report) {
             let _ = Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(d).spawn();
         }
     });
-    let cols = ["renderer", "mode", "fps", "frame ms", "p99 ms", "gpu ms", "cpu ms", "PSNR", "bad %", "init ms", "RSS MB", "GPU MB"];
+    let cols = ["renderer", "mode", "fps", "frame ms", "p99 ms", "gpu ms", "cpu ms", "latency ms", "PSNR", "settled dB", "bad %", "init ms", "shaders ms", "RSS MB", "GPU MB", "device MB"];
     egui::ScrollArea::horizontal().id_salt("report-table").show(ui, |ui| {
         egui::Grid::new("report").striped(true).show(ui, |ui| {
             for c in cols {
@@ -143,18 +143,37 @@ pub fn report_ui(ui: &mut Ui, r: &Report) {
                     "p99 ms" => "99th-percentile time between completed frames (hitches)",
                     "gpu ms" => "Mean GPU execution time per frame (timestamp queries)",
                     "cpu ms" => "Mean renderer-process CPU time per frame",
+                    "latency ms" => "Mean time from a frame's request to its completion",
                     "PSNR" => "Mean PSNR vs the reference renderer in dB (higher is better, 99 = exact)",
+                    "settled dB" => "PSNR of the frames rendered with the camera held still long enough to settle (accumulating pipelines: converged); the score the catalogue's floor uses where present",
                     "bad %" => "Mean share of pixels off by more than 16/255 vs the reference",
                     "init ms" => "Renderer start-up time (device, pipelines)",
+                    "shaders ms" => "The part of init ms spent on shaders: composing and validating modules, and creating pipelines (the driver's compile)",
                     "RSS MB" => "Peak resident memory of the renderer process",
-                    _ => "GPU memory the renderer reports allocating",
+                    "GPU MB" => "GPU memory the renderer counts holding",
+                    _ => "Measured: the most its GPU devices' allocators held (rounding and transient memory included)",
                 });
             }
             ui.end_row();
             for p in &r.passes {
                 let s = |k: &str| p.get(k).and_then(|x| x.as_str()).unwrap_or("-").to_string();
                 let n = |v: Option<f64>, d: usize| v.map(|x| format!("{x:.d$}")).unwrap_or_else(|| "-".into());
-                ui.label(s("label"));
+                // What else the pass says of itself: what it left out, a fault while stopping,
+                // lanes that failed beside it.
+                let list = |k: &str| p.get(k).and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("; ")).filter(|x| !x.is_empty());
+                let notes: Vec<String> = [
+                    list("not_supported").map(|x| format!("left out: {x}")),
+                    p.get("shutdown_error").and_then(|x| x.as_str()).map(|x| format!("while stopping: {x}")),
+                    list("beside_failed").map(|x| format!("shared the machine for part of the pass with failed {x}")),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if notes.is_empty() {
+                    ui.label(s("label"));
+                } else {
+                    ui.label(format!("{} ⚠", s("label"))).on_hover_text(notes.join("\n"));
+                }
                 ui.label(s("mode"));
                 if let Some(e) = p.get("error").and_then(|e| e.as_str()) {
                     ui.colored_label(egui::Color32::LIGHT_RED, "FAILED").on_hover_text(e);
@@ -166,11 +185,18 @@ pub fn report_ui(ui: &mut Ui, r: &Report) {
                 ui.label(n(f(p, &["frame_interval_ms", "p99"]), 2));
                 ui.label(n(f(p, &["gpu_ms", "mean"]), 2));
                 ui.label(n(f(p, &["cpu_ms", "mean"]), 2));
+                ui.label(n(f(p, &["latency_ms", "mean"]), 2));
                 ui.label(n(f(p, &["quality", "psnr", "mean"]), 1));
+                ui.label(n(f(p, &["quality_settled", "psnr", "mean"]), 1));
                 ui.label(n(f(p, &["quality", "bad_pct", "mean"]), 2));
                 ui.label(n(f(p, &["init_ms"]), 0));
+                let shader = [f(p, &["shaders", "module_ms"]), f(p, &["shaders", "pipeline_ms"])];
+                ui.label(if shader.iter().all(Option::is_none) { "-".into() } else { format!("{} + {}", n(shader[0], 0), n(shader[1], 0)) })
+                    .on_hover_text("modules + pipelines");
                 ui.label(n(f(p, &["peak_rss_mb"]), 0));
-                ui.label(n(f(p, &["memory", "gpu_bytes"]).filter(|x| *x > 0.0).map(|x| x / 1048576.0), 0));
+                let mb = |k: &str| n(f(p, &["memory", k]).filter(|x| *x > 0.0).map(|x| x / 1048576.0), 0);
+                ui.label(mb("gpu_bytes"));
+                ui.label(mb("gpu_device_bytes"));
                 ui.end_row();
             }
         });
