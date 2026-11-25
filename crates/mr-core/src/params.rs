@@ -121,18 +121,66 @@ pub struct ValueNeed {
 
 impl ParamSpec {
     pub fn bool(name: &str, description: &str, default: bool, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Bool, default: ParamValue::Bool(default), live, owner: None, baked: true, needs: vec![] }
+        Self {
+            name: name.into(),
+            description: description.into(),
+            kind: ParamKind::Bool,
+            default: ParamValue::Bool(default),
+            live,
+            owner: None,
+            baked: true,
+            needs: vec![],
+        }
     }
 
-    pub fn int(name: &str, description: &str, min: i64, max: i64, default: i64, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Int { min, max }, default: ParamValue::Int(default), live, owner: None, baked: false, needs: vec![] }
+    pub fn int(
+        name: &str,
+        description: &str,
+        min: i64,
+        max: i64,
+        default: i64,
+        live: bool,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            kind: ParamKind::Int { min, max },
+            default: ParamValue::Int(default),
+            live,
+            owner: None,
+            baked: false,
+            needs: vec![],
+        }
     }
 
-    pub fn float(name: &str, description: &str, min: f64, max: f64, log: bool, default: f64, live: bool) -> Self {
-        Self { name: name.into(), description: description.into(), kind: ParamKind::Float { min, max, log }, default: ParamValue::Float(default), live, owner: None, baked: false, needs: vec![] }
+    pub fn float(
+        name: &str,
+        description: &str,
+        min: f64,
+        max: f64,
+        log: bool,
+        default: f64,
+        live: bool,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            kind: ParamKind::Float { min, max, log },
+            default: ParamValue::Float(default),
+            live,
+            owner: None,
+            baked: false,
+            needs: vec![],
+        }
     }
 
-    pub fn choice(name: &str, description: &str, options: &[&str], default: &str, live: bool) -> Self {
+    pub fn choice(
+        name: &str,
+        description: &str,
+        options: &[&str],
+        default: &str,
+        live: bool,
+    ) -> Self {
         Self {
             name: name.into(),
             description: description.into(),
@@ -153,20 +201,38 @@ impl ParamSpec {
 
     /// Marks the knob as belonging to `components` of `slot` (see `owner`).
     pub fn of(mut self, slot: &str, components: &[&str]) -> Self {
-        self.owner = Some((slot.into(), components.iter().map(|c| c.to_string()).collect()));
+        self.owner = Some((
+            slot.into(),
+            components.iter().map(|c| c.to_string()).collect(),
+        ));
         self
     }
 
     /// Value `value` needs a node of `role` (with `port`: the node feeding its input `port`)
     /// whose component is one of `components`, which have `what` (see [`ValueNeed`]).
-    pub fn needs(mut self, value: &str, role: &str, port: Option<&str>, components: &[&str], what: &str) -> Self {
-        self.needs.push(ValueNeed { value: value.into(), role: role.into(), port: port.map(Into::into), components: components.iter().map(|c| c.to_string()).collect(), what: what.into() });
+    pub fn needs(
+        mut self,
+        value: &str,
+        role: &str,
+        port: Option<&str>,
+        components: &[&str],
+        what: &str,
+    ) -> Self {
+        self.needs.push(ValueNeed {
+            value: value.into(),
+            role: role.into(),
+            port: port.map(Into::into),
+            components: components.iter().map(|c| c.to_string()).collect(),
+            what: what.into(),
+        });
         self
     }
 
     /// Whether the knob belongs to component `component` of `slot`.
     pub fn owned_by(&self, slot: &str, component: &str) -> bool {
-        self.owner.as_ref().is_some_and(|(s, cs)| s == slot && cs.iter().any(|c| c == component))
+        self.owner
+            .as_ref()
+            .is_some_and(|(s, cs)| s == slot && cs.iter().any(|c| c == component))
     }
 
     /// Coerces and clamps a value into this parameter's domain.
@@ -189,7 +255,10 @@ impl ParamSpec {
     pub fn from_json(&self, v: &serde_json::Value) -> Option<ParamValue> {
         let raw = match &self.kind {
             ParamKind::Bool => ParamValue::Bool(v.as_bool()?),
-            ParamKind::Int { .. } => ParamValue::Int(v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64))?),
+            ParamKind::Int { .. } => ParamValue::Int(
+                v.as_i64()
+                    .or_else(|| v.as_f64().map(|f| f.round() as i64))?,
+            ),
             ParamKind::Float { .. } => ParamValue::Float(v.as_f64()?),
             ParamKind::Choice(_) => ParamValue::Choice(v.as_str()?.into()),
         };

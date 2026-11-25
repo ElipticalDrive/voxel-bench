@@ -133,7 +133,8 @@ What a renderer, a pass and the registry report, and where the GUI shows it.
 | events (started, edits, refusals, hot swaps) of the last seconds | tile |
 | a failure: the error, a dead worker's exit status or signal, the watchdog's verdict on a hung one | tile (first line) and panel (whole) |
 | the node a failure or a refused knob is about: a failure names its component (`clipmap: ...`, the convention of build, device-limit and memory errors), its role when the code serves the role whatever its component (`storage: the voxel pool is full`), or a node id in backticks; a refusal, the knob's owner | that node, red with ⚠, in the panel's pipeline rows and on the editor's canvas, the message on hover (a refusal as long as the tile shows it; what names no node stays the lane's) |
-| the node a draft's reason names (`accept` names nodes in backticks, `` `draw` (draw `raster`): input `faces` ... is not bound``) | that node, red with ⚠, on the editor's canvas, the reason on hover beside the lane's own faults |
+| the node a draft's reason names (`accept` names nodes in backticks, `` `draw` (draw `raster`): input `faces` ... is not bound``) | that node, red with ⚠, on the editor's canvas and in the pipeline rows, the reason on hover beside the lane's own faults |
+| a plan's renderer that does not run as given (`accept` refuses its graph, no executor builds its shape, a knob set twice), before any lane runs it | the plan editor, under the renderer's name (⚠ does not run: the reason), the node it names marked in its rows; device limits are the device's to say, at build, and come from the lane (row above) |
 | a hot swap in progress | panel |
 
 **A finished benchmark** (the Benchmark tab, one row per pass): fps, frame ms (mean, p99), GPU

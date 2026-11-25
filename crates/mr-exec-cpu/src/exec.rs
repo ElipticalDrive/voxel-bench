@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::collections::HashMap;
 
 use mr_components::graph::Checked;
-use mr_reference::{Pool, World};
 use mr_core::*;
+use mr_reference::{Pool, World};
 
 use crate::Pixel;
 
@@ -56,11 +56,20 @@ pub(crate) trait Node: Send {
     /// was built with), writes `out`.
     fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report);
     /// Its knobs; `None` if `name` is not one.
-    fn set_param(&mut self, _out: &mut Res, _name: &str, _value: &ParamValue) -> Option<anyhow::Result<()>> {
+    fn set_param(
+        &mut self,
+        _out: &mut Res,
+        _name: &str,
+        _value: &ParamValue,
+    ) -> Option<anyhow::Result<()>> {
         None
     }
     /// A node to replace while running (an edit to the graph); `None` if it is not this node.
-    fn switch(&mut self, _out: &mut Res, _s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+    fn switch(
+        &mut self,
+        _out: &mut Res,
+        _s: &mr_components::graph::Switch,
+    ) -> Option<anyhow::Result<()>> {
         None
     }
     /// After a resize: resizes `out` if its size follows the image's.
@@ -91,7 +100,10 @@ struct ViewOptions {
 
 impl Default for ViewOptions {
     fn default() -> Self {
-        Self { view: "image".into(), view_max: 256 }
+        Self {
+            view: "image".into(),
+            view_max: 256,
+        }
     }
 }
 
@@ -118,27 +130,65 @@ pub(crate) struct Executor<P> {
 }
 
 impl<P: Pixel> Executor<P> {
-    pub fn new(p: &InitParams, threads: usize, world: World, mut passes: Vec<Pass>) -> anyhow::Result<Self> {
-        anyhow::ensure!(passes.iter().enumerate().all(|(i, s)| s.ins.iter().all(|&j| j < i)), "a pass reads a later pass's output");
-        let outs = passes.iter_mut().map(|s| s.node.output(p.width, p.height)).collect();
+    pub fn new(
+        p: &InitParams,
+        threads: usize,
+        world: World,
+        mut passes: Vec<Pass>,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            passes
+                .iter()
+                .enumerate()
+                .all(|(i, s)| s.ins.iter().all(|&j| j < i)),
+            "a pass reads a later pass's output"
+        );
+        let outs = passes
+            .iter_mut()
+            .map(|s| s.node.output(p.width, p.height))
+            .collect();
         let g = mr_components::graph::of_init("cpu", p)?;
         let o: ViewOptions = p.options()?;
         let (view, view_max) = mr_components::post::view_chosen(&g, &o.view, o.view_max);
-        let mut e = Self { graph: g.graph, pool: Pool::new(p.devices.cpu_threads(threads))?, world, width: p.width, height: p.height, passes, outs, baked: &[], native: false, view: String::new(), view_max, values: vec![], _px: std::marker::PhantomData };
+        let mut e = Self {
+            graph: g.graph,
+            pool: Pool::new(p.devices.cpu_threads(threads))?,
+            world,
+            width: p.width,
+            height: p.height,
+            passes,
+            outs,
+            baked: &[],
+            native: false,
+            view: String::new(),
+            view_max,
+            values: vec![],
+            _px: std::marker::PhantomData,
+        };
         e.set_view(&view)?;
         Ok(e)
     }
 
     /// Every pass's quantities.
     fn quantities(&self) -> Vec<Quantity> {
-        self.passes.iter().flat_map(|p| p.node.quantities()).copied().collect()
+        self.passes
+            .iter()
+            .flat_map(|p| p.node.quantities())
+            .copied()
+            .collect()
     }
 
     /// The view `name` (`image`: none), if a pass writes it.
     fn set_view(&mut self, name: &str) -> anyhow::Result<()> {
         let viewed = mr_components::post::view_quantity(name, &self.quantities())?.is_some();
         self.view = name.to_string();
-        self.values = if viewed { (0..self.width * self.height).map(|_| AtomicU32::new(0)).collect() } else { vec![] };
+        self.values = if viewed {
+            (0..self.width * self.height)
+                .map(|_| AtomicU32::new(0))
+                .collect()
+        } else {
+            vec![]
+        };
         Ok(())
     }
 
@@ -151,22 +201,36 @@ impl<P: Pixel> Executor<P> {
         let values = &self.values;
         pool.install(|| {
             use rayon::prelude::*;
-            image.par_iter_mut().zip(values.par_iter()).for_each(|(px, v)| {
-                let v = v.load(Relaxed);
-                let [r, g, b] = legend.color(if q.float { f32::from_bits(v) as f64 } else { v as f64 });
-                *px = P::from_rgba8([r, g, b, 255]);
-            });
+            image
+                .par_iter_mut()
+                .zip(values.par_iter())
+                .for_each(|(px, v)| {
+                    let v = v.load(Relaxed);
+                    let [r, g, b] = legend.color(if q.float {
+                        f32::from_bits(v) as f64
+                    } else {
+                        v as f64
+                    });
+                    *px = P::from_rgba8([r, g, b, 255]);
+                });
         });
         Some(legend)
     }
 
     /// A compiled pipeline's: refuses its `baked` knobs, says when it is `native`.
     pub fn baked(self, baked: mr_core::baked::Knobs, native: bool) -> Self {
-        Self { baked, native, ..self }
+        Self {
+            baked,
+            native,
+            ..self
+        }
     }
 
     fn image(&self) -> &[P] {
-        self.outs.last().and_then(|o| o.downcast_ref::<Vec<P>>()).map_or(&[], |v| v.as_slice())
+        self.outs
+            .last()
+            .and_then(|o| o.downcast_ref::<Vec<P>>())
+            .map_or(&[], |v| v.as_slice())
     }
 }
 
@@ -184,8 +248,16 @@ impl<P: Pixel> Renderer for Executor<P> {
         let start = std::time::Instant::now();
         let mut report = Report::default();
         let (passes, outs) = (&mut self.passes, &mut self.outs);
-        let view = (!self.values.is_empty()).then_some((self.view.as_str(), self.values.as_slice()));
-        let cx = Cx { pool: &self.pool, world: &self.world, req, width: self.width, height: self.height, view };
+        let view =
+            (!self.values.is_empty()).then_some((self.view.as_str(), self.values.as_slice()));
+        let cx = Cx {
+            pool: &self.pool,
+            world: &self.world,
+            req,
+            width: self.width,
+            height: self.height,
+            view,
+        };
         self.pool.install(|| {
             for (i, pass) in passes.iter_mut().enumerate() {
                 // Inputs come before `i` (checked at creation): split there.
@@ -201,8 +273,18 @@ impl<P: Pixel> Renderer for Executor<P> {
             // A pipeline compiled for this machine (observations tell it from the generic build).
             report.counters.push(("compiled_native".into(), 1.0));
         }
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: report.counters, legend: report.legend, stages: report.stages };
-        sink.complete(CompletedFrame { frame_id: req.frame_id, stats, pixels: Some(bytemuck::cast_slice(self.image())) });
+        let stats = FrameStats {
+            cpu_ms: start.elapsed().as_secs_f32() * 1e3,
+            gpu_ms: None,
+            counters: report.counters,
+            legend: report.legend,
+            stages: report.stages,
+        };
+        sink.complete(CompletedFrame {
+            frame_id: req.frame_id,
+            stats,
+            pixels: Some(bytemuck::cast_slice(self.image())),
+        });
         Ok(())
     }
 
@@ -210,7 +292,15 @@ impl<P: Pixel> Renderer for Executor<P> {
         let (g, switches) = mr_components::graph::live(&self.graph, edits)?;
         for s in &switches {
             let mut nodes = self.passes.iter_mut().zip(&mut self.outs);
-            nodes.find_map(|(p, out)| p.node.switch(out, s)).unwrap_or_else(|| anyhow::bail!("{} node `{}` cannot change while running", s.role.name(), s.node))?;
+            nodes
+                .find_map(|(p, out)| p.node.switch(out, s))
+                .unwrap_or_else(|| {
+                    anyhow::bail!(
+                        "{} node `{}` cannot change while running",
+                        s.role.name(),
+                        s.node
+                    )
+                })?;
         }
         self.graph = g.graph;
         Ok(())
@@ -264,8 +354,19 @@ impl<P: Pixel> Renderer for Executor<P> {
     }
 
     fn memory(&self) -> MemoryReport {
-        let cpu_bytes = self.passes.iter().zip(&self.outs).map(|(s, o)| s.node.memory(o)).sum::<u64>() + std::mem::size_of_val(self.image()) as u64 + self.values.len() as u64 * 4;
-        MemoryReport { cpu_bytes, gpu_bytes: 0, gpu_device_bytes: 0 }
+        let cpu_bytes = self
+            .passes
+            .iter()
+            .zip(&self.outs)
+            .map(|(s, o)| s.node.memory(o))
+            .sum::<u64>()
+            + std::mem::size_of_val(self.image()) as u64
+            + self.values.len() as u64 * 4;
+        MemoryReport {
+            cpu_bytes,
+            gpu_bytes: 0,
+            gpu_device_bytes: 0,
+        }
     }
 }
 

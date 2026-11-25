@@ -193,9 +193,17 @@ impl App {
             self.open_graph(ui.ctx(), graph::Of::Plan(i), sel);
         }
         if let Some(i) = restart {
-            let n = self.live.as_ref().map(|l| l.shared.lock().unwrap().lanes.len()).unwrap_or(0);
+            let n = self
+                .live
+                .as_ref()
+                .map(|l| l.shared.lock().unwrap().lanes.len())
+                .unwrap_or(0);
             let spec = self.plan.renderers[i].clone();
-            self.send(if i < n { Cmd::Restart { lane: i, spec } } else { Cmd::AddLane(spec) });
+            self.send(if i < n {
+                Cmd::Restart { lane: i, spec }
+            } else {
+                Cmd::AddLane(spec)
+            });
         }
     }
 
@@ -207,7 +215,11 @@ impl App {
         }
         self.toml_pass = Some(pass);
         ui.horizontal(|ui| {
-            if ui.button("Apply").on_hover_text("Parse this TOML and replace the plan with it").clicked() {
+            if ui
+                .button("Apply")
+                .on_hover_text("Parse this TOML and replace the plan with it")
+                .clicked()
+            {
                 match Plan::parse(&self.toml_text, &[]) {
                     Ok(p) => {
                         self.plan = p;
@@ -218,7 +230,11 @@ impl App {
                     Err(e) => self.toml_error = Some(format!("{e:#}")),
                 }
             }
-            if ui.button("Revert").on_hover_text("Discard text edits; show the current plan again").clicked() {
+            if ui
+                .button("Revert")
+                .on_hover_text("Discard text edits; show the current plan again")
+                .clicked()
+            {
                 self.toml_text = self.plan.to_toml().unwrap_or_default();
                 self.toml_error = None;
             }
@@ -227,7 +243,13 @@ impl App {
             ui.colored_label(Color32::LIGHT_RED, e);
         }
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.add(egui::TextEdit::multiline(&mut self.toml_text).code_editor().desired_width(f32::INFINITY).desired_rows(40)).on_hover_text("Edit, then Apply. Field reference: docs/plans.md.");
+            ui.add(
+                egui::TextEdit::multiline(&mut self.toml_text)
+                    .code_editor()
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(40),
+            )
+            .on_hover_text("Edit, then Apply. Field reference: docs/plans.md.");
         });
     }
 
@@ -249,17 +271,40 @@ impl App {
         };
         if self.compare_tex.as_ref().is_none_or(|c| c.seq != r.seq) {
             let size = [r.width as usize, r.height as usize];
-            let mk = |name: String, px: &[u8]| ui.ctx().load_texture(name, egui::ColorImage::from_rgba_unmultiplied(size, px), TextureOptions::NEAREST);
+            let mk = |name: String, px: &[u8]| {
+                ui.ctx().load_texture(
+                    name,
+                    egui::ColorImage::from_rgba_unmultiplied(size, px),
+                    TextureOptions::NEAREST,
+                )
+            };
             self.compare_tex = Some(CompareTex {
                 seq: r.seq,
                 reference: mk("cmp-ref".into(), &r.reference),
-                lanes: r.lanes.iter().enumerate().map(|(i, l)| (mk(format!("cmp{i}"), &l.image), mk(format!("cmpd{i}"), &l.diff))).collect(),
+                lanes: r
+                    .lanes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| {
+                        (
+                            mk(format!("cmp{i}"), &l.image),
+                            mk(format!("cmpd{i}"), &l.diff),
+                        )
+                    })
+                    .collect(),
                 show: 0,
                 diff: true,
             });
         }
         let p = r.camera.position;
-        ui.label(format!("{} mode · camera ({:.1}, {:.1}, {:.1}) · reference: {}", r.mode.name(), p.x, p.y, p.z, r.reference_label));
+        ui.label(format!(
+            "{} mode · camera ({:.1}, {:.1}, {:.1}) · reference: {}",
+            r.mode.name(),
+            p.x,
+            p.y,
+            p.z,
+            r.reference_label
+        ));
         egui::Grid::new("cmp").striped(true).show(ui, |ui| {
             ui.strong("renderer");
             ui.strong("PSNR dB").on_hover_text("Peak signal-to-noise ratio vs the reference; higher is better, ≥40 dB looks identical, 99 = exact");
@@ -278,13 +323,19 @@ impl App {
         });
         let labels: Vec<String> = r.lanes.iter().map(|l| l.label.clone()).collect();
         drop(sh);
-        let Some(ct) = &mut self.compare_tex else { return };
+        let Some(ct) = &mut self.compare_tex else {
+            return;
+        };
         ui.horizontal_wrapped(|ui| {
             for (i, l) in labels.iter().enumerate() {
-                ui.selectable_value(&mut ct.show, i, l).on_hover_text("Show this renderer's frame");
+                ui.selectable_value(&mut ct.show, i, l)
+                    .on_hover_text("Show this renderer's frame");
             }
-            ui.selectable_value(&mut ct.show, usize::MAX, "reference").on_hover_text("Show the reference renderer's frame");
-            ui.checkbox(&mut ct.diff, "show diff").on_hover_text("Grey image with differing pixels in red (brighter = larger difference)");
+            ui.selectable_value(&mut ct.show, usize::MAX, "reference")
+                .on_hover_text("Show the reference renderer's frame");
+            ui.checkbox(&mut ct.diff, "show diff").on_hover_text(
+                "Grey image with differing pixels in red (brighter = larger difference)",
+            );
         });
         let tex = match ct.lanes.get(ct.show) {
             Some((img, diff)) => {
@@ -308,26 +359,47 @@ impl App {
         }
         if let Some(b) = &mut self.bench {
             if b.poll()
-                && let Some(p) = b.report.lock().unwrap().take() {
+                && let Some(p) = b.report.lock().unwrap().take()
+            {
                 match bench::load_report(&p) {
                     Ok(r) => self.report = Some(r),
                     Err(e) => self.message = format!("report: {e:#}"),
                 }
             }
-            egui::CollapsingHeader::new("benchmark output").default_open(!b.finished).show(ui, |ui| {
-                egui::ScrollArea::vertical().id_salt("bench-out").max_height(220.0).stick_to_bottom(true).show(ui, |ui| {
-                    for l in b.lines.lock().unwrap().iter() {
-                        ui.monospace(l);
-                    }
+            egui::CollapsingHeader::new("benchmark output")
+                .default_open(!b.finished)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("bench-out")
+                        .max_height(220.0)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for l in b.lines.lock().unwrap().iter() {
+                                ui.monospace(l);
+                            }
+                        });
                 });
-            });
         }
-        let base = PathBuf::from(self.plan.output.dir.clone().unwrap_or_else(|| "runs".into()));
+        let base = PathBuf::from(
+            self.plan
+                .output
+                .dir
+                .clone()
+                .unwrap_or_else(|| "runs".into()),
+        );
         ui.menu_button("📂 Load a previous report", |ui| {
             ui.weak("Benchmark runs found in the plan's output directory, newest first");
             for p in bench::past_runs(&base).into_iter().take(40) {
-                let name = p.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                if ui.button(name).on_hover_text(p.display().to_string()).clicked() {
+                let name = p
+                    .parent()
+                    .and_then(|d| d.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if ui
+                    .button(name)
+                    .on_hover_text(p.display().to_string())
+                    .clicked()
+                {
                     match bench::load_report(&p) {
                         Ok(r) => self.report = Some(r),
                         Err(e) => self.message = format!("report: {e:#}"),
@@ -344,7 +416,12 @@ impl App {
     }
 
     /// Opens the pipeline editor on a plan's renderer or a live lane, and shows its pane.
-    pub(super) fn open_graph(&mut self, ctx: &egui::Context, of: graph::Of, selected: Option<String>) {
+    pub(super) fn open_graph(
+        &mut self,
+        ctx: &egui::Context,
+        of: graph::Of,
+        selected: Option<String>,
+    ) {
         self.graph_win = Some(graph::Window::new(ctx, of, selected));
         self.docks.show(ctx, dock::Pane::Pipeline);
     }
@@ -357,21 +434,66 @@ impl App {
         };
         let target = match win.of {
             graph::Of::Plan(i) => self.plan.renderers.get(i).map(|r| {
-                let params = r.info(&self.plan.run, &self.infos).map(|i| i.params).unwrap_or_default();
-                (format!("plan renderer {} ({})", i + 1, r.label()), r.clone(), { let values = r.knob_values(); params.iter().map(|p| (p.clone(), knobs::option_value(p, &values))).collect::<Vec<_>>() })
+                let params = r
+                    .info(&self.plan.run, &self.infos)
+                    .map(|i| i.params)
+                    .unwrap_or_default();
+                (
+                    format!("plan renderer {} ({})", i + 1, r.label()),
+                    r.clone(),
+                    {
+                        let values = r.knob_values();
+                        params
+                            .iter()
+                            .map(|p| (p.clone(), knobs::option_value(p, &values)))
+                            .collect::<Vec<_>>()
+                    },
+                )
             }),
             graph::Of::Lane(i) => self.live.as_ref().and_then(|l| {
                 let sh = l.shared.lock().unwrap();
                 let now = sh.start.map_or(0.0, |s| s.elapsed().as_secs_f64());
                 sh.lanes.get(i).map(|l| {
-                    graph::set_faults(&mut self.trials, &format!("{:?}", graph::Of::Lane(i)), &l.spec, l.faults(now));
-                    (format!("live lane {} ({})", i + 1, l.spec.label()), l.spec.clone(), l.params.iter().map(|(s, v)| (s.clone(), self.knob_edits.get(&(i, s.name.clone())).cloned().unwrap_or(v.clone()))).collect())
+                    graph::set_faults(
+                        &mut self.trials,
+                        &format!("{:?}", graph::Of::Lane(i)),
+                        &l.spec,
+                        l.faults(now),
+                    );
+                    (
+                        format!("live lane {} ({})", i + 1, l.spec.label()),
+                        l.spec.clone(),
+                        l.params
+                            .iter()
+                            .map(|(s, v)| {
+                                (
+                                    s.clone(),
+                                    self.knob_edits
+                                        .get(&(i, s.name.clone()))
+                                        .cloned()
+                                        .unwrap_or(v.clone()),
+                                )
+                            })
+                            .collect(),
+                    )
                 })
             }),
         };
-        let Some((title, spec, knobs)) = target else { return };
+        let Some((title, spec, knobs)) = target else {
+            return;
+        };
         let marks = matches!(win.of, graph::Of::Lane(_));
-        let (edits, open) = graph::pane(ui, &mut win, &title, &spec, &knobs, marks, &mut self.trials, &self.infos, &self.plan.run);
+        let (edits, open) = graph::pane(
+            ui,
+            &mut win,
+            &title,
+            &spec,
+            &knobs,
+            marks,
+            &mut self.trials,
+            &self.infos,
+            &self.plan.run,
+        );
         match win.of {
             graph::Of::Plan(i) => {
                 let (changed, _) = graph::apply_to_plan(&mut self.plan.renderers[i], edits);
@@ -383,17 +505,32 @@ impl App {
             graph::Of::Lane(i) => {
                 for e in edits {
                     match e {
-                        graph::Edit::Knob { name, value, commit } => {
-                            let live = knobs.iter().find(|(s, _)| s.name == name).is_some_and(|(s, _)| s.live);
+                        graph::Edit::Knob {
+                            name,
+                            value,
+                            commit,
+                        } => {
+                            let live = knobs
+                                .iter()
+                                .find(|(s, _)| s.name == name)
+                                .is_some_and(|(s, _)| s.live);
                             if (live && name != "host.render_scale") || commit {
                                 self.knob_edits.remove(&(i, name.clone()));
-                                self.send(Cmd::SetParam { lane: i, name, value });
+                                self.send(Cmd::SetParam {
+                                    lane: i,
+                                    name,
+                                    value,
+                                });
                             } else {
                                 self.knob_edits.insert((i, name), value);
                             }
                         }
                         graph::Edit::Spec(new) => match graph::live_edits(&spec, &new, &knobs) {
-                            Some(knobs) => self.send(Cmd::Edits { lane: i, spec: new, knobs }),
+                            Some(knobs) => self.send(Cmd::Edits {
+                                lane: i,
+                                spec: new,
+                                knobs,
+                            }),
                             None => self.send(Cmd::Swap { lane: i, spec: new }),
                         },
                         graph::Edit::Open(_) => {}

@@ -26,7 +26,9 @@ fn main() {
     let (mut packets, mut isas) = (PACKETS.to_vec(), ISAS.to_vec());
     for part in setting.split_whitespace().filter(|p| *p != "all") {
         let Some((dim, values)) = part.split_once('=') else {
-            panic!("MR_CPU_COVERAGE: `{part}` is not `dimension=values` (dimensions: packets, isa)");
+            panic!(
+                "MR_CPU_COVERAGE: `{part}` is not `dimension=values` (dimensions: packets, isa)"
+            );
         };
         let values: Vec<&str> = values.split(',').filter(|v| !v.is_empty()).collect();
         let (all, kept): (&[&str], &mut Vec<&str>) = match dim {
@@ -34,7 +36,11 @@ fn main() {
             "isa" => (&ISAS, &mut isas),
             _ => panic!("MR_CPU_COVERAGE: no dimension `{dim}` (packets, isa)"),
         };
-        let always = if dim == "isa" { "scalar" } else { DEFAULT_PACKET };
+        let always = if dim == "isa" {
+            "scalar"
+        } else {
+            DEFAULT_PACKET
+        };
         if let Some(v) = values.iter().find(|v| !all.contains(v) && **v != always) {
             panic!("MR_CPU_COVERAGE: {dim} has no value `{v}` (of {all:?}; {always} always stays)");
         }
@@ -46,5 +52,9 @@ fn main() {
     for i in &isas {
         println!("cargo::rustc-cfg=cover_{i}");
     }
-    println!("cargo::rustc-env=MR_CPU_COVERED=packets={} isa=scalar{}", packets.join(","), isas.iter().map(|i| format!(",{i}")).collect::<String>());
+    println!(
+        "cargo::rustc-env=MR_CPU_COVERED=packets={} isa=scalar{}",
+        packets.join(","),
+        isas.iter().map(|i| format!(",{i}")).collect::<String>()
+    );
 }

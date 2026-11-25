@@ -3,7 +3,10 @@ use std::sync::Arc;
 use glam::IVec3;
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockId, BlockRegistry, Camera, ChunkData, ChunkKey, Environment, Light, MeshUpdate, ParamSpec, ParamValue, RenderMode};
+use crate::{
+    BlockId, BlockRegistry, Camera, ChunkData, ChunkKey, Environment, Light, MeshUpdate, ParamSpec,
+    ParamValue, RenderMode,
+};
 
 /// Static description of a renderer implementation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -79,7 +82,10 @@ pub struct DeviceConfig {
 impl DeviceConfig {
     /// The adapter filter of GPU slot `slot` (`None` = the default choice).
     pub fn gpu(&self, slot: usize) -> Option<&str> {
-        self.gpus.get(slot).map(String::as_str).filter(|s| !s.is_empty())
+        self.gpus
+            .get(slot)
+            .map(String::as_str)
+            .filter(|s| !s.is_empty())
     }
 
     /// Threads for a CPU stage: its own knob if set, else the configuration's.
@@ -181,7 +187,12 @@ pub struct StageTime {
 
 impl StageTime {
     pub fn cpu(name: &str, nodes: &[String], ms: f32) -> Self {
-        Self { name: name.into(), nodes: nodes.to_vec(), cpu_ms: Some(ms), gpu_ms: None }
+        Self {
+            name: name.into(),
+            nodes: nodes.to_vec(),
+            cpu_ms: Some(ms),
+            gpu_ms: None,
+        }
     }
 }
 

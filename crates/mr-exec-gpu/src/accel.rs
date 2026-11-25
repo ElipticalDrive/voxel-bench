@@ -49,8 +49,15 @@ struct ChunkAs {
 
 /// CPU-side geometry for one chunk's BLAS.
 enum Built {
-    Triangles { vertices: Vec<[f32; 3]>, indices: Vec<u32>, quads: Vec<[u32; 2]> },
-    Aabbs { boxes: Vec<[f32; 6]>, bricks: Vec<u32> },
+    Triangles {
+        vertices: Vec<[f32; 3]>,
+        indices: Vec<u32>,
+        quads: Vec<[u32; 2]>,
+    },
+    Aabbs {
+        boxes: Vec<[f32; 6]>,
+        bricks: Vec<u32>,
+    },
 }
 
 fn tlas(gpu: &Gpu, cap: u32) -> wgpu::Tlas {
@@ -66,16 +73,35 @@ impl AccelSpec {
     /// For the ray queries of `walks`, if it has any: their geometry node with its knobs
     /// (`cull`, `fast_build`, `build_budget`; `merge` only `block`: ray queries have no
     /// per-pixel block lookup).
-    pub fn of(g: &mr_components::graph::Checked, walks: &mr_components::shaders::Walks) -> anyhow::Result<Option<Self>> {
-        let Some(geo) = &walks.geometry else { return Ok(None) };
+    pub fn of(
+        g: &mr_components::graph::Checked,
+        walks: &mr_components::shaders::Walks,
+    ) -> anyhow::Result<Option<Self>> {
+        let Some(geo) = &walks.geometry else {
+            return Ok(None);
+        };
         let knobs = &g.node(&geo.node).knobs;
-        let merge = knobs.get("merge").and_then(|v| v.as_str()).unwrap_or("block");
-        anyhow::ensure!(merge == "block", "`{}`: merge = `{merge}`: ray queries have no per-pixel block lookup (only `block`)", geo.node);
+        let merge = knobs
+            .get("merge")
+            .and_then(|v| v.as_str())
+            .unwrap_or("block");
+        anyhow::ensure!(
+            merge == "block",
+            "`{}`: merge = `{merge}`: ray queries have no per-pixel block lookup (only `block`)",
+            geo.node
+        );
         Ok(Some(Self {
             geometry: geo.component.clone(),
             cull: knobs.get("cull").and_then(|v| v.as_bool()).unwrap_or(true),
-            fast_build: knobs.get("fast_build").and_then(|v| v.as_bool()).unwrap_or(false),
-            build_budget: knobs.get("build_budget").and_then(|v| v.as_integer()).unwrap_or(0).max(0) as usize,
+            fast_build: knobs
+                .get("fast_build")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            build_budget: knobs
+                .get("build_budget")
+                .and_then(|v| v.as_integer())
+                .unwrap_or(0)
+                .max(0) as usize,
         }))
     }
 }
@@ -106,10 +132,26 @@ pub(crate) struct Accel {
 
 impl Accel {
     pub fn new(gpu: &Arc<Gpu>, s: &AccelSpec) -> anyhow::Result<Self> {
-        let (_, rt) = mr_components::geometry::rt(&s.geometry).ok_or_else(|| anyhow::anyhow!("geometry `{}` builds no acceleration structure (have: greedy, naive, boxes)", s.geometry))?;
-        let geo_buf = GrowableBuffer::new(gpu, "geometry", 1 << 20, u64::MAX, wgpu::BufferUsages::STORAGE);
+        let (_, rt) = mr_components::geometry::rt(&s.geometry).ok_or_else(|| {
+            anyhow::anyhow!(
+                "geometry `{}` builds no acceleration structure (have: greedy, naive, boxes)",
+                s.geometry
+            )
+        })?;
+        let geo_buf = GrowableBuffer::new(
+            gpu,
+            "geometry",
+            1 << 20,
+            u64::MAX,
+            wgpu::BufferUsages::STORAGE,
+        );
         let geo_words = (geo_buf.size() / 4) as u32;
-        let chunk_info = gpu.storage("chunk info", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || "the BLAS slots (fixed)".into());
+        let chunk_info = gpu.storage(
+            "chunk info",
+            MAX_SLOTS as u64 * 16,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            || "the BLAS slots (fixed)".into(),
+        );
         let tlas_cap = 4096;
         Ok(Self {
             tlas: tlas(gpu, tlas_cap),
@@ -117,7 +159,10 @@ impl Accel {
             geo_buf,
             rt,
             geometry: s.geometry.clone(),
-            knobs: Knobs { merge: Merge::Block, cull: s.cull },
+            knobs: Knobs {
+                merge: Merge::Block,
+                cull: s.cull,
+            },
             fast_build: s.fast_build,
             build_budget: s.build_budget,
             geo_alloc: RangeAlloc::new(geo_words),
@@ -146,16 +191,43 @@ impl Accel {
     }
 
     pub fn layout_entries(&self, stages: wgpu::ShaderStages) -> Vec<wgpu::BindGroupLayoutEntry> {
-        let e = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: stages, ty, count: None };
-        let ro = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None };
-        vec![e(ACCEL_BINDING, wgpu::BindingType::AccelerationStructure { vertex_return: false }), e(ACCEL_BINDING + 1, ro), e(ACCEL_BINDING + 2, ro)]
+        let e = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: stages,
+            ty,
+            count: None,
+        };
+        let ro = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        vec![
+            e(
+                ACCEL_BINDING,
+                wgpu::BindingType::AccelerationStructure {
+                    vertex_return: false,
+                },
+            ),
+            e(ACCEL_BINDING + 1, ro),
+            e(ACCEL_BINDING + 2, ro),
+        ]
     }
 
     pub fn bind_entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
         vec![
-            wgpu::BindGroupEntry { binding: ACCEL_BINDING, resource: wgpu::BindingResource::AccelerationStructure(&self.tlas) },
-            wgpu::BindGroupEntry { binding: ACCEL_BINDING + 1, resource: self.geo_buf.buffer().as_entire_binding() },
-            wgpu::BindGroupEntry { binding: ACCEL_BINDING + 2, resource: self.chunk_info.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: ACCEL_BINDING,
+                resource: wgpu::BindingResource::AccelerationStructure(&self.tlas),
+            },
+            wgpu::BindGroupEntry {
+                binding: ACCEL_BINDING + 1,
+                resource: self.geo_buf.buffer().as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: ACCEL_BINDING + 2,
+                resource: self.chunk_info.as_entire_binding(),
+            },
         ]
     }
 
@@ -177,7 +249,12 @@ impl Accel {
 
     /// Builds this frame's structures into `enc`: dirty chunks' BLASes, then the TLAS with
     /// the instances relative to `cam_block`. Returns whether the bindings changed.
-    pub fn build(&mut self, world: &VoxelWorld, enc: &mut wgpu::CommandEncoder, cam_block: IVec3) -> bool {
+    pub fn build(
+        &mut self,
+        world: &VoxelWorld,
+        enc: &mut wgpu::CommandEncoder,
+        cam_block: IVec3,
+    ) -> bool {
         let start = Instant::now();
         self.rebuilt = self.rebuild(world, enc, cam_block >> 5);
         self.build_ms = start.elapsed().as_secs_f64() * 1e3;
@@ -204,7 +281,11 @@ impl Accel {
     pub fn counters(&self) -> Vec<(String, f64)> {
         // Primitives in all BLASes: a quad is two words of the geometry buffer, a box one.
         let words: u64 = self.chunks.values().map(|c| c.range.1 as u64).sum();
-        let primitives = if matches!(self.rt, RtKind::Boxes) { words } else { words / 2 };
+        let primitives = if matches!(self.rt, RtKind::Boxes) {
+            words
+        } else {
+            words / 2
+        };
         vec![
             ("instances".into(), self.instances as f64),
             ("blas_rebuilt".into(), self.rebuilt as f64),
@@ -225,7 +306,12 @@ impl Accel {
 
     pub fn memory_bytes(&self) -> u64 {
         // BLAS sizes are driver-internal; BLAS input buffers are a lower bound.
-        let inputs: u64 = self.chunks.values().flat_map(|c| c._inputs.iter()).map(|b| b.size()).sum();
+        let inputs: u64 = self
+            .chunks
+            .values()
+            .flat_map(|c| c._inputs.iter())
+            .map(|b| b.size())
+            .sum();
         self.geo_buf.size() + self.chunk_info.size() + inputs
     }
 
@@ -252,11 +338,18 @@ impl Accel {
                     vertices.extend(mr_mesh::Quad::decode(*q).corners().map(|c| c.to_array()));
                     indices.extend([base, base + 1, base + 2, base + 2, base + 1, base + 3]);
                 }
-                Some(Built::Triangles { vertices, indices, quads: mesh.quads })
+                Some(Built::Triangles {
+                    vertices,
+                    indices,
+                    quads: mesh.quads,
+                })
             }
             RtKind::Boxes => match world.chunk(pos)? {
                 ChunkData::Uniform(b) if b.is_air() => None,
-                ChunkData::Uniform(_) => Some(Built::Aabbs { boxes: vec![[0.0, 0.0, 0.0, 32.0, 32.0, 32.0]], bricks: vec![NO_BRICK] }),
+                ChunkData::Uniform(_) => Some(Built::Aabbs {
+                    boxes: vec![[0.0, 0.0, 0.0, 32.0, 32.0, 32.0]],
+                    bricks: vec![NO_BRICK],
+                }),
                 ChunkData::Dense(d) => {
                     let mut occupied = [false; 512];
                     for (i, b) in d.0.iter().enumerate() {
@@ -283,16 +376,32 @@ impl Accel {
     /// per-chunk inputs and BLASes grow with the world (radius) and the geometry: when the
     /// device runs out of memory for them, the renderer fails naming that (the errors that
     /// follow from the first refused allocation are its consequences, not reported).
-    fn rebuild(&mut self, world: &VoxelWorld, enc: &mut wgpu::CommandEncoder, near: IVec3) -> usize {
+    fn rebuild(
+        &mut self,
+        world: &VoxelWorld,
+        enc: &mut wgpu::CommandEncoder,
+        near: IVec3,
+    ) -> usize {
         if self.dirty.is_empty() {
             return 0;
         }
-        let oom = self.gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let invalid = self.gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let oom = self
+            .gpu
+            .device
+            .push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let invalid = self
+            .gpu
+            .device
+            .push_error_scope(wgpu::ErrorFilter::Validation);
         let n = self.rebuild_dirty(world, enc, near);
         let invalid = pollster::block_on(invalid.pop());
         if let Some(e) = pollster::block_on(oom.pop()) {
-            let bytes: u64 = self.chunks.values().flat_map(|c| c._inputs.iter()).map(|b| b.size()).sum();
+            let bytes: u64 = self
+                .chunks
+                .values()
+                .flat_map(|c| c._inputs.iter())
+                .map(|b| b.size())
+                .sum();
             self.gpu.fail(format!(
                 "geometry: acceleration structure: the device is out of memory for the chunks' BLAS inputs ({} chunks resident, {:.0} MiB of inputs; they grow with the radius and the geometry's faces): {e}; lower the client's radius or use a geometry with fewer faces",
                 self.chunks.len(),
@@ -304,7 +413,12 @@ impl Accel {
         n
     }
 
-    fn rebuild_dirty(&mut self, world: &VoxelWorld, enc: &mut wgpu::CommandEncoder, near: IVec3) -> usize {
+    fn rebuild_dirty(
+        &mut self,
+        world: &VoxelWorld,
+        enc: &mut wgpu::CommandEncoder,
+        near: IVec3,
+    ) -> usize {
         let mut dirty: Vec<IVec3> = self.dirty.drain().collect();
         if self.build_budget > 0 && dirty.len() > self.build_budget {
             dirty.sort_unstable_by_key(|p| (*p - near).length_squared());
@@ -312,10 +426,24 @@ impl Accel {
                 self.dirty.insert(p);
             }
         }
-        let built: Vec<(IVec3, Option<Built>)> = dirty.par_iter().map(|&p| (p, self.build_geometry(world, p))).collect();
-        let flags = if self.fast_build { wgpu::AccelerationStructureFlags::PREFER_FAST_BUILD } else { wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE };
+        let built: Vec<(IVec3, Option<Built>)> = dirty
+            .par_iter()
+            .map(|&p| (p, self.build_geometry(world, p)))
+            .collect();
+        let flags = if self.fast_build {
+            wgpu::AccelerationStructureFlags::PREFER_FAST_BUILD
+        } else {
+            wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE
+        };
         // Everything referenced by the build entries must outlive the build call.
-        let mut staged: Vec<(IVec3, u32, wgpu::Blas, wgpu::BlasGeometrySizeDescriptors, Vec<wgpu::Buffer>, (u32, u32))> = vec![];
+        let mut staged: Vec<(
+            IVec3,
+            u32,
+            wgpu::Blas,
+            wgpu::BlasGeometrySizeDescriptors,
+            Vec<wgpu::Buffer>,
+            (u32, u32),
+        )> = vec![];
         for (pos, b) in built {
             let old_slot = self.chunks.get(&pos).map(|c| c.slot);
             if let Some(c) = self.chunks.remove(&pos) {
@@ -333,12 +461,21 @@ impl Accel {
             // refuses the allocation, before the error can be named.
             let gpu = &self.gpu;
             let upload = |data: &[u8]| {
-                let b = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("blas input"), size: (data.len() as u64).next_multiple_of(4).max(4), usage: wgpu::BufferUsages::BLAS_INPUT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+                let b = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("blas input"),
+                    size: (data.len() as u64).next_multiple_of(4).max(4),
+                    usage: wgpu::BufferUsages::BLAS_INPUT | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
                 gpu.queue.write_buffer(&b, 0, data);
                 b
             };
             let (sizes, inputs, words, info) = match &b {
-                Built::Triangles { vertices, indices, quads } => {
+                Built::Triangles {
+                    vertices,
+                    indices,
+                    quads,
+                } => {
                     let vb = upload(bytemuck::cast_slice(vertices));
                     let ib = upload(bytemuck::cast_slice(indices));
                     let sizes = wgpu::BlasGeometrySizeDescriptors::Triangles {
@@ -350,7 +487,12 @@ impl Accel {
                             flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
                         }],
                     };
-                    (sizes, vec![vb, ib], bytemuck::cast_slice::<[u32; 2], u32>(quads).to_vec(), None)
+                    (
+                        sizes,
+                        vec![vb, ib],
+                        bytemuck::cast_slice::<[u32; 2], u32>(quads).to_vec(),
+                        None,
+                    )
                 }
                 Built::Aabbs { boxes, bricks } => {
                     let ab = upload(bytemuck::cast_slice(boxes));
@@ -360,24 +502,50 @@ impl Accel {
                             flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
                         }],
                     };
-                    (sizes, vec![ab], bricks.clone(), Some(world.table_lookup(pos).unwrap_or(0xffff_ffff)))
+                    (
+                        sizes,
+                        vec![ab],
+                        bricks.clone(),
+                        Some(world.table_lookup(pos).unwrap_or(0xffff_ffff)),
+                    )
                 }
             };
-            let Some((off, grew)) = self.geo_buf.alloc(&self.gpu, &mut self.geo_alloc, words.len() as u32, 4, DEVICE_BOUND) else {
+            let Some((off, grew)) = self.geo_buf.alloc(
+                &self.gpu,
+                &mut self.geo_alloc,
+                words.len() as u32,
+                4,
+                DEVICE_BOUND,
+            ) else {
                 self.free_slots.push(slot);
                 continue;
             };
             if grew {
                 self.rebind = true;
             }
-            self.gpu.queue.write_buffer(self.geo_buf.buffer(), off as u64 * 4, bytemuck::cast_slice(&words));
+            self.gpu.queue.write_buffer(
+                self.geo_buf.buffer(),
+                off as u64 * 4,
+                bytemuck::cast_slice(&words),
+            );
             // Triangles: first quad; boxes: chunk-table value and first brick.
             let info = match info {
                 None => [off / 2, 0, 0, 0],
                 Some(value) => [value, off, 0, 0],
             };
-            self.gpu.queue.write_buffer(&self.chunk_info, slot as u64 * 16, bytemuck::cast_slice(&info));
-            let blas = self.gpu.device.create_blas(&wgpu::CreateBlasDescriptor { label: None, flags, update_mode: wgpu::AccelerationStructureUpdateMode::Build }, sizes.clone());
+            self.gpu.queue.write_buffer(
+                &self.chunk_info,
+                slot as u64 * 16,
+                bytemuck::cast_slice(&info),
+            );
+            let blas = self.gpu.device.create_blas(
+                &wgpu::CreateBlasDescriptor {
+                    label: None,
+                    flags,
+                    update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+                },
+                sizes.clone(),
+            );
             staged.push((pos, slot, blas, sizes, inputs, (off, words.len() as u32)));
         }
         let n = staged.len();
@@ -385,39 +553,55 @@ impl Accel {
             let tri_geo: Vec<Vec<wgpu::BlasTriangleGeometry>> = staged
                 .iter()
                 .map(|(_, _, _, sizes, inputs, _)| match sizes {
-                    wgpu::BlasGeometrySizeDescriptors::Triangles { descriptors } => vec![wgpu::BlasTriangleGeometry {
-                        size: &descriptors[0],
-                        vertex_buffer: &inputs[0],
-                        first_vertex: 0,
-                        vertex_stride: 12,
-                        index_buffer: Some(&inputs[1]),
-                        first_index: Some(0),
-                        transform_buffer: None,
-                        transform_buffer_offset: None,
-                    }],
+                    wgpu::BlasGeometrySizeDescriptors::Triangles { descriptors } => {
+                        vec![wgpu::BlasTriangleGeometry {
+                            size: &descriptors[0],
+                            vertex_buffer: &inputs[0],
+                            first_vertex: 0,
+                            vertex_stride: 12,
+                            index_buffer: Some(&inputs[1]),
+                            first_index: Some(0),
+                            transform_buffer: None,
+                            transform_buffer_offset: None,
+                        }]
+                    }
                     _ => vec![],
                 })
                 .collect();
             let entries: Vec<wgpu::BlasBuildEntry> = staged
                 .iter()
                 .zip(tri_geo)
-                .map(|((_, _, blas, sizes, inputs, _), tri)| wgpu::BlasBuildEntry {
-                    blas,
-                    geometry: match sizes {
-                        wgpu::BlasGeometrySizeDescriptors::Triangles { .. } => wgpu::BlasGeometries::TriangleGeometries(tri),
-                        wgpu::BlasGeometrySizeDescriptors::AABBs { descriptors } => wgpu::BlasGeometries::AabbGeometries(vec![wgpu::BlasAabbGeometry {
-                            size: &descriptors[0],
-                            stride: 24,
-                            aabb_buffer: &inputs[0],
-                            primitive_offset: 0,
-                        }]),
+                .map(
+                    |((_, _, blas, sizes, inputs, _), tri)| wgpu::BlasBuildEntry {
+                        blas,
+                        geometry: match sizes {
+                            wgpu::BlasGeometrySizeDescriptors::Triangles { .. } => {
+                                wgpu::BlasGeometries::TriangleGeometries(tri)
+                            }
+                            wgpu::BlasGeometrySizeDescriptors::AABBs { descriptors } => {
+                                wgpu::BlasGeometries::AabbGeometries(vec![wgpu::BlasAabbGeometry {
+                                    size: &descriptors[0],
+                                    stride: 24,
+                                    aabb_buffer: &inputs[0],
+                                    primitive_offset: 0,
+                                }])
+                            }
+                        },
                     },
-                })
+                )
                 .collect();
             enc.build_acceleration_structures(entries.iter(), std::iter::empty());
         }
         for (pos, slot, blas, _, inputs, range) in staged {
-            self.chunks.insert(pos, ChunkAs { slot, blas, range, _inputs: inputs });
+            self.chunks.insert(
+                pos,
+                ChunkAs {
+                    slot,
+                    blas,
+                    range,
+                    _inputs: inputs,
+                },
+            );
         }
         n
     }

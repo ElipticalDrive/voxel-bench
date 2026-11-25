@@ -11,7 +11,10 @@ use std::collections::HashMap;
 use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use mr_core::chunk::{cell_of_index, local_of_block};
-use mr_core::{BlockId, BlockRegistry, CHUNK_VOLUME, Camera, ChunkData, ChunkKey, Environment, Light, WorldUpdate};
+use mr_core::{
+    BlockId, BlockRegistry, CHUNK_VOLUME, Camera, ChunkData, ChunkKey, Environment, Light,
+    WorldUpdate,
+};
 use serde::Deserialize;
 
 use crate::{Gpu, GrowableBuffer};
@@ -42,7 +45,10 @@ const MAX_PAGES: u32 = 64;
 const OTHER_BUFFERS: u32 = 37;
 
 impl PoolPages {
-    pub const ONE: Self = Self { pages: 1, page_slots: u32::MAX };
+    pub const ONE: Self = Self {
+        pages: 1,
+        page_slots: u32::MAX,
+    };
 
     /// The pages of a pool of up to `want_slots` chunks on a device binding `slots_per_binding`
     /// chunks at most and `buffers` storage buffers per stage ([`OTHER_BUFFERS`] of them not the pool's). A last page under a sixteenth of a
@@ -51,13 +57,30 @@ impl PoolPages {
     fn plan(want_slots: u32, slots_per_binding: u32, buffers: u32) -> Self {
         let per = slots_per_binding.max(1);
         let rest = want_slots % per;
-        let pages = (want_slots / per + (rest >= per / 16) as u32).clamp(1, MAX_PAGES.min(buffers.saturating_sub(OTHER_BUFFERS).max(1)));
-        if pages == 1 { Self { pages: 1, page_slots: want_slots.min(per).max(1) } } else { Self { pages, page_slots: per } }
+        let pages = (want_slots / per + (rest >= per / 16) as u32).clamp(
+            1,
+            MAX_PAGES.min(buffers.saturating_sub(OTHER_BUFFERS).max(1)),
+        );
+        if pages == 1 {
+            Self {
+                pages: 1,
+                page_slots: want_slots.min(per).max(1),
+            }
+        } else {
+            Self {
+                pages,
+                page_slots: per,
+            }
+        }
     }
 
     /// Chunks the pool holds at most.
     pub fn slots(&self) -> u32 {
-        if self.pages == 1 { self.page_slots } else { self.pages * self.page_slots }
+        if self.pages == 1 {
+            self.page_slots
+        } else {
+            self.pages * self.page_slots
+        }
     }
 
     /// The binding of page `p`.
@@ -72,18 +95,31 @@ impl PoolPages {
         }
         const DECL: &str = "@group(1) @binding(2) var<storage, read> pool: array<u32>;\n";
         const READ: &str = "pool[slot * 16384u + (idx >> 1u)]";
-        assert!(VOXELS_WGSL.contains(DECL) && VOXELS_WGSL.contains(READ), "voxels.wgsl: the pool's declaration or read changed");
-        let decls: String = (0..self.pages).map(|p| format!("@group(1) @binding({}) var<storage, read> pool{p}: array<u32>;\n", self.binding(p))).collect();
-        let cases: String = (1..self.pages).map(|p| format!("        case {p}u: {{ return pool{p}[at]; }}\n")).collect();
+        assert!(
+            VOXELS_WGSL.contains(DECL) && VOXELS_WGSL.contains(READ),
+            "voxels.wgsl: the pool's declaration or read changed"
+        );
+        let decls: String = (0..self.pages)
+            .map(|p| {
+                format!(
+                    "@group(1) @binding({}) var<storage, read> pool{p}: array<u32>;\n",
+                    self.binding(p)
+                )
+            })
+            .collect();
+        let cases: String = (1..self.pages)
+            .map(|p| format!("        case {p}u: {{ return pool{p}[at]; }}\n"))
+            .collect();
         let word = format!(
             "// The pool's word `i` of chunk `slot`: {} pages of {} chunks.\nfn pool_word(slot: u32, i: u32) -> u32 {{\n    let page = slot / {}u;\n    let at = (slot - page * {}u) * 16384u + i;\n    switch page {{\n{cases}        default: {{ return pool0[at]; }}\n    }}\n}}\n",
             self.pages, self.page_slots, self.page_slots, self.page_slots
         );
-        VOXELS_WGSL.replace(DECL, &format!("{decls}{word}")).replace(READ, "pool_word(slot, idx >> 1u)")
+        VOXELS_WGSL
+            .replace(DECL, &format!("{decls}{word}"))
+            .replace(READ, "pool_word(slot, idx >> 1u)")
     }
 }
 pub const LIGHTING_WGSL: &str = include_str!("lighting.wgsl");
-
 
 const EMPTY: u32 = 0xffff_ffff;
 const TOMB: u32 = 0xffff_fffe;
@@ -113,14 +149,23 @@ impl Shadows {
 
     /// Applies a `shadows` choice parameter.
     pub fn set(&mut self, v: &mr_core::ParamValue) -> anyhow::Result<()> {
-        *self = v.as_str().and_then(Self::parse).ok_or_else(|| anyhow::anyhow!("bad shadows value"))?;
+        *self = v
+            .as_str()
+            .and_then(Self::parse)
+            .ok_or_else(|| anyhow::anyhow!("bad shadows value"))?;
         Ok(())
     }
 }
 
 /// The `shadows` knob shared by GPU renderers.
 pub fn shadows_param() -> mr_core::ParamSpec {
-    mr_core::ParamSpec::choice("shadows", "Shadow rays in lit mode", &["none", "sun", "all"], "all", true)
+    mr_core::ParamSpec::choice(
+        "shadows",
+        "Shadow rays in lit mode",
+        &["none", "sun", "all"],
+        "all",
+        true,
+    )
 }
 
 #[repr(C)]
@@ -172,7 +217,9 @@ struct LightCell {
 }
 
 pub fn hash3(c: IVec3) -> u32 {
-    let h = (c.x as u32).wrapping_mul(0x8da6b343) ^ (c.y as u32).wrapping_mul(0xd8163841) ^ (c.z as u32).wrapping_mul(0xcb1ab31f);
+    let h = (c.x as u32).wrapping_mul(0x8da6b343)
+        ^ (c.y as u32).wrapping_mul(0xd8163841)
+        ^ (c.z as u32).wrapping_mul(0xcb1ab31f);
     h ^ (h >> 16)
 }
 
@@ -188,7 +235,14 @@ struct Table {
 
 impl Table {
     fn new(cap: usize) -> Self {
-        Self { entries: vec![[0, 0, 0, EMPTY]; cap], live: 0, tombs: 0, max_probe: 0, dirty: vec![], full_upload: true }
+        Self {
+            entries: vec![[0, 0, 0, EMPTY]; cap],
+            live: 0,
+            tombs: 0,
+            max_probe: 0,
+            dirty: vec![],
+            full_upload: true,
+        }
     }
 
     fn mask(&self) -> usize {
@@ -221,7 +275,11 @@ impl Table {
             return;
         }
         if (self.live + self.tombs + 1) * 2 > self.entries.len() {
-            let cap = if (self.live + 1) * 4 > self.entries.len() { self.entries.len() * 2 } else { self.entries.len() };
+            let cap = if (self.live + 1) * 4 > self.entries.len() {
+                self.entries.len() * 2
+            } else {
+                self.entries.len()
+            };
             self.rehash(cap);
         }
         let mut i = hash3(c) as usize & self.mask();
@@ -274,7 +332,10 @@ const LIGHTS_SET_BY: &str = "the world's lights (their count and the light grid)
 
 impl GrowBuf {
     fn new(gpu: &Gpu, label: &'static str, size: u64) -> Self {
-        Self { buf: storage(gpu, label, size.max(256), LIGHTS_SET_BY), label }
+        Self {
+            buf: storage(gpu, label, size.max(256), LIGHTS_SET_BY),
+            label,
+        }
     }
 
     /// Uploads `data`, reallocating if needed. Returns true if the buffer was replaced.
@@ -284,8 +345,19 @@ impl GrowBuf {
             // Doubling, but never past what the device binds while the data itself fits (the
             // data past it fails the device, naming the limit).
             let limits = gpu.device.limits();
-            let max = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size) & !15;
-            self.buf = storage(gpu, self.label, (data.len() as u64).next_power_of_two().min(max).max(data.len() as u64), LIGHTS_SET_BY);
+            let max = limits
+                .max_storage_buffer_binding_size
+                .min(limits.max_buffer_size)
+                & !15;
+            self.buf = storage(
+                gpu,
+                self.label,
+                (data.len() as u64)
+                    .next_power_of_two()
+                    .min(max)
+                    .max(data.len() as u64),
+                LIGHTS_SET_BY,
+            );
             grew = true;
         }
         if !data.is_empty() {
@@ -296,7 +368,12 @@ impl GrowBuf {
 }
 
 fn storage(gpu: &Gpu, label: &str, size: u64, set_by: &str) -> wgpu::Buffer {
-    gpu.storage(label, size.next_multiple_of(16), wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || set_by.to_string())
+    gpu.storage(
+        label,
+        size.next_multiple_of(16),
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        || set_by.to_string(),
+    )
 }
 
 /// Chunk-table key of a chunk at a LOD: the LOD is folded into y (`y * 8 + lod`).
@@ -353,27 +430,75 @@ pub struct VoxelWorld {
 }
 
 impl VoxelWorld {
-    pub fn new(gpu: &Gpu, blocks: &BlockRegistry, env: Environment, cfg: VoxelWorldConfig) -> anyhow::Result<Self> {
+    pub fn new(
+        gpu: &Gpu,
+        blocks: &BlockRegistry,
+        env: Environment,
+        cfg: VoxelWorldConfig,
+    ) -> anyhow::Result<Self> {
         let limits = gpu.device.limits();
-        let max_bytes = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
-        let want = if cfg.upload_voxels { (cfg.pool_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1) as u32 } else { 1 };
-        let pages = PoolPages::plan(want, (max_bytes / CHUNK_BYTES).min(u32::MAX as u64) as u32, limits.max_storage_buffers_per_shader_stage);
+        let max_bytes = limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size);
+        let want = if cfg.upload_voxels {
+            (cfg.pool_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1) as u32
+        } else {
+            1
+        };
+        let pages = PoolPages::plan(
+            want,
+            (max_bytes / CHUNK_BYTES).min(u32::MAX as u64) as u32,
+            limits.max_storage_buffers_per_shader_stage,
+        );
         let max_slots = want.min(pages.slots());
         let pool_slots = max_slots.min(64).min(pages.page_slots);
         if cfg.upload_voxels {
-            tracing::info!("voxel pool: grows up to {max_slots} chunks ({} MiB) in {} binding(s)", (max_slots as u64 * CHUNK_BYTES) >> 20, pages.pages);
+            tracing::info!(
+                "voxel pool: grows up to {max_slots} chunks ({} MiB) in {} binding(s)",
+                (max_slots as u64 * CHUNK_BYTES) >> 20,
+                pages.pages
+            );
         }
         let side = 2 * cfg.view_radius as usize + 1;
-        let table = Table::new((side * side * side * 2 * (cfg.max_lod as usize + 1)).next_power_of_two().max(1024));
+        let table = Table::new(
+            (side * side * side * 2 * (cfg.max_lod as usize + 1))
+                .next_power_of_two()
+                .max(1024),
+        );
 
-        let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: cfg.visibility, ty, count: None };
-        let ro = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None };
-        let mut entries = vec![entry(0, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None })];
-        entries.extend((1..=8).filter(|&b| b != 2 || pages.pages == 1).map(|b| entry(b, ro)));
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: cfg.visibility,
+            ty,
+            count: None,
+        };
+        let ro = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let mut entries = vec![entry(
+            0,
+            wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+        )];
+        entries.extend(
+            (1..=8)
+                .filter(|&b| b != 2 || pages.pages == 1)
+                .map(|b| entry(b, ro)),
+        );
         if pages.pages > 1 {
             entries.extend((0..pages.pages).map(|p| entry(pages.binding(p), ro)));
         }
-        let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel world"), entries: &entries });
+        let layout = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("voxel world"),
+                entries: &entries,
+            });
 
         let mk = |label, data: &[u8]| {
             let b = storage(gpu, label, data.len() as u64, "the block registry");
@@ -385,7 +510,10 @@ impl VoxelWorld {
         // with layers; the others never look past the colours).
         let colours = blocks.packed_texels();
         let texel_words = colours.len() as u32;
-        let texels = mk("texels", bytemuck::cast_slice(&[colours, blocks.packed_see_through()].concat()));
+        let texels = mk(
+            "texels",
+            bytemuck::cast_slice(&[colours, blocks.packed_see_through()].concat()),
+        );
         Ok(Self {
             params: gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("voxel params"),
@@ -393,11 +521,28 @@ impl VoxelWorld {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
-            table_buf: storage(gpu, "chunk table", (table.entries.len() * 16) as u64, TABLE_SET_BY),
+            table_buf: storage(
+                gpu,
+                "chunk table",
+                (table.entries.len() * 16) as u64,
+                TABLE_SET_BY,
+            ),
             table,
-            pool: vec![GrowableBuffer::new(gpu, "storage: voxel pool", pool_slots as u64 * CHUNK_BYTES, max_slots.min(pages.page_slots) as u64 * CHUNK_BYTES, wgpu::BufferUsages::STORAGE)],
+            pool: vec![GrowableBuffer::new(
+                gpu,
+                "storage: voxel pool",
+                pool_slots as u64 * CHUNK_BYTES,
+                max_slots.min(pages.page_slots) as u64 * CHUNK_BYTES,
+                wgpu::BufferUsages::STORAGE,
+            )],
             pages,
-            bricks: GrowableBuffer::new(gpu, "storage: bricks", pool_slots as u64 * BRICK_WORDS as u64 * 4, max_slots as u64 * BRICK_WORDS as u64 * 4, wgpu::BufferUsages::STORAGE),
+            bricks: GrowableBuffer::new(
+                gpu,
+                "storage: bricks",
+                pool_slots as u64 * BRICK_WORDS as u64 * 4,
+                max_slots as u64 * BRICK_WORDS as u64 * 4,
+                wgpu::BufferUsages::STORAGE,
+            ),
             free_slots: (0..pool_slots).rev().collect(),
             pool_slots,
             max_slots,
@@ -441,7 +586,13 @@ impl VoxelWorld {
             if p as usize == self.pool.len() {
                 // A later page: up to the slots it can hold of `max_slots`.
                 let max = (self.max_slots - p * ps).min(ps) as u64 * CHUNK_BYTES;
-                self.pool.push(GrowableBuffer::new(gpu, "storage: voxel pool", n, max, wgpu::BufferUsages::STORAGE));
+                self.pool.push(GrowableBuffer::new(
+                    gpu,
+                    "storage: voxel pool",
+                    n,
+                    max,
+                    wgpu::BufferUsages::STORAGE,
+                ));
             } else {
                 self.pool[p as usize].reserve(gpu, n, "`pool_mb`")?;
             }
@@ -459,7 +610,10 @@ impl VoxelWorld {
     }
 
     pub fn block(&self, p: IVec3) -> BlockId {
-        self.chunks.get(&ChunkKey::of_block(p)).map(|c| c.get(local_of_block(p))).unwrap_or(BlockId::AIR)
+        self.chunks
+            .get(&ChunkKey::of_block(p))
+            .map(|c| c.get(local_of_block(p)))
+            .unwrap_or(BlockId::AIR)
     }
 
     /// Pool slot of a dense LOD-0 chunk, for renderers keeping per-slot side data (indexed
@@ -494,7 +648,14 @@ impl VoxelWorld {
     }
 
     pub fn memory_bytes(&self) -> u64 {
-        (if self.cfg.upload_voxels { self.pool.iter().map(GrowableBuffer::size).sum::<u64>() + self.bricks.size() } else { 0 }) + self.table_buf.size() + self.light_buf.buf.size() + self.cell_buf.buf.size() + self.idx_buf.buf.size()
+        (if self.cfg.upload_voxels {
+            self.pool.iter().map(GrowableBuffer::size).sum::<u64>() + self.bricks.size()
+        } else {
+            0
+        }) + self.table_buf.size()
+            + self.light_buf.buf.size()
+            + self.cell_buf.buf.size()
+            + self.idx_buf.buf.size()
     }
 
     /// Applies world updates. Returns the LOD-0 chunk positions whose contents changed
@@ -581,7 +742,15 @@ impl VoxelWorld {
             ChunkData::Dense(d) => {
                 if self.free_slots.is_empty() && self.pool_slots < self.max_slots {
                     let new = (self.pool_slots * 2).min(self.max_slots);
-                    if self.reserve_pool(gpu, new).and(self.bricks.reserve(gpu, new as u64 * BRICK_WORDS as u64 * 4, "`pool_mb`")).is_some() {
+                    if self
+                        .reserve_pool(gpu, new)
+                        .and(self.bricks.reserve(
+                            gpu,
+                            new as u64 * BRICK_WORDS as u64 * 4,
+                            "`pool_mb`",
+                        ))
+                        .is_some()
+                    {
                         self.free_slots.extend((self.pool_slots..new).rev());
                         self.pool_slots = new;
                         self.bind_group = None;
@@ -594,7 +763,11 @@ impl VoxelWorld {
                     return;
                 };
                 let page = slot / self.pages.page_slots;
-                gpu.queue.write_buffer(self.pool[page as usize].buffer(), (slot - page * self.pages.page_slots) as u64 * CHUNK_BYTES, bytemuck::cast_slice(d.as_u16()));
+                gpu.queue.write_buffer(
+                    self.pool[page as usize].buffer(),
+                    (slot - page * self.pages.page_slots) as u64 * CHUNK_BYTES,
+                    bytemuck::cast_slice(d.as_u16()),
+                );
                 let mut bits = [0u32; BRICK_WORDS];
                 for (i, b) in d.0.iter().enumerate() {
                     if b.is_solid() {
@@ -603,7 +776,11 @@ impl VoxelWorld {
                         bits[bi >> 5] |= 1 << (bi & 31);
                     }
                 }
-                gpu.queue.write_buffer(self.bricks.buffer(), slot as u64 * BRICK_WORDS as u64 * 4, bytemuck::cast_slice(&bits));
+                gpu.queue.write_buffer(
+                    self.bricks.buffer(),
+                    slot as u64 * BRICK_WORDS as u64 * 4,
+                    bytemuck::cast_slice(&bits),
+                );
                 self.slots.insert(pos, slot);
                 self.table.insert(tk, slot);
             }
@@ -646,7 +823,12 @@ impl VoxelWorld {
                 probe += 1;
             }
             max_probe = max_probe.max(probe);
-            table[i] = LightCell { key: c.to_array(), start: idx.len() as u32, count: ls.len() as u32, _pad: [0; 3] };
+            table[i] = LightCell {
+                key: c.to_array(),
+                start: idx.len() as u32,
+                count: ls.len() as u32,
+                _pad: [0; 3],
+            };
             idx.extend(ls);
         }
         if gl.is_empty() {
@@ -677,7 +859,11 @@ impl VoxelWorld {
                 self.table_buf = storage(gpu, "chunk table", size, TABLE_SET_BY);
                 rebind = true;
             }
-            gpu.queue.write_buffer(&self.table_buf, 0, bytemuck::cast_slice(&self.table.entries));
+            gpu.queue.write_buffer(
+                &self.table_buf,
+                0,
+                bytemuck::cast_slice(&self.table.entries),
+            );
             self.table.full_upload = false;
             self.table.dirty.clear();
         } else {
@@ -685,14 +871,21 @@ impl VoxelWorld {
             dirty.sort_unstable();
             dirty.dedup();
             for i in dirty {
-                gpu.queue.write_buffer(&self.table_buf, i as u64 * 16, bytemuck::cast_slice(&self.table.entries[i as usize]));
+                gpu.queue.write_buffer(
+                    &self.table_buf,
+                    i as u64 * 16,
+                    bytemuck::cast_slice(&self.table.entries[i as usize]),
+                );
             }
         }
         if self.bounds_dirty {
-            self.bounds = self.chunks.keys().fold(None, |b: Option<(IVec3, IVec3)>, k| {
-                let (lo, hi) = (k.origin(), k.origin() + k.extent());
-                Some(b.map_or((lo, hi), |(a, z)| (a.min(lo), z.max(hi))))
-            });
+            self.bounds = self
+                .chunks
+                .keys()
+                .fold(None, |b: Option<(IVec3, IVec3)>, k| {
+                    let (lo, hi) = (k.origin(), k.origin() + k.extent());
+                    Some(b.map_or((lo, hi), |(a, z)| (a.min(lo), z.max(hi))))
+                });
             self.bounds_dirty = false;
         }
         let (cam_block, _) = cam.split_position();
@@ -727,15 +920,48 @@ impl VoxelWorld {
             lod_radius: self.cfg.view_radius,
             sky: self.env.sky.to_array(),
         };
-        gpu.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
+        gpu.queue
+            .write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
         if rebind {
-            let bufs = [&self.params, &self.table_buf, self.pool[0].buffer(), self.bricks.buffer(), &self.face_tex, &self.texels, &self.light_buf.buf, &self.cell_buf.buf, &self.idx_buf.buf];
-            let mut entries: Vec<_> = bufs.iter().enumerate().filter(|&(i, _)| i != 2 || self.pages.pages == 1).map(|(i, b)| wgpu::BindGroupEntry { binding: i as u32, resource: b.as_entire_binding() }).collect();
+            let bufs = [
+                &self.params,
+                &self.table_buf,
+                self.pool[0].buffer(),
+                self.bricks.buffer(),
+                &self.face_tex,
+                &self.texels,
+                &self.light_buf.buf,
+                &self.cell_buf.buf,
+                &self.idx_buf.buf,
+            ];
+            let mut entries: Vec<_> = bufs
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i != 2 || self.pages.pages == 1)
+                .map(|(i, b)| wgpu::BindGroupEntry {
+                    binding: i as u32,
+                    resource: b.as_entire_binding(),
+                })
+                .collect();
             if self.pages.pages > 1 {
                 // Pages the slots have not reached yet bind page 0 (never read: no slot there).
-                entries.extend((0..self.pages.pages).map(|p| wgpu::BindGroupEntry { binding: self.pages.binding(p), resource: self.pool.get(p as usize).unwrap_or(&self.pool[0]).buffer().as_entire_binding() }));
+                entries.extend((0..self.pages.pages).map(|p| {
+                    wgpu::BindGroupEntry {
+                        binding: self.pages.binding(p),
+                        resource: self
+                            .pool
+                            .get(p as usize)
+                            .unwrap_or(&self.pool[0])
+                            .buffer()
+                            .as_entire_binding(),
+                    }
+                }));
             }
-            self.bind_group = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxel world"), layout: &self.layout, entries: &entries }));
+            self.bind_group = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("voxel world"),
+                layout: &self.layout,
+                entries: &entries,
+            }));
         }
         self.bind_group.as_ref().unwrap()
     }
@@ -743,7 +969,6 @@ impl VoxelWorld {
     pub fn table_lookup(&self, pos: IVec3) -> Option<u32> {
         self.table.get(table_key(ChunkKey::lod0(pos)))
     }
-
 }
 
 #[cfg(test)]
@@ -755,14 +980,52 @@ mod tests {
     /// 2 GiB less a byte); else whole bindings, at most as many as the stage may bind.
     #[test]
     fn pages_planned() {
-        assert_eq!(PoolPages::plan(32768, 32767, 1 << 20), PoolPages { pages: 1, page_slots: 32767 });
-        assert_eq!(PoolPages::plan(1000, 32767, 1 << 20), PoolPages { pages: 1, page_slots: 1000 });
-        assert_eq!(PoolPages::plan(32768, 2048, 1 << 20), PoolPages { pages: 16, page_slots: 2048 });
-        assert_eq!(PoolPages::plan(3000, 2048, 1 << 20), PoolPages { pages: 2, page_slots: 2048 });
-        assert_eq!(PoolPages::plan(2100, 2048, 1 << 20), PoolPages { pages: 1, page_slots: 2048 });
+        assert_eq!(
+            PoolPages::plan(32768, 32767, 1 << 20),
+            PoolPages {
+                pages: 1,
+                page_slots: 32767
+            }
+        );
+        assert_eq!(
+            PoolPages::plan(1000, 32767, 1 << 20),
+            PoolPages {
+                pages: 1,
+                page_slots: 1000
+            }
+        );
+        assert_eq!(
+            PoolPages::plan(32768, 2048, 1 << 20),
+            PoolPages {
+                pages: 16,
+                page_slots: 2048
+            }
+        );
+        assert_eq!(
+            PoolPages::plan(3000, 2048, 1 << 20),
+            PoolPages {
+                pages: 2,
+                page_slots: 2048
+            }
+        );
+        assert_eq!(
+            PoolPages::plan(2100, 2048, 1 << 20),
+            PoolPages {
+                pages: 1,
+                page_slots: 2048
+            }
+        );
         assert_eq!(PoolPages::plan(1 << 20, 2048, 1 << 20).pages, MAX_PAGES);
-        assert_eq!(PoolPages::plan(32768, 2048, OTHER_BUFFERS + 4).pages, 4, "headroom for the other groups' storage buffers");
-        assert_eq!(PoolPages::plan(32768, 2048, 48).pages, 11, "lavapipe: 48 a stage");
+        assert_eq!(
+            PoolPages::plan(32768, 2048, OTHER_BUFFERS + 4).pages,
+            4,
+            "headroom for the other groups' storage buffers"
+        );
+        assert_eq!(
+            PoolPages::plan(32768, 2048, 48).pages,
+            11,
+            "lavapipe: 48 a stage"
+        );
         assert_eq!(PoolPages::plan(32768, 2048, 8).pages, 1);
     }
 
@@ -772,10 +1035,24 @@ mod tests {
         assert_eq!(PoolPages::ONE.wgsl(), VOXELS_WGSL);
         let root = "@compute @workgroup_size(1) fn main() { _ = voxel(lookup_chunk(vec3<i32>(0)), vec3<i32>(0)); }";
         let mut p = Program::world(None);
-        p.pool(PoolPages { pages: 3, page_slots: 16 });
-        let m = p.naga(root, &[VOXELS, COMMON]).unwrap_or_else(|e| panic!("{e}"));
-        let bindings: Vec<u32> = m.global_variables.iter().filter_map(|(_, g)| g.binding.as_ref()).filter(|b| b.group == 1).map(|b| b.binding).collect();
-        assert!(!bindings.contains(&2) && [9, 10, 11].iter().all(|b| bindings.contains(b)), "{bindings:?}");
+        p.pool(PoolPages {
+            pages: 3,
+            page_slots: 16,
+        });
+        let m = p
+            .naga(root, &[VOXELS, COMMON])
+            .unwrap_or_else(|e| panic!("{e}"));
+        let bindings: Vec<u32> = m
+            .global_variables
+            .iter()
+            .filter_map(|(_, g)| g.binding.as_ref())
+            .filter(|b| b.group == 1)
+            .map(|b| b.binding)
+            .collect();
+        assert!(
+            !bindings.contains(&2) && [9, 10, 11].iter().all(|b| bindings.contains(b)),
+            "{bindings:?}"
+        );
     }
 
     /// A pool over four bindings (the device clamped to bind 1 MiB, 16 chunks a page) holds
@@ -788,22 +1065,52 @@ mod tests {
             adapter: None,
             required_features: wgpu::Features::empty(),
             optional_features: wgpu::Features::empty(),
-            limits: &|a| wgpu::Limits { max_storage_buffer_binding_size: 1 << 20, ..a.clone() },
+            limits: &|a| wgpu::Limits {
+                max_storage_buffer_binding_size: 1 << 20,
+                ..a.clone()
+            },
         })
         .unwrap();
-        let tex = mr_core::Texture { name: "t".into(), texels: vec![[255; 4]; 256], alpha: vec![] };
-        let block = |name: &str| mr_core::BlockType { name: name.into(), faces: [0; 6], class: Default::default() };
-        let blocks = BlockRegistry { textures: vec![tex], blocks: vec![block("air"), block("stone")] };
-        let cfg = VoxelWorldConfig { max_lod: 0, upload_voxels: true, pool_mb: 4, view_radius: 4, shadows: Shadows::None, visibility: wgpu::ShaderStages::COMPUTE };
+        let tex = mr_core::Texture {
+            name: "t".into(),
+            texels: vec![[255; 4]; 256],
+            alpha: vec![],
+        };
+        let block = |name: &str| mr_core::BlockType {
+            name: name.into(),
+            faces: [0; 6],
+            class: Default::default(),
+        };
+        let blocks = BlockRegistry {
+            textures: vec![tex],
+            blocks: vec![block("air"), block("stone")],
+        };
+        let cfg = VoxelWorldConfig {
+            max_lod: 0,
+            upload_voxels: true,
+            pool_mb: 4,
+            view_radius: 4,
+            shadows: Shadows::None,
+            visibility: wgpu::ShaderStages::COMPUTE,
+        };
         let mut world = VoxelWorld::new(&gpu, &blocks, Environment::default(), cfg).unwrap();
-        assert_eq!(world.pages(), PoolPages { pages: 4, page_slots: 16 });
+        assert_eq!(
+            world.pages(),
+            PoolPages {
+                pages: 4,
+                page_slots: 16
+            }
+        );
         const N: u32 = 60;
         let at = IVec3::new(3, 5, 7);
         let updates = (0..N)
             .map(|i| {
                 let mut d = mr_core::DenseChunk::filled(BlockId(1));
                 d.set(at, BlockId(100 + i as u16));
-                WorldUpdate::ChunkLoad { key: ChunkKey::lod0(IVec3::new(i as i32, 0, 0)), data: ChunkData::Dense(std::sync::Arc::new(d)) }
+                WorldUpdate::ChunkLoad {
+                    key: ChunkKey::lod0(IVec3::new(i as i32, 0, 0)),
+                    data: ChunkData::Dense(std::sync::Arc::new(d)),
+                }
             })
             .collect();
         world.apply(&gpu, updates);
@@ -814,14 +1121,61 @@ mod tests {
         );
         let mut p = Program::world(None);
         p.pool(world.pages());
-        let module = crate::program::compile(&gpu.device, "pool pages", &p, &root, &[VOXELS, COMMON]);
-        let out = gpu.storage("out", N as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, || "the test".into());
-        let read = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("read"), size: N as u64 * 4, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let entry = wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None };
-        let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &[entry] });
-        let bind0 = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &layout0, entries: &[wgpu::BindGroupEntry { binding: 0, resource: out.as_entire_binding() }] });
-        let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout0), Some(world.layout())], immediate_size: 0 });
-        let pipe = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: None, layout: Some(&pl), module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+        let module =
+            crate::program::compile(&gpu.device, "pool pages", &p, &root, &[VOXELS, COMMON]);
+        let out = gpu.storage(
+            "out",
+            N as u64 * 4,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            || "the test".into(),
+        );
+        let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("read"),
+            size: N as u64 * 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let entry = wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let layout0 = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[entry],
+            });
+        let bind0 = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &layout0,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: out.as_entire_binding(),
+            }],
+        });
+        let pl = gpu
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&layout0), Some(world.layout())],
+                immediate_size: 0,
+            });
+        let pipe = gpu
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: Some(&pl),
+                module: &module,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
         let bind1 = world.prepare(&gpu, &Camera::default()).clone();
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         {
@@ -833,9 +1187,13 @@ mod tests {
         }
         enc.copy_buffer_to_buffer(&out, 0, &read, 0, N as u64 * 4);
         gpu.queue.submit([enc.finish()]);
-        read.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
-        gpu.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let got: Vec<u32> = bytemuck::cast_slice(&read.slice(..).get_mapped_range().unwrap()).to_vec();
+        read.slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        let got: Vec<u32> =
+            bytemuck::cast_slice(&read.slice(..).get_mapped_range().unwrap()).to_vec();
         assert!(gpu.check().is_ok());
         assert_eq!(got, (0..N).map(|i| 100 + i).collect::<Vec<_>>());
     }

@@ -14,10 +14,40 @@ impl App {
         }
         let (pressed, mods) = ctx.input(|i| {
             let keys = [
-                Key::L, Key::F, Key::P, Key::R, Key::G, Key::C, Key::E, Key::Tab, Key::Escape, Key::F5, Key::OpenBracket, Key::CloseBracket, Key::S,
-                Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9, Key::H, Key::F11, Key::Z, Key::M, Key::O,
+                Key::L,
+                Key::F,
+                Key::P,
+                Key::R,
+                Key::G,
+                Key::C,
+                Key::E,
+                Key::Tab,
+                Key::Escape,
+                Key::F5,
+                Key::OpenBracket,
+                Key::CloseBracket,
+                Key::S,
+                Key::Num1,
+                Key::Num2,
+                Key::Num3,
+                Key::Num4,
+                Key::Num5,
+                Key::Num6,
+                Key::Num7,
+                Key::Num8,
+                Key::Num9,
+                Key::H,
+                Key::F11,
+                Key::Z,
+                Key::M,
+                Key::O,
             ];
-            (keys.into_iter().filter(|k| i.key_pressed(*k)).collect::<Vec<_>>(), i.modifiers)
+            (
+                keys.into_iter()
+                    .filter(|k| i.key_pressed(*k))
+                    .collect::<Vec<_>>(),
+                i.modifiers,
+            )
         });
         for k in pressed {
             match k {
@@ -29,7 +59,13 @@ impl App {
                     }
                 }
                 Key::F5 => self.start_live(ctx),
-                Key::L => self.mode.lighting = if self.mode.lighting == mr_core::RenderMode::Unlit { mr_core::RenderMode::Lit } else { mr_core::RenderMode::Unlit },
+                Key::L => {
+                    self.mode.lighting = if self.mode.lighting == mr_core::RenderMode::Unlit {
+                        mr_core::RenderMode::Lit
+                    } else {
+                        mr_core::RenderMode::Unlit
+                    }
+                }
                 Key::N => self.mode.meshes = !self.mode.meshes,
                 Key::F => {
                     if self.follow_path {
@@ -45,11 +81,18 @@ impl App {
                 }
                 Key::OpenBracket | Key::CloseBracket => {
                     let step = if mods.shift { 100.0 } else { 10.0 };
-                    self.scene_frame = (self.scene_frame + if k == Key::OpenBracket { -step } else { step }).max(0.0);
+                    self.scene_frame = (self.scene_frame
+                        + if k == Key::OpenBracket { -step } else { step })
+                    .max(0.0);
                 }
                 Key::G => {
                     if let Some(c) = self.live_camera() {
-                        self.send(Cmd::AddLight { position: c.position, color: Vec3::from_array(self.light_color), intensity: self.light_intensity, radius: self.light_radius });
+                        self.send(Cmd::AddLight {
+                            position: c.position,
+                            color: Vec3::from_array(self.light_color),
+                            intensity: self.light_intensity,
+                            radius: self.light_radius,
+                        });
                     }
                 }
                 Key::C => {
@@ -69,7 +112,19 @@ impl App {
                 Key::O => self.overlays = !self.overlays,
                 Key::M => self.match_resolution(ctx),
                 k => {
-                    let i = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9].iter().position(|x| *x == k);
+                    let i = [
+                        Key::Num1,
+                        Key::Num2,
+                        Key::Num3,
+                        Key::Num4,
+                        Key::Num5,
+                        Key::Num6,
+                        Key::Num7,
+                        Key::Num8,
+                        Key::Num9,
+                    ]
+                    .iter()
+                    .position(|x| *x == k);
                     if let Some(i) = i {
                         self.focus = if self.focus == Some(i) { None } else { Some(i) };
                     }
@@ -81,8 +136,22 @@ impl App {
     pub(super) fn fly(&mut self, ctx: &egui::Context, look: Vec2) {
         let typing = ctx.egui_wants_keyboard_input();
         let (dt, held, mods) = ctx.input(|i| {
-            let keys = [Key::W, Key::A, Key::S, Key::D, Key::Space, Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown];
-            (i.stable_dt.min(0.1), keys.map(|k| !typing && i.key_down(k)), i.modifiers)
+            let keys = [
+                Key::W,
+                Key::A,
+                Key::S,
+                Key::D,
+                Key::Space,
+                Key::ArrowLeft,
+                Key::ArrowRight,
+                Key::ArrowUp,
+                Key::ArrowDown,
+            ];
+            (
+                i.stable_dt.min(0.1),
+                keys.map(|k| !typing && i.key_down(k)),
+                i.modifiers,
+            )
         });
         let [w, a, s, d, up, al, ar, au, ad] = held;
         // Ctrl+S saves the plan unless the canvas has the keyboard (then: fast reverse).
@@ -103,7 +172,14 @@ impl App {
         let fwd = Vec3::new(f.x, 0.0, f.z).normalize_or_zero();
         let right = self.cam.right();
         let mut m = Vec3::ZERO;
-        for (on, dir) in [(w, fwd), (s, -fwd), (d, right), (a, -right), (up, Vec3::Y), (down, -Vec3::Y)] {
+        for (on, dir) in [
+            (w, fwd),
+            (s, -fwd),
+            (d, right),
+            (a, -right),
+            (up, Vec3::Y),
+            (down, -Vec3::Y),
+        ] {
             if on {
                 m += dir;
             }
@@ -119,11 +195,17 @@ pub(super) fn help(ui: &mut egui::Ui) {
     ui.add_space(4.0);
     egui::Grid::new("keys").striped(true).show(ui, |ui| {
         for (k, d) in [
-            ("F5", "start / restart the live session with the current plan"),
+            (
+                "F5",
+                "start / restart the live session with the current plan",
+            ),
             ("W A S D", "move (switches from path to free fly)"),
             ("Space / Shift", "up / down"),
             ("Ctrl (held)", "5× speed"),
-            ("Right-drag / Left-drag / arrows", "look (left-drag only outside edit mode)"),
+            (
+                "Right-drag / Left-drag / arrows",
+                "look (left-drag only outside edit mode)",
+            ),
             ("Mouse wheel", "fly speed"),
             ("L", "toggle lit / unlit"),
             ("N", "toggle meshes (mesh mode)"),
@@ -131,16 +213,28 @@ pub(super) fn help(ui: &mut egui::Ui) {
             ("P", "play / pause the scene clock (path + scripted events)"),
             ("[ / ]", "scrub scene clock −/+10 frames (Shift: 100)"),
             ("R", "reset scene clock and return to the path"),
-            ("E", "edit mode: click removes a block, Ctrl+click places one"),
+            (
+                "E",
+                "edit mode: click removes a block, Ctrl+click places one",
+            ),
             ("G", "drop a point light at the camera"),
             ("C", "compare this exact view against the reference"),
             ("1–9 / Tab / Esc", "focus a renderer / cycle / show all"),
             ("F11", "fullscreen viewport (Esc or F11 to leave)"),
-            ("Z", "1:1 pixels: one frame pixel per screen pixel (cropped, never scaled)"),
-            ("M", "match render resolution to the tile's pixel size and restart live"),
+            (
+                "Z",
+                "1:1 pixels: one frame pixel per screen pixel (cropped, never scaled)",
+            ),
+            (
+                "M",
+                "match render resolution to the tile's pixel size and restart live",
+            ),
             ("O", "show / hide overlays (labels, HUD)"),
             ("Double-click", "focus / unfocus a tile"),
-            ("Ctrl+S", "save the plan; on the canvas (after a click on it) fast backwards"),
+            (
+                "Ctrl+S",
+                "save the plan; on the canvas (after a click on it) fast backwards",
+            ),
         ] {
             ui.monospace(k);
             ui.label(d);

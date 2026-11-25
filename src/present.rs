@@ -26,7 +26,10 @@ pub enum Report {
 
 enum Link {
     Connecting(Listener, Instant),
-    Connected { tx: MsgWriter<PresentMsg>, rx: Receiver<PresentReply> },
+    Connected {
+        tx: MsgWriter<PresentMsg>,
+        rx: Receiver<PresentReply>,
+    },
 }
 
 /// The host's end of one presenter.
@@ -51,7 +54,11 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 impl Presenter {
     /// Starts a presenter window titled `title`, its frames' 1.0 at `gain` × SDR white.
     pub fn spawn(title: &str, gain: f32, watchdog: Watchdog) -> anyhow::Result<Self> {
-        let tag = format!("multirenderer-{}-present{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
+        let tag = format!(
+            "multirenderer-{}-present{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
         let sock = mr_ipc::endpoint(&tag);
         let listener = mr_ipc::listen(&sock)?;
         let exe = crate::worker::self_exe()?;
@@ -61,7 +68,17 @@ impl Presenter {
             .stdout(Stdio::null())
             .spawn()
             .context("spawning a presenter")?;
-        Ok(Self { child: Some(child), link: Link::Connecting(listener, Instant::now()), shm: None, fresh: false, busy: false, gain, title: title.into(), watchdog, connected_in: None })
+        Ok(Self {
+            child: Some(child),
+            link: Link::Connecting(listener, Instant::now()),
+            shm: None,
+            fresh: false,
+            busy: false,
+            gain,
+            title: title.into(),
+            watchdog,
+            connected_in: None,
+        })
     }
 
     fn send(&mut self, m: PresentMsg) -> anyhow::Result<()> {
@@ -81,20 +98,24 @@ impl Presenter {
             let Some(stream) = mr_ipc::try_accept(l)? else {
                 let build = Duration::from_secs_f64(self.watchdog.build_s.max(0.0));
                 if since.elapsed() > build {
-                    bail!("the presenter did not connect within {build:.1?} (run.watchdog.build_s)");
+                    bail!(
+                        "the presenter did not connect within {build:.1?} (run.watchdog.build_s)"
+                    );
                 }
                 return Ok(vec![]);
             };
             self.connected_in = Some(since.elapsed());
             let (mut input, tx) = mr_ipc::split::<PresentReply, PresentMsg>(stream);
             let (reply_tx, rx) = crossbeam_channel::unbounded();
-            std::thread::Builder::new().name("rx-present".into()).spawn(move || {
-                while let Ok(Some(m)) = input.recv() {
-                    if reply_tx.send(m).is_err() {
-                        return;
+            std::thread::Builder::new()
+                .name("rx-present".into())
+                .spawn(move || {
+                    while let Ok(Some(m)) = input.recv() {
+                        if reply_tx.send(m).is_err() {
+                            return;
+                        }
                     }
-                }
-            })?;
+                })?;
             self.link = Link::Connected { tx, rx };
             let (gain, title) = (self.gain, self.title.clone());
             self.send(PresentMsg::Gain(gain))?;
@@ -125,19 +146,37 @@ impl Presenter {
     }
 
     /// Hands it a frame in the worker's format, unless it is still copying the last one.
-    pub fn offer(&mut self, width: u32, height: u32, format: PixelFormat, pixels: &[u8]) -> anyhow::Result<()> {
+    pub fn offer(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: PixelFormat,
+        pixels: &[u8],
+    ) -> anyhow::Result<()> {
         if self.busy || matches!(self.link, Link::Connecting(..)) {
             return Ok(());
         }
-        if self.shm.as_ref().is_none_or(|s| (s.spec().slot_bytes as usize) < pixels.len()) {
-            let tag = format!("multirenderer-{}-present{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
+        if self
+            .shm
+            .as_ref()
+            .is_none_or(|s| (s.spec().slot_bytes as usize) < pixels.len())
+        {
+            let tag = format!(
+                "multirenderer-{}-present{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            );
             let shm = FrameSlots::create(&tag, 1, pixels.len() as u64)?;
             self.send(PresentMsg::Shm(shm.spec().clone()))?;
             self.shm = Some(shm);
             self.fresh = true;
         }
         self.shm.as_mut().unwrap().slot_mut(0)[..pixels.len()].copy_from_slice(pixels);
-        self.send(PresentMsg::Frame { width, height, format })?;
+        self.send(PresentMsg::Frame {
+            width,
+            height,
+            format,
+        })?;
         self.busy = true;
         Ok(())
     }
@@ -164,9 +203,14 @@ impl Drop for Presenter {
     /// (`factor` x its connect time, at least `min_s`; never connected: `min_s`).
     fn drop(&mut self) {
         let _ = self.send(PresentMsg::Shutdown);
-        let Some(mut child) = self.child.take() else { return };
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
         let w = &self.watchdog;
-        let wait = self.connected_in.map_or(Duration::ZERO, |c| c.mul_f64(w.factor.max(1.0))).max(Duration::from_secs_f64(w.min_s.max(0.0)));
+        let wait = self
+            .connected_in
+            .map_or(Duration::ZERO, |c| c.mul_f64(w.factor.max(1.0)))
+            .max(Duration::from_secs_f64(w.min_s.max(0.0)));
         std::thread::spawn(move || {
             let until = Instant::now() + wait;
             while Instant::now() < until {
@@ -190,13 +234,15 @@ pub fn run(socket: &str, title: &str) -> anyhow::Result<()> {
 fn serve(stream: mr_ipc::Stream, ui: UiHandle) -> anyhow::Result<()> {
     let (mut input, mut tx) = mr_ipc::split::<PresentMsg, PresentReply>(stream);
     let (msg_tx, rx) = crossbeam_channel::bounded(4);
-    std::thread::Builder::new().name("rx-host".into()).spawn(move || {
-        while let Ok(Some(m)) = input.recv() {
-            if msg_tx.send(m).is_err() {
-                return;
+    std::thread::Builder::new()
+        .name("rx-host".into())
+        .spawn(move || {
+            while let Ok(Some(m)) = input.recv() {
+                if msg_tx.send(m).is_err() {
+                    return;
+                }
             }
-        }
-    })?;
+        })?;
     let mut shm: Option<FrameSlots> = None;
     while !ui.closed() {
         let (gain, status) = {
@@ -211,12 +257,24 @@ fn serve(stream: mr_ipc::Stream, ui: UiHandle) -> anyhow::Result<()> {
         }
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(PresentMsg::Shm(spec)) => shm = Some(FrameSlots::open(&spec)?),
-            Ok(PresentMsg::Frame { width, height, format }) => {
+            Ok(PresentMsg::Frame {
+                width,
+                height,
+                format,
+            }) => {
                 let n = (width * height * format.bytes()) as usize;
-                let Some(s) = &shm else { bail!("a frame before the frame region") };
+                let Some(s) = &shm else {
+                    bail!("a frame before the frame region")
+                };
                 let pixels = std::sync::Arc::new(s.slot(0)[..n].to_vec());
                 tx.send(&PresentReply::Shown)?;
-                ui.send(UiEvent::Frame { lane: 0, width, height, format, pixels });
+                ui.send(UiEvent::Frame {
+                    lane: 0,
+                    width,
+                    height,
+                    format,
+                    pixels,
+                });
             }
             Ok(PresentMsg::Gain(g)) => ui.send(UiEvent::Gain(g)),
             Ok(PresentMsg::Title(t)) => ui.send(UiEvent::Title(t)),

@@ -56,7 +56,11 @@ impl Journal {
     /// run's death is dropped; the pass it belonged to runs again).
     pub fn open(dir: &Path) -> anyhow::Result<Self> {
         let path = dir.join(FILE);
-        let (mut done, mut died_in, mut reports): (HashSet<Key>, HashMap<Key, u32>, Vec<(Option<Key>, PassReport)>) = Default::default();
+        let (mut done, mut died_in, mut reports): (
+            HashSet<Key>,
+            HashMap<Key, u32>,
+            Vec<(Option<Key>, PassReport)>,
+        ) = Default::default();
         let mut current = None;
         if let Ok(text) = std::fs::read_to_string(&path) {
             let lines: Vec<&str> = text.lines().collect();
@@ -64,7 +68,10 @@ impl Journal {
                 let entry = match serde_json::from_str::<Entry>(line) {
                     Ok(e) => e,
                     Err(_) if i + 1 == lines.len() => break,
-                    Err(e) => return Err(e).with_context(|| format!("{}: line {}", path.display(), i + 1)),
+                    Err(e) => {
+                        return Err(e)
+                            .with_context(|| format!("{}: line {}", path.display(), i + 1));
+                    }
                 };
                 match entry {
                     Entry::Started(k) => {
@@ -82,7 +89,10 @@ impl Journal {
         }
         // Only the finished passes' reports stand, and of the references only those beside them
         // (the main references run again).
-        let stand: Vec<(Key, PassReport)> = reports.into_iter().filter_map(|(k, r)| k.filter(|k| done.contains(k)).map(|k| (k, r))).collect();
+        let stand: Vec<(Key, PassReport)> = reports
+            .into_iter()
+            .filter_map(|(k, r)| k.filter(|k| done.contains(k)).map(|k| (k, r)))
+            .collect();
         // Written afresh: what stands, then this run's passes.
         let mut file = std::fs::File::create(&path).with_context(|| path.display().to_string())?;
         let mut text = String::new();
@@ -104,7 +114,12 @@ impl Journal {
         }
         file.write_all(text.as_bytes())?;
         file.sync_data()?;
-        Ok(Self { file, done, died_in, kept: stand.into_iter().map(|(_, r)| r).collect() })
+        Ok(Self {
+            file,
+            done,
+            died_in,
+            kept: stand.into_iter().map(|(_, r)| r).collect(),
+        })
     }
 
     /// Whether an earlier run finished this pass.
@@ -146,7 +161,11 @@ pub fn unfinished(base: &Path, name: &str) -> Option<PathBuf> {
         .ok()?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.len() > 16 && &n[16..] == name))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.len() > 16 && &n[16..] == name)
+        })
         .filter(|p| p.join(FILE).exists() && !p.join("report.json").exists())
         .collect();
     dirs.sort();
@@ -158,22 +177,55 @@ mod tests {
     use super::*;
 
     fn key(l: &str) -> Key {
-        Key { label: l.into(), mode: "unlit".into(), repeat: 0 }
+        Key {
+            label: l.into(),
+            mode: "unlit".into(),
+            repeat: 0,
+        }
     }
 
     fn report(l: &str) -> PassReport {
-        PassReport { label: l.into(), mode: Some(mr_core::PassMode::UNLIT), fps: 60.0, ..Default::default() }
+        PassReport {
+            label: l.into(),
+            mode: Some(mr_core::PassMode::UNLIT),
+            fps: 60.0,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn a_report_reads_back_as_written_an_identical_frame_included() {
-        let q = crate::compare::Quality { psnr: f64::INFINITY, ssim: 1.0, ..Default::default() };
-        let frame = crate::report::FrameRecord { frame: 3, latency_ms: 1.5, cpu_ms: 1.0, gpu_ms: None, update_ms: 0.0, arrived_bytes: 7, holes: 0, counters: vec![("chunks".into(), 4.0)], stages: vec![], quality: Some(q), quality_like: None };
-        let r = PassReport { per_frame: vec![frame], error: Some("x".into()), ..report("a") };
+        let q = crate::compare::Quality {
+            psnr: f64::INFINITY,
+            ssim: 1.0,
+            ..Default::default()
+        };
+        let frame = crate::report::FrameRecord {
+            frame: 3,
+            latency_ms: 1.5,
+            cpu_ms: 1.0,
+            gpu_ms: None,
+            update_ms: 0.0,
+            arrived_bytes: 7,
+            holes: 0,
+            counters: vec![("chunks".into(), 4.0)],
+            stages: vec![],
+            quality: Some(q),
+            quality_like: None,
+        };
+        let r = PassReport {
+            per_frame: vec![frame],
+            error: Some("x".into()),
+            ..report("a")
+        };
         let text = serde_json::to_string(&r).unwrap();
         let back: PassReport = serde_json::from_str(&text).unwrap();
         assert_eq!(serde_json::to_string(&back).unwrap(), text);
-        assert_eq!(back.per_frame[0].quality.unwrap().psnr, f64::INFINITY, "written as null, read as inf");
+        assert_eq!(
+            back.per_frame[0].quality.unwrap().psnr,
+            f64::INFINITY,
+            "written as null, read as inf"
+        );
     }
 
     #[test]
@@ -184,14 +236,18 @@ mod tests {
         {
             let mut j = Journal::open(&dir).unwrap();
             j.started(&key("a")).unwrap();
-            j.finished(&key("a"), &[report("a"), report("a (settled)")]).unwrap();
+            j.finished(&key("a"), &[report("a"), report("a (settled)")])
+                .unwrap();
             j.started(&key("b")).unwrap();
             // Dies in b; a line cut short by the death.
             j.file.write_all(b"{\"report\":{\"lab").unwrap();
         }
         let j = Journal::open(&dir).unwrap();
         assert!(j.done(&key("a")) && !j.done(&key("b")));
-        assert_eq!(j.kept.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["a", "a (settled)"]);
+        assert_eq!(
+            j.kept.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+            ["a", "a (settled)"]
+        );
         assert_eq!(j.kept[0].fps, 60.0);
         assert!(j.given_up(&key("b")).is_none(), "one death: tried again");
         let mut j = j;

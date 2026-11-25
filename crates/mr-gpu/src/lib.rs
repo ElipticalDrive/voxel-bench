@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::{Context, bail};
-use mr_core::{CompletedFrame, FrameSink, FrameStats, StageTime, Waker};
 use mr_core::lighting::PixelFormat;
+use mr_core::{CompletedFrame, FrameSink, FrameStats, StageTime, Waker};
 
 pub mod meshes;
 pub mod program;
@@ -61,12 +61,20 @@ impl AllocPeak {
     const BUDGET: u32 = 100;
 
     fn new(device: &wgpu::Device, peak: Arc<std::sync::atomic::AtomicU64>) -> Self {
-        Self(Arc::new(AllocPeakInner { device: device.clone(), peak, next: std::sync::Mutex::new(std::time::Instant::now()) }))
+        Self(Arc::new(AllocPeakInner {
+            device: device.clone(),
+            peak,
+            next: std::sync::Mutex::new(std::time::Instant::now()),
+        }))
     }
 
     /// Samples now; returns what the allocator holds (0 where the backend gives no report).
     pub fn sample(&self) -> u64 {
-        let now = self.0.device.generate_allocator_report().map_or(0, |r| r.total_allocated_bytes);
+        let now = self
+            .0
+            .device
+            .generate_allocator_report()
+            .map_or(0, |r| r.total_allocated_bytes);
         self.0.peak.fetch_max(now, Ordering::Relaxed);
         now
     }
@@ -111,23 +119,38 @@ impl Gpu {
     pub fn new(req: GpuRequest) -> anyhow::Result<Self> {
         let adapter = pick_adapter(req.adapter)?;
         let info = adapter.get_info();
-        tracing::info!("using adapter {} ({:?}, {:?}, driver {})", info.name, info.device_type, info.backend, info.driver_info);
+        tracing::info!(
+            "using adapter {} ({:?}, {:?}, driver {})",
+            info.name,
+            info.device_type,
+            info.backend,
+            info.driver_info
+        );
         let available = adapter.features();
         if !available.contains(req.required_features) {
-            bail!("adapter lacks features {:?}", req.required_features - available);
+            bail!(
+                "adapter lacks features {:?}",
+                req.required_features - available
+            );
         }
         // The pipeline cache where the adapter has one (`open_cache`).
-        let features = req.required_features | ((req.optional_features | wgpu::Features::PIPELINE_CACHE) & available);
+        let features = req.required_features
+            | ((req.optional_features | wgpu::Features::PIPELINE_CACHE) & available);
         let limits = (req.limits)(&adapter.limits());
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("mr-gpu"),
-            required_features: features,
-            required_limits: limits,
-            // SAFETY: opting into wgpu's experimental API surface (ray queries); the
-            // renderers that ask for it are prepared for driver-level issues.
-            experimental_features: if req.experimental { unsafe { wgpu::ExperimentalFeatures::enabled() } } else { wgpu::ExperimentalFeatures::disabled() },
-            ..Default::default()
-        }))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("mr-gpu"),
+                required_features: features,
+                required_limits: limits,
+                // SAFETY: opting into wgpu's experimental API surface (ray queries); the
+                // renderers that ask for it are prepared for driver-level issues.
+                experimental_features: if req.experimental {
+                    unsafe { wgpu::ExperimentalFeatures::enabled() }
+                } else {
+                    wgpu::ExperimentalFeatures::disabled()
+                },
+                ..Default::default()
+            }))?;
         let mut gpu = Self::from_parts(device, queue, info);
         gpu.adapter_features = available;
         gpu.experimental = req.experimental;
@@ -143,16 +166,33 @@ impl Gpu {
         let h = held.clone();
         let adapter = info.name.clone();
         device.on_uncaptured_error(Arc::new(move |e| {
-            let text = e.to_string().lines().take(12).collect::<Vec<_>>().join("\n");
+            let text = e
+                .to_string()
+                .lines()
+                .take(12)
+                .collect::<Vec<_>>()
+                .join("\n");
             // wgpu's out-of-memory error names no allocation: say what is known.
             f.set(match e {
-                wgpu::Error::OutOfMemory { .. } => out_of_memory(&adapter, h.load(Ordering::Relaxed), &text),
+                wgpu::Error::OutOfMemory { .. } => {
+                    out_of_memory(&adapter, h.load(Ordering::Relaxed), &text)
+                }
                 _ => format!("wgpu error: {text}"),
             })
         }));
         let features = device.features();
         let peak = AllocPeak::new(&device, held);
-        Self { device, queue, info, timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY), adapter_features: features, experimental: false, failure, cache: Default::default(), peak }
+        Self {
+            device,
+            queue,
+            info,
+            timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY),
+            adapter_features: features,
+            experimental: false,
+            failure,
+            cache: Default::default(),
+            peak,
+        }
     }
 
     /// Opens the persistent pipeline cache `name` (the pipelines' graph key): a file per
@@ -160,19 +200,40 @@ impl Gpu {
     /// it compiled in an earlier run. The first call in a process wins; no-op
     /// where the device has no pipeline cache (wgpu: Vulkan only) or `$MR_GPU_CACHE` is `0`.
     pub fn open_cache(&self, name: &str) {
-        if !self.device.features().contains(wgpu::Features::PIPELINE_CACHE) || std::env::var_os("MR_GPU_CACHE").is_some_and(|v| v == "0") {
+        if !self
+            .device
+            .features()
+            .contains(wgpu::Features::PIPELINE_CACHE)
+            || std::env::var_os("MR_GPU_CACHE").is_some_and(|v| v == "0")
+        {
             return;
         }
-        let Some(adapter) = wgpu::util::pipeline_cache_key(&self.info) else { return };
-        let path = mr_core::cache_dir().join("driver").join(adapter).join(format!("{name}.bin"));
+        let Some(adapter) = wgpu::util::pipeline_cache_key(&self.info) else {
+            return;
+        };
+        let path = mr_core::cache_dir()
+            .join("driver")
+            .join(adapter)
+            .join(format!("{name}.bin"));
         let data = std::fs::read(&path).ok();
         let saved = data.as_ref().map_or(0, Vec::len);
         let _ = self.cache.get_or_init(|| {
             // SAFETY: the data is what `get_data` wrote for this adapter (the file is keyed by
             // it); wgpu and the driver validate the header (vendor, device, driver version, wgpu
             // version) and fall back to an empty cache on a mismatch.
-            let cache = unsafe { self.device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor { label: Some(name), data: data.as_deref(), fallback: true }) };
-            DiskCache { cache, path, saved: std::sync::Mutex::new(saved) }
+            let cache = unsafe {
+                self.device
+                    .create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+                        label: Some(name),
+                        data: data.as_deref(),
+                        fallback: true,
+                    })
+            };
+            DiskCache {
+                cache,
+                path,
+                saved: std::sync::Mutex::new(saved),
+            }
         });
     }
 
@@ -185,13 +246,20 @@ impl Gpu {
     /// so workers of one graph running at once never leave a torn file).
     pub fn save_cache(&self) {
         let Some(c) = self.cache.get() else { return };
-        let Some(data) = c.cache.get_data() else { return };
+        let Some(data) = c.cache.get_data() else {
+            return;
+        };
         let mut saved = c.saved.lock().unwrap();
         if data.len() == *saved {
             return;
         }
         let tmp = c.path.with_extension(format!("{}.tmp", std::process::id()));
-        let written = c.path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&tmp, &data)).and_then(|_| std::fs::rename(&tmp, &c.path));
+        let written = c
+            .path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|_| std::fs::write(&tmp, &data))
+            .and_then(|_| std::fs::rename(&tmp, &c.path));
         match written {
             Ok(()) => *saved = data.len(),
             Err(e) => tracing::warn!("pipeline cache {}: {e}", c.path.display()),
@@ -203,9 +271,18 @@ impl Gpu {
         let have = self.device.features();
         let want = needs.required_features | (needs.optional_features & self.adapter_features);
         if !have.contains(want) {
-            return Some(format!("device on {} lacks features {:?}", self.info.name, want - have));
+            return Some(format!(
+                "device on {} lacks features {:?}",
+                self.info.name,
+                want - have
+            ));
         }
-        (needs.experimental && !self.experimental).then(|| format!("device on {} was opened without wgpu's experimental features", self.info.name))
+        (needs.experimental && !self.experimental).then(|| {
+            format!(
+                "device on {} was opened without wgpu's experimental features",
+                self.info.name
+            )
+        })
     }
 
     /// Fails if anything failed since the device was created (every frame starts and
@@ -264,21 +341,44 @@ impl Gpu {
     /// it at most adds wgpu errors after the named one, which stays first).
     /// Every storage buffer is created here (`tests/architecture.rs`): a node cannot assume
     /// one GPU's big bindings.
-    pub fn storage(&self, label: &str, size: u64, usage: wgpu::BufferUsages, set_by: impl FnOnce() -> String) -> wgpu::Buffer {
+    pub fn storage(
+        &self,
+        label: &str,
+        size: u64,
+        usage: wgpu::BufferUsages,
+        set_by: impl FnOnce() -> String,
+    ) -> wgpu::Buffer {
         let limits = self.device.limits();
-        let (limit, name) = if usage.contains(wgpu::BufferUsages::STORAGE) && limits.max_storage_buffer_binding_size < limits.max_buffer_size {
-            (limits.max_storage_buffer_binding_size, "max_storage_buffer_binding_size")
+        let (limit, name) = if usage.contains(wgpu::BufferUsages::STORAGE)
+            && limits.max_storage_buffer_binding_size < limits.max_buffer_size
+        {
+            (
+                limits.max_storage_buffer_binding_size,
+                "max_storage_buffer_binding_size",
+            )
         } else {
             (limits.max_buffer_size, "max_buffer_size")
         };
         let size = size.max(16).next_multiple_of(4);
         let size = if size > limit {
-            self.fail(over_limit(label, size, limit, name, &self.info.name, &set_by()));
+            self.fail(over_limit(
+                label,
+                size,
+                limit,
+                name,
+                &self.info.name,
+                &set_by(),
+            ));
             16
         } else {
             size
         };
-        self.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage,
+            mapped_at_creation: false,
+        })
     }
 
     /// The failure slot, for callbacks that outlive a borrow of the device.
@@ -314,7 +414,12 @@ pub fn shader(dev: &wgpu::Device, label: &str, src: String) -> wgpu::ShaderModul
     if let Some(dir) = std::env::var_os("MR_DUMP_WGSL") {
         dump_wgsl(&dir, label, &src);
     }
-    mr_core::shader_clock::module(|| dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(src.into()) }))
+    mr_core::shader_clock::module(|| {
+        dev.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(label),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        })
+    })
 }
 
 /// Pipeline creation counted by [`mr_core::shader_clock`] (the driver's compile, reported
@@ -336,8 +441,11 @@ impl Pipelines for wgpu::Device {
 /// Writes `src` to `dir/<label>-<hash>.wgsl` (`MR_DUMP_WGSL`).
 pub(crate) fn dump_wgsl(dir: &std::ffi::OsStr, label: &str, src: &str) {
     // FNV-1a: stable across builds and runs (unlike std's hasher).
-    let h = src.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
-    let path = std::path::Path::new(dir).join(format!("{}-{h:016x}.wgsl", label.replace([' ', '/'], "_")));
+    let h = src.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+    });
+    let path =
+        std::path::Path::new(dir).join(format!("{}-{h:016x}.wgsl", label.replace([' ', '/'], "_")));
     if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, src)) {
         tracing::warn!("MR_DUMP_WGSL: {}: {e}", path.display());
     }
@@ -356,7 +464,9 @@ pub struct GpuNeeds {
 /// A worker process's devices, handed to its renderer (`mr_serve::run`): GPUs open on
 /// request (CPU pipelines open none), in the slots the host's configuration names.
 pub fn devices(cfg: &mr_core::DeviceConfig) -> mr_core::Devices {
-    mr_core::Devices { gpus: Some(Arc::new(GpuPool::new(&cfg.gpus))) }
+    mr_core::Devices {
+        gpus: Some(Arc::new(GpuPool::new(&cfg.gpus))),
+    }
 }
 
 /// The GPU devices of one process: handed to renderers through
@@ -375,12 +485,20 @@ impl GpuPool {
     /// Devices opened on request; slot `k` on the adapter matching `adapters[k]` (empty or
     /// missing: the default choice).
     pub fn new(adapters: &[String]) -> Self {
-        Self { adapters: adapters.to_vec(), open: Default::default(), fixed: false }
+        Self {
+            adapters: adapters.to_vec(),
+            open: Default::default(),
+            fixed: false,
+        }
     }
 
     /// Exactly these devices, slot `k` = `gpus[k]`.
     pub fn fixed(gpus: Vec<Arc<Gpu>>) -> Self {
-        Self { adapters: vec![], open: std::sync::Mutex::new(gpus.into_iter().enumerate().collect()), fixed: true }
+        Self {
+            adapters: vec![],
+            open: std::sync::Mutex::new(gpus.into_iter().enumerate().collect()),
+            fixed: true,
+        }
     }
 
     /// A device of slot `slot` that serves `needs`.
@@ -394,9 +512,20 @@ impl GpuPool {
             }
         }
         if self.fixed {
-            bail!("no handed-in GPU device serves this renderer{}", if why.is_empty() { format!(" (no device in slot {slot})") } else { format!(": {}", why.join("; ")) });
+            bail!(
+                "no handed-in GPU device serves this renderer{}",
+                if why.is_empty() {
+                    format!(" (no device in slot {slot})")
+                } else {
+                    format!(": {}", why.join("; "))
+                }
+            );
         }
-        let adapter = self.adapters.get(slot).map(String::as_str).filter(|a| !a.is_empty());
+        let adapter = self
+            .adapters
+            .get(slot)
+            .map(String::as_str)
+            .filter(|a| !a.is_empty());
         let clamp = std::env::var("MR_GPU_LIMITS").ok();
         let clamp = clamp.as_deref().filter(|c| !c.is_empty());
         let gpu = Arc::new(Gpu::new(GpuRequest {
@@ -420,15 +549,29 @@ pub fn clamped_limits(clamp: Option<&str>, adapter: &wgpu::Limits) -> anyhow::Re
     let base = wgpu::Limits::defaults();
     Ok(match clamp {
         None => adapter.clone(),
-        Some("webgpu") => base.or_worse_values_from(adapter).using_acceleration_structure_values(adapter.clone()),
+        Some("webgpu") => base
+            .or_worse_values_from(adapter)
+            .using_acceleration_structure_values(adapter.clone()),
         Some("sizes") => wgpu::Limits {
-            max_storage_buffer_binding_size: adapter.max_storage_buffer_binding_size.min(base.max_storage_buffer_binding_size),
-            max_uniform_buffer_binding_size: adapter.max_uniform_buffer_binding_size.min(base.max_uniform_buffer_binding_size),
+            max_storage_buffer_binding_size: adapter
+                .max_storage_buffer_binding_size
+                .min(base.max_storage_buffer_binding_size),
+            max_uniform_buffer_binding_size: adapter
+                .max_uniform_buffer_binding_size
+                .min(base.max_uniform_buffer_binding_size),
             max_buffer_size: adapter.max_buffer_size.min(base.max_buffer_size),
-            max_texture_dimension_1d: adapter.max_texture_dimension_1d.min(base.max_texture_dimension_1d),
-            max_texture_dimension_2d: adapter.max_texture_dimension_2d.min(base.max_texture_dimension_2d),
-            max_texture_dimension_3d: adapter.max_texture_dimension_3d.min(base.max_texture_dimension_3d),
-            max_compute_workgroup_storage_size: adapter.max_compute_workgroup_storage_size.min(base.max_compute_workgroup_storage_size),
+            max_texture_dimension_1d: adapter
+                .max_texture_dimension_1d
+                .min(base.max_texture_dimension_1d),
+            max_texture_dimension_2d: adapter
+                .max_texture_dimension_2d
+                .min(base.max_texture_dimension_2d),
+            max_texture_dimension_3d: adapter
+                .max_texture_dimension_3d
+                .min(base.max_texture_dimension_3d),
+            max_compute_workgroup_storage_size: adapter
+                .max_compute_workgroup_storage_size
+                .min(base.max_compute_workgroup_storage_size),
             ..adapter.clone()
         },
         Some(other) => bail!("MR_GPU_LIMITS = {other:?}: expected `webgpu` or `sizes`"),
@@ -437,7 +580,11 @@ pub fn clamped_limits(clamp: Option<&str>, adapter: &wgpu::Limits) -> anyhow::Re
 
 /// The GPU of slot `slot` from the devices handed to a renderer.
 pub fn gpu(devices: &mr_core::Devices, slot: usize, needs: &GpuNeeds) -> anyhow::Result<Arc<Gpu>> {
-    let pool = devices.gpus.as_ref().and_then(|p| p.downcast_ref::<GpuPool>()).context("no GPU devices were handed to this renderer")?;
+    let pool = devices
+        .gpus
+        .as_ref()
+        .and_then(|p| p.downcast_ref::<GpuPool>())
+        .context("no GPU devices were handed to this renderer")?;
     pool.gpu(slot, needs)
 }
 
@@ -496,7 +643,14 @@ pub struct FrameRing {
 impl FrameRing {
     /// `waker` is called from a background thread whenever submitted work completes;
     /// `format` is the output's.
-    pub fn new(gpu: &Gpu, width: u32, height: u32, format: PixelFormat, depth: usize, waker: Waker) -> Self {
+    pub fn new(
+        gpu: &Gpu,
+        width: u32,
+        height: u32,
+        format: PixelFormat,
+        depth: usize,
+        waker: Waker,
+    ) -> Self {
         let bpp = format.bytes();
         let (submitted, rx) = std::sync::mpsc::channel::<()>();
         let device = gpu.device.clone();
@@ -519,16 +673,39 @@ impl FrameRing {
             .expect("spawn gpu-waiter");
         let padded_row = (width * bpp).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let query_set = gpu.timestamps.then(|| {
-            gpu.device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("frame timestamps"), ty: wgpu::QueryType::Timestamp, count: depth as u32 * 2 })
+            gpu.device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("frame timestamps"),
+                ty: wgpu::QueryType::Timestamp,
+                count: depth as u32 * 2,
+            })
         });
         let marks = gpu.timestamps.then(|| {
-            gpu.device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("stage marks"), ty: wgpu::QueryType::Timestamp, count: depth as u32 * MAX_MARKS })
+            gpu.device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("stage marks"),
+                ty: wgpu::QueryType::Timestamp,
+                count: depth as u32 * MAX_MARKS,
+            })
         });
-        let buffer = |label, usage| gpu.timestamps.then(|| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: MAX_MARKS as u64 * 8, usage, mapped_at_creation: false }));
+        let buffer = |label, usage| {
+            gpu.timestamps.then(|| {
+                gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size: MAX_MARKS as u64 * 8,
+                    usage,
+                    mapped_at_creation: false,
+                })
+            })
+        };
         let slots = (0..depth)
             .map(|_| Slot {
-                marks_resolve: buffer("marks resolve", wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC),
-                marks_read: buffer("marks read", wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ),
+                marks_resolve: buffer(
+                    "marks resolve",
+                    wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                ),
+                marks_read: buffer(
+                    "marks read",
+                    wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                ),
                 readback: gpu.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("readback"),
                     size: padded_row as u64 * height as u64,
@@ -581,7 +758,8 @@ impl FrameRing {
             gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
             self.poll(gpu, sink, false)?;
         }
-        self.clock_started.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.clock_started
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         Ok(Ticket(self.free.pop().unwrap()))
     }
 
@@ -589,44 +767,73 @@ impl FrameRing {
     /// structure builds): a timestamp in the encoder where the device writes them there, else
     /// an empty pass. The frame's passes asking to begin it then do not.
     pub fn start_clock(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, t: Ticket) {
-        let Some((q, begin, _)) = self.timestamps(t) else { return };
-        if gpu.device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
+        let Some((q, begin, _)) = self.timestamps(t) else {
+            return;
+        };
+        if gpu
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+        {
             enc.write_timestamp(q, begin);
         } else {
-            enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("frame begin"), timestamp_writes: self.compute_timestamps(t, true, false) });
+            enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("frame begin"),
+                timestamp_writes: self.compute_timestamps(t, true, false),
+            });
         }
-        self.clock_started.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.clock_started
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Whether a pass asking to begin the frame's clock does (not after `start_clock`).
     fn begins(&self, begin: bool) -> bool {
-        begin && !self.clock_started.load(std::sync::atomic::Ordering::Relaxed)
+        begin
+            && !self
+                .clock_started
+                .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// `(query_set, begin_index, end_index)` for this frame's timestamps, if supported.
     /// Write `begin` in the first pass of the frame and `end` in the last.
     pub fn timestamps(&self, t: Ticket) -> Option<(&wgpu::QuerySet, u32, u32)> {
-        self.query_set.as_ref().map(|q| (q, t.0 as u32 * 2, t.0 as u32 * 2 + 1))
+        self.query_set
+            .as_ref()
+            .map(|q| (q, t.0 as u32 * 2, t.0 as u32 * 2 + 1))
     }
 
-    pub fn compute_timestamps(&self, t: Ticket, begin: bool, end: bool) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
+    pub fn compute_timestamps(
+        &self,
+        t: Ticket,
+        begin: bool,
+        end: bool,
+    ) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
         let begin = self.begins(begin);
         // A pass writing neither is no timestamp pass (wgpu rejects one without indices).
-        self.timestamps(t).filter(|_| begin || end).map(|(q, b, e)| wgpu::ComputePassTimestampWrites {
-            query_set: q,
-            beginning_of_pass_write_index: begin.then_some(b),
-            end_of_pass_write_index: end.then_some(e),
-        })
+        self.timestamps(t)
+            .filter(|_| begin || end)
+            .map(|(q, b, e)| wgpu::ComputePassTimestampWrites {
+                query_set: q,
+                beginning_of_pass_write_index: begin.then_some(b),
+                end_of_pass_write_index: end.then_some(e),
+            })
     }
 
-    pub fn render_timestamps(&self, t: Ticket, begin: bool, end: bool) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+    pub fn render_timestamps(
+        &self,
+        t: Ticket,
+        begin: bool,
+        end: bool,
+    ) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
         let begin = self.begins(begin);
         // A pass writing neither is no timestamp pass (wgpu rejects one without indices).
-        self.timestamps(t).filter(|_| begin || end).map(|(q, b, e)| wgpu::RenderPassTimestampWrites {
-            query_set: q,
-            beginning_of_pass_write_index: begin.then_some(b),
-            end_of_pass_write_index: end.then_some(e),
-        })
+        self.timestamps(t)
+            .filter(|_| begin || end)
+            .map(|(q, b, e)| wgpu::RenderPassTimestampWrites {
+                query_set: q,
+                beginning_of_pass_write_index: begin.then_some(b),
+                end_of_pass_write_index: end.then_some(e),
+            })
     }
 
     /// Times stages (`stage` marks them) or not (`stage` does nothing).
@@ -653,13 +860,22 @@ impl FrameRing {
             return;
         }
         Self::mark(enc, q, t.0 as u32 * MAX_MARKS + rec.len() as u32);
-        rec.push(StageTime { name: name.into(), nodes: nodes.to_vec(), cpu_ms: None, gpu_ms: None });
+        rec.push(StageTime {
+            name: name.into(),
+            nodes: nodes.to_vec(),
+            cpu_ms: None,
+            gpu_ms: None,
+        });
     }
 
     fn mark(enc: &mut wgpu::CommandEncoder, q: &wgpu::QuerySet, index: u32) {
         enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("stage mark"),
-            timestamp_writes: Some(wgpu::ComputePassTimestampWrites { query_set: q, beginning_of_pass_write_index: Some(index), end_of_pass_write_index: None }),
+            timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+                query_set: q,
+                beginning_of_pass_write_index: Some(index),
+                end_of_pass_write_index: None,
+            }),
         });
     }
 
@@ -679,23 +895,42 @@ impl FrameRing {
         let slot = &self.slots[t.0];
         if readback {
             encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo { texture: output, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo {
+                    texture: output,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
                 wgpu::TexelCopyBufferInfo {
                     buffer: &slot.readback,
-                    layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(self.padded_row), rows_per_image: None },
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(self.padded_row),
+                        rows_per_image: None,
+                    },
                 },
-                wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: self.width,
+                    height: self.height,
+                    depth_or_array_layers: 1,
+                },
             );
         }
         let stages = std::mem::take(&mut *self.recording.lock().unwrap());
-        if let (false, Some(q), Some(res), Some(read)) = (stages.is_empty(), &self.marks, &slot.marks_resolve, &slot.marks_read) {
+        if let (false, Some(q), Some(res), Some(read)) = (
+            stages.is_empty(),
+            &self.marks,
+            &slot.marks_resolve,
+            &slot.marks_read,
+        ) {
             let b = t.0 as u32 * MAX_MARKS;
             let n = stages.len() as u32 + 1;
             Self::mark(&mut encoder, q, b + n - 1);
             encoder.resolve_query_set(q, b..b + n, res, 0);
             encoder.copy_buffer_to_buffer(res, 0, read, 0, n as u64 * 8);
         }
-        if let (Some(q), Some(res), Some(read)) = (&self.query_set, &slot.ts_resolve, &slot.ts_read) {
+        if let (Some(q), Some(res), Some(read)) = (&self.query_set, &slot.ts_resolve, &slot.ts_read)
+        {
             let b = t.0 as u32 * 2;
             encoder.resolve_query_set(q, b..b + 2, res, 0);
             encoder.copy_buffer_to_buffer(res, 0, read, 0, 16);
@@ -730,7 +965,14 @@ impl FrameRing {
                 r.fetch_sub(1, Ordering::SeqCst);
             });
         }
-        self.pending.push_back(Pending { frame_id, slot: t.0, readback, remaining, stats, stages });
+        self.pending.push_back(Pending {
+            frame_id,
+            slot: t.0,
+            readback,
+            remaining,
+            stats,
+            stages,
+        });
         if let Some(s) = &self.submitted {
             let _ = s.send(());
         }
@@ -743,7 +985,11 @@ impl FrameRing {
         if self.pending.is_empty() {
             return Ok(());
         }
-        gpu.device.poll(if wait { wgpu::PollType::wait_indefinitely() } else { wgpu::PollType::Poll })?;
+        gpu.device.poll(if wait {
+            wgpu::PollType::wait_indefinitely()
+        } else {
+            wgpu::PollType::Poll
+        })?;
         while let Some(p) = self.pending.front() {
             if p.remaining.load(Ordering::SeqCst) != 0 {
                 if wait {
@@ -757,10 +1003,16 @@ impl FrameRing {
             if let Some(read) = &slot.ts_read {
                 {
                     let v = read.get_mapped_range(..)?;
-                    let ts: [u64; 2] = [u64::from_le_bytes(v[0..8].try_into()?), u64::from_le_bytes(v[8..16].try_into()?)];
+                    let ts: [u64; 2] = [
+                        u64::from_le_bytes(v[0..8].try_into()?),
+                        u64::from_le_bytes(v[8..16].try_into()?),
+                    ];
                     // Added to what the frame brought (a pipeline over two GPUs: the other's).
                     if ts[1] > ts[0] {
-                        p.stats.gpu_ms = Some(p.stats.gpu_ms.unwrap_or(0.0) + (ts[1] - ts[0]) as f32 * self.timestamp_period / 1e6);
+                        p.stats.gpu_ms = Some(
+                            p.stats.gpu_ms.unwrap_or(0.0)
+                                + (ts[1] - ts[0]) as f32 * self.timestamp_period / 1e6,
+                        );
                     }
                 }
                 read.unmap();
@@ -771,7 +1023,11 @@ impl FrameRing {
                     let ts = |k: usize| u64::from_le_bytes(v[k * 8..k * 8 + 8].try_into().unwrap());
                     for (k, mut s) in std::mem::take(&mut p.stages).into_iter().enumerate() {
                         let (a, b) = (ts(k), ts(k + 1));
-                        s.gpu_ms = Some(if b > a { (b - a) as f32 * self.timestamp_period / 1e6 } else { 0.0 });
+                        s.gpu_ms = Some(if b > a {
+                            (b - a) as f32 * self.timestamp_period / 1e6
+                        } else {
+                            0.0
+                        });
                         p.stats.stages.push(s);
                     }
                 }
@@ -788,10 +1044,16 @@ impl FrameRing {
                     }
                 }
                 slot.readback.unmap();
-                p.stats.counters.push(("readback_copy_ms".into(), t0.elapsed().as_secs_f64() * 1e3));
+                p.stats
+                    .counters
+                    .push(("readback_copy_ms".into(), t0.elapsed().as_secs_f64() * 1e3));
             }
             self.free.push(p.slot);
-            sink.complete(CompletedFrame { frame_id: p.frame_id, stats: p.stats, pixels: p.readback.then_some(&self.pixels[..]) });
+            sink.complete(CompletedFrame {
+                frame_id: p.frame_id,
+                stats: p.stats,
+                pixels: p.readback.then_some(&self.pixels[..]),
+            });
         }
         Ok(())
     }
@@ -823,12 +1085,18 @@ pub fn output_format(f: PixelFormat) -> wgpu::TextureFormat {
 pub fn output_texture(gpu: &Gpu, width: u32, height: u32, format: PixelFormat) -> wgpu::Texture {
     gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("output"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: output_format(format),
-        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     })
 }
@@ -844,7 +1112,10 @@ pub struct RangeAlloc {
 
 impl RangeAlloc {
     pub fn new(cap: u32) -> Self {
-        Self { free: BTreeMap::from([(0, cap)]), cap }
+        Self {
+            free: BTreeMap::from([(0, cap)]),
+            cap,
+        }
     }
 
     pub fn capacity(&self) -> u32 {
@@ -865,7 +1136,8 @@ impl RangeAlloc {
             return;
         }
         if let Some((&p, &pl)) = self.free.range(..off).next_back()
-            && p + pl == off {
+            && p + pl == off
+        {
             self.free.remove(&p);
             off = p;
             n += pl;
@@ -903,20 +1175,46 @@ pub struct GrowableBuffer {
 }
 
 impl GrowableBuffer {
-    pub fn new(gpu: &Gpu, label: &'static str, initial: u64, max: u64, usage: wgpu::BufferUsages) -> Self {
+    pub fn new(
+        gpu: &Gpu,
+        label: &'static str,
+        initial: u64,
+        max: u64,
+        usage: wgpu::BufferUsages,
+    ) -> Self {
         let limits = gpu.device.limits();
         // A multiple of 16 (sizes are rounded up to one), so no size exceeds what the device binds.
-        let max = (max.min(limits.max_buffer_size).min(limits.max_storage_buffer_binding_size) & !15).max(256);
+        let max = (max
+            .min(limits.max_buffer_size)
+            .min(limits.max_storage_buffer_binding_size)
+            & !15)
+            .max(256);
         let usage = usage | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
         let size = initial.clamp(256, max).next_multiple_of(16);
-        Self { buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false }), label, usage, max }
+        Self {
+            buf: gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage,
+                mapped_at_creation: false,
+            }),
+            label,
+            usage,
+            max,
+        }
     }
 
     /// A buffer of `size` bytes from the start, never grown (a [`PagedBuffer`]'s later pages:
     /// no copy, so no old and new buffer at once); `None` if the device is out of memory (it
     /// has failed).
     /// `doing` names the buffer's place for the message.
-    fn whole(gpu: &Gpu, label: &'static str, size: u64, usage: wgpu::BufferUsages, doing: impl FnOnce(u64) -> String) -> Option<Self> {
+    fn whole(
+        gpu: &Gpu,
+        label: &'static str,
+        size: u64,
+        usage: wgpu::BufferUsages,
+        doing: impl FnOnce(u64) -> String,
+    ) -> Option<Self> {
         let mut b = Self::new(gpu, label, 256, size, usage);
         let size = b.max;
         b.buf = create_named(gpu, label, size, b.usage, || doing(size))?;
@@ -941,7 +1239,12 @@ impl GrowableBuffer {
     pub fn reserve(&mut self, gpu: &Gpu, bytes: u64, limit: &str) -> Option<bool> {
         let r = self.grow_to(gpu, bytes);
         if r.is_none() {
-            gpu.fail(format!("{}: more than {} MiB needed; the limit is {}; frames would miss data", self.label, self.max >> 20, named_limit(gpu, limit)));
+            gpu.fail(format!(
+                "{}: more than {} MiB needed; the limit is {}; frames would miss data",
+                self.label,
+                self.max >> 20,
+                named_limit(gpu, limit)
+            ));
         }
         r
     }
@@ -954,9 +1257,14 @@ impl GrowableBuffer {
         if bytes > self.max {
             return None;
         }
-        let size = (self.buf.size() * 2).max(bytes).min(self.max).next_multiple_of(16);
+        let size = (self.buf.size() * 2)
+            .max(bytes)
+            .min(self.max)
+            .next_multiple_of(16);
         let old = self.buf.size();
-        let new = create_named(gpu, self.label, size, self.usage, || format!("growing it from {} to {} MiB", old >> 20, size >> 20))?;
+        let new = create_named(gpu, self.label, size, self.usage, || {
+            format!("growing it from {} to {} MiB", old >> 20, size >> 20)
+        })?;
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         enc.copy_buffer_to_buffer(&self.buf, 0, &new, 0, self.buf.size());
         // Pending queue writes to the old buffer are flushed before this submission.
@@ -976,16 +1284,34 @@ impl GrowableBuffer {
     /// Allocates `n` units of `unit` bytes from `alloc`, growing buffer and allocator as
     /// needed. Returns the offset and whether the buffer was reallocated; `None` as
     /// [`Self::reserve`].
-    pub fn alloc(&mut self, gpu: &Gpu, alloc: &mut RangeAlloc, n: u32, unit: u64, limit: &str) -> Option<(u32, bool)> {
+    pub fn alloc(
+        &mut self,
+        gpu: &Gpu,
+        alloc: &mut RangeAlloc,
+        n: u32,
+        unit: u64,
+        limit: &str,
+    ) -> Option<(u32, bool)> {
         let r = self.alloc_within(gpu, alloc, n, unit);
         if r.is_none() {
-            gpu.fail(format!("{}: more than {} MiB needed; the limit is {}; frames would miss data", self.label, self.max >> 20, named_limit(gpu, limit)));
+            gpu.fail(format!(
+                "{}: more than {} MiB needed; the limit is {}; frames would miss data",
+                self.label,
+                self.max >> 20,
+                named_limit(gpu, limit)
+            ));
         }
         r
     }
 
     /// [`Self::alloc`] without failing the device: `None` if the range does not fit within the maximum.
-    fn alloc_within(&mut self, gpu: &Gpu, alloc: &mut RangeAlloc, n: u32, unit: u64) -> Option<(u32, bool)> {
+    fn alloc_within(
+        &mut self,
+        gpu: &Gpu,
+        alloc: &mut RangeAlloc,
+        n: u32,
+        unit: u64,
+    ) -> Option<(u32, bool)> {
         let mut grew = false;
         loop {
             if let Some(off) = alloc.alloc(n) {
@@ -1010,29 +1336,67 @@ fn named_limit(gpu: &Gpu, limit: &str) -> String {
         return limit.into();
     }
     let bind = gpu.device.limits().max_storage_buffer_binding_size;
-    format!("what {} binds ({:.1} MiB, `max_storage_buffer_binding_size`)", gpu.info.name, bind as f64 / (1u64 << 20) as f64)
+    format!(
+        "what {} binds ({:.1} MiB, `max_storage_buffer_binding_size`)",
+        gpu.info.name,
+        bind as f64 / (1u64 << 20) as f64
+    )
 }
 
 /// The failure of an allocation the device refused, unnamed by wgpu (`held`: the most this
 /// renderer was seen holding).
 fn out_of_memory(adapter: &str, held: u64, text: &str) -> String {
-    let seen = if held > 0 { format!(", this renderer seen holding up to {:.0} MiB", held as f64 / (1u64 << 20) as f64) } else { String::new() };
-    format!("the device is out of memory ({adapter}{seen}; the world's size sets most of it: lower the view radius, or the storage's pool or slot knobs): wgpu error: {text}")
+    let seen = if held > 0 {
+        format!(
+            ", this renderer seen holding up to {:.0} MiB",
+            held as f64 / (1u64 << 20) as f64
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "the device is out of memory ({adapter}{seen}; the world's size sets most of it: lower the view radius, or the storage's pool or slot knobs): wgpu error: {text}"
+    )
 }
 
 /// The failure of a buffer over a device limit ([`Gpu::storage`]).
-fn over_limit(label: &str, size: u64, limit: u64, name: &str, adapter: &str, set_by: &str) -> String {
+fn over_limit(
+    label: &str,
+    size: u64,
+    limit: u64,
+    name: &str,
+    adapter: &str,
+    set_by: &str,
+) -> String {
     let mib = |b: u64| b as f64 / (1u64 << 20) as f64;
-    format!("{label}: {:.1} MiB is over what {adapter} allows ({:.1} MiB, `{name}`); its size is set by {set_by}", mib(size), mib(limit))
+    format!(
+        "{label}: {:.1} MiB is over what {adapter} allows ({:.1} MiB, `{name}`); its size is set by {set_by}",
+        mib(size),
+        mib(limit)
+    )
 }
 
 /// A buffer whose creation, when the device is out of memory, fails the device naming it
 /// and `doing` (rare creations only: it waits for the error scope).
-fn create_named(gpu: &Gpu, label: &str, size: u64, usage: wgpu::BufferUsages, doing: impl FnOnce() -> String) -> Option<wgpu::Buffer> {
+fn create_named(
+    gpu: &Gpu,
+    label: &str,
+    size: u64,
+    usage: wgpu::BufferUsages,
+    doing: impl FnOnce() -> String,
+) -> Option<wgpu::Buffer> {
     let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-    let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
+    let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage,
+        mapped_at_creation: false,
+    });
     if let Some(e) = pollster::block_on(scope.pop()) {
-        gpu.fail(format!("{label}: the device is out of memory {}: {e}", doing()));
+        gpu.fail(format!(
+            "{label}: the device is out of memory {}: {e}",
+            doing()
+        ));
         return None;
     }
     Some(buf)
@@ -1054,11 +1418,24 @@ pub struct PagedBuffer {
 }
 
 impl PagedBuffer {
-    pub fn new(gpu: &Gpu, label: &'static str, initial: u64, page_max: u64, max: u64, usage: wgpu::BufferUsages) -> Self {
+    pub fn new(
+        gpu: &Gpu,
+        label: &'static str,
+        initial: u64,
+        page_max: u64,
+        max: u64,
+        usage: wgpu::BufferUsages,
+    ) -> Self {
         let first = GrowableBuffer::new(gpu, label, initial, page_max.min(max), usage);
         let page_max = first.max();
         let alloc = RangeAlloc::new(0);
-        Self { pages: vec![(first, alloc)], label, usage, page_max, max }
+        Self {
+            pages: vec![(first, alloc)],
+            label,
+            usage,
+            page_max,
+            max,
+        }
     }
 
     pub fn pages(&self) -> usize {
@@ -1078,7 +1455,13 @@ impl PagedBuffer {
     /// page. Returns the page, the offset in it (in units) and whether that page's buffer is
     /// new or reallocated (bind groups referencing it must be recreated); `None` if `max` is
     /// reached or `n` units exceed a page (the device has failed, naming `limit`).
-    pub fn alloc(&mut self, gpu: &Gpu, n: u32, unit: u64, limit: &str) -> Option<(usize, u32, bool)> {
+    pub fn alloc(
+        &mut self,
+        gpu: &Gpu,
+        n: u32,
+        unit: u64,
+        limit: &str,
+    ) -> Option<(usize, u32, bool)> {
         for (i, (buf, alloc)) in self.pages.iter_mut().enumerate() {
             if let Some((off, grew)) = buf.alloc_within(gpu, alloc, n, unit) {
                 return Some((i, off, grew));
@@ -1088,12 +1471,34 @@ impl PagedBuffer {
         let left = self.max.saturating_sub(held) & !15;
         let bytes = n as u64 * unit;
         if left < 256 || bytes > left.min(self.page_max) {
-            let why = if bytes > self.page_max { format!("{} bytes in one range, more than a page holds ({} MiB)", bytes, self.page_max >> 20) } else { format!("more than {} MiB needed", self.max >> 20) };
-            gpu.fail(format!("{}: {why}; the limit is {}; frames would miss data", self.label, named_limit(gpu, limit)));
+            let why = if bytes > self.page_max {
+                format!(
+                    "{} bytes in one range, more than a page holds ({} MiB)",
+                    bytes,
+                    self.page_max >> 20
+                )
+            } else {
+                format!("more than {} MiB needed", self.max >> 20)
+            };
+            gpu.fail(format!(
+                "{}: {why}; the limit is {}; frames would miss data",
+                self.label,
+                named_limit(gpu, limit)
+            ));
             return None;
         }
         let size = (self.page_max / 4).max(bytes).min(left).min(self.page_max);
-        let mut page = (GrowableBuffer::whole(gpu, self.label, size, self.usage, |size| format!("allocating page {} ({} MiB; {} MiB held)", self.pages.len() + 1, size >> 20, self.size() >> 20))?, RangeAlloc::new(0));
+        let mut page = (
+            GrowableBuffer::whole(gpu, self.label, size, self.usage, |size| {
+                format!(
+                    "allocating page {} ({} MiB; {} MiB held)",
+                    self.pages.len() + 1,
+                    size >> 20,
+                    self.size() >> 20
+                )
+            })?,
+            RangeAlloc::new(0),
+        );
         let (off, _) = page.0.alloc_within(gpu, &mut page.1, n, unit)?;
         self.pages.push(page);
         Some((self.pages.len() - 1, off, true))
@@ -1114,7 +1519,11 @@ pub fn pick_adapter(filter: Option<&str>) -> anyhow::Result<wgpu::Adapter> {
     // Debug object labels go through VK_EXT_debug_utils, whose loader bookkeeping is not
     // safe with several Vulkan instances on threads of one process (thread isolation):
     // it segfaults intermittently. Opt in explicitly when debugging a renderer.
-    desc.flags = if std::env::var_os("MR_GPU_DEBUG").is_some() { wgpu::InstanceFlags::debugging() } else { wgpu::InstanceFlags::empty() };
+    desc.flags = if std::env::var_os("MR_GPU_DEBUG").is_some() {
+        wgpu::InstanceFlags::debugging()
+    } else {
+        wgpu::InstanceFlags::empty()
+    };
     // On DX12 wgpu's indirect-call pass also rewrites indirect draws into the arguments its
     // command signatures read (first_instance as a root constant); without it they draw
     // garbage. Elsewhere it only validates, at a pass per indirect batch.
@@ -1126,11 +1535,17 @@ pub fn pick_adapter(filter: Option<&str>) -> anyhow::Result<wgpu::Adapter> {
     if adapters.is_empty() {
         bail!("no GPU adapters found");
     }
-    let names: Vec<String> = adapters.iter().map(|a| format!("{} ({:?})", a.get_info().name, a.get_info().device_type)).collect();
+    let names: Vec<String> = adapters
+        .iter()
+        .map(|a| format!("{} ({:?})", a.get_info().name, a.get_info().device_type))
+        .collect();
     let adapter = match filter {
         Some(f) => {
             let f = f.to_lowercase();
-            adapters.into_iter().find(|a| a.get_info().name.to_lowercase().contains(&f)).with_context(|| format!("no adapter matching `{f}` among {names:?}"))?
+            adapters
+                .into_iter()
+                .find(|a| a.get_info().name.to_lowercase().contains(&f))
+                .with_context(|| format!("no adapter matching `{f}` among {names:?}"))?
         }
         None => {
             use wgpu::DeviceType::*;
@@ -1151,7 +1566,8 @@ pub fn pick_adapter(filter: Option<&str>) -> anyhow::Result<wgpu::Adapter> {
 /// looked up once per filter per process: what a graph's device offers, for what its
 /// pipeline supports (`mr_components::graph::Checked::narrow`).
 pub fn adapter_features(filter: Option<&str>) -> Option<wgpu::Features> {
-    static SEEN: std::sync::Mutex<Vec<(Option<String>, Option<wgpu::Features>)>> = std::sync::Mutex::new(Vec::new());
+    static SEEN: std::sync::Mutex<Vec<(Option<String>, Option<wgpu::Features>)>> =
+        std::sync::Mutex::new(Vec::new());
     let key = filter.map(str::to_string);
     let mut seen = SEEN.lock().unwrap();
     if let Some((_, f)) = seen.iter().find(|(k, _)| *k == key) {
@@ -1178,18 +1594,38 @@ mod tests {
     #[ignore]
     fn pool_shares_and_refuses() {
         let pool = GpuPool::new(&[]);
-        let plain = GpuNeeds { optional_features: wgpu::Features::TIMESTAMP_QUERY, ..Default::default() };
+        let plain = GpuNeeds {
+            optional_features: wgpu::Features::TIMESTAMP_QUERY,
+            ..Default::default()
+        };
         let a = pool.gpu(0, &plain).unwrap();
         let b = pool.gpu(0, &plain).unwrap();
         assert!(Arc::ptr_eq(&a, &b), "equal needs share the device");
-        let more = GpuNeeds { required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE, ..plain.clone() };
+        let more = GpuNeeds {
+            required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE,
+            ..plain.clone()
+        };
         if a.lacks(&more).is_some() {
-            assert!(!Arc::ptr_eq(&a, &pool.gpu(0, &more).unwrap()), "needs the device lacks get another device");
+            assert!(
+                !Arc::ptr_eq(&a, &pool.gpu(0, &more).unwrap()),
+                "needs the device lacks get another device"
+            );
         }
         let fixed = GpuPool::fixed(vec![a.clone()]);
-        assert!(Arc::ptr_eq(&a, &fixed.gpu(0, &GpuNeeds::default()).unwrap()));
-        let rt = GpuNeeds { experimental: true, required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY, ..Default::default() };
-        let err = fixed.gpu(0, &rt).err().expect("a fixed pool cannot open a device").to_string();
+        assert!(Arc::ptr_eq(
+            &a,
+            &fixed.gpu(0, &GpuNeeds::default()).unwrap()
+        ));
+        let rt = GpuNeeds {
+            experimental: true,
+            required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY,
+            ..Default::default()
+        };
+        let err = fixed
+            .gpu(0, &rt)
+            .err()
+            .expect("a fixed pool cannot open a device")
+            .to_string();
         assert!(err.contains("no handed-in GPU device serves"), "{err}");
         assert!(fixed.gpu(1, &plain).is_err(), "no device in slot 1");
     }
@@ -1198,13 +1634,40 @@ mod tests {
     /// `webgpu` every limit but the ray-query ones; anything else is refused by name.
     #[test]
     fn limits_clamped() {
-        let big = wgpu::Limits { max_storage_buffer_binding_size: 2 << 30, max_storage_buffers_per_shader_stage: 64, max_tlas_instance_count: 1000, ..wgpu::Limits::defaults().using_resolution(wgpu::Limits { max_texture_dimension_2d: 32768, ..Default::default() }) };
+        let big = wgpu::Limits {
+            max_storage_buffer_binding_size: 2 << 30,
+            max_storage_buffers_per_shader_stage: 64,
+            max_tlas_instance_count: 1000,
+            ..wgpu::Limits::defaults().using_resolution(wgpu::Limits {
+                max_texture_dimension_2d: 32768,
+                ..Default::default()
+            })
+        };
         assert_eq!(clamped_limits(None, &big).unwrap(), big);
         let sizes = clamped_limits(Some("sizes"), &big).unwrap();
-        assert_eq!((sizes.max_storage_buffer_binding_size, sizes.max_texture_dimension_2d, sizes.max_storage_buffers_per_shader_stage), (128 << 20, 8192, 64));
+        assert_eq!(
+            (
+                sizes.max_storage_buffer_binding_size,
+                sizes.max_texture_dimension_2d,
+                sizes.max_storage_buffers_per_shader_stage
+            ),
+            (128 << 20, 8192, 64)
+        );
         let web = clamped_limits(Some("webgpu"), &big).unwrap();
-        assert_eq!((web.max_storage_buffer_binding_size, web.max_storage_buffers_per_shader_stage, web.max_tlas_instance_count), (128 << 20, 8, 1000));
-        assert!(clamped_limits(Some("tiny"), &big).unwrap_err().to_string().contains("tiny"));
+        assert_eq!(
+            (
+                web.max_storage_buffer_binding_size,
+                web.max_storage_buffers_per_shader_stage,
+                web.max_tlas_instance_count
+            ),
+            (128 << 20, 8, 1000)
+        );
+        assert!(
+            clamped_limits(Some("tiny"), &big)
+                .unwrap_err()
+                .to_string()
+                .contains("tiny")
+        );
     }
 
     /// A storage buffer over the device's binding limit fails the device naming the label,
@@ -1215,13 +1678,27 @@ mod tests {
     fn storage_over_the_limit_fails_by_name() {
         let gpu = GpuPool::new(&[]).gpu(0, &GpuNeeds::default()).unwrap();
         let limit = gpu.device.limits().max_storage_buffer_binding_size;
-        let ok = gpu.storage("small", 1000, wgpu::BufferUsages::STORAGE, || unreachable!());
+        let ok = gpu.storage(
+            "small",
+            1000,
+            wgpu::BufferUsages::STORAGE,
+            || unreachable!(),
+        );
         assert_eq!(ok.size(), 1000);
         assert!(gpu.check().is_ok());
-        let big = gpu.storage("test buffer", limit + 16, wgpu::BufferUsages::STORAGE, || "the test's knob".into());
+        let big = gpu.storage(
+            "test buffer",
+            limit + 16,
+            wgpu::BufferUsages::STORAGE,
+            || "the test's knob".into(),
+        );
         assert_eq!(big.size(), 16);
         let e = gpu.check().unwrap_err().to_string();
-        for want in ["test buffer", "max_storage_buffer_binding_size", "the test's knob"] {
+        for want in [
+            "test buffer",
+            "max_storage_buffer_binding_size",
+            "the test's knob",
+        ] {
             assert!(e.contains(want), "{e} lacks {want}");
         }
     }
@@ -1234,15 +1711,29 @@ mod tests {
         let gpu = GpuPool::new(&[]).gpu(0, &GpuNeeds::default()).unwrap();
         let size = 64 << 20;
         let before = gpu.allocated_bytes();
-        let buf = gpu.storage("measured", size, wgpu::BufferUsages::STORAGE, || unreachable!());
+        let buf = gpu.storage(
+            "measured",
+            size,
+            wgpu::BufferUsages::STORAGE,
+            || unreachable!(),
+        );
         let during = gpu.allocated_bytes();
         if during == 0 {
             return;
         }
-        assert!(during >= before + size, "{before} -> {during} after {size} bytes");
+        assert!(
+            during >= before + size,
+            "{before} -> {during} after {size} bytes"
+        );
         drop(buf);
-        gpu.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        assert!(gpu.allocated_bytes() < during, "still {} after the drop", gpu.allocated_bytes());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        assert!(
+            gpu.allocated_bytes() < during,
+            "still {} after the drop",
+            gpu.allocated_bytes()
+        );
     }
 
     /// The peak keeps a buffer sampled while held after it is dropped, and a growth's old
@@ -1253,29 +1744,57 @@ mod tests {
     fn peak_keeps_what_was_freed() {
         let gpu = GpuPool::new(&[]).gpu(0, &GpuNeeds::default()).unwrap();
         let size = 64 << 20;
-        let buf = gpu.storage("transient", size, wgpu::BufferUsages::STORAGE, || unreachable!());
+        let buf = gpu.storage(
+            "transient",
+            size,
+            wgpu::BufferUsages::STORAGE,
+            || unreachable!(),
+        );
         let during = gpu.allocated_bytes();
         if during == 0 {
             return;
         }
         drop(buf);
-        gpu.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
         let after = gpu.allocated_bytes();
         assert!(after + size <= during, "{during} -> {after}");
-        assert!(gpu.peak_allocated_bytes() >= during, "peak {} under {during}", gpu.peak_allocated_bytes());
+        assert!(
+            gpu.peak_allocated_bytes() >= during,
+            "peak {} under {during}",
+            gpu.peak_allocated_bytes()
+        );
 
         // A growth from 32 to 64 MiB holds 96 at once; the device then holds 64.
-        let mut grow = GrowableBuffer::new(&gpu, "grown", 32 << 20, 64 << 20, wgpu::BufferUsages::STORAGE);
+        let mut grow = GrowableBuffer::new(
+            &gpu,
+            "grown",
+            32 << 20,
+            64 << 20,
+            wgpu::BufferUsages::STORAGE,
+        );
         let base = gpu.allocated_bytes();
         assert_eq!(grow.reserve(&gpu, 64 << 20, "test"), Some(true));
-        assert!(gpu.allocated_bytes() < base + (64 << 20), "the old buffer still held: {base} -> {}", gpu.allocated_bytes());
-        assert!(gpu.alloc_peak().get() >= base + (64 << 20), "growth peak {} from {base}", gpu.alloc_peak().get());
+        assert!(
+            gpu.allocated_bytes() < base + (64 << 20),
+            "the old buffer still held: {base} -> {}",
+            gpu.allocated_bytes()
+        );
+        assert!(
+            gpu.alloc_peak().get() >= base + (64 << 20),
+            "growth peak {} from {base}",
+            gpu.alloc_peak().get()
+        );
 
         // Budgeted: a sample defers the next by a hundred times its cost.
         let fresh = AllocPeak::new(&gpu.device, Default::default());
         fresh.sample_budgeted();
         assert!(fresh.get() > 0);
-        assert!(*fresh.0.next.lock().unwrap() > std::time::Instant::now(), "no deferral after a sample");
+        assert!(
+            *fresh.0.next.lock().unwrap() > std::time::Instant::now(),
+            "no deferral after a sample"
+        );
     }
 
     /// A growable buffer grows to its maximum, holds what fits, and fails the device (never
@@ -1289,14 +1808,19 @@ mod tests {
         let mut alloc = RangeAlloc::new(0);
         let mut got = 0;
         while got < 62 {
-            let (off, _) = buf.alloc(&gpu, &mut alloc, 2, 16, "`test_mb`").expect("fits");
+            let (off, _) = buf
+                .alloc(&gpu, &mut alloc, 2, 16, "`test_mb`")
+                .expect("fits");
             assert_eq!(off, got);
             got += 2;
         }
         assert!(buf.size() <= 1000 && gpu.check().is_ok());
         assert!(buf.alloc(&gpu, &mut alloc, 2, 16, "`test_mb`").is_none());
         let err = gpu.check().unwrap_err().to_string();
-        assert!(err.contains("test data") && err.contains("`test_mb`"), "{err}");
+        assert!(
+            err.contains("test data") && err.contains("`test_mb`"),
+            "{err}"
+        );
         // The first failure stays.
         gpu.fail("later");
         assert_eq!(gpu.check().unwrap_err().to_string(), err);
@@ -1309,21 +1833,40 @@ mod tests {
     fn paged_buffer_adds_pages() {
         let gpu = GpuPool::new(&[]).gpu(0, &GpuNeeds::default()).unwrap();
         // Pages of 256 bytes (16 units of 16), four of them at most.
-        let mut buf = PagedBuffer::new(&gpu, "test pages", 64, 256, 1024, wgpu::BufferUsages::STORAGE);
+        let mut buf = PagedBuffer::new(
+            &gpu,
+            "test pages",
+            64,
+            256,
+            1024,
+            wgpu::BufferUsages::STORAGE,
+        );
         let mut got = vec![];
         for _ in 0..12 {
             let (page, off, _) = buf.alloc(&gpu, 5, 16, "`test_mb`").expect("fits");
             got.push((page, off));
         }
         // Three ranges of 5 per page (15 of 16 units), no range across pages.
-        assert_eq!(got.iter().filter(|g| g.0 == 0).map(|g| g.1).collect::<Vec<_>>(), [0, 5, 10]);
+        assert_eq!(
+            got.iter()
+                .filter(|g| g.0 == 0)
+                .map(|g| g.1)
+                .collect::<Vec<_>>(),
+            [0, 5, 10]
+        );
         assert_eq!((buf.pages(), got[11]), (4, (3, 10)));
         assert!(gpu.check().is_ok());
         // A freed range in an earlier page is used before failing.
         buf.free(1, 5, 5);
-        assert_eq!(buf.alloc(&gpu, 4, 16, "`test_mb`").map(|r| (r.0, r.1)), Some((1, 5)));
+        assert_eq!(
+            buf.alloc(&gpu, 4, 16, "`test_mb`").map(|r| (r.0, r.1)),
+            Some((1, 5))
+        );
         assert!(buf.alloc(&gpu, 5, 16, "`test_mb`").is_none());
         let err = gpu.check().unwrap_err().to_string();
-        assert!(err.contains("test pages") && err.contains("`test_mb`"), "{err}");
+        assert!(
+            err.contains("test pages") && err.contains("`test_mb`"),
+            "{err}"
+        );
     }
 }

@@ -47,7 +47,9 @@ impl Builder {
 
     /// A texture with coverage: `f` gives colour and alpha; all-opaque keeps `alpha` empty.
     fn tex_alpha(&mut self, name: &str, f: impl Fn(usize, usize, u64) -> (Rgb, f32)) -> u16 {
-        let seed = name.bytes().fold(0u64, |a, b| a.wrapping_mul(131).wrapping_add(b as u64));
+        let seed = name
+            .bytes()
+            .fold(0u64, |a, b| a.wrapping_mul(131).wrapping_add(b as u64));
         let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
         let (texels, mut alpha): (Vec<[u8; 4]>, Vec<u8>) = (0..TEX_SIZE * TEX_SIZE)
             .map(|i| {
@@ -59,12 +61,20 @@ impl Builder {
         if alpha.iter().all(|&a| a == 255) {
             alpha.clear();
         }
-        self.reg.textures.push(Texture { name: name.into(), texels, alpha });
+        self.reg.textures.push(Texture {
+            name: name.into(),
+            texels,
+            alpha,
+        });
         (self.reg.textures.len() - 1) as u16
     }
 
     fn block(&mut self, name: &str, faces: [u16; 6]) -> BlockId {
-        self.reg.blocks.push(BlockType { name: name.into(), faces, class: BlockClass::Opaque });
+        self.reg.blocks.push(BlockType {
+            name: name.into(),
+            faces,
+            class: BlockClass::Opaque,
+        });
         BlockId((self.reg.blocks.len() - 1) as u16)
     }
 
@@ -92,8 +102,16 @@ fn mul(c: Rgb, k: f32) -> Rgb {
 
 /// The default block set. Ids match [`blocks`].
 pub fn default_registry() -> BlockRegistry {
-    let mut b = Builder { reg: BlockRegistry::default() };
-    let missing = b.tex("missing", |x, y, _| if (x / 4 + y / 4) % 2 == 0 { [1.0, 0.0, 1.0] } else { [0.0; 3] });
+    let mut b = Builder {
+        reg: BlockRegistry::default(),
+    };
+    let missing = b.tex("missing", |x, y, _| {
+        if (x / 4 + y / 4) % 2 == 0 {
+            [1.0, 0.0, 1.0]
+        } else {
+            [0.0; 3]
+        }
+    });
     b.block("air", [missing; 6]);
 
     let stone = b.tex("stone", speckle([0.50, 0.50, 0.52], 0.15));
@@ -102,31 +120,66 @@ pub fn default_registry() -> BlockRegistry {
     let grass_side = b.tex("grass_side", |_, y, h| {
         let k = 1.0 + (unit(h) - 0.5) * 0.35;
         let edge = 3 + (h % 3) as usize;
-        if y < edge { mul([0.35, 0.62, 0.25], k) } else { mul([0.47, 0.33, 0.22], k) }
+        if y < edge {
+            mul([0.35, 0.62, 0.25], k)
+        } else {
+            mul([0.47, 0.33, 0.22], k)
+        }
     });
     let sand = b.tex("sand", speckle([0.86, 0.80, 0.58], 0.08));
     let log_top = b.tex("log_top", |x, y, h| {
         let d = ((x as f32 - 7.5).powi(2) + (y as f32 - 7.5).powi(2)).sqrt();
         let ring = if (d as i32) % 3 == 0 { 0.8 } else { 1.0 };
-        if d > 7.0 { [0.35, 0.25, 0.15] } else { mul([0.72, 0.58, 0.38], ring * (0.95 + unit(h) * 0.1)) }
+        if d > 7.0 {
+            [0.35, 0.25, 0.15]
+        } else {
+            mul([0.72, 0.58, 0.38], ring * (0.95 + unit(h) * 0.1))
+        }
     });
-    let bark = b.tex("bark", |x, _, h| mul([0.40, 0.29, 0.17], if x % 4 == 0 { 0.7 } else { 0.9 + unit(h) * 0.2 }));
-    let leaves = b.tex("leaves", |_, _, h| if unit(h) < 0.15 { [0.10, 0.25, 0.08] } else { mul([0.22, 0.52, 0.18], 0.8 + unit(h >> 8) * 0.4) });
+    let bark = b.tex("bark", |x, _, h| {
+        mul(
+            [0.40, 0.29, 0.17],
+            if x % 4 == 0 { 0.7 } else { 0.9 + unit(h) * 0.2 },
+        )
+    });
+    let leaves = b.tex("leaves", |_, _, h| {
+        if unit(h) < 0.15 {
+            [0.10, 0.25, 0.08]
+        } else {
+            mul([0.22, 0.52, 0.18], 0.8 + unit(h >> 8) * 0.4)
+        }
+    });
     let planks = b.tex("planks", |x, y, h| {
         let seam = y % 4 == 3 || (x + (y / 4) * 5) % 16 == 0;
-        mul([0.70, 0.54, 0.32], if seam { 0.65 } else { 0.92 + unit(h) * 0.12 })
+        mul(
+            [0.70, 0.54, 0.32],
+            if seam { 0.65 } else { 0.92 + unit(h) * 0.12 },
+        )
     });
     let bricks = b.tex("bricks", |x, y, h| {
         let offset = if (y / 4) % 2 == 0 { 0 } else { 4 };
         let mortar = y % 4 == 3 || (x + offset) % 8 == 7;
-        if mortar { [0.75, 0.73, 0.70] } else { mul([0.62, 0.25, 0.20], 0.9 + unit(h) * 0.2) }
+        if mortar {
+            [0.75, 0.73, 0.70]
+        } else {
+            mul([0.62, 0.25, 0.20], 0.9 + unit(h) * 0.2)
+        }
     });
     let snow = b.tex("snow", speckle([0.95, 0.96, 0.98], 0.03));
-    let gravel = b.tex("gravel", |_, _, h| mul([0.55, 0.52, 0.50], 0.6 + unit(h) * 0.6));
+    let gravel = b.tex("gravel", |_, _, h| {
+        mul([0.55, 0.52, 0.50], 0.6 + unit(h) * 0.6)
+    });
     let cobble = b.tex("cobble", |x, y, h| {
         let cell = hash3(7, (x / 5) as i32, (y / 5) as i32, 0);
         let edge = x % 5 == 0 || y % 5 == 0;
-        mul([0.48, 0.48, 0.48], if edge { 0.6 } else { 0.8 + unit(cell) * 0.3 + unit(h) * 0.1 })
+        mul(
+            [0.48, 0.48, 0.48],
+            if edge {
+                0.6
+            } else {
+                0.8 + unit(cell) * 0.3 + unit(h) * 0.1
+            },
+        )
     });
     let white = b.tex("white", speckle([0.85, 0.85, 0.85], 0.03));
     let red = b.tex("red", speckle([0.80, 0.12, 0.10], 0.03));
@@ -143,7 +196,13 @@ pub fn default_registry() -> BlockRegistry {
             [x as f32 / 15.0, y as f32 / 15.0, i as f32 / 5.0]
         });
     }
-    let ore = b.tex("ore", |_, _, h| if unit(h) < 0.12 { [0.9, 0.75, 0.2] } else { mul([0.50, 0.50, 0.52], 0.85 + unit(h >> 8) * 0.3) });
+    let ore = b.tex("ore", |_, _, h| {
+        if unit(h) < 0.12 {
+            [0.9, 0.75, 0.2]
+        } else {
+            mul([0.50, 0.50, 0.52], 0.85 + unit(h >> 8) * 0.3)
+        }
+    });
     let glow = b.tex("glow", |x, y, h| {
         let c = (x as i32 - 8).abs().max((y as i32 - 8).abs()) as f32 / 8.0;
         mul([1.0, 0.85, 0.45], 1.0 - c * 0.3 + unit(h) * 0.05)
@@ -151,7 +210,12 @@ pub fn default_registry() -> BlockRegistry {
 
     b.cube("stone", stone);
     b.cube("dirt", dirt);
-    b.block("grass", [grass_side, grass_side, grass_top, dirt, grass_side, grass_side]);
+    b.block(
+        "grass",
+        [
+            grass_side, grass_side, grass_top, dirt, grass_side, grass_side,
+        ],
+    );
     b.cube("sand", sand);
     b.block("log", [bark, bark, log_top, log_top, bark, bark]);
     b.cube("leaves", leaves);
@@ -173,7 +237,14 @@ pub fn default_registry() -> BlockRegistry {
     let glass = b.tex_alpha("glass", |x, y, h| {
         let frame = x == 0 || y == 0 || x == TEX_SIZE - 1 || y == TEX_SIZE - 1;
         let streak = (x + y) % 7 == 0;
-        if frame { ([0.80, 0.86, 0.90], 0.85) } else { (mul([0.85, 0.93, 0.97], 0.97 + unit(h) * 0.06), if streak { 0.35 } else { 0.18 }) }
+        if frame {
+            ([0.80, 0.86, 0.90], 0.85)
+        } else {
+            (
+                mul([0.85, 0.93, 0.97], 0.97 + unit(h) * 0.06),
+                if streak { 0.35 } else { 0.18 },
+            )
+        }
     });
     let stained = |c: Rgb| move |_: usize, _: usize, h: u64| (mul(c, 0.95 + unit(h) * 0.1), 0.55);
     let glass_red = b.tex_alpha("glass_red", stained([0.85, 0.15, 0.12]));
@@ -181,7 +252,10 @@ pub fn default_registry() -> BlockRegistry {
     let glass_blue = b.tex_alpha("glass_blue", stained([0.15, 0.30, 0.90]));
     let grate = b.tex_alpha("grate", |x, y, h| {
         let bar = x % 4 == 0 || y % 4 == 0;
-        (mul([0.42, 0.44, 0.47], 0.85 + unit(h) * 0.3), if bar { 1.0 } else { 0.0 })
+        (
+            mul([0.42, 0.44, 0.47], 0.85 + unit(h) * 0.3),
+            if bar { 1.0 } else { 0.0 },
+        )
     });
     b.see_through("glass", glass, BlockClass::Translucent);
     b.see_through("glass_red", glass_red, BlockClass::Translucent);
@@ -215,7 +289,12 @@ mod tests {
             for f in b.faces {
                 let t = &r.textures[f as usize];
                 assert!(t.texels.iter().all(|p| p[3] == 255), "{}", t.name);
-                assert_eq!(t.alpha.is_empty(), b.class == BlockClass::Opaque, "{}", t.name);
+                assert_eq!(
+                    t.alpha.is_empty(),
+                    b.class == BlockClass::Opaque,
+                    "{}",
+                    t.name
+                );
                 if b.class == BlockClass::Cutout {
                     assert!(t.alpha.iter().all(|&a| a == 0 || a == 255), "{}", t.name);
                 }
@@ -252,7 +331,10 @@ mod tests {
         assert!(r.chunk_see_through(&dense(7, blocks::GLASS)));
         assert!(!r.chunk_see_through(&dense(7, blocks::GLASS_RED)));
         r.blocks[blocks::GRATE.0 as usize].class = BlockClass::Cutout;
-        assert!(!r.chunk_see_through(&dense(7, blocks::GLASS_RED)), "an opaque id between see-through ones");
+        assert!(
+            !r.chunk_see_through(&dense(7, blocks::GLASS_RED)),
+            "an opaque id between see-through ones"
+        );
         assert!(r.chunk_see_through(&dense(7, blocks::GRATE)));
     }
 }

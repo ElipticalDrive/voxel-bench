@@ -25,7 +25,11 @@ pub fn faces_wgsl(varyings: bool) -> String {
 /// (entry `decode`, expecting the back end's `record_store`).
 pub fn target_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {
-        "visbuffer" => concat!(include_str!("visbuffer/gpu.wgsl"), "\n", include_str!("visbuffer/decode.wgsl")),
+        "visbuffer" => concat!(
+            include_str!("visbuffer/gpu.wgsl"),
+            "\n",
+            include_str!("visbuffer/decode.wgsl")
+        ),
         "gbuffer" => include_str!("gbuffer/gpu.wgsl"),
         _ => return None,
     })

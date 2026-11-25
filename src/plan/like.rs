@@ -32,12 +32,19 @@ pub struct Leaves {
 impl Leaves {
     /// What a pipeline with `features` leaves out of a pass of mode `m` over a world asking
     /// `world`.
-    pub fn of(features: &mr_core::Features, m: Option<PassMode>, world: &[mr_core::Feature]) -> Self {
+    pub fn of(
+        features: &mr_core::Features,
+        m: Option<PassMode>,
+        world: &[mr_core::Feature],
+    ) -> Self {
         use mr_core::Feature;
         let lit_meshes = m.is_some_and(|m| m.lighting == mr_core::RenderMode::Lit && m.meshes);
         Leaves {
-            mesh_rays: lit_meshes && features.has(Feature::Meshes) && !features.has(Feature::MeshRays),
-            transparency: world.contains(&Feature::Transparency) && !features.has(Feature::Transparency),
+            mesh_rays: lit_meshes
+                && features.has(Feature::Meshes)
+                && !features.has(Feature::MeshRays),
+            transparency: world.contains(&Feature::Transparency)
+                && !features.has(Feature::Transparency),
             volume: !features.has(Feature::Volume),
         }
     }
@@ -57,10 +64,29 @@ pub enum Lighting {
 impl Like {
     /// The class of a client's region, if it differs from the full-resolution reference's
     /// (the run's radius at LOD 0).
-    pub fn of(region: &crate::stream::Region, lighting: Lighting, leaves: Leaves, run: &RunSpec) -> Option<Self> {
+    pub fn of(
+        region: &crate::stream::Region,
+        lighting: Lighting,
+        leaves: Leaves,
+        run: &RunSpec,
+    ) -> Option<Self> {
         // Without coarse levels it does not matter how they would be made.
-        let levels = if region.max_lod > 0 { region.levels } else { Default::default() };
-        (region.max_lod > 0 || region.radius != run.view_radius || lighting != Lighting::Direct || leaves != Leaves::default()).then_some(Self { radius: region.radius, max_lod: region.max_lod, levels, lighting, leaves })
+        let levels = if region.max_lod > 0 {
+            region.levels
+        } else {
+            Default::default()
+        };
+        (region.max_lod > 0
+            || region.radius != run.view_radius
+            || lighting != Lighting::Direct
+            || leaves != Leaves::default())
+        .then_some(Self {
+            radius: region.radius,
+            max_lod: region.max_lod,
+            levels,
+            lighting,
+            leaves,
+        })
     }
 }
 

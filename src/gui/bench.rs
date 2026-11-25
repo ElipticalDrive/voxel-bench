@@ -20,7 +20,8 @@ pub struct BenchRun {
 
 impl BenchRun {
     pub fn start(plan: &Plan, overrides: &[String]) -> anyhow::Result<Self> {
-        let dir = PathBuf::from(plan.output.dir.clone().unwrap_or_else(|| "runs".into())).join(".gui");
+        let dir =
+            PathBuf::from(plan.output.dir.clone().unwrap_or_else(|| "runs".into())).join(".gui");
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{}.toml", crate::session::sanitize(&plan.name)));
         std::fs::write(&path, plan.to_toml()?)?;
@@ -33,9 +34,15 @@ impl BenchRun {
             .stderr(Stdio::piped())
             .env("NO_COLOR", "1")
             .spawn()?;
-        let lines = Arc::new(Mutex::new(vec![format!("$ multirenderer run {}", path.display())]));
+        let lines = Arc::new(Mutex::new(vec![format!(
+            "$ multirenderer run {}",
+            path.display()
+        )]));
         let report = Arc::new(Mutex::new(None));
-        for stream in [Box::new(child.stdout.take().unwrap()) as Box<dyn std::io::Read + Send>, Box::new(child.stderr.take().unwrap())] {
+        for stream in [
+            Box::new(child.stdout.take().unwrap()) as Box<dyn std::io::Read + Send>,
+            Box::new(child.stderr.take().unwrap()),
+        ] {
             let (lines, report) = (lines.clone(), report.clone());
             std::thread::spawn(move || {
                 for line in BufReader::new(stream).lines().map_while(Result::ok) {
@@ -47,14 +54,23 @@ impl BenchRun {
                 }
             });
         }
-        Ok(Self { lines, report, child, finished: false })
+        Ok(Self {
+            lines,
+            report,
+            child,
+            finished: false,
+        })
     }
 
     /// Returns true once the child process has exited.
     pub fn poll(&mut self) -> bool {
         if !self.finished
-            && let Ok(Some(status)) = self.child.try_wait() {
-            self.lines.lock().unwrap().push(format!("(benchmark exited: {status})"));
+            && let Ok(Some(status)) = self.child.try_wait()
+        {
+            self.lines
+                .lock()
+                .unwrap()
+                .push(format!("(benchmark exited: {status})"));
             self.finished = true;
         }
         self.finished
@@ -98,7 +114,10 @@ pub struct Report {
 pub fn load_report(path: &Path) -> anyhow::Result<Report> {
     let v: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
     let passes = v.as_array().cloned().unwrap_or_default();
-    Ok(Report { path: path.to_path_buf(), passes })
+    Ok(Report {
+        path: path.to_path_buf(),
+        passes,
+    })
 }
 
 /// `runs/*/report.json`, newest first.
@@ -126,12 +145,41 @@ fn f(v: &Value, path: &[&str]) -> Option<f64> {
 pub fn report_ui(ui: &mut Ui, r: &Report) {
     ui.horizontal(|ui| {
         ui.label(r.path.display().to_string());
-        if ui.small_button("open folder").on_hover_text("Open the run directory (report.json, CSVs, saved frames) in the file manager").clicked()
-            && let Some(d) = r.path.parent() {
-            let _ = Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(d).spawn();
+        if ui
+            .small_button("open folder")
+            .on_hover_text(
+                "Open the run directory (report.json, CSVs, saved frames) in the file manager",
+            )
+            .clicked()
+            && let Some(d) = r.path.parent()
+        {
+            let _ = Command::new(if cfg!(windows) {
+                "explorer"
+            } else {
+                "xdg-open"
+            })
+            .arg(d)
+            .spawn();
         }
     });
-    let cols = ["renderer", "mode", "fps", "frame ms", "p99 ms", "gpu ms", "cpu ms", "latency ms", "PSNR", "settled dB", "bad %", "init ms", "shaders ms", "RSS MB", "GPU MB", "device MB"];
+    let cols = [
+        "renderer",
+        "mode",
+        "fps",
+        "frame ms",
+        "p99 ms",
+        "gpu ms",
+        "cpu ms",
+        "latency ms",
+        "PSNR",
+        "settled dB",
+        "bad %",
+        "init ms",
+        "shaders ms",
+        "RSS MB",
+        "GPU MB",
+        "device MB",
+    ];
     egui::ScrollArea::horizontal().id_salt("report-table").show(ui, |ui| {
         egui::Grid::new("report").striped(true).show(ui, |ui| {
             for c in cols {
@@ -205,11 +253,22 @@ pub fn report_ui(ui: &mut Ui, r: &Report) {
     let bars: Vec<egui_plot::Bar> = r
         .passes
         .iter()
-        .filter(|p| !p.get("label").and_then(|l| l.as_str()).unwrap_or("").ends_with("(ref)"))
+        .filter(|p| {
+            !p.get("label")
+                .and_then(|l| l.as_str())
+                .unwrap_or("")
+                .ends_with("(ref)")
+        })
         .enumerate()
         .map(|(i, p)| {
-            let name = format!("{} {}", p.get("label").and_then(|x| x.as_str()).unwrap_or("?"), p.get("mode").and_then(|x| x.as_str()).unwrap_or(""));
-            egui_plot::Bar::new(i as f64, f(p, &["fps"]).unwrap_or(0.0)).name(name).width(0.7)
+            let name = format!(
+                "{} {}",
+                p.get("label").and_then(|x| x.as_str()).unwrap_or("?"),
+                p.get("mode").and_then(|x| x.as_str()).unwrap_or("")
+            );
+            egui_plot::Bar::new(i as f64, f(p, &["fps"]).unwrap_or(0.0))
+                .name(name)
+                .width(0.7)
         })
         .collect();
     egui_plot::Plot::new(("fps-bars", r.path.display().to_string()))

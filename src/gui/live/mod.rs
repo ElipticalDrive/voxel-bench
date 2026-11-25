@@ -17,7 +17,10 @@ use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender};
 use glam::{DVec3, Vec3};
-use mr_core::{BlockId, BlockRegistry, Camera, Environment, FrameRequest, Light, MeshData, MeshInstance, MeshUpdate, ParamSpec, ParamValue, PassMode, RendererInfo, WorldUpdate};
+use mr_core::{
+    BlockId, BlockRegistry, Camera, Environment, FrameRequest, Light, MeshData, MeshInstance,
+    MeshUpdate, ParamSpec, ParamValue, PassMode, RendererInfo, WorldUpdate,
+};
 use mr_ipc::HostMsg;
 use mr_world::{Scene, World};
 
@@ -58,25 +61,51 @@ pub struct Control {
 }
 
 pub enum Cmd {
-    Edit { origin: DVec3, dir: Vec3, place: Option<BlockId> },
-    AddLight { position: DVec3, color: Vec3, intensity: f32, radius: f32 },
+    Edit {
+        origin: DVec3,
+        dir: Vec3,
+        place: Option<BlockId>,
+    },
+    AddLight {
+        position: DVec3,
+        color: Vec3,
+        intensity: f32,
+        radius: f32,
+    },
     ClearUserLights,
     /// Change one knob (renderer parameter or `host.*`). Restart-only ones hot-swap.
-    SetParam { lane: usize, name: String, value: ParamValue },
+    SetParam {
+        lane: usize,
+        name: String,
+        value: ParamValue,
+    },
     /// A graph edit the lane takes while running (`graph::live_edits`): the spec it then
     /// runs (its worker is sent the graph's edits), and the knobs of the nodes replaced, each
     /// sent even where the lane has that value already.
-    Edits { lane: usize, spec: RendererSpec, knobs: Vec<(String, ParamValue)> },
+    Edits {
+        lane: usize,
+        spec: RendererSpec,
+        knobs: Vec<(String, ParamValue)>,
+    },
     /// Restart a lane with the plan's spec for it (a hot swap), keeping the knob values
     /// changed since that the plan's spec leaves as it was ([`keep_knobs`]).
-    Restart { lane: usize, spec: RendererSpec },
+    Restart {
+        lane: usize,
+        spec: RendererSpec,
+    },
     /// Hot-swap a lane to a spec made from its running one (a graph edit).
-    Swap { lane: usize, spec: RendererSpec },
+    Swap {
+        lane: usize,
+        spec: RendererSpec,
+    },
     AddLane(RendererSpec),
     RemoveLane(usize),
     /// Quality probe that also keeps the images (for the Compare tab).
     Compare,
-    Tune { lane: usize, config: Option<TunerConfig> },
+    Tune {
+        lane: usize,
+        config: Option<TunerConfig>,
+    },
     Stop,
 }
 
@@ -176,7 +205,9 @@ impl LaneView {
     /// What its failure and its knobs refused in the last `EVENT_SECS` (as long as its tile
     /// shows them) say about its graph's nodes (`graph::model::faults`).
     pub fn faults(&self, now: f64) -> BTreeMap<String, Vec<String>> {
-        let Some(g) = crate::gui::graph::model::graph_of(&self.spec) else { return Default::default() };
+        let Some(g) = crate::gui::graph::model::graph_of(&self.spec) else {
+            return Default::default();
+        };
         let failure = match &self.status {
             LaneStatus::Failed(m) => Some(m.as_str()),
             _ => None,
@@ -185,7 +216,11 @@ impl LaneView {
             .events
             .iter()
             .filter(|(t, _)| now - t < crate::gui::metrics::EVENT_SECS)
-            .filter_map(|(_, e)| e.strip_prefix("refused ")?.split_once(": ").map(|(n, e)| (n.to_string(), e.to_string())))
+            .filter_map(|(_, e)| {
+                e.strip_prefix("refused ")?
+                    .split_once(": ")
+                    .map(|(n, e)| (n.to_string(), e.to_string()))
+            })
             .collect();
         let params: Vec<ParamSpec> = self.params.iter().map(|(s, _)| s.clone()).collect();
         crate::gui::graph::model::faults(&g, failure, &refused, &params)
@@ -202,7 +237,11 @@ impl LaneView {
             (o, n) => n.or(o),
         };
         for s in frame {
-            match self.stages.iter().position(|o| o.name == s.name && o.nodes == s.nodes) {
+            match self
+                .stages
+                .iter()
+                .position(|o| o.name == s.name && o.nodes == s.nodes)
+            {
                 Some(k) => {
                     let o = &mut self.stages[k];
                     o.cpu_ms = mix(o.cpu_ms, s.cpu_ms);
@@ -335,7 +374,12 @@ impl Carry {
             .map(|v| Carry {
                 given: v.given.clone(),
                 now: v.spec.clone(),
-                host: v.params.iter().filter(|(p, _)| p.name.starts_with("host.") && p.name != "host.max_lod").map(|(p, v)| (p.name.clone(), p.default.clone(), v.clone())).collect(),
+                host: v
+                    .params
+                    .iter()
+                    .filter(|(p, _)| p.name.starts_with("host.") && p.name != "host.max_lod")
+                    .map(|(p, v)| (p.name.clone(), p.default.clone(), v.clone()))
+                    .collect(),
             })
             .collect()
     }
@@ -355,7 +399,10 @@ pub fn keep_knobs(given: &RendererSpec, now: &RendererSpec, new: RendererSpec) -
         }
     }
     let lod = |s: &RendererSpec| s.client_knob("max_lod");
-    if lod(now) != lod(given) && lod(&new) == lod(given) && kept.set_client_knob("max_lod", lod(now)).is_err() {
+    if lod(now) != lod(given)
+        && lod(&new) == lod(given)
+        && kept.set_client_knob("max_lod", lod(now)).is_err()
+    {
         return new;
     }
     if kept.resolve().is_err() {
@@ -368,9 +415,17 @@ impl LiveHandle {
     /// Starts a session whose lanes take over what `carry` (the previous session's lanes,
     /// [`Carry::of`]) changed: lane `i` from carry `i` when the counts match, else from
     /// the carry given the same spec.
-    pub fn start(plan: Plan, carry: Vec<Carry>, control: Control, repaint: impl Fn() + Send + 'static) -> Self {
+    pub fn start(
+        plan: Plan,
+        carry: Vec<Carry>,
+        control: Control,
+        repaint: impl Fn() + Send + 'static,
+    ) -> Self {
         let control = Arc::new(Mutex::new(control));
-        let shared = Arc::new(Mutex::new(Shared { status: "starting".into(), ..Default::default() }));
+        let shared = Arc::new(Mutex::new(Shared {
+            status: "starting".into(),
+            ..Default::default()
+        }));
         let (cmd, rx) = crossbeam_channel::unbounded();
         let (c, s) = (control.clone(), shared.clone());
         let thread = std::thread::Builder::new()
@@ -388,7 +443,12 @@ impl LiveHandle {
                 sh.finished = true;
             })
             .expect("spawn live session");
-        Self { control, shared, cmd, thread: Some(thread) }
+        Self {
+            control,
+            shared,
+            cmd,
+            thread: Some(thread),
+        }
     }
 
     pub fn send(&self, c: Cmd) {
@@ -458,12 +518,24 @@ struct Runner {
 impl Runner {
     /// Queues the server's messages for its client.
     fn take(&mut self, stream: &[WorldUpdate]) {
-        self.chunks_sent += stream.iter().filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. })).count() as u64;
+        self.chunks_sent += stream
+            .iter()
+            .filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. }))
+            .count() as u64;
         self.pending.extend_from_slice(stream);
     }
 
-    fn submit(&mut self, camera: Camera, mode: PassMode, layers: bool, readback: bool, purpose: Purpose) -> anyhow::Result<bool> {
-        let Some(w) = self.worker.as_mut() else { return Ok(false) };
+    fn submit(
+        &mut self,
+        camera: Camera,
+        mode: PassMode,
+        layers: bool,
+        readback: bool,
+        purpose: Purpose,
+    ) -> anyhow::Result<bool> {
+        let Some(w) = self.worker.as_mut() else {
+            return Ok(false);
+        };
         let slot = if readback {
             match w.take_slot() {
                 Some(s) => Some(s),
@@ -486,8 +558,23 @@ impl Runner {
         }
         let id = self.next_id;
         self.next_id += 1;
-        w.send(HostMsg::Render { req: FrameRequest { frame_id: id, camera, mode: mode.lighting, meshes: mode.meshes, layers, readback: slot.is_some() }, slot, time })?;
-        self.in_flight.push_back(Flight { id, sent: Instant::now(), purpose });
+        w.send(HostMsg::Render {
+            req: FrameRequest {
+                frame_id: id,
+                camera,
+                mode: mode.lighting,
+                meshes: mode.meshes,
+                layers,
+                readback: slot.is_some(),
+            },
+            slot,
+            time,
+        })?;
+        self.in_flight.push_back(Flight {
+            id,
+            sent: Instant::now(),
+            purpose,
+        });
         Ok(true)
     }
 }

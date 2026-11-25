@@ -12,7 +12,11 @@ use serde::{Deserialize, Serialize};
 pub enum Legend {
     /// Each pixel's value through the shared ramp: 0 at the bottom, `max` at the top
     /// (above `max`: white), on a log scale (`log2(1 + v)`) when `log`.
-    Ramp { quantity: String, max: f64, log: bool },
+    Ramp {
+        quantity: String,
+        max: f64,
+        log: bool,
+    },
     /// Fixed colours and what they mean; `None`: a note without a swatch.
     Categories(Vec<(String, Option<[u8; 3]>)>),
 }
@@ -40,13 +44,38 @@ pub struct Quantity {
 
 impl Quantity {
     /// A ramp view's quantity.
-    pub const fn ramp(name: &'static str, about: &'static str, help: &'static str, float: bool, log: bool) -> Self {
-        Self { name, about, help, float, log, categories: &[] }
+    pub const fn ramp(
+        name: &'static str,
+        about: &'static str,
+        help: &'static str,
+        float: bool,
+        log: bool,
+    ) -> Self {
+        Self {
+            name,
+            about,
+            help,
+            float,
+            log,
+            categories: &[],
+        }
     }
 
     /// A category view's quantity.
-    pub const fn categorical(name: &'static str, about: &'static str, help: &'static str, categories: &'static [(&'static str, Option<[u8; 3]>)]) -> Self {
-        Self { name, about, help, float: false, log: false, categories }
+    pub const fn categorical(
+        name: &'static str,
+        about: &'static str,
+        help: &'static str,
+        categories: &'static [(&'static str, Option<[u8; 3]>)],
+    ) -> Self {
+        Self {
+            name,
+            about,
+            help,
+            float: false,
+            log: false,
+            categories,
+        }
     }
 
     /// A category view (else a ramp).
@@ -56,7 +85,11 @@ impl Quantity {
 
     /// Its legend with the scale's top at `max` (`view_max`; ramps only).
     pub fn legend(&self, max: f64) -> Legend {
-        if self.is_categorical() { Legend::categories(self.categories) } else { Legend::ramp(self.about, max, self.log) }
+        if self.is_categorical() {
+            Legend::categories(self.categories)
+        } else {
+            Legend::ramp(self.about, max, self.log)
+        }
     }
 }
 
@@ -71,7 +104,11 @@ pub enum Reading {
 
 impl Legend {
     pub fn ramp(quantity: &str, max: f64, log: bool) -> Self {
-        Legend::Ramp { quantity: quantity.into(), max: max.max(1e-9), log }
+        Legend::Ramp {
+            quantity: quantity.into(),
+            max: max.max(1e-9),
+            log,
+        }
     }
 
     pub fn categories(items: &[(&str, Option<[u8; 3]>)]) -> Self {
@@ -99,7 +136,11 @@ impl Legend {
     /// sRGB colour of value `v` (white above the maximum).
     pub fn color(&self, v: f64) -> [u8; 3] {
         let t = self.position(v);
-        if t > 1.0 { [255; 3] } else { ramp_rgb8(t as f32) }
+        if t > 1.0 {
+            [255; 3]
+        } else {
+            ramp_rgb8(t as f32)
+        }
     }
 
     /// Reads a ramp view's pixel back: the nearest ramp colour (`None` if no ramp colour is
@@ -111,8 +152,14 @@ impl Legend {
         if rgb == [255; 3] {
             return Some(Reading::Over);
         }
-        let d2 = |c: [u8; 3]| (0..3).map(|i| (c[i] as i32 - rgb[i] as i32).pow(2)).sum::<i32>();
-        let (best, dist) = (0..256).map(|i| (i, d2(ramp_rgb8(i as f32 / 255.0)))).min_by_key(|&(_, d)| d)?;
+        let d2 = |c: [u8; 3]| {
+            (0..3)
+                .map(|i| (c[i] as i32 - rgb[i] as i32).pow(2))
+                .sum::<i32>()
+        };
+        let (best, dist) = (0..256)
+            .map(|i| (i, d2(ramp_rgb8(i as f32 / 255.0))))
+            .min_by_key(|&(_, d)| d)?;
         (dist <= 48).then(|| Reading::Value(self.value_at(best as f64 / 255.0)))
     }
 }
@@ -123,7 +170,15 @@ pub fn ramp(t: f32) -> [f32; 3] {
     let x = t.clamp(0.0, 1.0);
     let v4 = [1.0, x, x * x, x * x * x];
     let v2 = [v4[2] * v4[2], v4[3] * v4[2]];
-    let dot = |k4: [f32; 4], k2: [f32; 2]| (k4[0] * v4[0] + k4[1] * v4[1] + k4[2] * v4[2] + k4[3] * v4[3] + k2[0] * v2[0] + k2[1] * v2[1]).clamp(0.0, 1.0);
+    let dot = |k4: [f32; 4], k2: [f32; 2]| {
+        (k4[0] * v4[0]
+            + k4[1] * v4[1]
+            + k4[2] * v4[2]
+            + k4[3] * v4[3]
+            + k2[0] * v2[0]
+            + k2[1] * v2[1])
+            .clamp(0.0, 1.0)
+    };
     [dot(R4, R2), dot(G4, G2), dot(B4, B2)]
 }
 
@@ -173,15 +228,22 @@ mod tests {
     fn ramp_reads_back() {
         let l = Legend::ramp("steps", 1000.0, true);
         for v in [0.0, 3.0, 40.0, 300.0, 999.0] {
-            let Some(Reading::Value(r)) = l.read(l.color(v)) else { panic!("{v}") };
+            let Some(Reading::Value(r)) = l.read(l.color(v)) else {
+                panic!("{v}")
+            };
             // 256 steps over log2(1001) ≈ 10 doublings: within ~3% (+1 near zero).
             assert!((r - v).abs() <= 0.03 * v + 1.0, "{v} read as {r}");
         }
         assert_eq!(l.read(l.color(5000.0)), Some(Reading::Over));
         let lin = Legend::ramp("fragments", 16.0, false);
-        let Some(Reading::Value(r)) = lin.read(lin.color(7.0)) else { panic!() };
+        let Some(Reading::Value(r)) = lin.read(lin.color(7.0)) else {
+            panic!()
+        };
         assert!((r - 7.0).abs() < 0.1, "{r}");
-        assert_eq!(Legend::categories(&[("a", Some([1, 2, 3]))]).read([1, 2, 3]), None);
+        assert_eq!(
+            Legend::categories(&[("a", Some([1, 2, 3]))]).read([1, 2, 3]),
+            None
+        );
         // Near-black, then blue low and dark red at the top.
         assert!(ramp_rgb8(0.0).iter().all(|&c| c < 40));
         assert!(ramp_rgb8(0.1)[2] > ramp_rgb8(0.1)[0] && ramp_rgb8(1.0)[0] > ramp_rgb8(1.0)[2]);

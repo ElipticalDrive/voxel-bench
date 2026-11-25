@@ -80,7 +80,10 @@ impl StageSummary {
         let mut order: Vec<(String, Vec<String>)> = Vec::new();
         let mut times: std::collections::HashMap<(String, Vec<String>), Times> = Default::default();
         for stages in frames {
-            let mut frame: std::collections::HashMap<(String, Vec<String>), (Option<f64>, Option<f64>)> = Default::default();
+            let mut frame: std::collections::HashMap<
+                (String, Vec<String>),
+                (Option<f64>, Option<f64>),
+            > = Default::default();
             for s in stages {
                 let k = (s.name.clone(), s.nodes.clone());
                 if !times.contains_key(&k) {
@@ -106,7 +109,13 @@ impl StageSummary {
             .into_iter()
             .map(|k| {
                 let (c, g) = &times[&k];
-                StageSummary { frames: c.len().max(g.len()), cpu_ms: Summary::of(c.iter().copied()), gpu_ms: Summary::of(g.iter().copied()), name: k.0, nodes: k.1 }
+                StageSummary {
+                    frames: c.len().max(g.len()),
+                    cpu_ms: Summary::of(c.iter().copied()),
+                    gpu_ms: Summary::of(g.iter().copied()),
+                    name: k.0,
+                    nodes: k.1,
+                }
             })
             .collect()
     }
@@ -156,7 +165,10 @@ pub struct PassReport {
     pub resolution: [u32; 2],
     pub init_ms: f32,
     /// The part of `init_ms` spent making shader modules and pipelines (GPU renderers).
-    #[serde(default, skip_serializing_if = "mr_core::shader_clock::ShaderTime::is_zero")]
+    #[serde(
+        default,
+        skip_serializing_if = "mr_core::shader_clock::ShaderTime::is_zero"
+    )]
     pub shaders: mr_core::shader_clock::ShaderTime,
     pub initial_load_ms: f64,
     pub frames: usize,
@@ -236,7 +248,8 @@ impl PassReport {
         self.update_ms = Summary::of(f.iter().map(|r| r.update_ms as f64));
         self.stages = StageSummary::of(f.iter().map(|r| &r.stages[..]));
         let bytes: u64 = f.iter().map(|r| r.arrived_bytes).sum();
-        self.update_ns_per_byte = (bytes > 0).then(|| f.iter().map(|r| r.update_ms as f64).sum::<f64>() * 1e6 / bytes as f64);
+        self.update_ns_per_byte = (bytes > 0)
+            .then(|| f.iter().map(|r| r.update_ms as f64).sum::<f64>() * 1e6 / bytes as f64);
         self.holes = Summary::of(f.iter().map(|r| r.holes as f64));
         self.frames_with_holes = f.iter().filter(|r| r.holes > 0).count();
         self.frame_interval_ms = Summary::of(completions.windows(2).map(|w| w[1] - w[0]));
@@ -254,8 +267,15 @@ impl PassReport {
                 worst_frame: worst,
             })
         };
-        let like = summary(f.iter().filter_map(|r| r.quality_like.map(|q| (r.frame, q))).collect());
-        let q: Vec<(u32, Quality)> = f.iter().filter_map(|r| r.quality.map(|q| (r.frame, q))).collect();
+        let like = summary(
+            f.iter()
+                .filter_map(|r| r.quality_like.map(|q| (r.frame, q)))
+                .collect(),
+        );
+        let q: Vec<(u32, Quality)> = f
+            .iter()
+            .filter_map(|r| r.quality.map(|q| (r.frame, q)))
+            .collect();
         self.quality_like = like;
         if !q.is_empty() {
             self.quality = summary(q);
@@ -268,15 +288,34 @@ pub fn table(reports: &[PassReport]) -> String {
     let _ = writeln!(
         s,
         "{:<22} {:<6} {:>8} {:>9} {:>9} {:>9} {:>8} {:>9} {:>8} {:>7} {:>7} {:>8} {:>8}",
-        "renderer", "mode", "fps", "frame ms", "p99 ms", "gpu ms", "init ms", "load ms", "PSNR dB", "bad %", "RSS MB", "GPU MB", "dev MB"
+        "renderer",
+        "mode",
+        "fps",
+        "frame ms",
+        "p99 ms",
+        "gpu ms",
+        "init ms",
+        "load ms",
+        "PSNR dB",
+        "bad %",
+        "RSS MB",
+        "GPU MB",
+        "dev MB"
     );
     for r in reports {
         let mode = r.mode.map(|m| m.name()).unwrap_or("-");
         if let Some(e) = &r.error {
-            let _ = writeln!(s, "{:<22} {:<6} FAILED: {}", r.label, mode, e.lines().next().unwrap_or(""));
+            let _ = writeln!(
+                s,
+                "{:<22} {:<6} FAILED: {}",
+                r.label,
+                mode,
+                e.lines().next().unwrap_or("")
+            );
             continue;
         }
-        let o = |v: Option<f64>, p: usize| v.map(|x| format!("{x:.p$}")).unwrap_or_else(|| "-".into());
+        let o =
+            |v: Option<f64>, p: usize| v.map(|x| format!("{x:.p$}")).unwrap_or_else(|| "-".into());
         let interval = r.frame_interval_ms.as_ref();
         let _ = writeln!(
             s,
@@ -292,13 +331,32 @@ pub fn table(reports: &[PassReport]) -> String {
             o(r.quality.as_ref().map(|q| q.psnr.mean), 1),
             o(r.quality.as_ref().map(|q| q.bad_pct.mean), 2),
             o(r.peak_rss_mb, 0),
-            o((r.memory.gpu_bytes > 0).then(|| r.memory.gpu_bytes as f64 / 1048576.0), 0),
-            o((r.memory.gpu_device_bytes > 0).then(|| r.memory.gpu_device_bytes as f64 / 1048576.0), 0),
+            o(
+                (r.memory.gpu_bytes > 0).then(|| r.memory.gpu_bytes as f64 / 1048576.0),
+                0
+            ),
+            o(
+                (r.memory.gpu_device_bytes > 0)
+                    .then(|| r.memory.gpu_device_bytes as f64 / 1048576.0),
+                0
+            ),
             [
-                r.quality_like.as_ref().map(|q| format!("  like {}: {:.1} dB, {:.2} % bad", r.like.as_deref().unwrap_or("-"), q.psnr.mean, q.bad_pct.mean)),
-                r.quality_settled.as_ref().map(|q| format!("  settled ({}): {:.1} dB, {:.2} % bad", settled_why(r), q.psnr.mean, q.bad_pct.mean)),
-                (!r.beside_failed.is_empty()).then(|| format!("  ! beside failed: {}", r.beside_failed.join(", "))),
-                (!r.not_supported.is_empty()).then(|| format!("  ! not supported: {}", r.not_supported.join("; "))),
+                r.quality_like.as_ref().map(|q| format!(
+                    "  like {}: {:.1} dB, {:.2} % bad",
+                    r.like.as_deref().unwrap_or("-"),
+                    q.psnr.mean,
+                    q.bad_pct.mean
+                )),
+                r.quality_settled.as_ref().map(|q| format!(
+                    "  settled ({}): {:.1} dB, {:.2} % bad",
+                    settled_why(r),
+                    q.psnr.mean,
+                    q.bad_pct.mean
+                )),
+                (!r.beside_failed.is_empty())
+                    .then(|| format!("  ! beside failed: {}", r.beside_failed.join(", "))),
+                (!r.not_supported.is_empty())
+                    .then(|| format!("  ! not supported: {}", r.not_supported.join("; "))),
             ]
             .into_iter()
             .flatten()
@@ -312,21 +370,35 @@ pub fn table(reports: &[PassReport]) -> String {
 /// region at once over a free link (nothing to tell apart).
 pub fn stream_table(reports: &[PassReport]) -> Option<String> {
     let ok: Vec<&PassReport> = reports.iter().filter(|r| r.error.is_none()).collect();
-    let first_at_once = |r: &PassReport| r.first_complete.is_some_and(|c| r.per_frame.first().is_none_or(|f| c.frame <= f.frame));
-    if ok.iter().all(|r| r.link.free() && r.frames_with_holes == 0 && first_at_once(r)) {
+    let first_at_once = |r: &PassReport| {
+        r.first_complete
+            .is_some_and(|c| r.per_frame.first().is_none_or(|f| c.frame <= f.frame))
+    };
+    if ok
+        .iter()
+        .all(|r| r.link.free() && r.frames_with_holes == 0 && first_at_once(r))
+    {
         return None;
     }
     let mut s = String::new();
-    let _ = writeln!(s, "{:<6} {:>8} {:>8} {:>8} {:>7} {:>6} {:>6}  {:<28}  stream to", "mode", "sent MB", "arr. MB", "ns/byte", "holes", "max", "frames", "first complete");
+    let _ = writeln!(
+        s,
+        "{:<6} {:>8} {:>8} {:>8} {:>7} {:>6} {:>6}  {:<28}  stream to",
+        "mode", "sent MB", "arr. MB", "ns/byte", "holes", "max", "frames", "first complete"
+    );
     for r in ok {
-        let first = r.first_complete.map_or_else(|| "never".into(), |c| format!("#{:<4} {:>6.2} s {:>7.0} ms", c.frame, c.clock_s, c.ms));
+        let first = r.first_complete.map_or_else(
+            || "never".into(),
+            |c| format!("#{:<4} {:>6.2} s {:>7.0} ms", c.frame, c.clock_s, c.ms),
+        );
         let _ = writeln!(
             s,
             "{:<6} {:>8.1} {:>8.1} {:>8} {:>7.1} {:>6.0} {:>6}  {:<28}  {}",
             r.mode.map(|m| m.name()).unwrap_or("-"),
             r.wire_bytes as f64 / 1048576.0,
             r.arrived_bytes as f64 / 1048576.0,
-            r.update_ns_per_byte.map_or_else(|| "-".into(), |v| format!("{v:.2}")),
+            r.update_ns_per_byte
+                .map_or_else(|| "-".into(), |v| format!("{v:.2}")),
             r.holes.as_ref().map_or(0.0, |h| h.mean),
             r.holes.as_ref().map_or(0.0, |h| h.max),
             r.frames_with_holes,
@@ -340,12 +412,40 @@ pub fn stream_table(reports: &[PassReport]) -> Option<String> {
 /// Mean time per stage of each pass, `None` when no pass reported stages.
 pub fn stage_table(reports: &[PassReport]) -> Option<String> {
     let mut s = String::new();
-    for r in reports.iter().filter(|r| r.error.is_none() && !r.stages.is_empty()) {
-        let _ = writeln!(s, "{} ({}{})", r.label, r.mode.map(|m| m.name()).unwrap_or("-"), if r.repeat > 0 { format!(", run {}", r.repeat + 1) } else { String::new() });
+    for r in reports
+        .iter()
+        .filter(|r| r.error.is_none() && !r.stages.is_empty())
+    {
+        let _ = writeln!(
+            s,
+            "{} ({}{})",
+            r.label,
+            r.mode.map(|m| m.name()).unwrap_or("-"),
+            if r.repeat > 0 {
+                format!(", run {}", r.repeat + 1)
+            } else {
+                String::new()
+            }
+        );
         for st in &r.stages {
-            let ms = |x: &Option<Summary>, what| x.as_ref().map(|x| format!(" {what} {:>7.3} ms", x.mean)).unwrap_or_default();
-            let part = if st.frames < r.frames { format!(" ({} of {} frames)", st.frames, r.frames) } else { String::new() };
-            let _ = writeln!(s, "  {:<14} {:<28}{}{}{part}", st.name, st.nodes.join(" + "), ms(&st.gpu_ms, "gpu"), ms(&st.cpu_ms, "cpu"));
+            let ms = |x: &Option<Summary>, what| {
+                x.as_ref()
+                    .map(|x| format!(" {what} {:>7.3} ms", x.mean))
+                    .unwrap_or_default()
+            };
+            let part = if st.frames < r.frames {
+                format!(" ({} of {} frames)", st.frames, r.frames)
+            } else {
+                String::new()
+            };
+            let _ = writeln!(
+                s,
+                "  {:<14} {:<28}{}{}{part}",
+                st.name,
+                st.nodes.join(" + "),
+                ms(&st.gpu_ms, "gpu"),
+                ms(&st.cpu_ms, "cpu")
+            );
         }
     }
     (!s.is_empty()).then_some(s)
@@ -357,7 +457,10 @@ pub fn repeat_table(reports: &[PassReport]) -> Option<String> {
         return None;
     }
     let mut keys: Vec<(String, Option<PassMode>)> = vec![];
-    for r in reports.iter().filter(|r| r.error.is_none() && !r.label.ends_with("(ref)")) {
+    for r in reports
+        .iter()
+        .filter(|r| r.error.is_none() && !r.label.ends_with("(ref)"))
+    {
         if !keys.contains(&(r.label.clone(), r.mode)) {
             keys.push((r.label.clone(), r.mode));
         }
@@ -370,14 +473,38 @@ pub fn repeat_table(reports: &[PassReport]) -> Option<String> {
         Some((v[v.len() / 2], v[0], v[v.len() - 1]))
     };
     let mut s = String::new();
-    let _ = writeln!(s, "{:<22} {:<6} {:>4} {:>24} {:>24} {:>8}", "renderer", "mode", "runs", "fps median [min–max]", "gpu ms median [min–max]", "spread");
+    let _ = writeln!(
+        s,
+        "{:<22} {:<6} {:>4} {:>24} {:>24} {:>8}",
+        "renderer", "mode", "runs", "fps median [min–max]", "gpu ms median [min–max]", "spread"
+    );
     for (label, mode) in keys {
-        let runs: Vec<&PassReport> = reports.iter().filter(|r| r.label == label && r.mode == mode && r.error.is_none()).collect();
+        let runs: Vec<&PassReport> = reports
+            .iter()
+            .filter(|r| r.label == label && r.mode == mode && r.error.is_none())
+            .collect();
         let fps = med(runs.iter().map(|r| r.fps).collect());
-        let gpu = med(runs.iter().filter_map(|r| r.gpu_ms.as_ref().map(|g| g.mean)).collect());
-        let f = |x: Option<(f64, f64, f64)>, p: usize| x.map(|(m, lo, hi)| format!("{m:.p$} [{lo:.p$}–{hi:.p$}]")).unwrap_or("-".into());
-        let spread = fps.map(|(m, lo, hi)| format!("±{:.0}%", 50.0 * (hi - lo) / m.max(1e-9))).unwrap_or_default();
-        let _ = writeln!(s, "{:<22} {:<6} {:>4} {:>24} {:>24} {:>8}", label, mode.map(|m| m.name()).unwrap_or("-"), runs.len(), f(fps, 1), f(gpu, 2), spread);
+        let gpu = med(runs
+            .iter()
+            .filter_map(|r| r.gpu_ms.as_ref().map(|g| g.mean))
+            .collect());
+        let f = |x: Option<(f64, f64, f64)>, p: usize| {
+            x.map(|(m, lo, hi)| format!("{m:.p$} [{lo:.p$}–{hi:.p$}]"))
+                .unwrap_or("-".into())
+        };
+        let spread = fps
+            .map(|(m, lo, hi)| format!("±{:.0}%", 50.0 * (hi - lo) / m.max(1e-9)))
+            .unwrap_or_default();
+        let _ = writeln!(
+            s,
+            "{:<22} {:<6} {:>4} {:>24} {:>24} {:>8}",
+            label,
+            mode.map(|m| m.name()).unwrap_or("-"),
+            runs.len(),
+            f(fps, 1),
+            f(gpu, 2),
+            spread
+        );
     }
     Some(s)
 }
@@ -394,7 +521,12 @@ mod tests {
     use super::*;
 
     fn st(name: &str, cpu: Option<f32>, gpu: Option<f32>) -> StageTime {
-        StageTime { name: name.into(), nodes: vec![name.into()], cpu_ms: cpu, gpu_ms: gpu }
+        StageTime {
+            name: name.into(),
+            nodes: vec![name.into()],
+            cpu_ms: cpu,
+            gpu_ms: gpu,
+        }
     }
 
     /// A stage's CPU and GPU parts and its repeats within a frame add up per frame; stages
@@ -402,11 +534,36 @@ mod tests {
     #[test]
     fn stage_summaries() {
         let frames = [
-            vec![st("cast", Some(1.0), None), st("geometry", Some(2.0), None), st("geometry", None, Some(0.5))],
-            vec![st("cast", Some(3.0), None), st("storage", Some(1.0), None), st("storage", Some(1.0), None)],
+            vec![
+                st("cast", Some(1.0), None),
+                st("geometry", Some(2.0), None),
+                st("geometry", None, Some(0.5)),
+            ],
+            vec![
+                st("cast", Some(3.0), None),
+                st("storage", Some(1.0), None),
+                st("storage", Some(1.0), None),
+            ],
         ];
         let s = StageSummary::of(frames.iter().map(|f| &f[..]));
-        let got: Vec<(&str, usize, Option<f64>, Option<f64>)> = s.iter().map(|s| (s.name.as_str(), s.frames, s.cpu_ms.as_ref().map(|x| x.mean), s.gpu_ms.as_ref().map(|x| x.mean))).collect();
-        assert_eq!(got, [("cast", 2, Some(2.0), None), ("geometry", 1, Some(2.0), Some(0.5)), ("storage", 1, Some(2.0), None)]);
+        let got: Vec<(&str, usize, Option<f64>, Option<f64>)> = s
+            .iter()
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.frames,
+                    s.cpu_ms.as_ref().map(|x| x.mean),
+                    s.gpu_ms.as_ref().map(|x| x.mean),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("cast", 2, Some(2.0), None),
+                ("geometry", 1, Some(2.0), Some(0.5)),
+                ("storage", 1, Some(2.0), None)
+            ]
+        );
     }
 }

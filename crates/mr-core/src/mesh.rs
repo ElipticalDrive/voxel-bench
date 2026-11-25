@@ -35,7 +35,10 @@ pub struct MeshData {
 impl MeshData {
     /// Radius of a bounding sphere around the local origin.
     pub fn radius(&self) -> f32 {
-        self.positions.iter().map(|p| Vec3::from_array(*p).length()).fold(0.0, f32::max)
+        self.positions
+            .iter()
+            .map(|p| Vec3::from_array(*p).length())
+            .fold(0.0, f32::max)
     }
 }
 
@@ -52,7 +55,11 @@ pub struct MeshInstance {
 impl MeshInstance {
     /// Local-to-world transform relative to `origin` (e.g. the camera's block), in f32.
     pub fn matrix_rel(&self, origin: DVec3) -> Mat4 {
-        Mat4::from_scale_rotation_translation(Vec3::splat(self.scale as f32), self.rotation.as_quat(), (self.position - origin).as_vec3())
+        Mat4::from_scale_rotation_translation(
+            Vec3::splat(self.scale as f32),
+            self.rotation.as_quat(),
+            (self.position - origin).as_vec3(),
+        )
     }
 }
 
@@ -75,10 +82,25 @@ pub const BVH_LEAF: usize = 4;
 /// items' box centres, leaves of at most [`BVH_LEAF`]), appending its nodes to `nodes`, each
 /// node before its children; `offset` is added to the leaves' item ranges (`items` a slice
 /// of a larger list). `bounds` is an item's box. Returns the root's index.
-pub fn build_bvh<T>(items: &mut [T], nodes: &mut Vec<BvhNode>, offset: usize, bounds: &impl Fn(&T) -> (DVec3, DVec3)) -> usize {
-    let (lo, hi) = items.iter().map(bounds).fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), (a, b)| (lo.min(a), hi.max(b)));
+pub fn build_bvh<T>(
+    items: &mut [T],
+    nodes: &mut Vec<BvhNode>,
+    offset: usize,
+    bounds: &impl Fn(&T) -> (DVec3, DVec3),
+) -> usize {
+    let (lo, hi) = items.iter().map(bounds).fold(
+        (DVec3::INFINITY, DVec3::NEG_INFINITY),
+        |(lo, hi), (a, b)| (lo.min(a), hi.max(b)),
+    );
     let n = nodes.len();
-    nodes.push(BvhNode { lo, hi, a: offset, b: offset + items.len(), leaf: true, axis: 0 });
+    nodes.push(BvhNode {
+        lo,
+        hi,
+        a: offset,
+        b: offset + items.len(),
+        leaf: true,
+        axis: 0,
+    });
     if items.len() <= BVH_LEAF {
         return n;
     }
@@ -86,15 +108,33 @@ pub fn build_bvh<T>(items: &mut [T], nodes: &mut Vec<BvhNode>, offset: usize, bo
         let (a, b) = bounds(t);
         a + b
     };
-    let (clo, chi) = items.iter().map(centre).fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), c| (lo.min(c), hi.max(c)));
+    let (clo, chi) = items
+        .iter()
+        .map(centre)
+        .fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), c| {
+            (lo.min(c), hi.max(c))
+        });
     let ext = chi - clo;
-    let axis = if ext.x >= ext.y && ext.x >= ext.z { 0 } else if ext.y >= ext.z { 1 } else { 2 };
+    let axis = if ext.x >= ext.y && ext.x >= ext.z {
+        0
+    } else if ext.y >= ext.z {
+        1
+    } else {
+        2
+    };
     let mid = items.len() / 2;
     items.select_nth_unstable_by(mid, |a, b| centre(a)[axis].total_cmp(&centre(b)[axis]));
     let (left, right) = items.split_at_mut(mid);
     let a = build_bvh(left, nodes, offset, bounds);
     let b = build_bvh(right, nodes, offset + mid, bounds);
-    nodes[n] = BvhNode { lo, hi, a, b, leaf: false, axis };
+    nodes[n] = BvhNode {
+        lo,
+        hi,
+        a,
+        b,
+        leaf: false,
+        axis,
+    };
     n
 }
 

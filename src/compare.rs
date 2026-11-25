@@ -60,7 +60,11 @@ pub fn compare(a: &[u8], b: &[u8], width: u32) -> Quality {
     let n = pixels * 3.0;
     let mse = se as f64 / n;
     Quality {
-        psnr: if mse == 0.0 { f64::INFINITY } else { 10.0 * (255.0 * 255.0 / mse).log10() },
+        psnr: if mse == 0.0 {
+            f64::INFINITY
+        } else {
+            10.0 * (255.0 * 255.0 / mse).log10()
+        },
         mae: ae as f64 / n / 255.0,
         bad_pct: bad as f64 / pixels * 100.0,
         ssim,
@@ -75,7 +79,11 @@ fn to_db(s: f64) -> f64 {
 }
 
 fn luma(p: &[u8]) -> Vec<f32> {
-    p.as_chunks::<4>().0.iter().map(|c| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32).collect()
+    p.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32)
+        .collect()
 }
 
 fn half(l: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
@@ -83,7 +91,11 @@ fn half(l: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
     let mut out = vec![0.0; hw * hh];
     for y in 0..hh {
         for x in 0..hw {
-            out[y * hw + x] = 0.25 * (l[2 * y * w + 2 * x] + l[2 * y * w + 2 * x + 1] + l[(2 * y + 1) * w + 2 * x] + l[(2 * y + 1) * w + 2 * x + 1]);
+            out[y * hw + x] = 0.25
+                * (l[2 * y * w + 2 * x]
+                    + l[2 * y * w + 2 * x + 1]
+                    + l[(2 * y + 1) * w + 2 * x]
+                    + l[(2 * y + 1) * w + 2 * x + 1]);
         }
     }
     (out, hw, hh)
@@ -107,7 +119,11 @@ fn ms_ssim(mut a: Vec<f32>, mut b: Vec<f32>, mut w: usize, mut h: usize) -> f64 
             h = nh;
         }
     }
-    if weight_sum == 0.0 { 1.0 } else { (log_sum / weight_sum).exp() }
+    if weight_sum == 0.0 {
+        1.0
+    } else {
+        (log_sum / weight_sum).exp()
+    }
 }
 
 fn ssim_luma(la: &[f32], lb: &[f32], w: usize, h: usize) -> f64 {
@@ -130,8 +146,13 @@ fn ssim_luma(la: &[f32], lb: &[f32], w: usize, h: usize) -> f64 {
                 }
             }
             let (ma, mb) = (sa / 64.0, sb / 64.0);
-            let (va, vb, cov) = (saa / 64.0 - ma * ma, sbb / 64.0 - mb * mb, sab / 64.0 - ma * mb);
-            sum += ((2.0 * ma * mb + c1) * (2.0 * cov + c2)) / ((ma * ma + mb * mb + c1) * (va + vb + c2));
+            let (va, vb, cov) = (
+                saa / 64.0 - ma * ma,
+                sbb / 64.0 - mb * mb,
+                sab / 64.0 - ma * mb,
+            );
+            sum += ((2.0 * ma * mb + c1) * (2.0 * cov + c2))
+                / ((ma * ma + mb * mb + c1) * (va + vb + c2));
             n += 1;
         }
     }
@@ -142,8 +163,17 @@ fn ssim_luma(la: &[f32], lb: &[f32], w: usize, h: usize) -> f64 {
 /// a larger difference).
 pub fn diff_image(a: &[u8], b: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; a.len()];
-    for ((pa, pb), o) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0).zip(out.as_chunks_mut::<4>().0) {
-        let d = (0..3).map(|c| (pa[c] as i32 - pb[c] as i32).unsigned_abs()).max().unwrap();
+    for ((pa, pb), o) in a
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0)
+        .zip(out.as_chunks_mut::<4>().0)
+    {
+        let d = (0..3)
+            .map(|c| (pa[c] as i32 - pb[c] as i32).unsigned_abs())
+            .max()
+            .unwrap();
         if d > 2 {
             let v = (64 + d * 4).min(255) as u8;
             *o = [v, 0, 0, 255];
@@ -197,7 +227,11 @@ mod tests {
         assert_eq!(resample(&px, [16, 9], [16, 9], true), px);
         assert_eq!(resample(&px, [16, 9], [16, 9], false), px);
         let flat = vec![100u8; 8 * 8 * 4];
-        assert!(resample(&flat, [8, 8], [13, 11], true).iter().all(|&v| v == 100));
+        assert!(
+            resample(&flat, [8, 8], [13, 11], true)
+                .iter()
+                .all(|&v| v == 100)
+        );
     }
 
     #[test]

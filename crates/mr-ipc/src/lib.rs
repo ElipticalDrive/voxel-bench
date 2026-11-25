@@ -11,9 +11,14 @@ use std::marker::PhantomData;
 use anyhow::Context;
 use glam::DVec3;
 use interprocess::local_socket::prelude::*;
-use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, Name, RecvHalf, SendHalf};
 pub use interprocess::local_socket::{Listener, Stream};
-use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
+use interprocess::local_socket::{
+    ListenerNonblockingMode, ListenerOptions, Name, RecvHalf, SendHalf,
+};
+use mr_core::{
+    FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo,
+    WorldUpdate,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub const PROTOCOL_VERSION: u32 = 17;
@@ -28,28 +33,49 @@ pub struct ShmSpec {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum HostMsg {
-    Init { renderer: String, params: InitParams, shm: ShmSpec },
+    Init {
+        renderer: String,
+        params: InitParams,
+        shm: ShmSpec,
+    },
     /// The server's stream (the same for every client), in batches; the
     /// worker's client derives its renderer's updates from it, at camera position `at`
     /// (set on a batch that ends what the server sent for a frame). `time`: when the server
     /// sent it, in seconds of the host's clock (simulated in scripted runs), which the
     /// client's link delays it by.
-    Stream { updates: Vec<WorldUpdate>, at: Option<DVec3>, time: f64 },
+    Stream {
+        updates: Vec<WorldUpdate>,
+        at: Option<DVec3>,
+        time: f64,
+    },
     /// The server streams this region (a radius per LOD level) and neither it nor the
     /// client's changes: a client covering it takes the stream as it is.
-    Follow { radii: Vec<u32> },
+    Follow {
+        radii: Vec<u32>,
+    },
     /// The client generates the world itself (the graph's generator on the
     /// client): `world` is the server's generator spec (`mr_world::GenSpec` as JSON, the
     /// shared seed), `budget` the chunks it generates per frame (`None`: all at once). The
     /// server then sends it edits, lights and the environment only.
-    Generate { world: String, budget: Option<u32> },
+    Generate {
+        world: String,
+        budget: Option<u32>,
+    },
     /// Mesh mode: geometry and instances, applied in order with `Updates`.
     Meshes(MeshUpdate),
     /// `slot` is the shared-memory slot to write pixels into when `req.readback` is set.
     /// `time`: the frame's time on the host's clock (what has arrived over the link by then
     /// reaches the renderer first).
-    Render { req: FrameRequest, slot: Option<u32>, time: f64 },
-    Resize { width: u32, height: u32, shm: ShmSpec },
+    Render {
+        req: FrameRequest,
+        slot: Option<u32>,
+        time: f64,
+    },
+    Resize {
+        width: u32,
+        height: u32,
+        shm: ShmSpec,
+    },
     /// Live parameter changes, applied in order before the next frame.
     SetParams(Vec<(String, ParamValue)>),
     /// Edits to the pipeline graph the renderer runs (the nodes its executor replaces while
@@ -63,16 +89,33 @@ pub enum HostMsg {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum WorkerMsg {
-    Hello { pid: u32, protocol: u32, renderers: Vec<String> },
+    Hello {
+        pid: u32,
+        protocol: u32,
+        renderers: Vec<String>,
+    },
     /// `shaders`: the part of `init_ms` spent making shader modules and pipelines.
-    Ready { info: RendererInfo, init_ms: f32, shaders: mr_core::shader_clock::ShaderTime },
+    Ready {
+        info: RendererInfo,
+        init_ms: f32,
+        shaders: mr_core::shader_clock::ShaderTime,
+    },
     /// `update_ms` is time spent applying world updates since the previous frame;
     /// `arrivals` what had reached its client when the frame was requested.
-    FrameDone { frame_id: u64, stats: FrameStats, slot: Option<u32>, update_ms: f32, arrivals: mr_core::link::Arrivals },
+    FrameDone {
+        frame_id: u64,
+        stats: FrameStats,
+        slot: Option<u32>,
+        update_ms: f32,
+        arrivals: mr_core::link::Arrivals,
+    },
     Flushed,
     Memory(MemoryReport),
     /// A parameter change was rejected (non-fatal).
-    ParamError { name: String, error: String },
+    ParamError {
+        name: String,
+        error: String,
+    },
     Error(String),
 }
 
@@ -83,7 +126,11 @@ pub enum PresentMsg {
     /// The frame region (one slot), sent before the first frame and when frames outgrow it.
     Shm(ShmSpec),
     /// A frame is in the slot; the presenter answers `Shown` once it has copied it.
-    Frame { width: u32, height: u32, format: mr_core::lighting::PixelFormat },
+    Frame {
+        width: u32,
+        height: u32,
+        format: mr_core::lighting::PixelFormat,
+    },
     /// The frames' 1.0 relative to the display's SDR white (paper white).
     Gain(f32),
     Title(String),
@@ -145,8 +192,12 @@ impl<T: DeserializeOwned> MsgReader<T> {
 /// the runtime directory on Unix, a named pipe on Windows.
 pub fn endpoint(tag: &str) -> String {
     if cfg!(unix) {
-        let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        dir.join(format!("{tag}.sock")).to_string_lossy().into_owned()
+        let dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        dir.join(format!("{tag}.sock"))
+            .to_string_lossy()
+            .into_owned()
     } else {
         tag.to_string()
     }
@@ -188,8 +239,16 @@ pub fn connect(endpoint: &str) -> anyhow::Result<Stream> {
 pub fn split<In: DeserializeOwned, Out: Serialize>(s: Stream) -> (MsgReader<In>, MsgWriter<Out>) {
     let (r, w) = s.split();
     (
-        MsgReader { r: BufReader::with_capacity(1 << 20, r), buf: vec![], _t: PhantomData },
-        MsgWriter { w: BufWriter::with_capacity(1 << 20, w), buf: vec![], _t: PhantomData },
+        MsgReader {
+            r: BufReader::with_capacity(1 << 20, r),
+            buf: vec![],
+            _t: PhantomData,
+        },
+        MsgWriter {
+            w: BufWriter::with_capacity(1 << 20, w),
+            buf: vec![],
+            _t: PhantomData,
+        },
     )
 }
 
@@ -202,14 +261,26 @@ pub struct FrameSlots {
 impl FrameSlots {
     /// Creates (host side) a new region called `name`.
     pub fn create(name: &str, slots: u32, slot_bytes: u64) -> anyhow::Result<Self> {
-        let spec = ShmSpec { name: name.to_string(), slots, slot_bytes };
-        Ok(Self { map: shm::Map::create(name, spec.bytes()).with_context(|| format!("creating shared memory {name}"))?, spec })
+        let spec = ShmSpec {
+            name: name.to_string(),
+            slots,
+            slot_bytes,
+        };
+        Ok(Self {
+            map: shm::Map::create(name, spec.bytes())
+                .with_context(|| format!("creating shared memory {name}"))?,
+            spec,
+        })
     }
 
     /// Opens (worker side) an existing region.
     pub fn open(spec: &ShmSpec) -> anyhow::Result<Self> {
-        let map = shm::Map::open(&spec.name, spec.bytes()).with_context(|| format!("opening shared memory {}", spec.name))?;
-        Ok(Self { map, spec: spec.clone() })
+        let map = shm::Map::open(&spec.name, spec.bytes())
+            .with_context(|| format!("opening shared memory {}", spec.name))?;
+        Ok(Self {
+            map,
+            spec: spec.clone(),
+        })
     }
 
     pub fn spec(&self) -> &ShmSpec {
@@ -261,9 +332,17 @@ mod shm {
     impl Map {
         pub fn create(name: &str, bytes: usize) -> anyhow::Result<Self> {
             let path = path(name);
-            let f = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
+            let f = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)?;
             f.set_len(bytes as u64)?;
-            Ok(Self { map: unsafe { MmapMut::map_mut(&f)? }, owned: Some(path) })
+            Ok(Self {
+                map: unsafe { MmapMut::map_mut(&f)? },
+                owned: Some(path),
+            })
         }
 
         pub fn open(name: &str, bytes: usize) -> anyhow::Result<Self> {
@@ -272,7 +351,10 @@ mod shm {
             if f.metadata()?.len() < bytes as u64 {
                 bail!("{} too small", path.display());
             }
-            Ok(Self { map: unsafe { MmapMut::map_mut(&f)? }, owned: None })
+            Ok(Self {
+                map: unsafe { MmapMut::map_mut(&f)? },
+                owned: None,
+            })
         }
 
         pub fn bytes(&self) -> &[u8] {
@@ -302,7 +384,8 @@ mod shm {
     use anyhow::bail;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Memory::{
-        CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW, PAGE_READWRITE,
+        CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEMORY_BASIC_INFORMATION,
+        MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW, PAGE_READWRITE,
         UnmapViewOfFile, VirtualQuery,
     };
 
@@ -324,7 +407,16 @@ mod shm {
     impl Map {
         pub fn create(name: &str, bytes: usize) -> anyhow::Result<Self> {
             let size = bytes as u64;
-            let handle = unsafe { CreateFileMappingW(INVALID_HANDLE_VALUE, std::ptr::null(), PAGE_READWRITE, (size >> 32) as u32, size as u32, wide(name).as_ptr()) };
+            let handle = unsafe {
+                CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    std::ptr::null(),
+                    PAGE_READWRITE,
+                    (size >> 32) as u32,
+                    size as u32,
+                    wide(name).as_ptr(),
+                )
+            };
             if handle.is_null() {
                 return Err(std::io::Error::last_os_error().into());
             }
@@ -356,7 +448,9 @@ mod shm {
             let mut len = bytes;
             if len == 0 {
                 let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-                unsafe { VirtualQuery(view.Value, &mut info, size_of::<MEMORY_BASIC_INFORMATION>()) };
+                unsafe {
+                    VirtualQuery(view.Value, &mut info, size_of::<MEMORY_BASIC_INFORMATION>())
+                };
                 len = info.RegionSize;
             }
             Ok(Self { handle, view, len })
@@ -396,13 +490,43 @@ mod tests {
             gpu_ms: Some(0.5),
             counters: vec![("rays".into(), 3.0)],
             legend: None,
-            stages: vec![mr_core::StageTime::cpu("geometry", &["geometry".into()], 2.0), mr_core::StageTime { name: "draw".into(), nodes: vec!["draw".into()], cpu_ms: None, gpu_ms: Some(0.25) }],
+            stages: vec![
+                mr_core::StageTime::cpu("geometry", &["geometry".into()], 2.0),
+                mr_core::StageTime {
+                    name: "draw".into(),
+                    nodes: vec!["draw".into()],
+                    cpu_ms: None,
+                    gpu_ms: Some(0.25),
+                },
+            ],
         };
-        let arrivals = mr_core::link::Arrivals { bytes: 1 << 40, arrived: 1 << 39, holes: 3 };
-        let msg = WorkerMsg::FrameDone { frame_id: 7, stats: stats.clone(), slot: Some(1), update_ms: 0.125, arrivals };
+        let arrivals = mr_core::link::Arrivals {
+            bytes: 1 << 40,
+            arrived: 1 << 39,
+            holes: 3,
+        };
+        let msg = WorkerMsg::FrameDone {
+            frame_id: 7,
+            stats: stats.clone(),
+            slot: Some(1),
+            update_ms: 0.125,
+            arrivals,
+        };
         let back: WorkerMsg = postcard::from_bytes(&postcard::to_allocvec(&msg).unwrap()).unwrap();
-        let WorkerMsg::FrameDone { frame_id: 7, stats: s, slot: Some(1), update_ms, arrivals: a } = back else { panic!("{back:?}") };
-        assert_eq!((s.stages, s.counters, s.gpu_ms, update_ms, a), (stats.stages, stats.counters, stats.gpu_ms, 0.125, arrivals));
+        let WorkerMsg::FrameDone {
+            frame_id: 7,
+            stats: s,
+            slot: Some(1),
+            update_ms,
+            arrivals: a,
+        } = back
+        else {
+            panic!("{back:?}")
+        };
+        assert_eq!(
+            (s.stages, s.counters, s.gpu_ms, update_ms, a),
+            (stats.stages, stats.counters, stats.gpu_ms, 0.125, arrivals)
+        );
     }
 
     /// The OS parts carry data intact: large messages over a local socket in both
@@ -411,7 +535,11 @@ mod tests {
     fn transport_is_intact() {
         let ep = endpoint(&format!("mr-ipc-test-{}", std::process::id()));
         let l = listen(&ep).unwrap();
-        let pattern = |n: usize, seed: u64| (0..n).map(|i| (i as u64).wrapping_mul(2654435761).wrapping_add(seed) as u8).collect::<Vec<u8>>();
+        let pattern = |n: usize, seed: u64| {
+            (0..n)
+                .map(|i| (i as u64).wrapping_mul(2654435761).wrapping_add(seed) as u8)
+                .collect::<Vec<u8>>()
+        };
         let sizes = [0, 1, 4095, 65536, 3 << 20, 17 << 20];
         // Each side checks what it receives; the peer answers once the host has sent all.
         let peer = std::thread::spawn({
@@ -419,7 +547,10 @@ mod tests {
             move || {
                 let (mut r, mut w) = split::<Vec<u8>, Vec<u8>>(connect(&ep).unwrap());
                 for (i, n) in sizes.into_iter().enumerate() {
-                    assert!(r.recv().unwrap().unwrap() == pattern(n, i as u64), "to the peer: message {i} of {n} bytes");
+                    assert!(
+                        r.recv().unwrap().unwrap() == pattern(n, i as u64),
+                        "to the peer: message {i} of {n} bytes"
+                    );
                 }
                 for (i, n) in sizes.into_iter().enumerate() {
                     w.send(&pattern(n, 100 + i as u64)).unwrap();
@@ -437,7 +568,10 @@ mod tests {
             w.send(&pattern(n, i as u64)).unwrap();
         }
         for (i, n) in sizes.into_iter().enumerate() {
-            assert!(r.recv().unwrap().unwrap() == pattern(n, 100 + i as u64), "from the peer: message {i} of {n} bytes");
+            assert!(
+                r.recv().unwrap().unwrap() == pattern(n, 100 + i as u64),
+                "from the peer: message {i} of {n} bytes"
+            );
         }
         peer.join().unwrap();
 
@@ -447,10 +581,14 @@ mod tests {
         let mut b = FrameSlots::open(a.spec()).unwrap();
         a.unlink();
         for i in 0..slots {
-            b.slot_mut(i).copy_from_slice(&pattern(slot_bytes as usize, i as u64));
+            b.slot_mut(i)
+                .copy_from_slice(&pattern(slot_bytes as usize, i as u64));
         }
         for i in 0..slots {
-            assert!(a.slot(i) == pattern(slot_bytes as usize, i as u64), "slot {i}");
+            assert!(
+                a.slot(i) == pattern(slot_bytes as usize, i as u64),
+                "slot {i}"
+            );
         }
     }
 }

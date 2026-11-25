@@ -37,8 +37,15 @@ pub fn encode(spec: &ParamSpec, v: &ParamValue) -> f64 {
             }
         }
         ParamKind::Choice(opts) => {
-            let i = opts.iter().position(|o| Some(o.as_str()) == v.as_str()).unwrap_or(0);
-            if opts.len() <= 1 { 0.0 } else { i as f64 / (opts.len() - 1) as f64 }
+            let i = opts
+                .iter()
+                .position(|o| Some(o.as_str()) == v.as_str())
+                .unwrap_or(0);
+            if opts.len() <= 1 {
+                0.0
+            } else {
+                i as f64 / (opts.len() - 1) as f64
+            }
         }
     }
 }
@@ -49,15 +56,27 @@ pub fn decode(spec: &ParamSpec, x: f64) -> ParamValue {
         ParamKind::Bool => ParamValue::Bool(x >= 0.5),
         ParamKind::Int { min, max } => {
             let (lo, hi) = (*min as f64, *max as f64);
-            let v = if wide(*min, *max) { lo + (x * (hi - lo).ln_1p()).exp_m1() } else { lo + x * (hi - lo) };
+            let v = if wide(*min, *max) {
+                lo + (x * (hi - lo).ln_1p()).exp_m1()
+            } else {
+                lo + x * (hi - lo)
+            };
             ParamValue::Int((v.round() as i64).clamp(*min, *max))
         }
         ParamKind::Float { min, max, log } => {
-            let v = if *log && *min > 0.0 { min * (max / min).powf(x) } else { min + x * (max - min) };
+            let v = if *log && *min > 0.0 {
+                min * (max / min).powf(x)
+            } else {
+                min + x * (max - min)
+            };
             ParamValue::Float((v.clamp(*min, *max) * 1000.0).round() / 1000.0)
         }
         ParamKind::Choice(opts) => {
-            let i = if opts.len() <= 1 { 0 } else { (x * (opts.len() - 1) as f64).round() as usize };
+            let i = if opts.len() <= 1 {
+                0
+            } else {
+                (x * (opts.len() - 1) as f64).round() as usize
+            };
             ParamValue::Choice(opts[i.min(opts.len().saturating_sub(1))].clone())
         }
     }
@@ -137,7 +156,9 @@ impl Gp {
             return None;
         }
         let mean = ys.iter().sum::<f64>() / n as f64;
-        let std = (ys.iter().map(|y| (y - mean).powi(2)).sum::<f64>() / n as f64).sqrt().max(1e-6);
+        let std = (ys.iter().map(|y| (y - mean).powi(2)).sum::<f64>() / n as f64)
+            .sqrt()
+            .max(1e-6);
         let yn: Vec<f64> = ys.iter().map(|y| (y - mean) / std).collect();
         let mut best: Option<(f64, Gp)> = None;
         for ell in [0.08, 0.15, 0.25, 0.4, 0.7, 1.2] {
@@ -153,7 +174,17 @@ impl Gp {
             let logdet: f64 = (0..n).map(|i| l[i * n + i].ln()).sum();
             let lml = -0.5 * fit - logdet;
             if best.as_ref().is_none_or(|(b, _)| lml > *b) {
-                best = Some((lml, Gp { xs: xs.to_vec(), alpha, chol: l, ell, mean, std }));
+                best = Some((
+                    lml,
+                    Gp {
+                        xs: xs.to_vec(),
+                        alpha,
+                        chol: l,
+                        ell,
+                        mean,
+                        std,
+                    },
+                ));
             }
         }
         best.map(|b| b.1)
@@ -173,7 +204,11 @@ impl Gp {
 fn erf(x: f64) -> f64 {
     // Abramowitz & Stegun 7.1.26 (|error| < 1.5e-7).
     let t = 1.0 / (1.0 + 0.3275911 * x.abs());
-    let y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * (-x * x).exp();
+    let y = 1.0
+        - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t
+            + 0.254829592)
+            * t
+            * (-x * x).exp();
     if x >= 0.0 { y } else { -y }
 }
 
@@ -210,7 +245,11 @@ pub struct Optimizer {
 
 impl Optimizer {
     pub fn new(goal: Goal) -> Self {
-        Self { goal, obs: VecDeque::new(), max_obs: 40 }
+        Self {
+            goal,
+            obs: VecDeque::new(),
+            max_obs: 40,
+        }
     }
 
     pub fn observe(&mut self, o: Observation) {
@@ -236,7 +275,11 @@ impl Optimizer {
         let gp_f = Gp::fit(&xs, &lf, 0.02)?;
         let with_q: Vec<&Observation> = self.obs.iter().filter(|o| o.psnr.is_some()).collect();
         let gp_q = if self.goal.needs_quality() && !with_q.is_empty() {
-            Gp::fit(&with_q.iter().map(|o| o.x.clone()).collect::<Vec<_>>(), &with_q.iter().map(|o| o.psnr.unwrap()).collect::<Vec<_>>(), 0.02)
+            Gp::fit(
+                &with_q.iter().map(|o| o.x.clone()).collect::<Vec<_>>(),
+                &with_q.iter().map(|o| o.psnr.unwrap()).collect::<Vec<_>>(),
+                0.02,
+            )
         } else {
             None
         };
@@ -305,7 +348,9 @@ mod tests {
             let x = encode(s, &s.default);
             let back = decode(s, x);
             match (&back, &s.default) {
-                (ParamValue::Int(a), ParamValue::Int(b)) => assert!((a - b).abs() <= 1, "{}: {a} vs {b}", s.name),
+                (ParamValue::Int(a), ParamValue::Int(b)) => {
+                    assert!((a - b).abs() <= 1, "{}: {a} vs {b}", s.name)
+                }
                 _ => assert_eq!(back, s.default, "{}", s.name),
             }
         }

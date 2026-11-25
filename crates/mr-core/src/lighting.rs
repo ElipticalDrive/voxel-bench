@@ -40,8 +40,14 @@ pub struct PassMode {
 }
 
 impl PassMode {
-    pub const UNLIT: Self = Self { lighting: RenderMode::Unlit, meshes: false };
-    pub const LIT: Self = Self { lighting: RenderMode::Lit, meshes: false };
+    pub const UNLIT: Self = Self {
+        lighting: RenderMode::Unlit,
+        meshes: false,
+    };
+    pub const LIT: Self = Self {
+        lighting: RenderMode::Lit,
+        meshes: false,
+    };
 
     pub fn name(self) -> &'static str {
         match (self.lighting, self.meshes) {
@@ -55,7 +61,10 @@ impl PassMode {
 
 impl From<RenderMode> for PassMode {
     fn from(lighting: RenderMode) -> Self {
-        Self { lighting, meshes: false }
+        Self {
+            lighting,
+            meshes: false,
+        }
     }
 }
 
@@ -69,7 +78,11 @@ impl TryFrom<String> for PassMode {
         let lighting = match l {
             "unlit" => RenderMode::Unlit,
             "lit" => RenderMode::Lit,
-            _ => return Err(format!("unknown mode `{s}` (unlit, lit, unlit+meshes, lit+meshes)")),
+            _ => {
+                return Err(format!(
+                    "unknown mode `{s}` (unlit, lit, unlit+meshes, lit+meshes)"
+                ));
+            }
         };
         Ok(Self { lighting, meshes })
     }
@@ -118,7 +131,10 @@ impl Default for Environment {
         Self {
             sky: Vec3::new(0.45, 0.65, 0.95),
             ambient: Vec3::splat(0.08),
-            sun: Some(Sun { direction: Vec3::new(-0.4, -1.0, -0.25).normalize(), color: Vec3::splat(1.0) }),
+            sun: Some(Sun {
+                direction: Vec3::new(-0.4, -1.0, -0.25).normalize(),
+                color: Vec3::splat(1.0),
+            }),
             exposure: 1.0,
         }
     }
@@ -162,13 +178,21 @@ pub fn srgb_to_linear(c: u8) -> f32 {
 /// sRGB (0..1, continuous) to linear: for interpolated mesh vertex colours.
 #[inline]
 pub fn srgb_to_linear_f(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 #[inline]
 pub fn linear_to_srgb(c: f32) -> f32 {
     let c = c.clamp(0.0, 1.0);
-    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// Final encoding of a linear colour to an sRGB8 pixel (clamping, no tonemapper).
@@ -235,7 +259,11 @@ impl Tone {
 
     /// The output's pixel format.
     pub fn format(self) -> PixelFormat {
-        if self == Tone::Hdr { PixelFormat::Rgba16F } else { PixelFormat::Rgba8 }
+        if self == Tone::Hdr {
+            PixelFormat::Rgba16F
+        } else {
+            PixelFormat::Rgba8
+        }
     }
 }
 
@@ -263,14 +291,22 @@ impl PixelFormat {
 #[inline]
 pub fn linear_to_srgb_extended(x: f32) -> f32 {
     let c = x.max(0.0);
-    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// Its inverse: extended sRGB to linear light.
 #[inline]
 pub fn srgb_extended_to_linear(c: f32) -> f32 {
     let c = c.max(0.0);
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 /// `c` (non-negative, up to 65408) in RGB9E5: a 9-bit mantissa per channel and a shared
@@ -294,15 +330,27 @@ pub fn encode_rgb9e5(c: Vec3) -> u32 {
 /// Its inverse (the WGSL twin is `unpack_rgb9e5` in `mr-gpu`'s `common.wgsl`).
 pub fn decode_rgb9e5(p: u32) -> Vec3 {
     let step = 2f32.powi((p >> 27) as i32 - 24);
-    Vec3::new((p & 511) as f32, (p >> 9 & 511) as f32, (p >> 18 & 511) as f32) * step
+    Vec3::new(
+        (p & 511) as f32,
+        (p >> 9 & 511) as f32,
+        (p >> 18 & 511) as f32,
+    ) * step
 }
 
 /// An `Rgba16F` frame's 8-bit form: clamped and quantised, the pixels `clamp` writes (up to
 /// one step where the half's rounding crosses a quantisation boundary).
 pub fn hdr_to_rgba8(px: &[u8]) -> Vec<u8> {
     static TABLE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    let t = TABLE.get_or_init(|| (0..=u16::MAX).map(|h| (half_to_f32(h).clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect());
-    px.as_chunks::<2>().0.iter().map(|&h| t[u16::from_le_bytes(h) as usize]).collect()
+    let t = TABLE.get_or_init(|| {
+        (0..=u16::MAX)
+            .map(|h| (half_to_f32(h).clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
+            .collect()
+    });
+    px.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&h| t[u16::from_le_bytes(h) as usize])
+        .collect()
 }
 
 /// A pixel of a CPU-made frame, in its frame's [`PixelFormat`]: RGBA8 (`[u8; 4]`) or
@@ -403,7 +451,13 @@ pub fn half_to_f32(h: u16) -> f32 {
     let man = (h & 0x3ff) as f32;
     sign * match exp {
         0 => man * 2f32.powi(-24),
-        31 => if man == 0.0 { f32::INFINITY } else { f32::NAN },
+        31 => {
+            if man == 0.0 {
+                f32::INFINITY
+            } else {
+                f32::NAN
+            }
+        }
         e => (1.0 + man / 1024.0) * 2f32.powi(e - 15),
     }
 }
@@ -417,13 +471,31 @@ mod tests {
 
     #[test]
     fn rgb9e5_roundtrip() {
-        for c in [Vec3::ZERO, Vec3::new(0.7, 0.83, 0.98), Vec3::new(1.0, 0.5, 0.0), Vec3::new(3.7, 12.0, 0.01), Vec3::splat(65408.0), Vec3::new(1e-6, 0.0, 2e-6)] {
+        for c in [
+            Vec3::ZERO,
+            Vec3::new(0.7, 0.83, 0.98),
+            Vec3::new(1.0, 0.5, 0.0),
+            Vec3::new(3.7, 12.0, 0.01),
+            Vec3::splat(65408.0),
+            Vec3::new(1e-6, 0.0, 2e-6),
+        ] {
             let d = decode_rgb9e5(encode_rgb9e5(c));
             let step = (c.max_element() / 256.0).max(2f32.powi(-24)); // denormal range: absolute steps
-            assert!((d - c).abs().max_element() <= step * 0.5 + 1e-12, "{c} → {d}");
+            assert!(
+                (d - c).abs().max_element() <= step * 0.5 + 1e-12,
+                "{c} → {d}"
+            );
         }
-        assert_eq!(decode_rgb9e5(encode_rgb9e5(Vec3::splat(1e9))), Vec3::splat(65408.0), "clamped to the largest value");
-        assert_eq!(decode_rgb9e5(encode_rgb9e5(Vec3::new(1.0, 0.0, 0.0))).x, 1.0, "1 is exact");
+        assert_eq!(
+            decode_rgb9e5(encode_rgb9e5(Vec3::splat(1e9))),
+            Vec3::splat(65408.0),
+            "clamped to the largest value"
+        );
+        assert_eq!(
+            decode_rgb9e5(encode_rgb9e5(Vec3::new(1.0, 0.0, 0.0))).x,
+            1.0,
+            "1 is exact"
+        );
     }
 
     #[test]
@@ -458,8 +530,14 @@ mod tests {
             let h = Half4::encode(Tone::Hdr, c);
             let eight = hdr_to_rgba8(bytemuck::bytes_of(&h));
             let want = Tone::Clamp.encode(c);
-            assert!(eight.iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 1), "{x}: {eight:?} vs {want:?}");
-            assert!((half_to_f32(h.0[0]) - linear_to_srgb_extended(x)).abs() <= linear_to_srgb_extended(x) * 1e-3);
+            assert!(
+                eight.iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 1),
+                "{x}: {eight:?} vs {want:?}"
+            );
+            assert!(
+                (half_to_f32(h.0[0]) - linear_to_srgb_extended(x)).abs()
+                    <= linear_to_srgb_extended(x) * 1e-3
+            );
         }
     }
 }

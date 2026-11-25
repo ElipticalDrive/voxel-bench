@@ -12,7 +12,10 @@ pub fn hash(mut x: u64) -> u64 {
 
 #[inline]
 pub fn hash3(seed: u64, x: i32, y: i32, z: i32) -> u64 {
-    hash(seed ^ hash((x as u32 as u64) | ((y as u32 as u64) << 32)) ^ hash(z as u32 as u64 ^ 0x9e3779b97f4a7c15))
+    hash(
+        seed ^ hash((x as u32 as u64) | ((y as u32 as u64) << 32))
+            ^ hash(z as u32 as u64 ^ 0x9e3779b97f4a7c15),
+    )
 }
 
 /// Uniform float in `[0, 1)` from a hash.
@@ -55,7 +58,13 @@ pub fn perlin2(seed: u64, x: f32, y: f32) -> f32 {
     let (x0, y0) = (x.floor(), y.floor());
     let (fx, fy) = (x - x0, y - y0);
     let (ix, iy) = (x0 as i32, y0 as i32);
-    let g = |dx: i32, dy: i32| grad2(hash3(seed, ix + dx, iy + dy, 0), fx - dx as f32, fy - dy as f32);
+    let g = |dx: i32, dy: i32| {
+        grad2(
+            hash3(seed, ix + dx, iy + dy, 0),
+            fx - dx as f32,
+            fy - dy as f32,
+        )
+    };
     let (u, v) = (fade(fx), fade(fy));
     let a = g(0, 0) + u * (g(1, 0) - g(0, 0));
     let b = g(0, 1) + u * (g(1, 1) - g(0, 1));
@@ -68,7 +77,12 @@ pub fn perlin3(seed: u64, x: f32, y: f32, z: f32) -> f32 {
     let (fx, fy, fz) = (x - x0, y - y0, z - z0);
     let (ix, iy, iz) = (x0 as i32, y0 as i32, z0 as i32);
     let g = |dx: i32, dy: i32, dz: i32| {
-        grad3(hash3(seed, ix + dx, iy + dy, iz + dz), fx - dx as f32, fy - dy as f32, fz - dz as f32)
+        grad3(
+            hash3(seed, ix + dx, iy + dy, iz + dz),
+            fx - dx as f32,
+            fy - dy as f32,
+            fz - dz as f32,
+        )
     };
     let (u, v, w) = (fade(fx), fade(fy), fade(fz));
     let l = |a: f32, b: f32, t: f32| a + t * (b - a);

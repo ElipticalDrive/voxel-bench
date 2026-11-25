@@ -65,8 +65,10 @@ impl Plan {
     /// Loads with overrides (`dotted.path=value`) and removals (`dotted.path`; absent keys
     /// are fine, so scripts can unset across plans).
     pub fn load_with(path: &Path, overrides: &[String], unset: &[String]) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Self::parse_with(&text, overrides, unset).with_context(|| format!("in plan {}", path.display()))
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Self::parse_with(&text, overrides, unset)
+            .with_context(|| format!("in plan {}", path.display()))
     }
 
     pub fn parse(text: &str, overrides: &[String]) -> anyhow::Result<Self> {
@@ -83,7 +85,9 @@ impl Plan {
             let last = parts.pop().unwrap_or_default();
             let mut cur = Some(&mut table);
             for p in parts {
-                cur = cur.and_then(|t| t.get_mut(p)).and_then(|v| v.as_table_mut());
+                cur = cur
+                    .and_then(|t| t.get_mut(p))
+                    .and_then(|v| v.as_table_mut());
             }
             if cur.and_then(|t| t.remove(last)).is_none() {
                 tracing::debug!("unset `{u}`: not in the plan");
@@ -105,7 +109,8 @@ impl Plan {
     pub fn distinct_labels(&mut self) {
         let run = self.run.clone();
         let mut seen: std::collections::HashMap<String, usize> = Default::default();
-        let mut taken: std::collections::HashSet<String> = self.renderers.iter().map(|r| r.run_label(&run)).collect();
+        let mut taken: std::collections::HashSet<String> =
+            self.renderers.iter().map(|r| r.run_label(&run)).collect();
         for r in &mut self.renderers {
             let n = seen.entry(r.run_label(&run)).or_insert(0);
             *n += 1;
@@ -126,13 +131,20 @@ impl Plan {
     /// The renderers a pass of mode `m` runs, in order: those that support it (`standalone`:
     /// the standalone renderers' infos), and of the swept pipelines it cannot tell apart
     /// ([`RendererSpec::told_apart`]) the first; with how many swept ones that leaves out.
-    pub fn passes(&self, m: mr_core::PassMode, standalone: &[mr_core::RendererInfo]) -> (Vec<RendererSpec>, usize) {
+    pub fn passes(
+        &self,
+        m: mr_core::PassMode,
+        standalone: &[mr_core::RendererInfo],
+    ) -> (Vec<RendererSpec>, usize) {
         let mut seen = std::collections::HashSet::new();
         let mut moot = 0;
         let specs = self
             .renderers
             .iter()
-            .filter(|s| s.info(&self.run, standalone).is_some_and(|i| s.supports(&i, m)))
+            .filter(|s| {
+                s.info(&self.run, standalone)
+                    .is_some_and(|i| s.supports(&i, m))
+            })
             .filter(|s| {
                 let first = !s.swept || seen.insert(s.told_apart(m));
                 moot += usize::from(!first);

@@ -46,7 +46,11 @@ pub struct MeshHit {
 impl MeshHit {
     /// The linear albedo (the colour without its sRGB encoding).
     pub fn albedo(&self) -> Vec3 {
-        Vec3::new(srgb_to_linear_f(self.color.x), srgb_to_linear_f(self.color.y), srgb_to_linear_f(self.color.z))
+        Vec3::new(
+            srgb_to_linear_f(self.color.x),
+            srgb_to_linear_f(self.color.y),
+            srgb_to_linear_f(self.color.z),
+        )
     }
 }
 
@@ -79,7 +83,6 @@ impl Tri {
     fn hi(&self) -> DVec3 {
         self.p0.max(self.p0 + self.e1).max(self.p0 + self.e2)
     }
-
 }
 
 impl Meshes {
@@ -109,23 +112,45 @@ impl Meshes {
         self.nodes.clear();
         self.bounds.clear();
         for inst in &self.instances {
-            let Some(m) = self.data.get(&inst.mesh) else { continue };
+            let Some(m) = self.data.get(&inst.mesh) else {
+                continue;
+            };
             let start = self.tris.len();
-            let xf = |p: [f32; 3]| inst.position + inst.rotation * (Vec3::from_array(p).as_dvec3() * inst.scale);
+            let xf = |p: [f32; 3]| {
+                inst.position + inst.rotation * (Vec3::from_array(p).as_dvec3() * inst.scale)
+            };
             let col = |i: u32| {
                 let c = m.colors[i as usize];
                 Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32) / 255.0
             };
             for t in m.indices.as_chunks::<3>().0 {
-                let (a, b, c) = (xf(m.positions[t[0] as usize]), xf(m.positions[t[1] as usize]), xf(m.positions[t[2] as usize]));
-                self.tris.push(Tri { p0: a, e1: b - a, e2: c - a, c: [col(t[0]), col(t[1]), col(t[2])] });
+                let (a, b, c) = (
+                    xf(m.positions[t[0] as usize]),
+                    xf(m.positions[t[1] as usize]),
+                    xf(m.positions[t[2] as usize]),
+                );
+                self.tris.push(Tri {
+                    p0: a,
+                    e1: b - a,
+                    e2: c - a,
+                    c: [col(t[0]), col(t[1]), col(t[2])],
+                });
             }
             if self.tris.len() == start {
                 continue;
             }
             let end = self.tris.len();
-            let root = build_bvh(&mut self.tris[start..end], &mut self.nodes, start, &|t: &Tri| (t.lo(), t.hi()));
-            self.bounds.push(Bounds { center: inst.position, radius: m.radius() as f64 * inst.scale * 1.0001 + 1e-6, root });
+            let root = build_bvh(
+                &mut self.tris[start..end],
+                &mut self.nodes,
+                start,
+                &|t: &Tri| (t.lo(), t.hi()),
+            );
+            self.bounds.push(Bounds {
+                center: inst.position,
+                radius: m.radius() as f64 * inst.scale * 1.0001 + 1e-6,
+                root,
+            });
         }
     }
 
@@ -138,7 +163,11 @@ impl Meshes {
             n = -n;
         }
         let (u, v) = (u as f32, v as f32);
-        Some(MeshHit { t, normal: n.as_vec3(), color: tri.c[0] * (1.0 - u - v) + tri.c[1] * u + tri.c[2] * v })
+        Some(MeshHit {
+            t,
+            normal: n.as_vec3(),
+            color: tri.c[0] * (1.0 - u - v) + tri.c[1] * u + tri.c[2] * v,
+        })
     }
 
     /// Whether any triangle is hit with `0 < t < max_t` (a shadow ray's test; stops at the
@@ -174,7 +203,9 @@ impl Meshes {
                     continue;
                 }
                 for (i, tri) in self.tris[node.a..node.b].iter().enumerate() {
-                    if let Some((t, u, v)) = intersect(tri, o, d).filter(|h| h.0 > 1e-9 && h.0 < limit) {
+                    if let Some((t, u, v)) =
+                        intersect(tri, o, d).filter(|h| h.0 > 1e-9 && h.0 < limit)
+                    {
                         let i = node.a + i;
                         limit = t;
                         best = Some((t, i, u, v));
@@ -196,7 +227,12 @@ mod tests {
 
     /// One triangle in the z = 0 plane, coloured red / green / blue at its corners.
     fn tri_scene(inst: MeshInstance) -> Meshes {
-        let m = MeshData { id: 0, positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], colors: vec![[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]], indices: vec![0, 1, 2] };
+        let m = MeshData {
+            id: 0,
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            colors: vec![[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]],
+            indices: vec![0, 1, 2],
+        };
         let mut s = Meshes::default();
         s.apply(MeshUpdate::Meshes(vec![Arc::new(m)]));
         s.apply(MeshUpdate::Instances(vec![inst]));
@@ -205,34 +241,66 @@ mod tests {
     }
 
     fn inst(position: DVec3, rotation: DQuat, scale: f64) -> MeshInstance {
-        MeshInstance { id: 0, mesh: 0, position, rotation, scale }
+        MeshInstance {
+            id: 0,
+            mesh: 0,
+            position,
+            rotation,
+            scale,
+        }
     }
 
     #[test]
     fn hits_misses_normals_and_colours() {
         let s = tri_scene(inst(DVec3::ZERO, DQuat::IDENTITY, 1.0));
         // From +z looking down -z at (0.25, 0.25): t = 5, normal +z, colour mix.
-        let h = s.trace(DVec3::new(0.25, 0.25, 5.0), -DVec3::Z, 100.0).expect("hit");
+        let h = s
+            .trace(DVec3::new(0.25, 0.25, 5.0), -DVec3::Z, 100.0)
+            .expect("hit");
         assert!((h.t - 5.0).abs() < 1e-9);
         assert!((h.normal - Vec3::Z).length() < 1e-6);
-        assert!((h.color - Vec3::new(0.5, 0.25, 0.25)).length() < 1e-5, "{:?}", h.color);
+        assert!(
+            (h.color - Vec3::new(0.5, 0.25, 0.25)).length() < 1e-5,
+            "{:?}",
+            h.color
+        );
         // From -z: two-sided, normal flips to face the ray.
-        let h = s.trace(DVec3::new(0.25, 0.25, -2.0), DVec3::Z, 100.0).expect("hit back side");
+        let h = s
+            .trace(DVec3::new(0.25, 0.25, -2.0), DVec3::Z, 100.0)
+            .expect("hit back side");
         assert!((h.normal + Vec3::Z).length() < 1e-6);
         // Outside the triangle, beyond max_t, and pointing away.
-        assert!(s.trace(DVec3::new(0.8, 0.8, 5.0), -DVec3::Z, 100.0).is_none());
-        assert!(s.trace(DVec3::new(0.25, 0.25, 5.0), -DVec3::Z, 4.0).is_none());
-        assert!(s.trace(DVec3::new(0.25, 0.25, 5.0), DVec3::Z, 100.0).is_none());
+        assert!(
+            s.trace(DVec3::new(0.8, 0.8, 5.0), -DVec3::Z, 100.0)
+                .is_none()
+        );
+        assert!(
+            s.trace(DVec3::new(0.25, 0.25, 5.0), -DVec3::Z, 4.0)
+                .is_none()
+        );
+        assert!(
+            s.trace(DVec3::new(0.25, 0.25, 5.0), DVec3::Z, 100.0)
+                .is_none()
+        );
     }
 
     #[test]
     fn instance_transform() {
         // Scaled 4x, rotated 90 degrees about y (local +x -> world -z), moved to (10, 0, 0).
-        let s = tri_scene(inst(DVec3::new(10.0, 0.0, 0.0), DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2), 4.0));
+        let s = tri_scene(inst(
+            DVec3::new(10.0, 0.0, 0.0),
+            DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2),
+            4.0,
+        ));
         // The triangle now lies in the x = 10 plane, spanning z in [-4, 0] and y in [0, 4].
-        let h = s.trace(DVec3::new(20.0, 1.0, -1.0), -DVec3::X, 100.0).expect("hit");
+        let h = s
+            .trace(DVec3::new(20.0, 1.0, -1.0), -DVec3::X, 100.0)
+            .expect("hit");
         assert!((h.t - 10.0).abs() < 1e-9);
-        assert!(s.trace(DVec3::new(20.0, 1.0, 1.0), -DVec3::X, 100.0).is_none());
+        assert!(
+            s.trace(DVec3::new(20.0, 1.0, 1.0), -DVec3::X, 100.0)
+                .is_none()
+        );
     }
 
     /// The BVH finds what testing every triangle finds: the same nearest hit, and a hit for
@@ -245,22 +313,42 @@ mod tests {
         for _ in 0..300 {
             let c = [r(4.0), r(4.0), r(4.0)];
             for _ in 0..3 {
-                positions.push([(c[0] + r(0.7)) as f32, (c[1] + r(0.7)) as f32, (c[2] + r(0.7)) as f32]);
+                positions.push([
+                    (c[0] + r(0.7)) as f32,
+                    (c[1] + r(0.7)) as f32,
+                    (c[2] + r(0.7)) as f32,
+                ]);
             }
         }
         let n = positions.len() as u32;
-        let m = MeshData { id: 0, positions, colors: vec![[200, 100, 50, 255]; n as usize], indices: (0..n).collect() };
+        let m = MeshData {
+            id: 0,
+            positions,
+            colors: vec![[200, 100, 50, 255]; n as usize],
+            indices: (0..n).collect(),
+        };
         let mut s = Meshes::default();
         s.apply(MeshUpdate::Meshes(vec![Arc::new(m)]));
-        s.apply(MeshUpdate::Instances(vec![inst(DVec3::new(1.0, 2.0, 3.0), DQuat::from_rotation_z(0.4), 1.5)]));
+        s.apply(MeshUpdate::Instances(vec![inst(
+            DVec3::new(1.0, 2.0, 3.0),
+            DQuat::from_rotation_z(0.4),
+            1.5,
+        )]));
         s.prepare();
         assert!(s.nodes.len() > 100, "a tree, not one leaf");
         let mut hits = 0;
         for _ in 0..2000 {
             let o = DVec3::new(r(12.0), r(12.0), r(12.0));
-            let d = (DVec3::new(1.0, 2.0, 3.0) + DVec3::new(r(5.0), r(5.0), r(5.0)) - o).normalize();
+            let d =
+                (DVec3::new(1.0, 2.0, 3.0) + DVec3::new(r(5.0), r(5.0), r(5.0)) - o).normalize();
             let max_t = 4.0 + r(1.0).abs() * 20.0;
-            let brute = s.tris.iter().filter_map(|t| intersect(t, o, d)).map(|h| h.0).filter(|&t| t > 1e-9 && t < max_t).min_by(f64::total_cmp);
+            let brute = s
+                .tris
+                .iter()
+                .filter_map(|t| intersect(t, o, d))
+                .map(|h| h.0)
+                .filter(|&t| t > 1e-9 && t < max_t)
+                .min_by(f64::total_cmp);
             assert_eq!(s.trace(o, d, max_t).map(|h| h.t), brute);
             assert_eq!(s.occluded(o, d, max_t), brute.is_some());
             hits += brute.is_some() as u32;

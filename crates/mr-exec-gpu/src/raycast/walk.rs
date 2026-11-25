@@ -32,7 +32,6 @@ use crate::{Core, CoreSpec, REGION_BINDING};
 
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_WALK;
 
-
 pub(crate) fn info() -> RendererInfo {
     RendererInfo {
         name: "gpu".into(),
@@ -44,37 +43,95 @@ pub(crate) fn info() -> RendererInfo {
     }
 }
 
-
 /// The GPU traversals that count their steps (`Cap::Steps`), which `view = steps` needs as
 /// the primary walk.
 fn steps_walks() -> Vec<&'static str> {
-    mr_components::components(Role::Traversal).filter(|c| caps::provides(mr_components::Kind::Gpu, Role::Traversal, c.name, Cap::Steps)).map(|c| c.name).collect()
+    mr_components::components(Role::Traversal)
+        .filter(|c| {
+            caps::provides(
+                mr_components::Kind::Gpu,
+                Role::Traversal,
+                c.name,
+                Cap::Steps,
+            )
+        })
+        .map(|c| c.name)
+        .collect()
 }
 
 /// What the walk writes for the post's view (`View::Steps`, `View::Distance`).
 const QUANTITIES: &[Quantity] = &[
-    Quantity::ramp("steps", "loop iterations (primary ray)", "primary-ray loop iterations per pixel (log)", false, true),
-    Quantity::ramp("distance", "distance to the primary hit (blocks)", "the primary hit's distance in blocks (linear; white for the sky)", true, false),
+    Quantity::ramp(
+        "steps",
+        "loop iterations (primary ray)",
+        "primary-ray loop iterations per pixel (log)",
+        false,
+        true,
+    ),
+    Quantity::ramp(
+        "distance",
+        "distance to the primary hit (blocks)",
+        "the primary hit's distance in blocks (linear; white for the sky)",
+        true,
+        false,
+    ),
 ];
 
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
-        ParamSpec::int("tile", "beam prepass: tile size in pixels (1 = no prepass)", 1, 64, 8, true).of("prepass", &["beam"]),
+        ParamSpec::int(
+            "tile",
+            "beam prepass: tile size in pixels (1 = no prepass)",
+            1,
+            64,
+            8,
+            true,
+        )
+        .of("prepass", &["beam"]),
     ];
     p.extend(shade_state::params());
     p.push(REGION.placement_param("inline"));
     p.push(ParamSpec::bool("exact", "incremental: recompute exit times from the integer cell after each move (no float drift) instead of accumulating them", true, true).of("traversal", &["incremental"]));
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
-        p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("traversal", &["incremental"]));
+        p.push(
+            ParamSpec::bool(
+                &format!("skip{size}"),
+                &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"),
+                true,
+                true,
+            )
+            .of("traversal", &["incremental"]),
+        );
     }
     p.push(ParamSpec::choice("dispatch", "How pixels are run: `compute` (one compute thread per pixel) or `fragment` (a fragment shader over a full-screen triangle; was gpu-frag-dda)", &["compute", "fragment"], "compute", true));
     let [view, view_max] = mr_components::post::view_knobs(QUANTITIES);
-    p.push(view.needs("steps", "visibility", Some("primary"), &steps_walks(), "steps"));
+    p.push(view.needs(
+        "steps",
+        "visibility",
+        Some("primary"),
+        &steps_walks(),
+        "steps",
+    ));
     p.push(view_max);
     p.extend([
         shadows_param(),
-        ParamSpec::int("max_steps", "Loop iteration limit per ray (compiled into the kernels)", 32, 16384, 2048, false).baked(true),
-        ParamSpec::int("pool_mb", "Voxel pool limit (MiB); for region storages (tree64) the limit of their own data", 64, 6144, 2048, false),
+        ParamSpec::int(
+            "max_steps",
+            "Loop iteration limit per ray (compiled into the kernels)",
+            32,
+            16384,
+            2048,
+            false,
+        )
+        .baked(true),
+        ParamSpec::int(
+            "pool_mb",
+            "Voxel pool limit (MiB); for region storages (tree64) the limit of their own data",
+            64,
+            6144,
+            2048,
+            false,
+        ),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
     ]);
     p
@@ -94,7 +151,14 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { view: "image".into(), view_max: 256, dispatch: "compute".into(), pool_mb: 2048, max_steps: 2048, frames_in_flight: 3 }
+        Self {
+            view: "image".into(),
+            view_max: 256,
+            dispatch: "compute".into(),
+            pool_mb: 2048,
+            max_steps: 2048,
+            frames_in_flight: 3,
+        }
     }
 }
 
@@ -111,7 +175,13 @@ struct KernelKnobs {
 
 impl Default for KernelKnobs {
     fn default() -> Self {
-        Self { exact: true, skip2: true, skip4: true, skip8: true, skip16: true }
+        Self {
+            exact: true,
+            skip2: true,
+            skip4: true,
+            skip8: true,
+            skip16: true,
+        }
     }
 }
 
@@ -141,7 +211,13 @@ struct ShadingKnobs {
 
 impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self { placement: "inline".into(), shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
+        Self {
+            placement: "inline".into(),
+            shadows: Shadows::All,
+            bounces: 1,
+            spp: 1,
+            accumulate: true,
+        }
     }
 }
 
@@ -181,11 +257,23 @@ impl Composition {
     fn of(g: &graph::Checked, opts: &Options, max_lod: u8) -> anyhow::Result<Self> {
         // Every site's walk; the primary kernel's constants are its node's knobs.
         let mut walks = Walks::of(g);
-        let site = |role, port| g.site(role, port).ok_or_else(|| anyhow::anyhow!("raycast-gpu: {} `{port}` rays are not bound", role.name()));
+        let site = |role, port| {
+            g.site(role, port).ok_or_else(|| {
+                anyhow::anyhow!("raycast-gpu: {} `{port}` rays are not bound", role.name())
+            })
+        };
         let primary_site = site(Role::Visibility, "primary")?;
         let k: KernelKnobs = g.knobs(primary_site.kernel).map_err(anyhow::Error::msg)?;
         let primary = walks.site(g, primary_site, STORAGE_GROUPS, false);
-        walks.kernels[primary].consts = mr_components::shaders::KernelConsts { lod: false, exact: k.exact, levels: [k.skip2, k.skip4, k.skip8, k.skip16].iter().enumerate().fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)), max_steps: opts.max_steps };
+        walks.kernels[primary].consts = mr_components::shaders::KernelConsts {
+            lod: false,
+            exact: k.exact,
+            levels: [k.skip2, k.skip4, k.skip8, k.skip16]
+                .iter()
+                .enumerate()
+                .fold(0, |m, (i, &on)| m | (on as u32) << (i + 1)),
+            max_steps: opts.max_steps,
+        };
         walks.set_max_steps(opts.max_steps);
         let shadow = match super::shading_site(g, "shadow") {
             Some(_) => walks.site(g, site(Role::Shading, "shadow")?, STORAGE_GROUPS, false),
@@ -195,12 +283,19 @@ impl Composition {
             Some(Some(s)) => walks.site(g, s, STORAGE_GROUPS, false),
             _ => shadow,
         };
-        let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+        let mesh_shadow = g
+            .site(Role::Meshes, "shadow")
+            .map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         let (prepass, pk) = match g.find(Role::Prepass) {
-            Some(id) => (g.node(id).component.clone(), g.knobs::<PrepassKnobs>(id).map_err(anyhow::Error::msg)?),
+            Some(id) => (
+                g.node(id).component.clone(),
+                g.knobs::<PrepassKnobs>(id).map_err(anyhow::Error::msg)?,
+            ),
             None => ("none".into(), PrepassKnobs::default()),
         };
-        let meshes = g.find(Role::Meshes).is_some_and(|id| g.node(id).component != "none");
+        let meshes = g
+            .find(Role::Meshes)
+            .is_some_and(|id| g.node(id).component != "none");
         let mut comp = Self {
             walks,
             shadow,
@@ -216,7 +311,9 @@ impl Composition {
         if max_lod > 0 {
             comp.set_lod(true);
             if let Some(why) = lod_blocker(&comp) {
-                anyhow::bail!("raycast-gpu: asked for LOD (max_lod = {max_lod}), which this pipeline lacks: {why}");
+                anyhow::bail!(
+                    "raycast-gpu: asked for LOD (max_lod = {max_lod}), which this pipeline lacks: {why}"
+                );
             }
         }
         Ok(comp)
@@ -228,13 +325,20 @@ impl Composition {
 
     /// The prepass in effect: a tile of 1 pixel turns it off.
     fn prepass(&self) -> &str {
-        if self.tile <= 1 { "none" } else { &self.prepass }
+        if self.tile <= 1 {
+            "none"
+        } else {
+            &self.prepass
+        }
     }
 
     /// Sets LOD on every kernel (they all walk the LOD chunks).
     fn set_lod(&mut self, lod: bool) {
         self.lod = lod;
-        self.walks.kernels.iter_mut().for_each(|k| k.consts.lod = lod);
+        self.walks
+            .kernels
+            .iter_mut()
+            .for_each(|k| k.consts.lod = lod);
     }
 
     /// The shader as modules: every storage and kernel node its own
@@ -247,13 +351,32 @@ impl Composition {
         let mut program = mr_gpu::program::Program::world(Some("rays::shadow"));
         self.walks.add_to(&mut program);
         let rays = shaders::shading_rays(&mut program, &self.walks, self.shadow, self.bounce);
-        shaders::shading(&mut program, shading, &rays.iter().map(String::as_str).collect::<Vec<_>>(), 0, crate::STATE_BINDING);
+        shaders::shading(
+            &mut program,
+            shading,
+            &rays.iter().map(String::as_str).collect::<Vec<_>>(),
+            0,
+            crate::STATE_BINDING,
+        );
         // Mesh records at group 3 (the triangles at binding 3), lit through the mesh-shadow site.
         // With `Meshed::Rays` the shading's rays meet the triangles too.
-        let meshes = (meshed != Meshed::No).then(|| shaders::meshes(&mut program, &self.walks, shading, [self.shadow, self.bounce], self.mesh_shadow, 3, 3, meshed == Meshed::Rays));
+        let meshes = (meshed != Meshed::No).then(|| {
+            shaders::meshes(
+                &mut program,
+                &self.walks,
+                shading,
+                [self.shadow, self.bounce],
+                self.mesh_shadow,
+                3,
+                3,
+                meshed == Meshed::Rays,
+            )
+        });
         let pre = mr_components::prepass::gpu_wgsl(self.prepass()).expect("validated");
         let primary = self.primary();
-        let primary_storage = primary.storage.expect("the walk's primary rays walk a storage");
+        let primary_storage = primary
+            .storage
+            .expect("the walk's primary rays walk a storage");
         let root = format!(
             "// Composition: storage = {}, prepass = {}, traversal = {}, shading = {shading}\n\
              const PREPASS_TILE: u32 = {}u;\n\
@@ -262,14 +385,34 @@ impl Composition {
             self.prepass(),
             primary.component,
             self.tile.max(1),
-            if meshed != Meshed::No { MESH_RECORDS_WGSL } else { "" },
+            if meshed != Meshed::No {
+                MESH_RECORDS_WGSL
+            } else {
+                ""
+            },
             include_str!("walk.wgsl"),
         );
-        let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string(), self.walks.kernel_path(0), self.walks.storage_path(primary_storage)];
+        let mut deps = vec![
+            shaders::SHADING.to_string(),
+            shaders::STATE.to_string(),
+            self.walks.kernel_path(0),
+            self.walks.storage_path(primary_storage),
+        ];
         deps.extend(meshes.into_iter().flatten());
         deps.extend(rays);
-        deps.extend([mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON].map(String::from));
-        CastProgram { program, root, deps }
+        deps.extend(
+            [
+                mr_gpu::program::LIGHTING,
+                mr_gpu::program::VOXELS,
+                mr_gpu::program::COMMON,
+            ]
+            .map(String::from),
+        );
+        CastProgram {
+            program,
+            root,
+            deps,
+        }
     }
 }
 
@@ -277,12 +420,35 @@ impl Composition {
 /// can't: LOD needs every storage and kernel to handle LOD chunks and a prepass that copes
 /// (none; the beam reads level 0); `view = "steps"` a primary walk that counts its steps.
 fn feature_blocker(c: &Composition) -> Option<String> {
-    let lod = c.lod.then(|| lod_blocker(c).map(|w| format!("this run streams LOD chunks: {w}"))).flatten();
-    lod.or_else(|| (c.view == View::Steps && !caps::provides(mr_components::Kind::Gpu, Role::Traversal, &c.primary().component, Cap::Steps)).then(|| format!("view = steps: traversal `{}` lacks steps", c.primary().component)))
+    let lod = c
+        .lod
+        .then(|| lod_blocker(c).map(|w| format!("this run streams LOD chunks: {w}")))
+        .flatten();
+    lod.or_else(|| {
+        (c.view == View::Steps
+            && !caps::provides(
+                mr_components::Kind::Gpu,
+                Role::Traversal,
+                &c.primary().component,
+                Cap::Steps,
+            ))
+        .then(|| {
+            format!(
+                "view = steps: traversal `{}` lacks steps",
+                c.primary().component
+            )
+        })
+    })
 }
 
 fn lod_blocker(c: &Composition) -> Option<String> {
-    let pre = (!caps::provides(mr_components::Kind::Gpu, Role::Prepass, c.prepass(), Cap::Lod)).then(|| format!("prepass `{}` lacks lod", c.prepass()));
+    let pre = (!caps::provides(
+        mr_components::Kind::Gpu,
+        Role::Prepass,
+        c.prepass(),
+        Cap::Lod,
+    ))
+    .then(|| format!("prepass `{}` lacks lod", c.prepass()));
     let why: Vec<String> = c.walks.lod_blocker().into_iter().chain(pre).collect();
     (!why.is_empty()).then(|| why.join("; "))
 }
@@ -315,7 +481,12 @@ pub(crate) struct Walk {
 }
 
 impl Walk {
-    pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String, Option<crate::remote::Far>)> {
+    pub(crate) fn new(
+        p: &InitParams,
+        devices: &Devices,
+        waker: Waker,
+        g: &graph::Checked,
+    ) -> anyhow::Result<(Core, Self, String, Option<crate::remote::Far>)> {
         let mut opts: Options = p.options()?;
         (opts.view, opts.view_max) = mr_components::post::view_chosen(g, &opts.view, opts.view_max);
         let comp = Composition::of(g, &opts, p.max_lod)?;
@@ -329,28 +500,38 @@ impl Walk {
         let stages = wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT;
         // The storage instances' data: the primary's at group 2, the other sites' at 4.. .
         let spec = CoreSpec {
-                gpu: GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY },
-                walks: &comp.walks,
-                accel: crate::accel::AccelSpec::of(g, &comp.walks)?,
-                stages,
-                max_lod: if comp.lod { p.max_lod.min(6) } else { 0 },
-                voxels: false,
-                hits: mr_components::parse_placement(&k.placement)?.then_some(crate::exec::Form::Records),
-                shading: &shading,
-                bounces: k.bounces,
-                spp: k.spp,
-                accumulate: k.accumulate,
-                shadows: k.shadows,
-                max_steps: opts.max_steps,
-                pool_mb: opts.pool_mb,
-                frames_in_flight: opts.frames_in_flight,
+            gpu: GpuNeeds {
+                experimental: false,
+                required_features: wgpu::Features::empty(),
+                optional_features: wgpu::Features::TIMESTAMP_QUERY,
+            },
+            walks: &comp.walks,
+            accel: crate::accel::AccelSpec::of(g, &comp.walks)?,
+            stages,
+            max_lod: if comp.lod { p.max_lod.min(6) } else { 0 },
+            voxels: false,
+            hits: mr_components::parse_placement(&k.placement)?
+                .then_some(crate::exec::Form::Records),
+            shading: &shading,
+            bounces: k.bounces,
+            spp: k.spp,
+            accumulate: k.accumulate,
+            shadows: k.shadows,
+            max_steps: opts.max_steps,
+            pool_mb: opts.pool_mb,
+            frames_in_flight: opts.frames_in_flight,
         };
         let mut core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
         core.set_view(&opts.view, QUANTITIES)?;
         core.view_max = opts.view_max.clamp(1, 16384);
         let far = crate::remote::create(p, devices, waker, g, &core, &spec)?;
         let walk = |k: usize| comp.walks.label(k);
-        tracing::info!("raycast-gpu: primary {}, shadow {}, bounce {}, shading {shading}", walk(0), walk(comp.shadow), walk(comp.bounce));
+        tracing::info!(
+            "raycast-gpu: primary {}, shadow {}, bounce {}, shading {shading}",
+            walk(0),
+            walk(comp.shadow),
+            walk(comp.bounce)
+        );
         let walk = Self {
             meshes: MeshRecords::new(&core.gpu, p.width, p.height),
             built: comp.clone(),
@@ -372,18 +553,36 @@ impl Cast for Walk {
         let rw = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: stages,
-            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None },
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
             count: None,
         };
         vec![rw(REGION_BINDING), rw(REGION_BINDING + 1)]
     }
 
     fn bind_entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
-        vec![wgpu::BindGroupEntry { binding: REGION_BINDING, resource: self.beam.tiles.as_entire_binding() }, wgpu::BindGroupEntry { binding: REGION_BINDING + 1, resource: self.beam.stats.as_entire_binding() }]
+        vec![
+            wgpu::BindGroupEntry {
+                binding: REGION_BINDING,
+                resource: self.beam.tiles.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: REGION_BINDING + 1,
+                resource: self.beam.stats.as_entire_binding(),
+            },
+        ]
     }
 
-    fn layouts<'a>(&'a self, core: &'a Core, [layout0, world]: [&'a wgpu::BindGroupLayout; 2]) -> Vec<Option<&'a wgpu::BindGroupLayout>> {
-        core.storages.layouts(&[Some(layout0), Some(world), None, Some(self.meshes.layout())])
+    fn layouts<'a>(
+        &'a self,
+        core: &'a Core,
+        [layout0, world]: [&'a wgpu::BindGroupLayout; 2],
+    ) -> Vec<Option<&'a wgpu::BindGroupLayout>> {
+        core.storages
+            .layouts(&[Some(layout0), Some(world), None, Some(self.meshes.layout())])
     }
 
     fn program(&self, shading: &str, meshed: Meshed) -> CastProgram {
@@ -419,7 +618,11 @@ impl Cast for Walk {
     }
 
     fn entries(&self) -> &'static [&'static str] {
-        if mr_components::prepass::has_pass(self.comp.prepass()) { &["prepass"] } else { &[] }
+        if mr_components::prepass::has_pass(self.comp.prepass()) {
+            &["prepass"]
+        } else {
+            &[]
+        }
     }
 
     fn camera(&self) -> [u32; 2] {
@@ -438,43 +641,84 @@ impl Cast for Walk {
         self.bound = core.storages.prepare(&core.gpu, &core.world);
     }
 
-    fn encode_meshes(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, first: bool) -> bool {
+    fn encode_meshes(
+        &mut self,
+        core: &mut Core,
+        enc: &mut wgpu::CommandEncoder,
+        ticket: Ticket,
+        req: &FrameRequest,
+        first: bool,
+    ) -> bool {
         let want_meshes = req.meshes && self.built.meshes;
         let meshes_on = self.meshes.active(want_meshes);
-        let ts = if meshes_on { core.ring.render_timestamps(ticket, first, false) } else { None };
+        let ts = if meshes_on {
+            core.ring.render_timestamps(ticket, first, false)
+        } else {
+            None
+        };
         if meshes_on {
             core.ring.stage(enc, ticket, "meshes", &self.stage_nodes[0]);
         }
-        self.meshes.encode(&core.gpu, enc, &req.camera, core.width as f32 / core.height as f32, req.mode, want_meshes, ts);
+        self.meshes.encode(
+            &core.gpu,
+            enc,
+            &req.camera,
+            core.width as f32 / core.height as f32,
+            req.mode,
+            want_meshes,
+            ts,
+        );
         meshes_on
     }
 
-    fn prepass(&mut self, core: &mut Core, passes: &Passes, enc: &mut wgpu::CommandEncoder, ticket: Ticket, world: &wgpu::BindGroup, first: bool) -> bool {
+    fn prepass(
+        &mut self,
+        core: &mut Core,
+        passes: &Passes,
+        enc: &mut wgpu::CommandEncoder,
+        ticket: Ticket,
+        world: &wgpu::BindGroup,
+        first: bool,
+    ) -> bool {
         let pre = passes.extra.first();
         self.prepass = pre.is_some();
         self.copy_stats = self.beam.begin(enc, self.prepass);
         if let Some(pre) = pre {
-            core.ring.stage(enc, ticket, "prepass", &self.stage_nodes[1]);
+            core.ring
+                .stage(enc, ticket, "prepass", &self.stage_nodes[1]);
             let tile = self.built.tile.max(1);
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("prepass"), timestamp_writes: core.ring.compute_timestamps(ticket, first, false) });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("prepass"),
+                timestamp_writes: core.ring.compute_timestamps(ticket, first, false),
+            });
             pass.set_pipeline(pre);
             pass.set_bind_group(0, passes.bind0(), &[]);
             pass.set_bind_group(1, world, &[]);
             pass.set_bind_group(3, self.meshes.bind_group(), &[]);
             self.bound.compute(&mut pass);
-            pass.dispatch_workgroups(core.width.div_ceil(tile).div_ceil(8), core.height.div_ceil(tile).div_ceil(8), 1);
+            pass.dispatch_workgroups(
+                core.width.div_ceil(tile).div_ceil(8),
+                core.height.div_ceil(tile).div_ceil(8),
+                1,
+            );
         }
         self.prepass
     }
 
     fn groups(&self) -> impl Iterator<Item = (u32, &wgpu::BindGroup)> {
-        std::iter::once((3, self.meshes.bind_group())).chain(self.bound.0.iter().map(|(g, b)| (*g, b)))
+        std::iter::once((3, self.meshes.bind_group()))
+            .chain(self.bound.0.iter().map(|(g, b)| (*g, b)))
     }
 
     fn stats(&self, core: &Core) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
-        let counters = core.storages.counters()
+        let counters = core
+            .storages
+            .counters()
             .into_iter()
-            .chain(self.prepass.then(|| ("avg_skip_blocks".to_string(), self.beam.avg_skip)))
+            .chain(
+                self.prepass
+                    .then(|| ("avg_skip_blocks".to_string(), self.beam.avg_skip)),
+            )
             .collect();
         (counters, None, Vec::new())
     }
@@ -526,7 +770,9 @@ impl Cast for Walk {
                 let mut c = self.comp.clone();
                 set(&mut c).map(|_| self.comp = c)
             }
-            "dispatch" => parse_dispatch(value.as_str().unwrap_or("")).map(|f| self.comp.fragment = f),
+            "dispatch" => {
+                parse_dispatch(value.as_str().unwrap_or("")).map(|f| self.comp.fragment = f)
+            }
             "exact" => {
                 self.comp.walks.kernels[0].consts.exact = value.as_bool().unwrap_or(true);
                 Ok(())
@@ -570,9 +816,26 @@ impl Beam {
     fn new(gpu: &Gpu, width: u32, height: u32) -> Self {
         let res = || format!("the resolution ({width}x{height})");
         Self {
-            tiles: gpu.storage("beam tiles", width as u64 * height as u64 * 4, wgpu::BufferUsages::STORAGE, res),
-            stats: gpu.storage("beam stats", 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, res),
-            read: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("beam stats readback"), size: 16, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
+            tiles: gpu.storage(
+                "beam tiles",
+                width as u64 * height as u64 * 4,
+                wgpu::BufferUsages::STORAGE,
+                res,
+            ),
+            stats: gpu.storage(
+                "beam stats",
+                16,
+                wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                res,
+            ),
+            read: gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("beam stats readback"),
+                size: 16,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
             state: Arc::new(AtomicU32::new(0)),
             avg_skip: 0.0,
         }
@@ -604,7 +867,11 @@ impl Beam {
     fn read(&self) {
         self.state.store(1, Ordering::Release);
         let state = self.state.clone();
-        self.read.slice(..).map_async(wgpu::MapMode::Read, move |r| state.store(if r.is_ok() { 2 } else { 0 }, Ordering::Release));
+        self.read
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| {
+                state.store(if r.is_ok() { 2 } else { 0 }, Ordering::Release)
+            });
     }
 }
 
@@ -621,13 +888,24 @@ mod tests {
             let mut f = info().features;
             ck.narrow_on(&mut f, &|_| None);
             // (Graphs of the region the walk does not compose, the second GPU's split, aside.)
-            let Ok(c) = Composition::of(&ck, &Options::default(), 0) else { continue };
+            let Ok(c) = Composition::of(&ck, &Options::default(), 0) else {
+                continue;
+            };
             let walk = lod_blocker(&c);
-            assert_eq!(f.has(Feature::Lod), walk.is_none(), "{:?}: narrow {:?}, walk {walk:?}", ck.graph.label(), f.why_not(Feature::Lod));
+            assert_eq!(
+                f.has(Feature::Lod),
+                walk.is_none(),
+                "{:?}: narrow {:?}, walk {walk:?}",
+                ck.graph.label(),
+                f.why_not(Feature::Lod)
+            );
             n += 1;
             with += f.has(Feature::Lod) as usize;
         }
-        assert!(n > 20 && with > 0 && with < n, "{n} graphs, {with} with LOD");
+        assert!(
+            n > 20 && with > 0 && with < n,
+            "{n} graphs, {with} with LOD"
+        );
     }
 
     /// Every composition's shader composes from its modules and validates (no GPU needed):
@@ -643,32 +921,68 @@ mod tests {
         let mut n = 0;
         for st in &storages {
             for k in &kernels {
-                for (ss, sk) in [("same", "same"), ("tree64", "same"), ("same", "sphere"), ("distance", "incremental")] {
+                for (ss, sk) in [
+                    ("same", "same"),
+                    ("tree64", "same"),
+                    ("same", "sphere"),
+                    ("distance", "incremental"),
+                ] {
                     for shading in base.choices("shading") {
                         for (prepass, tile) in [("none", 1), ("beam", 8)] {
-                            let mut edits = vec![Change::component("storage", st), Change::component("kernel", k), Change::component("shading", shading)];
+                            let mut edits = vec![
+                                Change::component("storage", st),
+                                Change::component("kernel", k),
+                                Change::component("shading", shading),
+                            ];
                             // Shadow and bounce rays through a walk of their own: another
                             // kernel, over the primary rays' storage or another.
                             let own = (ss, sk) != ("same", "same");
                             if own {
-                                edits.push(Change::add("shadow.kernel", Role::Traversal, if sk == "same" { k } else { sk }));
+                                edits.push(Change::add(
+                                    "shadow.kernel",
+                                    Role::Traversal,
+                                    if sk == "same" { k } else { sk },
+                                ));
                                 if ss != "same" {
-                                    edits.extend([Change::add("shadow.storage", Role::Storage, ss), Change::bind("shadow.storage", "changes", "world")]);
+                                    edits.extend([
+                                        Change::add("shadow.storage", Role::Storage, ss),
+                                        Change::bind("shadow.storage", "changes", "world"),
+                                    ]);
                                 }
-                                edits.push(Change::bind("shadow.kernel", "storage", if ss == "same" { "storage" } else { "shadow.storage" }));
-                                edits.extend([Change::bind("meshes", "shadow", "shadow.kernel"), Change::bind("shading", "shadow", "shadow.kernel")]);
+                                edits.push(Change::bind(
+                                    "shadow.kernel",
+                                    "storage",
+                                    if ss == "same" {
+                                        "storage"
+                                    } else {
+                                        "shadow.storage"
+                                    },
+                                ));
+                                edits.extend([
+                                    Change::bind("meshes", "shadow", "shadow.kernel"),
+                                    Change::bind("shading", "shadow", "shadow.kernel"),
+                                ]);
                             }
                             if shading == "pathtrace" {
-                                edits.push(Change::bind("shading", "bounce", if own { "shadow.kernel" } else { "kernel" }));
+                                edits.push(Change::bind(
+                                    "shading",
+                                    "bounce",
+                                    if own { "shadow.kernel" } else { "kernel" },
+                                ));
                             }
                             if prepass == "beam" {
-                                edits.extend([Change::add("prepass", Role::Prepass, "beam"), Change::bind("prepass", "storage", "storage"), Change::bind("visibility", "start", "prepass")]);
+                                edits.extend([
+                                    Change::add("prepass", Role::Prepass, "beam"),
+                                    Change::bind("prepass", "storage", "storage"),
+                                    Change::bind("visibility", "start", "prepass"),
+                                ]);
                             }
                             let mut graphs = vec![base.with_edits(&edits).unwrap()];
                             // Bounces and mesh shadows through walks of their own.
                             if shading == "pathtrace" && *k == "refloor" {
                                 let mut g = graphs[0].clone();
-                                g.nodes.insert("b.storage".into(), Node::new(Role::Storage, "rows"));
+                                g.nodes
+                                    .insert("b.storage".into(), Node::new(Role::Storage, "rows"));
                                 let mut bk = Node::new(Role::Traversal, "incremental");
                                 bk.inputs.insert("storage".into(), "b.storage".into());
                                 bk.knobs.insert("exact".into(), toml::Value::Boolean(false));
@@ -676,56 +990,137 @@ mod tests {
                                 let mut mk = Node::new(Role::Traversal, "rowrun");
                                 mk.inputs.insert("storage".into(), "storage".into());
                                 g.nodes.insert("m.kernel".into(), mk);
-                                g.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "b.kernel".into());
-                                g.nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), "m.kernel".into());
+                                g.nodes
+                                    .get_mut("shading")
+                                    .unwrap()
+                                    .inputs
+                                    .insert("bounce".into(), "b.kernel".into());
+                                g.nodes
+                                    .get_mut("meshes")
+                                    .unwrap()
+                                    .inputs
+                                    .insert("shadow".into(), "m.kernel".into());
                                 graphs.push(g);
                             }
                             for (gi, mut g) in graphs.into_iter().enumerate() {
                                 // The primary kernel's and the prepass's knobs on their nodes.
                                 let kernel = g.nodes.get_mut("kernel").unwrap();
-                                kernel.knobs.insert("exact".into(), toml::Value::Boolean(false));
-                                kernel.knobs.insert("skip4".into(), toml::Value::Boolean(false));
+                                kernel
+                                    .knobs
+                                    .insert("exact".into(), toml::Value::Boolean(false));
+                                kernel
+                                    .knobs
+                                    .insert("skip4".into(), toml::Value::Boolean(false));
                                 if let Some(pre) = g.nodes.get_mut("prepass") {
                                     pre.knobs.insert("tile".into(), toml::Value::Integer(tile));
                                 }
                                 assert!(g.validate().is_ok(), "{g:?}");
                                 let ck = g.check().unwrap();
-                                let opts = Options { view: "steps".into(), max_steps: 77, ..Default::default() };
+                                let opts = Options {
+                                    view: "steps".into(),
+                                    max_steps: 77,
+                                    ..Default::default()
+                                };
                                 // LOD where every walk handles it (not the walks of their own)
                                 // and the prepass copes; asked of another, it is refused.
-                                let lod = *st == "bricks" && *k == "refloor" && ss == "same" && sk == "same" && prepass == "none" && gi == 0;
-                                let supported = lod_blocker(&Composition::of(&ck, &opts, 0).unwrap()).is_none();
+                                let lod = *st == "bricks"
+                                    && *k == "refloor"
+                                    && ss == "same"
+                                    && sk == "same"
+                                    && prepass == "none"
+                                    && gi == 0;
+                                let supported =
+                                    lod_blocker(&Composition::of(&ck, &opts, 0).unwrap()).is_none();
                                 assert!(supported || !lod, "{g:?}");
-                                assert!(!(supported && (*st == "tree64" || ss == "tree64" || prepass == "beam" || gi == 1)), "{g:?}");
+                                assert!(
+                                    !(supported
+                                        && (*st == "tree64"
+                                            || ss == "tree64"
+                                            || prepass == "beam"
+                                            || gi == 1)),
+                                    "{g:?}"
+                                );
                                 match Composition::of(&ck, &opts, 4) {
                                     Ok(c) => assert!(supported && c.lod, "LOD not refused: {g:?}"),
-                                    Err(e) => assert!(!supported && e.to_string().contains("lacks"), "{e}"),
+                                    Err(e) => assert!(
+                                        !supported && e.to_string().contains("lacks"),
+                                        "{e}"
+                                    ),
                                 }
-                                let c = Composition::of(&ck, &opts, if lod { 4 } else { 0 }).unwrap_or_else(|e| panic!("{g:?}: {e}"));
+                                let c = Composition::of(&ck, &opts, if lod { 4 } else { 0 })
+                                    .unwrap_or_else(|e| panic!("{g:?}: {e}"));
                                 assert_eq!(c.lod, lod, "{c:?}");
                                 // Every site's kernel walks with the knob's step limit, a constant.
-                                assert!(c.walks.kernels.iter().all(|k| k.consts.max_steps == 77), "{c:?}");
+                                assert!(
+                                    c.walks.kernels.iter().all(|k| k.consts.max_steps == 77),
+                                    "{c:?}"
+                                );
                                 // Inline and deferred shading (the record-writing walk and the
                                 // common pass), with meshes' records (and their rays) and
                                 // without, in compute and fragment shaders.
-                                use Meshed::{No, Records, Rays};
-                                for (deferred, meshed, fragment) in [(false, Rays, false), (true, Rays, true), (false, Records, true), (true, Records, false), (false, No, true), (true, No, false)] {
-                                    let what = format!("{c:?} {shading} deferred {deferred} meshed {meshed:?} fragment {fragment}");
+                                use Meshed::{No, Rays, Records};
+                                for (deferred, meshed, fragment) in [
+                                    (false, Rays, false),
+                                    (true, Rays, true),
+                                    (false, Records, true),
+                                    (true, Records, false),
+                                    (false, No, true),
+                                    (true, No, false),
+                                ] {
+                                    let what = format!(
+                                        "{c:?} {shading} deferred {deferred} meshed {meshed:?} fragment {fragment}"
+                                    );
                                     let view = if deferred { View::Image } else { c.view };
-                                    super::super::tests::validate(c.program(shading, meshed), deferred, view, fragment, false, &what);
+                                    super::super::tests::validate(
+                                        c.program(shading, meshed),
+                                        deferred,
+                                        view,
+                                        fragment,
+                                        false,
+                                        &what,
+                                    );
                                     // With layers (the shadings that composite them).
-                                    if caps::provides(mr_components::Kind::Gpu, Role::Shading, shading, Cap::Layers) {
-                                        super::super::tests::validate(c.program(shading, meshed), deferred, View::Image, fragment, true, &format!("{what} layered"));
+                                    if caps::provides(
+                                        mr_components::Kind::Gpu,
+                                        Role::Shading,
+                                        shading,
+                                        Cap::Layers,
+                                    ) {
+                                        super::super::tests::validate(
+                                            c.program(shading, meshed),
+                                            deferred,
+                                            View::Image,
+                                            fragment,
+                                            true,
+                                            &format!("{what} layered"),
+                                        );
                                     }
                                     if !deferred {
-                                        let d = Composition { view: View::Distance, ..c.clone() };
-                                        super::super::tests::validate(d.program(shading, meshed), false, View::Distance, fragment, false, &what);
+                                        let d = Composition {
+                                            view: View::Distance,
+                                            ..c.clone()
+                                        };
+                                        super::super::tests::validate(
+                                            d.program(shading, meshed),
+                                            false,
+                                            View::Distance,
+                                            fragment,
+                                            false,
+                                            &what,
+                                        );
                                     }
                                     // The float output (`hdr`: the `HDR` def's declarations).
                                     if prepass == "none" {
                                         let mut h = c.clone();
                                         h.walks.post = mr_components::post::Tone::Hdr;
-                                        super::super::tests::validate(h.program(shading, meshed), deferred, view, fragment, false, &format!("{what} hdr"));
+                                        super::super::tests::validate(
+                                            h.program(shading, meshed),
+                                            deferred,
+                                            view,
+                                            fragment,
+                                            false,
+                                            &format!("{what} hdr"),
+                                        );
                                     }
                                 }
                                 n += 1;

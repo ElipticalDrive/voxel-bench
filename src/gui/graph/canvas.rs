@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use egui::{
+    Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
+};
 use mr_components::graph::{Data, Device, Graph, When, inputs, output};
 use mr_core::RendererInfo;
 
@@ -80,7 +82,12 @@ fn layout(g: &Graph) -> HashMap<String, Pos2> {
         let c = if model::world_side(n.role) {
             0
         } else {
-            n.inputs.iter().filter(|(p, s)| n.when(p) == When::Now && !model::world_side(g.nodes[*s].role)).filter_map(|(_, s)| col.get(s.as_str())).max().map_or(1, |c| c + 1)
+            n.inputs
+                .iter()
+                .filter(|(p, s)| n.when(p) == When::Now && !model::world_side(g.nodes[*s].role))
+                .filter_map(|(_, s)| col.get(s.as_str()))
+                .max()
+                .map_or(1, |c| c + 1)
         };
         col.insert(id, c);
     }
@@ -91,10 +98,23 @@ fn layout(g: &Graph) -> HashMap<String, Pos2> {
         // Barycentre of the inputs already placed (the world's side keeps reading order).
         let key = |id: &String| -> f32 {
             let n = &g.nodes[id];
-            let ys: Vec<f32> = n.inputs.values().filter_map(|s| pos.get(s)).map(|p| p.y).collect();
-            if c == 0 || ys.is_empty() { f32::MAX } else { ys.iter().sum::<f32>() / ys.len() as f32 }
+            let ys: Vec<f32> = n
+                .inputs
+                .values()
+                .filter_map(|s| pos.get(s))
+                .map(|p| p.y)
+                .collect();
+            if c == 0 || ys.is_empty() {
+                f32::MAX
+            } else {
+                ys.iter().sum::<f32>() / ys.len() as f32
+            }
         };
-        let mut keyed: Vec<(f32, usize, &String)> = ids.drain(..).enumerate().map(|(i, id)| (key(id), i, id)).collect();
+        let mut keyed: Vec<(f32, usize, &String)> = ids
+            .drain(..)
+            .enumerate()
+            .map(|(i, id)| (key(id), i, id))
+            .collect();
         keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         let mut y = 0.0;
         for (want, _, id) in keyed {
@@ -110,11 +130,25 @@ fn layout(g: &Graph) -> HashMap<String, Pos2> {
 
 fn bezier(from: Pos2, to: Pos2, s: f32) -> Vec<Pos2> {
     let dx = ((to.x - from.x).abs() * 0.5).max(50.0 * s);
-    let c = egui::epaint::CubicBezierShape::from_points_stroke([from, from + vec2(dx, 0.0), to - vec2(dx, 0.0), to], false, Color32::TRANSPARENT, Stroke::NONE);
+    let c = egui::epaint::CubicBezierShape::from_points_stroke(
+        [from, from + vec2(dx, 0.0), to - vec2(dx, 0.0), to],
+        false,
+        Color32::TRANSPARENT,
+        Stroke::NONE,
+    );
     c.flatten(Some(0.5))
 }
 
-pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &HashMap<String, Device>, selected: Option<&str>, trial: &mut Trial, infos: &[RendererInfo]) -> Response {
+pub fn show(
+    ui: &mut Ui,
+    view: &mut View,
+    auto_frame: bool,
+    g: &Graph,
+    devs: &HashMap<String, Device>,
+    selected: Option<&str>,
+    trial: &mut Trial,
+    infos: &[RendererInfo],
+) -> Response {
     let mut out = Response::default();
     let rect = ui.available_rect_before_wrap();
     let bg = ui.interact(rect, ui.id().with("canvas"), Sense::click_and_drag());
@@ -124,7 +158,9 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
 
     let base = layout(g);
     let offsets = view.offsets.clone();
-    let at = |id: &str| base.get(id).copied().unwrap_or_default() + offsets.get(id).copied().unwrap_or_default();
+    let at = |id: &str| {
+        base.get(id).copied().unwrap_or_default() + offsets.get(id).copied().unwrap_or_default()
+    };
     let (mut lo, mut hi) = (pos2(f32::MAX, f32::MAX), pos2(f32::MIN, f32::MIN));
     for id in g.nodes.keys() {
         let p = at(id);
@@ -132,7 +168,9 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
         hi = hi.max(p + vec2(W, height(g, id)));
     }
     let size = (hi - lo).max(vec2(1.0, 1.0));
-    let fit = ((rect.width() - 40.0) / size.x).min((rect.height() - 40.0) / size.y).clamp(0.7, 1.0);
+    let fit = ((rect.width() - 40.0) / size.x)
+        .min((rect.height() - 40.0) / size.y)
+        .clamp(0.7, 1.0);
     if bg.double_clicked() {
         (view.frame, view.pan) = (None, Vec2::ZERO);
     }
@@ -155,7 +193,8 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
     let screen = |p: Pos2| origin + p.to_vec2() * s;
     let font = |px: f32| FontId::proportional(px * s);
     let node_rect = |id: &str| Rect::from_min_size(screen(at(id)), vec2(W, height(g, id)) * s);
-    let in_pos = |id: &str, i: usize| screen(at(id)) + vec2(0.0, (HEAD + ROW * (i as f32 + 0.5)) * s);
+    let in_pos =
+        |id: &str, i: usize| screen(at(id)) + vec2(0.0, (HEAD + ROW * (i as f32 + 0.5)) * s);
     let out_pos = |id: &str| screen(at(id)) + vec2(W, HEAD * 0.5) * s;
 
     if bg.dragged() && view.wire.is_none() {
@@ -170,11 +209,17 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
     for (id, n) in &g.nodes {
         let ports = inputs(n.role, &n.component);
         for (port, src) in &n.inputs {
-            let Some(i) = ports.iter().position(|p| p.name == port) else { continue };
+            let Some(i) = ports.iter().position(|p| p.name == port) else {
+                continue;
+            };
             let Some(m) = g.nodes.get(src) else { continue };
             let d = output(m.role, &m.component);
             let thin = d == Data::Changes || d == Data::Chunks;
-            let color = if thin { data_color(d).gamma_multiply(0.45) } else { data_color(d) };
+            let color = if thin {
+                data_color(d).gamma_multiply(0.45)
+            } else {
+                data_color(d)
+            };
             let pts = bezier(out_pos(src), in_pos(id, i), s);
             let stroke = Stroke::new(if thin { 1.0 } else { 2.0 } * s.max(0.6), color);
             match n.when(port) {
@@ -182,7 +227,11 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
                 w => {
                     let mid = pts[pts.len() / 2];
                     painter.extend(Shape::dashed_line(&pts, stroke, 6.0 * s, 4.0 * s));
-                    let tag = if let When::Iterate(k) = w { format!("×{k}") } else { "prev".into() };
+                    let tag = if let When::Iterate(k) = w {
+                        format!("×{k}")
+                    } else {
+                        "prev".into()
+                    };
                     painter.text(mid, Align2::CENTER_BOTTOM, tag, font(10.0), color);
                 }
             }
@@ -195,7 +244,10 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
     let mut moved: Vec<(String, Vec2)> = vec![];
     let mut refit = false;
     // The node a draft's reason names (`accept` names nodes in backticks): marked as a fault.
-    let drafted = trial.draft().map(|why| model::faults(g, Some(why), &[], &[])).unwrap_or_default();
+    let drafted = trial
+        .draft()
+        .map(|why| model::faults(g, Some(why), &[], &[]))
+        .unwrap_or_default();
     for id in model::order(g) {
         let n = &g.nodes[&id];
         let r = node_rect(&id);
@@ -204,10 +256,27 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
         let fill = visuals.widgets.noninteractive.bg_fill;
         painter.rect_filled(r, 5.0 * s, fill);
         let head = Rect::from_min_size(r.min, vec2(r.width(), HEAD * s));
-        painter.rect_filled(head, egui::CornerRadius { nw: (5.0 * s) as u8, ne: (5.0 * s) as u8, sw: 0, se: 0 }, data_color(output(n.role, &n.component)).gamma_multiply(0.28));
+        painter.rect_filled(
+            head,
+            egui::CornerRadius {
+                nw: (5.0 * s) as u8,
+                ne: (5.0 * s) as u8,
+                sw: 0,
+                se: 0,
+            },
+            data_color(output(n.role, &n.component)).gamma_multiply(0.28),
+        );
         // A node the live lane's failure or a refused knob is about: red, the message on hover.
-        let lane = trial.faults.get(&id).map(|v| format!("The lane says this node is at fault:\n{}", v.join("\n")));
-        let draft = drafted.get(&id).map(|v| format!("The draft does not run because of this node:\n{}", v.join("\n")));
+        let lane = trial
+            .faults
+            .get(&id)
+            .map(|v| format!("The lane says this node is at fault:\n{}", v.join("\n")));
+        let draft = drafted.get(&id).map(|v| {
+            format!(
+                "The draft does not run because of this node:\n{}",
+                v.join("\n")
+            )
+        });
         let fault = match (lane, draft) {
             (None, None) => None,
             (a, b) => Some(a.into_iter().chain(b).collect::<Vec<_>>().join("\n\n")),
@@ -216,13 +285,39 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
             Some(f) => resp.on_hover_text(f),
             None => resp,
         };
-        let stroke = if fault.is_some() { Stroke::new(if sel { 3.0 } else { 2.0 }, super::FAULT) } else if sel { Stroke::new(2.0, visuals.selection.stroke.color) } else if resp.hovered() { Stroke::new(1.5, visuals.widgets.hovered.fg_stroke.color) } else { Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color) };
+        let stroke = if fault.is_some() {
+            Stroke::new(if sel { 3.0 } else { 2.0 }, super::FAULT)
+        } else if sel {
+            Stroke::new(2.0, visuals.selection.stroke.color)
+        } else if resp.hovered() {
+            Stroke::new(1.5, visuals.widgets.hovered.fg_stroke.color)
+        } else {
+            Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color)
+        };
         painter.rect_stroke(r, 5.0 * s, stroke, StrokeKind::Inside);
         match fault {
-            Some(_) => drop(painter.text(r.min + vec2(7.0, 4.0) * s, Align2::LEFT_TOP, format!("⚠ {id}"), font(10.0), super::FAULT)),
-            None => drop(painter.text(r.min + vec2(7.0, 4.0) * s, Align2::LEFT_TOP, &id, font(10.0), visuals.weak_text_color())),
+            Some(_) => drop(painter.text(
+                r.min + vec2(7.0, 4.0) * s,
+                Align2::LEFT_TOP,
+                format!("⚠ {id}"),
+                font(10.0),
+                super::FAULT,
+            )),
+            None => drop(painter.text(
+                r.min + vec2(7.0, 4.0) * s,
+                Align2::LEFT_TOP,
+                &id,
+                font(10.0),
+                visuals.weak_text_color(),
+            )),
         }
-        painter.text(r.min + vec2(7.0, 17.0) * s, Align2::LEFT_TOP, &n.component, FontId::proportional(13.0 * s), visuals.strong_text_color());
+        painter.text(
+            r.min + vec2(7.0, 17.0) * s,
+            Align2::LEFT_TOP,
+            &n.component,
+            FontId::proportional(13.0 * s),
+            visuals.strong_text_color(),
+        );
         // Where it runs (fused nodes: with their callers).
         if let Some(d) = devs.get(&id) {
             let fused = output(n.role, &n.component).fused();
@@ -232,9 +327,24 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
                 (false, None) => d.to_string(),
             };
             let tr = r.right_top() + vec2(-6.0, 5.0) * s;
-            let tr_rect = painter.text(tr, Align2::RIGHT_TOP, &label, font(10.0), if fused { visuals.weak_text_color() } else { device_color(*d) });
+            let tr_rect = painter.text(
+                tr,
+                Align2::RIGHT_TOP,
+                &label,
+                font(10.0),
+                if fused {
+                    visuals.weak_text_color()
+                } else {
+                    device_color(*d)
+                },
+            );
             if n.device.is_some() && !fused {
-                painter.rect_stroke(tr_rect.expand(2.0 * s), 3.0 * s, Stroke::new(1.0, device_color(*d)), StrokeKind::Outside);
+                painter.rect_stroke(
+                    tr_rect.expand(2.0 * s),
+                    3.0 * s,
+                    Stroke::new(1.0, device_color(*d)),
+                    StrokeKind::Outside,
+                );
             }
         }
         // Inputs.
@@ -247,12 +357,31 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
             } else {
                 painter.circle_stroke(c, 4.0 * s, Stroke::new(1.0, col.gamma_multiply(0.6)));
             }
-            let tc = if bound { visuals.text_color() } else { visuals.weak_text_color() };
-            painter.text(c + vec2(9.0 * s, 0.0), Align2::LEFT_CENTER, p.name, font(11.0), tc);
+            let tc = if bound {
+                visuals.text_color()
+            } else {
+                visuals.weak_text_color()
+            };
+            painter.text(
+                c + vec2(9.0 * s, 0.0),
+                Align2::LEFT_CENTER,
+                p.name,
+                font(11.0),
+                tc,
+            );
             if n.when(p.name) != When::Now {
-                painter.text(pos2(r.right() - 6.0 * s, c.y), Align2::RIGHT_CENTER, n.when(p.name).label(), font(10.0), visuals.weak_text_color());
+                painter.text(
+                    pos2(r.right() - 6.0 * s, c.y),
+                    Align2::RIGHT_CENTER,
+                    n.when(p.name).label(),
+                    font(10.0),
+                    visuals.weak_text_color(),
+                );
             }
-            let row = Rect::from_min_max(pos2(r.left() - 6.0 * s, c.y - ROW * 0.5 * s), pos2(r.right(), c.y + ROW * 0.5 * s));
+            let row = Rect::from_min_max(
+                pos2(r.left() - 6.0 * s, c.y - ROW * 0.5 * s),
+                pos2(r.right(), c.y + ROW * 0.5 * s),
+            );
             let pr = ui.interact(row, ui.id().with(("port", &id, p.name)), Sense::click());
             if pr.clicked() {
                 out.select = Some(Some(id.clone()));
@@ -261,7 +390,13 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
             if pointer.is_some_and(|q| row.contains(q)) {
                 hovered_port = Some((id.clone(), p.name.to_string()));
             }
-            let pr = pr.on_hover_text(format!("{}: {} ({}{})", p.name, p.description, p.data.name(), if p.required { "" } else { ", optional" }));
+            let pr = pr.on_hover_text(format!(
+                "{}: {} ({}{})",
+                p.name,
+                p.description,
+                p.data.name(),
+                if p.required { "" } else { ", optional" }
+            ));
             drop(pr);
         }
         // The output, with how many read it.
@@ -271,7 +406,13 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
         if !readers.is_empty() || d == Data::Image {
             painter.circle_filled(o, 5.0 * s, data_color(d));
             if readers.len() > 1 {
-                painter.text(o + vec2(7.0, -7.0) * s, Align2::LEFT_BOTTOM, format!("×{}", readers.len()), font(10.0), visuals.weak_text_color());
+                painter.text(
+                    o + vec2(7.0, -7.0) * s,
+                    Align2::LEFT_BOTTOM,
+                    format!("×{}", readers.len()),
+                    font(10.0),
+                    visuals.weak_text_color(),
+                );
             }
         }
         let orect = Rect::from_center_size(o, vec2(16.0, 16.0) * s);
@@ -292,12 +433,17 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
             refit = true;
         }
         resp.on_hover_ui(|ui| {
-            ui.label(egui::RichText::new(format!("{id}: {} {}", n.role.name(), n.component)).strong());
+            ui.label(
+                egui::RichText::new(format!("{id}: {} {}", n.role.name(), n.component)).strong(),
+            );
             ui.label(super::description(n.role, &n.component));
             if let Some(st) = mr_components::graph::state(n.role, &n.component) {
                 ui.weak(format!("Keeps: {st}"));
             }
-            let rd: Vec<String> = model::readers(g, &id).into_iter().map(|(r, p)| format!("{r}.{p}")).collect();
+            let rd: Vec<String> = model::readers(g, &id)
+                .into_iter()
+                .map(|(r, p)| format!("{r}.{p}"))
+                .collect();
             if !rd.is_empty() {
                 ui.weak(format!("Read by: {}", rd.join(", ")));
             }
@@ -324,7 +470,11 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
             for (id, n) in &g.nodes {
                 for (i, p) in inputs(n.role, &n.component).iter().enumerate() {
                     if p.data == d && *id != src && p.data != Data::Changes {
-                        painter.circle_stroke(in_pos(id, i), 7.0 * s, Stroke::new(1.5, data_color(d)));
+                        painter.circle_stroke(
+                            in_pos(id, i),
+                            7.0 * s,
+                            Stroke::new(1.5, data_color(d)),
+                        );
                     }
                 }
             }
@@ -332,9 +482,20 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
             let mut verdict = None;
             if let Some((id, port)) = hovered_port.clone() {
                 let n = &g.nodes[&id];
-                let fits = inputs(n.role, &n.component).iter().find(|p| p.name == port).is_some_and(|p| p.data == d && p.data != Data::Changes) && id != src;
+                let fits = inputs(n.role, &n.component)
+                    .iter()
+                    .find(|p| p.name == port)
+                    .is_some_and(|p| p.data == d && p.data != Data::Changes)
+                    && id != src;
                 verdict = Some(if !fits {
-                    Err(format!("`{port}` takes {}, not {}", inputs(n.role, &n.component).iter().find(|p| p.name == port).map_or("-", |p| p.data.name()), d.name()))
+                    Err(format!(
+                        "`{port}` takes {}, not {}",
+                        inputs(n.role, &n.component)
+                            .iter()
+                            .find(|p| p.name == port)
+                            .map_or("-", |p| p.data.name()),
+                        d.name()
+                    ))
                 } else if n.inputs.get(&port) == Some(&src) {
                     Err("already bound there".into())
                 } else {
@@ -350,16 +511,25 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
                 Some(Err(_)) => Color32::from_rgb(230, 80, 80),
                 None => data_color(d),
             };
-            painter.add(Shape::line(bezier(out_pos(&src), end, s), Stroke::new(2.5, color)));
+            painter.add(Shape::line(
+                bezier(out_pos(&src), end, s),
+                Stroke::new(2.5, color),
+            ));
             if let Some(v) = &verdict {
                 let text = match v {
                     Ok((_, Ok(spec))) => format!("gives: {}", spec.label()),
-                    Ok((_, Err(e))) => format!("does not run: {e}\n(drop it to keep editing: a draft)"),
+                    Ok((_, Err(e))) => {
+                        format!("does not run: {e}\n(drop it to keep editing: a draft)")
+                    }
                     Err(e) => format!("cannot run: {e}"),
                 };
                 let galley = painter.layout(text, FontId::proportional(12.0), color, 420.0);
                 let at = end + vec2(14.0, 10.0);
-                painter.rect_filled(Rect::from_min_size(at, galley.size()).expand(4.0), 4.0, visuals.window_fill);
+                painter.rect_filled(
+                    Rect::from_min_size(at, galley.size()).expand(4.0),
+                    4.0,
+                    visuals.window_fill,
+                );
                 painter.galley(at, galley, color);
             }
             if ui.input(|i| i.pointer.any_released()) {
@@ -378,9 +548,25 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
     // A legend of the edge colours.
     let mut x = rect.left() + 8.0;
     let y = rect.bottom() - 12.0;
-    for d in [Data::Storage, Data::Rays, Data::Faces, Data::Hits, Data::Tiles, Data::Surfaces, Data::Starts, Data::Image, Data::Changes] {
+    for d in [
+        Data::Storage,
+        Data::Rays,
+        Data::Faces,
+        Data::Hits,
+        Data::Tiles,
+        Data::Surfaces,
+        Data::Starts,
+        Data::Image,
+        Data::Changes,
+    ] {
         painter.circle_filled(pos2(x + 4.0, y), 4.0, data_color(d));
-        let r = painter.text(pos2(x + 11.0, y), Align2::LEFT_CENTER, d.name(), FontId::proportional(11.0), visuals.weak_text_color());
+        let r = painter.text(
+            pos2(x + 11.0, y),
+            Align2::LEFT_CENTER,
+            d.name(),
+            FontId::proportional(11.0),
+            visuals.weak_text_color(),
+        );
         x = r.right() + 12.0;
     }
     out

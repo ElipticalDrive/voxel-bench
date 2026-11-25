@@ -8,7 +8,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::bail;
 use glam::{DVec3, Vec3};
-use mr_core::{BlockRegistry, Camera, Environment, FrameRequest, Light, MeshData, MeshInstance, MeshUpdate, PassMode, WorldUpdate};
+use mr_core::{
+    BlockRegistry, Camera, Environment, FrameRequest, Light, MeshData, MeshInstance, MeshUpdate,
+    PassMode, WorldUpdate,
+};
 use mr_ipc::{HostMsg, WorkerMsg};
 use mr_world::scenario::{FrameEvents, resolve_edits};
 use mr_world::{Scene, World};
@@ -65,8 +68,25 @@ pub struct ScriptedDriver {
 }
 
 impl ScriptedDriver {
-    pub fn new(scene: Scene, mode: PassMode, warmup: u32, frames: u32, only_every: Option<u32>, clock_fps: f64) -> Self {
-        Self { scene, mode, warmup, frames, only_every, clock_fps, settle: None, held: 0, i: 0 }
+    pub fn new(
+        scene: Scene,
+        mode: PassMode,
+        warmup: u32,
+        frames: u32,
+        only_every: Option<u32>,
+        clock_fps: f64,
+    ) -> Self {
+        Self {
+            scene,
+            mode,
+            warmup,
+            frames,
+            only_every,
+            clock_fps,
+            settle: None,
+            held: 0,
+            i: 0,
+        }
     }
 }
 
@@ -78,7 +98,17 @@ impl Driver for ScriptedDriver {
             let f = self.i - 1 - self.warmup;
             let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(f));
             let time = (self.i - 1) as f64 / self.clock_fps;
-            return Ok(Some(FrameInput { frame: f, camera: self.scene.camera(f), mode: self.mode, events: Default::default(), meshes, render: true, recorded: self.held == 0, held: true, time }));
+            return Ok(Some(FrameInput {
+                frame: f,
+                camera: self.scene.camera(f),
+                mode: self.mode,
+                events: Default::default(),
+                meshes,
+                render: true,
+                recorded: self.held == 0,
+                held: true,
+                time,
+            }));
         }
         let i = self.i;
         self.i += 1;
@@ -89,7 +119,17 @@ impl Driver for ScriptedDriver {
             // A pass rendering only the compared frames (a reference's) still streams its
             // warm-up, so what it was given by each frame is what the pipelines were.
             let render = self.only_every.is_none();
-            return Ok(Some(FrameInput { frame: 0, camera, mode: self.mode, events: Default::default(), meshes, render, recorded: false, held: false, time }));
+            return Ok(Some(FrameInput {
+                frame: 0,
+                camera,
+                mode: self.mode,
+                events: Default::default(),
+                meshes,
+                render,
+                recorded: false,
+                held: false,
+                time,
+            }));
         }
         let f = i - self.warmup;
         if f >= self.frames {
@@ -99,10 +139,23 @@ impl Driver for ScriptedDriver {
         let events = self.scene.events(f, &camera)?;
         let render = self.only_every.is_none_or(|n| sampled(f, n, self.frames));
         let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(f));
-        if let Some((_, n)) = self.settle.filter(|s| render && sampled(f, s.0, self.frames)) {
+        if let Some((_, n)) = self
+            .settle
+            .filter(|s| render && sampled(f, s.0, self.frames))
+        {
             self.held = n;
         }
-        Ok(Some(FrameInput { frame: f, camera, mode: self.mode, events, meshes, render, recorded: self.held == 0, held: false, time }))
+        Ok(Some(FrameInput {
+            frame: f,
+            camera,
+            mode: self.mode,
+            events,
+            meshes,
+            render,
+            recorded: self.held == 0,
+            held: false,
+            time,
+        }))
     }
 }
 
@@ -126,7 +179,17 @@ pub struct InteractiveDriver {
 impl InteractiveDriver {
     pub fn new(ui: UiHandle, scene: Scene, mode: PassMode) -> Self {
         let camera = scene.camera(0);
-        Self { ui, scene, camera, mode, speed: 20.0, frame: 0, last: Instant::now(), start: Instant::now(), fps_window: (Instant::now(), 0) }
+        Self {
+            ui,
+            scene,
+            camera,
+            mode,
+            speed: 20.0,
+            frame: 0,
+            last: Instant::now(),
+            start: Instant::now(),
+            fps_window: (Instant::now(), 0),
+        }
     }
 }
 
@@ -145,18 +208,33 @@ impl Driver for InteractiveDriver {
             inp.look = Default::default();
             self.speed *= 1.25f32.powi(std::mem::take(&mut inp.speed_steps));
             if std::mem::take(&mut inp.toggle_mode) {
-                self.mode.lighting = if self.mode.lighting == mr_core::RenderMode::Unlit { mr_core::RenderMode::Lit } else { mr_core::RenderMode::Unlit };
+                self.mode.lighting = if self.mode.lighting == mr_core::RenderMode::Unlit {
+                    mr_core::RenderMode::Lit
+                } else {
+                    mr_core::RenderMode::Unlit
+                };
             }
             let f = self.camera.forward();
             let fwd = Vec3::new(f.x, 0.0, f.z).normalize_or_zero();
             let right = self.camera.right();
             let mut m = Vec3::ZERO;
-            for (k, d) in [(K::KeyW, fwd), (K::KeyS, -fwd), (K::KeyD, right), (K::KeyA, -right), (K::Space, Vec3::Y), (K::ShiftLeft, -Vec3::Y)] {
+            for (k, d) in [
+                (K::KeyW, fwd),
+                (K::KeyS, -fwd),
+                (K::KeyD, right),
+                (K::KeyA, -right),
+                (K::Space, Vec3::Y),
+                (K::ShiftLeft, -Vec3::Y),
+            ] {
                 if inp.held.contains(&k) {
                     m += d;
                 }
             }
-            let boost = if inp.held.contains(&K::ControlLeft) { 5.0 } else { 1.0 };
+            let boost = if inp.held.contains(&K::ControlLeft) {
+                5.0
+            } else {
+                1.0
+            };
             self.camera.position += (m.normalize_or_zero() * self.speed * boost * dt).as_dvec3();
             if std::mem::take(&mut inp.print_camera) {
                 let p = self.camera.position;
@@ -186,8 +264,21 @@ impl Driver for InteractiveDriver {
             )));
             self.fps_window = (Instant::now(), 0);
         }
-        let meshes = self.mode.meshes.then(|| self.scene.mesh_instances(self.frame));
-        Ok(Some(FrameInput { frame: self.frame, camera: self.camera, mode: self.mode, events, meshes, render: true, recorded: false, held: false, time: self.start.elapsed().as_secs_f64() }))
+        let meshes = self
+            .mode
+            .meshes
+            .then(|| self.scene.mesh_instances(self.frame));
+        Ok(Some(FrameInput {
+            frame: self.frame,
+            camera: self.camera,
+            mode: self.mode,
+            events,
+            meshes,
+            render: true,
+            recorded: false,
+            held: false,
+            time: self.start.elapsed().as_secs_f64(),
+        }))
     }
 }
 
@@ -229,8 +320,29 @@ pub struct Lane {
 }
 
 impl Lane {
-    pub fn new(worker: Worker, region: Region, report: PassReport, ui_index: usize, width: u32, height: u32) -> Self {
-        Self { worker, region, report, ui_index, like: None, width, height, in_flight: VecDeque::new(), next_id: 0, completions: vec![], arrived: 0, last_ui: None, pending_quality: vec![] }
+    pub fn new(
+        worker: Worker,
+        region: Region,
+        report: PassReport,
+        ui_index: usize,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self {
+            worker,
+            region,
+            report,
+            ui_index,
+            like: None,
+            width,
+            height,
+            in_flight: VecDeque::new(),
+            next_id: 0,
+            completions: vec![],
+            arrived: 0,
+            last_ui: None,
+            pending_quality: vec![],
+        }
     }
 }
 
@@ -255,7 +367,13 @@ pub struct Outputs {
 type SaveJob = (PathBuf, u32, u32, Vec<u8>);
 
 impl Outputs {
-    pub fn new(ui: Option<UiHandle>, readback: Readback, save: Option<(SaveSpec, PathBuf)>, compare_every: Option<u32>, frames: u32) -> Self {
+    pub fn new(
+        ui: Option<UiHandle>,
+        readback: Readback,
+        save: Option<(SaveSpec, PathBuf)>,
+        compare_every: Option<u32>,
+        frames: u32,
+    ) -> Self {
         let writer = save.as_ref().map(|_| {
             let (tx, rx) = crossbeam_channel::unbounded::<(PathBuf, u32, u32, Vec<u8>)>();
             for _ in 0..4 {
@@ -284,22 +402,37 @@ impl Outputs {
                 }
             });
         }
-        Self { ui, readback, save, compare_every, references: HashMap::new(), recording_reference: false, frames, writer, comparer }
+        Self {
+            ui,
+            readback,
+            save,
+            compare_every,
+            references: HashMap::new(),
+            recording_reference: false,
+            frames,
+            writer,
+            comparer,
+        }
     }
 
     fn save_hit(&self, f: u32) -> bool {
-        self.save.as_ref().is_some_and(|(s, _)| sampled(f, s.every, self.frames))
+        self.save
+            .as_ref()
+            .is_some_and(|(s, _)| sampled(f, s.every, self.frames))
     }
 
     fn compare_hit(&self, f: u32) -> bool {
-        self.compare_every.is_some_and(|n| sampled(f, n, self.frames))
+        self.compare_every
+            .is_some_and(|n| sampled(f, n, self.frames))
     }
 
     fn wants(&self, f: u32, recorded: bool) -> bool {
         match self.readback {
             Readback::Never => false,
             Readback::Always => true,
-            Readback::Auto => self.ui.is_some() || (recorded && (self.save_hit(f) || self.compare_hit(f))),
+            Readback::Auto => {
+                self.ui.is_some() || (recorded && (self.save_hit(f) || self.compare_hit(f)))
+            }
         }
     }
 
@@ -309,16 +442,32 @@ impl Outputs {
     /// float frame in HDR where the display can). Comparisons and PNGs take its RGBA8 form (a
     /// float frame converted only when one of them does); the float frame of an `hdr` post is
     /// saved as Radiance `.hdr` next to the PNG.
-    fn deliver(&mut self, lane: &mut Lane, frame: u32, mode: PassMode, recorded: bool, px: Vec<u8>) -> Option<crossbeam_channel::Receiver<Scores>> {
+    fn deliver(
+        &mut self,
+        lane: &mut Lane,
+        frame: u32,
+        mode: PassMode,
+        recorded: bool,
+        px: Vec<u8>,
+    ) -> Option<crossbeam_channel::Receiver<Scores>> {
         let (w, h) = (lane.width, lane.height);
         // Throttle what goes to the window to ~60 Hz per lane.
-        let to_ui = self.ui.is_some() && lane.last_ui.is_none_or(|t| t.elapsed() > Duration::from_millis(15));
+        let to_ui = self.ui.is_some()
+            && lane
+                .last_ui
+                .is_none_or(|t| t.elapsed() > Duration::from_millis(15));
         if !to_ui && !(recorded && (self.compare_hit(frame) || self.save_hit(frame))) {
             return None;
         }
         if let (true, Some(ui)) = (to_ui, &self.ui) {
             lane.last_ui = Some(Instant::now());
-            ui.send(UiEvent::Frame { lane: lane.ui_index, width: w, height: h, format: lane.worker.format, pixels: Arc::new(px.clone()) });
+            ui.send(UiEvent::Frame {
+                lane: lane.ui_index,
+                width: w,
+                height: h,
+                format: lane.worker.format,
+                pixels: Arc::new(px.clone()),
+            });
         }
         if !recorded {
             return None;
@@ -328,19 +477,30 @@ impl Outputs {
         let mut quality = None;
         if self.compare_hit(frame) {
             if self.recording_reference {
-                self.references.insert((lane.like, mode, frame), Arc::new(px.to_vec()));
+                self.references
+                    .insert((lane.like, mode, frame), Arc::new(px.to_vec()));
             } else if let Some(r) = self.references.get(&(None, mode, frame))
-                && r.len() == px.len() {
-                let like = lane.like.and_then(|l| self.references.get(&(Some(l), mode, frame))).filter(|l| l.len() == px.len()).cloned();
+                && r.len() == px.len()
+            {
+                let like = lane
+                    .like
+                    .and_then(|l| self.references.get(&(Some(l), mode, frame)))
+                    .filter(|l| l.len() == px.len())
+                    .cloned();
                 let diff = match (self.save_hit(frame), &self.save, &self.writer) {
-                    (true, Some((s, dir)), Some(tx)) if s.diffs => Some((dir.join(format!("{tag}/{frame:06}-diff.png")), tx.clone())),
+                    (true, Some((s, dir)), Some(tx)) if s.diffs => {
+                        Some((dir.join(format!("{tag}/{frame:06}-diff.png")), tx.clone()))
+                    }
                     _ => None,
                 };
                 let (r, px) = (r.clone(), px.clone());
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 self.comparer
                     .send(Box::new(move || {
-                        let _ = tx.send((compare::compare(&r, &px, w), like.map(|l| compare::compare(&l, &px, w))));
+                        let _ = tx.send((
+                            compare::compare(&r, &px, w),
+                            like.map(|l| compare::compare(&l, &px, w)),
+                        ));
                         if let Some((path, saver)) = diff {
                             let _ = saver.send((path, w, h, compare::diff_image(&r, &px)));
                         }
@@ -350,7 +510,8 @@ impl Outputs {
             }
         }
         if self.save_hit(frame)
-            && let (Some((_, dir)), Some(tx)) = (&self.save, &self.writer) {
+            && let (Some((_, dir)), Some(tx)) = (&self.save, &self.writer)
+        {
             if let Some(hdr) = hdr {
                 let _ = tx.send((dir.join(format!("{tag}/{frame:06}.hdr")), w, h, hdr));
             }
@@ -365,8 +526,21 @@ impl Outputs {
 fn save_image(path: &Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
     if path.extension().is_some_and(|e| e == "hdr") {
         use mr_core::lighting::{half_to_f32, srgb_extended_to_linear};
-        let rgb: Vec<image::Rgb<f32>> = px.as_chunks::<8>().0.iter().map(|p| image::Rgb(std::array::from_fn(|c| srgb_extended_to_linear(half_to_f32(u16::from_le_bytes([p[2 * c], p[2 * c + 1]])))))).collect();
-        image::codecs::hdr::HdrEncoder::new(std::io::BufWriter::new(std::fs::File::create(path)?)).encode(&rgb, w as usize, h as usize)?;
+        let rgb: Vec<image::Rgb<f32>> = px
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|p| {
+                image::Rgb(std::array::from_fn(|c| {
+                    srgb_extended_to_linear(half_to_f32(u16::from_le_bytes([
+                        p[2 * c],
+                        p[2 * c + 1],
+                    ])))
+                }))
+            })
+            .collect();
+        image::codecs::hdr::HdrEncoder::new(std::io::BufWriter::new(std::fs::File::create(path)?))
+            .encode(&rgb, w as usize, h as usize)?;
     } else {
         image::save_buffer(path, px, w, h, image::ExtendedColorType::Rgba8)?;
     }
@@ -374,40 +548,79 @@ fn save_image(path: &Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
 }
 
 pub fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 const BATCH: usize = 256;
 
 /// Sends the server's stream to a worker in batches, sent at `time`; its client derives its
 /// renderer's region at camera position `at` after the last.
-pub fn send_stream(w: &Worker, mut ups: Vec<WorldUpdate>, at: DVec3, time: f64) -> anyhow::Result<()> {
+pub fn send_stream(
+    w: &Worker,
+    mut ups: Vec<WorldUpdate>,
+    at: DVec3,
+    time: f64,
+) -> anyhow::Result<()> {
     while !ups.is_empty() {
-        let rest = if ups.len() > BATCH { ups.split_off(BATCH) } else { vec![] };
+        let rest = if ups.len() > BATCH {
+            ups.split_off(BATCH)
+        } else {
+            vec![]
+        };
         let last = rest.is_empty();
-        w.send(HostMsg::Stream { updates: std::mem::replace(&mut ups, rest), at: last.then_some(at), time })?;
+        w.send(HostMsg::Stream {
+            updates: std::mem::replace(&mut ups, rest),
+            at: last.then_some(at),
+            time,
+        })?;
     }
     Ok(())
 }
 
 fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> anyhow::Result<()> {
-    let WorkerMsg::FrameDone { frame_id, stats, slot, update_ms, arrivals } = m else {
+    let WorkerMsg::FrameDone {
+        frame_id,
+        stats,
+        slot,
+        update_ms,
+        arrivals,
+    } = m
+    else {
         bail!("[{}] unexpected message {m:?}", lane.report.label);
     };
-    let Some(f) = lane.in_flight.pop_front() else { bail!("[{}] completed a frame never requested", lane.report.label) };
+    let Some(f) = lane.in_flight.pop_front() else {
+        bail!("[{}] completed a frame never requested", lane.report.label)
+    };
     // Its first frame ends its build: its deadlines follow its timing from here.
     lane.worker.built();
     if f.id != frame_id {
-        bail!("[{}] frames completed out of order ({} before {})", lane.report.label, frame_id, f.id);
+        bail!(
+            "[{}] frames completed out of order ({} before {})",
+            lane.report.label,
+            frame_id,
+            f.id
+        );
     }
     let latency_ms = f.sent.elapsed().as_secs_f64() * 1e3;
     let mut stats = stats;
     let quality = match slot {
         Some(s) => {
             let t0 = Instant::now();
-            let px = lane.worker.take_frame(s, (lane.width * lane.height) as usize);
+            let px = lane
+                .worker
+                .take_frame(s, (lane.width * lane.height) as usize);
             let q = out.deliver(lane, f.frame, f.mode, f.recorded, px);
-            stats.counters.push(("readback_host_ms".into(), t0.elapsed().as_secs_f64() * 1e3));
+            stats
+                .counters
+                .push(("readback_host_ms".into(), t0.elapsed().as_secs_f64() * 1e3));
             q
         }
         None => None,
@@ -419,26 +632,47 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
     lane.report.wire_bytes = arrivals.bytes;
     lane.report.arrived_bytes = arrivals.arrived;
     if holes == 0 && lane.report.first_complete.is_none() {
-        lane.report.first_complete = Some(FirstComplete { frame: f.frame, ms: start.elapsed().as_secs_f64() * 1e3, clock_s: f.time });
+        lane.report.first_complete = Some(FirstComplete {
+            frame: f.frame,
+            ms: start.elapsed().as_secs_f64() * 1e3,
+            clock_s: f.time,
+        });
     }
     if f.recorded {
         lane.completions.push(start.elapsed().as_secs_f64() * 1e3);
         if let Some(rx) = quality {
             lane.pending_quality.push((lane.report.per_frame.len(), rx));
         }
-        lane.report.per_frame.push(FrameRecord { frame: f.frame, latency_ms, cpu_ms: stats.cpu_ms, gpu_ms: stats.gpu_ms, update_ms, arrived_bytes, holes, counters: stats.counters, stages: stats.stages, quality: None, quality_like: None });
+        lane.report.per_frame.push(FrameRecord {
+            frame: f.frame,
+            latency_ms,
+            cpu_ms: stats.cpu_ms,
+            gpu_ms: stats.gpu_ms,
+            update_ms,
+            arrived_bytes,
+            holes,
+            counters: stats.counters,
+            stages: stats.stages,
+            quality: None,
+            quality_like: None,
+        });
     }
     Ok(())
 }
 
 fn pump(lane: &mut Lane, out: &mut Outputs, start: Instant, block: bool) -> anyhow::Result<()> {
     if block {
-        let m = lane.worker.recv().map_err(|e| e.context(format!("[{}]", lane.report.label)))?;
+        let m = lane
+            .worker
+            .recv()
+            .map_err(|e| e.context(format!("[{}]", lane.report.label)))?;
         on_msg(lane, out, start, m)?;
     }
     while let Ok(ev) = lane.worker.rx.try_recv() {
         match ev {
-            WorkerEvent::Msg(WorkerMsg::Error(e)) => bail!("[{}] worker error: {e}", lane.report.label),
+            WorkerEvent::Msg(WorkerMsg::Error(e)) => {
+                bail!("[{}] worker error: {e}", lane.report.label)
+            }
             WorkerEvent::Msg(m) => on_msg(lane, out, start, m)?,
             WorkerEvent::Closed => bail!("[{}] worker exited unexpectedly", lane.report.label),
         }
@@ -457,10 +691,17 @@ fn settle(lane: &mut Lane, r: anyhow::Result<()>) {
         // A process that died says how (a signal names a crash the worker could not report);
         // one the watchdog killed has said why already.
         let closed = format!("{e:#}").contains("worker exited");
-        if let Some(status) = lane.worker.exit_status(closed).filter(|_| !lane.worker.is_hung()) {
+        if let Some(status) = lane
+            .worker
+            .exit_status(closed)
+            .filter(|_| !lane.worker.is_hung())
+        {
             e = e.context(format!("worker process ended: {status}"));
         }
-        tracing::error!("[{}] failed; its pass goes on without it: {e:#}", lane.report.label);
+        tracing::error!(
+            "[{}] failed; its pass goes on without it: {e:#}",
+            lane.report.label
+        );
         lane.report.error = Some(format!("{e:#}"));
         lane.in_flight.clear();
     }
@@ -474,7 +715,10 @@ fn live(lanes: &mut [Lane]) -> impl Iterator<Item = &mut Lane> {
 fn flush_lane(lane: &mut Lane, out: &mut Outputs, start: Instant) -> anyhow::Result<()> {
     lane.worker.send(HostMsg::Flush)?;
     loop {
-        let m = lane.worker.recv().map_err(|e| e.context(format!("[{}] flushing", lane.report.label)))?;
+        let m = lane
+            .worker
+            .recv()
+            .map_err(|e| e.context(format!("[{}] flushing", lane.report.label)))?;
         if let WorkerMsg::Flushed = m {
             return Ok(());
         }
@@ -507,7 +751,9 @@ pub fn run_pass(
     let radii = crate::stream::union(lanes.iter().map(|l| l.region.streamed()), 0);
     let mut server = Streamer::new(radii.clone(), run.budget());
     for l in lanes.iter_mut() {
-        let r = l.worker.send(HostMsg::Follow { radii: radii.clone() });
+        let r = l.worker.send(HostMsg::Follow {
+            radii: radii.clone(),
+        });
         settle(l, r);
     }
     while let Some(input) = driver.next()? {
@@ -555,26 +801,46 @@ pub fn run_pass(
         }
         edit_stream.extend(tail);
         // What crossed the link to each client.
-        let loads = stream.iter().filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. })).count() as u64;
+        let loads = stream
+            .iter()
+            .filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. }))
+            .count() as u64;
         for lane in live(lanes) {
-            let stream = if lane.region.generates { &edit_stream } else { &stream };
+            let stream = if lane.region.generates {
+                &edit_stream
+            } else {
+                &stream
+            };
             if !lane.region.generates {
                 lane.report.chunks_sent += loads;
             }
             let r = (|| {
                 if first && !meshes.is_empty() {
-                    lane.worker.send(HostMsg::Meshes(MeshUpdate::Meshes(meshes.to_vec())))?;
+                    lane.worker
+                        .send(HostMsg::Meshes(MeshUpdate::Meshes(meshes.to_vec())))?;
                 }
                 if let Some(i) = &instances {
-                    lane.worker.send(HostMsg::Meshes(MeshUpdate::Instances(i.clone())))?;
+                    lane.worker
+                        .send(HostMsg::Meshes(MeshUpdate::Instances(i.clone())))?;
                 }
                 if first {
                     let t = Instant::now();
-                    send_stream(&lane.worker, stream.clone(), input.camera.position, input.time)?;
-                    lane.worker.flush(|m| bail!("unexpected {m:?} during initial load"))?;
+                    send_stream(
+                        &lane.worker,
+                        stream.clone(),
+                        input.camera.position,
+                        input.time,
+                    )?;
+                    lane.worker
+                        .flush(|m| bail!("unexpected {m:?} during initial load"))?;
                     lane.report.initial_load_ms = t.elapsed().as_secs_f64() * 1e3;
                 } else if !stream.is_empty() {
-                    send_stream(&lane.worker, stream.clone(), input.camera.position, input.time)?;
+                    send_stream(
+                        &lane.worker,
+                        stream.clone(),
+                        input.camera.position,
+                        input.time,
+                    )?;
                 }
                 Ok(())
             })();
@@ -618,26 +884,63 @@ pub fn run_pass(
                 continue;
             }
             let readback = out.wants(input.frame, input.recorded);
-            let slot = if readback { lane.worker.take_slot() } else { None };
+            let slot = if readback {
+                lane.worker.take_slot()
+            } else {
+                None
+            };
             let id = lane.next_id;
             lane.next_id += 1;
-            let req = FrameRequest { frame_id: id, camera: input.camera, mode: input.mode.lighting, meshes: input.mode.meshes, layers, readback: slot.is_some() };
-            let backlog = if streams && !lane.region.generates { server.pending_within(&lane.region.streamed()) as u32 } else { 0 };
-            lane.in_flight.push_back(InFlight { id, frame: input.frame, mode: input.mode, sent: Instant::now(), recorded: input.recorded, time: input.time, backlog });
-            let r = lane.worker.send(HostMsg::Render { req, slot, time: input.time });
+            let req = FrameRequest {
+                frame_id: id,
+                camera: input.camera,
+                mode: input.mode.lighting,
+                meshes: input.mode.meshes,
+                layers,
+                readback: slot.is_some(),
+            };
+            let backlog = if streams && !lane.region.generates {
+                server.pending_within(&lane.region.streamed()) as u32
+            } else {
+                0
+            };
+            lane.in_flight.push_back(InFlight {
+                id,
+                frame: input.frame,
+                mode: input.mode,
+                sent: Instant::now(),
+                recorded: input.recorded,
+                time: input.time,
+                backlog,
+            });
+            let r = lane.worker.send(HostMsg::Render {
+                req,
+                slot,
+                time: input.time,
+            });
             settle(lane, r);
         }
         rendered += 1;
     }
     for lane in live(lanes) {
-        let r = flush_lane(lane, out, start).and_then(|()| if lane.in_flight.is_empty() { Ok(()) } else { Err(anyhow::anyhow!("flush returned with frames in flight")) });
+        let r = flush_lane(lane, out, start).and_then(|()| {
+            if lane.in_flight.is_empty() {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("flush returned with frames in flight"))
+            }
+        });
         settle(lane, r);
         if lane.report.error.is_some() {
             continue;
         }
         let ms = measure_start.unwrap_or(start);
         let ms_off = ms.duration_since(start).as_secs_f64() * 1e3;
-        lane.report.wall_s = lane.completions.last().map(|&c| (c - ms_off) / 1e3).unwrap_or(0.0);
+        lane.report.wall_s = lane
+            .completions
+            .last()
+            .map(|&c| (c - ms_off) / 1e3)
+            .unwrap_or(0.0);
         if matches!(run.pacing, Pacing::Fps { .. }) {
             lane.report.missed_deadlines = Some(missed);
         }
@@ -648,7 +951,10 @@ pub fn run_pass(
         }
         for (i, rx) in lane.pending_quality.drain(..) {
             if let Ok((q, like)) = rx.recv() {
-                (lane.report.per_frame[i].quality, lane.report.per_frame[i].quality_like) = (Some(q), like);
+                (
+                    lane.report.per_frame[i].quality,
+                    lane.report.per_frame[i].quality_like,
+                ) = (Some(q), like);
             }
         }
         let completions = std::mem::take(&mut lane.completions);
@@ -659,7 +965,11 @@ pub fn run_pass(
         }
     }
     // The survivors shared the machine with a lane that stopped part-way: their timings say so.
-    let failed: Vec<String> = lanes.iter().filter(|l| l.report.error.is_some()).map(|l| l.report.label.clone()).collect();
+    let failed: Vec<String> = lanes
+        .iter()
+        .filter(|l| l.report.error.is_some())
+        .map(|l| l.report.label.clone())
+        .collect();
     for lane in live(lanes) {
         lane.report.beside_failed = failed.clone();
     }
@@ -675,7 +985,13 @@ mod tests {
         let text = "generator = { type = \"flat\" }\ncamera = { type = \"line\", from = [0, 20, 0], to = [400, 20, 0] }\n";
         let spec: SceneSpec = toml::from_str(text).unwrap();
         let mut world = World::new(spec.generator.build());
-        let scene = Scene::new(spec, Arc::new(mr_world::textures::default_registry()), &mut world, 10).unwrap();
+        let scene = Scene::new(
+            spec,
+            Arc::new(mr_world::textures::default_registry()),
+            &mut world,
+            10,
+        )
+        .unwrap();
         let mut d = ScriptedDriver::new(scene, PassMode::UNLIT, 3, 10, only_every, 60.0);
         d.settle = settle;
         std::iter::from_fn(|| d.next().unwrap()).collect()
@@ -687,7 +1003,12 @@ mod tests {
     /// budgeted stream would hand the reference other chunks than the pipelines.
     #[test]
     fn every_pass_streams_the_same_timeline() {
-        let streamed = |v: &[FrameInput]| v.iter().filter(|i| !i.held).map(|i| (i.frame, i.camera.position, i.time)).collect::<Vec<_>>();
+        let streamed = |v: &[FrameInput]| {
+            v.iter()
+                .filter(|i| !i.held)
+                .map(|i| (i.frame, i.camera.position, i.time))
+                .collect::<Vec<_>>()
+        };
         let measured = inputs(None, None);
         assert_eq!(measured.len(), 13);
         let reference = inputs(Some(5), None);
@@ -695,9 +1016,23 @@ mod tests {
         assert_eq!(streamed(&reference), streamed(&measured));
         assert_eq!(streamed(&settled), streamed(&measured));
         // The reference renders the compared frames alone, not its warm-up.
-        assert_eq!(reference.iter().filter(|i| i.render).map(|i| i.frame).collect::<Vec<_>>(), [0, 5, 9]);
+        assert_eq!(
+            reference
+                .iter()
+                .filter(|i| i.render)
+                .map(|i| i.frame)
+                .collect::<Vec<_>>(),
+            [0, 5, 9]
+        );
         // Held renders: four after each compared frame, the last recorded.
         assert_eq!(settled.iter().filter(|i| i.held).count(), 12);
-        assert!(settled.iter().filter(|i| i.frame == 5).filter(|i| i.recorded).count() == 1);
+        assert!(
+            settled
+                .iter()
+                .filter(|i| i.frame == 5)
+                .filter(|i| i.recorded)
+                .count()
+                == 1
+        );
     }
 }

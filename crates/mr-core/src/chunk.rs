@@ -9,7 +9,9 @@ pub const CHUNK_VOLUME: usize = (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize;
 
 /// Block type index into the [`crate::BlockRegistry`]. `0` is air (empty, transparent);
 /// every other block is an opaque unit cube.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Copy, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[repr(transparent)]
 pub struct BlockId(pub u16);
 
@@ -82,7 +84,12 @@ pub struct DenseChunk(pub Box<[BlockId; CHUNK_VOLUME]>);
 
 impl DenseChunk {
     pub fn filled(block: BlockId) -> Self {
-        Self(vec![block; CHUNK_VOLUME].into_boxed_slice().try_into().unwrap())
+        Self(
+            vec![block; CHUNK_VOLUME]
+                .into_boxed_slice()
+                .try_into()
+                .unwrap(),
+        )
     }
 
     #[inline]
@@ -195,7 +202,13 @@ mod tests {
         for i in [0, 1, 31, 32, 1023, 1024, 32767] {
             assert_eq!(cell_index(cell_of_index(i)), i);
         }
-        assert_eq!(ChunkKey::of_block(IVec3::new(-1, 32, 31)).pos, IVec3::new(-1, 1, 0));
-        assert_eq!(local_of_block(IVec3::new(-1, 32, 31)), IVec3::new(31, 0, 31));
+        assert_eq!(
+            ChunkKey::of_block(IVec3::new(-1, 32, 31)).pos,
+            IVec3::new(-1, 1, 0)
+        );
+        assert_eq!(
+            local_of_block(IVec3::new(-1, 32, 31)),
+            IVec3::new(31, 0, 31)
+        );
     }
 }

@@ -26,7 +26,9 @@ const fn read_miss(cache: u64) -> u64 {
 /// The `perf` knob's value, refused where this system has no counters.
 pub fn allowed(on: bool) -> anyhow::Result<bool> {
     if on && !cfg!(target_os = "linux") {
-        anyhow::bail!("perf: hardware counters need Linux's perf_event_open, not available on this system");
+        anyhow::bail!(
+            "perf: hardware counters need Linux's perf_event_open, not available on this system"
+        );
     }
     Ok(on)
 }
@@ -52,7 +54,8 @@ mod linux {
         attr[4] = 1 | 2; // read_format: TOTAL_TIME_ENABLED | TOTAL_TIME_RUNNING
         attr[5] = 1 | (1 << 5) | (1 << 6); // disabled, exclude_kernel, exclude_hv
         // SAFETY: valid attr buffer; pid 0 = calling thread, cpu -1 = any.
-        let fd = unsafe { libc::syscall(libc::SYS_perf_event_open, attr.as_ptr(), 0, -1, -1, 0u64) };
+        let fd =
+            unsafe { libc::syscall(libc::SYS_perf_event_open, attr.as_ptr(), 0, -1, -1, 0u64) };
         if fd < 0 {
             return None;
         }
@@ -67,9 +70,21 @@ mod linux {
 
     impl Counters {
         pub fn open_on(pool: &rayon::ThreadPool) -> Option<Self> {
-            let fds = pool.broadcast(|_| EVENTS.iter().map(|&(_, k, c)| open(k, c)).collect::<Vec<_>>());
-            let ok = fds.first().map(|v| v.iter().filter(|f| f.is_some()).count()).unwrap_or(0);
-            tracing::info!("perf counters: {ok}/{} events open on {} threads", EVENTS.len(), fds.len());
+            let fds = pool.broadcast(|_| {
+                EVENTS
+                    .iter()
+                    .map(|&(_, k, c)| open(k, c))
+                    .collect::<Vec<_>>()
+            });
+            let ok = fds
+                .first()
+                .map(|v| v.iter().filter(|f| f.is_some()).count())
+                .unwrap_or(0);
+            tracing::info!(
+                "perf counters: {ok}/{} events open on {} threads",
+                EVENTS.len(),
+                fds.len()
+            );
             Some(Self { fds })
         }
 
@@ -103,7 +118,11 @@ mod linux {
                     }
                 }
             }
-            total.iter().zip(&seen).map(|(v, s)| if *s { *v } else { f64::NAN }).collect()
+            total
+                .iter()
+                .zip(&seen)
+                .map(|(v, s)| if *s { *v } else { f64::NAN })
+                .collect()
         }
     }
 }

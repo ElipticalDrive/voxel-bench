@@ -669,7 +669,10 @@ mod tests {
                 .insert("storage".into(), st.into());
         };
         let e = with(rg.clone(), &exposure).accept().unwrap_err();
-        assert!(e.contains("`visibility`.storage: not bound, and `geometry` merges"), "{e}");
+        assert!(
+            e.contains("`visibility`.storage: not bound, and `geometry` merges"),
+            "{e}"
+        );
         with(rg.clone(), &|g| bind(g, "storage")).accept().unwrap();
         with(rg.clone(), &|g| {
             exposure(g);
@@ -1013,7 +1016,11 @@ mod tests {
             .unwrap()
             .knobs
             .insert("white".into(), toml::Value::Float(4.0));
-        assert!(g.check().unwrap_err().contains("the post's knobs are `view`"));
+        assert!(
+            g.check()
+                .unwrap_err()
+                .contains("the post's knobs are `view`")
+        );
         // Its diagnostic view's knobs are its own.
         let knobs = &mut g.nodes.get_mut("post").unwrap().knobs;
         knobs.clear();
@@ -1176,14 +1183,26 @@ mod tests {
         // A drawer's shading on the second GPU: the gbuffer's records cross (and the
         // visbuffer's, decoded from its ids; forward shading has none), meshes stay on one GPU.
         let why = g.accept().unwrap_err();
-        assert!(why.contains("draw = gbuffer") && why.contains("meshes = none"), "{why}");
+        assert!(
+            why.contains("draw = gbuffer") && why.contains("meshes = none"),
+            "{why}"
+        );
         let g = g
-            .with_edits(&["meshes", "kernel", "storage"].map(|n| Change::Remove(n.into())).into_iter().chain([Change::component("draw", "gbuffer")]).collect::<Vec<_>>())
+            .with_edits(
+                &["meshes", "kernel", "storage"]
+                    .map(|n| Change::Remove(n.into()))
+                    .into_iter()
+                    .chain([Change::component("draw", "gbuffer")])
+                    .collect::<Vec<_>>(),
+            )
             .unwrap();
         g.accept().unwrap();
         let sched = g.check().unwrap().schedule().unwrap().to_string();
         assert!(sched.contains("gpu -> gpu1"), "{sched}");
-        g.with_edits(&[Change::component("draw", "visbuffer")]).unwrap().accept().unwrap();
+        g.with_edits(&[Change::component("draw", "visbuffer")])
+            .unwrap()
+            .accept()
+            .unwrap();
         let why = g
             .with_edits(&[Change::component("draw", "raster")])
             .unwrap()
@@ -1196,7 +1215,10 @@ mod tests {
         g.nodes.get_mut("shading").unwrap().device = Some(Device::Gpu(1));
         g.accept().unwrap();
         let ck = g.check().unwrap();
-        assert_eq!((ck.devices["kernel"], ck.devices["visibility"]), (Device::Gpu(1), Device::Gpu(0)));
+        assert_eq!(
+            (ck.devices["kernel"], ck.devices["visibility"]),
+            (Device::Gpu(1), Device::Gpu(0))
+        );
         let sched = ck.schedule().unwrap().to_string();
         assert!(sched.contains("gpu -> gpu1"), "{sched}");
     }
@@ -1264,7 +1286,10 @@ mod tests {
         );
         bind(&mut g, "shadow", "rq");
         let e = g.validate().unwrap_err();
-        assert!(e.contains("`rq` (rayquery) needs accel from `pts`: geometry `points` lacks it"), "{e}");
+        assert!(
+            e.contains("`rq` (rayquery) needs accel from `pts`: geometry `points` lacks it"),
+            "{e}"
+        );
         let mut g = of("rayquery-gpu");
         rq(&mut g, "geo2", "rq2");
         bind(&mut g, "shadow", "rq2");

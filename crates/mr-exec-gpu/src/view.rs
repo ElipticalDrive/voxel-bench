@@ -6,21 +6,25 @@
 //! output: a ramp's value through the shared colour ramp, a category as a tint of the greyed
 //! image. Unviewed, nothing is compiled or bound.
 
-use mr_gpu::Pipelines as _;
 use mr_core::{Legend, Quantity};
 use mr_gpu::Gpu;
+use mr_gpu::Pipelines as _;
 
 /// The quantity buffer's binding in group 0 (past every other's).
 pub(crate) const QUANTITY_BINDING: u32 = 31;
 
 /// The quantity buffer's declaration in a writer's program.
 pub(crate) fn wgsl() -> String {
-    format!("@group(0) @binding({QUANTITY_BINDING}) var<storage, read_write> quantity: array<u32>;\n")
+    format!(
+        "@group(0) @binding({QUANTITY_BINDING}) var<storage, read_write> quantity: array<u32>;\n"
+    )
 }
 
 /// The declaration for a writer that counts (`atomicAdd`).
 pub(crate) fn atomic_wgsl() -> String {
-    format!("@group(0) @binding({QUANTITY_BINDING}) var<storage, read_write> quantity: array<atomic<u32>>;\n")
+    format!(
+        "@group(0) @binding({QUANTITY_BINDING}) var<storage, read_write> quantity: array<atomic<u32>>;\n"
+    )
 }
 
 /// The view chosen: its quantity, the buffer its writer fills, the mapping pass (a category
@@ -36,20 +40,55 @@ pub(crate) struct Viewing {
 
 impl Viewing {
     pub fn new(gpu: &Gpu, quantity: Quantity, width: u32, height: u32) -> Self {
-        let params = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("view params"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let params = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("view params"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         // Per category: its colour, alpha 0 for one colour per id.
         let palette = quantity.is_categorical().then(|| {
-            let colors: Vec<[f32; 4]> = quantity.categories.iter().map(|(_, c)| c.map_or([0.0; 4], |c| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0])).collect();
-            let b = gpu.storage("view palette", colors.len() as u64 * 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || "the view's palette".into());
+            let colors: Vec<[f32; 4]> = quantity
+                .categories
+                .iter()
+                .map(|(_, c)| {
+                    c.map_or([0.0; 4], |c| {
+                        [
+                            c[0] as f32 / 255.0,
+                            c[1] as f32 / 255.0,
+                            c[2] as f32 / 255.0,
+                            1.0,
+                        ]
+                    })
+                })
+                .collect();
+            let b = gpu.storage(
+                "view palette",
+                colors.len() as u64 * 16,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                || "the view's palette".into(),
+            );
             gpu.queue.write_buffer(&b, 0, bytemuck::cast_slice(&colors));
             b
         });
-        Self { quantity, buffer: Self::buffer(gpu, width, height), params, palette, under: None, pipeline: None }
+        Self {
+            quantity,
+            buffer: Self::buffer(gpu, width, height),
+            params,
+            palette,
+            under: None,
+            pipeline: None,
+        }
     }
 
     fn buffer(gpu: &Gpu, width: u32, height: u32) -> wgpu::Buffer {
         let size = (width as u64 * height as u64 * 4).max(16);
-        gpu.storage("quantity", size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || format!("the resolution ({width}x{height})"))
+        gpu.storage(
+            "quantity",
+            size,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            || format!("the resolution ({width}x{height})"),
+        )
     }
 
     pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) {
@@ -62,11 +101,19 @@ impl Viewing {
     }
 
     pub fn bind_entry(&self) -> wgpu::BindGroupEntry<'_> {
-        wgpu::BindGroupEntry { binding: QUANTITY_BINDING, resource: self.buffer.as_entire_binding() }
+        wgpu::BindGroupEntry {
+            binding: QUANTITY_BINDING,
+            resource: self.buffer.as_entire_binding(),
+        }
     }
 
     pub fn memory_bytes(&self) -> u64 {
-        self.buffer.size() + self.under.as_ref().map_or(0, |t| t.width() as u64 * t.height() as u64 * t.format().block_copy_size(None).unwrap_or(4) as u64)
+        self.buffer.size()
+            + self.under.as_ref().map_or(0, |t| {
+                t.width() as u64
+                    * t.height() as u64
+                    * t.format().block_copy_size(None).unwrap_or(4) as u64
+            })
     }
 
     pub fn legend(&self, max: u32) -> Legend {
@@ -79,17 +126,39 @@ impl Viewing {
     }
 
     /// The mapping pass into `output` (format `format`), after the frame's passes.
-    pub fn encode(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, output: &wgpu::Texture, format: wgpu::TextureFormat, max: u32) {
+    pub fn encode(
+        &mut self,
+        gpu: &Gpu,
+        enc: &mut wgpu::CommandEncoder,
+        output: &wgpu::Texture,
+        format: wgpu::TextureFormat,
+        max: u32,
+    ) {
         let (w, h) = (output.width(), output.height());
         let flags = self.quantity.float as u32 | (self.quantity.log as u32) << 1;
-        gpu.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&[w, h, (max as f32).to_bits(), flags]));
+        gpu.queue.write_buffer(
+            &self.params,
+            0,
+            bytemuck::cast_slice(&[w, h, (max as f32).to_bits(), flags]),
+        );
         let categorical = self.quantity.is_categorical();
-        let (layout, pipeline) = self.pipeline.get_or_insert_with(|| pipeline(gpu, format, categorical));
+        let (layout, pipeline) = self
+            .pipeline
+            .get_or_insert_with(|| pipeline(gpu, format, categorical));
         let view = output.create_view(&Default::default());
         let mut entries = vec![
-            wgpu::BindGroupEntry { binding: 0, resource: self.buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
-            wgpu::BindGroupEntry { binding: 2, resource: self.params.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: self.params.as_entire_binding(),
+            },
         ];
         // Categories tint the image: a copy of it to read.
         let under_view;
@@ -97,7 +166,11 @@ impl Viewing {
             let under = self.under.get_or_insert_with(|| {
                 gpu.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("view image"),
-                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    size: wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
@@ -106,47 +179,112 @@ impl Viewing {
                     view_formats: &[],
                 })
             });
-            enc.copy_texture_to_texture(output.as_image_copy(), under.as_image_copy(), wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
+            enc.copy_texture_to_texture(
+                output.as_image_copy(),
+                under.as_image_copy(),
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
             under_view = under.create_view(&Default::default());
-            entries.push(wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&under_view) });
-            entries.push(wgpu::BindGroupEntry { binding: 4, resource: palette.as_entire_binding() });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&under_view),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 4,
+                resource: palette.as_entire_binding(),
+            });
         }
-        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("view"), layout, entries: &entries });
-        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("view"), timestamp_writes: None });
+        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("view"),
+            layout,
+            entries: &entries,
+        });
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("view"),
+            timestamp_writes: None,
+        });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind, &[]);
         pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
     }
 }
 
-fn pipeline(gpu: &Gpu, format: wgpu::TextureFormat, categorical: bool) -> (wgpu::BindGroupLayout, wgpu::ComputePipeline) {
+fn pipeline(
+    gpu: &Gpu,
+    format: wgpu::TextureFormat,
+    categorical: bool,
+) -> (wgpu::BindGroupLayout, wgpu::ComputePipeline) {
     let dev = &gpu.device;
     let c = wgpu::ShaderStages::COMPUTE;
     let mut entries = vec![
         crate::storage_entry(0, true, c),
-        wgpu::BindGroupLayoutEntry { binding: 1, visibility: c, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format, view_dimension: wgpu::TextureViewDimension::D2 }, count: None },
-        wgpu::BindGroupLayoutEntry { binding: 2, visibility: c, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: c,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: c,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
     ];
     if categorical {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: 3,
             visibility: c,
-            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
             count: None,
         });
         entries.push(crate::storage_entry(4, true, c));
     }
-    let layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("view"), entries: &entries });
+    let layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("view"),
+        entries: &entries,
+    });
     let module = mr_gpu::shader(dev, "view", shader(format, categorical));
-    let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("view"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
-    let pipeline = dev.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("view"), layout: Some(&pl), module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: gpu.cache() });
+    let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("view"),
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    let pipeline = dev.compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("view"),
+        layout: Some(&pl),
+        module: &module,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: gpu.cache(),
+    });
     (layout, pipeline)
 }
 
 /// The mapping pass's shader for an output of `format`, of a category view's quantity when
 /// `categorical`.
 fn shader(format: wgpu::TextureFormat, categorical: bool) -> String {
-    let fmt = if format == wgpu::TextureFormat::Rgba16Float { "rgba16float" } else { "rgba8unorm" };
+    let fmt = if format == wgpu::TextureFormat::Rgba16Float {
+        "rgba16float"
+    } else {
+        "rgba8unorm"
+    };
     let head = format!(
         "@group(0) @binding(0) var<storage, read> quantity: array<u32>;\n\
          @group(0) @binding(1) var out_tex: texture_storage_2d<{fmt}, write>;\n\
@@ -196,11 +334,17 @@ fn shader(format: wgpu::TextureFormat, categorical: bool) -> String {
 mod tests {
     #[test]
     fn shader_parses() {
-        for f in [wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureFormat::Rgba16Float] {
+        for f in [
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba16Float,
+        ] {
             for categorical in [false, true] {
                 use wgpu::naga::{front::wgsl, valid};
-                let m = wgsl::parse_str(&super::shader(f, categorical)).unwrap_or_else(|e| panic!("{e}"));
-                valid::Validator::new(valid::ValidationFlags::all(), valid::Capabilities::all()).validate(&m).unwrap();
+                let m = wgsl::parse_str(&super::shader(f, categorical))
+                    .unwrap_or_else(|e| panic!("{e}"));
+                valid::Validator::new(valid::ValidationFlags::all(), valid::Capabilities::all())
+                    .validate(&m)
+                    .unwrap();
             }
         }
     }

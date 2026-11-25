@@ -5,8 +5,8 @@ use std::sync::atomic::Ordering;
 
 use bytemuck::Zeroable;
 use glam::IVec3;
-use mr_core::*;
 use mr_components::graph::Role;
+use mr_core::*;
 use mr_gpu::voxels::hash3;
 use mr_gpu::wgpu;
 
@@ -59,8 +59,12 @@ impl GpuSampler {
             pos[s as usize] = [p.x, p.y, p.z, 1];
         }
         self.chunk_probe = max_probe;
-        core.gpu.queue.write_buffer(&self.ctable, 0, bytemuck::cast_slice(&table));
-        core.gpu.queue.write_buffer(&self.cpos, 0, bytemuck::cast_slice(&pos));
+        core.gpu
+            .queue
+            .write_buffer(&self.ctable, 0, bytemuck::cast_slice(&table));
+        core.gpu
+            .queue
+            .write_buffer(&self.cpos, 0, bytemuck::cast_slice(&pos));
     }
 }
 
@@ -70,8 +74,14 @@ impl exec::State for GpuSampler {
             // Event areas for the next frame: edited blocks exactly, chunk loads whole.
             for u in updates {
                 match u {
-                    WorldUpdate::SetBlocks(edits) => self.pending.extend(edits.iter().map(|e| (e.pos, 1))),
-                    WorldUpdate::ChunkLoad { key, .. } | WorldUpdate::ChunkUnload { key } if key.lod == 0 => self.pending.push((key.pos * 32, 32)),
+                    WorldUpdate::SetBlocks(edits) => {
+                        self.pending.extend(edits.iter().map(|e| (e.pos, 1)))
+                    }
+                    WorldUpdate::ChunkLoad { key, .. } | WorldUpdate::ChunkUnload { key }
+                        if key.lod == 0 =>
+                    {
+                        self.pending.push((key.pos * 32, 32))
+                    }
                     _ => {}
                 }
             }
@@ -83,12 +93,22 @@ impl exec::State for GpuSampler {
         Ok(())
     }
 
-    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        self.set_knob(name, value).or_else(|| self.drawing.set_param(core, name, value))
+    fn set_param(
+        &mut self,
+        core: &mut Core,
+        name: &str,
+        value: &ParamValue,
+    ) -> Option<anyhow::Result<()>> {
+        self.set_knob(name, value)
+            .or_else(|| self.drawing.set_param(core, name, value))
     }
 
     /// Hole detection comes and goes with its node; the drawer is the drawing's.
-    fn switch(&mut self, core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+    fn switch(
+        &mut self,
+        core: &mut Core,
+        s: &mr_components::graph::Switch,
+    ) -> Option<anyhow::Result<()>> {
         if s.role != Role::Holes {
             return self.drawing.switch(core, s);
         }
@@ -108,8 +128,23 @@ impl exec::State for GpuSampler {
 
     fn memory(&self, core: &Core) -> (u64, u64) {
         let s = &self.sized;
-        let set = (self.keys[0].size() + self.vals[0].size() + self.lists[0].size()) * 2 + self.jobs.size() + self.seen.size() + s.changed_tiles.size() + s.need.size() + core.width as u64 * core.height as u64 * 4;
-        (0, set + s.cache_c.size() + s.cache_t.size() + s.claim.size() + s.rayq.size() + s.tileq.size() + self.ctable.size() + self.cpos.size() + self.drawing.memory_bytes(core))
+        let set = (self.keys[0].size() + self.vals[0].size() + self.lists[0].size()) * 2
+            + self.jobs.size()
+            + self.seen.size()
+            + s.changed_tiles.size()
+            + s.need.size()
+            + core.width as u64 * core.height as u64 * 4;
+        (
+            0,
+            set + s.cache_c.size()
+                + s.cache_t.size()
+                + s.claim.size()
+                + s.rayq.size()
+                + s.tileq.size()
+                + self.ctable.size()
+                + self.cpos.size()
+                + self.drawing.memory_bytes(core),
+        )
     }
 }
 
@@ -118,7 +153,8 @@ impl Region for GpuSampler {
         if self.drawing.drawer.mode().deferred() && self.order == "painter" {
             anyhow::bail!("order = painter needs draw = raster (it draws forward)");
         }
-        self.drawing.check_state(req.mode, Some(self.order == "painter"))
+        self.drawing
+            .check_state(req.mode, Some(self.order == "painter"))
     }
 
     /// The frame's discovery settings (its kind: static when nothing that affects visibility
@@ -131,8 +167,21 @@ impl Region for GpuSampler {
         let c = &req.camera;
         let tan_now = (c.fov_y * 0.5).tan();
         let same_pos = self.prev_pos == Some(c.position);
-        let same_rot = self.prev_cam.is_some_and(|p| p == (c.forward().to_array(), c.right().to_array(), c.up().to_array(), tan_now));
-        if events && same_pos && same_rot && self.pending.is_empty() && !self.force_full && self.frame > 0 {
+        let same_rot = self.prev_cam.is_some_and(|p| {
+            p == (
+                c.forward().to_array(),
+                c.right().to_array(),
+                c.up().to_array(),
+                tan_now,
+            )
+        });
+        if events
+            && same_pos
+            && same_rot
+            && self.pending.is_empty()
+            && !self.force_full
+            && self.frame > 0
+        {
             // Nothing that affects visibility changed: redraw the last face list (only
             // shading runs: lights may move).
             self.last_kind = FrameKind::Static;
@@ -140,7 +189,15 @@ impl Region for GpuSampler {
             self.drawing.write_frame(core, c, req.mode, IVec3::ZERO);
             let tile = self.vis.tile;
             let world = Some(core.world.prepare(&core.gpu, c).clone());
-            self.now = Frame { redraw: true, parity: (self.frame & 1) as usize, cols: core.width.div_ceil(tile), rows: core.height.div_ceil(tile), world, out: Some(core.output.create_view(&Default::default())), ..Frame::default() };
+            self.now = Frame {
+                redraw: true,
+                parity: (self.frame & 1) as usize,
+                cols: core.width.div_ceil(tile),
+                rows: core.height.div_ceil(tile),
+                world,
+                out: Some(core.output.create_view(&Default::default())),
+                ..Frame::default()
+            };
             return;
         }
         self.frame = self.frame.wrapping_add(1).max(1);
@@ -164,7 +221,10 @@ impl Region for GpuSampler {
         let tan_half_fov = (c.fov_y * 0.5).tan();
         let queue_cap = self.sized.lat_w * self.sized.lat_h;
         // Incremental mode: camera translation since last frame, and changed chunks' tiles.
-        let moved = self.prev_pos.map(|p| (c.position - p).length()).unwrap_or(f64::INFINITY);
+        let moved = self
+            .prev_pos
+            .map(|p| (c.position - p).length())
+            .unwrap_or(f64::INFINITY);
         self.prev_pos = Some(c.position);
         let f_px = height as f32 * 0.5 / tan_half_fov;
         let mut full = self.force_full || moved > 64.0;
@@ -185,7 +245,11 @@ impl Region for GpuSampler {
                 }
             }
             if any_changed {
-                core.gpu.queue.write_buffer(&self.sized.changed_tiles, 0, bytemuck::cast_slice(&mask));
+                core.gpu.queue.write_buffer(
+                    &self.sized.changed_tiles,
+                    0,
+                    bytemuck::cast_slice(&mask),
+                );
             }
         }
         let kind = if full {
@@ -198,7 +262,12 @@ impl Region for GpuSampler {
         self.last_kind = kind;
         self.kind_counts[kind as usize] += 1;
         let prev_cam = if full { None } else { self.prev_cam };
-        self.prev_cam = Some((c.forward().to_array(), c.right().to_array(), c.up().to_array(), tan_half_fov));
+        self.prev_cam = Some((
+            c.forward().to_array(),
+            c.right().to_array(),
+            c.up().to_array(),
+            tan_half_fov,
+        ));
         self.force_full = false;
         let prm = Params {
             forward: c.forward().to_array(),
@@ -217,7 +286,12 @@ impl Region for GpuSampler {
             lat_h: self.sized.lat_h,
             cols,
             rows,
-            keep: if self.incremental { self.cover.keep_unseen } else { self.vis.keep_frames }.max(1),
+            keep: if self.incremental {
+                self.cover.keep_unseen
+            } else {
+                self.vis.keep_frames
+            }
+            .max(1),
             criterion: (self.vis.criterion == "face") as u32,
             sky_tile: self.vis.sky_tile,
             max_fp: self.vis.max_footprint,
@@ -235,7 +309,11 @@ impl Region for GpuSampler {
             inline_fp: self.vis.inline_fp,
             occluders: self.vis.occluders,
             refresh: self.cover.refresh,
-            par_k: if moved.is_finite() { f_px * moved as f32 / c.near } else { 0.0 },
+            par_k: if moved.is_finite() {
+                f_px * moved as f32 / c.near
+            } else {
+                0.0
+            },
             changed: any_changed as u32,
             full: full as u32,
             r_max: self.cover.reveal_tiles.max(1),
@@ -251,7 +329,9 @@ impl Region for GpuSampler {
             morton_side: (cols + 1).max(rows + 1).next_power_of_two(),
             _q: [0; 2],
         };
-        core.gpu.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&prm));
+        core.gpu
+            .queue
+            .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&prm));
         let mut lvls = vec![LevelUniform::zeroed(); MAX_LEVELS + 1];
         for (l, u) in lvls.iter_mut().enumerate() {
             *u = LevelUniform {
@@ -266,7 +346,9 @@ impl Region for GpuSampler {
                 _pad: [0; 56],
             };
         }
-        core.gpu.queue.write_buffer(&self.level_buf, 0, bytemuck::cast_slice(&lvls));
+        core.gpu
+            .queue
+            .write_buffer(&self.level_buf, 0, bytemuck::cast_slice(&lvls));
         self.drawing.write_frame(core, c, req.mode, IVec3::ZERO);
         let world = core.world.prepare(&core.gpu, c).clone();
         if self.bind_disc.is_none() {
@@ -274,7 +356,10 @@ impl Region for GpuSampler {
         }
         let bind_disc = self.bind_disc.as_ref().unwrap()[parity].clone();
         // Counter/timestamp staging buffer for this frame (if one is free).
-        let stage = self.stages.iter().position(|s| s.state.load(Ordering::SeqCst) == 0);
+        let stage = self
+            .stages
+            .iter()
+            .position(|s| s.state.load(Ordering::SeqCst) == 0);
         self.now = Frame {
             parity,
             off: (off_x, off_y),
@@ -289,7 +374,11 @@ impl Region for GpuSampler {
         };
     }
 
-    fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
+    fn stats(
+        &self,
+        core: &Core,
+        req: &FrameRequest,
+    ) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
         (self.counters(core, req.mode), None, core.accel_stats().1)
     }
 
@@ -305,7 +394,12 @@ impl Region for GpuSampler {
     /// next), the audit (so it does not inflate gpu_ms) and the counters' copy into the
     /// staging buffer.
     fn finish(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket) {
-        let Frame { redraw, parity, stage, .. } = self.now;
+        let Frame {
+            redraw,
+            parity,
+            stage,
+            ..
+        } = self.now;
         let (width, height) = (core.width, core.height);
         if !redraw {
             let (world_bg, storage_bg, bind_disc) = self.groups();
@@ -319,7 +413,13 @@ impl Region for GpuSampler {
             };
             if self.incremental {
                 core.ring.stage(enc, ticket, "sky mask", &self.holes_nodes);
-                pixels(&mut enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sky mask"), timestamp_writes: None }), &self.pipe_sky);
+                pixels(
+                    &mut enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("sky mask"),
+                        timestamp_writes: None,
+                    }),
+                    &self.pipe_sky,
+                );
             }
         }
         if redraw {
@@ -328,7 +428,10 @@ impl Region for GpuSampler {
         if self.vis.audit {
             let (world_bg, storage_bg, bind_disc) = self.groups();
             core.ring.stage(enc, ticket, "audit", &[]);
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("discover audit"), timestamp_writes: None });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("discover audit"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(&self.pipe_audit);
             pass.set_bind_group(0, bind_disc, &[0]);
             pass.set_bind_group(1, world_bg, &[]);
@@ -343,7 +446,13 @@ impl Region for GpuSampler {
             if let (Some(q), Some(res)) = (&self.profile, &self.profile_resolve) {
                 let base = i as u32 * PROFILE_TS;
                 enc.resolve_query_set(q, base..base + PROFILE_TS, res, i as u64 * 256);
-                enc.copy_buffer_to_buffer(res, i as u64 * 256, b, STATS_WORDS * 4 + 16, PROFILE_TS as u64 * 8);
+                enc.copy_buffer_to_buffer(
+                    res,
+                    i as u64 * 256,
+                    b,
+                    STATS_WORDS * 4 + 16,
+                    PROFILE_TS as u64 * 8,
+                );
             }
             self.stages[i].tag = (self.frame, parity as u32);
         }
@@ -355,7 +464,9 @@ impl Region for GpuSampler {
             let st = &self.stages[i];
             st.state.store(1, Ordering::SeqCst);
             let flag = st.state.clone();
-            st.buf.map_async(wgpu::MapMode::Read, .., move |r| flag.store(if r.is_ok() { 2 } else { 3 }, Ordering::SeqCst));
+            st.buf.map_async(wgpu::MapMode::Read, .., move |r| {
+                flag.store(if r.is_ok() { 2 } else { 3 }, Ordering::SeqCst)
+            });
         }
     }
 }
@@ -364,7 +475,17 @@ impl Region for GpuSampler {
 /// if it is off screen. A box straddling the camera plane that may be visible gets the
 /// whole screen (its projection is unbounded); `None` is never returned for boxes behind
 /// or beside the camera, only kept for callers that want a forced full frame.
-fn box_rect(view_proj: &glam::Mat4, min: IVec3, size: i32, cam: glam::DVec3, width: u32, height: u32, tile: u32, cols: u32, rows: u32) -> Option<Option<[u32; 4]>> {
+fn box_rect(
+    view_proj: &glam::Mat4,
+    min: IVec3,
+    size: i32,
+    cam: glam::DVec3,
+    width: u32,
+    height: u32,
+    tile: u32,
+    cols: u32,
+    rows: u32,
+) -> Option<Option<[u32; 4]>> {
     let clips: [glam::Vec4; 8] = std::array::from_fn(|k| {
         let k = k as i32;
         let corner = (min + IVec3::new(k & 1, (k >> 1) & 1, k >> 2) * size).as_dvec3();
@@ -372,7 +493,12 @@ fn box_rect(view_proj: &glam::Mat4, min: IVec3, size: i32, cam: glam::DVec3, wid
     });
     // Outside one frustum plane entirely (left, right, bottom, top, near): off screen.
     let outside = |f: &dyn Fn(&glam::Vec4) -> bool| clips.iter().all(f);
-    if outside(&|c| c.x < -c.w) || outside(&|c| c.x > c.w) || outside(&|c| c.y < -c.w) || outside(&|c| c.y > c.w) || outside(&|c| c.w <= 1e-3) {
+    if outside(&|c| c.x < -c.w)
+        || outside(&|c| c.x > c.w)
+        || outside(&|c| c.y < -c.w)
+        || outside(&|c| c.y > c.w)
+        || outside(&|c| c.w <= 1e-3)
+    {
         return Some(None);
     }
     if clips.iter().any(|c| c.w <= 1e-3) {
@@ -381,7 +507,10 @@ fn box_rect(view_proj: &glam::Mat4, min: IVec3, size: i32, cam: glam::DVec3, wid
     let (mut lo, mut hi) = (glam::Vec2::splat(f32::MAX), glam::Vec2::splat(f32::MIN));
     for clip in clips {
         let ndc = clip.truncate().truncate() / clip.w;
-        let px = glam::Vec2::new((ndc.x * 0.5 + 0.5) * width as f32, (0.5 - ndc.y * 0.5) * height as f32);
+        let px = glam::Vec2::new(
+            (ndc.x * 0.5 + 0.5) * width as f32,
+            (0.5 - ndc.y * 0.5) * height as f32,
+        );
         lo = lo.min(px);
         hi = hi.max(px);
     }

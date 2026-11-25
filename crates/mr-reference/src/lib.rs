@@ -42,7 +42,13 @@ impl Shadows {
 pub fn cpu_params() -> Vec<ParamSpec> {
     vec![
         ParamSpec::int("threads", "Worker threads (0 = all cores)", 0, 256, 0, true),
-        ParamSpec::choice("shadows", "Shadow rays in lit mode", &["none", "sun", "all"], "all", true),
+        ParamSpec::choice(
+            "shadows",
+            "Shadow rays in lit mode",
+            &["none", "sun", "all"],
+            "all",
+            true,
+        ),
     ]
 }
 
@@ -58,7 +64,12 @@ pub struct Pool {
 
 impl Pool {
     pub fn new(threads: usize) -> anyhow::Result<Self> {
-        Ok(Self { pool: rayon::ThreadPoolBuilder::new().num_threads(threads).build()?, threads })
+        Ok(Self {
+            pool: rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()?,
+            threads,
+        })
     }
 
     pub fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
@@ -71,7 +82,12 @@ impl Pool {
 
     /// Handles the shared `threads` / `shadows` parameters; returns false if `name` is
     /// not one of them.
-    pub fn set_common(&mut self, world: &mut World, name: &str, value: &ParamValue) -> anyhow::Result<bool> {
+    pub fn set_common(
+        &mut self,
+        world: &mut World,
+        name: &str,
+        value: &ParamValue,
+    ) -> anyhow::Result<bool> {
         match name {
             "threads" => {
                 let n = value.as_i64().unwrap_or(0) as usize;
@@ -91,7 +107,10 @@ impl Pool {
 
 /// The `shadows` knob's value.
 pub fn parse_shadows(value: &ParamValue) -> anyhow::Result<Shadows> {
-    value.as_str().and_then(Shadows::parse).ok_or_else(|| anyhow::anyhow!("bad shadows value"))
+    value
+        .as_str()
+        .and_then(Shadows::parse)
+        .ok_or_else(|| anyhow::anyhow!("bad shadows value"))
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -153,7 +172,9 @@ impl Rng {
     /// A direction around `n`, cosine-weighted.
     pub fn cosine(&mut self, n: DVec3) -> DVec3 {
         let (u, phi) = (self.unit(), std::f64::consts::TAU * self.unit());
-        let t = n.cross(if n.x.abs() > 0.5 { DVec3::Y } else { DVec3::X }).normalize();
+        let t = n
+            .cross(if n.x.abs() > 0.5 { DVec3::Y } else { DVec3::X })
+            .normalize();
         let b = n.cross(t);
         (t * (u.sqrt() * phi.cos()) + b * (u.sqrt() * phi.sin()) + n * (1.0 - u).sqrt()).normalize()
     }
@@ -169,7 +190,10 @@ pub fn entry() -> RendererEntry {
             let mut i = info();
             match p.options::<Options>()?.lod {
                 true => i.features = i.features.with_lod(MAX_LOD),
-                false => i.features.lack(Feature::Lod, "the reference holds LOD levels only with `lod = true`"),
+                false => i.features.lack(
+                    Feature::Lod,
+                    "the reference holds LOD levels only with `lod = true`",
+                ),
             }
             Ok(i)
         },
@@ -180,9 +204,16 @@ pub fn entry() -> RendererEntry {
 pub fn info() -> RendererInfo {
     RendererInfo {
         name: "cpu-reference".into(),
-        description: "Multi-threaded f64 two-level DDA ray caster; defines the reference images".into(),
+        description: "Multi-threaded f64 two-level DDA ray caster; defines the reference images"
+            .into(),
         tags: vec!["cpu".into(), "raycast".into(), "reference".into()],
-        features: Features::of(&[Feature::Lit, Feature::Volume, Feature::Meshes, Feature::MeshRays, Feature::Transparency]),
+        features: Features::of(&[
+            Feature::Lit,
+            Feature::Volume,
+            Feature::Meshes,
+            Feature::MeshRays,
+            Feature::Transparency,
+        ]),
         params: params(),
     }
 }
@@ -205,7 +236,15 @@ pub struct World {
 
 impl World {
     pub fn new(p: &InitParams) -> Self {
-        Self { blocks: p.blocks.clone(), env: p.environment, shadows: Shadows::All, tone: Tone::Clamp, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false }
+        Self {
+            blocks: p.blocks.clone(),
+            env: p.environment,
+            shadows: Shadows::All,
+            tone: Tone::Clamp,
+            lights: HashMap::new(),
+            light_grid: HashMap::new(),
+            lights_dirty: false,
+        }
     }
 
     /// The sky's pixel (a linear colour, through the post).
@@ -248,7 +287,10 @@ impl World {
                 for z in lo.z..=hi.z {
                     for y in lo.y..=hi.y {
                         for x in lo.x..=hi.x {
-                            self.light_grid.entry(IVec3::new(x, y, z)).or_default().push(*l);
+                            self.light_grid
+                                .entry(IVec3::new(x, y, z))
+                                .or_default()
+                                .push(*l);
                         }
                     }
                 }
@@ -259,7 +301,9 @@ impl World {
 
     /// Point lights that may reach world block `world` (a coarse candidate list).
     pub fn lights_near(&self, world: IVec3) -> Option<&[Light]> {
-        self.light_grid.get(&(world >> LIGHT_CELL_BITS)).map(|v| v.as_slice())
+        self.light_grid
+            .get(&(world >> LIGHT_CELL_BITS))
+            .map(|v| v.as_slice())
     }
 
     pub fn light_count(&self) -> usize {
@@ -269,39 +313,82 @@ impl World {
     /// Shades a surface point `p` on `face` of `block` (`local` = position within the
     /// block) with the reference model, shadow rays tested by `occluded` (from a point along a
     /// unit direction within a distance: whether something is hit).
-    pub fn shade_surface<P: Pixel>(&self, p: DVec3, local: Vec3, face: Face, block: BlockId, mode: RenderMode, occluded: impl Fn(DVec3, DVec3, f64) -> bool) -> P {
-        self.shade_surface_through(p, local, face, block, mode, |p, d, dist| if occluded(p, d, dist) { 0.0 } else { 1.0 })
+    pub fn shade_surface<P: Pixel>(
+        &self,
+        p: DVec3,
+        local: Vec3,
+        face: Face,
+        block: BlockId,
+        mode: RenderMode,
+        occluded: impl Fn(DVec3, DVec3, f64) -> bool,
+    ) -> P {
+        self.shade_surface_through(p, local, face, block, mode, |p, d, dist| {
+            if occluded(p, d, dist) { 0.0 } else { 1.0 }
+        })
     }
 
     /// [`Self::shade_surface`] with shadow rays that pass partly: `transmit` gives the fraction
     /// of light that arrives (0 = occluded).
-    pub fn shade_surface_through<P: Pixel>(&self, p: DVec3, local: Vec3, face: Face, block: BlockId, mode: RenderMode, transmit: impl Fn(DVec3, DVec3, f64) -> f32) -> P {
+    pub fn shade_surface_through<P: Pixel>(
+        &self,
+        p: DVec3,
+        local: Vec3,
+        face: Face,
+        block: BlockId,
+        mode: RenderMode,
+        transmit: impl Fn(DVec3, DVec3, f64) -> f32,
+    ) -> P {
         let uv = face.uv(local);
         let tex = self.blocks.texture_of(block, face);
         let texel = tex.texel(texel_coord(uv.x), texel_coord(uv.y));
         if mode == RenderMode::Unlit {
             return P::from_rgba8(texel);
         }
-        let albedo = Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]));
-        P::encode(self.tone, albedo * self.light_through(p, face.normal().as_vec3(), transmit) * self.env.exposure)
+        let albedo = Vec3::new(
+            srgb_to_linear(texel[0]),
+            srgb_to_linear(texel[1]),
+            srgb_to_linear(texel[2]),
+        );
+        P::encode(
+            self.tone,
+            albedo * self.light_through(p, face.normal().as_vec3(), transmit) * self.env.exposure,
+        )
     }
 
     /// Incoming light (linear) at surface point `p` with normal `n`: ambient, sun and
     /// point lights, each with its shadow ray tested by `occluded`.
-    pub fn light_at(&self, p: DVec3, n: Vec3, occluded: impl Fn(DVec3, DVec3, f64) -> bool) -> Vec3 {
-        self.light_through(p, n, |p, d, dist| if occluded(p, d, dist) { 0.0 } else { 1.0 })
+    pub fn light_at(
+        &self,
+        p: DVec3,
+        n: Vec3,
+        occluded: impl Fn(DVec3, DVec3, f64) -> bool,
+    ) -> Vec3 {
+        self.light_through(
+            p,
+            n,
+            |p, d, dist| if occluded(p, d, dist) { 0.0 } else { 1.0 },
+        )
     }
 
     /// [`Self::light_at`] with shadow rays that pass partly: each light is scaled by the
     /// fraction `transmit` lets through (see-through blocks attenuate, opaque ones stop).
     #[inline]
-    pub fn light_through(&self, p: DVec3, n: Vec3, transmit: impl Fn(DVec3, DVec3, f64) -> f32) -> Vec3 {
+    pub fn light_through(
+        &self,
+        p: DVec3,
+        n: Vec3,
+        transmit: impl Fn(DVec3, DVec3, f64) -> f32,
+    ) -> Vec3 {
         let p = p + n.as_dvec3() * 1e-4;
         let mut light = self.env.ambient;
         if let Some(sun) = self.env.sun {
             let ndl = n.dot(-sun.direction);
             if ndl > 0.0 {
-                let v = if self.shadows == Shadows::None { 1.0 } else { transmit(p, -sun.direction.as_dvec3(), MAX_DIST) };
+                let v = if self.shadows == Shadows::None {
+                    1.0
+                } else {
+                    transmit(p, -sun.direction.as_dvec3(), MAX_DIST)
+                };
                 if v > 0.0 {
                     light += sun.color * ndl * v;
                 }
@@ -313,7 +400,11 @@ impl World {
                 let c = point_light(n, to.as_vec3(), l);
                 if c != Vec3::ZERO {
                     let dist = to.length();
-                    let v = if self.shadows != Shadows::All { 1.0 } else { transmit(p, to / dist, dist) };
+                    let v = if self.shadows != Shadows::All {
+                        1.0
+                    } else {
+                        transmit(p, to / dist, dist)
+                    };
                     if v > 0.0 {
                         light += c * v;
                     }
@@ -362,11 +453,20 @@ impl Columns {
     /// Rewrites chunk column (`x`, `z`) of `shown` from the given chunks; returns the chunk
     /// positions written or removed.
     fn rebuild(&self, shown: &mut HashMap<IVec3, ChunkData>, x: i32, z: i32) -> Vec<IVec3> {
-        let mut out: Vec<IVec3> = shown.keys().filter(|k| k.x == x && k.z == z).copied().collect();
+        let mut out: Vec<IVec3> = shown
+            .keys()
+            .filter(|k| k.x == x && k.z == z)
+            .copied()
+            .collect();
         for k in &out {
             shown.remove(k);
         }
-        let mut ys: Vec<i32> = self.given.keys().filter(|k| k.x == x && k.z == z).map(|k| k.y).collect();
+        let mut ys: Vec<i32> = self
+            .given
+            .keys()
+            .filter(|k| k.x == x && k.z == z)
+            .map(|k| k.y)
+            .collect();
         ys.sort_unstable_by(|a, b| b.cmp(a));
         let Some(&high) = ys.first() else { return out };
         // Per (lx, lz): the top block's world y and kind.
@@ -375,7 +475,11 @@ impl Columns {
             for lx in 0..CHUNK_SIZE {
                 tops[(lz * CHUNK_SIZE + lx) as usize] = ys.iter().find_map(|&cy| {
                     let ch = &self.given[&IVec3::new(x, cy, z)];
-                    (0..CHUNK_SIZE).rev().map(|ly| (ly, ch.get(IVec3::new(lx, ly, lz)))).find(|(_, b)| *b != BlockId::AIR).map(|(ly, b)| (cy * CHUNK_SIZE + ly, b))
+                    (0..CHUNK_SIZE)
+                        .rev()
+                        .map(|ly| (ly, ch.get(IVec3::new(lx, ly, lz))))
+                        .find(|(_, b)| *b != BlockId::AIR)
+                        .map(|(ly, b)| (cy * CHUNK_SIZE + ly, b))
                 });
             }
         }
@@ -383,7 +487,9 @@ impl Columns {
             let mut d = DenseChunk::filled(BlockId::AIR);
             for lz in 0..CHUNK_SIZE {
                 for lx in 0..CHUNK_SIZE {
-                    let Some((top, b)) = tops[(lz * CHUNK_SIZE + lx) as usize] else { continue };
+                    let Some((top, b)) = tops[(lz * CHUNK_SIZE + lx) as usize] else {
+                        continue;
+                    };
                     for ly in 0..CHUNK_SIZE.min(top - cy * CHUNK_SIZE + 1).max(0) {
                         d.set(IVec3::new(lx, ly, lz), b);
                     }
@@ -495,8 +601,22 @@ impl CpuReference {
         } else {
             Chunks::default()
         };
-        let paths = opts.bounces.map(|bounces| Paths { bounces, paths: opts.paths.unwrap_or(PATHS).max(1) });
-        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths, mesh_rays: opts.mesh_rays.unwrap_or(true), transparency: opts.transparency.unwrap_or(true) })
+        let paths = opts.bounces.map(|bounces| Paths {
+            bounces,
+            paths: opts.paths.unwrap_or(PATHS).max(1),
+        });
+        Ok(Self {
+            width: p.width,
+            height: p.height,
+            pixels: vec![0; (p.width * p.height * 4) as usize],
+            world,
+            chunks,
+            meshes: Default::default(),
+            pool: Pool::new(p.devices.cpu_threads(opts.threads))?,
+            paths,
+            mesh_rays: opts.mesh_rays.unwrap_or(true),
+            transparency: opts.transparency.unwrap_or(true),
+        })
     }
 }
 
@@ -505,7 +625,10 @@ impl Chunks {
     /// (x, z) column solid from its top block down to the lowest chunk loaded anywhere, all of
     /// the top block's kind; LOD 0 only.
     pub fn as_columns(mut self) -> Self {
-        self.columns = Some(Columns { given: HashMap::new(), low: i32::MAX });
+        self.columns = Some(Columns {
+            given: HashMap::new(),
+            low: i32::MAX,
+        });
         self.lod = None;
         self
     }
@@ -513,7 +636,15 @@ impl Chunks {
     /// Chunks that hold and trace the levels up to `max_lod` of a region of `radius` chunks
     /// per level; [`Chunks::look_from`] places the region before tracing.
     pub fn with_lod(radius: u32, max_lod: u8) -> Self {
-        Self { lod: Some(Lod { radius: radius as i32, max: max_lod, cam: IVec3::ZERO, coarse: HashMap::new() }), ..Default::default() }
+        Self {
+            lod: Some(Lod {
+                radius: radius as i32,
+                max: max_lod,
+                cam: IVec3::ZERO,
+                coarse: HashMap::new(),
+            }),
+            ..Default::default()
+        }
     }
 
     /// The camera's position: the centre of the LOD regions (nothing without LOD).
@@ -539,13 +670,20 @@ impl Chunks {
     }
 
     pub fn dense_bytes(&self) -> u64 {
-        self.chunks.values().filter(|c| matches!(c, ChunkData::Dense(_))).count() as u64 * CHUNK_VOLUME as u64 * 2
+        self.chunks
+            .values()
+            .filter(|c| matches!(c, ChunkData::Dense(_)))
+            .count() as u64
+            * CHUNK_VOLUME as u64
+            * 2
     }
 
     /// Applies the chunk updates (the world's others are ignored: [`World::apply`]); returns
     /// the LOD-0 chunk positions whose contents changed.
     pub fn apply(&mut self, updates: &[WorldUpdate]) -> Vec<IVec3> {
-        let Some(mut cols) = self.columns.take() else { return self.apply_given(updates) };
+        let Some(mut cols) = self.columns.take() else {
+            return self.apply_given(updates);
+        };
         std::mem::swap(&mut self.chunks, &mut cols.given);
         let changed = self.apply_given(updates);
         std::mem::swap(&mut self.chunks, &mut cols.given);
@@ -609,7 +747,9 @@ impl Chunks {
                         }
                     }
                 }
-                WorldUpdate::LightUpsert(_) | WorldUpdate::LightRemove(_) | WorldUpdate::SetEnvironment(_) => {}
+                WorldUpdate::LightUpsert(_)
+                | WorldUpdate::LightRemove(_)
+                | WorldUpdate::SetEnvironment(_) => {}
             }
         }
         changed.sort_unstable_by_key(|p| (p.x, p.y, p.z));
@@ -619,7 +759,9 @@ impl Chunks {
 
     fn rebuild_bounds(&mut self) {
         let mut it = self.chunks.keys();
-        self.bounds = it.next().map(|&first| it.fold((first, first), |(lo, hi), &k| (lo.min(k), hi.max(k))));
+        self.bounds = it
+            .next()
+            .map(|&first| it.fold((first, first), |(lo, hi), &k| (lo.min(k), hi.max(k))));
         self.bounds_dirty = false;
     }
 
@@ -632,7 +774,13 @@ impl Chunks {
                 return false;
             }
             // Degenerate (axis 3): started on a boundary inside solid.
-            hit = (v.axis != 3).then(|| Hit { t: v.t, cell: v.cell, block: v.block, face: Face::entered(v.axis, d.signum().as_ivec3()[v.axis]), lod: v.lod });
+            hit = (v.axis != 3).then(|| Hit {
+                t: v.t,
+                cell: v.cell,
+                block: v.block,
+                face: Face::entered(v.axis, d.signum().as_ivec3()[v.axis]),
+                lod: v.lod,
+            });
             true
         });
         hit
@@ -640,7 +788,9 @@ impl Chunks {
 
     /// The block at a LOD-0 cell (air where no chunk is loaded).
     pub fn block_at(&self, cell: IVec3) -> BlockId {
-        self.chunks.get(&(cell >> CHUNK_BITS as i32)).map_or(BlockId::AIR, |c| c.get(local_of_block(cell)))
+        self.chunks
+            .get(&(cell >> CHUNK_BITS as i32))
+            .map_or(BlockId::AIR, |c| c.get(local_of_block(cell)))
     }
 
     /// Walks the cells along the ray front to back, calling `visit` with each cell entered
@@ -653,7 +803,13 @@ impl Chunks {
         self.walk_lod0(o, d, max_t, visit);
     }
 
-    fn walk_lod0(&self, o: DVec3, d: DVec3, max_t: f64, mut visit: impl FnMut(Visit) -> bool) -> Option<()> {
+    fn walk_lod0(
+        &self,
+        o: DVec3,
+        d: DVec3,
+        max_t: f64,
+        mut visit: impl FnMut(Visit) -> bool,
+    ) -> Option<()> {
         let (lo, hi) = self.bounds?;
         // Clip against the loaded-chunk AABB.
         let bmin = (lo << CHUNK_BITS as i32).as_dvec3();
@@ -671,14 +827,35 @@ impl Chunks {
         let start_cell = o.floor().as_ivec3();
         // Begin at the AABB entry; nudge the floor so the entry cell is inside the box.
         let p = o + d * tnear;
-        let mut cell = p.floor().as_ivec3().clamp(lo << CHUNK_BITS as i32, ((hi + 1) << CHUNK_BITS as i32) - 1);
-        let mut axis = if tnear > 0.0 { t0.min(t1).to_array().iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0 } else { 3 };
+        let mut cell = p
+            .floor()
+            .as_ivec3()
+            .clamp(lo << CHUNK_BITS as i32, ((hi + 1) << CHUNK_BITS as i32) - 1);
+        let mut axis = if tnear > 0.0 {
+            t0.min(t1)
+                .to_array()
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .unwrap()
+                .0
+        } else {
+            3
+        };
 
         let next_t = |cell: IVec3, size: i32| -> DVec3 {
             let mut t = DVec3::ZERO;
             for a in 0..3 {
-                let boundary = if step[a] > 0 { (cell[a].div_euclid(size) + 1) * size } else { cell[a].div_euclid(size) * size };
-                t[a] = if d[a] == 0.0 { f64::INFINITY } else { (boundary as f64 - o[a]) * inv[a] };
+                let boundary = if step[a] > 0 {
+                    (cell[a].div_euclid(size) + 1) * size
+                } else {
+                    cell[a].div_euclid(size) * size
+                };
+                t[a] = if d[a] == 0.0 {
+                    f64::INFINITY
+                } else {
+                    (boundary as f64 - o[a]) * inv[a]
+                };
             }
             t
         };
@@ -688,7 +865,13 @@ impl Chunks {
             let chunk_pos = cell >> CHUNK_BITS as i32;
             match self.chunks.get(&chunk_pos) {
                 None | Some(ChunkData::Uniform(BlockId::AIR)) => {
-                    if visit(Visit { t, cell, block: BlockId::AIR, axis, lod: 0 }) {
+                    if visit(Visit {
+                        t,
+                        cell,
+                        block: BlockId::AIR,
+                        axis,
+                        lod: 0,
+                    }) {
                         return None;
                     }
                     // Skip the whole chunk: advance to its exit face.
@@ -701,7 +884,11 @@ impl Chunks {
                     // Make the axis we crossed exact, keep the others inside the chunk slab.
                     for k in 0..3 {
                         if k == a {
-                            next[k] = if step[k] > 0 { c0[k] + CHUNK_SIZE } else { c0[k] - 1 };
+                            next[k] = if step[k] > 0 {
+                                c0[k] + CHUNK_SIZE
+                            } else {
+                                c0[k] - 1
+                            };
                         } else {
                             next[k] = next[k].clamp(c0[k], c0[k] + CHUNK_SIZE - 1);
                         }
@@ -712,7 +899,15 @@ impl Chunks {
                 Some(chunk) => {
                     let c0 = chunk_pos << CHUNK_BITS as i32;
                     loop {
-                        if cell != start_cell && visit(Visit { t, cell, block: chunk.get(local_of_block(cell)), axis, lod: 0 }) {
+                        if cell != start_cell
+                            && visit(Visit {
+                                t,
+                                cell,
+                                block: chunk.get(local_of_block(cell)),
+                                axis,
+                                lod: 0,
+                            })
+                        {
                             return None;
                         }
                         let tv = next_t(cell, 1);
@@ -736,7 +931,14 @@ impl Chunks {
     /// The walk through LOD levels: every cell at the finest level whose region contains it,
     /// exactly (no step crosses into another level's cells unseen). Ignores the cell containing
     /// `o`, as [`Chunks::trace`] does. A coarse cell is visited as its lowest corner.
-    fn walk_lod(&self, l: &Lod, o: DVec3, d: DVec3, max_t: f64, mut visit: impl FnMut(Visit) -> bool) {
+    fn walk_lod(
+        &self,
+        l: &Lod,
+        o: DVec3,
+        d: DVec3,
+        max_t: f64,
+        mut visit: impl FnMut(Visit) -> bool,
+    ) {
         // The outermost level's region bounds everything.
         let top = CHUNK_BITS as i32 + l.max as i32;
         let c = l.cam >> top;
@@ -752,24 +954,52 @@ impl Chunks {
         let step = d.signum().as_ivec3();
         let start = o.floor().as_ivec3();
         let mut cell = (o + d * tnear).floor().as_ivec3().clamp(lo, hi);
-        let mut axis = if tnear > 0.0 { t0.min(t1).to_array().iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0 } else { 3 };
+        let mut axis = if tnear > 0.0 {
+            t0.min(t1)
+                .to_array()
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .unwrap()
+                .0
+        } else {
+            3
+        };
         let mut t = tnear;
         while t <= tfar {
             let m = l.level(cell);
             let key = cell >> (CHUNK_BITS as i32 + m as i32);
-            let chunk = if m == 0 { self.chunks.get(&key) } else { l.coarse.get(&ChunkKey { pos: key, lod: m }) };
+            let chunk = if m == 0 {
+                self.chunks.get(&key)
+            } else {
+                l.coarse.get(&ChunkKey { pos: key, lod: m })
+            };
             // The box to leave next: the cell, or for an empty chunk the largest box around the
             // cell that is all of this level (the chunk at level 0; else the chunk's octant, a
             // chunk of the level below that its region left out whole).
             let size = match chunk {
                 None | Some(ChunkData::Uniform(BlockId::AIR)) => {
-                    if visit(Visit { t, cell: (cell >> m) << m, block: BlockId::AIR, axis, lod: m }) {
+                    if visit(Visit {
+                        t,
+                        cell: (cell >> m) << m,
+                        block: BlockId::AIR,
+                        axis,
+                        lod: m,
+                    }) {
                         return;
                     }
                     CHUNK_SIZE << m.saturating_sub(1)
                 }
                 Some(chunk) => {
-                    if cell >> m != start >> m && visit(Visit { t, cell: (cell >> m) << m, block: chunk.get(local_of_block(cell >> m)), axis, lod: m }) {
+                    if cell >> m != start >> m
+                        && visit(Visit {
+                            t,
+                            cell: (cell >> m) << m,
+                            block: chunk.get(local_of_block(cell >> m)),
+                            axis,
+                            lod: m,
+                        })
+                    {
                         return;
                     }
                     1 << m
@@ -779,7 +1009,8 @@ impl Chunks {
             let mut tv = DVec3::INFINITY;
             for a in 0..3 {
                 if d[a] != 0.0 {
-                    tv[a] = ((if step[a] > 0 { b0[a] + size } else { b0[a] }) as f64 - o[a]) * inv[a];
+                    tv[a] =
+                        ((if step[a] > 0 { b0[a] + size } else { b0[a] }) as f64 - o[a]) * inv[a];
                 }
             }
             let a = min_axis(tv);
@@ -787,7 +1018,11 @@ impl Chunks {
             // The axis crossed is exact; the others stay inside the box's slab.
             let mut next = (o + d * t).floor().as_ivec3();
             for k in 0..3 {
-                next[k] = if k == a { if step[k] > 0 { b0[k] + size } else { b0[k] - 1 } } else { next[k].clamp(b0[k], b0[k] + size - 1) };
+                next[k] = if k == a {
+                    if step[k] > 0 { b0[k] + size } else { b0[k] - 1 }
+                } else {
+                    next[k].clamp(b0[k], b0[k] + size - 1)
+                };
             }
             cell = next;
             axis = a;
@@ -815,7 +1050,8 @@ impl VoxelScene<'_> {
 
     /// Whether a voxel or a mesh is hit from `p` along `dir` within `dist`.
     pub fn occluded(&self, p: DVec3, dir: DVec3, dist: f64) -> bool {
-        self.chunks.occluded(p, dir, dist) || self.ray_meshes().is_some_and(|m| m.occluded(p, dir, dist))
+        self.chunks.occluded(p, dir, dist)
+            || self.ray_meshes().is_some_and(|m| m.occluded(p, dir, dist))
     }
 
     /// The fraction of light that passes from `p` along `dir` within `dist`: the product of
@@ -841,7 +1077,11 @@ impl VoxelScene<'_> {
         let start = o.floor().as_ivec3();
         let first = self.chunks.block_at(start);
         // The block being crossed (air outside), its last cell and level.
-        let mut prev = if blocks.see_through(first) { (first, start, 0) } else { (BlockId::AIR, start, 0) };
+        let mut prev = if blocks.see_through(first) {
+            (first, start, 0)
+        } else {
+            (BlockId::AIR, start, 0)
+        };
         self.chunks.walk(o, d, max_t, |v| {
             if v.axis == 3 {
                 prev = (v.block, v.cell, v.lod);
@@ -853,12 +1093,28 @@ impl VoxelScene<'_> {
             }
             let mut n = Vec3::ZERO;
             n[v.axis] = -step[v.axis] as f32;
-            if blocks.see_through(prev.0) && f(Layer { t: v.t, cell: prev.1, lod: prev.2, block: prev.0, face: Face::entered(v.axis, -step[v.axis]), n }) {
+            if blocks.see_through(prev.0)
+                && f(Layer {
+                    t: v.t,
+                    cell: prev.1,
+                    lod: prev.2,
+                    block: prev.0,
+                    face: Face::entered(v.axis, -step[v.axis]),
+                    n,
+                })
+            {
                 return true;
             }
             prev = (v.block, v.cell, v.lod);
             if v.block.is_solid() {
-                return f(Layer { t: v.t, cell: v.cell, lod: v.lod, block: v.block, face: Face::entered(v.axis, step[v.axis]), n }) || !blocks.see_through(v.block);
+                return f(Layer {
+                    t: v.t,
+                    cell: v.cell,
+                    lod: v.lod,
+                    block: v.block,
+                    face: Face::entered(v.axis, step[v.axis]),
+                    n,
+                }) || !blocks.see_through(v.block);
             }
             false
         });
@@ -867,7 +1123,11 @@ impl VoxelScene<'_> {
     /// The texture and texel where a layer is crossed.
     fn texel_at(&self, o: DVec3, d: DVec3, l: &Layer) -> (&Texture, usize, usize) {
         let uv = l.face.uv(Self::local_at(o, d, l.t, l.cell, l.lod));
-        (self.world.blocks.texture_of(l.block, l.face), texel_coord(uv.x), texel_coord(uv.y))
+        (
+            self.world.blocks.texture_of(l.block, l.face),
+            texel_coord(uv.x),
+            texel_coord(uv.y),
+        )
     }
 
     /// How much of the light a layer stops (its texel's alpha; 1 for an opaque block).
@@ -900,7 +1160,15 @@ impl VoxelScene<'_> {
     /// A layered ray's pixel: its surfaces composited front to back (OVER) in linear light,
     /// the nearest mesh or the sky behind. A ray whose first surface covers fully is the
     /// opaque path's pixel ([`Self::shade`], bit for bit; with shadow rays attenuated).
-    fn shade_layered(&self, o: DVec3, d: DVec3, max_t: f64, mode: RenderMode, paths: Option<Paths>, rng: &mut Rng) -> [u8; 4] {
+    fn shade_layered(
+        &self,
+        o: DVec3,
+        d: DVec3,
+        max_t: f64,
+        mode: RenderMode,
+        paths: Option<Paths>,
+        rng: &mut Rng,
+    ) -> [u8; 4] {
         let mesh = self.meshes.and_then(|m| m.trace(o, d, max_t));
         let (layers, through) = self.front(o, d, mesh.as_ref().map_or(max_t, |m| m.t));
         let (tone, exposure) = (self.world.tone, self.world.env.exposure);
@@ -910,16 +1178,32 @@ impl VoxelScene<'_> {
             (_, None) => albedo * self.light_at(p, n) * exposure,
         };
         // An entry face covering fully (an exit face's normal is not its face's).
-        if let Some((l, _)) = layers.first().filter(|(l, a)| *a >= 1.0 && l.n == l.face.normal().as_vec3()) {
-            let hit = Hit { t: l.t, cell: l.cell, block: l.block, face: l.face, lod: l.lod };
+        if let Some((l, _)) = layers
+            .first()
+            .filter(|(l, a)| *a >= 1.0 && l.n == l.face.normal().as_vec3())
+        {
+            let hit = Hit {
+                t: l.t,
+                cell: l.cell,
+                block: l.block,
+                face: l.face,
+                lod: l.lod,
+            };
             return match paths.filter(|_| mode == RenderMode::Lit) {
-                Some(_) => tone.encode(lit(self.albedo(o, d, &hit), o + d * hit.t, hit.face.normal().as_vec3(), rng)),
+                Some(_) => tone.encode(lit(
+                    self.albedo(o, d, &hit),
+                    o + d * hit.t,
+                    hit.face.normal().as_vec3(),
+                    rng,
+                )),
                 None => self.shade(o, d, &hit, mode),
             };
         }
         if layers.is_empty() {
             return match mesh {
-                Some(m) if mode == RenderMode::Lit && paths.is_some() => tone.encode(lit(m.albedo(), o + d * m.t, m.normal, rng)),
+                Some(m) if mode == RenderMode::Lit && paths.is_some() => {
+                    tone.encode(lit(m.albedo(), o + d * m.t, m.normal, rng))
+                }
                 Some(m) => self.shade_mesh(o + d * m.t, m.normal, m.color, mode),
                 None => self.world.sky(),
             };
@@ -929,7 +1213,11 @@ impl VoxelScene<'_> {
         for (l, a) in &layers {
             let (tex, x, y) = self.texel_at(o, d, l);
             let t = tex.texel(x, y);
-            let albedo = Vec3::new(srgb_to_linear(t[0]), srgb_to_linear(t[1]), srgb_to_linear(t[2]));
+            let albedo = Vec3::new(
+                srgb_to_linear(t[0]),
+                srgb_to_linear(t[1]),
+                srgb_to_linear(t[2]),
+            );
             c += lit(albedo, o + d * l.t, l.n, rng) * (left * a);
             left *= 1.0 - a;
         }
@@ -937,8 +1225,21 @@ impl VoxelScene<'_> {
             c += left
                 * match mesh {
                     Some(m) => {
-                        let albedo = Vec3::new(srgb_to_linear_f(m.color.x), srgb_to_linear_f(m.color.y), srgb_to_linear_f(m.color.z));
-                        lit(if mode == RenderMode::Unlit { albedo } else { m.albedo() }, o + d * m.t, m.normal, rng)
+                        let albedo = Vec3::new(
+                            srgb_to_linear_f(m.color.x),
+                            srgb_to_linear_f(m.color.y),
+                            srgb_to_linear_f(m.color.z),
+                        );
+                        lit(
+                            if mode == RenderMode::Unlit {
+                                albedo
+                            } else {
+                                m.albedo()
+                            },
+                            o + d * m.t,
+                            m.normal,
+                            rng,
+                        )
                     }
                     None => self.world.env.sky,
                 };
@@ -958,7 +1259,13 @@ impl VoxelScene<'_> {
             self.layers(o, d, max_t, |l| {
                 let a = self.coverage(o, d, &l);
                 if a >= 1.0 || (a > 0.0 && (rng.unit() as f32) < a) {
-                    hit = Some(Hit { t: l.t, cell: l.cell, block: l.block, face: l.face, lod: l.lod });
+                    hit = Some(Hit {
+                        t: l.t,
+                        cell: l.cell,
+                        block: l.block,
+                        face: l.face,
+                        lod: l.lod,
+                    });
                     return true;
                 }
                 false
@@ -967,14 +1274,31 @@ impl VoxelScene<'_> {
         } else {
             self.trace(o, d, max_t)
         };
-        if let Some(m) = self.ray_meshes().and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_t, |h| h.t))) {
-            return Some(Surface { t: m.t, n: m.normal.as_dvec3(), albedo: m.albedo() });
+        if let Some(m) = self
+            .ray_meshes()
+            .and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_t, |h| h.t)))
+        {
+            return Some(Surface {
+                t: m.t,
+                n: m.normal.as_dvec3(),
+                albedo: m.albedo(),
+            });
         }
-        hit.map(|h| Surface { t: h.t, n: facing(h.face, d), albedo: self.albedo(o, d, &h) })
+        hit.map(|h| Surface {
+            t: h.t,
+            n: facing(h.face, d),
+            albedo: self.albedo(o, d, &h),
+        })
     }
 
     pub fn shade(&self, o: DVec3, d: DVec3, hit: &Hit, mode: RenderMode) -> [u8; 4] {
-        self.shade_surface(o + d * hit.t, Self::local(o, d, hit), hit.face, hit.block, mode)
+        self.shade_surface(
+            o + d * hit.t,
+            Self::local(o, d, hit),
+            hit.face,
+            hit.block,
+            mode,
+        )
     }
 
     /// The hit point within its block.
@@ -986,14 +1310,26 @@ impl VoxelScene<'_> {
     fn local_at(o: DVec3, d: DVec3, t: f64, cell: IVec3, lod: u8) -> Vec3 {
         let p = o + d * t;
         // A coarse cell shows its block's texture once per block, as the pipelines do.
-        if lod == 0 { (o - cell.as_dvec3() + d * t).as_vec3() } else { (p - p.floor()).as_vec3() }
+        if lod == 0 {
+            (o - cell.as_dvec3() + d * t).as_vec3()
+        } else {
+            (p - p.floor()).as_vec3()
+        }
     }
 
     /// The linear albedo where `hit` was hit.
     fn albedo(&self, o: DVec3, d: DVec3, hit: &Hit) -> Vec3 {
         let uv = hit.face.uv(Self::local(o, d, hit));
-        let texel = self.world.blocks.texture_of(hit.block, hit.face).texel(texel_coord(uv.x), texel_coord(uv.y));
-        Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]))
+        let texel = self
+            .world
+            .blocks
+            .texture_of(hit.block, hit.face)
+            .texel(texel_coord(uv.x), texel_coord(uv.y));
+        Vec3::new(
+            srgb_to_linear(texel[0]),
+            srgb_to_linear(texel[1]),
+            srgb_to_linear(texel[2]),
+        )
     }
 
     /// Incoming light (linear) at surface point `p` with normal `n` by diffuse path tracing,
@@ -1002,7 +1338,14 @@ impl VoxelScene<'_> {
     /// ([`Self::light_at`]); the ambient term stands in for the sky, so only a ray that
     /// escapes and the last vertex take it. Bounces land on voxels and meshes. `bounces = 0` is
     /// [`Self::light_at`].
-    pub fn light_by_paths(&self, p: DVec3, n: Vec3, bounces: u32, paths: u32, rng: &mut Rng) -> Vec3 {
+    pub fn light_by_paths(
+        &self,
+        p: DVec3,
+        n: Vec3,
+        bounces: u32,
+        paths: u32,
+        rng: &mut Rng,
+    ) -> Vec3 {
         let ambient = self.world.env.ambient;
         let direct = self.light_at(p, n);
         if bounces == 0 {
@@ -1022,7 +1365,12 @@ impl VoxelScene<'_> {
                 (p, n) = (o + d * hit.t, hit.n);
                 through *= hit.albedo;
                 let light = self.light_at(p, n.as_vec3());
-                sum += through * if depth < bounces { light - ambient } else { light };
+                sum += through
+                    * if depth < bounces {
+                        light - ambient
+                    } else {
+                        light
+                    };
             }
         }
         direct - ambient + sum / paths as f32
@@ -1030,11 +1378,25 @@ impl VoxelScene<'_> {
 
     /// Shades a surface point `p` on `face` of `block` (`local` = position within the
     /// block) with the reference model.
-    pub fn shade_surface<P: Pixel>(&self, p: DVec3, local: Vec3, face: Face, block: BlockId, mode: RenderMode) -> P {
+    pub fn shade_surface<P: Pixel>(
+        &self,
+        p: DVec3,
+        local: Vec3,
+        face: Face,
+        block: BlockId,
+        mode: RenderMode,
+    ) -> P {
         if self.layered {
-            return self.world.shade_surface_through(p, local, face, block, mode, |p, d, dist| self.transmittance(p, d, dist));
+            return self
+                .world
+                .shade_surface_through(p, local, face, block, mode, |p, d, dist| {
+                    self.transmittance(p, d, dist)
+                });
         }
-        self.world.shade_surface(p, local, face, block, mode, |p, d, dist| self.occluded(p, d, dist))
+        self.world
+            .shade_surface(p, local, face, block, mode, |p, d, dist| {
+                self.occluded(p, d, dist)
+            })
     }
 
     /// Shades a mesh surface (mesh mode): `color` is the interpolated sRGB vertex colour,
@@ -1045,17 +1407,26 @@ impl VoxelScene<'_> {
             let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
             return [q(color.x), q(color.y), q(color.z), 255];
         }
-        let albedo = Vec3::new(srgb_to_linear_f(color.x), srgb_to_linear_f(color.y), srgb_to_linear_f(color.z));
-        self.world.tone.encode(albedo * self.light_at(p, n) * self.world.env.exposure)
+        let albedo = Vec3::new(
+            srgb_to_linear_f(color.x),
+            srgb_to_linear_f(color.y),
+            srgb_to_linear_f(color.z),
+        );
+        self.world
+            .tone
+            .encode(albedo * self.light_at(p, n) * self.world.env.exposure)
     }
 
     /// Incoming light (linear) at surface point `p` with normal `n`: ambient, sun and
     /// point lights, each with its shadow ray through the voxels and meshes.
     pub fn light_at(&self, p: DVec3, n: Vec3) -> Vec3 {
         if self.layered {
-            return self.world.light_through(p, n, |p, d, dist| self.transmittance(p, d, dist));
+            return self
+                .world
+                .light_through(p, n, |p, d, dist| self.transmittance(p, d, dist));
         }
-        self.world.light_at(p, n, |p, d, dist| self.occluded(p, d, dist))
+        self.world
+            .light_at(p, n, |p, d, dist| self.occluded(p, d, dist))
     }
 }
 
@@ -1096,36 +1467,68 @@ impl Renderer for CpuReference {
         let (w, h) = (self.width, self.height);
         let cam = req.camera;
         let o = cam.position;
-        let this = VoxelScene { world: &self.world, chunks: &self.chunks, meshes: req.meshes.then_some(&self.meshes), layered: req.layers && self.transparency, mesh_rays: self.mesh_rays };
+        let this = VoxelScene {
+            world: &self.world,
+            chunks: &self.chunks,
+            meshes: req.meshes.then_some(&self.meshes),
+            layered: req.layers && self.transparency,
+            mesh_rays: self.mesh_rays,
+        };
         let max_dist = this.max_dist();
         let sky = self.world.sky();
         // Path-traced lit frames: the light at the primary point from its paths.
         let paths = self.paths.filter(|_| req.mode == RenderMode::Lit);
         let (tone, exposure) = (self.world.tone, self.world.env.exposure);
-        let lit = |albedo: Vec3, p: DVec3, n: Vec3, k: Paths, rng: &mut Rng| -> [u8; 4] { tone.encode(albedo * this.light_by_paths(p, n, k.bounces, k.paths, rng) * exposure) };
+        let lit = |albedo: Vec3, p: DVec3, n: Vec3, k: Paths, rng: &mut Rng| -> [u8; 4] {
+            tone.encode(albedo * this.light_by_paths(p, n, k.bounces, k.paths, rng) * exposure)
+        };
         let mut pixels = std::mem::take(&mut self.pixels);
-        self.pool.install(|| pixels.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
-            for x in 0..w {
-                let d = cam.ray_dir(x, y as u32, w, h).as_dvec3();
-                if this.layered {
-                    let px = this.shade_layered(o, d, max_dist, req.mode, paths, &mut Rng::new(y as u32 * w + x));
-                    row[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&px);
-                    continue;
-                }
-                let hit = this.trace(o, d, max_dist);
-                // Mesh mode: the nearest mesh surface in front of the voxel hit wins.
-                let mesh_hit = this.meshes.and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_dist, |h| h.t)));
-                let mut rng = Rng::new(y as u32 * w + x);
-                let px = match (mesh_hit, hit, paths) {
-                    (Some(m), _, Some(k)) => lit(m.albedo(), o + d * m.t, m.normal, k, &mut rng),
-                    (Some(m), _, None) => this.shade_mesh(o + d * m.t, m.normal, m.color, req.mode),
-                    (None, Some(hit), Some(k)) => lit(this.albedo(o, d, &hit), o + d * hit.t, hit.face.normal().as_vec3(), k, &mut rng),
-                    (None, Some(hit), None) => this.shade(o, d, &hit, req.mode),
-                    (None, None, _) => sky,
-                };
-                row[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&px);
-            }
-        }));
+        self.pool.install(|| {
+            pixels
+                .par_chunks_mut((w * 4) as usize)
+                .enumerate()
+                .for_each(|(y, row)| {
+                    for x in 0..w {
+                        let d = cam.ray_dir(x, y as u32, w, h).as_dvec3();
+                        if this.layered {
+                            let px = this.shade_layered(
+                                o,
+                                d,
+                                max_dist,
+                                req.mode,
+                                paths,
+                                &mut Rng::new(y as u32 * w + x),
+                            );
+                            row[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&px);
+                            continue;
+                        }
+                        let hit = this.trace(o, d, max_dist);
+                        // Mesh mode: the nearest mesh surface in front of the voxel hit wins.
+                        let mesh_hit = this
+                            .meshes
+                            .and_then(|m| m.trace(o, d, hit.as_ref().map_or(max_dist, |h| h.t)));
+                        let mut rng = Rng::new(y as u32 * w + x);
+                        let px = match (mesh_hit, hit, paths) {
+                            (Some(m), _, Some(k)) => {
+                                lit(m.albedo(), o + d * m.t, m.normal, k, &mut rng)
+                            }
+                            (Some(m), _, None) => {
+                                this.shade_mesh(o + d * m.t, m.normal, m.color, req.mode)
+                            }
+                            (None, Some(hit), Some(k)) => lit(
+                                this.albedo(o, d, &hit),
+                                o + d * hit.t,
+                                hit.face.normal().as_vec3(),
+                                k,
+                                &mut rng,
+                            ),
+                            (None, Some(hit), None) => this.shade(o, d, &hit, req.mode),
+                            (None, None, _) => sky,
+                        };
+                        row[x as usize * 4..x as usize * 4 + 4].copy_from_slice(&px);
+                    }
+                })
+        });
         self.pixels = pixels;
         let stats = FrameStats {
             cpu_ms: start.elapsed().as_secs_f32() * 1e3,
@@ -1134,11 +1537,22 @@ impl Renderer for CpuReference {
             counters: vec![
                 ("chunks".into(), self.chunks.chunk_count() as f64),
                 ("lights".into(), self.world.light_count() as f64),
-                ("mesh_triangles".into(), if req.meshes { self.meshes.triangle_count() as f64 } else { 0.0 }),
+                (
+                    "mesh_triangles".into(),
+                    if req.meshes {
+                        self.meshes.triangle_count() as f64
+                    } else {
+                        0.0
+                    },
+                ),
             ],
             stages: Vec::new(),
         };
-        sink.complete(CompletedFrame { frame_id: req.frame_id, stats, pixels: Some(&self.pixels) });
+        sink.complete(CompletedFrame {
+            frame_id: req.frame_id,
+            stats,
+            pixels: Some(&self.pixels),
+        });
         Ok(())
     }
 
@@ -1161,7 +1575,11 @@ impl Renderer for CpuReference {
     }
 
     fn memory(&self) -> MemoryReport {
-        MemoryReport { cpu_bytes: self.chunks.dense_bytes() + self.pixels.len() as u64, gpu_bytes: 0, gpu_device_bytes: 0 }
+        MemoryReport {
+            cpu_bytes: self.chunks.dense_bytes() + self.pixels.len() as u64,
+            gpu_bytes: 0,
+            gpu_device_bytes: 0,
+        }
     }
 }
 
@@ -1176,7 +1594,10 @@ mod tests {
         for &cell in cells {
             data.set(cell, STONE);
         }
-        c.apply(&[WorldUpdate::ChunkLoad { key: ChunkKey { pos, lod }, data }]);
+        c.apply(&[WorldUpdate::ChunkLoad {
+            key: ChunkKey { pos, lod },
+            data,
+        }]);
     }
 
     /// A cell is seen at the finest level whose region contains it: a coarse chunk's cells
@@ -1188,9 +1609,16 @@ mod tests {
         let mut c = Chunks::with_lod(0, 1);
         c.look_from(DVec3::new(1.5, 1.5, 1.5));
         // Level 1: a cell inside level 0's region (blocks 10..12) and one outside (40..42).
-        load(&mut c, IVec3::ZERO, 1, &[IVec3::new(5, 0, 0), IVec3::new(20, 0, 0)]);
+        load(
+            &mut c,
+            IVec3::ZERO,
+            1,
+            &[IVec3::new(5, 0, 0), IVec3::new(20, 0, 0)],
+        );
         let (o, d) = (DVec3::new(1.5, 1.5, 1.5), DVec3::X);
-        let h = c.trace(o, d, 1e7).expect("the coarse cell beyond the fine region");
+        let h = c
+            .trace(o, d, 1e7)
+            .expect("the coarse cell beyond the fine region");
         assert_eq!((h.cell, h.lod, h.t), (IVec3::new(40, 0, 0), 1, 38.5));
         // A level-0 block in front wins; the level-0 chunk being loaded hides nothing else.
         load(&mut c, IVec3::ZERO, 0, &[IVec3::new(20, 1, 1)]);
@@ -1214,29 +1642,73 @@ mod tests {
     /// made), less when it is grey.
     #[test]
     fn paths_agree_with_direct_light_where_they_must() {
-        let texture = |v: u8| Texture { name: String::new(), texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE], alpha: vec![] };
-        let block = |t: u16| BlockType { name: String::new(), faces: [t; 6], class: BlockClass::Opaque };
-        let blocks = Arc::new(BlockRegistry { textures: vec![texture(255), texture(128)], blocks: vec![block(0), block(0), block(1)] });
-        let mut world = World { blocks, env: Environment::default(), shadows: Shadows::All, tone: Tone::Clamp, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false };
+        let texture = |v: u8| Texture {
+            name: String::new(),
+            texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE],
+            alpha: vec![],
+        };
+        let block = |t: u16| BlockType {
+            name: String::new(),
+            faces: [t; 6],
+            class: BlockClass::Opaque,
+        };
+        let blocks = Arc::new(BlockRegistry {
+            textures: vec![texture(255), texture(128)],
+            blocks: vec![block(0), block(0), block(1)],
+        });
+        let mut world = World {
+            blocks,
+            env: Environment::default(),
+            shadows: Shadows::All,
+            tone: Tone::Clamp,
+            lights: HashMap::new(),
+            light_grid: HashMap::new(),
+            lights_dirty: false,
+        };
         let ambient = world.env.ambient;
         let (at, up) = (DVec3::new(8.5, 1.0, 8.5), Vec3::Y);
         let chunks = chunk_of(&[(IVec3::new(8, 0, 8), STONE)]);
         {
-            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false, mesh_rays: true };
+            let s = VoxelScene {
+                world: &world,
+                chunks: &chunks,
+                meshes: None,
+                layered: false,
+                mesh_rays: true,
+            };
             let direct = s.light_at(at, up);
-            assert!(direct.max_element() > ambient.max_element(), "the sun reaches it");
+            assert!(
+                direct.max_element() > ambient.max_element(),
+                "the sun reaches it"
+            );
             assert_eq!(s.light_by_paths(at, up, 0, 16, &mut Rng::new(1)), direct);
-            assert!((s.light_by_paths(at, up, 3, 16, &mut Rng::new(1)) - direct).abs().max_element() < 1e-6);
+            assert!(
+                (s.light_by_paths(at, up, 3, 16, &mut Rng::new(1)) - direct)
+                    .abs()
+                    .max_element()
+                    < 1e-6
+            );
         }
         world.env.sun = None;
         for (ceiling, grey) in [(STONE, false), (BlockId(2), true)] {
             let mut cells = vec![(IVec3::new(8, 0, 8), STONE)];
-            cells.extend((0..32).flat_map(|x| (0..32).map(move |z| (IVec3::new(x, 4, z), ceiling))));
+            cells
+                .extend((0..32).flat_map(|x| (0..32).map(move |z| (IVec3::new(x, 4, z), ceiling))));
             let chunks = chunk_of(&cells);
-            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false, mesh_rays: true };
+            let s = VoxelScene {
+                world: &world,
+                chunks: &chunks,
+                meshes: None,
+                layered: false,
+                mesh_rays: true,
+            };
             let light = s.light_by_paths(at, up, 2, 1024, &mut Rng::new(1));
             if grey {
-                assert!(light.max_element() < ambient.max_element() * 0.9 && light.min_element() > ambient.min_element() * 0.2, "{light}");
+                assert!(
+                    light.max_element() < ambient.max_element() * 0.9
+                        && light.min_element() > ambient.min_element() * 0.2,
+                    "{light}"
+                );
             } else {
                 assert!((light - ambient).abs().max_element() < 1e-5, "{light}");
             }
@@ -1250,38 +1722,110 @@ mod tests {
     /// ambient gives (as a voxel ceiling does), a grey one less.
     #[test]
     fn meshes_occlude_and_take_bounces() {
-        let texture = |v: u8| Texture { name: String::new(), texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE], alpha: vec![] };
-        let block = |t: u16| BlockType { name: String::new(), faces: [t; 6], class: BlockClass::Opaque };
-        let blocks = Arc::new(BlockRegistry { textures: vec![texture(255)], blocks: vec![block(0), block(0)] });
-        let mut world = World { blocks, env: Environment::default(), shadows: Shadows::All, tone: Tone::Clamp, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false };
+        let texture = |v: u8| Texture {
+            name: String::new(),
+            texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE],
+            alpha: vec![],
+        };
+        let block = |t: u16| BlockType {
+            name: String::new(),
+            faces: [t; 6],
+            class: BlockClass::Opaque,
+        };
+        let blocks = Arc::new(BlockRegistry {
+            textures: vec![texture(255)],
+            blocks: vec![block(0), block(0)],
+        });
+        let mut world = World {
+            blocks,
+            env: Environment::default(),
+            shadows: Shadows::All,
+            tone: Tone::Clamp,
+            lights: HashMap::new(),
+            light_grid: HashMap::new(),
+            lights_dirty: false,
+        };
         let ambient = world.env.ambient;
         let (at, up) = (DVec3::new(8.5, 1.0, 8.5), Vec3::Y);
         let chunks = chunk_of(&[(IVec3::new(8, 0, 8), STONE)]);
         // A horizontal square of side 2h at height y above `at`, its centre moved by `by`.
         let square = |y: f32, h: f32, grey: u8, by: DVec3| {
-            let m = MeshData { id: 0, positions: vec![[-h, y, -h], [h, y, -h], [h, y, h], [-h, y, h]], colors: vec![[grey, grey, grey, 255]; 4], indices: vec![0, 1, 2, 0, 2, 3] };
+            let m = MeshData {
+                id: 0,
+                positions: vec![[-h, y, -h], [h, y, -h], [h, y, h], [-h, y, h]],
+                colors: vec![[grey, grey, grey, 255]; 4],
+                indices: vec![0, 1, 2, 0, 2, 3],
+            };
             let mut s = mesh::Meshes::default();
             s.apply(MeshUpdate::Meshes(vec![Arc::new(m)]));
-            s.apply(MeshUpdate::Instances(vec![MeshInstance { id: 0, mesh: 0, position: DVec3::new(8.5, 0.0, 8.5) + by, rotation: glam::DQuat::IDENTITY, scale: 1.0 }]));
+            s.apply(MeshUpdate::Instances(vec![MeshInstance {
+                id: 0,
+                mesh: 0,
+                position: DVec3::new(8.5, 0.0, 8.5) + by,
+                rotation: glam::DQuat::IDENTITY,
+                scale: 1.0,
+            }]));
             s.prepare();
             s
         };
-        let sun = world.env.sun.expect("the default has a sun").direction.as_dvec3();
+        let sun = world
+            .env
+            .sun
+            .expect("the default has a sun")
+            .direction
+            .as_dvec3();
         // A square centred on the sun's ray from the point, 3 blocks up it.
         let shade = square(0.0, 3.0, 255, at - sun * 3.0 - DVec3::new(8.5, 0.0, 8.5));
-        let open = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: false, mesh_rays: true }.light_at(at, up);
-        let shaded = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&shade), layered: false, mesh_rays: true }.light_at(at, up);
-        assert!(open.max_element() > ambient.max_element(), "the sun reaches it");
-        assert!((shaded - ambient).abs().max_element() < 1e-6, "the mesh shades it: {shaded}");
-        let bare = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&shade), layered: false, mesh_rays: false }.light_at(at, up);
+        let open = VoxelScene {
+            world: &world,
+            chunks: &chunks,
+            meshes: None,
+            layered: false,
+            mesh_rays: true,
+        }
+        .light_at(at, up);
+        let shaded = VoxelScene {
+            world: &world,
+            chunks: &chunks,
+            meshes: Some(&shade),
+            layered: false,
+            mesh_rays: true,
+        }
+        .light_at(at, up);
+        assert!(
+            open.max_element() > ambient.max_element(),
+            "the sun reaches it"
+        );
+        assert!(
+            (shaded - ambient).abs().max_element() < 1e-6,
+            "the mesh shades it: {shaded}"
+        );
+        let bare = VoxelScene {
+            world: &world,
+            chunks: &chunks,
+            meshes: Some(&shade),
+            layered: false,
+            mesh_rays: false,
+        }
+        .light_at(at, up);
         assert_eq!(bare, open, "without mesh rays the mesh casts no shadow");
         world.env.sun = None;
         for (grey, absorbs) in [(255, false), (128, true)] {
             let ceiling = square(4.0, 1e4, grey, DVec3::ZERO);
-            let s = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&ceiling), layered: false, mesh_rays: true };
+            let s = VoxelScene {
+                world: &world,
+                chunks: &chunks,
+                meshes: Some(&ceiling),
+                layered: false,
+                mesh_rays: true,
+            };
             let light = s.light_by_paths(at, up, 2, 1024, &mut Rng::new(1));
             if absorbs {
-                assert!(light.max_element() < ambient.max_element() * 0.9 && light.min_element() > ambient.min_element() * 0.2, "{light}");
+                assert!(
+                    light.max_element() < ambient.max_element() * 0.9
+                        && light.min_element() > ambient.min_element() * 0.2,
+                    "{light}"
+                );
             } else {
                 assert!((light - ambient).abs().max_element() < 1e-5, "{light}");
             }
@@ -1295,19 +1839,46 @@ mod tests {
     /// opaque is the opaque path's.
     #[test]
     fn layers_composite_and_attenuate() {
-        let texture = |v: u8, a: Vec<u8>| Texture { name: String::new(), texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE], alpha: a };
-        let block = |t: u16, class| BlockType { name: String::new(), faces: [t; 6], class };
+        let texture = |v: u8, a: Vec<u8>| Texture {
+            name: String::new(),
+            texels: vec![[v, v, v, 255]; TEX_SIZE * TEX_SIZE],
+            alpha: a,
+        };
+        let block = |t: u16, class| BlockType {
+            name: String::new(),
+            faces: [t; 6],
+            class,
+        };
         let half = vec![128u8; TEX_SIZE * TEX_SIZE];
         let blocks = Arc::new(BlockRegistry {
             textures: vec![texture(255, vec![]), texture(0, half.clone())],
-            blocks: vec![block(0, BlockClass::Opaque), block(0, BlockClass::Opaque), block(1, BlockClass::Translucent), block(1, BlockClass::Translucent)],
+            blocks: vec![
+                block(0, BlockClass::Opaque),
+                block(0, BlockClass::Opaque),
+                block(1, BlockClass::Translucent),
+                block(1, BlockClass::Translucent),
+            ],
         });
         let (glass, other) = (BlockId(2), BlockId(3));
-        let world = World { blocks, env: Environment::default(), shadows: Shadows::All, tone: Tone::Clamp, lights: HashMap::new(), light_grid: HashMap::new(), lights_dirty: false };
+        let world = World {
+            blocks,
+            env: Environment::default(),
+            shadows: Shadows::All,
+            tone: Tone::Clamp,
+            lights: HashMap::new(),
+            light_grid: HashMap::new(),
+            lights_dirty: false,
+        };
         let a = 128.0 / 255.0;
         let (o, d) = (DVec3::new(0.0, 0.5, 0.5), DVec3::X);
         let count = |chunks: &Chunks| {
-            let s = VoxelScene { world: &world, chunks, meshes: None, layered: true, mesh_rays: true };
+            let s = VoxelScene {
+                world: &world,
+                chunks,
+                meshes: None,
+                layered: true,
+                mesh_rays: true,
+            };
             let mut n = vec![];
             s.layers(o, d, 100.0, |l| {
                 n.push((l.t, l.block));
@@ -1319,25 +1890,53 @@ mod tests {
         let (n, t) = count(&chunk_of(&[(IVec3::new(3, 0, 0), glass)]));
         assert_eq!(n, vec![(3.0, glass), (4.0, glass)]);
         assert!((t - (1.0 - a) * (1.0 - a)).abs() < 1e-6, "{t}");
-        let (n, _) = count(&chunk_of(&[(IVec3::new(3, 0, 0), glass), (IVec3::new(4, 0, 0), glass)]));
+        let (n, _) = count(&chunk_of(&[
+            (IVec3::new(3, 0, 0), glass),
+            (IVec3::new(4, 0, 0), glass),
+        ]));
         assert_eq!(n, vec![(3.0, glass), (5.0, glass)]);
-        let (n, _) = count(&chunk_of(&[(IVec3::new(3, 0, 0), glass), (IVec3::new(4, 0, 0), other)]));
-        assert_eq!(n, vec![(3.0, glass), (4.0, glass), (4.0, other), (5.0, other)]);
-        let (n, t) = count(&chunk_of(&[(IVec3::new(3, 0, 0), glass), (IVec3::new(6, 0, 0), STONE), (IVec3::new(8, 0, 0), glass)]));
+        let (n, _) = count(&chunk_of(&[
+            (IVec3::new(3, 0, 0), glass),
+            (IVec3::new(4, 0, 0), other),
+        ]));
+        assert_eq!(
+            n,
+            vec![(3.0, glass), (4.0, glass), (4.0, other), (5.0, other)]
+        );
+        let (n, t) = count(&chunk_of(&[
+            (IVec3::new(3, 0, 0), glass),
+            (IVec3::new(6, 0, 0), STONE),
+            (IVec3::new(8, 0, 0), glass),
+        ]));
         assert_eq!(n, vec![(3.0, glass), (4.0, glass), (6.0, STONE)]);
         assert_eq!(t, 0.0);
         // Unlit: black glass at half coverage, twice, over the white wall.
         let chunks = chunk_of(&[(IVec3::new(3, 0, 0), glass), (IVec3::new(6, 0, 0), STONE)]);
-        let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered: true, mesh_rays: true };
+        let s = VoxelScene {
+            world: &world,
+            chunks: &chunks,
+            meshes: None,
+            layered: true,
+            mesh_rays: true,
+        };
         let px = s.shade_layered(o, d, 100.0, RenderMode::Unlit, None, &mut Rng::new(1));
         assert_eq!(px, Tone::Clamp.encode(Vec3::ONE * (1.0 - a) * (1.0 - a)));
         // The wall alone: the opaque path's pixel, unlit and lit.
         let chunks = chunk_of(&[(IVec3::new(6, 0, 0), STONE)]);
         for layered in [false, true] {
-            let s = VoxelScene { world: &world, chunks: &chunks, meshes: None, layered, mesh_rays: true };
+            let s = VoxelScene {
+                world: &world,
+                chunks: &chunks,
+                meshes: None,
+                layered,
+                mesh_rays: true,
+            };
             for mode in [RenderMode::Unlit, RenderMode::Lit] {
                 let hit = s.trace(o, d, 100.0).unwrap();
-                assert_eq!(s.shade_layered(o, d, 100.0, mode, None, &mut Rng::new(1)), s.shade(o, d, &hit, mode));
+                assert_eq!(
+                    s.shade_layered(o, d, 100.0, mode, None, &mut Rng::new(1)),
+                    s.shade(o, d, &hit, mode)
+                );
             }
         }
     }
@@ -1349,26 +1948,50 @@ mod tests {
             for &(cell, b) in cells {
                 data.set(cell, b);
             }
-            WorldUpdate::ChunkLoad { key: ChunkKey { pos, lod: 0 }, data }
+            WorldUpdate::ChunkLoad {
+                key: ChunkKey { pos, lod: 0 },
+                data,
+            }
         };
         let (stone, grass) = (BlockId(1), BlockId(2));
         let mut c = Chunks::default().as_columns();
         // An overhang: grass floating at y = 10 above stone at y = 2, column (3, 4).
-        c.apply(&[load(IVec3::ZERO, &[(IVec3::new(3, 10, 4), grass), (IVec3::new(3, 2, 4), stone)])]);
+        c.apply(&[load(
+            IVec3::ZERO,
+            &[(IVec3::new(3, 10, 4), grass), (IVec3::new(3, 2, 4), stone)],
+        )]);
         c.prepare();
         assert_eq!(c.block_at(IVec3::new(3, 10, 4)), grass);
-        assert_eq!(c.block_at(IVec3::new(3, 5, 4)), grass, "the gap under the overhang is solid");
-        assert_eq!(c.block_at(IVec3::new(3, 0, 4)), grass, "all of the top's kind");
+        assert_eq!(
+            c.block_at(IVec3::new(3, 5, 4)),
+            grass,
+            "the gap under the overhang is solid"
+        );
+        assert_eq!(
+            c.block_at(IVec3::new(3, 0, 4)),
+            grass,
+            "all of the top's kind"
+        );
         assert_eq!(c.block_at(IVec3::new(3, 11, 4)), BlockId::AIR);
-        assert_eq!(c.block_at(IVec3::new(4, 5, 4)), BlockId::AIR, "an empty column stays empty");
+        assert_eq!(
+            c.block_at(IVec3::new(4, 5, 4)),
+            BlockId::AIR,
+            "an empty column stays empty"
+        );
         // A lower chunk elsewhere deepens every column to it; the edit's chunk column too.
         c.apply(&[load(IVec3::new(1, -1, 0), &[(IVec3::new(0, 0, 0), stone)])]);
         c.prepare();
         assert_eq!(c.block_at(IVec3::new(3, -20, 4)), grass);
         assert_eq!(c.block_at(IVec3::new(CHUNK_SIZE, -CHUNK_SIZE, 0)), stone);
-        assert_eq!(c.block_at(IVec3::new(CHUNK_SIZE, -CHUNK_SIZE + 1, 0)), BlockId::AIR);
+        assert_eq!(
+            c.block_at(IVec3::new(CHUNK_SIZE, -CHUNK_SIZE + 1, 0)),
+            BlockId::AIR
+        );
         // Edits reach the view: the overhang removed, the column's top is the stone.
-        c.apply(&[WorldUpdate::SetBlocks(vec![BlockEdit { pos: IVec3::new(3, 10, 4), block: BlockId::AIR }])]);
+        c.apply(&[WorldUpdate::SetBlocks(vec![BlockEdit {
+            pos: IVec3::new(3, 10, 4),
+            block: BlockId::AIR,
+        }])]);
         c.prepare();
         assert_eq!(c.block_at(IVec3::new(3, 5, 4)), BlockId::AIR);
         assert_eq!(c.block_at(IVec3::new(3, 2, 4)), stone);
@@ -1380,7 +2003,13 @@ mod tests {
             data.set(cell, b);
         }
         let mut c = Chunks::default();
-        c.apply(&[WorldUpdate::ChunkLoad { key: ChunkKey { pos: IVec3::ZERO, lod: 0 }, data }]);
+        c.apply(&[WorldUpdate::ChunkLoad {
+            key: ChunkKey {
+                pos: IVec3::ZERO,
+                lod: 0,
+            },
+            data,
+        }]);
         c.prepare();
         c
     }

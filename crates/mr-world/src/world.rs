@@ -23,7 +23,11 @@ pub struct World {
 
 impl World {
     pub fn new(generator: Arc<dyn WorldGen>) -> Self {
-        Self { generator, chunks: HashMap::new(), edited: HashSet::new() }
+        Self {
+            generator,
+            chunks: HashMap::new(),
+            edited: HashSet::new(),
+        }
     }
 
     /// Whether a chunk can be non-air: inside the generator's vertical range, or edited.
@@ -41,13 +45,20 @@ impl World {
 
     /// Fetches chunks, generating missing ones in parallel.
     pub fn get_many(&mut self, keys: &[ChunkKey]) -> Vec<ChunkData> {
-        let missing: Vec<ChunkKey> = keys.iter().copied().filter(|k| !self.chunks.contains_key(k)).collect();
+        let missing: Vec<ChunkKey> = keys
+            .iter()
+            .copied()
+            .filter(|k| !self.chunks.contains_key(k))
+            .collect();
         if !missing.is_empty() {
             let generated: Vec<(ChunkKey, ChunkData)> = missing
                 .par_iter()
                 .map(|&k| {
-                    let data =
-                        if self.may_contain_blocks(k) { self.generator.chunk(k) } else { ChunkData::Uniform(BlockId::AIR) };
+                    let data = if self.may_contain_blocks(k) {
+                        self.generator.chunk(k)
+                    } else {
+                        ChunkData::Uniform(BlockId::AIR)
+                    };
                     (k, data)
                 })
                 .collect();
@@ -99,7 +110,13 @@ impl World {
     pub fn asks(&self, blocks: &mr_core::BlockRegistry) -> Vec<mr_core::Feature> {
         let mut out = self.generator.asks();
         let t = mr_core::Feature::Transparency;
-        if !out.contains(&t) && self.edited.iter().any(|&pos| self.chunks.get(&ChunkKey { pos, lod: 0 }).is_some_and(|c| blocks.chunk_see_through(c))) {
+        if !out.contains(&t)
+            && self.edited.iter().any(|&pos| {
+                self.chunks
+                    .get(&ChunkKey { pos, lod: 0 })
+                    .is_some_and(|c| blocks.chunk_see_through(c))
+            })
+        {
             out.push(t);
         }
         out
@@ -114,12 +131,19 @@ impl World {
         for &pos in keys {
             let key = ChunkKey { pos, lod: 0 };
             let now = &self.chunks[&key];
-            let was = if self.may_contain_generated(key) { self.generator.chunk(key) } else { ChunkData::Uniform(BlockId::AIR) };
+            let was = if self.may_contain_generated(key) {
+                self.generator.chunk(key)
+            } else {
+                ChunkData::Uniform(BlockId::AIR)
+            };
             for i in 0..mr_core::CHUNK_VOLUME {
                 let l = mr_core::chunk::cell_of_index(i);
                 let b = now.get(l);
                 if b != was.get(l) {
-                    out.push(BlockEdit { pos: key.origin() + l, block: b });
+                    out.push(BlockEdit {
+                        pos: key.origin() + l,
+                        block: b,
+                    });
                 }
             }
         }
@@ -129,7 +153,8 @@ impl World {
     /// Drops cached chunks for which `keep` is false (edited chunks are always kept).
     pub fn evict(&mut self, keep: impl Fn(ChunkKey) -> bool) {
         let edited = &self.edited;
-        self.chunks.retain(|k, _| keep(*k) || (k.lod == 0 && edited.contains(&k.pos)));
+        self.chunks
+            .retain(|k, _| keep(*k) || (k.lod == 0 && edited.contains(&k.pos)));
     }
 
     /// First solid block along a ray (voxel DDA), skipping the cell containing `origin`.
@@ -144,11 +169,25 @@ impl World {
         let inv = d.recip().abs();
         let mut t_max = DVec3::ZERO;
         for a in 0..3 {
-            let edge = if d[a] > 0.0 { cell[a] as f64 + 1.0 } else { cell[a] as f64 };
-            t_max[a] = if d[a] == 0.0 { f64::INFINITY } else { (edge - origin[a]) / d[a] };
+            let edge = if d[a] > 0.0 {
+                cell[a] as f64 + 1.0
+            } else {
+                cell[a] as f64
+            };
+            t_max[a] = if d[a] == 0.0 {
+                f64::INFINITY
+            } else {
+                (edge - origin[a]) / d[a]
+            };
         }
         loop {
-            let a = if t_max.x <= t_max.y && t_max.x <= t_max.z { 0 } else if t_max.y <= t_max.z { 1 } else { 2 };
+            let a = if t_max.x <= t_max.y && t_max.x <= t_max.z {
+                0
+            } else if t_max.y <= t_max.z {
+                1
+            } else {
+                2
+            };
             if t_max[a] > max_dist {
                 return None;
             }

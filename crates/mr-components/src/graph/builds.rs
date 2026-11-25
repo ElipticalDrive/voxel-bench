@@ -655,7 +655,10 @@ pub const CPU_SAMPLER: Builds = Builds {
         RT,
     ],
     // Discovery a frame ahead of the drawer, or within its frame.
-    free: &[(Role::Draw, "faces", &[When::Now, When::Prev]), HITS_LATE[0]],
+    free: &[
+        (Role::Draw, "faces", &[When::Now, When::Prev]),
+        HITS_LATE[0],
+    ],
     timing_knobs: &[("pipelined", Role::Draw, "faces", When::Prev, When::Now)],
     live: &[Live::of(Role::Visibility), Live::of(Role::Draw)],
     split: true,

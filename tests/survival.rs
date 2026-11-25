@@ -17,7 +17,11 @@ const WAYS: [&str; 5] = ["error", "panic", "abort", "segv", "hang"];
 
 /// Software CI runners are slower: deadlines scale by `MR_TEST_SLOW`.
 fn slow() -> f64 {
-    std::env::var("MR_TEST_SLOW").ok().and_then(|v| v.parse::<f64>().ok()).filter(|f| *f >= 1.0).unwrap_or(1.0)
+    std::env::var("MR_TEST_SLOW")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|f| *f >= 1.0)
+        .unwrap_or(1.0)
 }
 
 struct Outcome {
@@ -34,7 +38,11 @@ fn run(dir: &Path, isolation: &str, fault: &str, launcher: &[&str]) -> Outcome {
     let d = dir.join(format!("{isolation}-{}", fault.replace(':', "-")));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let launcher = launcher.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>().join(", ");
+    let launcher = launcher
+        .iter()
+        .map(|a| format!("{a:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let s = slow();
     // The memory blow-up touches up to the address-space limit page by page, which outlasts a
     // short watchdog on a slow machine (CI: killed as hung after 2 s): it tests the refusal,
@@ -76,8 +84,14 @@ save = {{ every = 0 }}
         .output()
         .unwrap();
     let log = String::from_utf8_lossy(&o.stderr).into_owned() + &String::from_utf8_lossy(&o.stdout);
-    let report = find(&d.join("out"), "report.json").map(|p| serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(p).unwrap()).unwrap());
-    let lane = |label: &str| report.as_ref().and_then(|r| r.as_array()?.iter().find(|l| l["label"] == label).cloned());
+    let report = find(&d.join("out"), "report.json").map(|p| {
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(p).unwrap()).unwrap()
+    });
+    let lane = |label: &str| {
+        report
+            .as_ref()
+            .and_then(|r| r.as_array()?.iter().find(|l| l["label"] == label).cloned())
+    };
     let text = |v: &serde_json::Value, k: &str| v.get(k).and_then(|e| e.as_str()).map(String::from);
     Outcome {
         case,
@@ -117,34 +131,76 @@ fn says(how: &str, isolation: &str) -> &'static str {
 }
 
 fn check(o: &Outcome, isolation: &str, at: &str, how: &str) -> Result<(), String> {
-    let fail = |why: &str| Err(format!("{}: {why}\n--- log ---\n{}", o.case, o.log.lines().rev().take(25).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")));
+    let fail = |why: &str| {
+        Err(format!(
+            "{}: {why}\n--- log ---\n{}",
+            o.case,
+            o.log
+                .lines()
+                .rev()
+                .take(25)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        ))
+    };
     // A thread shares the host's process: an abort or a segfault ends it (the defined cost).
     if isolation == "thread" && matches!(how, "abort" | "segv") {
-        return if o.status.success() { fail("the program survived what a thread cannot") } else { Ok(()) };
+        return if o.status.success() {
+            fail("the program survived what a thread cannot")
+        } else {
+            Ok(())
+        };
     }
     if !o.status.success() {
         return fail(&format!("the program ended {}", o.status));
     }
-    let Some((error, shutdown)) = &o.faulty else { return fail("no report of the faulty lane") };
+    let Some((error, shutdown)) = &o.faulty else {
+        return fail("no report of the faulty lane");
+    };
     if o.healthy != Some((None, None)) {
         return fail(&format!("the healthy lane: {:?}", o.healthy));
     }
-    let (got, other) = if at == "shutdown" { (shutdown, error) } else { (error, shutdown) };
+    let (got, other) = if at == "shutdown" {
+        (shutdown, error)
+    } else {
+        (error, shutdown)
+    };
     if other.is_some() && at == "shutdown" {
         return fail(&format!("a shutdown fault failed the pass: {other:?}"));
     }
     match got {
         Some(e) if e.contains(says(how, isolation)) => Ok(()),
-        _ => fail(&format!("expected the report to say `{}`, got error {error:?}, shutdown {shutdown:?}", says(how, isolation))),
+        _ => fail(&format!(
+            "expected the report to say `{}`, got error {error:?}, shutdown {shutdown:?}",
+            says(how, isolation)
+        )),
     }
 }
 
 fn matrix(isolation: &str) {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("survival");
-    let mut cases: Vec<(String, String, Vec<&str>)> = MOMENTS.iter().flat_map(|at| WAYS.iter().map(move |how| (at.to_string(), how.to_string(), vec![]))).collect();
-    if isolation == "process" && Command::new("prlimit").arg("--version").output().is_ok_and(|o| o.status.success()) {
+    let mut cases: Vec<(String, String, Vec<&str>)> = MOMENTS
+        .iter()
+        .flat_map(|at| {
+            WAYS.iter()
+                .map(move |how| (at.to_string(), how.to_string(), vec![]))
+        })
+        .collect();
+    if isolation == "process"
+        && Command::new("prlimit")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    {
         // 4 GiB of address space: the renderer's own needs fit, the blow-up is refused.
-        cases.push(("mid".into(), "oom".into(), vec!["prlimit", "--as=4294967296"]));
+        cases.push((
+            "mid".into(),
+            "oom".into(),
+            vec!["prlimit", "--as=4294967296"],
+        ));
     }
     // A few at a time: each is a whole run, and a crowded machine would trip the watchdog.
     let width = std::thread::available_parallelism().map_or(2, |n| (n.get() / 4).max(1));
@@ -152,7 +208,12 @@ fn matrix(isolation: &str) {
     for chunk in cases.chunks(width) {
         let outcomes: Vec<_> = std::thread::scope(|s| {
             let dir = &dir;
-            let hs: Vec<_> = chunk.iter().map(|(at, how, l)| s.spawn(move || (run(dir, isolation, &format!("{at}:{how}"), l), at, how))).collect();
+            let hs: Vec<_> = chunk
+                .iter()
+                .map(|(at, how, l)| {
+                    s.spawn(move || (run(dir, isolation, &format!("{at}:{how}"), l), at, how))
+                })
+                .collect();
             hs.into_iter().map(|h| h.join().unwrap()).collect()
         });
         for (o, at, how) in outcomes {
@@ -161,7 +222,13 @@ fn matrix(isolation: &str) {
             }
         }
     }
-    assert!(failures.is_empty(), "{} of {} cases failed:\n\n{}", failures.len(), cases.len(), failures.join("\n\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {} cases failed:\n\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n\n")
+    );
 }
 
 #[test]
@@ -179,11 +246,17 @@ fn survives_or_ends_as_documented_in_a_thread() {
 /// passes after it run, and the catalogue lists it as failed.
 #[test]
 fn a_sweep_records_failed_passes_and_goes_on() {
-    let d = Path::new(env!("CARGO_TARGET_TMPDIR")).join("survival").join("sweep");
+    let d = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("survival")
+        .join("sweep");
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let s = slow();
-    let faults = [("crash", "mid:segv", "SIGSEGV"), ("hangs", "first:hang", "killed"), ("errs", "build:error", "injected fault")];
+    let faults = [
+        ("crash", "mid:segv", "SIGSEGV"),
+        ("hangs", "first:hang", "killed"),
+        ("errs", "build:error", "injected fault"),
+    ];
     let mut plan = format!(
         r#"[scene]
 generator = {{ type = "flat" }}
@@ -207,18 +280,35 @@ label = "before"
         d.join("out").to_str().unwrap(),
     );
     for (label, fault, _) in faults {
-        plan += &format!("[[renderer]]\ngraph = \"raycast-cpu\"\nlabel = \"{label}\"\noptions = {{ fault = \"{fault}\" }}\n");
+        plan += &format!(
+            "[[renderer]]\ngraph = \"raycast-cpu\"\nlabel = \"{label}\"\noptions = {{ fault = \"{fault}\" }}\n"
+        );
     }
     plan += "[[renderer]]\ngraph = \"raycast-cpu\"\nlabel = \"after\"\n";
     std::fs::write(d.join("plan.toml"), plan).unwrap();
     let exe = env!("CARGO_BIN_EXE_multirenderer");
-    let o = Command::new(exe).arg("run").arg(d.join("plan.toml")).env("MR_FAULT_INJECTION", "1").env("RUST_LOG", "warn").output().unwrap();
+    let o = Command::new(exe)
+        .arg("run")
+        .arg(d.join("plan.toml"))
+        .env("MR_FAULT_INJECTION", "1")
+        .env("RUST_LOG", "warn")
+        .output()
+        .unwrap();
     let log = String::from_utf8_lossy(&o.stderr).into_owned() + &String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success(), "the sweep ended {}:\n{log}", o.status);
-    let obs = std::fs::read_to_string(find(&d.join("out"), "observations.jsonl").expect("observations.jsonl")).unwrap();
-    let records: Vec<serde_json::Value> = obs.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let obs = std::fs::read_to_string(
+        find(&d.join("out"), "observations.jsonl").expect("observations.jsonl"),
+    )
+    .unwrap();
+    let records: Vec<serde_json::Value> = obs
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
     let error = |label: &str| {
-        let r = records.iter().find(|r| r.to_string().contains(&format!("\"{label}\""))).unwrap_or_else(|| panic!("no record of `{label}` in {obs}"));
+        let r = records
+            .iter()
+            .find(|r| r.to_string().contains(&format!("\"{label}\"")))
+            .unwrap_or_else(|| panic!("no record of `{label}` in {obs}"));
         r["error"].as_str().map(String::from)
     };
     for label in ["before", "after"] {
@@ -228,11 +318,23 @@ label = "before"
         let e = error(label).unwrap_or_else(|| panic!("`{label}` recorded as passed"));
         assert!(e.contains(says), "`{label}`: {e}");
     }
-    let o = Command::new(exe).arg("catalogue").arg(d.join("out")).output().unwrap();
-    assert!(o.status.success(), "catalogue: {}", String::from_utf8_lossy(&o.stderr));
+    let o = Command::new(exe)
+        .arg("catalogue")
+        .arg(d.join("out"))
+        .output()
+        .unwrap();
+    assert!(
+        o.status.success(),
+        "catalogue: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     let cat = std::fs::read_to_string(d.join("out").join("catalogue.md")).unwrap();
     for (label, _, says) in faults {
-        assert!(cat.lines().any(|l| l.contains(label) && l.contains("FAILED") && l.contains(says)), "the catalogue does not list `{label}` as failed:\n{cat}");
+        assert!(
+            cat.lines()
+                .any(|l| l.contains(label) && l.contains("FAILED") && l.contains(says)),
+            "the catalogue does not list `{label}` as failed:\n{cat}"
+        );
     }
 }
 
@@ -244,7 +346,9 @@ label = "before"
 fn a_worker_exits_when_its_host_is_killed_under_a_hang() {
     use std::io::BufRead;
     use std::time::{Duration, Instant};
-    let d = Path::new(env!("CARGO_TARGET_TMPDIR")).join("survival").join("host-killed");
+    let d = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("survival")
+        .join("host-killed");
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let s = slow();
@@ -283,7 +387,10 @@ save = {{ every = 0 }}
     let (tx, rx) = std::sync::mpsc::channel();
     let stderr = host.stderr.take().unwrap();
     std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
             let _ = tx.send(line);
         }
     });
@@ -303,14 +410,23 @@ save = {{ every = 0 }}
         .unwrap()
         .flatten()
         .filter_map(|t| std::fs::read_to_string(t.path().join("children")).ok())
-        .flat_map(|c| c.split_whitespace().filter_map(|p| p.parse().ok()).collect::<Vec<u32>>())
+        .flat_map(|c| {
+            c.split_whitespace()
+                .filter_map(|p| p.parse().ok())
+                .collect::<Vec<u32>>()
+        })
         .collect();
     assert!(!children.is_empty(), "the host has no worker process");
     host.kill().unwrap();
     host.wait().unwrap();
     // Gone, or a zombie its new parent has yet to reap.
     let alive = |pid: u32| {
-        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| st.rsplit(')').next().and_then(|r| r.split_whitespace().next()) != Some("Z"))
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| {
+            st.rsplit(')')
+                .next()
+                .and_then(|r| r.split_whitespace().next())
+                != Some("Z")
+        })
     };
     let deadline = Instant::now() + Duration::from_secs_f64(10.0 * s);
     while children.iter().any(|&p| alive(p)) {

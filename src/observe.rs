@@ -34,18 +34,39 @@ impl Machine {
     /// This machine, as far as it can be found out cheaply (missing parts stay empty).
     pub fn detect() -> Self {
         let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
-        let cpu = cpuinfo.lines().find_map(|l| l.strip_prefix("model name").and_then(|r| r.split_once(':')).map(|(_, v)| v.trim().to_string())).unwrap_or_default();
+        let cpu = cpuinfo
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("model name")
+                    .and_then(|r| r.split_once(':'))
+                    .map(|(_, v)| v.trim().to_string())
+            })
+            .unwrap_or_default();
         let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
-        let kb = meminfo.lines().find_map(|l| l.strip_prefix("MemTotal:")).and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<f64>().ok()).unwrap_or(0.0);
-        let os = std::fs::read_to_string("/proc/sys/kernel/osrelease").map(|s| format!("{} {}", std::env::consts::OS, s.trim())).unwrap_or_else(|_| std::env::consts::OS.into());
+        let kb = meminfo
+            .lines()
+            .find_map(|l| l.strip_prefix("MemTotal:"))
+            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let os = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .map(|s| format!("{} {}", std::env::consts::OS, s.trim()))
+            .unwrap_or_else(|_| std::env::consts::OS.into());
         let gpu = mr_gpu::adapter_info(None).ok();
         Self {
             cpu,
-            threads: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+            threads: std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(0),
             memory_gb: (kb / 1048576.0 * 10.0).round() / 10.0,
             gpu: gpu.as_ref().map(|g| g.name.clone()).unwrap_or_default(),
-            gpu_driver: gpu.as_ref().map(|g| format!("{} {}", g.driver, g.driver_info).trim().to_string()).unwrap_or_default(),
-            gpu_backend: gpu.as_ref().map(|g| format!("{:?}", g.backend)).unwrap_or_default(),
+            gpu_driver: gpu
+                .as_ref()
+                .map(|g| format!("{} {}", g.driver, g.driver_info).trim().to_string())
+                .unwrap_or_default(),
+            gpu_backend: gpu
+                .as_ref()
+                .map(|g| format!("{:?}", g.backend))
+                .unwrap_or_default(),
             os,
         }
     }
@@ -176,7 +197,13 @@ pub struct ObservedStage {
 }
 
 impl Observation {
-    pub fn new(r: &PassReport, plan: &Plan, run: &str, machine: &Machine, features: Option<&SceneFeatures>) -> Self {
+    pub fn new(
+        r: &PassReport,
+        plan: &Plan,
+        run: &str,
+        machine: &Machine,
+        features: Option<&SceneFeatures>,
+    ) -> Self {
         let mut sums: BTreeMap<String, (f64, u32)> = BTreeMap::new();
         for f in &r.per_frame {
             for (k, v) in &f.counters {
@@ -221,7 +248,8 @@ impl Observation {
             initial_load_ms: r.initial_load_ms,
             peak_rss_mb: r.peak_rss_mb,
             gpu_mb: (r.memory.gpu_bytes > 0).then(|| r.memory.gpu_bytes as f64 / 1048576.0),
-            gpu_device_mb: (r.memory.gpu_device_bytes > 0).then(|| r.memory.gpu_device_bytes as f64 / 1048576.0),
+            gpu_device_mb: (r.memory.gpu_device_bytes > 0)
+                .then(|| r.memory.gpu_device_bytes as f64 / 1048576.0),
             psnr: q.map(|q| q.psnr.mean),
             psnr_min: q.map(|q| q.psnr.min),
             bad_pct: q.map(|q| q.bad_pct.mean),
@@ -232,7 +260,10 @@ impl Observation {
             converged_spp: r.converged_spp,
             psnr_settled: r.quality_settled.as_ref().map(|q| q.psnr.mean),
             bad_pct_settled: r.quality_settled.as_ref().map(|q| q.bad_pct.mean),
-            counters: sums.into_iter().map(|(k, (s, n))| (k, s / n.max(1) as f64)).collect(),
+            counters: sums
+                .into_iter()
+                .map(|(k, (s, n))| (k, s / n.max(1) as f64))
+                .collect(),
             stages: Vec::new(),
             stream: (r.error.is_none()).then(|| ObservedStream {
                 wire_bytes: r.wire_bytes,
@@ -250,7 +281,12 @@ impl Observation {
 
     fn with_stages(mut self, r: &PassReport) -> Self {
         let g = self.pipeline();
-        let what = |id: &String| g.as_ref().and_then(|g| g.nodes.get(id)).map_or_else(|| id.clone(), |n| format!("{}.{}", n.role.name(), n.component));
+        let what = |id: &String| {
+            g.as_ref().and_then(|g| g.nodes.get(id)).map_or_else(
+                || id.clone(),
+                |n| format!("{}.{}", n.role.name(), n.component),
+            )
+        };
         self.stages = r
             .stages
             .iter()
@@ -281,7 +317,8 @@ impl Observation {
     /// any version. A record newer than this build ([`VERSION`]) is an error naming both
     /// versions: what it holds may mean something this build would misread.
     pub fn parse(line: &str) -> serde_json::Result<Option<Self>> {
-        let older = |v: &serde_json::Value| v["version"].as_u64().is_some_and(|n| n < VERSION as u64);
+        let older =
+            |v: &serde_json::Value| v["version"].as_u64().is_some_and(|n| n < VERSION as u64);
         if let Some(why) = newer(line) {
             return Err(serde::de::Error::custom(why));
         }
@@ -291,7 +328,9 @@ impl Observation {
                 let v: serde_json::Value = serde_json::from_str(line)?;
                 Ok((v["graph"].is_null() && v["composition"].is_null()).then_some(o))
             }
-            Err(_) if serde_json::from_str::<serde_json::Value>(line).is_ok_and(|v| older(&v)) => Ok(None),
+            Err(_) if serde_json::from_str::<serde_json::Value>(line).is_ok_and(|v| older(&v)) => {
+                Ok(None)
+            }
             Err(e) => Err(e),
         }
     }
@@ -301,11 +340,20 @@ impl Observation {
 pub fn newer(line: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let n = v["version"].as_u64().filter(|n| *n > VERSION as u64)?;
-    Some(format!("an observation of version {n}, newer than this build reads (version {VERSION}): rebuild"))
+    Some(format!(
+        "an observation of version {n}, newer than this build reads (version {VERSION}): rebuild"
+    ))
 }
 
 /// Writes the run's observations (every pass except the reference's) as JSON lines.
-pub fn write(path: &Path, reports: &[PassReport], plan: &Plan, run: &str, machine: &Machine, features: Option<&SceneFeatures>) -> anyhow::Result<usize> {
+pub fn write(
+    path: &Path,
+    reports: &[PassReport],
+    plan: &Plan,
+    run: &str,
+    machine: &Machine,
+    features: Option<&SceneFeatures>,
+) -> anyhow::Result<usize> {
     let mut text = String::new();
     let mut n = 0;
     for r in reports.iter().filter(|r| !r.label.ends_with("(ref)")) {
@@ -344,7 +392,11 @@ pub fn read(files: &[PathBuf]) -> anyhow::Result<(Vec<Observation>, usize)> {
     let (mut out, mut left_out) = (vec![], 0);
     for f in files {
         let text = std::fs::read_to_string(f)?;
-        for (i, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        for (i, line) in text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| !l.trim().is_empty())
+        {
             match Observation::parse(line) {
                 Ok(Some(o)) => out.push(o),
                 Ok(None) => left_out += 1,

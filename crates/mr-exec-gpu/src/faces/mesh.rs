@@ -24,9 +24,9 @@ use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawNodes};
 use mr_components::geometry::{GpuGeometry, Knobs, Merge};
 use mr_components::graph::{Checked, Role};
-use mr_components::storage::gpu_data::Bound;
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
+use mr_components::storage::gpu_data::Bound;
 use mr_core::*;
 use mr_gpu::meshes::{ForwardSpec, GpuMeshes, MeshPass};
 use mr_gpu::voxels::{Shadows, shadows_param};
@@ -35,8 +35,8 @@ use rayon::prelude::*;
 use serde::Deserialize;
 
 use super::{CoreOpts, Draw, SourceSpec};
-use crate::exec::{self, Cx, Node, Region, State};
 use crate::Core;
+use crate::exec::{self, Cx, Node, Region, State};
 
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_MESHING;
 
@@ -49,8 +49,6 @@ pub(crate) fn info() -> RendererInfo {
         params: REGION.lighting_knobs(params()),
     }
 }
-
-
 
 fn params() -> Vec<ParamSpec> {
     let mut p = vec![
@@ -82,7 +80,13 @@ struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { max_steps: 2048, mesh_budget: 0, pool_mb: 1536, quad_buffer_mb: 8192, frames_in_flight: 3 }
+        Self {
+            max_steps: 2048,
+            mesh_budget: 0,
+            pool_mb: 1536,
+            quad_buffer_mb: 8192,
+            frames_in_flight: 3,
+        }
     }
 }
 
@@ -96,7 +100,10 @@ struct GeometryKnobs {
 
 impl Default for GeometryKnobs {
     fn default() -> Self {
-        Self { merge: "block".into(), cull: true }
+        Self {
+            merge: "block".into(),
+            cull: true,
+        }
     }
 }
 
@@ -111,7 +118,9 @@ struct DrawKnobs {
 
 impl Default for DrawKnobs {
     fn default() -> Self {
-        Self { depth_prepass: true }
+        Self {
+            depth_prepass: true,
+        }
     }
 }
 
@@ -127,7 +136,12 @@ struct ShadingKnobs {
 
 impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self { bounces: 1, spp: 1, accumulate: true, shadows: Shadows::All }
+        Self {
+            bounces: 1,
+            spp: 1,
+            accumulate: true,
+            shadows: Shadows::All,
+        }
     }
 }
 
@@ -138,7 +152,6 @@ struct Live {
     meshes: String,
     knobs: Knobs,
 }
-
 
 fn parse_merge(s: &str) -> anyhow::Result<Merge> {
     match s {
@@ -157,10 +170,16 @@ const STORAGE_GROUPS: &[u32] = &[2, 4, 5];
 /// the indices of (shadow, bounce, mesh shadow).
 fn walks(g: &Checked) -> anyhow::Result<(Walks, usize, usize, usize)> {
     let mut walks = Walks::of(g);
-    let shadow = g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("shadow rays are not bound"))?;
+    let shadow = g
+        .site(Role::Shading, "shadow")
+        .ok_or_else(|| anyhow::anyhow!("shadow rays are not bound"))?;
     let shadow = walks.site(g, shadow, STORAGE_GROUPS, false);
-    let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
-    let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+    let bounce = g
+        .site(Role::Shading, "bounce")
+        .map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+    let mesh_shadow = g
+        .site(Role::Meshes, "shadow")
+        .map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
     Ok((walks, shadow, bounce, mesh_shadow))
 }
 
@@ -170,7 +189,11 @@ fn geometry(name: &str) -> GpuGeometry {
 
 /// The face source's WGSL: the geometry component's vertex placement and the chunks' faces.
 fn source_wgsl(geometry: &str) -> String {
-    format!("{}\n{}", self::geometry(geometry).wgsl, include_str!("chunks.wgsl"))
+    format!(
+        "{}\n{}",
+        self::geometry(geometry).wgsl,
+        include_str!("chunks.wgsl")
+    )
 }
 
 #[repr(C)]
@@ -260,33 +283,70 @@ struct Frame {
 }
 
 impl Meshing {
-    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<(Core, Self, Option<crate::remote::Far>)> {
+    fn new(
+        p: &InitParams,
+        devices: &Devices,
+        waker: Waker,
+        g: &Checked,
+    ) -> anyhow::Result<(Core, Self, Option<crate::remote::Far>)> {
         let opts: Options = p.options()?;
-        let node = |role| g.find(role).ok_or_else(|| anyhow::anyhow!("no {role:?} node"));
+        let node = |role| {
+            g.find(role)
+                .ok_or_else(|| anyhow::anyhow!("no {role:?} node"))
+        };
         let (geometry_id, draw_id) = (node(Role::Geometry)?, node(Role::Draw)?);
         let geometry = g.node(geometry_id).component.clone();
         let draw = g.node(draw_id).component.clone();
         let shading = g.node(g.shading()).component.clone();
-        let meshes_node = g.find(Role::Meshes).map_or("none", |id| g.node(id).component.as_str()).to_string();
+        let meshes_node = g
+            .find(Role::Meshes)
+            .map_or("none", |id| g.node(id).component.as_str())
+            .to_string();
         let gk: GeometryKnobs = g.knobs(geometry_id).map_err(anyhow::Error::msg)?;
         let dk: DrawKnobs = g.knobs(draw_id).map_err(anyhow::Error::msg)?;
         let sk: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
-        let knobs = Knobs { merge: parse_merge(&gk.merge)?, cull: gk.cull };
+        let knobs = Knobs {
+            merge: parse_merge(&gk.merge)?,
+            cull: gk.cull,
+        };
         // The faces cross from the CPU (meshing) to the GPU (the drawer): the schedule's
         // transfer; its adapter is the per-chunk upload.
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
-        if !schedule.transfers.iter().any(|e| e.port == "faces" && g.node(&e.to).role == Role::Visibility) {
+        if !schedule
+            .transfers
+            .iter()
+            .any(|e| e.port == "faces" && g.node(&e.to).role == Role::Visibility)
+        {
             anyhow::bail!("the faces do not cross from the CPU to the GPU");
         }
         let (mut walks, shadow, bounce, mesh_shadow) = walks(g)?;
         // Faces merged across block types look their blocks up in the face source's storage.
-        let lookup = g.input(Role::Visibility, "storage").map(|st| walks.storage(g, st, STORAGE_GROUPS));
+        let lookup = g
+            .input(Role::Visibility, "storage")
+            .map(|st| walks.storage(g, st, STORAGE_GROUPS));
         if knobs.merge == Merge::Exposure && lookup.is_none() {
-            anyhow::bail!("merge = exposure: the visibility node's storage is not bound (the merged faces' blocks are looked up there)");
+            anyhow::bail!(
+                "merge = exposure: the visibility node's storage is not bound (the merged faces' blocks are looked up there)"
+            );
         }
         walks.set_max_steps(opts.max_steps);
-        tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
-        let o = CoreOpts { shading: &shading, draw: &draw, bounces: sk.bounces, spp: sk.spp, accumulate: sk.accumulate, shadows: sk.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
+        tracing::info!(
+            "raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks",
+            walks.storages[0].component,
+            walks.kernels[0].component,
+            walks.kernels.len()
+        );
+        let o = CoreOpts {
+            shading: &shading,
+            draw: &draw,
+            bounces: sk.bounces,
+            spp: sk.spp,
+            accumulate: sk.accumulate,
+            shadows: sk.shadows,
+            max_steps: opts.max_steps,
+            pool_mb: opts.pool_mb,
+            frames_in_flight: opts.frames_in_flight,
+        };
         let meshes = meshes_node != "none";
         let (core, drawing, far) = super::new(
             p,
@@ -307,20 +367,49 @@ impl Meshing {
                 draw_meshes: meshes,
                 features: wgpu::Features::INDIRECT_FIRST_INSTANCE,
                 depth_read: false,
-                nodes: DrawNodes { draw: g.ids(&[Role::Visibility, Role::Draw]), shade: g.ids(&[Role::Shading]), extra: g.ids(&[Role::Meshes]) },
+                nodes: DrawNodes {
+                    draw: g.ids(&[Role::Visibility, Role::Draw]),
+                    shade: g.ids(&[Role::Shading]),
+                    extra: g.ids(&[Role::Meshes]),
+                },
             },
         )?;
         let gpu = &core.gpu;
-        let storage = |label, size: u64, extra| gpu.storage(label, size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra, || "fixed sizes (the BLAS slots, the first draws)".into());
+        let storage = |label, size: u64, extra| {
+            gpu.storage(
+                label,
+                size,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra,
+                || "fixed sizes (the BLAS slots, the first draws)".into(),
+            )
+        };
         // Pages hold fewer than 2^32 quads (offsets and instance indices are u32).
-        let quads = PagedBuffer::new(gpu, "geometry: quads", 1 << 20, u32::MAX as u64 * QUAD_BYTES, (opts.quad_buffer_mb as u64) << 20, wgpu::BufferUsages::STORAGE);
-        let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
+        let quads = PagedBuffer::new(
+            gpu,
+            "geometry: quads",
+            1 << 20,
+            u32::MAX as u64 * QUAD_BYTES,
+            (opts.quad_buffer_mb as u64) << 20,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let chunk_buf = storage(
+            "chunk positions",
+            MAX_SLOTS as u64 * 16,
+            wgpu::BufferUsages::empty(),
+        );
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
         // Forward drawers shade meshes through the region's shading component (lit through the
         // mesh-shadow site's rays: `shaders::meshes`); drawing only (the shading on another
         // GPU), no meshes.
         let module = drawing.mesh_module(&core);
-        let mesh = GpuMeshes::new(gpu, module.as_ref().map(|module| ForwardSpec { module, layout: &drawing.pl_draw, format: core.output_format() }));
+        let mesh = GpuMeshes::new(
+            gpu,
+            module.as_ref().map(|module| ForwardSpec {
+                module,
+                layout: &drawing.pl_draw,
+                format: core.output_format(),
+            }),
+        );
         let s = Self {
             built: geometry.clone(),
             stale: false,
@@ -337,7 +426,12 @@ impl Meshing {
             free_slots: (0..MAX_SLOTS as u32).rev().map(|s| s as u16).collect(),
             frame: Frame::default(),
             opts,
-            live: Live { geometry, shading, meshes: meshes_node, knobs },
+            live: Live {
+                geometry,
+                shading,
+                meshes: meshes_node,
+                knobs,
+            },
             drawing,
         };
         Ok((core, s, far))
@@ -382,8 +476,20 @@ impl Meshing {
                 Some(m) => m.slot,
                 None => match self.free_slots.pop() {
                     Some(s) => {
-                        self.meshes.insert(pos, ChunkMesh { slot: s, page: 0, offset: 0, counts: [0; 6] });
-                        gpu.queue.write_buffer(&self.chunk_buf, s as u64 * 16, bytemuck::cast_slice(&[pos.x, pos.y, pos.z, 0]));
+                        self.meshes.insert(
+                            pos,
+                            ChunkMesh {
+                                slot: s,
+                                page: 0,
+                                offset: 0,
+                                counts: [0; 6],
+                            },
+                        );
+                        gpu.queue.write_buffer(
+                            &self.chunk_buf,
+                            s as u64 * 16,
+                            bytemuck::cast_slice(&[pos.x, pos.y, pos.z, 0]),
+                        );
                         s
                     }
                     None => {
@@ -414,14 +520,22 @@ impl Meshing {
             if len == 0 {
                 continue;
             }
-            let Some((page, off, grew)) = self.quads.alloc(gpu, len, QUAD_BYTES, "`quad_buffer_mb`") else { continue };
+            let Some((page, off, grew)) =
+                self.quads.alloc(gpu, len, QUAD_BYTES, "`quad_buffer_mb`")
+            else {
+                continue;
+            };
             if grew {
                 self.bind0.clear();
             }
             let m = self.meshes.get_mut(&pos).unwrap();
             (m.page, m.offset) = (page, off);
             m.counts = mesh.counts;
-            gpu.queue.write_buffer(self.quads.buffer(page), off as u64 * QUAD_BYTES, bytemuck::cast_slice(&mesh.quads));
+            gpu.queue.write_buffer(
+                self.quads.buffer(page),
+                off as u64 * QUAD_BYTES,
+                bytemuck::cast_slice(&mesh.quads),
+            );
             // Large uploads (a whole world at once) are sent in parts, or their staging
             // copies take as much memory as the quads.
             staged += len as u64 * QUAD_BYTES;
@@ -442,7 +556,11 @@ fn frustum_planes(m: Mat4) -> [Vec4; 5] {
 
 fn aabb_visible(planes: &[Vec4; 5], min: Vec3, max: Vec3) -> bool {
     planes.iter().all(|p| {
-        let v = Vec3::new(if p.x >= 0.0 { max.x } else { min.x }, if p.y >= 0.0 { max.y } else { min.y }, if p.z >= 0.0 { max.z } else { min.z });
+        let v = Vec3::new(
+            if p.x >= 0.0 { max.x } else { min.x },
+            if p.y >= 0.0 { max.y } else { min.y },
+            if p.z >= 0.0 { max.z } else { min.z },
+        );
         p.truncate().dot(v) + p.w >= 0.0
     })
 }
@@ -473,7 +591,12 @@ impl Meshing {
             }
             if !geo.per_face {
                 // The hardware back-face culls the hidden half of each instance.
-                draws.push(DrawArgs { vertex_count: geo.verts, instance_count: m.len(), first_vertex: 0, first_instance: m.offset });
+                draws.push(DrawArgs {
+                    vertex_count: geo.verts,
+                    instance_count: m.len(),
+                    first_vertex: 0,
+                    first_instance: m.offset,
+                });
                 drawn += m.len() as u64;
                 continue;
             }
@@ -481,9 +604,18 @@ impl Meshing {
             for (f, &n) in m.counts.iter().enumerate() {
                 let axis = f / 2;
                 // Faces pointing +axis are only visible from beyond the chunk's min plane.
-                let visible = if f % 2 == 0 { 0.0 > min[axis] } else { 0.0 < max[axis] };
+                let visible = if f % 2 == 0 {
+                    0.0 > min[axis]
+                } else {
+                    0.0 < max[axis]
+                };
                 if n > 0 && visible {
-                    draws.push(DrawArgs { vertex_count: geo.verts, instance_count: n, first_vertex: 0, first_instance: off });
+                    draws.push(DrawArgs {
+                        vertex_count: geo.verts,
+                        instance_count: n,
+                        first_vertex: 0,
+                        first_instance: off,
+                    });
                     drawn += n as u64;
                 }
                 off += n;
@@ -497,24 +629,42 @@ impl Meshing {
                 first += d.len() as u32;
             }
         }
-        let draws = if pages.len() == 1 { pages.pop().unwrap() } else { pages.concat() };
+        let draws = if pages.len() == 1 {
+            pages.pop().unwrap()
+        } else {
+            pages.concat()
+        };
         let bytes = (draws.len() * 16) as u64;
         if bytes > self.indirect.size() {
-            self.indirect = core.gpu.storage("indirect", bytes.next_power_of_two(), wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDIRECT, || {
-                format!("the draws in view ({}, 16 bytes each)", draws.len())
-            });
+            self.indirect = core.gpu.storage(
+                "indirect",
+                bytes.next_power_of_two(),
+                wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::INDIRECT,
+                || format!("the draws in view ({}, 16 bytes each)", draws.len()),
+            );
         }
         if !draws.is_empty() {
-            core.gpu.queue.write_buffer(&self.indirect, 0, bytemuck::cast_slice(&draws));
+            core.gpu
+                .queue
+                .write_buffer(&self.indirect, 0, bytemuck::cast_slice(&draws));
         }
         let f = &mut self.frame;
-        (f.draws, f.batches, f.drawn_instances, f.total) = (draws.len() as u32, batches, drawn, total);
+        (f.draws, f.batches, f.drawn_instances, f.total) =
+            (draws.len() as u32, batches, drawn, total);
         f.cull_ms = cull_start.elapsed().as_secs_f32() * 1e3;
     }
 
     /// The storages' groups for the shadow rays (and the meshes' occlusion), after the
     /// acceleration structures.
-    fn store(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+    fn store(
+        &mut self,
+        core: &mut Core,
+        enc: &mut wgpu::CommandEncoder,
+        ticket: mr_gpu::Ticket,
+        req: &FrameRequest,
+    ) {
         if std::mem::replace(&mut self.frame.stored, true) {
             return;
         }
@@ -524,7 +674,12 @@ impl Meshing {
             self.bind0.clear();
         }
         if self.bind0.is_empty() {
-            self.bind0 = (0..self.quads.pages()).map(|p| self.drawing.bind(core, self.quads.buffer(p), &self.chunk_buf)).collect();
+            self.bind0 = (0..self.quads.pages())
+                .map(|p| {
+                    self.drawing
+                        .bind(core, self.quads.buffer(p), &self.chunk_buf)
+                })
+                .collect();
         }
     }
 
@@ -535,22 +690,37 @@ impl Meshing {
         }
         if self.frame.want_meshes {
             // The images group is built each frame, so a new vertex buffer needs nothing more.
-            self.mesh.prepare(&core.gpu, &req.camera, self.frame.view_proj, req.mode);
+            self.mesh
+                .prepare(&core.gpu, &req.camera, self.frame.view_proj, req.mode);
         }
     }
 
     /// The drawer's passes over the frame's groups.
-    fn encode(&self, core: &Core, ticket: mr_gpu::Ticket, req: &FrameRequest, pass: impl FnOnce(&DrawFrame)) {
+    fn encode(
+        &self,
+        core: &Core,
+        ticket: mr_gpu::Ticket,
+        req: &FrameRequest,
+        pass: impl FnOnce(&DrawFrame),
+    ) {
         let f = &self.frame;
         let bound = f.bound.as_ref().expect("stored");
         let (bind2, more) = bound.split();
-        let binds: Vec<&wgpu::BindGroup> = [self.bind0.first(), f.world.as_ref(), bind2].into_iter().flatten().collect();
+        let binds: Vec<&wgpu::BindGroup> = [self.bind0.first(), f.world.as_ref(), bind2]
+            .into_iter()
+            .flatten()
+            .collect();
         let sky = core.sky();
         let frame = DrawFrame {
             out: f.out.as_ref().expect("set up"),
             depth: &self.drawing.depth,
             ids: self.drawing.ids(core),
-            clear: wgpu::Color { r: sky[0], g: sky[1], b: sky[2], a: 1.0 },
+            clear: wgpu::Color {
+                r: sky[0],
+                g: sky[1],
+                b: sky[2],
+                a: 1.0,
+            },
             prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
             binds: &binds,
@@ -567,12 +737,19 @@ impl Meshing {
 
     /// Meshes go into the faces' forward passes, and into their ids or records when deferred.
     fn draws_meshes(&self) -> bool {
-        self.frame.want_meshes && (!self.drawing.drawer.mode().deferred() || self.mesh.triangles() > 0)
+        self.frame.want_meshes
+            && (!self.drawing.drawer.mode().deferred() || self.mesh.triangles() > 0)
     }
 
     /// The draw node: the faces with one multi-draw-indirect per page of the quads, each
     /// binding its page (and the meshes), shaded in the fragments when forward.
-    fn draw(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+    fn draw(
+        &mut self,
+        core: &mut Core,
+        enc: &mut wgpu::CommandEncoder,
+        ticket: mr_gpu::Ticket,
+        req: &FrameRequest,
+    ) {
         self.cull(core);
         self.store(core, enc, ticket, req);
         self.prepare_meshes(core, req);
@@ -592,7 +769,9 @@ impl Meshing {
             }
         };
         let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: MeshPass| self.mesh.draw(pass, mp);
-        let meshes = self.draws_meshes().then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass));
+        let meshes = self
+            .draws_meshes()
+            .then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, MeshPass));
         self.encode(core, ticket, req, |f| {
             self.drawing.drawer.encode_draw(enc, f, &draw, meshes, None);
             self.drawing.drawer.encode_decode(&core.gpu, enc, f);
@@ -600,11 +779,21 @@ impl Meshing {
     }
 
     /// The shading node: the deferred drawers' pass over the ids or records.
-    fn shade(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
+    fn shade(
+        &mut self,
+        core: &mut Core,
+        enc: &mut wgpu::CommandEncoder,
+        ticket: mr_gpu::Ticket,
+        req: &FrameRequest,
+    ) {
         self.draw(core, enc, ticket, req);
         let meshes = self.draws_meshes();
         let lit = req.mode == RenderMode::Lit;
-        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_shade(&core.gpu, enc, f, meshes, lit));
+        self.encode(core, ticket, req, |f| {
+            self.drawing
+                .drawer
+                .encode_shade(&core.gpu, enc, f, meshes, lit)
+        });
     }
 }
 
@@ -626,13 +815,23 @@ impl State for Meshing {
         self.mesh.apply(update);
     }
 
-    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-        self.set_knob(name, value).or_else(|| self.drawing.set_param(core, name, value))
+    fn set_param(
+        &mut self,
+        core: &mut Core,
+        name: &str,
+        value: &ParamValue,
+    ) -> Option<anyhow::Result<()>> {
+        self.set_knob(name, value)
+            .or_else(|| self.drawing.set_param(core, name, value))
     }
 
     /// The geometry the drawer draws, the shading and the meshes are compiled in (rebuilt at
     /// the next frame); the drawer is the drawing's.
-    fn switch(&mut self, core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+    fn switch(
+        &mut self,
+        core: &mut Core,
+        s: &mr_components::graph::Switch,
+    ) -> Option<anyhow::Result<()>> {
         let field = match s.role {
             Role::Geometry => &mut self.live.geometry,
             Role::Shading => &mut self.live.shading,
@@ -655,7 +854,13 @@ impl State for Meshing {
     }
 
     fn memory(&self, core: &Core) -> (u64, u64) {
-        (0, self.quads.size() + self.chunk_buf.size() + self.indirect.size() + self.drawing.memory_bytes(core))
+        (
+            0,
+            self.quads.size()
+                + self.chunk_buf.size()
+                + self.indirect.size()
+                + self.drawing.memory_bytes(core),
+        )
     }
 }
 
@@ -694,11 +899,27 @@ impl Region for Meshing {
     fn compile(&mut self, core: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
         if self.stale {
             let o = &self.live;
-            if self.drawing.rebuild(core, source_wgsl(&o.geometry), geometry(&o.geometry).strip, &o.shading, o.meshes != "none")? {
+            if self.drawing.rebuild(
+                core,
+                source_wgsl(&o.geometry),
+                geometry(&o.geometry).strip,
+                &o.shading,
+                o.meshes != "none",
+            )? {
                 self.bind0.clear();
             }
             // The forward mesh passes shade through the drawer's shading.
-            self.mesh.set_forward(&core.gpu, ForwardSpec { module: &self.drawing.mesh_module(core).expect("raster-gpu has meshes"), layout: &self.drawing.pl_draw, format: core.output_format() });
+            self.mesh.set_forward(
+                &core.gpu,
+                ForwardSpec {
+                    module: &self
+                        .drawing
+                        .mesh_module(core)
+                        .expect("raster-gpu has meshes"),
+                    layout: &self.drawing.pl_draw,
+                    format: core.output_format(),
+                },
+            );
             if o.geometry != self.built {
                 self.built = o.geometry.clone();
                 self.remesh_all();
@@ -737,7 +958,11 @@ impl Region for Meshing {
         };
     }
 
-    fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
+    fn stats(
+        &self,
+        core: &Core,
+        req: &FrameRequest,
+    ) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
         let f = &self.frame;
         let (accel, accel_stages) = core.accel_stats();
         let counters = vec![
@@ -746,14 +971,27 @@ impl Region for Meshing {
             ("draws".into(), f.draws as f64),
             ("remeshed".into(), f.remeshed as f64),
             ("mesh_ms".into(), f.mesh_ms),
-            ("mesh_triangles".into(), if f.want_meshes { self.mesh.triangles() as f64 } else { 0.0 }),
+            (
+                "mesh_triangles".into(),
+                if f.want_meshes {
+                    self.mesh.triangles() as f64
+                } else {
+                    0.0
+                },
+            ),
         ]
         .into_iter()
         .chain(core.storages.counters())
         .chain(accel)
         .chain(core.accum.counter(req.mode))
         .collect();
-        let stages = [StageTime::cpu("geometry", &self.geometry_nodes, f.mesh_ms as f32), StageTime::cpu("cull", &self.cull_nodes, f.cull_ms)].into_iter().chain(accel_stages).collect();
+        let stages = [
+            StageTime::cpu("geometry", &self.geometry_nodes, f.mesh_ms as f32),
+            StageTime::cpu("cull", &self.cull_nodes, f.cull_ms),
+        ]
+        .into_iter()
+        .chain(accel_stages)
+        .collect();
         (counters, None, stages)
     }
 
@@ -803,17 +1041,26 @@ impl Node<Meshing> for Shading {
 
 /// The meshing executor for `g`: culling, storages, meshes, drawing and shading as nodes (the
 /// geometry is meshed on the CPU and uploaded before them: the geometry node and its transfer).
-pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    let passes = exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<Meshing>>> {
-        Some(match role {
-            Role::Visibility => Box::new(Visibility),
-            Role::Storage => Box::new(Storage),
-            Role::Meshes => Box::new(Meshes),
-            Role::Draw => Box::new(DrawFaces),
-            Role::Shading => Box::new(Shading),
-            _ => return None,
-        })
-    })?;
+pub(crate) fn create(
+    p: &InitParams,
+    devices: &Devices,
+    waker: Waker,
+    g: &Checked,
+) -> anyhow::Result<Box<dyn Renderer>> {
+    let passes = exec::passes(
+        g,
+        crate::home_slot(g),
+        |role| -> Option<Box<dyn Node<Meshing>>> {
+            Some(match role {
+                Role::Visibility => Box::new(Visibility),
+                Role::Storage => Box::new(Storage),
+                Role::Meshes => Box::new(Meshes),
+                Role::Draw => Box::new(DrawFaces),
+                Role::Shading => Box::new(Shading),
+                _ => return None,
+            })
+        },
+    )?;
     crate::exec::run_or_split(Meshing::new(p, devices, waker, g)?, g, passes)
 }
 
@@ -831,8 +1078,18 @@ mod tests {
             for k in base.choices("kernel") {
                 for g in base.choices("geometry") {
                     for shading in base.choices("shading") {
-                        let bounce = (shading == "pathtrace").then(|| Change::bind("shading", "bounce", "kernel"));
-                        let edits: Vec<Change> = [("storage", st), ("kernel", k), ("geometry", g), ("shading", shading)].into_iter().map(|(n, c)| Change::component(n, c)).chain(bounce).collect();
+                        let bounce = (shading == "pathtrace")
+                            .then(|| Change::bind("shading", "bounce", "kernel"));
+                        let edits: Vec<Change> = [
+                            ("storage", st),
+                            ("kernel", k),
+                            ("geometry", g),
+                            ("shading", shading),
+                        ]
+                        .into_iter()
+                        .map(|(n, c)| Change::component(n, c))
+                        .chain(bounce)
+                        .collect();
                         let mut graphs = vec![base.with_edits(&edits).unwrap()];
                         // Bounces, mesh shadows and the merged faces' lookup through walks and a
                         // storage of their own.
@@ -840,16 +1097,38 @@ mod tests {
                             let mut gr = graphs[0].clone();
                             let node = |role, c: &str, ins: &[(&str, &str)]| {
                                 let mut n = mr_components::graph::Node::new(role, c);
-                                n.inputs.extend(ins.iter().map(|&(p, s)| (p.to_string(), s.to_string())));
+                                n.inputs.extend(
+                                    ins.iter().map(|&(p, s)| (p.to_string(), s.to_string())),
+                                );
                                 n
                             };
-                            gr.nodes.insert("b.storage".into(), node(Role::Storage, "distance", &[]));
-                            gr.nodes.insert("b.kernel".into(), node(Role::Traversal, "sphere", &[("storage", "b.storage")]));
-                            gr.nodes.insert("m.kernel".into(), node(Role::Traversal, "incremental", &[("storage", "storage")]));
-                            gr.nodes.get_mut("shading").unwrap().inputs.insert("bounce".into(), "b.kernel".into());
-                            gr.nodes.get_mut("meshes").unwrap().inputs.insert("shadow".into(), "m.kernel".into());
-                            gr.nodes.insert("l.storage".into(), node(Role::Storage, "rows", &[]));
-                            gr.nodes.get_mut("visibility").unwrap().inputs.insert("storage".into(), "l.storage".into());
+                            gr.nodes
+                                .insert("b.storage".into(), node(Role::Storage, "distance", &[]));
+                            gr.nodes.insert(
+                                "b.kernel".into(),
+                                node(Role::Traversal, "sphere", &[("storage", "b.storage")]),
+                            );
+                            gr.nodes.insert(
+                                "m.kernel".into(),
+                                node(Role::Traversal, "incremental", &[("storage", "storage")]),
+                            );
+                            gr.nodes
+                                .get_mut("shading")
+                                .unwrap()
+                                .inputs
+                                .insert("bounce".into(), "b.kernel".into());
+                            gr.nodes
+                                .get_mut("meshes")
+                                .unwrap()
+                                .inputs
+                                .insert("shadow".into(), "m.kernel".into());
+                            gr.nodes
+                                .insert("l.storage".into(), node(Role::Storage, "rows", &[]));
+                            gr.nodes
+                                .get_mut("visibility")
+                                .unwrap()
+                                .inputs
+                                .insert("storage".into(), "l.storage".into());
                             graphs.push(gr);
                         }
                         for gr in graphs {
@@ -857,18 +1136,40 @@ mod tests {
                             gr.validate().unwrap_or_else(|e| panic!("{gr:?}: {e}"));
                             let what = format!("raster-gpu {st} {k} {g} {shading}");
                             let (mut walks, shadow, bounce, mesh_shadow) = walks(&ck).unwrap();
-                            let lookup = ck.input(Role::Visibility, "storage").map(|st| walks.storage(&ck, st, STORAGE_GROUPS));
+                            let lookup = ck
+                                .input(Role::Visibility, "storage")
+                                .map(|st| walks.storage(&ck, st, STORAGE_GROUPS));
                             // The drawer (with mesh records for deferred drawers, and without).
-                            let (program, deps, meshed) = crate::faces::programs(&walks, None, lookup, [shadow, bounce], Some(mesh_shadow), shading);
+                            let (program, deps, meshed) = crate::faces::programs(
+                                &walks,
+                                None,
+                                lookup,
+                                [shadow, bounce],
+                                Some(mesh_shadow),
+                                shading,
+                            );
                             let draw_src = crate::faces::draw_src(&source_wgsl(g), false);
                             // The merged faces' blocks come from the face source's storage.
                             if let Some(st) = lookup {
                                 let d: Vec<&str> = deps.iter().map(String::as_str).collect();
                                 let text = program.text(&draw_src, &d).unwrap();
-                                let want = format!("#import {}::{{s_block_at}}", walks.storage_path(st));
-                                assert!(text.split("// ---- root").nth(1).unwrap().contains(&want), "{what}: {want}");
+                                let want =
+                                    format!("#import {}::{{s_block_at}}", walks.storage_path(st));
+                                assert!(
+                                    text.split("// ---- root").nth(1).unwrap().contains(&want),
+                                    "{what}: {want}"
+                                );
                             }
-                            crate::faces::tests::drawers(&program, &deps, meshed.as_ref(), &draw_src, shading, &what, &base.choices("draw"), (&walks, None, lookup));
+                            crate::faces::tests::drawers(
+                                &program,
+                                &deps,
+                                meshed.as_ref(),
+                                &draw_src,
+                                shading,
+                                &what,
+                                &base.choices("draw"),
+                                (&walks, None, lookup),
+                            );
                             n += 1;
                         }
                     }

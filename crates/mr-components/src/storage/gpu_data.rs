@@ -150,9 +150,12 @@ impl StorageData {
     }
 
     fn table_buffer(gpu: &Gpu, size: u64) -> wgpu::Buffer {
-        gpu.storage("storage regions", size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || {
-            "the chunks in view (the region table)".into()
-        })
+        gpu.storage(
+            "storage regions",
+            size,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            || "the chunks in view (the region table)".into(),
+        )
     }
 
     /// Whether this storage reads the shared voxel pool (`VoxelWorldConfig::upload_voxels`).

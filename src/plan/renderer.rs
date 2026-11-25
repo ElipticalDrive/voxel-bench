@@ -49,12 +49,26 @@ pub struct RendererSpec {
 
 impl RendererSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), graph: None, label: None, options: Default::default(), devices: None, compile: None, swept: false, like: None, start: None, compose_label: Default::default() }
+        Self {
+            name: name.into(),
+            graph: None,
+            label: None,
+            options: Default::default(),
+            devices: None,
+            compile: None,
+            swept: false,
+            like: None,
+            start: None,
+            compose_label: Default::default(),
+        }
     }
 
     /// The pipeline of graph file `file` (a shipped one's name or a path, as a plan's `graph`).
     pub fn from_file(file: &str) -> anyhow::Result<Self> {
-        Self::try_from(Written { graph: Some(GraphRef::File(file.into())), ..Default::default() })
+        Self::try_from(Written {
+            graph: Some(GraphRef::File(file.into())),
+            ..Default::default()
+        })
     }
 
     /// Checks the pipeline and derives what follows from it: into the options, the knobs the
@@ -63,18 +77,33 @@ impl RendererSpec {
         self.compose_label = Default::default();
         let Some(g) = &self.graph else {
             if self.name.is_empty() {
-                bail!("a renderer needs a `graph` (a pipeline: a graph file's name or the graph itself) or a `name` (a standalone renderer)");
+                bail!(
+                    "a renderer needs a `graph` (a pipeline: a graph file's name or the graph itself) or a `name` (a standalone renderer)"
+                );
             }
             if mr_components::graph::shipped(&self.name).is_some() {
-                bail!("`{0}` is a graph file: write `graph = \"{0}\"`, not `name`", self.name);
+                bail!(
+                    "`{0}` is a graph file: write `graph = \"{0}\"`, not `name`",
+                    self.name
+                );
             }
             return Ok(());
         };
-        g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
-        g.region().context("renderer graph: no executor builds a graph of this shape")?;
-        let params = crate::pipelines::executor_of(g).map(|(_, p)| p).unwrap_or_default();
-        for (k, v) in g.preset_options().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
-            let default = params.iter().find(|p| p.name == k).and_then(|p| toml::Value::try_from(p.default.to_json()).ok());
+        g.accept()
+            .map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
+        g.region()
+            .context("renderer graph: no executor builds a graph of this shape")?;
+        let params = crate::pipelines::executor_of(g)
+            .map(|(_, p)| p)
+            .unwrap_or_default();
+        for (k, v) in g
+            .preset_options()
+            .map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?
+        {
+            let default = params
+                .iter()
+                .find(|p| p.name == k)
+                .and_then(|p| toml::Value::try_from(p.default.to_json()).ok());
             if default.as_ref() == Some(&v) {
                 continue;
             }
@@ -89,7 +118,9 @@ impl RendererSpec {
 
     /// The worker's entry that runs it: a pipeline's executor (`Graph::runs_on`), else its name.
     pub fn entry(&self) -> &str {
-        self.graph.as_ref().map_or(self.name.as_str(), |g| g.runs_on())
+        self.graph
+            .as_ref()
+            .map_or(self.name.as_str(), |g| g.runs_on())
     }
 
     /// Whether `other` is run by the same code with the same knobs: the same standalone
@@ -101,7 +132,11 @@ impl RendererSpec {
 
     /// What it supports and its knobs: a pipeline's from its graph (the region of the executor
     /// that builds its shape), a standalone renderer's from `standalone` by name.
-    pub fn info(&self, run: &RunSpec, standalone: &[mr_core::RendererInfo]) -> Option<mr_core::RendererInfo> {
+    pub fn info(
+        &self,
+        run: &RunSpec,
+        standalone: &[mr_core::RendererInfo],
+    ) -> Option<mr_core::RendererInfo> {
         match &self.graph {
             Some(g) => crate::pipelines::graph_info(g, &self.devices(run)),
             None => standalone.iter().find(|i| i.name == self.name).cloned(),
@@ -117,7 +152,12 @@ impl RendererSpec {
         use mr_components::graph::Role;
         let Some(g) = &self.graph else { return vec![] };
         let mut v = vec![];
-        for (id, n) in g.nodes.iter().filter(|(_, n)| !matches!(n.role, Role::World | Role::Generator | Role::Link | Role::Client | Role::Post)) {
+        for (id, n) in g.nodes.iter().filter(|(_, n)| {
+            !matches!(
+                n.role,
+                Role::World | Role::Generator | Role::Link | Role::Client | Role::Post
+            )
+        }) {
             let choices = g.choices(id);
             if choices.len() > 1 {
                 v.push(mr_core::ParamSpec::choice(&format!("{id}{COMPONENT_KNOB}"), &format!("The component of node `{id}` ({}): an edit of the graph (restart where its executor cannot replace the node while running)", n.role.name()), &choices, &n.component, false));
@@ -129,11 +169,17 @@ impl RendererSpec {
     /// Node `node` runs `component` (the graph edit; on failure nothing changes).
     pub fn set_component(&mut self, node: &str, component: &str) -> anyhow::Result<()> {
         let old = self.clone();
-        let g = self.graph.as_ref().with_context(|| format!("`{}` is not a pipeline", self.label()))?;
-        let r = g.edit(&mr_components::graph::Change::component(node, component)).map_err(anyhow::Error::msg).and_then(|g| {
-            self.graph = Some(g);
-            self.resolve()
-        });
+        let g = self
+            .graph
+            .as_ref()
+            .with_context(|| format!("`{}` is not a pipeline", self.label()))?;
+        let r = g
+            .edit(&mr_components::graph::Change::component(node, component))
+            .map_err(anyhow::Error::msg)
+            .and_then(|g| {
+                self.graph = Some(g);
+                self.resolve()
+            });
         if r.is_err() {
             *self = old;
         }
@@ -144,7 +190,16 @@ impl RendererSpec {
     /// renderer still (its graph was not changed since).
     fn start_form(&self) -> Option<Written> {
         let (file, edits) = self.start.as_ref()?;
-        let w = Written { graph: Some(GraphRef::File(file.clone())), edits: edits.clone(), label: self.label.clone(), options: self.options.clone(), devices: self.devices.clone(), compile: self.compile, swept: self.swept, ..Default::default() };
+        let w = Written {
+            graph: Some(GraphRef::File(file.clone())),
+            edits: edits.clone(),
+            label: self.label.clone(),
+            options: self.options.clone(),
+            devices: self.devices.clone(),
+            compile: self.compile,
+            swept: self.swept,
+            ..Default::default()
+        };
         let back = Self::try_from(w.clone()).ok()?;
         (back.graph == self.graph && back.options == self.options).then_some(w)
     }
@@ -156,7 +211,14 @@ impl RendererSpec {
         if let Some(w) = self.start_form() {
             return w;
         }
-        let mut w = Written { label: self.label.clone(), options: self.options.clone(), devices: self.devices.clone(), compile: self.compile, swept: self.swept, ..Default::default() };
+        let mut w = Written {
+            label: self.label.clone(),
+            options: self.options.clone(),
+            devices: self.devices.clone(),
+            compile: self.compile,
+            swept: self.swept,
+            ..Default::default()
+        };
         match &self.graph {
             Some(g) => {
                 for k in g.preset_options().unwrap_or_default().keys() {
@@ -178,9 +240,14 @@ impl RendererSpec {
         let mut parts = split_top(s).into_iter().map(str::trim);
         let file = parts.next().unwrap_or_default();
         let rest: Vec<&str> = parts.filter(|p| !p.is_empty()).collect();
-        if rest.is_empty() && mr_components::graph::shipped(file).is_none() && !Path::new(file).is_file() {
+        if rest.is_empty()
+            && mr_components::graph::shipped(file).is_none()
+            && !Path::new(file).is_file()
+        {
             if file.contains([':', '+']) {
-                bail!("`{s}`: a renderer is written `<graph file>[,<edit>,...]` (e.g. `raycast-gpu,storage=prefix,kernel=incremental`; `multirenderer list` shows the spellings)");
+                bail!(
+                    "`{s}`: a renderer is written `<graph file>[,<edit>,...]` (e.g. `raycast-gpu,storage=prefix,kernel=incremental`; `multirenderer list` shows the spellings)"
+                );
             }
             return Ok(Self::new(file));
         }
@@ -191,15 +258,28 @@ impl RendererSpec {
             g = g.edit(&c).map_err(|e| anyhow::anyhow!("`{p}`: {e}"))?;
             edits.push(c);
         }
-        Self::try_from(Written { graph: Some(GraphRef::File(file.into())), edits, ..Default::default() }).with_context(|| format!("`{s}`"))
+        Self::try_from(Written {
+            graph: Some(GraphRef::File(file.into())),
+            edits,
+            ..Default::default()
+        })
+        .with_context(|| format!("`{s}`"))
     }
 
     /// What a pass of mode `m` can tell of this renderer (`Graph::told_apart` and its
     /// options): renderers equal here draw the same frames in such a pass, so a sweep runs
     /// one of them.
     pub fn told_apart(&self, m: PassMode) -> String {
-        let g = self.graph.as_ref().map(|g| serde_json::to_string(&g.told_apart(m)).unwrap_or_default());
-        format!("{}\n{}\n{}", self.name, g.unwrap_or_default(), toml::to_string(&self.options).unwrap_or_default())
+        let g = self
+            .graph
+            .as_ref()
+            .map(|g| serde_json::to_string(&g.told_apart(m)).unwrap_or_default());
+        format!(
+            "{}\n{}\n{}",
+            self.name,
+            g.unwrap_or_default(),
+            toml::to_string(&self.options).unwrap_or_default()
+        )
     }
 
     /// The graph it runs (`None` for standalone renderers).
@@ -212,19 +292,42 @@ impl RendererSpec {
     /// knob with an `owner`) placed on their nodes, where the executors read them; the
     /// preset's own knobs (`threads`, ...) stay options.
     pub fn worker_graph(&self) -> anyhow::Result<Option<mr_components::graph::Graph>> {
-        let Some(g) = self.pipeline() else { return Ok(None) };
-        let Some((_, params)) = crate::pipelines::executor_of(&g) else { return Ok(Some(g)) };
-        let knobs: Vec<_> = self.options.iter().filter_map(|(k, v)| params.iter().find(|p| p.name == *k && p.owner.is_some()).map(|p| (p, v.clone()))).collect();
-        g.with_knobs(&knobs).map(Some).map_err(|e| anyhow::anyhow!("{}: {e}", self.label()))
+        let Some(g) = self.pipeline() else {
+            return Ok(None);
+        };
+        let Some((_, params)) = crate::pipelines::executor_of(&g) else {
+            return Ok(Some(g));
+        };
+        let knobs: Vec<_> = self
+            .options
+            .iter()
+            .filter_map(|(k, v)| {
+                params
+                    .iter()
+                    .find(|p| p.name == *k && p.owner.is_some())
+                    .map(|p| (p, v.clone()))
+            })
+            .collect();
+        g.with_knobs(&knobs)
+            .map(Some)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", self.label()))
     }
 
     /// The knob values it runs with as far as they are set: its stages' node knobs, its
     /// nodes' components (`component_knobs`), then its options (which win, as
     /// `worker_graph` places them).
     pub fn knob_values(&self) -> toml::Table {
-        let mut t = self.graph.as_ref().and_then(|g| g.stage_knobs().ok()).unwrap_or_default();
+        let mut t = self
+            .graph
+            .as_ref()
+            .and_then(|g| g.stage_knobs().ok())
+            .unwrap_or_default();
         if let Some(g) = &self.graph {
-            t.extend(g.nodes.iter().map(|(id, n)| (format!("{id}{COMPONENT_KNOB}"), n.component.clone().into())));
+            t.extend(
+                g.nodes
+                    .iter()
+                    .map(|(id, n)| (format!("{id}{COMPONENT_KNOB}"), n.component.clone().into())),
+            );
         }
         t.extend(self.options.clone());
         t
@@ -232,7 +335,8 @@ impl RendererSpec {
 
     /// How this renderer runs compiled for this machine (`None`: the generic build).
     pub fn compiled(&self, run: &RunSpec) -> Option<Compile> {
-        Some(self.compile.unwrap_or(run.compile)).filter(|&c| c != Compile::Off && matches!(crate::pipelines::bake(self), Ok(Some(_))))
+        Some(self.compile.unwrap_or(run.compile))
+            .filter(|&c| c != Compile::Off && matches!(crate::pipelines::bake(self), Ok(Some(_))))
     }
 
     /// The label of its lanes in a run: [`Self::label`], with the compiled level when it runs
@@ -251,7 +355,10 @@ impl RendererSpec {
             return l;
         }
         match &self.graph {
-            Some(g) => self.compose_label.get_or_init(|| g.label().unwrap_or_else(|e| format!("{} [invalid graph: {e}]", g.runs_on()))),
+            Some(g) => self.compose_label.get_or_init(|| {
+                g.label()
+                    .unwrap_or_else(|e| format!("{} [invalid graph: {e}]", g.runs_on()))
+            }),
             None => &self.name,
         }
     }
@@ -267,7 +374,13 @@ impl RendererSpec {
     /// reported it for this graph) lacks, each with the reason: it is not asked for these, or
     /// (mesh rays, transparency) its frames leave them out; then the knobs in its options its
     /// graph leaves out (`Checked::knobs_left_out`: no node to take them, a value's need unmet).
-    pub fn not_supported(&self, run: &RunSpec, m: Option<PassMode>, world: &[mr_core::Feature], info: &mr_core::RendererInfo) -> Vec<String> {
+    pub fn not_supported(
+        &self,
+        run: &RunSpec,
+        m: Option<PassMode>,
+        world: &[mr_core::Feature],
+        info: &mr_core::RendererInfo,
+    ) -> Vec<String> {
         let mut out = info.features.left_out(m, self.max_lod(run, u8::MAX), world);
         if let Some(c) = self.pipeline().and_then(|g| g.check().ok()) {
             out.extend(c.knobs_left_out(&info.params, &self.options));
@@ -278,8 +391,18 @@ impl RendererSpec {
     /// The edges of its graph whose value arrives a frame late (`node.port`): its frames show
     /// a moving camera or a changing world partly as they were a frame ago.
     pub fn late(&self) -> Vec<String> {
-        let Ok(Some(g)) = self.worker_graph() else { return vec![] };
-        g.nodes.iter().flat_map(|(id, n)| n.timing.iter().filter(|t| *t.1 == mr_components::graph::When::Prev).map(move |(port, _)| format!("{id}.{port}"))).collect()
+        let Ok(Some(g)) = self.worker_graph() else {
+            return vec![];
+        };
+        g.nodes
+            .iter()
+            .flat_map(|(id, n)| {
+                n.timing
+                    .iter()
+                    .filter(|t| *t.1 == mr_components::graph::When::Prev)
+                    .map(move |(port, _)| format!("{id}.{port}"))
+            })
+            .collect()
     }
 
     /// The paths per pixel per frame it accumulates in a pass of mode `m`, if it averages
@@ -290,11 +413,28 @@ impl RendererSpec {
             return None;
         }
         let g = self.worker_graph().ok()??;
-        let n = g.nodes.values().find(|n| n.role == Role::Shading && mr_components::shading::state::stateful(&n.component))?;
+        let n = g.nodes.values().find(|n| {
+            n.role == Role::Shading && mr_components::shading::state::stateful(&n.component)
+        })?;
         let defaults = mr_components::shading::state::params();
-        let default = |name: &str| defaults.iter().find(|p| p.name == name).map(|p| p.default.clone());
-        let on = n.knobs.get("accumulate").and_then(|v| v.as_bool()).or_else(|| default("accumulate")?.as_bool()).unwrap_or(true);
-        let spp = n.knobs.get("spp").and_then(|v| v.as_integer()).or_else(|| default("spp")?.as_i64()).unwrap_or(1);
+        let default = |name: &str| {
+            defaults
+                .iter()
+                .find(|p| p.name == name)
+                .map(|p| p.default.clone())
+        };
+        let on = n
+            .knobs
+            .get("accumulate")
+            .and_then(|v| v.as_bool())
+            .or_else(|| default("accumulate")?.as_bool())
+            .unwrap_or(true);
+        let spp = n
+            .knobs
+            .get("spp")
+            .and_then(|v| v.as_integer())
+            .or_else(|| default("spp")?.as_i64())
+            .unwrap_or(1);
         on.then_some(spp.clamp(1, 64) as u32)
     }
 
@@ -304,20 +444,41 @@ impl RendererSpec {
         use mr_components::graph::Role;
         let traced = || {
             let g = self.worker_graph().ok()??;
-            let n = g.nodes.values().find(|n| n.role == Role::Shading && mr_components::shading::state::stateful(&n.component))?;
-            let default = mr_components::shading::state::params().iter().find(|p| p.name == "bounces").and_then(|p| p.default.as_i64()).unwrap_or(1);
+            let n = g.nodes.values().find(|n| {
+                n.role == Role::Shading && mr_components::shading::state::stateful(&n.component)
+            })?;
+            let default = mr_components::shading::state::params()
+                .iter()
+                .find(|p| p.name == "bounces")
+                .and_then(|p| p.default.as_i64())
+                .unwrap_or(1);
             // Without bounces it is the direct model.
-            match n.knobs.get("bounces").and_then(|v| v.as_integer()).unwrap_or(default) as u8 {
+            match n
+                .knobs
+                .get("bounces")
+                .and_then(|v| v.as_integer())
+                .unwrap_or(default) as u8
+            {
                 0 => None,
                 bounces => Some(Lighting::Paths { bounces }),
             }
         };
-        if m.lighting == mr_core::RenderMode::Lit { traced().unwrap_or_default() } else { Lighting::Direct }
+        if m.lighting == mr_core::RenderMode::Lit {
+            traced().unwrap_or_default()
+        } else {
+            Lighting::Direct
+        }
     }
 
     /// Chunks streamed around the camera: its client's `radius`, else the run's.
     pub fn view_radius(&self, run: &RunSpec) -> u32 {
-        self.like.map_or_else(|| self.client_knob("radius").map_or(run.view_radius, |r| r as u32), |l| l.radius)
+        self.like.map_or_else(
+            || {
+                self.client_knob("radius")
+                    .map_or(run.view_radius, |r| r as u32)
+            },
+            |l| l.radius,
+        )
     }
 
     /// Its client's knob `name` (`radius`, `max_lod`), if set.
@@ -329,7 +490,10 @@ impl RendererSpec {
     /// nothing changes).
     pub fn set_client_knob(&mut self, name: &str, value: Option<i64>) -> anyhow::Result<()> {
         use mr_components::graph::{CLIENT, Change, Role};
-        let g = self.graph.clone().with_context(|| format!("`{}` has no client (not a pipeline)", self.label()))?;
+        let g = self
+            .graph
+            .clone()
+            .with_context(|| format!("`{}` has no client (not a pipeline)", self.label()))?;
         // The edits: the knob on its client node, the node added first where the graph
         // leaves it to be filled in (then nothing is unset on it).
         let mut edits = vec![];
@@ -338,7 +502,12 @@ impl RendererSpec {
             None if value.is_none() => return Ok(()),
             None => {
                 let filled = g.check().map_err(anyhow::Error::msg)?.graph;
-                let component = filled.nodes.values().find(|n| n.role == Role::Client).map(|n| n.component.clone()).context("no client in the checked graph")?;
+                let component = filled
+                    .nodes
+                    .values()
+                    .find(|n| n.role == Role::Client)
+                    .map(|n| n.component.clone())
+                    .context("no client in the checked graph")?;
                 edits.push(Change::add(CLIENT, Role::Client, &component));
                 CLIENT.to_string()
             }
@@ -355,7 +524,9 @@ impl RendererSpec {
 
     /// The link its client receives the stream over (its graph's link node).
     pub fn link(&self) -> mr_core::link::LinkSpec {
-        self.pipeline().and_then(|g| g.link().ok()).unwrap_or_default()
+        self.pipeline()
+            .and_then(|g| g.link().ok())
+            .unwrap_or_default()
     }
 
     pub fn devices(&self, run: &RunSpec) -> mr_core::DeviceConfig {
@@ -364,17 +535,34 @@ impl RendererSpec {
 
     /// LOD levels to stream, given what the renderer supports.
     pub fn max_lod(&self, run: &RunSpec, supported: u8) -> u8 {
-        self.like.map_or_else(|| self.client_knob("max_lod").map_or(run.max_lod, |l| l as u8), |l| l.max_lod).min(supported)
+        self.like
+            .map_or_else(
+                || self.client_knob("max_lod").map_or(run.max_lod, |l| l as u8),
+                |l| l.max_lod,
+            )
+            .min(supported)
     }
 
     /// How its client gets the LOD levels (its graph's `client` node).
     pub fn levels(&self) -> mr_core::client::Levels {
-        self.like.map_or_else(|| self.pipeline().and_then(|g| mr_core::client::Levels::of(g.client())).unwrap_or_default(), |l| l.levels)
+        self.like.map_or_else(
+            || {
+                self.pipeline()
+                    .and_then(|g| mr_core::client::Levels::of(g.client()))
+                    .unwrap_or_default()
+            },
+            |l| l.levels,
+        )
     }
 
     /// What its client takes of the server's stream, given the levels the renderer supports.
     pub fn region(&self, run: &RunSpec, supported: u8) -> crate::stream::Region {
-        crate::stream::Region { radius: self.view_radius(run), max_lod: self.max_lod(run, supported), levels: self.levels(), generates: self.generates() }
+        crate::stream::Region {
+            radius: self.view_radius(run),
+            max_lod: self.max_lod(run, supported),
+            levels: self.levels(),
+            generates: self.generates(),
+        }
     }
 
     /// Whether its client generates the world itself (its graph's generator on the client).
