@@ -36,6 +36,10 @@ fn run(dir: &Path, isolation: &str, fault: &str, launcher: &[&str]) -> Outcome {
     std::fs::create_dir_all(&d).unwrap();
     let launcher = launcher.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>().join(", ");
     let s = slow();
+    // The memory blow-up touches up to the address-space limit page by page, which outlasts a
+    // short watchdog on a slow machine (CI: killed as hung after 2 s): it tests the refusal,
+    // not the watchdog, so its floor is out of reach.
+    let min_s = if fault.ends_with(":oom") { 60.0 } else { 2.0 } * s;
     let plan = format!(
         r#"[scene]
 generator = {{ type = "flat" }}
@@ -60,7 +64,7 @@ dir = {:?}
 save = {{ every = 0 }}
 "#,
         5.0 * s,
-        2.0 * s,
+        min_s,
         d.join("out").to_str().unwrap(),
     );
     std::fs::write(d.join("plan.toml"), plan).unwrap();
