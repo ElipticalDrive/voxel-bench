@@ -49,7 +49,11 @@ multirenderer (host: the server)            worker process (one per renderer: a 
   `MR_FAULT_INJECTION=1` and a renderer option `fault = "<at>:<how>"`, see
   `crates/mr-serve/src/fault.rs`), and a sweep's sequential passes past failing ones (each
   recorded in `observations.jsonl` with its reason, listed as failed in the catalogue);
-  `oom` runs only in a process, under `prlimit`. The GUI's test
+  `oom` runs only in a process, under `prlimit`. A worker process does not outlive its host:
+  when the host's end of the socket closes without a shutdown (the host died or was killed),
+  the worker exits at once, even with its renderer hung, and a log write failing on the dead
+  pipe cannot stop it (`a_worker_exits_when_its_host_is_killed_under_a_hang`: the host
+  SIGKILLed under a hung worker whose watchdog is out of reach). The GUI's test
   (`gui_survives_faults`) runs one live session per isolation with a lane per moment x way,
   `knob` included (a knob's error is a refusal, an event of the lane), and a hung hot swap;
   what goes wrong while stopping is written to the session log.

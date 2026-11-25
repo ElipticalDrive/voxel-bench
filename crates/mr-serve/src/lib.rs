@@ -113,7 +113,9 @@ pub fn run(socket: &str, entries: Vec<RendererEntry>, devices: fn(&mr_core::Devi
         // The host is gone without asking us to stop: nobody is left to report to, and a
         // hung renderer would keep the process (and its device memory) alive forever.
         if !shutdown && OWN_PROCESS.load(std::sync::atomic::Ordering::Relaxed) {
-            tracing::warn!("the host closed the connection without a shutdown; exiting");
+            // The host's death usually took the log pipe with it: a failed write must not
+            // stop the exit (tracing-subscriber reports it with `eprintln!`, which panics).
+            let _ = std::panic::catch_unwind(|| tracing::warn!("the host closed the connection without a shutdown; exiting"));
             std::process::exit(3);
         }
     })?;

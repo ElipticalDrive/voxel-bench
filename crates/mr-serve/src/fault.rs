@@ -89,6 +89,7 @@ impl Fault {
                 unreachable!()
             },
             How::Hang => loop {
+                tracing::warn!("{what}: hanging");
                 std::thread::sleep(std::time::Duration::from_secs(3600));
             },
             How::Oom => {

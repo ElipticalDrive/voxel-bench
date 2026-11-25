@@ -136,7 +136,9 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "info,wgpu_core=warn,wgpu_hal=error,naga=warn".into());
     let sub = tracing_subscriber::fmt().with_writer(std::io::stderr).with_env_filter(filter);
     if worker {
-        sub.with_ansi(false).without_time().init();
+        // Its stderr is a pipe to the host, gone when the host dies: a failed write is dropped,
+        // not reported (the report is an `eprintln!` to the same pipe, which panics).
+        sub.with_ansi(false).without_time().log_internal_errors(false).init();
     } else {
         sub.init();
     }

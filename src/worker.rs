@@ -535,7 +535,7 @@ fn forward_stderr(stderr: std::process::ChildStderr, label: String, log: Option<
             if let Some(f) = &mut file {
                 let _ = writeln!(f, "{line}");
             }
-            if line.contains("ERROR") || line.contains("panicked") || file.is_none() {
+            if line.contains(" WARN ") || line.contains("ERROR") || line.contains("panicked") || file.is_none() {
                 eprintln!("[{label}] {line}");
             }
         }

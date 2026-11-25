@@ -235,3 +235,91 @@ label = "before"
         assert!(cat.lines().any(|l| l.contains(label) && l.contains("FAILED") && l.contains(says)), "the catalogue does not list `{label}` as failed:\n{cat}");
     }
 }
+
+/// A worker process does not outlive its host: the host killed outright (SIGKILL, no shutdown
+/// sent) while its worker's renderer hangs, the worker exits on its own within seconds. Its
+/// watchdog is set far out of reach, so only the closed socket can end it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_worker_exits_when_its_host_is_killed_under_a_hang() {
+    use std::io::BufRead;
+    use std::time::{Duration, Instant};
+    let d = Path::new(env!("CARGO_TARGET_TMPDIR")).join("survival").join("host-killed");
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let s = slow();
+    let plan = format!(
+        r#"[scene]
+generator = {{ type = "flat" }}
+camera = {{ type = "line", from = [0, 20, 0], to = [40, 20, 0] }}
+[run]
+frames = 15
+warmup = 0
+resolution = [64, 36]
+view_radius = 1
+isolation = "process"
+watchdog = {{ build_s = 3600, factor = 20, min_s = 3600 }}
+[[renderer]]
+graph = "raycast-cpu"
+label = "hangs"
+options = {{ fault = "first:hang" }}
+[output]
+dir = {:?}
+save = {{ every = 0 }}
+"#,
+        d.join("out").to_str().unwrap(),
+    );
+    std::fs::write(d.join("plan.toml"), plan).unwrap();
+    let mut host = Command::new(env!("CARGO_BIN_EXE_multirenderer"))
+        .arg("run")
+        .arg(d.join("plan.toml"))
+        .env("MR_FAULT_INJECTION", "1")
+        .env("RUST_LOG", "warn")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The worker's log reaches the host's stderr: wait for the hang to begin.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stderr = host.stderr.take().unwrap();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let mut log = String::new();
+    let deadline = Instant::now() + Duration::from_secs_f64(60.0 * s);
+    while !log.contains("injected fault at first: hanging") {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(l) => log += &(l + "\n"),
+            Err(_) => {
+                let _ = host.kill();
+                panic!("the worker never began its hang:\n{log}");
+            }
+        }
+    }
+    // The host's children (the worker), read from /proc before the host dies.
+    let children: Vec<u32> = std::fs::read_dir(format!("/proc/{}/task", host.id()))
+        .unwrap()
+        .flatten()
+        .filter_map(|t| std::fs::read_to_string(t.path().join("children")).ok())
+        .flat_map(|c| c.split_whitespace().filter_map(|p| p.parse().ok()).collect::<Vec<u32>>())
+        .collect();
+    assert!(!children.is_empty(), "the host has no worker process");
+    host.kill().unwrap();
+    host.wait().unwrap();
+    // Gone, or a zombie its new parent has yet to reap.
+    let alive = |pid: u32| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| st.rsplit(')').next().and_then(|r| r.split_whitespace().next()) != Some("Z"))
+    };
+    let deadline = Instant::now() + Duration::from_secs_f64(10.0 * s);
+    while children.iter().any(|&p| alive(p)) {
+        if Instant::now() > deadline {
+            for &p in &children {
+                let _ = Command::new("kill").arg("-9").arg(p.to_string()).status();
+            }
+            panic!("worker {children:?} outlived its killed host by 10 s:\n{log}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
