@@ -5,7 +5,7 @@
 //! pipeline and knobs suit this machine and the scene at hand.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -305,16 +305,12 @@ pub fn newer(line: &str) -> Option<String> {
 }
 
 /// Writes the run's observations (every pass except the reference's) as JSON lines.
-pub fn write(path: &Path, reports: &[PassReport], plan: &Plan, run: &str, machine: &Machine, features: Option<&SceneFeatures>) -> anyhow::Result<usize> {
-    let mut text = String::new();
-    let mut n = 0;
-    for r in reports.iter().filter(|r| !r.label.ends_with("(ref)")) {
-        text += &serde_json::to_string(&Observation::new(r, plan, run, machine, features))?;
-        text.push('\n');
-        n += 1;
+/// A report's observation as its line (no newline); none for a reference.
+pub fn line(r: &PassReport, plan: &Plan, run: &str, machine: &Machine, features: Option<&SceneFeatures>) -> anyhow::Result<Option<String>> {
+    if r.label.ends_with("(ref)") {
+        return Ok(None);
     }
-    std::fs::write(path, text)?;
-    Ok(n)
+    Ok(Some(serde_json::to_string(&Observation::new(r, plan, run, machine, features))?))
 }
 
 /// Every `observations.jsonl` under `paths` (files, or directories searched recursively).

@@ -5,8 +5,7 @@
 //! with the reason, runs the third pass and finishes: every pass in the report, the first one
 //! run once.
 //!
-//! Not here: a full disk (needs a small filesystem mounted for the test). A failed journal write
-//! ends the run like any death, and resuming continues it the same way.
+//! A full disk, during a pass and while the records are written: `tests/records.rs`.
 
 use std::path::Path;
 use std::process::Command;

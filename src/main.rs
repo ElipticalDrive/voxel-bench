@@ -286,13 +286,16 @@ fn main() -> anyhow::Result<()> {
                 table = format!("{table}\n{t}");
             }
             println!("\n{table}");
-            std::fs::write(run_dir.join("summary.txt"), &table)?;
-            // Compact: every frame of every pass (pretty-printed it was 2.6 times the size).
-            std::fs::write(run_dir.join("report.json"), serde_json::to_string(&reports)?)?;
+            std::fs::write(run_dir.join("summary.txt"), &table).with_context(|| format!("{}: the run stays unfinished: with output.resume a later run writes its records", run_dir.join("summary.txt").display()))?;
+            drop(reports);
             let run_name = run_dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            let n = observe::write(&run_dir.join("observations.jsonl"), &reports, &plan, &run_name, &observe::Machine::detect(), scene_features.as_ref())?;
-            let _ = std::fs::remove_file(run_dir.join(journal::FILE));
+            let n = finish_run(&run_dir, &plan, &run_name, scene_features.as_ref())?;
             println!("report: {} ({n} observations)", run_dir.join("report.json").display());
+            // What the run held at most (its workers apart, under process isolation): flat in
+            // the passes it runs, as their frames live in the journal.
+            if let Some(kb) = std::fs::read_to_string("/proc/self/status").ok().and_then(|s| s.lines().find_map(|l| l.strip_prefix("VmHWM:")?.trim().strip_suffix(" kB")?.parse::<u64>().ok())) {
+                println!("host peak memory: {:.0} MB", kb as f64 / 1024.0);
+            }
             Ok(())
         }
         Cmd::View { plan: path, renderers, overrides } => {
@@ -639,7 +642,9 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
     for &mode in &run.modes {
         if plan.output.compare.is_some() {
             out.references.retain(|k, _| k.1 != mode);
-            reports.extend(ctx.reference(None, mode, &base, &mut out)?);
+            let refs = ctx.reference(None, mode, &base, &mut out)?;
+            journal.beside(&refs)?;
+            reports.extend(refs.into_iter().map(PassReport::slim));
         }
         let (specs, moot) = plan.passes(mode, &infos);
         for s in plan.renderers.iter().filter(|s| !s.swept && !s.info(&plan.run, &infos).is_some_and(|i| s.supports(&i, mode))) {
@@ -684,7 +689,7 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
                 for (i, s) in todo.iter().enumerate() {
                     journal.finished(&key(s), if i == 0 { &done } else { &[] })?;
                 }
-                batch.extend(done);
+                batch.extend(done.into_iter().map(PassReport::slim));
                 if out.ui.as_ref().is_some_and(|u| u.closed()) {
                     reports.extend(batch);
                     return Ok((with_kept(journal.kept, reports), scene_features));
@@ -700,6 +705,57 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         out.compare_every = plan.output.compare.as_ref().map(|c| c.every);
     }
     Ok((with_kept(journal.kept, reports), scene_features))
+}
+
+/// Writes a finished run's records from its journal, one report at a time (the run held only
+/// slim copies): the observations, then `report.json` (compact: every frame of every pass), each
+/// written beside and renamed into place, so a failed write (a full disk) leaves no partial
+/// file and the run stays unfinished, resumable; then the journal goes. Returns the
+/// observations written.
+fn finish_run(run_dir: &Path, plan: &Plan, run_name: &str, features: Option<&features::SceneFeatures>) -> anyhow::Result<usize> {
+    use std::io::Write as _;
+    let create = |name: &str| -> anyhow::Result<(PathBuf, std::io::BufWriter<std::fs::File>)> {
+        let part = run_dir.join(format!("{name}.part"));
+        let f = std::fs::File::create(&part).with_context(|| part.display().to_string())?;
+        Ok((part, std::io::BufWriter::new(f)))
+    };
+    let close = |part: PathBuf, w: std::io::BufWriter<std::fs::File>, name: &str| -> anyhow::Result<()> {
+        let f = w.into_inner().map_err(|e| e.into_error()).with_context(|| part.display().to_string())?;
+        f.sync_data().with_context(|| part.display().to_string())?;
+        std::fs::rename(&part, run_dir.join(name)).with_context(|| part.display().to_string())
+    };
+    let machine = observe::Machine::detect();
+    let (op, rp) = (run_dir.join("observations.jsonl.part"), run_dir.join("report.json.part"));
+    let write = || -> anyhow::Result<usize> {
+        let ((_, mut ow), (_, mut rw)) = (create("observations.jsonl")?, create("report.json")?);
+        let (mut n, mut first) = (0, true);
+        rw.write_all(b"[")?;
+        journal::each(run_dir, |r| {
+            if let Some(line) = observe::line(&r, plan, run_name, &machine, features)? {
+                ow.write_all(line.as_bytes())?;
+                ow.write_all(b"\n")?;
+                n += 1;
+            }
+            if !first {
+                rw.write_all(b",")?;
+            }
+            first = false;
+            serde_json::to_writer(&mut rw, &r)?;
+            Ok(())
+        })?;
+        rw.write_all(b"]")?;
+        close(op.clone(), ow, "observations.jsonl")?;
+        close(rp.clone(), rw, "report.json")?;
+        Ok(n)
+    };
+    let n = write().map_err(|e| {
+        // What was written of them goes, so the space is free for the resumed run.
+        let _ = std::fs::remove_file(&op);
+        let _ = std::fs::remove_file(&rp);
+        e.context(format!("writing the run's records ({}, report.json) from its journal failed; the run stays unfinished: with output.resume a later run writes them", run_dir.join("observations.jsonl").display()))
+    })?;
+    let _ = std::fs::remove_file(run_dir.join(journal::FILE));
+    Ok(n)
 }
 
 /// The reports of the passes earlier runs finished (`kept`, a resumed run's), then this run's;

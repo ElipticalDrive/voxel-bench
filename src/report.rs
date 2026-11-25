@@ -227,6 +227,16 @@ pub struct PassReport {
 }
 
 impl PassReport {
+    /// The report as a run holds it once the pass is journaled: its summaries, without the
+    /// per-frame records past the first (what the tables read), which stay in the journal and
+    /// go to `report.json` from there. A run's memory then grows with its passes, not with
+    /// their frames.
+    pub fn slim(mut self) -> Self {
+        self.per_frame.truncate(1);
+        self.per_frame.shrink_to_fit();
+        self
+    }
+
     pub fn finish(&mut self, completions: &[f64]) {
         let f = &self.per_frame;
         self.frames = f.len();
