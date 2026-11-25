@@ -6,7 +6,10 @@
 //! Per renderer: relative speed (fps / the best correct renderer's) per scenario, its
 //! geometric mean over scenarios, wins, where it is within 10% of the best ("good at"), and
 //! where it does unusually well compared with its own average ("stands out": comparative
-//! advantage). Per component: the paired effect of choosing it for a node, among pipelines
+//! advantage). Memory ranks too: each renderer's footprint (peak RSS plus GPU memory, measured
+//! where the device reports it, else counted) relative to the scenario's leanest correct one,
+//! its geometric mean, and per scenario the correct renderers no other beats on both speed and
+//! footprint (the frontier). Per component: the paired effect of choosing it for a node, among pipelines
 //! whose graphs differ in that node's component alone (knobs equal).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,6 +41,12 @@ pub struct Entry {
     pub gpu_mb: Option<f64>,
     pub gpu_device_mb: Option<f64>,
     pub rss_mb: Option<f64>,
+    /// The footprint: `rss_mb` plus `gpu_device_mb` (else `gpu_mb`); none if neither is known.
+    pub mem_mb: Option<f64>,
+    /// `mem_mb` / the leanest correct renderer's in this scenario (none without figures).
+    pub mem_rel: Option<f64>,
+    /// Correct, and no other correct renderer is at least as fast and as lean, and better in one.
+    pub frontier: bool,
     pub samples: usize,
     pub error: Option<String>,
     /// fps / the best correct renderer's fps in this scenario.
@@ -65,6 +74,10 @@ pub struct RendererSummary {
     pub scenarios: usize,
     /// Geometric mean of `rel` over the scenarios where it ran correctly (`None`: nowhere).
     pub geomean: Option<f64>,
+    /// Geometric mean of `mem_rel` over the same scenarios, where known (1 = always leanest).
+    pub mem_geomean: Option<f64>,
+    /// Scenarios where it is on the speed/footprint frontier.
+    pub frontier: Vec<String>,
     pub wins: Vec<String>,
     pub good_at: Vec<String>,
     /// Scenarios where `rel` is well above its own geometric mean, with the ratio.
@@ -230,6 +243,9 @@ impl Catalogue {
                         gpu_mb: m(&|o| o.gpu_mb),
                         gpu_device_mb: m(&|o| o.gpu_device_mb),
                         rss_mb: m(&|o| o.peak_rss_mb),
+                        mem_mb: None,
+                        mem_rel: None,
+                        frontier: false,
                         samples: ok.len(),
                         error: if ok.is_empty() { os.iter().find_map(|o| o.error.clone()) } else { None },
                         rel: 0.0,
@@ -240,6 +256,14 @@ impl Catalogue {
             let best = entries.iter().filter(|e| e.valid).map(|e| e.fps).fold(0.0, f64::max);
             for e in &mut entries {
                 e.rel = if best > 0.0 && e.error.is_none() { e.fps / best } else { 0.0 };
+                let gpu = e.gpu_device_mb.or(e.gpu_mb);
+                e.mem_mb = (e.error.is_none() && (e.rss_mb.is_some() || gpu.is_some())).then(|| e.rss_mb.unwrap_or(0.0) + gpu.unwrap_or(0.0)).filter(|&m| m > 0.0);
+            }
+            let lean = entries.iter().filter(|e| e.valid).filter_map(|e| e.mem_mb).fold(f64::INFINITY, f64::min);
+            let known: Vec<(f64, f64)> = entries.iter().filter(|e| e.valid).filter_map(|e| Some((e.fps, e.mem_mb?))).collect();
+            for e in &mut entries {
+                e.mem_rel = e.mem_mb.filter(|_| lean.is_finite()).map(|m| m / lean);
+                e.frontier = e.valid && e.mem_mb.is_some_and(|m| !known.iter().any(|&(f, k)| f >= e.fps && k <= m && (f > e.fps || k < m)));
             }
             entries.sort_by(|a, b| a.error.is_some().cmp(&b.error.is_some()).then(b.valid.cmp(&a.valid)).then(b.fps.total_cmp(&a.fps)));
             let name = if multi { format!("{plan} [{mode}] @ {machine}") } else { format!("{plan} [{mode}]") };
@@ -258,6 +282,7 @@ impl Catalogue {
             .map(|(label, list)| {
                 let valid: Vec<(&Scenario, &Entry)> = list.iter().copied().filter(|(_, e)| e.valid).collect();
                 let g = (!valid.is_empty()).then(|| geomean(&valid.iter().map(|(_, e)| e.rel).collect::<Vec<_>>()));
+                let mem: Vec<f64> = valid.iter().filter_map(|(_, e)| e.mem_rel).collect();
                 let names = |f: &dyn Fn(&Entry) -> bool| list.iter().filter(|(_, e)| f(e)).map(|(s, _)| s.name.clone()).collect::<Vec<_>>();
                 let mut stands: Vec<(String, f64)> = valid.iter().filter(|_| valid.len() > 1).map(|(s, e)| (s.name.clone(), e.rel / g.unwrap_or(1.0).max(1e-9))).filter(|&(_, r)| r >= 1.25).collect();
                 stands.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -266,6 +291,8 @@ impl Catalogue {
                     label,
                     scenarios: list.len(),
                     geomean: g,
+                    mem_geomean: (!mem.is_empty()).then(|| geomean(&mem)),
+                    frontier: names(&|e| e.frontier),
                     wins: names(&|e| e.valid && e.rel >= 0.9999),
                     good_at: names(&|e| e.valid && e.rel >= 0.9),
                     stands_out: stands,
@@ -393,13 +420,14 @@ impl Catalogue {
                 }
             }
         }
-        let _ = writeln!(s, "\n## Renderers\n\nSorted by the geometric mean of *rel* over the scenarios where the renderer ran correctly.\n\n| renderer | scenarios | geomean rel | wins | good at | stands out | weak at (rel < 0.25) | incorrect | failed |\n|---|---:|---:|---:|---|---|---|---|---|");
+        let _ = writeln!(s, "\n## Renderers\n\nSorted by the geometric mean of *rel* over the scenarios where the renderer ran correctly.\n\n| renderer | scenarios | geomean rel | geomean mem | wins | good at | stands out | weak at (rel < 0.25) | incorrect | failed |\n|---|---:|---:|---:|---:|---|---|---|---|---|");
         for r in &self.renderers {
             let list = |v: &[String]| if v.is_empty() { "".to_string() } else { v.join(", ") };
             let stands: Vec<String> = r.stands_out.iter().map(|(n, x)| format!("{n} ({x:.1}×)")).collect();
-            let _ = writeln!(s, "| {} | {} | {} | {} | {} | {} | {} | {} | {} |", r.label, r.scenarios, opt(r.geomean, 2), r.wins.len(), list(&r.good_at), stands.join(", "), list(&r.weak_at), list(&r.incorrect), list(&r.failed));
+            let _ = writeln!(s, "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |", r.label, r.scenarios, opt(r.geomean, 2), opt(r.mem_geomean, 2), r.wins.len(), list(&r.good_at), stands.join(", "), list(&r.weak_at), list(&r.incorrect), list(&r.failed));
         }
         let _ = writeln!(s);
+        let _ = writeln!(s, "{}", self.memory_markdown());
         if !self.components.is_empty() {
             let _ = writeln!(s, "## Components\n\nThe effect of a node's component, among pipelines whose graphs differ in that node's component alone (knobs equal): the geometric mean of fps relative to the best of each such group, wins, and the number of comparisons. A node is named by its executor, its role and the inputs leading to it from the output.\n");
             for c in &self.components {
@@ -413,16 +441,16 @@ impl Catalogue {
         let _ = writeln!(s, "## Scenarios\n");
         for sc in &self.scenarios {
             let feats = sc.features.as_ref().map(|f| format!(" {}.", f.describe())).unwrap_or_default();
-            let _ = writeln!(s, "### {}\n\n{}×{}.{feats}\n\n| # | renderer | fps | rel | p99 ms | gpu ms | cpu ms | PSNR | bad % | GPU MB | dev MB | RSS MB |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|", sc.name, sc.resolution[0], sc.resolution[1]);
+            let _ = writeln!(s, "### {}\n\n{}×{}.{feats}\n\n| # | renderer | fps | rel | p99 ms | gpu ms | cpu ms | PSNR | bad % | GPU MB | dev MB | RSS MB | mem rel |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|", sc.name, sc.resolution[0], sc.resolution[1]);
             for (i, e) in sc.entries.iter().enumerate() {
                 if let Some(err) = &e.error {
-                    let _ = writeln!(s, "| {} | {} | FAILED: {} | | | | | | | | | |", i + 1, e.label, err.lines().next().unwrap_or("").replace('|', "/"));
+                    let _ = writeln!(s, "| {} | {} | FAILED: {} | | | | | | | | | | |", i + 1, e.label, err.lines().next().unwrap_or("").replace('|', "/"));
                     continue;
                 }
-                let flag = if e.valid { "" } else { " (incorrect)" };
+                let flag = if !e.valid { " (incorrect)" } else if e.frontier { " ◆" } else { "" };
                 let _ = writeln!(
                     s,
-                    "| {} | {}{flag} | {:.1} | {:.2} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                    "| {} | {}{flag} | {:.1} | {:.2} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                     i + 1,
                     e.label,
                     e.fps,
@@ -434,7 +462,8 @@ impl Catalogue {
                     opt(e.bad_pct, 2),
                     opt(e.gpu_mb, 0),
                     opt(e.gpu_device_mb, 0),
-                    opt(e.rss_mb, 0)
+                    opt(e.rss_mb, 0),
+                    opt(e.mem_rel, 2)
                 );
             }
             let _ = writeln!(s);
@@ -442,9 +471,30 @@ impl Catalogue {
         s
     }
 
+    /// Memory as a ranking: per scenario the leanest correct renderer, the fastest one's
+    /// footprint, and the frontier; the renderers by their geometric mean footprint.
+    fn memory_markdown(&self) -> String {
+        let mut s = String::new();
+        let _ = writeln!(s, "## Memory\n\nThe footprint is the peak RSS plus the GPU memory (measured by the device's allocator where it reports one, else what the renderer counts; RSS may hold mapped GPU memory too, so read it as an upper bound). *mem* is the footprint relative to the leanest correct renderer of the scenario. The frontier (◆ in the scenario tables): correct renderers no other correct one beats on speed and footprint both.\n\n| scenario | leanest | MB | fastest's MB | frontier (fps, MB) |\n|---|---|---:|---:|---|");
+        for sc in &self.scenarios {
+            let ok = || sc.entries.iter().filter(|e| e.valid && e.mem_mb.is_some());
+            let Some(lean) = ok().min_by(|a, b| a.mem_mb.unwrap().total_cmp(&b.mem_mb.unwrap())) else { continue };
+            let fast = sc.entries.iter().find(|e| e.valid).and_then(|e| e.mem_mb);
+            let front: Vec<String> = sc.entries.iter().filter(|e| e.frontier).map(|e| format!("{} ({:.0}, {:.0})", e.label, e.fps, e.mem_mb.unwrap_or(0.0))).collect();
+            let _ = writeln!(s, "| {} | {} | {:.0} | {} | {} |", sc.name, lean.label, lean.mem_mb.unwrap(), opt(fast, 0), front.join("; "));
+        }
+        let mut by: Vec<&RendererSummary> = self.renderers.iter().filter(|r| r.mem_geomean.is_some()).collect();
+        by.sort_by(|a, b| a.mem_geomean.unwrap().total_cmp(&b.mem_geomean.unwrap()));
+        let _ = writeln!(s, "\nLeanest first (geometric mean of *mem* over the scenarios where it ran correctly):\n\n| renderer | geomean mem | geomean rel | on the frontier |\n|---|---:|---:|---|");
+        for r in by {
+            let _ = writeln!(s, "| {} | {} | {} | {} |", r.label, opt(r.mem_geomean, 2), opt(r.geomean, 2), r.frontier.join(", "));
+        }
+        s
+    }
+
     /// One row per (scenario, renderer), for spreadsheets and scripts.
     pub fn csv(&self) -> String {
-        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,executor,graph_key,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,psnr_like,psnr_settled,bad_pct,gpu_mb,gpu_device_mb,rss_mb,samples,error\n");
+        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,executor,graph_key,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,psnr_like,psnr_settled,bad_pct,gpu_mb,gpu_device_mb,rss_mb,mem_mb,mem_rel,frontier,samples,error\n");
         let q = |x: &str| format!("\"{}\"", x.replace('"', "\"\""));
         for sc in &self.scenarios {
             // The scenario's columns, including its measured features (empty if unknown).
@@ -459,7 +509,7 @@ impl Catalogue {
             for e in &sc.entries {
                 let _ = writeln!(
                     s,
-                    "{scenario},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                    "{scenario},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                     q(&e.label),
                     e.graph.as_ref().map_or("", |g| g.runs_on()),
                     e.graph_key.as_deref().unwrap_or(""),
@@ -477,6 +527,9 @@ impl Catalogue {
                     opt(e.gpu_mb, 1),
                     opt(e.gpu_device_mb, 1),
                     opt(e.rss_mb, 1),
+                    opt(e.mem_mb, 1),
+                    opt(e.mem_rel, 3),
+                    e.frontier,
                     e.samples,
                     q(e.error.as_deref().unwrap_or(""))
                 );
@@ -553,6 +606,30 @@ mod tests {
         assert!((row("bricks").1 - (100.0f64 / 120.0).sqrt()).abs() < 1e-9 && row("bricks").2 == 1 && row("bricks").3 == 2);
         assert!(cat.markdown().contains(&format!("**gpu · storage ({PRIMARY})**")) && cat.csv().lines().count() == 6);
         assert!(cat.csv().contains(&format!(",gpu,{},", with("prefix").key().unwrap())), "{}", cat.csv());
+    }
+
+    /// Memory ranks: the footprint (RSS plus the measured GPU figure, else the counted one)
+    /// relative to the leanest correct renderer, and the speed/footprint frontier.
+    #[test]
+    fn ranks_by_memory() {
+        let m = |g: Graph, fps: f64, psnr: f64, rss: f64, counted: f64, device: Option<f64>| Observation { peak_rss_mb: Some(rss), gpu_mb: Some(counted), gpu_device_mb: device, ..obs("terrain", g, fps, Some(psnr)) };
+        let all = vec![
+            m(with("bricks"), 100.0, 50.0, 100.0, 300.0, Some(500.0)), // 600: slower and fatter than prefix
+            m(with("prefix"), 120.0, 50.0, 100.0, 200.0, Some(300.0)), // 400: fastest
+            m(with("distance"), 60.0, 50.0, 100.0, 100.0, None),          // 200 counted: leanest
+            m(with("hier"), 300.0, 20.0, 50.0, 10.0, Some(10.0)),       // incorrect: never leanest
+        ];
+        let cat = Catalogue::build(&all, 35.0);
+        let e = |n: &str| cat.scenarios[0].entries.iter().find(|e| e.label.contains(n)).unwrap();
+        assert_eq!((e("bricks").mem_mb, e("distance").mem_mb), (Some(600.0), Some(200.0)), "measured wins over counted, counted where unmeasured");
+        assert_eq!((e("bricks").mem_rel, e("prefix").mem_rel, e("distance").mem_rel), (Some(3.0), Some(2.0), Some(1.0)));
+        assert_eq!([e("bricks").frontier, e("prefix").frontier, e("distance").frontier, e("hier").frontier], [false, true, true, false]);
+        let r = |n: &str| cat.renderers.iter().find(|r| r.label.contains(n)).unwrap();
+        assert_eq!((r("distance").mem_geomean, r("hier").mem_geomean), (Some(1.0), None));
+        assert_eq!(r("prefix").frontier, ["terrain [unlit]"]);
+        let md = cat.markdown();
+        assert!(md.contains("## Memory") && md.contains(&format!("| terrain [unlit] | {} | 200 | 400 |", e("distance").label)), "{md}");
+        assert!(cat.csv().contains(",600.0,3.000,false,"), "{}", cat.csv());
     }
 
     /// A node's component is compared only among graphs that differ in it alone, and the

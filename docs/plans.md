@@ -270,7 +270,13 @@ incorrect: they are ranked, but never best (the floor applies to `psnr_like` whe
 has one: fewer levels of detail are a loss, not an error; a path tracer is held to its own
 lighting model, and its noise counts; and to `psnr_settled` where it has one: a frame late
 is a property, not an error). For each renderer it lists:
-- the geometric mean of its speed relative to each scenario's best;
+- the geometric mean of its speed relative to each scenario's best, and of its footprint
+  relative to each scenario's leanest correct renderer (*geomean mem*; the footprint is
+  `peak_rss_mb` plus `gpu_device_mb`, else `gpu_mb`: an upper bound, RSS may hold mapped GPU
+  memory too);
+- where it is on the speed/footprint frontier (correct, and no correct renderer at least as
+  fast and as lean; ◆ in the scenario tables; the section *Memory* lists the leanest per
+  scenario and the renderers leanest first; CSV `mem_mb`, `mem_rel`, `frontier`);
 - its wins, and where it is within 10% of the best (*good at*);
 - where it is comparatively strong (*stands out*: at least 1.25× its own average relative
   speed);
