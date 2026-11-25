@@ -425,8 +425,11 @@ impl Worker {
         // or, a thread, ends (its connection may outlive it).
         loop {
             if self.thread.as_ref().is_some_and(|t| t.is_finished()) {
-                while let Ok(WorkerEvent::Msg(WorkerMsg::Error(e))) = self.rx.try_recv() {
-                    problem = Some(format!("failed while stopping: {e}"));
+                // Everything still queued: an error can sit behind a frame or a status.
+                while let Ok(ev) = self.rx.try_recv() {
+                    if let WorkerEvent::Msg(WorkerMsg::Error(e)) = ev {
+                        problem = Some(format!("failed while stopping: {e}"));
+                    }
                 }
                 break;
             }
