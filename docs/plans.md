@@ -363,6 +363,9 @@ Python, for Linux and Windows (`scripts/`):
   of its place (default 3), when a finding cites it (its name in `docs/*.md`, `notes/*.md` or
   `ROADMAP.md`), when a run in it is unfinished (resumable) or when it holds a file `KEEP`;
   the rest go. It prints each with its size and why, and removes only with `--apply`.
+- `scale.py [--plans ...] [--radii ...] [--mem 24G]` / `scale.py --table`: where each pipeline
+  stops as the world grows (the view radius doubled per scenario plan, pass / fail and the
+  reason, under a memory cap, journaled and resumable); the table is `docs/limits.md`.
 
 ### Records at scale
 

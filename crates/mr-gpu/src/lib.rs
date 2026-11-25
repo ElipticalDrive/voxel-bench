@@ -51,7 +51,8 @@ pub struct AllocPeak(Arc<AllocPeakInner>);
 
 struct AllocPeakInner {
     device: wgpu::Device,
-    peak: std::sync::atomic::AtomicU64,
+    /// Shared with the device's error handler (which must not hold the device: a cycle).
+    peak: Arc<std::sync::atomic::AtomicU64>,
     /// When the next budgeted sample may run.
     next: std::sync::Mutex<std::time::Instant>,
 }
@@ -59,8 +60,8 @@ struct AllocPeakInner {
 impl AllocPeak {
     const BUDGET: u32 = 100;
 
-    fn new(device: &wgpu::Device) -> Self {
-        Self(Arc::new(AllocPeakInner { device: device.clone(), peak: Default::default(), next: std::sync::Mutex::new(std::time::Instant::now()) }))
+    fn new(device: &wgpu::Device, peak: Arc<std::sync::atomic::AtomicU64>) -> Self {
+        Self(Arc::new(AllocPeakInner { device: device.clone(), peak, next: std::sync::Mutex::new(std::time::Instant::now()) }))
     }
 
     /// Samples now; returns what the allocator holds (0 where the backend gives no report).
@@ -138,9 +139,19 @@ impl Gpu {
     pub fn from_parts(device: wgpu::Device, queue: wgpu::Queue, info: wgpu::AdapterInfo) -> Self {
         let failure = Failure::default();
         let f = failure.clone();
-        device.on_uncaptured_error(Arc::new(move |e| f.set(format!("wgpu error: {}", e.to_string().lines().take(12).collect::<Vec<_>>().join("\n")))));
+        let held: Arc<std::sync::atomic::AtomicU64> = Default::default();
+        let h = held.clone();
+        let adapter = info.name.clone();
+        device.on_uncaptured_error(Arc::new(move |e| {
+            let text = e.to_string().lines().take(12).collect::<Vec<_>>().join("\n");
+            // wgpu's out-of-memory error names no allocation: say what is known.
+            f.set(match e {
+                wgpu::Error::OutOfMemory { .. } => out_of_memory(&adapter, h.load(Ordering::Relaxed), &text),
+                _ => format!("wgpu error: {text}"),
+            })
+        }));
         let features = device.features();
-        let peak = AllocPeak::new(&device);
+        let peak = AllocPeak::new(&device, held);
         Self { device, queue, info, timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY), adapter_features: features, experimental: false, failure, cache: Default::default(), peak }
     }
 
@@ -1002,6 +1013,13 @@ fn named_limit(gpu: &Gpu, limit: &str) -> String {
     format!("what {} binds ({:.1} MiB, `max_storage_buffer_binding_size`)", gpu.info.name, bind as f64 / (1u64 << 20) as f64)
 }
 
+/// The failure of an allocation the device refused, unnamed by wgpu (`held`: the most this
+/// renderer was seen holding).
+fn out_of_memory(adapter: &str, held: u64, text: &str) -> String {
+    let seen = if held > 0 { format!(", this renderer seen holding up to {:.0} MiB", held as f64 / (1u64 << 20) as f64) } else { String::new() };
+    format!("the device is out of memory ({adapter}{seen}; the world's size sets most of it: lower the view radius, or the storage's pool or slot knobs): wgpu error: {text}")
+}
+
 /// The failure of a buffer over a device limit ([`Gpu::storage`]).
 fn over_limit(label: &str, size: u64, limit: u64, name: &str, adapter: &str, set_by: &str) -> String {
     let mib = |b: u64| b as f64 / (1u64 << 20) as f64;
@@ -1254,7 +1272,7 @@ mod tests {
         assert!(gpu.alloc_peak().get() >= base + (64 << 20), "growth peak {} from {base}", gpu.alloc_peak().get());
 
         // Budgeted: a sample defers the next by a hundred times its cost.
-        let fresh = AllocPeak::new(&gpu.device);
+        let fresh = AllocPeak::new(&gpu.device, Default::default());
         fresh.sample_budgeted();
         assert!(fresh.get() > 0);
         assert!(*fresh.0.next.lock().unwrap() > std::time::Instant::now(), "no deferral after a sample");

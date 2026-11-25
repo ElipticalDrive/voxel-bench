@@ -18,7 +18,6 @@ use mr_core::*;
 use mr_gpu::voxels::VoxelWorld;
 use mr_gpu::{DEVICE_BOUND, Gpu, GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
-use wgpu::util::DeviceExt;
 
 /// Group 0's bindings of the acceleration structures: the TLAS, the geometry hits are decoded
 /// from, the chunk info per instance slot (between the hit records and the region's).
@@ -280,11 +279,32 @@ impl Accel {
         }
     }
 
-    /// Rebuilds BLASes of dirty chunks into `enc`. Returns how many were rebuilt.
+    /// Rebuilds BLASes of dirty chunks into `enc`. Returns how many were rebuilt. The
+    /// per-chunk inputs and BLASes grow with the world (radius) and the geometry: when the
+    /// device runs out of memory for them, the renderer fails naming that (the errors that
+    /// follow from the first refused allocation are its consequences, not reported).
     fn rebuild(&mut self, world: &VoxelWorld, enc: &mut wgpu::CommandEncoder, near: IVec3) -> usize {
         if self.dirty.is_empty() {
             return 0;
         }
+        let oom = self.gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let invalid = self.gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let n = self.rebuild_dirty(world, enc, near);
+        let invalid = pollster::block_on(invalid.pop());
+        if let Some(e) = pollster::block_on(oom.pop()) {
+            let bytes: u64 = self.chunks.values().flat_map(|c| c._inputs.iter()).map(|b| b.size()).sum();
+            self.gpu.fail(format!(
+                "acceleration structure: the device is out of memory for the chunks' BLAS inputs ({} chunks resident, {:.0} MiB of inputs; they grow with the radius and the geometry's faces): {e}; lower the client's radius or use a geometry with fewer faces",
+                self.chunks.len(),
+                bytes as f64 / (1u64 << 20) as f64
+            ));
+        } else if let Some(e) = invalid {
+            self.gpu.fail(format!("wgpu error: {e}"));
+        }
+        n
+    }
+
+    fn rebuild_dirty(&mut self, world: &VoxelWorld, enc: &mut wgpu::CommandEncoder, near: IVec3) -> usize {
         let mut dirty: Vec<IVec3> = self.dirty.drain().collect();
         if self.build_budget > 0 && dirty.len() > self.build_budget {
             dirty.sort_unstable_by_key(|p| (*p - near).length_squared());
@@ -309,11 +329,18 @@ impl Accel {
                 self.gpu.fail(format!("acceleration structure: more than {MAX_SLOTS} chunks; rays would miss the rest; lower the client's radius"));
                 continue;
             };
-            let usage = wgpu::BufferUsages::BLAS_INPUT;
+            // Created, then written: `create_buffer_init`'s mapping panics when the device
+            // refuses the allocation, before the error can be named.
+            let gpu = &self.gpu;
+            let upload = |data: &[u8]| {
+                let b = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("blas input"), size: (data.len() as u64).next_multiple_of(4).max(4), usage: wgpu::BufferUsages::BLAS_INPUT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+                gpu.queue.write_buffer(&b, 0, data);
+                b
+            };
             let (sizes, inputs, words, info) = match &b {
                 Built::Triangles { vertices, indices, quads } => {
-                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(vertices), usage });
-                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(indices), usage });
+                    let vb = upload(bytemuck::cast_slice(vertices));
+                    let ib = upload(bytemuck::cast_slice(indices));
                     let sizes = wgpu::BlasGeometrySizeDescriptors::Triangles {
                         descriptors: vec![wgpu::BlasTriangleGeometrySizeDescriptor {
                             vertex_format: wgpu::VertexFormat::Float32x3,
@@ -326,7 +353,7 @@ impl Accel {
                     (sizes, vec![vb, ib], bytemuck::cast_slice::<[u32; 2], u32>(quads).to_vec(), None)
                 }
                 Built::Aabbs { boxes, bricks } => {
-                    let ab = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(boxes), usage });
+                    let ab = upload(bytemuck::cast_slice(boxes));
                     let sizes = wgpu::BlasGeometrySizeDescriptors::AABBs {
                         descriptors: vec![wgpu::BlasAABBGeometrySizeDescriptor {
                             primitive_count: boxes.len() as u32,

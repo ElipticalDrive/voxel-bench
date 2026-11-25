@@ -115,7 +115,7 @@ for w in what:
     elif w == "gpu":
         subprocess.run(["cargo", "build", "--release", "-q"], cwd=ROOT, capture_output=True)
         os.environ.setdefault("SECONDS", "8")  # the tuner demo's run, long enough for trials
-        for name, args in (("gpu e2e", ["--bin", "multirenderer", "--", "--ignored", "--skip", "gui_screenshot"]), ("gpu pool", ["-p", "mr-gpu", "--", "--ignored"])):
+        for name, args in (("gpu e2e", ["--bin", "multirenderer", "--", "--ignored", "--skip", "gui_screenshot"]), ("gpu pool", ["-p", "mr-gpu", "--", "--ignored"]), ("gpu scale", ["--test", "scale", "--", "--ignored"])):
             s, t = cargo(["test", "-q", "--release", *args], logs / f"{name.replace(' ', '-')}.log")
             rc |= tests(name, s, t)
         r = subprocess.run([sys.executable, str(ROOT / "scripts" / "limits.py"), "--no-build"], cwd=ROOT, capture_output=True, text=True)

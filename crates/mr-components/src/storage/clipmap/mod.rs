@@ -65,8 +65,19 @@ pub struct Clipmap {
 impl Clipmap {
     /// `wide`: more than 256 block types (R16 ids).
     pub fn new(gpu: &Gpu, view_radius: u32, wide: bool) -> Self {
-        let max = (gpu.device.limits().max_texture_dimension_3d / 32) as i32;
-        let side = (2 * view_radius as i32 + 1).min(max).max(1);
+        let dim = gpu.device.limits().max_texture_dimension_3d;
+        let max = (dim / 32) as i32;
+        let want = 2 * view_radius as i32 + 1;
+        if want > max {
+            // Chunks would evict each other from their slots: frames would miss them.
+            gpu.fail(format!(
+                "clipmap: a view radius of {view_radius} chunks needs a volume {want} chunks ({} texels) wide, over what {} allows ({dim} texels, `max_texture_dimension_3d`: a radius of {} at most); lower the client's radius",
+                want * 32,
+                gpu.info.name,
+                (max - 1) / 2
+            ));
+        }
+        let side = want.min(max).max(1);
         let slots = IVec3::new(side, side.min(MAX_Y_SLOTS), side);
         let tex = |label, n: i32, format| {
             gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -84,7 +95,9 @@ impl Clipmap {
                 view_formats: &[],
             })
         };
-        // Fresh textures are zero-initialised: every slot reads as empty.
+        // Fresh textures are zero-initialised: every slot reads as empty. Their size grows with
+        // the cube of the radius: a refusal is named (wgpu's own error names nothing).
+        let oom = gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let textures = [
             tex(
                 "clipmap voxels",
@@ -98,6 +111,17 @@ impl Clipmap {
             tex("clipmap bricks", 8, wgpu::TextureFormat::R8Uint),
             tex("clipmap tags", 1, wgpu::TextureFormat::R32Uint),
         ];
+        if let Some(e) = pollster::block_on(oom.pop()) {
+            let blocks = (slots.x * slots.y * slots.z) as u64 * 32768;
+            let bytes = blocks * if wide { 2 } else { 1 } + blocks / 64 + blocks / 32768 * 4;
+            gpu.fail(format!(
+                "clipmap: the device is out of memory for its textures ({:.0} MiB for a volume {}x{}x{} chunks: a view radius of {view_radius}); lower the client's radius: {e}",
+                bytes as f64 / (1u64 << 20) as f64,
+                slots.x,
+                slots.y,
+                slots.z
+            ));
+        }
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("clipmap params"),
             size: 16,

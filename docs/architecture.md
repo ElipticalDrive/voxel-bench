@@ -279,7 +279,10 @@ adds costs a driver compile once per graph key, then nothing.
   picture to look at). It also runs `scripts/limits.py`: every shipped GPU graph with
   `MR_GPU_LIMITS=sizes`, on a small world (renders, the same pixels as unclamped) and a big
   one at 4K (renders or fails naming a `max_...` limit), so a new node cannot quietly assume a
-  big binding.
+  big binding; and `tests/scale.rs` (a world past a pipeline's size limit is refused naming it).
+- Size limits, `scripts/scale.py` (by hand, minutes to hours): the view radius doubled per
+  scenario plan over every pipeline, the radius at which each stops and why; the table is
+  `docs/limits.md`.
 - GPU tests in CI, `scripts/check.py lavapipe`: the ones that fit Mesa's software Vulkan (the
   device pool, the live sessions of raycast, meshes and the two-GPU split, the headless GUI) on lavapipe whatever GPU the machine has; CI's `lavapipe` job runs it on every push. A
   real small device: 128 MiB a binding and 48 storage buffers a stage, so the voxel pool is
