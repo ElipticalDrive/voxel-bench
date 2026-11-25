@@ -76,6 +76,7 @@ mr-components.workspace = true
 mr-world.workspace = true
 mr-ipc.workspace = true
 mr-worker.workspace = true
+mr-serve.workspace = true
 mr-gpu.workspace = true
 mr-exec-cpu.workspace = true
 mr-exec-gpu.workspace = true

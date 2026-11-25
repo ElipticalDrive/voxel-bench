@@ -2239,6 +2239,7 @@ dependencies = [
  "mr-exec-gpu",
  "mr-gpu",
  "mr-ipc",
+ "mr-serve",
  "mr-worker",
  "mr-world",
  "pollster",

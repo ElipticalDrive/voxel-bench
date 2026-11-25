@@ -27,7 +27,7 @@ fn wait(shared: &Arc<Mutex<Shared>>, what: &str, secs: u64, f: impl Fn(&Shared) 
 /// The built host executable, for process workers (they start from the real executable, not
 /// this test harness): the nearest ancestor of the harness that holds one, `target/<profile>/`,
 /// whatever cargo's layout for test binaries is (cargo 1.100 moved them under `build/`).
-fn built_host() -> std::path::PathBuf {
+pub(crate) fn built_host() -> std::path::PathBuf {
     let me = std::env::current_exe().unwrap();
     let name = format!("multirenderer{}", std::env::consts::EXE_SUFFIX);
     me.ancestors().map(|d| d.join(&name)).find(|p| p.is_file()).unwrap_or_else(|| panic!("build the binary first (none above {})", me.display()))

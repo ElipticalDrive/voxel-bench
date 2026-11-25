@@ -6,6 +6,7 @@ mod bench;
 mod dock;
 mod editor;
 pub(crate) mod graph;
+mod gpu;
 mod input;
 mod knobs;
 mod legend;
@@ -43,8 +44,42 @@ pub fn run(initial: Option<PathBuf>) -> anyhow::Result<()> {
             b.with_x11();
         }));
     }
-    eframe::run_native("MultiRenderer", options, Box::new(move |cc| Ok(Box::new(App::new(&cc.egui_ctx, initial)))))
-        .map_err(|e| anyhow::anyhow!("{e}"))
+    // egui-wgpu panics when it draws on a lost device: that panic is the loss, handed over
+    // like one the GUI saw first (see `gpu`); any other panic stays one.
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        eframe::run_native(
+            "MultiRenderer",
+            options,
+            Box::new(move |cc| {
+                let mut app = App::new(&cc.egui_ctx, initial);
+                app.gpu = Some(gpu::GuiGpu::new(cc.wgpu_render_state.as_ref(), &cc.egui_ctx));
+                if let Some((why, original)) = gpu::restarted() {
+                    app.message = format!("restarted: the previous GUI's GPU device was {why}; its live session stopped");
+                    if let Some(o) = original {
+                        let name = o.as_ref().map_or("the untitled plan".to_string(), |o| o.display().to_string());
+                        app.message += &format!("; unsaved changes of {name} recovered (not yet saved)");
+                        if let Some(o) = &o {
+                            app.path_text = o.display().to_string();
+                        }
+                        app.plan_path = o;
+                        app.dirty = true;
+                    }
+                    eprintln!("GUI {}", app.message);
+                }
+                Ok(Box::new(app))
+            }),
+        )
+    }));
+    match run {
+        Ok(r) => r.map_err(|e| anyhow::anyhow!("{e}")),
+        Err(panic) => match gpu::lost() {
+            Some(why) => {
+                eprintln!("the GUI's GPU device was {why} and drawing on it failed: handing over to a fresh GUI");
+                gpu::hand_over(&why)
+            }
+            None => std::panic::resume_unwind(panic),
+        },
+    }
 }
 
 /// The graphical session on Linux, checked before the window opens so a missing one says why.
@@ -163,6 +198,8 @@ struct App {
     /// The pipeline editor, if open (shown by the Pipeline pane).
     graph_win: Option<graph::Window>,
     trials: graph::Trials,
+    /// The GUI's own GPU device, watched for errors and loss (none in headless tests).
+    gpu: Option<gpu::GuiGpu>,
 }
 
 /// A vertical scroll area that stays where the user left it when its content shrinks for a
@@ -260,6 +297,7 @@ impl App {
             message: String::new(),
             graph_win: None,
             trials: Default::default(),
+            gpu: None,
         };
         app.option_text = option_texts(&app.plan);
         if let Some(p) = initial {
@@ -302,6 +340,18 @@ impl App {
             }
             Err(e) => self.message = format!("save failed: {e:#}"),
         }
+    }
+
+    /// The GUI's GPU device is lost: stop the session, hand over to a fresh GUI (see [`gpu`])
+    /// and exit before drawing again (egui-wgpu panics on a lost device).
+    fn device_lost(&mut self, why: &str) -> ! {
+        eprintln!("the GUI's GPU device was {why}: stopping the live session and handing over to a fresh GUI");
+        self.live = None;
+        if let Err(e) = gpu::hand_over(why) {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
     }
 
     fn start_live(&mut self, ctx: &egui::Context) {
@@ -395,6 +445,13 @@ impl eframe::App for App {
 impl App {
     fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        let unsaved = self.dirty.then_some(&self.plan);
+        match self.gpu.as_mut().and_then(|g| g.poll(&ctx, &self.plan_path, unsaved, &mut self.message)) {
+            Some(gpu::Event::Lost(why)) => self.device_lost(&why),
+            Some(gpu::Event::StartLive) => self.start_live(&ctx),
+            Some(gpu::Event::MarkDirty) => self.dirty = true,
+            None => {}
+        }
         self.keys(&ctx);
         // A click anywhere takes the keyboard from the canvas; the viewport gives it back when
         // the click was on it.

@@ -53,6 +53,22 @@ multirenderer (host: the server)            worker process (one per renderer: a 
   (`gui_survives_faults`) runs one live session per isolation with a lane per moment x way,
   `knob` included (a knob's error is a refusal, an event of the lane), and a hung hot swap;
   what goes wrong while stopping is written to the session log.
+- **The GUI's own GPU device** (eframe's, drawing the window and its torn-off panes; renderers
+  and presenter windows have devices of their own, in their own processes by default). A lost
+  surface is recreated by egui-wgpu and the frame skipped. An error on the device that is not
+  its loss is shown in the toolbar's message and drawing goes on (wgpu's default made it a
+  panic, ending the program). A lost device (driver reset, GPU removed or hung) cannot be
+  survived in place: eframe builds its painter once with no way to swap the device under it,
+  and egui-wgpu panics when it draws on a lost device. So the GUI hands over: its live session
+  stops (workers end as at any stop), a plan with unsaved changes is written to
+  `recovered-plan.toml` in the configuration directory, a fresh GUI starts on the plan (on a
+  new device) and says in its message what happened and what was recovered, and the old one
+  exits. The GUI notices the loss on its next frame, or egui-wgpu's panic does first (caught
+  around eframe's loop; any other panic stays one); the hand-over is the same. Its live
+  session and its lanes' state (knobs changed live, tuners) do not carry over; a thread-isolated lane
+  that took the driver down with it is the thread's cost above. The GUI's test
+  (`gui_device_lost_hands_over`) destroys the device both ways, in a headless compositor of
+  its own (`kwin_wayland --virtual`, through its Xwayland).
 - **Server and clients.** The host is the server. It owns the authoritative world and sends
   every worker one stream of `WorldUpdate`s: chunk loads and unloads, block edits, lights and
   the environment. In the worker, the graph's `link` node delays, reorders or drops that

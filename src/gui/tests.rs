@@ -395,3 +395,106 @@ fn gui_headless_smoke() {
     frame(&ctx, &mut app, &[], &mut t);
     app.live = None;
 }
+
+/// The GUI's own GPU device lost (destroyed by fault injection) while a live session runs, both
+/// ways it can be found: by the GUI's next frame (`device-lost`) and by egui-wgpu panicking
+/// while it draws (`device-lost-unseen`, here with unsaved changes). Either way the GUI stops
+/// the session, hands over to a fresh GUI on the plan (the unsaved one recovered) and exits
+/// normally. Runs the real GUI in a headless compositor of its own (`kwin_wayland --virtual`,
+/// through its Xwayland: on its Wayland socket the GUI draws its first frame and then gets no
+/// frame callbacks), so nothing shows on the desktop; needs a GPU (`--ignored`).
+#[test]
+#[ignore]
+fn gui_device_lost_hands_over() {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+    let host = super::live::tests::built_host();
+    let slow = std::env::var("MR_TEST_SLOW").ok().and_then(|v| v.parse::<f64>().ok()).filter(|f| *f >= 1.0).unwrap_or(1.0);
+    let dir = std::env::temp_dir().join(format!("mr-gui-device-lost-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).expect("XDG_RUNTIME_DIR");
+    let socket = format!("mr-test-{}", std::process::id());
+    let display_file = dir.join("display");
+    let mut kwin = std::process::Command::new("kwin_wayland")
+        .args(["--virtual", "--xwayland", "--socket", &socket, "--width", "1280", "--height", "800"])
+        .arg(format!("sh -c 'echo $DISPLAY > {}'", display_file.display()))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("this test needs kwin_wayland (its --virtual backend is the headless compositor)");
+    let deadline = Instant::now() + Duration::from_secs_f64(20.0 * slow);
+    let display = loop {
+        if let Some(d) = std::fs::read_to_string(&display_file).ok().map(|d| d.trim().to_string()).filter(|d| !d.is_empty()) {
+            break d;
+        }
+        if Instant::now() > deadline {
+            let _ = kwin.kill();
+            panic!("kwin_wayland --virtual --xwayland started no X display");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let plan = dir.join("plan.toml");
+    let text = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"line\", from = [0, 20, 0], to = [40, 20, 0] }\n\
+        [run]\nresolution = [64, 36]\nview_radius = 1\n[[renderer]]\ngraph = \"raycast-cpu\"\n";
+    std::fs::write(&plan, text).unwrap();
+    let (lost, quit) = (3.0 * slow, 2.0 * slow);
+    let runs = [
+        (format!("live:0,device-lost:{lost},quit:{quit}"), "the GUI's GPU device was destroyed: stopping the live session"),
+        (format!("live:0,dirty:0,device-lost-unseen:{lost},quit:{quit}"), "the GUI's GPU device was destroyed and drawing on it failed"),
+    ];
+    let mut failures = vec![];
+    for (faults, how) in &runs {
+        let mut gui = std::process::Command::new(&host)
+            .arg("gui")
+            .arg(&plan)
+            .env("DISPLAY", &display)
+            .env_remove("WAYLAND_DISPLAY")
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .env("MR_FAULT_INJECTION", "1")
+            .env("MR_GUI_FAULT", faults)
+            .env("RUST_LOG", "warn")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // The pipe ends when both GUIs have closed it (the fresh one inherits it).
+        let mut err = gui.stderr.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = err.read_to_string(&mut s);
+            let _ = tx.send(s);
+        });
+        let Ok(log) = rx.recv_timeout(Duration::from_secs_f64(60.0 * slow)) else {
+            failures.push(format!("{faults}: the GUIs did not close within the deadline"));
+            break;
+        };
+        let status = gui.wait().unwrap();
+        let unsaved = faults.contains("dirty");
+        let mut want = vec![
+            "fault injection: starting the live session",
+            "fault injection: destroying the GUI's GPU device",
+            how,
+            "GUI restarted: the previous GUI's GPU device was destroyed",
+            "fault injection: closing the GUI",
+        ];
+        if unsaved {
+            want.extend(["unsaved plan written to", "unsaved changes of"]);
+        }
+        let missing: Vec<_> = want.iter().filter(|w| !log.contains(**w)).collect();
+        // The unseen loss is egui-wgpu's panic, by design; anything else panicking is not.
+        let panicked = log.contains("panicked") && !(faults.contains("unseen") && log.matches("panicked").count() == 1 && log.contains("egui-wgpu"));
+        if !status.success() || !missing.is_empty() || panicked {
+            failures.push(format!("{faults}: status {status}, missing {missing:?}, panicked {panicked}\n{log}"));
+        }
+    }
+    // A terminated compositor removes its X display's socket and lock (killed, it leaves them).
+    let _ = std::process::Command::new("kill").arg(kwin.id().to_string()).status();
+    let _ = kwin.wait();
+    for f in [socket.clone(), format!("{socket}.lock")] {
+        let _ = std::fs::remove_file(runtime.join(f));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
