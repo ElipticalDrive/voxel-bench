@@ -64,6 +64,15 @@ recorded as failed with that reason. The references run again (their frames are 
 comparisons). `scripts/sweep.py` always resumes, and skips the plans whose run in `OUT` has
 finished, so re-running a sweep that died continues it.
 
+While it runs, the journal is where the per-frame records live: the run keeps only each pass's
+summaries in memory (and its first frame record), and at its end streams the journal, one report
+at a time, into `observations.jsonl` and `report.json`, so its memory does not grow with the
+passes it runs (it prints its peak, `host peak memory`). A disk that fills up stops the run with
+the cause and the file named: during a pass, at that pass's journal write (the passes before it
+stand); at the end, while writing the records (each is written beside as `.part` and renamed into
+place, a part removed on failure, so a run either has its whole `report.json` or is unfinished).
+Either way it resumes once there is room (`tests/records.rs`, on a small tmpfs).
+
 The ways of writing a renderer (`graph` as a file or inline with `edits`, the command line's `-r`) are in
 [pipelines.md](pipelines.md).
 
@@ -379,6 +388,7 @@ finished):
 | `logs/` | 8.4 MB (2126 files) | passes |
 | reading: `records.py` (guard) / `catalogue` | 1.1 s / 0.4 s for 2846 records (about 0.4 ms / 0.15 ms per record) | records |
 | `report.py` on one report.json | 4 s and 1.2 GB of memory for the 345 MB one | its size |
+| a run's host memory | flat: 118-119 MB for 5 to 160 passes of 600 frames (CPU, 64x36); held in memory before 2026-11-25, 0.46 MB a pass (twice its size in the report), so the 6.5 GB of a full plan | nothing |
 
 Every figure is linear in the passes a sweep runs (a turn sweep's are pairwise, not the product
 of choices; the full sweep's are the product, by intent). What a turn reads (observations, by
