@@ -88,3 +88,12 @@ A small scripting language that writes the same graph as the canvas editor, for 
 prefer conciseness: same graph, same diagnostics, convertible both ways. Plans' edit lists
 (`graph` + `edits`) and the CLI's short edit spellings are partial versions today; this one
 would express any graph.
+
+## Verifying a pipeline by simulation
+
+Check a graph's correctness without running it: simulate the data types (and shapes, ranges and
+sizes) a specific frame would carry through the edges, node by node, and report the node whose
+output cannot match what the next one takes (a hit record without a normal, a buffer over a
+device limit, a port fed from a frame late). Would catch what the graph sweep finds by
+rendering, earlier and without a GPU; a build or run that fails anyway stays a defined outcome
+(the lane shows the error and the program lives on). (user, 2026-11-24)
