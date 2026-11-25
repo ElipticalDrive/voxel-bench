@@ -16,6 +16,8 @@ use mr_core::{CompletedFrame, FrameSink, Renderer, RendererEntry, Waker};
 use mr_ipc::{FrameSlots, HostMsg, MsgWriter, PROTOCOL_VERSION, WorkerMsg};
 use mr_world::stream::Generating;
 
+pub mod fault;
+
 /// The `worker --socket <endpoint>` arguments a worker process is started with.
 pub fn socket_arg(mut args: impl Iterator<Item = String>) -> anyhow::Result<String> {
     while let Some(a) = args.next() {
@@ -96,11 +98,20 @@ pub fn run(socket: &str, entries: Vec<RendererEntry>, devices: fn(&mr_core::Devi
         }
     })?;
 
-    let result = serve(&rx, &mut out, waker, entries, devices);
+    // A panic is the renderer's failure, said to the host like an error: unwinding alone
+    // would leave the socket open (the reader thread holds it), and with thread isolation the
+    // host would wait for a message that never comes.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&rx, &mut out, waker, entries, devices)))
+        .unwrap_or_else(|p| Err(anyhow::anyhow!("panicked: {}", panic_message(&*p))));
     if let Err(e) = &result {
         let _ = out.send(&WorkerMsg::Error(format!("{e:#}")));
     }
     result
+}
+
+/// The text of a panic's payload.
+fn panic_message(p: &(dyn std::any::Any + Send)) -> &str {
+    p.downcast_ref::<&str>().copied().or_else(|| p.downcast_ref::<String>().map(String::as_str)).unwrap_or("(no message)")
 }
 
 /// The messages the link delivered by `time`.
@@ -139,7 +150,15 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let reach = |c: &Client| mr_core::client::reach(c.radius(), c.max_lod(), levels);
     // The link in front of it: none when free, the stream then as it came.
     let mut link = (!params.link.free()).then(|| Link::new(params.link));
+    // A fault asked for (tests only: `fault::ENV`), at build or later.
+    let fault = fault::Fault::of_options(&params.options_json)?;
+    if let Some(f) = fault {
+        f.trip(fault::At::Build)?;
+    }
     let mut renderer: Box<dyn Renderer> = (entry.create)(params, &devices, waker)?;
+    if let Some(f) = fault {
+        renderer = Box::new(fault::Faulty::new(renderer, f));
+    }
     let mut shm = FrameSlots::open(&shm)?;
     out.send(&WorkerMsg::Ready { info, init_ms: t.elapsed().as_secs_f32() * 1e3 })?;
 
@@ -271,7 +290,12 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 }
             }
             HostMsg::QueryMemory => sink.out.send(&WorkerMsg::Memory(renderer.memory()))?,
-            HostMsg::Shutdown => break,
+            HostMsg::Shutdown => {
+                if let Some(f) = fault {
+                    f.trip(fault::At::Shutdown)?;
+                }
+                break;
+            }
             HostMsg::Init { .. } => bail!("duplicate Init"),
         }
         if let Some(e) = sink.error.take() {

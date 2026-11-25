@@ -447,7 +447,12 @@ fn pump(lane: &mut Lane, out: &mut Outputs, start: Instant, block: bool) -> anyh
 /// A lane's own failure (its worker's error, its exit, its silence) ends that lane, not the pass:
 /// its report carries the error and the other lanes go on.
 fn settle(lane: &mut Lane, r: anyhow::Result<()>) {
-    if let Err(e) = r {
+    if let Err(mut e) = r {
+        // A process that died says how (a signal names a crash the worker could not report).
+        let closed = format!("{e:#}").contains("worker exited");
+        if let Some(status) = lane.worker.exit_status(closed) {
+            e = e.context(format!("worker process ended: {status}"));
+        }
         tracing::error!("[{}] failed; its pass goes on without it: {e:#}", lane.report.label);
         lane.report.error = Some(format!("{e:#}"));
         lane.in_flight.clear();

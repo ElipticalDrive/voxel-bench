@@ -205,7 +205,15 @@ impl Worker {
         let slot_bytes = (cfg.params.width * cfg.params.height * format.bytes()) as u64;
         let mut shm = FrameSlots::create(&tag, cfg.slots, slot_bytes)?;
         tx.send(HostMsg::Init { renderer: cfg.renderer.to_string(), params: cfg.params, shm: shm.spec().clone() })?;
-        let (info, init_ms) = match recv_timeout(&rx, Duration::from_secs(300))? {
+        let ready = recv_timeout(&rx, Duration::from_secs(300)).map_err(|e| {
+            // A process gone while building says how (a signal names a crash it could not report).
+            let closed = e.to_string().starts_with("worker exited");
+            match child.as_mut().and_then(|c| if closed { c.wait().ok() } else { c.try_wait().ok().flatten() }) {
+                Some(status) => e.context(format!("worker process ended: {status}")),
+                None => e,
+            }
+        });
+        let (info, init_ms) = match ready? {
             WorkerMsg::Ready { info, init_ms } => (info, init_ms),
             m => bail!("[{}] expected Ready, got {m:?}", cfg.label),
         };
@@ -293,6 +301,16 @@ impl Worker {
         let s = std::fs::read_to_string(format!("/proc/{}/status", self.pid)).ok()?;
         let line = s.lines().find(|l| l.starts_with(key))?;
         Some(line.split_whitespace().nth(1)?.parse::<u64>().ok()? * 1024)
+    }
+
+    /// How the worker process ended (`exit status: 1`, `signal: 11 (SIGSEGV) (core dumped)`):
+    /// None for a thread or a process still running. With `closed` (its connection is gone,
+    /// so all its descriptors are: it is exiting) this waits for the exit, no deadline needed;
+    /// otherwise it only looks.
+    pub fn exit_status(&mut self, closed: bool) -> Option<String> {
+        let c = self.child.as_mut()?;
+        let status = if closed { c.wait().ok() } else { c.try_wait().ok().flatten() };
+        status.map(|s| s.to_string())
     }
 
     pub fn shutdown(mut self) {
