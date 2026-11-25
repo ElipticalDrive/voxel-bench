@@ -1,6 +1,6 @@
 //! How a plan runs: frames, resolution, modes, pacing, streaming, isolation, compilation.
 
-use mr_core::PassMode;
+use mr_core::{Choice, Choices, PassMode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -98,10 +98,46 @@ pub enum Compile {
 
 impl Compile {
     pub fn name(self) -> &'static str {
+        self.entry().name
+    }
+}
+
+impl Choices for Compile {
+    const CHOICES: &'static [Choice<Self>] = &[
+        Choice { name: "off", make: || Compile::Off, about: "The generic (precompiled) build: every knob live" },
+        Choice {
+            name: "native",
+            make: || Compile::Native,
+            about: "CPU executor pipelines run as pipelines compiled for this CPU with their choices baked in (seconds to build once, cached; checked against the generic build before use; process isolation). The generic build runs meanwhile, then hot-swaps.",
+        },
+        Choice {
+            name: "break-in",
+            make: || Compile::BreakIn,
+            about: "As native, built for speed whatever it takes: native, whole-program LTO, profile-guided (trained on a short flight) and both, each timed on this machine, the fastest kept (minutes, once per pipeline and machine). The generic build runs meanwhile, then hot-swaps.",
+        },
+    ];
+    fn choice(&self) -> usize {
         match self {
-            Compile::Off => "off",
-            Compile::Native => "native",
-            Compile::BreakIn => "break-in",
+            Compile::Off => 0,
+            Compile::Native => 1,
+            Compile::BreakIn => 2,
+        }
+    }
+}
+
+impl Choices for Isolation {
+    const CHOICES: &'static [Choice<Self>] = &[
+        Choice { name: "process", make: || Isolation::Process, about: "Each renderer in its own process: crashes can't take others down; memory is measured per renderer" },
+        Choice {
+            name: "thread",
+            make: || Isolation::Thread,
+            about: "In-process threads: faster to start, no copy of the world, easier to debug; but an abort or segfault in a renderer ends the whole program, and a hung one is abandoned, not stopped",
+        },
+    ];
+    fn choice(&self) -> usize {
+        match self {
+            Isolation::Process => 0,
+            Isolation::Thread => 1,
         }
     }
 }

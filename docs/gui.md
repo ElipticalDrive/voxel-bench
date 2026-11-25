@@ -149,8 +149,12 @@ registry (`ComponentInfo::description`) or, for the roles outside it (world, gen
 client, post), from `graph::host_description`. Knobs are the components' declarations; views are
 the quantities the graph's nodes write. The world's generators, their descriptions and their
 knobs come from `mr_world::generators::GENERATORS`. The reference renderer list is the
-registry's renderers. Fixed in the GUI: camera paths, the tuner's goals, metrics and
-algorithms, read-back, isolation and compile modes, input timings (`now`, `prev`, `iterate`).
+registry's renderers. The small enums a plan picks from (camera paths, lights, events,
+read-back, isolation, compile) each list their variants once, beside the type
+(`mr_core::Choices`: the name plans write, a fresh value, what it is); the pickers and their
+tooltips read that list, a new variant does not build until it has its index, and each crate's
+test fails until it is listed. Still spelled in the GUI: the tuner's goals, metrics and
+algorithms (the tuner panel), input timings (`now`, `prev`, `iterate`, the graph model's).
 
 ## Knobs and hot swaps
 

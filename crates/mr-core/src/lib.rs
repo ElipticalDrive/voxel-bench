@@ -6,6 +6,7 @@
 //! Renderers depend on this crate only.
 
 pub mod camera;
+pub mod choice;
 pub mod chunk;
 pub mod client;
 pub mod face;
@@ -21,6 +22,7 @@ pub mod shader_clock;
 pub mod texture;
 
 pub use camera::Camera;
+pub use choice::{Choice, Choices};
 pub use chunk::{BlockId, CHUNK_SIZE, CHUNK_VOLUME, ChunkData, ChunkKey, DenseChunk};
 pub use face::Face;
 pub use features::{Feature, Features};

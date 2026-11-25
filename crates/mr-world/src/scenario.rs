@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, bail};
 use glam::{DVec3, IVec3, Vec3};
 use mr_core::renderer::BlockEdit;
-use mr_core::{BlockId, BlockRegistry, Camera, Environment, Light, Sun};
+use mr_core::{BlockId, BlockRegistry, Camera, Choice, Choices, Environment, Light, Sun};
 use serde::{Deserialize, Serialize};
 
 use crate::World;
@@ -181,6 +181,82 @@ pub enum EventSpec {
 
 fn one() -> u32 {
     1
+}
+
+impl Choices for LightSpec {
+    const CHOICES: &'static [Choice<Self>] = &[
+        Choice { name: "point", make: || LightSpec::Point { position: [0.0, 60.0, 0.0], color: [1.0; 3], intensity: 20.0, radius: 16.0 }, about: "One point light" },
+        Choice {
+            name: "scatter",
+            make: || LightSpec::Scatter { count: 100, seed: 0, center: None, extent: [100.0, 40.0, 100.0], color: None, intensity: 20.0, radius: 16.0, on_surface: true },
+            about: "Many point lights scattered randomly in a box: stresses light culling",
+        },
+    ];
+    fn choice(&self) -> usize {
+        match self {
+            LightSpec::Point { .. } => 0,
+            LightSpec::Scatter { .. } => 1,
+        }
+    }
+}
+
+impl Choices for CameraPathSpec {
+    const CHOICES: &'static [Choice<Self>] = &[
+        Choice { name: "static", make: || CameraPathSpec::Static { position: None, target: None, yaw_deg: 0.0, pitch_deg: 0.0 }, about: "A fixed viewpoint" },
+        Choice { name: "orbit", make: || CameraPathSpec::Orbit { center: [0.0, 40.0, 0.0], radius: 80.0, height: 30.0, period: 600 }, about: "Circle around a point, looking at it" },
+        Choice { name: "line", make: || CameraPathSpec::Line { from: None, to: [500.0, 120.0, 0.0], look_at: None }, about: "Straight line over the run's frames: tests streaming" },
+        Choice { name: "flythrough", make: || CameraPathSpec::Flythrough { points: vec![[0.0, 100.0, 0.0], [200.0, 120.0, 100.0]] }, about: "Smooth path through a list of points" },
+        Choice { name: "spin", make: || CameraPathSpec::Spin { position: None, period: 300, pitch_deg: 0.0 }, about: "Turn on the spot: every direction, no streaming" },
+    ];
+    fn choice(&self) -> usize {
+        match self {
+            CameraPathSpec::Static { .. } => 0,
+            CameraPathSpec::Orbit { .. } => 1,
+            CameraPathSpec::Line { .. } => 2,
+            CameraPathSpec::Flythrough { .. } => 3,
+            CameraPathSpec::Spin { .. } => 4,
+        }
+    }
+}
+
+impl Choices for EventSpec {
+    const CHOICES: &'static [Choice<Self>] = &[
+        Choice { name: "sphere", make: || EventSpec::Sphere { frame: 60, center: [0.0, 40.0, 0.0], radius: 10.0, block: "air".into() }, about: "Fill a sphere with a block at one frame (air = crater)" },
+        Choice { name: "box", make: || EventSpec::Box { frame: 60, min: [0, 30, 0], max: [4, 80, 4], block: "bricks".into() }, about: "Fill a box with a block at one frame" },
+        Choice {
+            name: "random_edits",
+            make: || EventSpec::RandomEdits { every: 1, count: 500, seed: 0, center: None, radius: 30.0, block: "toggle".into() },
+            about: "Continuous random block changes: tests incremental updates",
+        },
+        Choice { name: "animate_lights", make: || EventSpec::AnimateLights { amplitude: 2.0, period: 90 }, about: "Move every point light back and forth" },
+        Choice { name: "sun_cycle", make: || EventSpec::SunCycle { period: 1200 }, about: "Rotate the sun through a day" },
+    ];
+    fn choice(&self) -> usize {
+        match self {
+            EventSpec::Sphere { .. } => 0,
+            EventSpec::Box { .. } => 1,
+            EventSpec::RandomEdits { .. } => 2,
+            EventSpec::AnimateLights { .. } => 3,
+            EventSpec::SunCycle { .. } => 4,
+        }
+    }
+}
+
+#[cfg(test)]
+mod choice_tests {
+    use super::*;
+
+    fn tag<T: Serialize>(v: &T) -> String {
+        toml::Table::try_from(v).unwrap()["type"].as_str().unwrap().to_string()
+    }
+
+    /// The scenario's pickers list every variant once, by the name plans write.
+    #[test]
+    fn scenario_choices_are_complete() {
+        mr_core::choice::check::<LightSpec>(tag);
+        mr_core::choice::check::<CameraPathSpec>(tag);
+        mr_core::choice::check::<EventSpec>(tag);
+    }
 }
 
 /// Changes produced by the scene for one frame.

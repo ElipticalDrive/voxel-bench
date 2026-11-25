@@ -1,12 +1,12 @@
 //! Structured editor for run plans.
 
 use egui::{ComboBox, DragValue, Ui};
-use mr_core::{Camera, PassMode, RendererInfo};
+use mr_core::{Camera, Choices, PassMode, RendererInfo};
 use mr_world::GenSpec;
 use mr_world::generators::GENERATORS;
 use mr_world::scenario::{CameraPathSpec, EnvSpec, EventSpec, LightSpec};
 
-use crate::plan::{CompareSpec, Compile, Isolation, Pacing, Plan, Readback, RendererSpec, SaveSpec, Streaming};
+use crate::plan::{CompareSpec, Compile, Isolation, Pacing, Plan, RendererSpec, SaveSpec, Streaming};
 
 /// Context the editor needs besides the plan itself.
 pub struct EditorCtx<'a> {
@@ -105,22 +105,37 @@ fn block_combo(ui: &mut Ui, id: &str, b: &mut String, names: &[String], toggle: 
     c
 }
 
-/// `variants` are (name, constructor, tooltip).
-fn variant_combo<T>(ui: &mut Ui, id: &str, current: &str, value: &mut T, variants: &[(&str, fn() -> T, &str)]) -> Changed {
+/// A picker over a type's `CHOICES` (`mr_core::Choices`): picking another variant gives its
+/// fresh value.
+fn choice_combo<T: Choices>(ui: &mut Ui, id: &str, value: &mut T) -> Changed {
     let mut c = false;
-    let tip = variants.iter().find(|v| v.0 == current).map(|v| v.2).unwrap_or("");
+    let now = value.entry();
     ComboBox::from_id_salt(id)
-        .selected_text(current)
+        .selected_text(now.name)
         .show_ui(ui, |ui| {
-            for (name, make, tip) in variants {
-                if ui.selectable_label(*name == current, *name).on_hover_text(*tip).clicked() && *name != current {
-                    *value = make();
+            for e in T::CHOICES {
+                if ui.selectable_label(e.name == now.name, e.name).on_hover_text(e.about).clicked() && e.name != now.name {
+                    *value = (e.make)();
                     c = true;
                 }
             }
         })
         .response
-        .on_hover_text(tip);
+        .on_hover_text(now.about);
+    c
+}
+
+/// A row of buttons over a type's `CHOICES`; `enabled` says why one cannot be picked now.
+fn choice_row<T: Choices + PartialEq>(ui: &mut Ui, value: &mut T, enabled: impl Fn(&T) -> Result<(), &'static str>) -> Changed {
+    let mut c = false;
+    for e in T::CHOICES {
+        let v = (e.make)();
+        let why = enabled(&v).err();
+        c |= ui
+            .add_enabled_ui(why.is_none(), |ui| ui.selectable_value(value, v, e.name).on_hover_text(e.about).on_disabled_hover_text(why.unwrap_or("")))
+            .inner
+            .changed();
+    }
     c
 }
 
@@ -203,29 +218,10 @@ fn gen_fields(ui: &mut Ui, g: &mut GenSpec) -> Changed {
 
 fn camera(ui: &mut Ui, plan: &mut Plan, cam: Option<Camera>) -> Changed {
     let p = &mut plan.scene.camera;
-    let name = match p {
-        CameraPathSpec::Static { .. } => "static",
-        CameraPathSpec::Orbit { .. } => "orbit",
-        CameraPathSpec::Line { .. } => "line",
-        CameraPathSpec::Flythrough { .. } => "flythrough",
-        CameraPathSpec::Spin { .. } => "spin",
-    };
     let mut c = ui
         .horizontal(|ui| {
             ui.label("Path").on_hover_text("Scripted camera motion, indexed by scene frame (benchmarks follow it; live sessions can too)");
-            variant_combo(
-                ui,
-                "campath",
-                name,
-                p,
-                &[
-                    ("static", || CameraPathSpec::Static { position: None, target: None, yaw_deg: 0.0, pitch_deg: 0.0 }, "A fixed viewpoint"),
-                    ("orbit", || CameraPathSpec::Orbit { center: [0.0, 40.0, 0.0], radius: 80.0, height: 30.0, period: 600 }, "Circle around a point, looking at it"),
-                    ("line", || CameraPathSpec::Line { from: None, to: [500.0, 120.0, 0.0], look_at: None }, "Straight line over the run's frames: tests streaming"),
-                    ("flythrough", || CameraPathSpec::Flythrough { points: vec![[0.0, 100.0, 0.0], [200.0, 120.0, 100.0]] }, "Smooth path through a list of points"),
-                    ("spin", || CameraPathSpec::Spin { position: None, period: 300, pitch_deg: 0.0 }, "Turn on the spot: every direction, no streaming"),
-                ],
-            )
+            choice_combo(ui, "campath", p)
         })
         .inner;
     match p {
@@ -334,26 +330,7 @@ fn lights(ui: &mut Ui, ls: &mut Vec<LightSpec>, cam: Option<Camera>) -> Changed 
         ui.push_id(("light", i), |ui| {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    let name = if matches!(l, LightSpec::Point { .. }) { "point" } else { "scatter" };
-                    c |= variant_combo(
-                        ui,
-                        "kind",
-                        name,
-                        l,
-                        &[
-                            ("point", || LightSpec::Point { position: [0.0, 60.0, 0.0], color: [1.0; 3], intensity: 20.0, radius: 16.0 }, "One point light"),
-                            ("scatter", || LightSpec::Scatter {
-                                count: 100,
-                                seed: 0,
-                                center: None,
-                                extent: [100.0, 40.0, 100.0],
-                                color: None,
-                                intensity: 20.0,
-                                radius: 16.0,
-                                on_surface: true,
-                            }, "Many point lights scattered randomly in a box: stresses light culling"),
-                        ],
-                    );
+                    c |= choice_combo(ui, "kind", l);
                     if ui.small_button("✖").on_hover_text("Remove this light").clicked() {
                         remove = Some(i);
                     }
@@ -406,26 +383,7 @@ fn events(ui: &mut Ui, es: &mut Vec<EventSpec>, ctx: &EditorCtx) -> Changed {
         ui.push_id(("event", i), |ui| {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    let name = match e {
-                        EventSpec::Sphere { .. } => "sphere",
-                        EventSpec::Box { .. } => "box",
-                        EventSpec::RandomEdits { .. } => "random_edits",
-                        EventSpec::AnimateLights { .. } => "animate_lights",
-                        EventSpec::SunCycle { .. } => "sun_cycle",
-                    };
-                    c |= variant_combo(
-                        ui,
-                        "kind",
-                        name,
-                        e,
-                        &[
-                            ("sphere", || EventSpec::Sphere { frame: 60, center: [0.0, 40.0, 0.0], radius: 10.0, block: "air".into() }, "Fill a sphere with a block at one frame (air = crater)"),
-                            ("box", || EventSpec::Box { frame: 60, min: [0, 30, 0], max: [4, 80, 4], block: "bricks".into() }, "Fill a box with a block at one frame"),
-                            ("random_edits", || EventSpec::RandomEdits { every: 1, count: 500, seed: 0, center: None, radius: 30.0, block: "toggle".into() }, "Continuous random block changes: tests incremental updates"),
-                            ("animate_lights", || EventSpec::AnimateLights { amplitude: 2.0, period: 90 }, "Move every point light back and forth"),
-                            ("sun_cycle", || EventSpec::SunCycle { period: 1200 }, "Rotate the sun through a day"),
-                        ],
-                    );
+                    c |= choice_combo(ui, "kind", e);
                     if ui.small_button("✖").on_hover_text("Remove this event").clicked() {
                         remove = Some(i);
                     }
@@ -619,16 +577,11 @@ fn run(ui: &mut Ui, plan: &mut Plan) -> Changed {
             c
         });
         c |= form_row(ui, "isolation", "Where renderers run", |ui| {
-            ui.selectable_value(&mut r.isolation, Isolation::Process, "process").on_hover_text("Each renderer in its own process: crashes can't take others down; memory is measured per renderer").changed()
-                | ui.selectable_value(&mut r.isolation, Isolation::Thread, "thread").on_hover_text("In-process threads: faster to start, no copy of the world, easier to debug; but an abort or segfault in a renderer ends the whole program, and a hung one is abandoned, not stopped").changed()
+            choice_row(ui, &mut r.isolation, |_| Ok(()))
         });
         c |= form_row(ui, "compile", "CPU executor pipelines (cpu, raster-cpu, columns-cpu): the generic build, or a pipeline compiled for this machine", |ui| {
-            let mut c = ui.selectable_value(&mut r.compile, Compile::Off, "generic").on_hover_text("The precompiled build: every knob live").changed();
-            let tip = "CPU executor pipelines run as pipelines compiled for this CPU with their choices baked in (seconds to build once, cached; checked against the generic build before use; process isolation). The generic build runs meanwhile, then hot-swaps.";
-            c |= ui.add_enabled_ui(r.isolation == Isolation::Process, |ui| ui.selectable_value(&mut r.compile, Compile::Native, "native").on_hover_text(tip).on_disabled_hover_text("Compiled pipelines run in their own process: choose process isolation")).inner.changed();
-            let tip = "As native, built for speed whatever it takes: native, whole-program LTO, profile-guided (trained on a short flight) and both, each timed on this machine, the fastest kept (minutes, once per pipeline and machine). The generic build runs meanwhile, then hot-swaps.";
-            c |= ui.add_enabled_ui(r.isolation == Isolation::Process, |ui| ui.selectable_value(&mut r.compile, Compile::BreakIn, "break-in").on_hover_text(tip).on_disabled_hover_text("Compiled pipelines run in their own process: choose process isolation")).inner.changed();
-            c
+            let process = r.isolation == Isolation::Process;
+            choice_row(ui, &mut r.compile, |v| if *v == Compile::Off || process { Ok(()) } else { Err("Compiled pipelines run in their own process: choose process isolation") })
         });
         let tip = "Command prefix for renderer processes, e.g. a profiler or taskset";
         c |= form_row(ui, "launcher", tip, |ui| {
@@ -695,13 +648,7 @@ fn output(ui: &mut Ui, plan: &mut Plan, infos: &[RendererInfo]) -> Changed {
     let mut c = false;
     ui.horizontal(|ui| {
         ui.label("read-back").on_hover_text("Whether frames are copied back to the host each frame");
-        for (v, n, tip) in [
-            (Readback::Auto, "auto", "Only when a frame is needed (saving, comparison, window)"),
-            (Readback::Always, "always", "Every frame: measures the cost of getting pixels out, like a real app would pay"),
-            (Readback::Never, "never", "Never: pure render speed"),
-        ] {
-            c |= ui.selectable_value(&mut o.readback, v, n).on_hover_text(tip).changed();
-        }
+        c |= choice_row(ui, &mut o.readback, |_| Ok(()));
     });
     c |= ui.checkbox(&mut o.window, "show window during benchmark").on_hover_text("Display frames while the benchmark runs (costs read-back)").changed();
     let mut save = o.save.is_some();
@@ -822,5 +769,38 @@ mod refused_tests {
         let all = draw(&mut plan);
         assert!(all.iter().any(|t| t.starts_with("⚠ does not run: ") && t.contains("`draw`")), "the reason on the renderer: {all:?}");
         assert!(all.iter().any(|t| t == "⚠ draw"), "the node it names marked in its rows: {all:?}");
+    }
+
+    /// The plan editor's small pickers draw from their types' `CHOICES`: every camera path,
+    /// light and event shows its name when picked (drawing changes nothing), and the run's
+    /// isolation and compile and the output's read-back offer every entry.
+    #[test]
+    fn pickers_offer_every_choice() {
+        use mr_core::Choices;
+        let ctx = egui::Context::default();
+        let mut plan = Plan::parse(crate::gui::DEFAULT_PLAN, &[]).unwrap();
+        let draw = |plan: &mut Plan, f: &dyn Fn(&mut Ui, &mut Plan) -> Changed| {
+            let mut changed = false;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| changed = f(ui, plan));
+            out.textures_delta.clear();
+            assert!(!changed, "drawing changed the plan");
+            texts(&out)
+        };
+        for e in CameraPathSpec::CHOICES {
+            plan.scene.camera = (e.make)();
+            assert!(draw(&mut plan, &|ui, p| camera(ui, p, None)).iter().any(|t| t == e.name), "camera path {}", e.name);
+        }
+        for e in LightSpec::CHOICES {
+            plan.scene.lights = vec![(e.make)()];
+            assert!(draw(&mut plan, &|ui, p| lights(ui, &mut p.scene.lights, None)).iter().any(|t| t == e.name), "light {}", e.name);
+        }
+        let all = draw(&mut plan, &|ui, p| run(ui, p));
+        for name in crate::plan::Isolation::CHOICES.iter().map(|e| e.name).chain(Compile::CHOICES.iter().map(|e| e.name)) {
+            assert!(all.iter().any(|t| t == name), "run setting {name}: {all:?}");
+        }
+        let all = draw(&mut plan, &|ui, p| output(ui, p, &[]));
+        for e in crate::plan::Readback::CHOICES {
+            assert!(all.iter().any(|t| t == e.name), "read-back {}: {all:?}", e.name);
+        }
     }
 }
