@@ -819,6 +819,16 @@ pub fn output_format(f: PixelFormat) -> wgpu::TextureFormat {
     }
 }
 
+/// Refuses a resolution with a side over the device's `max_texture_dimension_2d` (the
+/// frame targets are 2D textures; past it wgpu fails with a bare validation error).
+pub fn check_resolution(gpu: &Gpu, width: u32, height: u32) -> anyhow::Result<()> {
+    let max = gpu.device.limits().max_texture_dimension_2d;
+    if width > max || height > max {
+        anyhow::bail!("resolution {width}x{height}: a side is over what {} allows ({max}, `max_texture_dimension_2d`)", gpu.info.name);
+    }
+    Ok(())
+}
+
 /// Creates the output texture renderers draw into (storage + render target + copy).
 pub fn output_texture(gpu: &Gpu, width: u32, height: u32, format: PixelFormat) -> wgpu::Texture {
     gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -1017,7 +1027,7 @@ fn named_limit(gpu: &Gpu, limit: &str) -> String {
 /// renderer was seen holding).
 fn out_of_memory(adapter: &str, held: u64, text: &str) -> String {
     let seen = if held > 0 { format!(", this renderer seen holding up to {:.0} MiB", held as f64 / (1u64 << 20) as f64) } else { String::new() };
-    format!("the device is out of memory ({adapter}{seen}; the world's size sets most of it: lower the view radius, or the storage's pool or slot knobs): wgpu error: {text}")
+    format!("the device is out of memory ({adapter}{seen}; the world's size and the resolution set most of it: lower the view radius or the resolution, or the storage's pool or slot knobs): wgpu error: {text}")
 }
 
 /// The failure of a buffer over a device limit ([`Gpu::storage`]).

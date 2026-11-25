@@ -303,6 +303,7 @@ impl Core {
             needs.required_features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
         }
         let gpu = mr_gpu::gpu(devices, slot, &needs)?;
+        mr_gpu::check_resolution(&gpu, p.width, p.height)?;
         // Every pipeline of this graph goes through one persistent cache.
         gpu.open_cache(&g.graph.key().map_err(anyhow::Error::msg)?);
         let accel = s.accel.as_ref().map(|a| accel::Accel::new(&gpu, a)).transpose()?;

@@ -454,6 +454,7 @@ impl<R: Region> Renderer for Executor<R> {
     }
 
     fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
+        mr_gpu::check_resolution(&self.core.gpu, width, height)?;
         self.core.resize(width, height);
         self.region.resize(&self.core);
         Ok(())

@@ -136,6 +136,29 @@ fn ctrl_s_saves_or_flies_backwards() {
     assert!((app.cam.position - start).dot(back) > 0.0, "it flies backwards: {start} -> {}", app.cam.position);
 }
 
+/// Free flight stops at the world's reach (2^30 blocks per axis; past it the view wraps) and
+/// says so, as a plan's camera path past it is refused.
+#[test]
+fn free_flight_stops_at_the_worlds_reach() {
+    let ctx = egui::Context::default();
+    let mut app = App::new(&ctx, None);
+    let mut t = 0.0;
+    frame(&ctx, &mut app, &[], &mut t);
+    let l = mr_core::chunk::WORLD_LIMIT as f64;
+    app.follow_path = false;
+    app.speed = 2000.0;
+    app.cam.position = glam::DVec3::new(-l + 0.5, l - 1.0, 12.0);
+    let hold = egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+    for _ in 0..5 {
+        t += 1.0 / 60.0;
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1700.0, 1000.0))), time: Some(t), events: vec![hold.clone()], ..Default::default() };
+        ctx.run_ui(input, |ui| app.draw(ui)).textures_delta.clear();
+    }
+    assert_eq!(app.cam.position.y, l, "held at the reach, not past it");
+    assert_eq!(app.cam.position.x, -l + 0.5, "the other axes untouched");
+    assert!(app.message.contains("world's reach"), "and says why: {:?}", app.message);
+}
+
 fn frame(ctx: &egui::Context, app: &mut App, keys: &[Key], t: &mut f64) {
     *t += 1.0 / 60.0;
     let mut events = vec![];

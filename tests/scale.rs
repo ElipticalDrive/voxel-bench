@@ -8,7 +8,12 @@ use std::process::Command;
 /// The error of the one lane of a flat world at `radius` with `renderer`, on a device clamped
 /// to WebGPU's baseline sizes (`MR_GPU_LIMITS=sizes`); None when it rendered.
 fn lane_error(dir: &Path, renderer: &str, radius: u32) -> Option<String> {
-    let d = dir.join(format!("r{radius}"));
+    lane_error_at(dir, renderer, radius, [64, 36])
+}
+
+/// [`lane_error`] at a resolution.
+fn lane_error_at(dir: &Path, renderer: &str, radius: u32, [w, h]: [u32; 2]) -> Option<String> {
+    let d = dir.join(format!("r{radius}-{w}x{h}"));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let plan = format!(
@@ -18,7 +23,7 @@ camera = {{ type = "line", from = [0, 20, 0], to = [40, 20, 0] }}
 [run]
 frames = 1
 warmup = 0
-resolution = [64, 36]
+resolution = [{w}, {h}]
 modes = ["unlit"]
 view_radius = {radius}
 [[renderer]]
@@ -64,4 +69,16 @@ edits = [{ node = "storage", component = "clipmap" }]"#;
     assert_eq!(lane_error(&dir, clipmap, 31), None);
     let e = lane_error(&dir, clipmap, 32).expect("radius 32 rendered");
     assert!(e.contains("max_texture_dimension_3d") && e.contains("radius of 31 at most"), "{e}");
+}
+
+/// Frames are 2D textures: a side past `max_texture_dimension_2d` (8192 at the baseline)
+/// failed with a bare "wgpu error: Validation Error". Now refused naming the limit.
+#[test]
+#[ignore]
+fn a_frame_past_the_texture_limit_is_refused_naming_it() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scale-frame");
+    let raycast = r#"graph = "raycast-gpu""#;
+    assert_eq!(lane_error_at(&dir, raycast, 2, [8192, 8]), None);
+    let e = lane_error_at(&dir, raycast, 2, [8193, 8]).expect("8193 wide rendered");
+    assert!(e.contains("max_texture_dimension_2d") && e.contains("8192"), "{e}");
 }
