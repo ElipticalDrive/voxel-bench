@@ -302,8 +302,8 @@ impl CpuSampler {
         let (view, view_max) = mr_components::post::view_chosen(g, "image", 256);
         core.set_view(&view, quantities(&visibility))?;
         core.view_max = view_max;
-        let rec_buf = GrowableBuffer::new(&core.gpu, "face records", 1 << 22, u64::MAX, wgpu::BufferUsages::STORAGE);
-        let tag_buf = GrowableBuffer::new(&core.gpu, "face tags", 1 << 21, u64::MAX, wgpu::BufferUsages::STORAGE);
+        let rec_buf = GrowableBuffer::new(&core.gpu, "visibility: face records", 1 << 22, u64::MAX, wgpu::BufferUsages::STORAGE);
+        let tag_buf = GrowableBuffer::new(&core.gpu, "visibility: face tags", 1 << 21, u64::MAX, wgpu::BufferUsages::STORAGE);
         let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(p.devices.cpu_threads(opts.threads)).thread_name(|i| format!("discover-{i}")).build()?);
         let s = Self {
             cpu: match world {

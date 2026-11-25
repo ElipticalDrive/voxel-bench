@@ -678,7 +678,10 @@ mod tests {
         let failure = "failed: worker error: clipmap: a view radius of 70 chunks needs a volume 141 chunks (4512 texels) wide, over what X allows";
         let f = model::faults(&g, Some(failure), &[], &params);
         assert_eq!(f.keys().collect::<Vec<_>>(), [&storage], "{f:?}");
-        assert!(model::faults(&g, Some("failed: worker error: the voxel pool is full"), &[], &params).is_empty());
+        // By role: code serving a role whatever its component (the voxel pool, any storage's).
+        let f = model::faults(&g, Some("failed: worker error: storage: the voxel pool is full (8 chunks)"), &[], &params);
+        assert_eq!(f.keys().collect::<Vec<_>>(), [&storage], "{f:?}");
+        assert!(model::faults(&g, Some("failed: worker error: the device is lost"), &[], &params).is_empty());
         assert!(model::faults(&g, Some("worker exited (signal 11)"), &[], &params).is_empty());
         // A refused knob: its owner, as the editor files the knob under that node.
         let (knob, owner) = params
@@ -723,6 +726,29 @@ mod tests {
             out.textures_delta.clear();
             assert_eq!(marked(&out), faulty, "canvas");
         }
+        // A draft: the canvas marks the node its reason names (`accept` words it `` `id`.port: ``).
+        let f = model::faults(&g, Some(&format!("`{storage}`.changes: the region runs this edge now, not prev")), &[], &params);
+        assert_eq!(f.keys().collect::<Vec<_>>(), [&storage], "{f:?}");
+        set_faults(&mut trials, &key, &spec, Default::default());
+        let to_draw = {
+            let shading = g.nodes.iter().find(|(_, n)| n.role == Role::Shading).map(|(k, _)| k.clone()).unwrap();
+            Change::Bind(shading, "hits".into(), Target::New(Role::Draw, "raster".into()))
+        };
+        trials.get(&key, &spec).unwrap().make_draft(&to_draw, &[]);
+        let mut win = Window::new(&ctx, Of::Lane(0), None);
+        let size = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))), ..Default::default() };
+        let mut out = ctx.run_ui(size, |ui| drop(pane(ui, &mut win, "lane", &spec, &knobs, true, &mut trials, &[], &run)));
+        out.textures_delta.clear();
+        let mut all = vec![];
+        fn texts(s: &egui::Shape, out: &mut Vec<String>) {
+            match s {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
+                _ => {}
+            }
+        }
+        out.shapes.iter().for_each(|c| texts(&c.shape, &mut all));
+        assert!(all.iter().any(|t| t.starts_with("⚠ draw")), "the draft's unbound drawer marked: {all:?}");
     }
 
     /// Every choice the editor lists on every preset's graph is answered (runs, or a reason),

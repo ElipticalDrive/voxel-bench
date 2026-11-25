@@ -313,7 +313,7 @@ impl Meshing {
         let gpu = &core.gpu;
         let storage = |label, size: u64, extra| gpu.storage(label, size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra, || "fixed sizes (the BLAS slots, the first draws)".into());
         // Pages hold fewer than 2^32 quads (offsets and instance indices are u32).
-        let quads = PagedBuffer::new(gpu, "quads", 1 << 20, u32::MAX as u64 * QUAD_BYTES, (opts.quad_buffer_mb as u64) << 20, wgpu::BufferUsages::STORAGE);
+        let quads = PagedBuffer::new(gpu, "geometry: quads", 1 << 20, u32::MAX as u64 * QUAD_BYTES, (opts.quad_buffer_mb as u64) << 20, wgpu::BufferUsages::STORAGE);
         let chunk_buf = storage("chunk positions", MAX_SLOTS as u64 * 16, wgpu::BufferUsages::empty());
         let indirect = storage("indirect", 6 * 16 * 4096, wgpu::BufferUsages::INDIRECT);
         // Forward drawers shade meshes through the region's shading component (lit through the
@@ -387,7 +387,7 @@ impl Meshing {
                         s
                     }
                     None => {
-                        gpu.fail(format!("raster-gpu: more than {MAX_SLOTS} meshed chunks; frames would miss the rest; lower the client's radius"));
+                        gpu.fail(format!("geometry: more than {MAX_SLOTS} meshed chunks; frames would miss the rest; lower the client's radius"));
                         continue;
                     }
                 },
@@ -719,7 +719,7 @@ impl Region for Meshing {
         if self.quads.pages() > 1 && self.drawing.drawer.mode() == DrawMode::Visbuffer {
             // Its ids name an instance of one page (at most 2^28, about what one binds), and
             // its shading pass binds one.
-            core.gpu.fail(format!("raster-gpu: the quads take {} buffers; `visbuffer` reads one (draw = raster or gbuffer read any number)", self.quads.pages()));
+            core.gpu.fail(format!("visbuffer: the quads take {} buffers; `visbuffer` reads one (draw = raster or gbuffer read any number)", self.quads.pages()));
         }
         let mesh_ms = start.elapsed().as_secs_f64() * 1e3;
         let c = &req.camera;

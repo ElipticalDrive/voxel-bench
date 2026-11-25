@@ -154,7 +154,10 @@ pub fn knob_owner(g: &Graph, slot: &str, component: &str) -> Option<String> {
 /// What a live lane's failure and refused knobs say about its nodes: node id -> the
 /// messages, for the editor to show on the node at fault. A failure names a node by its
 /// component (`clipmap: ...`, the convention of build, device-limit and memory errors: a
-/// component's error starts with its name) or by its id in backticks; each `: `-separated
+/// component's error starts with its name), by its role when the code at fault serves the
+/// role whatever its component (`storage: the voxel pool is full`), or by its id in
+/// backticks, alone or before a port (`` `shading`.hits prev: ... ``, as `accept` words its
+/// refusals); each `: `-separated
 /// part of the message is tried, so the host's prefixes (`failed: worker error: `) do not
 /// matter. A component used by several nodes marks each. A refused knob marks the node that
 /// owns it. What names no node stays the lane's (its tile and panel show every failure).
@@ -163,7 +166,9 @@ pub fn faults(g: &Graph, failure: Option<&str>, refused: &[(String, String)], pa
     if let Some(e) = failure {
         let parts: Vec<&str> = e.lines().next().unwrap_or("").split(": ").map(str::trim).collect();
         for (id, n) in &g.nodes {
-            let named = |p: &&str| *p == n.component || *p == format!("`{id}`");
+            let tick = format!("`{id}`");
+            let by_id = |p: &str| p.strip_prefix(tick.as_str()).is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', ' ']));
+            let named = |p: &&str| *p == n.component || (n.role.registered() && *p == n.role.name()) || by_id(p);
             if !n.component.is_empty() && parts.iter().any(named) {
                 out.entry(id.clone()).or_default().push(e.to_string());
             }
@@ -262,6 +267,8 @@ mod tests {
         t.make_draft(&to_draw, &[]);
         assert_eq!(t.draft(), Some(why.as_str()));
         let draw = node(t.graph(), Role::Draw);
+        // The reason names the node at fault (`draw`, unbound), which the canvas marks.
+        assert_eq!(faults(t.graph(), Some(&why), &[], &[]).keys().collect::<Vec<_>>(), [&draw], "{why}");
         assert!(t.graph().nodes[&draw].inputs.is_empty());
         assert!(t.graph().nodes.contains_key(&vis));
         // Removing the drawer leaves the hits unbound: still a draft.

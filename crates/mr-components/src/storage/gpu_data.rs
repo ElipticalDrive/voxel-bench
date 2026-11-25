@@ -112,7 +112,7 @@ impl StorageData {
         };
         let aux = GrowableBuffer::new(
             gpu,
-            "storage aux",
+            "storage: aux",
             1 << 16,
             max.max(256),
             wgpu::BufferUsages::STORAGE,

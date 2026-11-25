@@ -294,7 +294,7 @@ impl Accel {
         if let Some(e) = pollster::block_on(oom.pop()) {
             let bytes: u64 = self.chunks.values().flat_map(|c| c._inputs.iter()).map(|b| b.size()).sum();
             self.gpu.fail(format!(
-                "acceleration structure: the device is out of memory for the chunks' BLAS inputs ({} chunks resident, {:.0} MiB of inputs; they grow with the radius and the geometry's faces): {e}; lower the client's radius or use a geometry with fewer faces",
+                "geometry: acceleration structure: the device is out of memory for the chunks' BLAS inputs ({} chunks resident, {:.0} MiB of inputs; they grow with the radius and the geometry's faces): {e}; lower the client's radius or use a geometry with fewer faces",
                 self.chunks.len(),
                 bytes as f64 / (1u64 << 20) as f64
             ));
@@ -326,7 +326,7 @@ impl Accel {
             }
             let Some(b) = b else { continue };
             let Some(slot) = old_slot.or_else(|| self.free_slots.pop()) else {
-                self.gpu.fail(format!("acceleration structure: more than {MAX_SLOTS} chunks; rays would miss the rest; lower the client's radius"));
+                self.gpu.fail(format!("geometry: acceleration structure: more than {MAX_SLOTS} chunks; rays would miss the rest; lower the client's radius"));
                 continue;
             };
             // Created, then written: `create_buffer_init`'s mapping panics when the device

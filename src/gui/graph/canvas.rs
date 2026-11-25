@@ -194,6 +194,8 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
     let mut hovered_port: Option<(String, String)> = None;
     let mut moved: Vec<(String, Vec2)> = vec![];
     let mut refit = false;
+    // The node a draft's reason names (`accept` names nodes in backticks): marked as a fault.
+    let drafted = trial.draft().map(|why| model::faults(g, Some(why), &[], &[])).unwrap_or_default();
     for id in model::order(g) {
         let n = &g.nodes[&id];
         let r = node_rect(&id);
@@ -204,9 +206,14 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
         let head = Rect::from_min_size(r.min, vec2(r.width(), HEAD * s));
         painter.rect_filled(head, egui::CornerRadius { nw: (5.0 * s) as u8, ne: (5.0 * s) as u8, sw: 0, se: 0 }, data_color(output(n.role, &n.component)).gamma_multiply(0.28));
         // A node the live lane's failure or a refused knob is about: red, the message on hover.
-        let fault = trial.faults.get(&id).map(|v| v.join("\n"));
+        let lane = trial.faults.get(&id).map(|v| format!("The lane says this node is at fault:\n{}", v.join("\n")));
+        let draft = drafted.get(&id).map(|v| format!("The draft does not run because of this node:\n{}", v.join("\n")));
+        let fault = match (lane, draft) {
+            (None, None) => None,
+            (a, b) => Some(a.into_iter().chain(b).collect::<Vec<_>>().join("\n\n")),
+        };
         let resp = match &fault {
-            Some(f) => resp.on_hover_text(format!("The lane says this node is at fault:\n{f}")),
+            Some(f) => resp.on_hover_text(f),
             None => resp,
         };
         let stroke = if fault.is_some() { Stroke::new(if sel { 3.0 } else { 2.0 }, super::FAULT) } else if sel { Stroke::new(2.0, visuals.selection.stroke.color) } else if resp.hovered() { Stroke::new(1.5, visuals.widgets.hovered.fg_stroke.color) } else { Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color) };

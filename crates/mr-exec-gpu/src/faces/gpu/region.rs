@@ -26,7 +26,7 @@ impl GpuSampler {
                         self.slots.insert(pos, s);
                         self.slots_dirty = true;
                     }
-                    None => core.gpu.fail(format!("discover-gpu: more than {MAX_SLOTS} non-air chunks; frames would miss the faces of the rest; lower the client's radius")),
+                    None => core.gpu.fail(format!("visibility: more than {MAX_SLOTS} non-air chunks; frames would miss the faces of the rest; lower the client's radius")),
                 },
                 (false, Some(s)) => {
                     self.slots.remove(&pos);

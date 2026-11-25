@@ -395,9 +395,9 @@ impl VoxelWorld {
             }),
             table_buf: storage(gpu, "chunk table", (table.entries.len() * 16) as u64, TABLE_SET_BY),
             table,
-            pool: vec![GrowableBuffer::new(gpu, "voxel pool", pool_slots as u64 * CHUNK_BYTES, max_slots.min(pages.page_slots) as u64 * CHUNK_BYTES, wgpu::BufferUsages::STORAGE)],
+            pool: vec![GrowableBuffer::new(gpu, "storage: voxel pool", pool_slots as u64 * CHUNK_BYTES, max_slots.min(pages.page_slots) as u64 * CHUNK_BYTES, wgpu::BufferUsages::STORAGE)],
             pages,
-            bricks: GrowableBuffer::new(gpu, "bricks", pool_slots as u64 * BRICK_WORDS as u64 * 4, max_slots as u64 * BRICK_WORDS as u64 * 4, wgpu::BufferUsages::STORAGE),
+            bricks: GrowableBuffer::new(gpu, "storage: bricks", pool_slots as u64 * BRICK_WORDS as u64 * 4, max_slots as u64 * BRICK_WORDS as u64 * 4, wgpu::BufferUsages::STORAGE),
             free_slots: (0..pool_slots).rev().collect(),
             pool_slots,
             max_slots,
@@ -441,7 +441,7 @@ impl VoxelWorld {
             if p as usize == self.pool.len() {
                 // A later page: up to the slots it can hold of `max_slots`.
                 let max = (self.max_slots - p * ps).min(ps) as u64 * CHUNK_BYTES;
-                self.pool.push(GrowableBuffer::new(gpu, "voxel pool", n, max, wgpu::BufferUsages::STORAGE));
+                self.pool.push(GrowableBuffer::new(gpu, "storage: voxel pool", n, max, wgpu::BufferUsages::STORAGE));
             } else {
                 self.pool[p as usize].reserve(gpu, n, "`pool_mb`")?;
             }
@@ -588,7 +588,7 @@ impl VoxelWorld {
                     }
                 }
                 let Some(slot) = self.free_slots.pop() else {
-                    gpu.fail(format!("the voxel pool is full ({} chunks); frames would miss chunks; raise `pool_mb`", self.pool_slots));
+                    gpu.fail(format!("storage: the voxel pool is full ({} chunks); frames would miss chunks; raise `pool_mb`", self.pool_slots));
                     self.table.remove(tk);
                     self.chunks.remove(&pos);
                     return;
