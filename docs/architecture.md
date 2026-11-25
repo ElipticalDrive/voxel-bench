@@ -159,13 +159,14 @@ The shading is called, not inlined: one more costs a fixed amount, per pixel typ
 (41 functions). Compiled pipelines (`run.compile`) instantiate one combination and are not
 affected.
 
-**Coverage rule** (decided 2026-11-24): the precompiled (generic) build keeps covering every
-storage x walk x shading combination while its release `.text` stays under 100 MB (44 MB
-today, about 15 more storage-or-walk additions). Past that, packet sizes other than the default
-(8) leave the generic build and are compiled on demand (`run.compile`), which divides the walk
-term by four; past it again, the ISA dispatch narrows to the machine's own at install. Storages,
-walks and shadings themselves always stay in the generic build, so every graph runs without a
-compiler. `scripts/buildcost.py figures` prints the figure the rule reads.
+**Coverage is the user's choice** (2026-11-24): what the precompiled (generic) build covers
+spends the user's build time and disk, so it is a build setting, not a threshold of ours. The
+default is everything (every storage x walk x shading, every packet size, every ISA: today's
+build). The dimensions that may be narrowed are the ones a compiled pipeline (`run.compile`)
+can supply on demand: packet sizes (a narrowed build keeps the default, 8; dividing the walk term
+by four) and the ISA dispatch (a build for this machine's ISA alone). Storages, walks and
+shadings always stay, so every graph runs without a compiler. `scripts/buildcost.py` measures
+what each choice costs, for the user to decide by. (The setting itself is not built yet.)
 
 ## Verifying a change
 
