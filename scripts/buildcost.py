@@ -141,6 +141,9 @@ def figures(timed, probe=None, coverage=None):
         t = time.monotonic()
         subprocess.run([sys.executable, str(ROOT / "scripts/check.py")], cwd=ROOT)
         f["check_s"] = round(time.monotonic() - t, 1)
+        steps = ROOT / "target/logs/times.json"
+        if steps.exists():
+            f["check_steps"] = json.loads(steps.read_text())["steps"]
     return f
 
 

@@ -219,8 +219,9 @@ all in `mr-exec-cpu`.
 **Tracking the build's figures.** `scripts/ab/buildguard.py record` appends a commit's figures
 to `baselines/build.jsonl`: release binary and `.text` bytes and functions (from
 `buildcost.py figures`), the rebuild after a component edit when `buildcost.py --time` measured
-it, `check.py`'s wall time per step (check.py writes `target/logs/times.json` each run, with the
-commit, whether the tree had changes and whether the machine was quiet), and CI's job minutes
+it, with `check.py`'s wall time right after that rebuild (total and per step: check.py writes
+`target/logs/times.json` each run; a run's own time depends on what was built before it, so only
+this defined start is tracked), and CI's job minutes
 (`gh`, the newest successful run of the commit). `buildguard.py` alone compares the tree with the
 last record and prints every delta: sizes are flagged past `--pct` (default 5 %), times past
 `--time-pct` (default 10 %) only when both records were taken on a quiet machine; CI times are

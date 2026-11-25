@@ -9,8 +9,8 @@ The figures, each from where it is measured:
 - sizes (deterministic, any machine): binary and .text bytes and functions of the release
   binary, from the newest `scripts/buildcost.py figures` JSON of this commit (run when missing);
 - the release rebuild after a component edit (`rebuild_s`), when that JSON was made with --time;
-- `check.py` wall time per step, from target/logs/times.json (check.py writes it each run) when it
-  ran the default steps on this commit with no changes in the tree;
+- `check.py`'s wall time (total and per step) right after that rebuild, from the same JSON: a
+  check.py run's own time depends on what was built before it, so only this defined start counts;
 - CI's job times (`check`, `lavapipe`, minutes) of the newest successful run of this commit (gh).
 
 A time is compared only when both records were taken on a quiet machine (`.agent/bin/quiet`,
@@ -63,17 +63,9 @@ def sizes(c):
     if d.get("timed") and f.get("rebuild_s") is not None:
         out["rebuild_s"] = f["rebuild_s"]
         out["rebuild_quiet"] = d.get("quiet")
+    if d.get("timed") and f.get("check_s") is not None:
+        out["check"] = {"total_s": f["check_s"], "steps": f.get("check_steps"), "quiet": d.get("quiet")}
     return out
-
-
-def check_times(c):
-    p = ROOT / "target/logs/times.json"
-    if not p.exists():
-        return None
-    t = json.loads(p.read_text())
-    if t.get("commit") != c or t.get("dirty") or not t.get("ok") or sorted(t["steps"]) != ["build", "clippy", "test"]:
-        return None
-    return {"steps": t["steps"], "total_s": round(sum(t["steps"].values()), 1), "quiet": t.get("quiet"), "at": t["at"]}
 
 
 def ci_times(full):
@@ -89,9 +81,6 @@ def ci_times(full):
 def current():
     c = commit()
     rec = {"commit": c, "at": datetime.now().isoformat(timespec="seconds"), **sizes(c)}
-    t = check_times(c)
-    if t:
-        rec["check"] = t
     ci = ci_times(sh("git", "rev-parse", "HEAD").stdout.strip())
     if ci:
         rec["ci"] = ci
