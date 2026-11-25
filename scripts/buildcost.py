@@ -9,6 +9,10 @@
                                                     `incremental` matched at run time beside the others
   scripts/buildcost.py shading [--time] [-o FILE]   the same with one more CPU shading: a copy of `direct`
                                                     chosen at run time beside it
+  scripts/buildcost.py coverage SETTING [--time] [-o FILE]
+                                                    the same built with MR_CPU_COVERAGE=SETTING (e.g.
+                                                    "packets=8 isa=avx2"), in target/coverage so the
+                                                    usual build is not redone; the narrowed build's saving
 
 Figures without --time are deterministic and need no idle machine: binary size, .text size,
 functions in the binary (all, per workspace crate) and the functions whose name mentions the
@@ -99,24 +103,29 @@ def sh(cmd, **kw):
     return subprocess.run(cmd, cwd=ROOT, check=True, **kw)
 
 
-def build(timed):
+def build(timed, coverage=None):
     if timed:
         # what one component edit costs: everything from the components crate up is rebuilt
         (ROOT / "crates/mr-components/src/lib.rs").touch()
+    env = os.environ.copy()
+    env.pop("MR_CPU_COVERAGE", None)
+    if coverage is not None:
+        env.update(MR_CPU_COVERAGE=coverage, CARGO_TARGET_DIR=str(ROOT / "target" / "coverage"))
     t = time.monotonic()
-    sh(["nice", "-n", "19", "cargo", "build", "--release", "-q", "--bin", "multirenderer"])
+    sh(["nice", "-n", "19", "cargo", "build", "--release", "-q", "--bin", "multirenderer"], env=env)
     return time.monotonic() - t
 
 
-def figures(timed, probe=None):
+def figures(timed, probe=None, coverage=None):
     f = {"rebuild_s": None, "check_s": None}
-    s = build(timed)
+    s = build(timed, coverage)
     if timed:
         f["rebuild_s"] = round(s, 1)
-    f["binary_bytes"] = BIN.stat().st_size
-    sizes = sh(["size", "-A", str(BIN)], capture_output=True, text=True).stdout
+    binary = BIN if coverage is None else ROOT / "target" / "coverage" / "release" / "multirenderer"
+    f["binary_bytes"] = binary.stat().st_size
+    sizes = sh(["size", "-A", str(binary)], capture_output=True, text=True).stdout
     f["text_bytes"] = next(int(l.split()[1]) for l in sizes.splitlines() if l.startswith(".text "))
-    syms = sh(["nm", "-C", "--defined-only", str(BIN)], capture_output=True, text=True).stdout.splitlines()
+    syms = sh(["nm", "-C", "--defined-only", str(binary)], capture_output=True, text=True).stdout.splitlines()
     fns = [l.split(" ", 2)[2] for l in syms if len(l.split(" ", 2)) == 3 and l.split(" ", 2)[1] in "tTwW"]
     f["functions"] = len(fns)
     per = {c: 0 for c in CRATES}
@@ -128,7 +137,7 @@ def figures(timed, probe=None):
     f["functions_per_crate"] = per
     if probe:
         f[f"functions_naming_{probe}"] = sum(1 for n in fns if re.search(rf"\b{probe}\b", n))
-    if timed:
+    if timed and coverage is None:
         t = time.monotonic()
         subprocess.run([sys.executable, str(ROOT / "scripts/check.py")], cwd=ROOT)
         f["check_s"] = round(time.monotonic() - t, 1)
@@ -155,13 +164,13 @@ def table(a, b):
 
 def main():
     args = sys.argv[1:]
-    if not args or args[0] not in ("figures", "storage", "walk", "shading"):
+    if not args or args[0] not in ("figures", "storage", "walk", "shading", "coverage") or args[0] == "coverage" and len(args) < 2:
         sys.exit(__doc__)
     mode, timed = args[0], "--time" in args
     out = Path(args[args.index("-o") + 1]) if "-o" in args else \
         ROOT / "target/buildcost" / f"{mode}-{datetime.now():%Y%m%d-%H%M}.json"
     dirty = sh(["git", "status", "--porcelain", "--", "crates", "src"], capture_output=True, text=True).stdout
-    if mode != "figures" and dirty:
+    if mode not in ("figures", "coverage") and dirty:
         sys.exit("buildcost: crates/ or src/ has uncommitted changes; the scaffold must be undone cleanly")
     res = {"mode": mode, "timed": timed, "commit": sh(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
                                                     text=True).stdout.strip(), "at": datetime.now().isoformat()}
@@ -175,6 +184,11 @@ def main():
             left = sh(["git", "status", "--porcelain", "--", "crates", "src"], capture_output=True, text=True).stdout
             if left:
                 print("buildcost: the tree is NOT clean after removing the scaffold:\n" + left, file=sys.stderr)
+        print(table(res["before"], res["after"]))
+    elif mode == "coverage":
+        res["coverage"] = args[1]
+        res["after"] = figures(timed, coverage=args[1])
+        print(f"MR_CPU_COVERAGE={args[1]!r}")
         print(table(res["before"], res["after"]))
     elif mode in PROBES:
         try:

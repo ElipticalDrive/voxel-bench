@@ -248,17 +248,22 @@ enum Isa {
     Avx512,
 }
 
-fn detect(choice: &str) -> Isa {
-    let avx512 = std::arch::is_x86_feature_detected!("avx512f") && std::arch::is_x86_feature_detected!("avx512vl") && std::arch::is_x86_feature_detected!("avx512bw");
-    let avx2 = std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma");
-    match choice {
-        "scalar" => Isa::Scalar,
+/// The hot loop's instruction set for the `isa` knob: `auto` the best this CPU has among those the
+/// build covers (`build.rs`); a named one this build left out is refused (one this CPU lacks
+/// runs scalar, as before).
+fn detect(choice: &str) -> anyhow::Result<Isa> {
+    let avx512 = cfg!(cover_avx512) && std::arch::is_x86_feature_detected!("avx512f") && std::arch::is_x86_feature_detected!("avx512vl") && std::arch::is_x86_feature_detected!("avx512bw");
+    let avx2 = cfg!(cover_avx2) && std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma");
+    if choice == "avx2" && !cfg!(cover_avx2) || choice == "avx512" && !cfg!(cover_avx512) {
+        anyhow::bail!("isa {choice} is not in this build's CPU coverage ({}): rebuild with MR_CPU_COVERAGE including it", env!("MR_CPU_COVERED"));
+    }
+    Ok(match choice {
         "avx2" if avx2 => Isa::Avx2,
         "avx512" if avx512 => Isa::Avx512,
         "auto" if avx512 => Isa::Avx512,
         "auto" if avx2 => Isa::Avx2,
         _ => Isa::Scalar,
-    }
+    })
 }
 
 // ------------------------------------------------------------------------- tracing
@@ -754,7 +759,7 @@ impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
         if storage == "u8" && p.blocks.blocks.len() > 256 {
             anyhow::bail!("storage u8 needs <= 256 block types, registry has {}", p.blocks.blocks.len());
         }
-        let isa = detect(&o.isa);
+        let isa = detect(&o.isa)?;
         tracing::info!("cpu: storage {storage}, traversal {kernel}, {isa:?} hot loop, packets of {}", k.packet);
         let shadow = shadow_kernel(g)?;
         if let Some((t, _)) = shadow {
@@ -772,7 +777,7 @@ impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
                 rects: vec![],
                 perf: perf::allowed(o.perf)?,
                 counters: None,
-                packet: k.packet.parse().unwrap_or(1),
+                packet: covered_packet::<S>(&k.packet)?,
                 isa,
                 isa_choice: o.isa,
             },
@@ -971,19 +976,44 @@ fn render_rect<R: Repr, S: Spec, P: Pixel, const N: usize, const D: bool, const 
 
 #[inline(always)]
 fn render_rect_dyn<R: Repr, S: Spec, P: Pixel, const D: bool, const L: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
-    match S::PACKET.unwrap_or(job.packet) {
-        1 => render_rect::<R, S, P, 1, D, L>(job, r),
-        4 => render_rect::<R, S, P, 4, D, L>(job, r),
-        16 => render_rect::<R, S, P, 16, D, L>(job, r),
-        _ => render_rect::<R, S, P, 8, D, L>(job, r),
+    // A compiled pipeline bakes its one size; the generic build has the sizes its coverage keeps
+    // (`build.rs`), others refused at creation and on a live change (`covered_packet`).
+    match const { S::PACKET } {
+        Some(1) => render_rect::<R, S, P, 1, D, L>(job, r),
+        Some(4) => render_rect::<R, S, P, 4, D, L>(job, r),
+        Some(16) => render_rect::<R, S, P, 16, D, L>(job, r),
+        Some(_) => render_rect::<R, S, P, 8, D, L>(job, r),
+        None => match job.packet {
+            #[cfg(cover_packet_1)]
+            1 => render_rect::<R, S, P, 1, D, L>(job, r),
+            #[cfg(cover_packet_4)]
+            4 => render_rect::<R, S, P, 4, D, L>(job, r),
+            #[cfg(cover_packet_8)]
+            8 => render_rect::<R, S, P, 8, D, L>(job, r),
+            #[cfg(cover_packet_16)]
+            16 => render_rect::<R, S, P, 16, D, L>(job, r),
+            n => unreachable!("packets of {n}: refused at creation"),
+        },
     }
 }
 
+/// The ray packet size `value` (the `packet` knob), or why this build cannot run it.
+fn covered_packet<S: Spec>(value: &str) -> anyhow::Result<usize> {
+    let n: usize = value.parse().map_err(|_| anyhow::anyhow!("packet `{value}` is not a number"))?;
+    let kept = cfg!(cover_packet_1) && n == 1 || cfg!(cover_packet_4) && n == 4 || cfg!(cover_packet_8) && n == 8 || cfg!(cover_packet_16) && n == 16;
+    if S::PACKET.is_none() && !kept {
+        anyhow::bail!("packets of {n} are not in this build's CPU coverage ({}): rebuild with MR_CPU_COVERAGE including it, or compile the graph (run.compile)", env!("MR_CPU_COVERED"));
+    }
+    Ok(n)
+}
+
+#[cfg(cover_avx2)]
 #[target_feature(enable = "avx2,fma")]
 fn render_rect_avx2<R: Repr, S: Spec, P: Pixel, const D: bool, const L: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
     render_rect_dyn::<R, S, P, D, L>(job, r)
 }
 
+#[cfg(cover_avx512)]
 #[target_feature(enable = "avx512f,avx512vl,avx512bw,avx2,fma")]
 fn render_rect_avx512<R: Repr, S: Spec, P: Pixel, const D: bool, const L: bool>(job: &Job<R, P>, r: Rect) -> RowWork {
     render_rect_dyn::<R, S, P, D, L>(job, r)
@@ -996,9 +1026,12 @@ fn render_rect_isa<R: Repr, S: Spec, P: Pixel, const D: bool, const L: bool>(isa
     }
     match isa {
         // SAFETY: only selected when the CPU reports these features.
+        #[cfg(cover_avx512)]
         Isa::Avx512 => unsafe { render_rect_avx512::<R, S, P, D, L>(job, r) },
+        #[cfg(cover_avx2)]
         Isa::Avx2 => unsafe { render_rect_avx2::<R, S, P, D, L>(job, r) },
-        Isa::Scalar => render_rect_dyn::<R, S, P, D, L>(job, r),
+        // Scalar, or an ISA this build's coverage left out (`detect` never picks one).
+        _ => render_rect_dyn::<R, S, P, D, L>(job, r),
     }
 }
 
@@ -1244,14 +1277,15 @@ impl<S: Spec, P: Pixel> Cast<S, P> {
         match name {
             "perf" => self.perf = perf::allowed(value.as_bool().unwrap_or(false))?,
             "packet" => {
-                self.packet = value.as_str().and_then(|s| s.parse().ok()).unwrap_or(8);
+                self.packet = covered_packet::<S>(value.as_str().unwrap_or(""))?;
             }
             "schedule" => (self.tiles, self.rects) = (parse_schedule(value.as_str().unwrap_or(""))?, vec![]),
             "tile_order" => (self.tile_order, self.rects) = (parse_order(value.as_str().unwrap_or(""))?, vec![]),
             "tile" => (self.tile, self.rects) = (value.as_i64().unwrap_or(16).clamp(4, 256) as u32, vec![]),
             "isa" => {
-                self.isa_choice = value.as_str().unwrap_or("auto").to_string();
-                self.isa = detect(&self.isa_choice);
+                let choice = value.as_str().unwrap_or("auto").to_string();
+                self.isa = detect(&choice)?;
+                self.isa_choice = choice;
             }
             _ => return Ok(false),
         }
@@ -1455,5 +1489,41 @@ mod nodes {
         }
         let world = crate::world::<P>(p, g, parts.shadows)?;
         Ok(Box::new(exec::Executor::<P>::new(p, parts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The build's coverage (`MR_CPU_COVERAGE`, `build.rs`) refuses exactly what it left out,
+    /// naming the setting; a compiled pipeline's baked size is never refused.
+    #[test]
+    fn coverage_refuses_what_it_left_out() {
+        let covered = env!("MR_CPU_COVERED");
+        let packets: Vec<&str> = covered.split_whitespace().find_map(|p| p.strip_prefix("packets=")).unwrap().split(',').collect();
+        let isas: Vec<&str> = covered.split_whitespace().find_map(|p| p.strip_prefix("isa=")).unwrap().split(',').collect();
+        struct Baked;
+        impl Spec for Baked {
+            const PACKET: Option<usize> = Some(4);
+        }
+        for n in ["1", "4", "8", "16"] {
+            let r = covered_packet::<Generic>(n);
+            assert_eq!(r.is_ok(), packets.contains(&n), "packets of {n} under {covered}");
+            if let Err(e) = r {
+                assert!(e.to_string().contains("MR_CPU_COVERAGE"), "{e}");
+            }
+            assert!(covered_packet::<Baked>(n).is_ok());
+        }
+        for isa in ["avx2", "avx512"] {
+            assert_eq!(detect(isa).is_ok(), isas.contains(&isa), "isa {isa} under {covered}");
+        }
+        assert!(detect("scalar").is_ok() && detect("auto").is_ok());
+        // The knob's default always stays (`build.rs`'s `DEFAULT_PACKET`), so default graphs run.
+        let default = params().into_iter().find(|p| p.name == "packet").unwrap().default;
+        assert!(packets.contains(&default.as_str().unwrap()), "the packet default {default:?} is not covered: {covered}");
+        if !isas.contains(&"avx2") && !isas.contains(&"avx512") {
+            assert_eq!(detect("auto").unwrap(), Isa::Scalar);
+        }
     }
 }

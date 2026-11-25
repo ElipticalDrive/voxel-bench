@@ -160,13 +160,28 @@ The shading is called, not inlined: one more costs a fixed amount, per pixel typ
 affected.
 
 **Coverage is the user's choice** (2026-11-24): what the precompiled (generic) build covers
-spends the user's build time and disk, so it is a build setting, not a threshold of ours. The
-default is everything (every storage x walk x shading, every packet size, every ISA: today's
-build). The dimensions that may be narrowed are the ones a compiled pipeline (`run.compile`)
-can supply on demand: packet sizes (a narrowed build keeps the default, 8; dividing the walk term
-by four) and the ISA dispatch (a build for this machine's ISA alone). Storages, walks and
-shadings always stay, so every graph runs without a compiler. `scripts/buildcost.py` measures
-what each choice costs, for the user to decide by. (The setting itself is not built yet.)
+spends the user's build time and disk, so it is a build setting, not a threshold of ours:
+`MR_CPU_COVERAGE`, read by `crates/mr-exec-cpu/build.rs` (set it in the shell or, to keep it,
+in `.cargo/config.toml`'s `[env]`; cargo rebuilds when it changes). Unset or `all`: everything
+(every storage x walk x shading, every packet size, every ISA). Else space-separated
+narrowings, each `dimension=kept,values`, of the dimensions a compiled pipeline
+(`run.compile`) can supply on demand:
+
+- `packets=4,8`: the ray packet sizes in the generic tile loop (of 4, 8, 16; 1, the `packet`
+  knob's default, always stays). `packets=` alone keeps 1 only. Each kept size is one copy of every storage's tile loops with the walks
+  inlined, so this divides the walk term.
+- `isa=avx2`: the instruction sets dispatched to at run time (of avx2, avx512; scalar always
+  stays, every CPU runs it). `isa=` alone keeps scalar only.
+
+Storages, walks and shadings always stay, so every graph runs without a compiler. A graph or a
+live knob change asking for what the build left out fails to build (the lane says which value,
+the build's coverage and the two ways out), never runs as something else; `isa = auto` picks
+the best covered ISA. A compiled pipeline bakes its own packet size and ISA and is unaffected.
+`scripts/buildcost.py coverage SETTING` measures what a narrowing saves (built in
+`target/coverage`); `check.py test` also runs `mr-exec-cpu`'s tests in a narrowed build.
+Measured 2026-11-24: the narrowest, `packets= isa=` (packet 1, scalar), takes the release
+binary from 272.4 to 252.2 MB and `.text` from 44.3 to 32.3 MB (-27 %), 170 functions fewer,
+all in `mr-exec-cpu`.
 
 ## Verifying a change
 

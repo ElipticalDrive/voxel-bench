@@ -86,6 +86,12 @@ for w in what:
     elif w == "test":
         s, t = cargo(["test", "-q", "--workspace"], logs / "test.log")
         rc |= tests("tests", s, t)
+        # The CPU executor in a narrowed build (`MR_CPU_COVERAGE`, crates/mr-exec-cpu/build.rs):
+        # its own target dir, so the usual build is not redone each time.
+        env = {**os.environ, "MR_CPU_COVERAGE": "packets=8 isa=", "CARGO_TARGET_DIR": str(ROOT / "target" / "coverage")}
+        with open(logs / "test-coverage.log", "w") as f:
+            s = subprocess.run(["cargo", "test", "-q", "-p", "mr-exec-cpu"], cwd=ROOT, env=env, stdout=f, stderr=subprocess.STDOUT).returncode
+        rc |= tests("tests narrowed (packets=8 isa=: 1, 8, scalar)", s, (logs / "test-coverage.log").read_text(errors="replace"))
         # The scripts' own tests (records.py), on the dev build's binary the cargo tests built.
         env = {**os.environ, "MR_BIN": os.environ.get("MR_BIN", str(ROOT / "target" / "debug" / "multirenderer"))}
         with open(logs / "test-scripts.log", "w") as f:
