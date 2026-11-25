@@ -136,22 +136,36 @@ features asked for. Asynchronous renderers call the `Waker` when work may have f
 ### What a component costs the build
 
 `scripts/buildcost.py storage` builds the release binary, adds a CPU storage (`new.py storage`,
-a copy of `bricks`), builds again, restores the tree and prints both; `--time` adds the rebuild
-and `check.py` times (an idle machine only). Measured 2026-11-24 (commit 79ee13c, sizes only):
+a copy of `bricks`), builds again, restores the tree and prints both; `walk` and `shading` do
+the same with a probe (a copy of `incremental` matched at run time beside the other walks, a
+copy of `direct` chosen at run time beside it: the code a real one adds, not a component);
+`--time` adds the rebuild and `check.py` times (an idle machine only). Measured 2026-11-24
+(sizes only; release `.text` 44.3 MB before):
 
 | one more | binary | `.text` | functions | instantiated for it | rebuild | `check.py` |
 |---|---|---|---|---|---|---|
 | CPU storage | +6.1 MB (+2.2 %) | +1.8 MB (+4.2 %) | +340 (+0.7 %) | 305 | not yet timed | not yet timed |
-| walk, shading | not yet measured (no scaffold) | | | | | |
+| CPU raycast walk | +4.6 MB (+1.7 %) | +2.9 MB (+6.5 %) | +8 | 8 (the rest inlined) | not yet timed | not yet timed |
+| CPU shading | +0.2 MB (+0.1 %) | +0.17 MB (+0.4 %) | +50 | 41 | not yet timed | not yet timed |
 
 Why: the generic CPU build monomorphises each region per storage (`by_storage!` in
 `mr-exec-cpu/src/raycast.rs`), and inside that the ray caster's tile loop
 (`render_rect_*`) per ISA (scalar, AVX2, AVX-512) x pixel (`[u8; 4]`, `Half4`) x two const
-flags: 24 instances of about 65 KB per storage, 1.6 MB of the 1.8. The walk and the shading are
-matched at run time *inside* each instance, so one more storage costs a fixed amount, but one
-more CPU walk or shading grows all 24 instances of every storage: the generic build's size
-grows with storages x (walks + shadings). Compiled pipelines (`run.compile`) instantiate one
-combination and are not affected.
+flags: 24 instances of about 65 KB per storage, 1.6 MB of a storage's 1.8. Each instance holds
+one copy of the tile loop per packet size (1, 4, 8, 16), and the walks are inlined into every
+copy and matched at run time, so one more walk adds itself to storages x 24 x 4 loops: the
+walk term grows with the product storages x walks (about 0.36 MB per storage and walk today).
+The shading is called, not inlined: one more costs a fixed amount, per pixel type and spec
+(41 functions). Compiled pipelines (`run.compile`) instantiate one combination and are not
+affected.
+
+**Coverage rule** (decided 2026-11-24): the precompiled (generic) build keeps covering every
+storage x walk x shading combination while its release `.text` stays under 100 MB (44 MB
+today, about 15 more storage-or-walk additions). Past that, packet sizes other than the default
+(8) leave the generic build and are compiled on demand (`run.compile`), which divides the walk
+term by four; past it again, the ISA dispatch narrows to the machine's own at install. Storages,
+walks and shadings themselves always stay in the generic build, so every graph runs without a
+compiler. `scripts/buildcost.py figures` prints the figure the rule reads.
 
 ## Verifying a change
 

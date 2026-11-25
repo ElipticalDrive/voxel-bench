@@ -5,6 +5,10 @@
   scripts/buildcost.py storage [--time] [-o FILE]   the same with one more CPU storage (`new.py storage`,
                                                     a copy of `bricks`), then the tree restored; prints
                                                     both and the difference
+  scripts/buildcost.py walk [--time] [-o FILE]      the same with one more CPU raycast walk: a copy of
+                                                    `incremental` matched at run time beside the others
+  scripts/buildcost.py shading [--time] [-o FILE]   the same with one more CPU shading: a copy of `direct`
+                                                    chosen at run time beside it
 
 Figures without --time are deterministic and need no idle machine: binary size, .text size,
 functions in the binary (all, per workspace crate) and the functions whose name mentions the
@@ -27,6 +31,68 @@ CRATES = ["mr_core", "mr_world", "mr_ipc", "mr_serve", "mr_worker", "mr_gpu", "m
           "mr_exec_cpu", "mr_exec_gpu", "mr_reference", "multirenderer"]
 NAME = "costprobe"  # the scaffolded storage
 TYPE = "Costprobe"
+C = ROOT / "crates/mr-components/src"
+RAY = ROOT / "crates/mr-exec-cpu/src/raycast.rs"
+
+# The walk and shading probes: not components (nothing registers them, no graph picks them),
+# only the code a real one adds to the generic build, reachable at run time so it is kept:
+# (copy from, copy to, renames in the copy), then (file, text, replacement) edits.
+PROBES = {
+    "walk": ((C / "traversal/incremental/cpu.rs", C / "traversal/costprobe_cpu.rs",
+              [("trace_incremental", "trace_costprobe"), ("struct Incremental", "struct CostprobeWalk"),
+               ("for Incremental", "for CostprobeWalk"), ('"incremental"', '"costprobe"')]), [
+        (C / "traversal/mod.rs", "mod cpu_tests;\n", "mod cpu_tests;\npub mod costprobe_cpu;\n"),
+        (RAY, "    IncrementalExact,\n}", "    IncrementalExact,\n    Costprobe,\n}"),
+        (RAY, '        "refloor" => Traversal::Refloor,\n',
+         '        "refloor" => Traversal::Refloor,\n        "costprobe" => Traversal::Costprobe,\n'),
+        (RAY, "            Traversal::Refloor => {}\n",
+         "            Traversal::Refloor => {}\n            Traversal::Costprobe => return mr_components::traversal::costprobe_cpu"
+               "::trace_costprobe::<R, false>(&self.grid, levels, cam, p, d, dist, bmin, bmax).0,\n"),
+        (RAY, "                            Traversal::IncrementalExact => trace_incremental",
+         "                            Traversal::Costprobe => mr_components::traversal::costprobe_cpu::trace_costprobe"
+               "::<R, false>(&scene.grid, levels, cam_block, o, dirs[l], 1e7, bmin, bmax),\n"
+               "                            Traversal::IncrementalExact => trace_incremental"),
+    ]),
+    "shading": ((C / "shading/direct/cpu.rs", C / "shading/costprobe_cpu.rs",
+                 # the copy takes the same context and surface as `direct` (what the caller builds)
+                 [("pub struct Ctx<", "pub struct UnusedCtx<"), ("pub struct Surface", "pub struct UnusedSurface"),
+                  ("impl Surface", "impl UnusedSurface"),
+                  ("use glam::", "#![allow(dead_code)]\nuse crate::shading::direct::cpu::{Ctx, Surface};\nuse glam::")]), [
+        (C / "shading/mod.rs", "pub mod deferred;\n", "pub mod deferred;\npub mod costprobe_cpu;\n"),
+        (RAY, "        mr_components::shading::direct::cpu::shade(&shading_ctx!(self, S, world, cam, T), s, mode)",
+         "        if COSTPROBE.load(std::sync::atomic::Ordering::Relaxed) {\n"
+         "            return mr_components::shading::costprobe_cpu::shade(&shading_ctx!(self, S, world, cam, T), s, mode);\n"
+         "        }\n"
+         "        mr_components::shading::direct::cpu::shade(&shading_ctx!(self, S, world, cam, T), s, mode)"),
+        (RAY, "        mr_components::shading::direct::cpu::radiance(&shading_ctx!(self, S, world, cam, true), s, mode)",
+         "        if COSTPROBE.load(std::sync::atomic::Ordering::Relaxed) {\n"
+         "            return mr_components::shading::costprobe_cpu::radiance(&shading_ctx!(self, S, world, cam, true), s, mode);\n"
+         "        }\n"
+         "        mr_components::shading::direct::cpu::radiance(&shading_ctx!(self, S, world, cam, true), s, mode)"),
+        (RAY, "/// The traversal kernel, with the `exact` knob folded in.\n",
+         "pub static COSTPROBE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);\n\n"
+         "/// The traversal kernel, with the `exact` knob folded in.\n"),
+    ]),
+}
+
+
+def probe_apply(kind):
+    (src, dst, renames), edits = PROBES[kind]
+    text = src.read_text()
+    for a, b in renames:
+        text = text.replace(a, b)
+    dst.write_text(text)
+    for path, old, new in edits:
+        t = path.read_text()
+        if t.count(old) != 1:
+            raise SystemExit(f"buildcost: anchor not found once in {path.relative_to(ROOT)}: {old[:60]!r}")
+        path.write_text(t.replace(old, new))
+
+
+def probe_undo(kind):
+    (_, dst, _), edits = PROBES[kind]
+    dst.unlink(missing_ok=True)
+    sh(["git", "checkout", "--", *sorted({str(p.relative_to(ROOT)) for p, _, _ in edits})])
 
 
 def sh(cmd, **kw):
@@ -82,20 +148,20 @@ def table(a, b):
         if not x and not y:
             continue
         out.append(f"{label:24}{x:>14,}{y:>14,}{y - x:>+12,}")
-    n = f"functions_naming_{TYPE}"
-    out.append(f"{'fns naming ' + TYPE:24}{'':>14}{b.get(n, 0):>14,}")
+    for n in (k for k in b if k.startswith("functions_naming_")):
+        out.append(f"{'fns naming ' + n[17:]:24}{'':>14}{b[n]:>14,}")
     return "\n".join(out)
 
 
 def main():
     args = sys.argv[1:]
-    if not args or args[0] not in ("figures", "storage"):
+    if not args or args[0] not in ("figures", "storage", "walk", "shading"):
         sys.exit(__doc__)
     mode, timed = args[0], "--time" in args
     out = Path(args[args.index("-o") + 1]) if "-o" in args else \
         ROOT / "target/buildcost" / f"{mode}-{datetime.now():%Y%m%d-%H%M}.json"
     dirty = sh(["git", "status", "--porcelain", "--", "crates", "src"], capture_output=True, text=True).stdout
-    if mode == "storage" and dirty:
+    if mode != "figures" and dirty:
         sys.exit("buildcost: crates/ or src/ has uncommitted changes; the scaffold must be undone cleanly")
     res = {"mode": mode, "timed": timed, "commit": sh(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
                                                     text=True).stdout.strip(), "at": datetime.now().isoformat()}
@@ -109,6 +175,16 @@ def main():
             left = sh(["git", "status", "--porcelain", "--", "crates", "src"], capture_output=True, text=True).stdout
             if left:
                 print("buildcost: the tree is NOT clean after removing the scaffold:\n" + left, file=sys.stderr)
+        print(table(res["before"], res["after"]))
+    elif mode in PROBES:
+        try:
+            probe_apply(mode)
+            res["after"] = figures(timed, "costprobe_cpu")
+        finally:
+            probe_undo(mode)
+            left = sh(["git", "status", "--porcelain", "--", "crates", "src"], capture_output=True, text=True).stdout
+            if left:
+                print("buildcost: the tree is NOT clean after removing the probe:\n" + left, file=sys.stderr)
         print(table(res["before"], res["after"]))
     else:
         print(json.dumps(res["before"], indent=1))
