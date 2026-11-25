@@ -9,8 +9,9 @@ build clippy test gpu); `only` runs just what is named (`check.py only gpu`). `b
 host's end-to-end live sessions, the tuner and scale-curve demos run briefly, the device pool, and `limits.py`: every shipped
 GPU graph on a device clamped to WebGPU's baseline sizes);
 only `gui_screenshot` stays manual. `lavapipe`: the GPU tests that fit Mesa's software Vulkan
-(the device pool, the live sessions of the GPU graphs, the split, meshes, HDR, the headless GUI;
-not the compiled build, nor the tuner and scale-curve demos, which time things) on lavapipe,
+(the device pool, the live sessions of the GPU graphs, the split, meshes, the headless GUI;
+not the HDR window, which needs a display, the compiled build, nor the tuner and scale-curve
+demos, which time things) on lavapipe,
 whatever GPU the machine has: what CI runs, where no GPU is. `windows`: zero-warning
 cross-checks for both Windows targets (`rustup target add x86_64-pc-windows-gnu
 x86_64-pc-windows-msvc`). `wine`: the unit and GPU end-to-end tests of the `-gnu` build under
@@ -102,7 +103,7 @@ for w in what:
             continue
         os.environ.update(VK_DRIVER_FILES=icd, VK_ICD_FILENAMES=icd)
         subprocess.run(["cargo", "build", "--release", "-q"], cwd=ROOT, capture_output=True)  # the sessions' workers
-        e2e = ["gui::live::tests::live_session_end_to_end", "gui::live::tests::live_hdr_window", "gui::live::tests::live_meshes_end_to_end", "gui::live::tests::live_split_end_to_end", "gui::tests::gui_headless_smoke"]
+        e2e = ["gui::live::tests::live_session_end_to_end", "gui::live::tests::live_meshes_end_to_end", "gui::live::tests::live_split_end_to_end", "gui::tests::gui_headless_smoke"]
         for name, args in (("lavapipe e2e", ["--bin", "multirenderer", "--", "--ignored", "--exact", *e2e]), ("lavapipe pool", ["-p", "mr-gpu", "--", "--ignored"])):
             s, t = cargo(["test", "-q", "--release", *args], logs / f"{name.replace(' ', '-')}.log")
             rc |= tests(name, s, t)
