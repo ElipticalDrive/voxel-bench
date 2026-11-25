@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
 use mr_core::{MemoryReport, PassMode, StageTime};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::compare::Quality;
 
@@ -34,7 +34,7 @@ impl Summary {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrameRecord {
     pub frame: u32,
     /// Host-measured: Render sent -> FrameDone received.
@@ -47,15 +47,15 @@ pub struct FrameRecord {
     /// Chunks of its region missing when the frame was requested: the server's backlog, on
     /// the link, not generated yet.
     pub holes: u32,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub counters: Vec<(String, f64)>,
     /// Time per stage and the graph nodes each ran.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<StageTime>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality: Option<Quality>,
     /// Against the like reference (`PassReport::like`).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality_like: Option<Quality>,
 }
 
@@ -112,7 +112,7 @@ impl StageSummary {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QualitySummary {
     pub frames: usize,
     pub psnr: Summary,
@@ -131,7 +131,10 @@ pub struct FirstComplete {
     pub clock_s: f64,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+/// Read back from a run's journal (`passes.jsonl`) when the run is resumed: what it does not
+/// write reads as its default.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PassReport {
     pub label: String,
     /// The executor that ran it (`cpu`, `gpu`); a standalone renderer's name.

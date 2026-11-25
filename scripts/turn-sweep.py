@@ -17,7 +17,8 @@ the guard compares the passes both have.
   GPU=radv scripts/turn-sweep.py terrain    # on the GPU adapter whose name contains this
 
 A plan not in the list below takes every pair. Results: target/turn/<time>/<run>/observations.jsonl,
-and target/turn/<time>/catalogue.md / .csv.
+and target/turn/<time>/catalogue.md / .csv. Runs resume as sweep.py's do: the same command
+with the same OUT again continues a sweep that died.
 """
 import os
 import re
@@ -26,7 +27,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from mr import ROOT, build_release, full_sweep, release, run_logged
+from mr import ROOT, build_release, finished, full_sweep, plan_log, release, run_logged
 
 # sweep.py's scenario plans, in its order; a plan's place here is its part of the pairs.
 PLANS = "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker meshes".split()
@@ -73,9 +74,12 @@ if listing:
 out = os.environ.get("OUT") or f"target/turn/{time.strftime('%Y%m%d-%H%M')}"
 (ROOT / out).mkdir(parents=True, exist_ok=True)
 for p in plans:
+    if finished(out, p):
+        print(f"=== {p}: finished in {out}, skipped", flush=True)
+        continue
     print(f"=== {p} {time.strftime('%H:%M')}", flush=True)
-    log = ROOT / out / f"{p}.log"
-    run_logged([release(), "run", f"plans/{p}.toml", *args, "-s", f'output.dir="{out}"', *cover(p)], log)
+    log = plan_log(out, p)
+    run_logged([release(), "run", f"plans/{p}.toml", *args, "-s", f'output.dir="{out}"', "-s", "output.resume=true", *cover(p)], log)
     lines = log.read_text(errors="replace").splitlines()
     print("\n".join(l for l in lines if "swept pipelines run" in l or "observations)" in l))
     print(f"    failed passes: {len({l for l in lines if 'FAILED' in l})}")

@@ -51,7 +51,18 @@ readback = "auto"             # auto | always | never
 save = { every = 100, diffs = true }
 compare = { reference = "cpu-reference", every = 100, settle = 2, converge = 64 }
 dir = "runs"
+resume = false                # true: continue the newest unfinished run of this plan in `dir`
 ```
+
+A run writes each pass's reports to `passes.jsonl` in its run directory as the pass ends, and
+`report.json` (compact JSON, every frame of every pass) and `observations.jsonl` when it
+finishes, removing the journal. A run that dies part-way (killed, the machine off, the disk
+full, a renderer taking a thread-isolated host down) leaves its journal; the same plan run again
+with `output.resume = true` continues it in the same directory: the passes it finished stand
+and are not run again, the pass it died in runs again, and a pass the run died in twice is
+recorded as failed with that reason. The references run again (their frames are needed for the
+comparisons). `scripts/sweep.py` always resumes, and skips the plans whose run in `OUT` has
+finished, so re-running a sweep that died continues it.
 
 The ways of writing a renderer (`graph` as a file or inline with `edits`, the command line's `-r`) are in
 [pipelines.md](pipelines.md).
@@ -174,7 +185,8 @@ multirenderer run plans/terrain.toml -s run.resolution=[3840,2160] \
 
 Each run writes `runs/<timestamp>-<name>/`: `plan.toml` (with the overrides applied),
 `report.json` (every metric, including per-frame records), `summary.txt`, `observations.jsonl`,
-`logs/` (one per worker) and `frames/` (saved frames and diff images).
+`logs/` (one per worker) and `frames/` (saved frames and diff images); while it runs, its
+journal `passes.jsonl` (below).
 
 A long run can be paused from outside: with `MR_PAUSE_FILE` set, the run holds between passes
 while that file exists (its worker gone, so nothing on the GPU), writing `<file>.held` (its pid)
@@ -346,3 +358,27 @@ Python, for Linux and Windows (`scripts/`):
   applied and how often. Records the binary cannot key (a component since removed, a form no
   longer read) are left out and counted by the binary's reason (`unknown traversal component
   ...`); records newer than the binary reads are refused, naming both versions (rebuild).
+- `keep.py [--keep N] [--apply]`: the keep-rule for old sweeps (`target/sweep/*`,
+  `target/turn/*`, `baselines/sweep-*`). A sweep directory stays when it is among the newest N
+  of its place (default 3), when a finding cites it (its name in `docs/*.md`, `notes/*.md` or
+  `ROADMAP.md`), when a run in it is unfinished (resumable) or when it holds a file `KEEP`;
+  the rest go. It prints each with its size and why, and removes only with `--apply`.
+
+### Records at scale
+
+What a turn writes and reads, measured on the 2026-11-24 full sweep (1423 passes per plan, two plans
+finished):
+
+| | per plan | grows with |
+|---|---|---|
+| `observations.jsonl` | 5.5 MB (3.9 KB per pass) | passes |
+| `report.json` | 345 MB (showcase, 120 frames a pass) to 1.7 GB (terrain flight, 600) pretty-printed; compact since, 2.6x smaller, 96 % of it the per-frame records | passes x frames |
+| `logs/` | 8.4 MB (2126 files) | passes |
+| reading: `records.py` (guard) / `catalogue` | 1.1 s / 0.4 s for 2846 records (about 0.4 ms / 0.15 ms per record) | records |
+| `report.py` on one report.json | 4 s and 1.2 GB of memory for the 345 MB one | its size |
+
+Every figure is linear in the passes a sweep runs (a turn sweep's are pairwise, not the product
+of choices; the full sweep's are the product, by intent). What a turn reads (observations, by
+the guard and the catalogue) is the small one; the per-frame reports are for looking into one
+run, not read per turn. A full sweep is 15 plans, so some 80 MB of observations and several
+GB of compact reports on disk: `keep.py` bounds how many such sweeps stay.

@@ -1,24 +1,38 @@
 //! Image comparison metrics on RGBA8 sRGB frames.
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Clone, Copy, Debug, Default, Serialize)]
+/// Reads a figure JSON wrote as `null`: serde_json writes a non-finite `f64` (an identical
+/// image's PSNR, `inf`) as `null`, so a report read back (a resumed run's journal) takes it as
+/// `inf`.
+pub fn null_is_inf<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::INFINITY))
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Quality {
     /// Peak signal-to-noise ratio over RGB in dB (`inf` for identical images).
+    #[serde(deserialize_with = "null_is_inf")]
     pub psnr: f64,
     /// Mean absolute error over RGB, in `[0, 1]`.
+    #[serde(deserialize_with = "null_is_inf")]
     pub mae: f64,
     /// Percentage of pixels whose largest channel difference exceeds 16/255.
+    #[serde(deserialize_with = "null_is_inf")]
     pub bad_pct: f64,
     /// Mean structural similarity of luminance (8x8 windows, stride 4), in `[-1, 1]`.
     /// Tolerant to small shifts and resampling, unlike PSNR.
+    #[serde(deserialize_with = "null_is_inf")]
     pub ssim: f64,
     /// SSIM as decibels, `-10 log10(1 - ssim)` (0.99 → 20 dB, 0.999 → 30 dB), capped at 99.
+    #[serde(deserialize_with = "null_is_inf")]
     pub ssim_db: f64,
     /// Multi-scale SSIM (5 scales, standard weights): degrades gracefully with resolution
     /// changes and resampling instead of falling off a cliff like PSNR. In `[0, 1]`.
+    #[serde(deserialize_with = "null_is_inf")]
     pub ms_ssim: f64,
     /// MS-SSIM as decibels (same mapping as `ssim_db`).
+    #[serde(deserialize_with = "null_is_inf")]
     pub ms_ssim_db: f64,
 }
 

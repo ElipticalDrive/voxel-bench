@@ -7,11 +7,15 @@ or failed (the bugs and missing `accept` rules a sweep finds).
   FRAMES=120 scripts/sweep.py terrain  # shorter camera paths (faster flight), one plan
   RES=480x270 EVERY=20 FRAMES=60 scripts/sweep.py terrain  # a quick correctness pass
   OUT=target/sweep/base scripts/sweep.py terrain           # into a given directory (adds to it)
+  OUT=target/sweep/base scripts/sweep.py                   # again after it died: continues it
   GPU=radv scripts/sweep.py terrain    # on the GPU adapter whose name contains this (also llvmpipe)
 
 Results: target/sweep/<time>/<run>/observations.jsonl (one record per renderer and pass,
 tagged with this machine), and target/sweep/<time>/catalogue.md / .csv. Re-run the
-catalogue over several sweeps with `multirenderer catalogue target/sweep`.
+catalogue over several sweeps with `multirenderer catalogue target/sweep`. Each run resumes
+(`output.resume`): a plan whose run in OUT finished is skipped, one whose run died part-way
+continues where it stopped (its log kept as <plan>.died-N.log), so the same command run again
+after a sweep died continues it.
 """
 import os
 import subprocess
@@ -19,12 +23,12 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from mr import ROOT, build_release, full_sweep, release, run_logged
+from mr import ROOT, build_release, finished, full_sweep, plan_log, release, run_logged
 
 out = os.environ.get("OUT") or f"target/sweep/{time.strftime('%Y%m%d-%H%M')}"
 plans = sys.argv[1:] or "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker meshes".split()
 sweep = full_sweep()
-args = ["-s", sweep, "-s", "run.repeats=1", "-s", "run.parallel=false", "-s", f"output.compare.every={os.environ.get('EVERY', 50)}", "-s", f'output.dir="{out}"', "-u", "output.save", "-u", "output.window"]
+args = ["-s", sweep, "-s", "run.repeats=1", "-s", "run.parallel=false", "-s", f"output.compare.every={os.environ.get('EVERY', 50)}", "-s", f'output.dir="{out}"', "-s", "output.resume=true", "-u", "output.save", "-u", "output.window"]
 if os.environ.get("FRAMES"):
     args += ["-s", f"run.frames={os.environ['FRAMES']}", "-s", "run.warmup=10"]
 if os.environ.get("GPU"):
@@ -36,8 +40,11 @@ if not build_release():
     sys.exit(1)
 (ROOT / out).mkdir(parents=True, exist_ok=True)
 for p in plans:
+    if finished(out, p):
+        print(f"=== {p}: finished in {out}, skipped", flush=True)
+        continue
     print(f"=== {p} {time.strftime('%H:%M')}", flush=True)
-    log = ROOT / out / f"{p}.log"
+    log = plan_log(out, p)
     run_logged([release(), "run", f"plans/{p}.toml", *args], log)
     lines = log.read_text(errors="replace").splitlines()
     print("\n".join(l for l in lines if "swept compositions run" in l or "observations)" in l))

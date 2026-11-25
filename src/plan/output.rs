@@ -17,6 +17,9 @@ pub struct OutputSpec {
     pub compare: Option<CompareSpec>,
     /// Where run directories go (default `runs/`).
     pub dir: Option<String>,
+    /// Continue the newest unfinished run of this plan in `dir` (one that died part-way: its
+    /// journal, no report) instead of starting a new one; a new one when there is none.
+    pub resume: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]

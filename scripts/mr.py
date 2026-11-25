@@ -42,6 +42,27 @@ def run_logged(args, log, env=None):
         return subprocess.run([str(a) for a in args], cwd=ROOT, stdout=f, stderr=subprocess.STDOUT, env=None if env is None else {**os.environ, **env}).returncode == 0
 
 
+def finished(out, plan):
+    """Whether the sweep directory `out` holds a finished run of `plans/<plan>.toml` (its
+    observations written); sweeps skip it, and resume (`output.resume`) one that died."""
+    import re
+    import tomllib
+    with open(ROOT / "plans" / f"{plan}.toml", "rb") as f:
+        name = re.sub(r"[^\w-]", "_", tomllib.load(f).get("name", "plan"))
+    return any((d / "observations.jsonl").exists() for d in (ROOT / out).glob(f"*-*-{name}") if d.name[16:] == name)
+
+
+def plan_log(out, plan):
+    """The log of a sweep's run of `plan` in `out`; a dead run's log is kept as `<plan>.died-N.log`."""
+    log = ROOT / out / f"{plan}.log"
+    if log.exists():
+        n = 1
+        while (ROOT / out / f"{plan}.died-{n}.log").exists():
+            n += 1
+        log.rename(ROOT / out / f"{plan}.died-{n}.log")
+    return log
+
+
 def fresh(d):
     """Empties directory `d` (created if missing) and returns it."""
     import shutil

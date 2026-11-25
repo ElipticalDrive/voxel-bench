@@ -6,6 +6,7 @@ mod compare;
 #[cfg(test)]
 mod contract;
 mod features;
+mod journal;
 mod catalogue;
 mod gui;
 mod observe;
@@ -253,10 +254,16 @@ fn main() -> anyhow::Result<()> {
         Cmd::Run { plan: path, overrides, unset, .. } => {
             let mut plan = Plan::load_with(&path, &overrides, &unset)?;
             plan.distinct_labels();
-            let run_dir = make_run_dir(&plan)?;
+            let resumed = plan.output.resume.then(|| journal::unfinished(&run_base(&plan), &sanitize(&plan.name))).flatten();
+            let run_dir = match &resumed {
+                Some(d) => d.clone(),
+                None => make_run_dir(&plan)?,
+            };
             let text = std::fs::read_to_string(&path)?;
-            std::fs::write(run_dir.join("plan.toml"), format!("# overrides: {overrides:?}, unset: {unset:?}\n{text}"))?;
-            tracing::info!("run directory {}", run_dir.display());
+            if resumed.is_none() {
+                std::fs::write(run_dir.join("plan.toml"), format!("# overrides: {overrides:?}, unset: {unset:?}\n{text}"))?;
+            }
+            tracing::info!("run directory {}{}", run_dir.display(), if resumed.is_some() { " (resumed)" } else { "" });
             let (reports, scene_features) = if plan.output.window {
                 let (p, d) = (plan.clone(), run_dir.clone());
                 window::run_with_window(&format!("multirenderer — {}", plan.name), move |ui| run_plan(&p, &d, Some(ui)))?
@@ -275,9 +282,11 @@ fn main() -> anyhow::Result<()> {
             }
             println!("\n{table}");
             std::fs::write(run_dir.join("summary.txt"), &table)?;
-            std::fs::write(run_dir.join("report.json"), serde_json::to_string_pretty(&reports)?)?;
+            // Compact: every frame of every pass (pretty-printed it was 2.6 times the size).
+            std::fs::write(run_dir.join("report.json"), serde_json::to_string(&reports)?)?;
             let run_name = run_dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             let n = observe::write(&run_dir.join("observations.jsonl"), &reports, &plan, &run_name, &observe::Machine::detect(), scene_features.as_ref())?;
+            let _ = std::fs::remove_file(run_dir.join(journal::FILE));
             println!("report: {} ({n} observations)", run_dir.join("report.json").display());
             Ok(())
         }
@@ -350,10 +359,14 @@ fn make_run_dir(plan: &Plan) -> anyhow::Result<PathBuf> {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + (m <= 2) as i64;
     let stamp = format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}", rem / 3600, rem % 3600 / 60, rem % 60);
-    let base = PathBuf::from(plan.output.dir.clone().unwrap_or_else(|| "runs".into()));
-    let dir = base.join(format!("{stamp}-{}", sanitize(&plan.name)));
+    let dir = run_base(plan).join(format!("{stamp}-{}", sanitize(&plan.name)));
     std::fs::create_dir_all(dir.join("logs"))?;
     Ok(dir)
+}
+
+/// Where the plan's run directories go.
+fn run_base(plan: &Plan) -> PathBuf {
+    PathBuf::from(plan.output.dir.clone().unwrap_or_else(|| "runs".into()))
 }
 
 struct Ctx<'a> {
@@ -370,24 +383,30 @@ impl Ctx<'_> {
         spec.run_label(&self.plan.run)
     }
 
+    /// A pass's report before it runs: what it is.
+    fn base_report(&self, spec: &RendererSpec, mode: Option<PassMode>) -> PassReport {
+        let run = &self.plan.run;
+        PassReport {
+            label: self.label(spec),
+            renderer: spec.entry().to_string(),
+            graph_key: spec.pipeline().and_then(|g| g.key().ok()),
+            graph: spec.pipeline(),
+            options: spec.options.clone(),
+            view_radius: spec.view_radius(run),
+            link: spec.link(),
+            mode,
+            resolution: run.resolution,
+            ..Default::default()
+        }
+    }
+
     fn spawn_lanes(&self, specs: &[RendererSpec], mode: Option<PassMode>, asks: &[mr_core::Feature]) -> (Vec<Lane>, Vec<PassReport>) {
         let run = &self.plan.run;
         let [w, h] = run.resolution;
         let (mut lanes, mut failed) = (vec![], vec![]);
         for spec in specs {
             let label = self.label(spec);
-            let mut report = PassReport {
-                label: label.clone(),
-                renderer: spec.entry().to_string(),
-                graph_key: spec.pipeline().and_then(|g| g.key().ok()),
-                graph: spec.pipeline(),
-                options: spec.options.clone(),
-                view_radius: spec.view_radius(run),
-                link: spec.link(),
-                mode,
-                resolution: [w, h],
-                ..Default::default()
-            };
+            let mut report = self.base_report(spec, mode);
             let mode_tag = mode.map(|m| m.name()).unwrap_or("view");
             let log = self.run_dir.map(|d| d.join("logs").join(format!("{}-{mode_tag}.log", sanitize(&label))));
             let spawn = || worker::spawn_renderer(run, spec, &self.plan.scene.generator, self.blocks.clone(), log, run.resolution, run.in_flight + 2);
@@ -607,6 +626,10 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
 
     let save = plan.output.save.clone().map(|s| (s, run_dir.join("frames")));
     let mut out = Outputs::new(ui, plan.output.readback, save, plan.output.compare.as_ref().map(|c| c.every), run.frames);
+    let mut journal = journal::Journal::open(run_dir)?;
+    if !journal.kept.is_empty() {
+        tracing::info!("resumed: {} reports of passes an earlier run finished stand", journal.kept.len());
+    }
     let mut reports = vec![];
     for &mode in &run.modes {
         if plan.output.compare.is_some() {
@@ -624,19 +647,43 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         // temperature spread over all renderers instead of favouring whichever ran first.
         for repeat in 0..run.repeats.max(1) {
             let mut batch = vec![];
-            if run.parallel {
-                batch.extend(ctx.pass(&specs, mode, &base, &mut out, None, 0)?);
-            } else {
-                for s in &specs {
-                    batch.extend(ctx.pass(std::slice::from_ref(s), mode, &base, &mut out, None, 0)?);
-                    if out.ui.as_ref().is_some_and(|u| u.closed()) {
-                        reports.extend(batch);
-                        return Ok((reports, scene_features));
+            let groups: Vec<&[RendererSpec]> = if run.parallel { vec![&specs[..]] } else { specs.chunks(1).collect() };
+            for group in groups {
+                // The passes an earlier run finished stand; one it died in too often is failed.
+                let key = |s: &RendererSpec| journal::Key { label: ctx.label(s), mode: mode.name().to_string(), repeat };
+                let mut todo = vec![];
+                for s in group {
+                    let k = key(s);
+                    if journal.done(&k) {
+                        continue;
                     }
+                    if let Some(why) = journal.given_up(&k) {
+                        tracing::error!("[{}] {why}", k.label);
+                        let mut r = ctx.base_report(s, Some(mode));
+                        (r.error, r.repeat) = (Some(why), repeat);
+                        journal.finished(&k, std::slice::from_ref(&r))?;
+                        batch.push(r);
+                        continue;
+                    }
+                    journal.started(&k)?;
+                    todo.push(s.clone());
                 }
-            }
-            for r in &mut batch {
-                r.repeat = repeat;
+                if todo.is_empty() {
+                    continue;
+                }
+                let mut done = ctx.pass(&todo, mode, &base, &mut out, None, 0)?;
+                for r in &mut done {
+                    r.repeat = repeat;
+                }
+                // Run side by side, they end together: their reports written once.
+                for (i, s) in todo.iter().enumerate() {
+                    journal.finished(&key(s), if i == 0 { &done } else { &[] })?;
+                }
+                batch.extend(done);
+                if out.ui.as_ref().is_some_and(|u| u.closed()) {
+                    reports.extend(batch);
+                    return Ok((with_kept(journal.kept, reports), scene_features));
+                }
             }
             reports.extend(batch);
             // References are only compared once (first repetition); later ones would only
@@ -647,7 +694,16 @@ fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result
         }
         out.compare_every = plan.output.compare.as_ref().map(|c| c.every);
     }
-    Ok((reports, scene_features))
+    Ok((with_kept(journal.kept, reports), scene_features))
+}
+
+/// The reports of the passes earlier runs finished (`kept`, a resumed run's), then this run's;
+/// a reference both recorded, once (this run's).
+fn with_kept(kept: Vec<PassReport>, reports: Vec<PassReport>) -> Vec<PassReport> {
+    let fresh: std::collections::HashSet<_> = reports.iter().map(|r| (r.label.clone(), r.mode, r.repeat)).collect();
+    let mut all: Vec<PassReport> = kept.into_iter().filter(|r| !fresh.contains(&(r.label.clone(), r.mode, r.repeat))).collect();
+    all.extend(reports);
+    all
 }
 
 fn view(plan: &Plan, ui: UiHandle) -> anyhow::Result<()> {
