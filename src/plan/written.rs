@@ -46,14 +46,8 @@ pub fn graph_file(f: &str) -> anyhow::Result<mr_components::graph::Graph> {
     if let Some(g) = mr_components::graph::shipped(f) {
         return Ok(g);
     }
-    let shipped = mr_components::graph::SHIPPED
-        .iter()
-        .map(|(n, _)| *n)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let text = std::fs::read_to_string(f).with_context(|| {
-        format!("graph `{f}`: neither a shipped graph ({shipped}) nor a file that can be read")
-    })?;
+    let shipped = mr_components::graph::SHIPPED.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ");
+    let text = std::fs::read_to_string(f).with_context(|| format!("graph `{f}`: neither a shipped graph ({shipped}) nor a file that can be read"))?;
     toml::from_str(&text).with_context(|| format!("graph file `{f}`"))
 }
 
@@ -62,14 +56,10 @@ impl TryFrom<Written> for RendererSpec {
 
     fn try_from(w: Written) -> anyhow::Result<Self> {
         if w.graph.is_some() && !w.name.is_empty() {
-            bail!(
-                "a renderer has `graph` (a pipeline) or `name` (a standalone renderer), not both"
-            );
+            bail!("a renderer has `graph` (a pipeline) or `name` (a standalone renderer), not both");
         }
         if !w.edits.is_empty() && w.graph.is_none() {
-            bail!(
-                "`edits` change a `graph` (a file's name or the graph itself); this renderer has none"
-            );
+            bail!("`edits` change a `graph` (a file's name or the graph itself); this renderer has none");
         }
         let (graph, start) = match w.graph {
             None => (None, None),
@@ -78,22 +68,11 @@ impl TryFrom<Written> for RendererSpec {
                     GraphRef::Inline(g) => (*g, None),
                     GraphRef::File(f) => (graph_file(&f)?, Some(f)),
                 };
-                let g = g
-                    .with_edits(&w.edits)
-                    .map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
+                let g = g.with_edits(&w.edits).map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
                 (Some(g), file.map(|f| (f, w.edits)))
             }
         };
-        let mut s = Self {
-            graph,
-            start,
-            label: w.label,
-            options: w.options,
-            devices: w.devices,
-            compile: w.compile,
-            swept: w.swept,
-            ..Self::new(w.name)
-        };
+        let mut s = Self { graph, start, label: w.label, options: w.options, devices: w.devices, compile: w.compile, swept: w.swept, ..Self::new(w.name) };
         s.resolve()?;
         Ok(s)
     }

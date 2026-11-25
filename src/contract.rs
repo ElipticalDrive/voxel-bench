@@ -39,16 +39,8 @@ static STORAGE: [ComponentInfo; 1] = [ComponentInfo {
     name: PROBE,
     description: "A storage only a test registers.",
     impls: &[
-        Impl {
-            kind: Kind::Gpu,
-            apis: SHADER,
-            provides: &[Cap::Voxels, Cap::Lod],
-        },
-        Impl {
-            kind: Kind::Cpu,
-            apis: ISAS,
-            provides: &[Cap::Voxels],
-        },
+        Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Voxels, Cap::Lod] },
+        Impl { kind: Kind::Cpu, apis: ISAS, provides: &[Cap::Voxels] },
     ],
     needs: &[],
 }];
@@ -59,16 +51,8 @@ static WALK: [ComponentInfo; 1] = [ComponentInfo {
     name: PROBE,
     description: "A walk only a test registers.",
     impls: &[
-        Impl {
-            kind: Kind::Gpu,
-            apis: SHADER,
-            provides: &[Cap::Steps, Cap::Layers],
-        },
-        Impl {
-            kind: Kind::Cpu,
-            apis: ISAS,
-            provides: &[Cap::Steps, Cap::Layers],
-        },
+        Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Steps, Cap::Layers] },
+        Impl { kind: Kind::Cpu, apis: ISAS, provides: &[Cap::Steps, Cap::Layers] },
     ],
     needs: &[(Role::Storage, Cap::Voxels)],
 }];
@@ -78,11 +62,7 @@ static RAY_QUERY: [ComponentInfo; 1] = [ComponentInfo {
     role: Role::Traversal,
     name: PROBE,
     description: "A ray query only a test registers.",
-    impls: &[Impl {
-        kind: Kind::Gpu,
-        apis: &[Api::RayQuery],
-        provides: &[],
-    }],
+    impls: &[Impl { kind: Kind::Gpu, apis: &[Api::RayQuery], provides: &[] }],
     needs: &[(Role::Geometry, Cap::Accel)],
 }];
 
@@ -92,16 +72,8 @@ static HEIGHTS: [ComponentInfo; 1] = [ComponentInfo {
     name: PROBE,
     description: "A column storage only a test registers.",
     impls: &[
-        Impl {
-            kind: Kind::Gpu,
-            apis: &[Api::Compute],
-            provides: &[Cap::Heights],
-        },
-        Impl {
-            kind: Kind::Cpu,
-            apis: &[Api::Scalar],
-            provides: &[Cap::Heights],
-        },
+        Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[Cap::Heights] },
+        Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[Cap::Heights] },
     ],
     needs: &[],
 }];
@@ -112,16 +84,8 @@ static MARCH: [ComponentInfo; 1] = [ComponentInfo {
     name: PROBE,
     description: "A column march only a test registers.",
     impls: &[
-        Impl {
-            kind: Kind::Gpu,
-            apis: &[Api::Compute],
-            provides: &[],
-        },
-        Impl {
-            kind: Kind::Cpu,
-            apis: &[Api::Scalar],
-            provides: &[],
-        },
+        Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] },
+        Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] },
     ],
     needs: &[(Role::Storage, Cap::Heights)],
 }];
@@ -131,11 +95,7 @@ static SHADING: [ComponentInfo; 1] = [ComponentInfo {
     role: Role::Shading,
     name: PROBE,
     description: "A shading only a test registers.",
-    impls: &[Impl {
-        kind: Kind::Gpu,
-        apis: SHADER,
-        provides: &[Cap::Paths],
-    }],
+    impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Paths] }],
     needs: &[],
 }];
 
@@ -144,11 +104,7 @@ static DRAWER: [ComponentInfo; 1] = [ComponentInfo {
     role: Role::Draw,
     name: PROBE,
     description: "A drawer only a test registers.",
-    impls: &[Impl {
-        kind: Kind::Gpu,
-        apis: &[Api::Raster],
-        provides: &[Cap::MeshRays, Cap::Records],
-    }],
+    impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[Cap::MeshRays, Cap::Records] }],
     needs: &[],
 }];
 
@@ -157,11 +113,7 @@ static GEOMETRY: [ComponentInfo; 1] = [ComponentInfo {
     role: Role::Geometry,
     name: PROBE,
     description: "Geometry only a test registers.",
-    impls: &[Impl {
-        kind: Kind::Cpu,
-        apis: &[Api::Scalar],
-        provides: &[Cap::Quads, Cap::Accel],
-    }],
+    impls: &[Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[Cap::Quads, Cap::Accel] }],
     needs: &[],
 }];
 
@@ -170,11 +122,7 @@ static MESHES: [ComponentInfo; 1] = [ComponentInfo {
     role: Role::Meshes,
     name: PROBE,
     description: "A mesh drawer only a test registers.",
-    impls: &[Impl {
-        kind: Kind::Gpu,
-        apis: &[Api::Raster],
-        provides: &[Cap::RayLimit, Cap::FaceDepth],
-    }],
+    impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[Cap::RayLimit, Cap::FaceDepth] }],
     needs: &[],
 }];
 
@@ -183,11 +131,7 @@ static PREPASS: [ComponentInfo; 1] = [ComponentInfo {
     role: Role::Prepass,
     name: PROBE,
     description: "A prepass only a test registers.",
-    impls: &[Impl {
-        kind: Kind::Gpu,
-        apis: &[Api::Compute],
-        provides: &[],
-    }],
+    impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }],
     needs: &[(Role::Storage, Cap::Voxels)],
 }];
 
@@ -196,11 +140,7 @@ static HOLES: [ComponentInfo; 1] = [ComponentInfo {
     role: Role::Holes,
     name: PROBE,
     description: "Hole detection only a test registers.",
-    impls: &[Impl {
-        kind: Kind::Gpu,
-        apis: &[Api::Compute],
-        provides: &[],
-    }],
+    impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }],
     needs: &[],
 }];
 
@@ -209,11 +149,7 @@ static VISIBILITY: [ComponentInfo; 1] = [ComponentInfo {
     role: Role::Visibility,
     name: PROBE,
     description: "A visibility strategy only a test registers.",
-    impls: &[Impl {
-        kind: Kind::Gpu,
-        apis: SHADER,
-        provides: &[Cap::Layers],
-    }],
+    impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Layers] }],
     needs: &[],
 }];
 
@@ -224,28 +160,19 @@ fn none() -> Vec<graph::Change> {
 impl Probe {
     /// Shipped graph `file` with the node.
     fn base(&self, file: &str) -> Graph {
-        graph::shipped(file)
-            .unwrap()
-            .with_edits(&(self.added)())
-            .unwrap()
+        graph::shipped(file).unwrap().with_edits(&(self.added)()).unwrap()
     }
 
     /// `file` with the node, as `component`.
     fn with(&self, file: &str, component: &str) -> Option<Graph> {
-        self.base(file)
-            .edit(&graph::Change::component(self.node, component))
-            .ok()
+        self.base(file).edit(&graph::Change::component(self.node, component)).ok()
     }
 
     /// The pipeline of `file` with the node as `component`, as a plan writes it.
     fn spec(&self, file: &str, component: &str) -> anyhow::Result<RendererSpec> {
         let mut edits = (self.added)();
         edits.push(graph::Change::component(self.node, component));
-        RendererSpec::try_from(Written {
-            graph: Some(GraphRef::File(file.into())),
-            edits,
-            ..Default::default()
-        })
+        RendererSpec::try_from(Written { graph: Some(GraphRef::File(file.into())), edits, ..Default::default() })
     }
 }
 
@@ -253,12 +180,7 @@ impl Probe {
 fn class(spec: &RendererSpec, run: &RunSpec) -> Option<Like> {
     let info = spec.info(run, &[]).expect("a pipeline's info");
     let region = spec.region(run, info.features.max_lod());
-    Like::of(
-        &region,
-        spec.lighting(PassMode::LIT),
-        Leaves::of(&info.features, Some(PassMode::LIT), &[]),
-        run,
-    )
+    Like::of(&region, spec.lighting(PassMode::LIT), Leaves::of(&info.features, Some(PassMode::LIT), &[]), run)
 }
 
 fn offered_everywhere(p: &Probe) {
@@ -274,26 +196,15 @@ fn offered_everywhere(p: &Probe) {
     };
 
     // The registry.
-    check(
-        "registry",
-        graph::role_components(role).contains(&PROBE),
-        format!("`role_components({})` lacks it", role.name()),
-    );
+    check("registry", graph::role_components(role).contains(&PROBE), format!("`role_components({})` lacks it", role.name()));
 
     // What a node may be.
     let added = !(p.added)().is_empty();
     for &file in &files {
         let g = p.base(file);
         let choices = g.choices(node);
-        check(
-            "Graph::choices",
-            choices.contains(&PROBE),
-            format!("{file} `{node}` may be {choices:?}"),
-        );
-        if let Err(why) = g
-            .edit(&graph::Change::component(node, PROBE))
-            .and_then(|h| h.accept())
-        {
+        check("Graph::choices", choices.contains(&PROBE), format!("{file} `{node}` may be {choices:?}"));
+        if let Err(why) = g.edit(&graph::Change::component(node, PROBE)).and_then(|h| h.accept()) {
             check("Graph::choices", false, format!("{file} with it: {why}"));
         }
     }
@@ -303,66 +214,31 @@ fn offered_everywhere(p: &Probe) {
     for &file in &files {
         let renderer = toml::toml! { graph = file vary = [{ node = node, component = "*" }] };
         let mut renderer = toml::Value::Table(renderer);
-        renderer
-            .as_table_mut()
-            .unwrap()
-            .insert("edits".into(), toml::Value::try_from((p.added)()).unwrap());
+        renderer.as_table_mut().unwrap().insert("edits".into(), toml::Value::try_from((p.added)()).unwrap());
         let text = toml::to_string(&toml::toml! { renderer = [renderer] }).unwrap();
         let swept = Plan::parse(&format!("{base}{text}"), &[]);
-        let has = swept.as_ref().is_ok_and(|p| {
-            p.renderers.iter().any(|r| {
-                r.pipeline()
-                    .is_some_and(|g| g.nodes[node].component == PROBE)
-            })
-        });
-        check(
-            "sweep expansion",
-            has,
-            format!(
-                "{file} `{node} = *`: {:?}",
-                swept.map(|p| p
-                    .renderers
-                    .iter()
-                    .map(|r| r.label().to_string())
-                    .collect::<Vec<_>>())
-            ),
-        );
+        let has = swept.as_ref().is_ok_and(|p| p.renderers.iter().any(|r| r.pipeline().is_some_and(|g| g.nodes[node].component == PROBE)));
+        check("sweep expansion", has, format!("{file} `{node} = *`: {:?}", swept.map(|p| p.renderers.iter().map(|r| r.label().to_string()).collect::<Vec<_>>())));
     }
 
     // `multirenderer list`: the component, and the files that offer it.
     let list = crate::list().unwrap();
-    let line = list
-        .lines()
-        .find(|l| l.trim_start().starts_with(&format!("{PROBE} ")))
-        .unwrap_or_default()
-        .to_string();
+    let line = list.lines().find(|l| l.trim_start().starts_with(&format!("{PROBE} "))).unwrap_or_default().to_string();
     check("list", !line.is_empty(), "no line".into());
     for &file in files.iter().filter(|_| !added) {
-        check(
-            "list",
-            line.contains("(in ") && line.contains(file),
-            format!("not offered in {file}: `{line}`"),
-        );
+        check("list", line.contains("(in ") && line.contains(file), format!("not offered in {file}: `{line}`"));
     }
 
     // `multirenderer audit`: implemented and reached on each kind it has code for (the first
     // two files suffice; more are slow in debug builds).
     let first: Vec<&str> = files.iter().copied().take(2).collect();
-    let rows = if added {
-        vec![]
-    } else {
-        graph::audit_of(first.iter().copied(), false)
-    };
+    let rows = if added { vec![] } else { graph::audit_of(first.iter().copied(), false) };
     match rows.iter().find(|r| r.role == role && r.name == PROBE) {
         None => check("audit", added, "no row".into()),
         Some(r) => {
             for i in p.registered[0].impls {
                 let u = &r.on[graph::kind_index(i.kind)];
-                check(
-                    "audit",
-                    r.registered && !u.apis.is_empty() && first.iter().any(|f| u.files.contains(f)),
-                    format!("{}: {u:?}", i.kind.name()),
-                );
+                check("audit", r.registered && !u.apis.is_empty() && first.iter().any(|f| u.files.contains(f)), format!("{}: {u:?}", i.kind.name()));
             }
         }
     }
@@ -385,47 +261,25 @@ fn offered_everywhere(p: &Probe) {
     // Beside its twin: a component with other inputs (a path tracer's `bounce`) checks into
     // another graph than one without.
     let (file, twin) = p.files[0];
-    match (
-        p.with(file, PROBE),
-        p.with(file, PROBE).and(p.with(file, twin)),
-    ) {
+    match (p.with(file, PROBE), p.with(file, PROBE).and(p.with(file, twin))) {
         (Some(g), Some(like)) => {
             let cat = crate::catalogue::Catalogue::build(&[obs(like, 100.0), obs(g, 120.0)], 35.0);
-            let row = cat
-                .components
-                .iter()
-                .find(|c| c.role == role.name())
-                .and_then(|c| c.rows.iter().find(|r| r.0 == PROBE));
-            check(
-                "catalogue",
-                row.is_some_and(|r| r.2 == 1),
-                format!("{:?}", cat.components),
-            );
+            let row = cat.components.iter().find(|c| c.role == role.name()).and_then(|c| c.rows.iter().find(|r| r.0 == PROBE));
+            check("catalogue", row.is_some_and(|r| r.2 == 1), format!("{:?}", cat.components));
         }
         _ => check("catalogue", false, format!("{file}: no graph with it")),
     }
 
     // A reference class: its lit frames are scored like those of the registered twin, from
     // what it declares.
-    let run = RunSpec {
-        max_lod: 2,
-        ..RunSpec::default()
-    };
+    let run = RunSpec { max_lod: 2, ..RunSpec::default() };
     for &(file, twin) in p.files {
         match (p.spec(file, PROBE), p.spec(file, twin)) {
             (Ok(probe), Ok(like)) => {
                 let (a, b) = (class(&probe, &run), class(&like, &run));
-                check(
-                    "reference class",
-                    a == b,
-                    format!("{file}: {a:?}, {twin} {b:?}"),
-                );
+                check("reference class", a == b, format!("{file}: {a:?}, {twin} {b:?}"));
             }
-            (probe, _) => check(
-                "reference class",
-                false,
-                format!("{file}: {:?}", probe.err()),
-            ),
+            (probe, _) => check("reference class", false, format!("{file}: {:?}", probe.err())),
         }
     }
 
@@ -434,38 +288,19 @@ fn offered_everywhere(p: &Probe) {
         let g = p.base(file);
         let options = crate::gui::graph::component_options(&g, node);
         let pick = options.iter().find(|o| o.0 == PROBE);
-        check(
-            "GUI choices",
-            pick.is_some(),
-            format!(
-                "{file}: {:?}",
-                options.iter().map(|o| &o.0).collect::<Vec<_>>()
-            ),
-        );
+        check("GUI choices", pick.is_some(), format!("{file}: {:?}", options.iter().map(|o| &o.0).collect::<Vec<_>>()));
         if let Some((.., change, _, _)) = pick {
             let spec = p.spec(file, twin).unwrap();
             let mut trial = crate::gui::graph::model::Trial::new(spec.clone(), g.clone());
-            check(
-                "GUI choices",
-                trial.try_change(change, &[]).is_ok(),
-                format!("{file}: greyed: {:?}", trial.try_change(change, &[]).err()),
-            );
-            let knob = spec
-                .component_knobs()
-                .into_iter()
-                .find(|k| k.name == format!("{node}.component"));
+            check("GUI choices", trial.try_change(change, &[]).is_ok(), format!("{file}: greyed: {:?}", trial.try_change(change, &[]).err()));
+            let knob = spec.component_knobs().into_iter().find(|k| k.name == format!("{node}.component"));
             check("GUI choices", knob.as_ref().is_some_and(|k| matches!(&k.kind, mr_core::ParamKind::Choice(v) if v.iter().any(|c| c == PROBE))), format!("{file}: the tuner's `{node}.component`: {knob:?}"));
         }
     }
 
     let mut places: Vec<&str> = missing.iter().map(|(p, _)| *p).collect();
     places.dedup();
-    assert_eq!(
-        places,
-        p.debt,
-        "a newly registered {} is missing from (place, why): {missing:#?}",
-        role.name()
-    );
+    assert_eq!(places, p.debt, "a newly registered {} is missing from (place, why): {missing:#?}", role.name());
 }
 
 #[test]
@@ -484,12 +319,7 @@ fn a_registered_walk_is_offered_everywhere() {
     offered_everywhere(&Probe {
         registered: &WALK,
         node: "kernel",
-        files: &[
-            ("raycast-gpu", "incremental"),
-            ("raycast-cpu", "incremental"),
-            ("raster-gpu", "incremental"),
-            ("raster-cpu", "incremental"),
-        ],
+        files: &[("raycast-gpu", "incremental"), ("raycast-cpu", "incremental"), ("raster-gpu", "incremental"), ("raster-cpu", "incremental")],
         added: none,
         debt: &[],
     });
@@ -522,10 +352,7 @@ fn a_registered_column_march_is_offered_everywhere() {
     offered_everywhere(&Probe {
         registered: &MARCH,
         node: "kernel",
-        files: &[
-            ("columns-gpu", "heightfield"),
-            ("columns-cpu", "heightfield"),
-        ],
+        files: &[("columns-gpu", "heightfield"), ("columns-cpu", "heightfield")],
         added: none,
         debt: &[],
     });
@@ -536,12 +363,7 @@ fn a_registered_shading_is_offered_everywhere() {
     offered_everywhere(&Probe {
         registered: &SHADING,
         node: "shading",
-        files: &[
-            ("raycast-gpu", "pathtrace"),
-            ("raster-gpu", "pathtrace"),
-            ("rayquery-gpu", "pathtrace"),
-            ("splat-gpu", "pathtrace"),
-        ],
+        files: &[("raycast-gpu", "pathtrace"), ("raster-gpu", "pathtrace"), ("rayquery-gpu", "pathtrace"), ("splat-gpu", "pathtrace")],
         added: none,
         debt: &[],
     });
@@ -552,11 +374,7 @@ fn a_registered_drawer_is_offered_everywhere() {
     offered_everywhere(&Probe {
         registered: &DRAWER,
         node: "draw",
-        files: &[
-            ("raster-gpu", "gbuffer"),
-            ("discover-gpu", "gbuffer"),
-            ("discover-cpu", "gbuffer"),
-        ],
+        files: &[("raster-gpu", "gbuffer"), ("discover-gpu", "gbuffer"), ("discover-cpu", "gbuffer")],
         added: none,
         debt: &[],
     });
@@ -567,11 +385,7 @@ fn a_registered_geometry_is_offered_everywhere() {
     offered_everywhere(&Probe {
         registered: &GEOMETRY,
         node: "geometry",
-        files: &[
-            ("raster-gpu", "greedy"),
-            ("raster-cpu", "greedy"),
-            ("rayquery-gpu", "greedy"),
-        ],
+        files: &[("raster-gpu", "greedy"), ("raster-cpu", "greedy"), ("rayquery-gpu", "greedy")],
         added: none,
         debt: &[],
     });
@@ -596,11 +410,7 @@ fn a_registered_prepass_is_offered_everywhere() {
         files: &[("raycast-gpu", "beam")],
         added: || {
             use graph::Change;
-            vec![
-                Change::add("prepass", Role::Prepass, "beam"),
-                Change::bind("prepass", "storage", "storage"),
-                Change::bind("visibility", "start", "prepass"),
-            ]
+            vec![Change::add("prepass", Role::Prepass, "beam"), Change::bind("prepass", "storage", "storage"), Change::bind("visibility", "start", "prepass")]
         },
         debt: &[],
     });
@@ -643,15 +453,7 @@ fn a_registered_visibility_is_offered_everywhere() {
         node: "visibility",
         files: &[("raycast-gpu", "raycast")],
         added: none,
-        debt: &[
-            "Graph::choices",
-            "sweep expansion",
-            "list",
-            "audit",
-            "catalogue",
-            "reference class",
-            "GUI choices",
-        ],
+        debt: &["Graph::choices", "sweep expansion", "list", "audit", "catalogue", "reference class", "GUI choices"],
     });
 }
 
@@ -665,62 +467,36 @@ fn a_registered_visibility_is_offered_everywhere() {
 #[test]
 fn keys_stay_across_turns() {
     use mr_components::knobs;
-    let shipped = || {
-        graph::SHIPPED
-            .iter()
-            .map(|(name, _)| (*name, graph::shipped(name).unwrap()))
-    };
+    let shipped = || graph::SHIPPED.iter().map(|(name, _)| (*name, graph::shipped(name).unwrap()));
     let seen = |g: &Graph| (g.key().unwrap(), g.label().unwrap());
     let before: Vec<_> = shipped().map(|(_, g)| seen(&g)).collect();
     mr_components::register_on_this_thread(&STORAGE);
-    assert_eq!(
-        shipped().map(|(_, g)| seen(&g)).collect::<Vec<_>>(),
-        before,
-        "registering a component moved a shipped graph's key or label"
-    );
+    assert_eq!(shipped().map(|(_, g)| seen(&g)).collect::<Vec<_>>(), before, "registering a component moved a shipped graph's key or label");
 
     // Knobs at their defaults, on every node of every shipped graph as every component it may be.
     let mut tried = 0;
     for (name, g) in shipped() {
         for id in g.nodes.keys() {
             for c in g.choices(id) {
-                let Ok(h) = g.edit(&graph::Change::component(id, c)) else {
-                    continue;
-                };
+                let Ok(h) = g.edit(&graph::Change::component(id, c)) else { continue };
                 if h.key().is_err() {
                     continue;
                 }
                 let role = h.nodes[id].role;
-                for (knob, d) in knobs::DEFAULTS
-                    .iter()
-                    .filter(|(r, n, _)| *r == role && *n == c)
-                    .flat_map(|(_, _, ks)| ks.iter())
-                {
+                for (knob, d) in knobs::DEFAULTS.iter().filter(|(r, n, _)| *r == role && *n == c).flat_map(|(_, _, ks)| ks.iter()) {
                     let set = |v: toml::Value| {
                         let mut s = h.clone();
-                        s.nodes
-                            .get_mut(id)
-                            .unwrap()
-                            .knobs
-                            .insert(knob.to_string(), v);
+                        s.nodes.get_mut(id).unwrap().knobs.insert(knob.to_string(), v);
                         s
                     };
-                    assert_eq!(
-                        seen(&set(d.value())),
-                        seen(&h),
-                        "{name} `{id}` = {c}: {knob} at its default keys apart"
-                    );
+                    assert_eq!(seen(&set(d.value())), seen(&h), "{name} `{id}` = {c}: {knob} at its default keys apart");
                     let off = match *d {
                         knobs::Value::Bool(b) => (!b).into(),
                         knobs::Value::Int(i) => (i + 1).into(),
                         knobs::Value::Float(f) => (f + 1.0).into(),
                         knobs::Value::Str(s) => format!("{s}-not").into(),
                     };
-                    assert_ne!(
-                        set(off).key().unwrap(),
-                        h.key().unwrap(),
-                        "{name} `{id}` = {c}: {knob} off its default keys as unset"
-                    );
+                    assert_ne!(set(off).key().unwrap(), h.key().unwrap(), "{name} `{id}` = {c}: {knob} off its default keys as unset");
                     tried += 1;
                 }
             }
@@ -730,44 +506,22 @@ fn keys_stay_across_turns() {
 
     // The identities: written out, the same graph; another component there, another.
     for (name, g) in shipped() {
-        for role in Role::ALL
-            .iter()
-            .copied()
-            .filter(|r| graph::identity(*r).is_some())
-        {
+        for role in Role::ALL.iter().copied().filter(|r| graph::identity(*r).is_some()) {
             if g.nodes.values().any(|n| n.role == role) {
                 continue;
             }
             let with = |c: &str| {
                 let mut edits = vec![graph::Change::add(role.name(), role, c)];
                 if role == Role::Post {
-                    let shading = g
-                        .nodes
-                        .iter()
-                        .find(|(_, n)| n.role == Role::Shading)
-                        .map(|(k, _)| k.clone())
-                        .unwrap();
+                    let shading = g.nodes.iter().find(|(_, n)| n.role == Role::Shading).map(|(k, _)| k.clone()).unwrap();
                     edits.push(graph::Change::bind(role.name(), "image", &shading));
                 }
                 g.with_edits(&edits).unwrap()
             };
             let identity = graph::identity(role).unwrap();
-            assert_eq!(
-                seen(&with(identity)),
-                seen(&g),
-                "{name} with its {} `{identity}` written out",
-                role.name()
-            );
-            if let Some(other) = graph::role_components(role)
-                .into_iter()
-                .find(|c| *c != identity && with(c).key().is_ok())
-            {
-                assert_ne!(
-                    with(other).key().unwrap(),
-                    g.key().unwrap(),
-                    "{name} with its {} `{other}`",
-                    role.name()
-                );
+            assert_eq!(seen(&with(identity)), seen(&g), "{name} with its {} `{identity}` written out", role.name());
+            if let Some(other) = graph::role_components(role).into_iter().find(|c| *c != identity && with(c).key().is_ok()) {
+                assert_ne!(with(other).key().unwrap(), g.key().unwrap(), "{name} with its {} `{other}`", role.name());
             }
         }
     }
@@ -781,52 +535,21 @@ fn knob_defaults_are_the_executors() {
     use std::collections::{BTreeMap, BTreeSet};
     let mut declared: BTreeMap<(String, String, String), BTreeSet<String>> = BTreeMap::new();
     for b in graph::REGIONS {
-        let info = if b.executor() == "cpu" {
-            mr_exec_cpu::info(b.id)
-        } else {
-            mr_exec_gpu::info(b.id)
-        };
+        let info = if b.executor() == "cpu" { mr_exec_cpu::info(b.id) } else { mr_exec_gpu::info(b.id) };
         for p in &info.params {
-            let Some((role, components)) = &p.owner else {
-                continue;
-            };
-            let v = toml::Value::try_from(p.default.to_json())
-                .unwrap()
-                .to_string();
+            let Some((role, components)) = &p.owner else { continue };
+            let v = toml::Value::try_from(p.default.to_json()).unwrap().to_string();
             for c in components {
-                declared
-                    .entry((role.clone(), c.clone(), p.name.clone()))
-                    .or_default()
-                    .insert(v.clone());
+                declared.entry((role.clone(), c.clone(), p.name.clone())).or_default().insert(v.clone());
             }
         }
     }
-    let want: BTreeMap<_, _> = declared
-        .into_iter()
-        .filter(|(_, v)| v.len() == 1)
-        .map(|(k, v)| (k, v.into_iter().next().unwrap()))
-        .collect();
+    let want: BTreeMap<_, _> = declared.into_iter().filter(|(_, v)| v.len() == 1).map(|(k, v)| (k, v.into_iter().next().unwrap())).collect();
     let have: BTreeMap<_, _> = mr_components::knobs::DEFAULTS
         .iter()
-        .flat_map(|(r, c, ks)| {
-            ks.iter().map(move |(k, d)| {
-                (
-                    (r.name().to_string(), c.to_string(), k.to_string()),
-                    d.value().to_string(),
-                )
-            })
-        })
+        .flat_map(|(r, c, ks)| ks.iter().map(move |(k, d)| ((r.name().to_string(), c.to_string(), k.to_string()), d.value().to_string())))
         .collect();
-    let missing: Vec<_> = want
-        .iter()
-        .filter(|(k, v)| have.get(*k) != Some(v))
-        .collect();
-    let extra: Vec<_> = have
-        .iter()
-        .filter(|(k, _)| !want.contains_key(*k))
-        .collect();
-    assert!(
-        missing.is_empty() && extra.is_empty(),
-        "knobs::DEFAULTS differs from the executors' knobs: to add or correct (role, component, knob) = default: {missing:#?}; to remove: {extra:#?}"
-    );
+    let missing: Vec<_> = want.iter().filter(|(k, v)| have.get(*k) != Some(v)).collect();
+    let extra: Vec<_> = have.iter().filter(|(k, _)| !want.contains_key(*k)).collect();
+    assert!(missing.is_empty() && extra.is_empty(), "knobs::DEFAULTS differs from the executors' knobs: to add or correct (role, component, knob) = default: {missing:#?}; to remove: {extra:#?}");
 }

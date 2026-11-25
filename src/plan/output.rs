@@ -68,15 +68,9 @@ impl CompareSpec {
     /// (0: no settled pass): `settle` for late edges, enough for `converge` paths per pixel
     /// where it accumulates, the larger.
     pub fn held(&self, spec: &RendererSpec, m: PassMode) -> u32 {
-        let late = if spec.late().is_empty() {
-            0
-        } else {
-            self.settle
-        };
+        let late = if spec.late().is_empty() { 0 } else { self.settle };
         // The compared frame's own render is the first of them.
-        let converge = spec
-            .accumulates(m)
-            .map_or(0, |spp| self.converge.div_ceil(spp).saturating_sub(1));
+        let converge = spec.accumulates(m).map_or(0, |spp| self.converge.div_ceil(spp).saturating_sub(1));
         late.max(converge)
     }
 }

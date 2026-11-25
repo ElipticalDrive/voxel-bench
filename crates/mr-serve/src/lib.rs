@@ -61,15 +61,11 @@ impl FrameSink for Sink<'_> {
             let t0 = std::time::Instant::now();
             let dst = self.shm.slot_mut(s);
             if px.len() > dst.len() {
-                self.error
-                    .get_or_insert(anyhow::anyhow!("frame of {} bytes exceeds slot", px.len()));
+                self.error.get_or_insert(anyhow::anyhow!("frame of {} bytes exceeds slot", px.len()));
                 return;
             }
             dst[..px.len()].copy_from_slice(px);
-            frame
-                .stats
-                .counters
-                .push(("readback_shm_ms".into(), t0.elapsed().as_secs_f64() * 1e3));
+            frame.stats.counters.push(("readback_shm_ms".into(), t0.elapsed().as_secs_f64() * 1e3));
         }
         let msg = WorkerMsg::FrameDone {
             frame_id: frame.frame_id,
@@ -86,17 +82,9 @@ impl FrameSink for Sink<'_> {
 
 /// Connects to the host at `socket` and serves one of `entries` until shutdown. `devices`
 /// opens the process's devices for the configuration the host sends.
-pub fn run(
-    socket: &str,
-    entries: Vec<RendererEntry>,
-    devices: fn(&mr_core::DeviceConfig) -> mr_core::Devices,
-) -> anyhow::Result<()> {
+pub fn run(socket: &str, entries: Vec<RendererEntry>, devices: fn(&mr_core::DeviceConfig) -> mr_core::Devices) -> anyhow::Result<()> {
     let (mut input, mut out) = mr_ipc::split::<HostMsg, WorkerMsg>(mr_ipc::connect(socket)?);
-    out.send(&WorkerMsg::Hello {
-        pid: std::process::id(),
-        protocol: PROTOCOL_VERSION,
-        renderers: entries.iter().map(|e| e.name.to_string()).collect(),
-    })?;
+    out.send(&WorkerMsg::Hello { pid: std::process::id(), protocol: PROTOCOL_VERSION, renderers: entries.iter().map(|e| e.name.to_string()).collect() })?;
 
     // Drain the socket on a separate thread so the host never blocks on a busy renderer.
     // The renderer's waker feeds the same queue, so completions are handled promptly.
@@ -105,44 +93,38 @@ pub fn run(
     let waker = Waker::new(move || {
         let _ = wake_tx.send(Input::Wake);
     });
-    std::thread::Builder::new()
-        .name("ipc-reader".into())
-        .spawn(move || {
-            let mut shutdown = false;
-            loop {
-                match input.recv() {
-                    Ok(Some(m)) => {
-                        shutdown |= matches!(m, HostMsg::Shutdown);
-                        if tx.send(Input::Host(m)).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        tracing::error!("ipc read failed: {e:#}");
+    std::thread::Builder::new().name("ipc-reader".into()).spawn(move || {
+        let mut shutdown = false;
+        loop {
+            match input.recv() {
+                Ok(Some(m)) => {
+                    shutdown |= matches!(m, HostMsg::Shutdown);
+                    if tx.send(Input::Host(m)).is_err() {
                         break;
                     }
                 }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::error!("ipc read failed: {e:#}");
+                    break;
+                }
             }
-            // The host is gone without asking us to stop: nobody is left to report to, and a
-            // hung renderer would keep the process (and its device memory) alive forever.
-            if !shutdown && OWN_PROCESS.load(std::sync::atomic::Ordering::Relaxed) {
-                // The host's death usually took the log pipe with it: a failed write must not
-                // stop the exit (tracing-subscriber reports it with `eprintln!`, which panics).
-                let _ = std::panic::catch_unwind(|| {
-                    tracing::warn!("the host closed the connection without a shutdown; exiting")
-                });
-                std::process::exit(3);
-            }
-        })?;
+        }
+        // The host is gone without asking us to stop: nobody is left to report to, and a
+        // hung renderer would keep the process (and its device memory) alive forever.
+        if !shutdown && OWN_PROCESS.load(std::sync::atomic::Ordering::Relaxed) {
+            // The host's death usually took the log pipe with it: a failed write must not
+            // stop the exit (tracing-subscriber reports it with `eprintln!`, which panics).
+            let _ = std::panic::catch_unwind(|| tracing::warn!("the host closed the connection without a shutdown; exiting"));
+            std::process::exit(3);
+        }
+    })?;
 
     // A panic is the renderer's failure, said to the host like an error: unwinding alone
     // would leave the socket open (the reader thread holds it), and with thread isolation the
     // host would wait for a message that never comes.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        serve(&rx, &mut out, waker, entries, devices)
-    }))
-    .unwrap_or_else(|p| Err(anyhow::anyhow!("panicked: {}", panic_message(&*p))));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&rx, &mut out, waker, entries, devices)))
+        .unwrap_or_else(|p| Err(anyhow::anyhow!("panicked: {}", panic_message(&*p))));
     if let Err(e) = &result {
         let _ = out.send(&WorkerMsg::Error(format!("{e:#}")));
     }
@@ -151,10 +133,7 @@ pub fn run(
 
 /// The text of a panic's payload.
 fn panic_message(p: &(dyn std::any::Any + Send)) -> &str {
-    p.downcast_ref::<&str>()
-        .copied()
-        .or_else(|| p.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("(no message)")
+    p.downcast_ref::<&str>().copied().or_else(|| p.downcast_ref::<String>().map(String::as_str)).unwrap_or("(no message)")
 }
 
 /// The messages the link delivered by `time`.
@@ -171,25 +150,11 @@ enum Input {
     Wake,
 }
 
-fn serve(
-    rx: &crossbeam_channel::Receiver<Input>,
-    out: &mut MsgWriter<WorkerMsg>,
-    waker: Waker,
-    entries: Vec<RendererEntry>,
-    devices: fn(&mr_core::DeviceConfig) -> mr_core::Devices,
-) -> anyhow::Result<()> {
-    let Ok(Input::Host(HostMsg::Init {
-        renderer: name,
-        mut params,
-        shm,
-    })) = rx.recv()
-    else {
+fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>, waker: Waker, entries: Vec<RendererEntry>, devices: fn(&mr_core::DeviceConfig) -> mr_core::Devices) -> anyhow::Result<()> {
+    let Ok(Input::Host(HostMsg::Init { renderer: name, mut params, shm })) = rx.recv() else {
         bail!("expected Init as first message");
     };
-    let entry = entries
-        .into_iter()
-        .find(|e| e.name == name)
-        .with_context(|| format!("unknown renderer `{name}`"))?;
+    let entry = entries.into_iter().find(|e| e.name == name).with_context(|| format!("unknown renderer `{name}`"))?;
     let info = (entry.info)(&params)?;
     tracing::info!("initialising {name} at {}x{}", params.width, params.height);
     let t = Instant::now();
@@ -218,11 +183,7 @@ fn serve(
         renderer = Box::new(fault::Faulty::new(renderer, f));
     }
     let mut shm = FrameSlots::open(&shm)?;
-    out.send(&WorkerMsg::Ready {
-        info,
-        init_ms: t.elapsed().as_secs_f32() * 1e3,
-        shaders: mr_core::shader_clock::take(),
-    })?;
+    out.send(&WorkerMsg::Ready { info, init_ms: t.elapsed().as_secs_f32() * 1e3, shaders: mr_core::shader_clock::take() })?;
 
     let mut slots = HashMap::new();
     let mut update_ms = 0f32;
@@ -230,13 +191,7 @@ fn serve(
     let mut free_bytes = 0u64;
     while let Ok(msg) = rx.recv() {
         let mut new_shm = None;
-        let mut sink = Sink {
-            out,
-            shm: &mut shm,
-            slots: &mut slots,
-            update_ms: &mut update_ms,
-            error: None,
-        };
+        let mut sink = Sink { out, shm: &mut shm, slots: &mut slots, update_ms: &mut update_ms, error: None };
         let msg = match msg {
             Input::Wake => {
                 renderer.poll(&mut sink)?;
@@ -250,10 +205,7 @@ fn serve(
         match msg {
             HostMsg::Stream { updates, at, time } => {
                 if link.is_none() {
-                    free_bytes += updates
-                        .iter()
-                        .map(|u| mr_core::link::wire_bytes(u) as u64)
-                        .sum::<u64>();
+                    free_bytes += updates.iter().map(|u| mr_core::link::wire_bytes(u) as u64).sum::<u64>();
                 }
                 let t = Instant::now();
                 let mut ups = vec![];
@@ -285,22 +237,10 @@ fn serve(
                 *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
             }
             // A client generating the world follows its own generator's region.
-            HostMsg::Follow { radii } => client.follow(
-                if generating.is_some() {
-                    reach(&client)
-                } else {
-                    radii
-                }
-                .as_slice(),
-            ),
+            HostMsg::Follow { radii } => client.follow(if generating.is_some() { reach(&client) } else { radii }.as_slice()),
             HostMsg::Generate { world, budget } => {
-                let spec: mr_world::GenSpec =
-                    serde_json::from_str(&world).context("the world's generator spec")?;
-                generating = Some(Generating::new(
-                    &spec,
-                    reach(&client),
-                    budget.map(|b| b as usize),
-                ));
+                let spec: mr_world::GenSpec = serde_json::from_str(&world).context("the world's generator spec")?;
+                generating = Some(Generating::new(&spec, reach(&client), budget.map(|b| b as usize)));
             }
             HostMsg::Meshes(m) => {
                 let t = Instant::now();
@@ -329,39 +269,24 @@ fn serve(
                     renderer.update(ups)?;
                     *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
                 }
-                let holes = link.as_ref().map_or(0, |l| l.chunks_in_flight())
-                    + generating.as_ref().map_or(0, |g| g.pending());
-                let (bytes, arrived) = link.as_ref().map_or((free_bytes, free_bytes), |l| {
-                    (l.stats().bytes, l.stats().arrived)
-                });
-                let arrivals = Arrivals {
-                    bytes,
-                    arrived,
-                    holes: holes as u32,
-                };
-                sink.slots
-                    .insert(req.frame_id, (slot.filter(|_| req.readback), arrivals));
+                let holes = link.as_ref().map_or(0, |l| l.chunks_in_flight()) + generating.as_ref().map_or(0, |g| g.pending());
+                let (bytes, arrived) = link.as_ref().map_or((free_bytes, free_bytes), |l| (l.stats().bytes, l.stats().arrived));
+                let arrivals = Arrivals { bytes, arrived, holes: holes as u32 };
+                sink.slots.insert(req.frame_id, (slot.filter(|_| req.readback), arrivals));
                 renderer.render(&req, &mut sink)?;
             }
             HostMsg::Flush => {
                 renderer.flush(&mut sink)?;
                 sink.out.send(&WorkerMsg::Flushed)?;
             }
-            HostMsg::Resize {
-                width,
-                height,
-                shm: spec,
-            } => {
+            HostMsg::Resize { width, height, shm: spec } => {
                 renderer.flush(&mut sink)?;
                 renderer.resize(width, height)?;
                 new_shm = Some(spec);
             }
             HostMsg::Edit(edits) => {
                 if let Err(e) = renderer.edit(&edits) {
-                    sink.out.send(&WorkerMsg::ParamError {
-                        name: "edit".into(),
-                        error: format!("{e:#}"),
-                    })?;
+                    sink.out.send(&WorkerMsg::ParamError { name: "edit".into(), error: format!("{e:#}") })?;
                 }
             }
             HostMsg::SetParams(ps) => {
@@ -369,18 +294,12 @@ fn serve(
                     // The client's region (the host's `view_radius`, `max_lod`).
                     let level = || value.as_i64().map(|v| v.clamp(0, 255) as u32);
                     let r = match name.as_str() {
-                        "client.radius" => level()
-                            .map(|v| client.set_radius(v))
-                            .context("client.radius takes an integer"),
-                        "client.max_lod" => level()
-                            .map(|v| client.set_max_lod((v as u8).min(supported)))
-                            .context("client.max_lod takes an integer"),
+                        "client.radius" => level().map(|v| client.set_radius(v)).context("client.radius takes an integer"),
+                        "client.max_lod" => level().map(|v| client.set_max_lod((v as u8).min(supported))).context("client.max_lod takes an integer"),
                         _ => renderer.set_param(&name, &value),
                     };
                     // Its generator follows the client's region.
-                    if let (Some(g), "client.radius" | "client.max_lod") =
-                        (&mut generating, name.as_str())
-                    {
+                    if let (Some(g), "client.radius" | "client.max_lod") = (&mut generating, name.as_str()) {
                         let (mut local, mut ups) = (vec![], vec![]);
                         g.set_radii(&reach(&client), &mut local);
                         client.receive(&local, &mut ups);
@@ -389,10 +308,7 @@ fn serve(
                         }
                     }
                     if let Err(e) = r {
-                        sink.out.send(&WorkerMsg::ParamError {
-                            name,
-                            error: format!("{e:#}"),
-                        })?;
+                        sink.out.send(&WorkerMsg::ParamError { name, error: format!("{e:#}") })?;
                     }
                 }
             }

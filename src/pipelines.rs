@@ -67,9 +67,7 @@ impl Executor {
 
 /// The executor that runs `g` (`Graph::runs_on`) and the info of its region that builds the
 /// graph's shape (`None`: no region of that executor does, so no generated pipeline runs it).
-pub(crate) fn executor_info(
-    g: &mr_components::graph::Graph,
-) -> Option<(Executor, mr_core::RendererInfo)> {
+pub(crate) fn executor_info(g: &mr_components::graph::Graph) -> Option<(Executor, mr_core::RendererInfo)> {
     let region = g.region().filter(|b| b.executor() == g.runs_on())?.id;
     Some(match g.runs_on() {
         "cpu" => (Executor::Cpu, mr_exec_cpu::info(region)),
@@ -79,10 +77,7 @@ pub(crate) fn executor_info(
 
 /// What the pipeline of `g` on `devices` supports and its knobs: its executor's region
 /// narrowed by the graph and its devices (`Checked::narrow`), as its worker reports it.
-pub(crate) fn graph_info(
-    g: &mr_components::graph::Graph,
-    devices: &mr_core::DeviceConfig,
-) -> Option<mr_core::RendererInfo> {
+pub(crate) fn graph_info(g: &mr_components::graph::Graph, devices: &mr_core::DeviceConfig) -> Option<mr_core::RendererInfo> {
     executor_info(g).map(|(_, mut i)| {
         if let Ok(c) = g.check() {
             c.narrow(&mut i.features, devices);
@@ -92,9 +87,7 @@ pub(crate) fn graph_info(
 }
 
 /// The executor that runs `g` and the knobs of its region (see [`executor_info`]).
-pub(crate) fn executor_of(
-    g: &mr_components::graph::Graph,
-) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
+pub(crate) fn executor_of(g: &mr_components::graph::Graph) -> Option<(Executor, Vec<mr_core::ParamSpec>)> {
     executor_info(g).map(|(e, i)| (e, i.params))
 }
 
@@ -110,12 +103,8 @@ pub struct Compiled {
 /// What a renderer run by an executor bakes in (`None` for other renderers).
 pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
     use mr_components::graph::{Device, Role};
-    let Some(mut graph) = spec.worker_graph()? else {
-        return Ok(None);
-    };
-    let Some((executor, params)) = executor_of(&graph) else {
-        return Ok(None);
-    };
+    let Some(mut graph) = spec.worker_graph()? else { return Ok(None) };
+    let Some((executor, params)) = executor_of(&graph) else { return Ok(None) };
     // The knobs the generated code bakes: those declared specialisable (`ParamSpec::baked`)
     // on a node of the graph, each valued on every node of its owner in the graph the worker
     // gets (given there, else its default): what the worker checks the build against. Only
@@ -123,24 +112,13 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
     // code); the GPU executor's crate builds its CPU work natively and bakes no knob, its
     // specialisable knobs being the shaders', which every build compiles in itself.
     let mut baked: Vec<(String, toml::Value)> = vec![];
-    for p in params
-        .iter()
-        .filter(|p| executor == Executor::Cpu && p.baked && p.owner.is_some())
-    {
+    for p in params.iter().filter(|p| executor == Executor::Cpu && p.baked && p.owner.is_some()) {
         let k = p.name.as_str();
         let (role, comps) = p.owner.as_ref().unwrap();
         let default = toml::Value::try_from(p.default.to_json())?;
         let mut value = None;
-        for n in graph
-            .nodes
-            .values_mut()
-            .filter(|n| n.role.name() == *role && comps.contains(&n.component))
-        {
-            let v = n
-                .knobs
-                .entry(k.to_string())
-                .or_insert_with(|| default.clone())
-                .clone();
+        for n in graph.nodes.values_mut().filter(|n| n.role.name() == *role && comps.contains(&n.component)) {
+            let v = n.knobs.entry(k.to_string()).or_insert_with(|| default.clone()).clone();
             if value.get_or_insert_with(|| v.clone()) != &v {
                 bail!("`{k}` differs between nodes: one build bakes one value");
             }
@@ -151,77 +129,34 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
     // A knob changed between frames and not specialisable is read at run time by every
     // build alike (`view`): the build is the same without it.
     for p in params.iter().filter(|p| !p.baked && p.live) {
-        let Some((role, comps)) = &p.owner else {
-            continue;
-        };
-        for n in graph
-            .nodes
-            .values_mut()
-            .filter(|n| n.role.name() == *role && comps.contains(&n.component))
-        {
+        let Some((role, comps)) = &p.owner else { continue };
+        for n in graph.nodes.values_mut().filter(|n| n.role.name() == *role && comps.contains(&n.component)) {
             n.knobs.remove(&p.name);
         }
     }
     let ck = graph.check().map_err(anyhow::Error::msg)?;
-    let rust = |v: &toml::Value| -> anyhow::Result<String> {
-        Ok(format!("{:?}", serde_json::to_string(v)?))
-    };
+    let rust = |v: &toml::Value| -> anyhow::Result<String> { Ok(format!("{:?}", serde_json::to_string(v)?)) };
     let variant = |s: &str| s[..1].to_uppercase() + &s[1..];
     let mut consts = vec![];
     if executor == Executor::Gpu {
         // The GPU executor's CPU work, built for this CPU; discovery on the CPU in the graph's
         // storage alone (the storage its rays walk).
         let entry = "mr_exec_gpu::compiled_entry::<Baked>()".to_string();
-        if ck.find(Role::Draw).is_some()
-            && ck
-                .find(Role::Visibility)
-                .is_some_and(|v| ck.devices[v] == Device::Cpu)
-        {
-            let kernel = ck
-                .input(Role::Visibility, "rays")
-                .context("discovery casts no rays")?;
-            let storage = ck
-                .node(
-                    ck.node(kernel)
-                        .inputs
-                        .get("storage")
-                        .context("the discovery rays walk no storage")?,
-                )
-                .component
-                .clone();
-            let ty = mr_exec_cpu::storage_type(&storage)
-                .with_context(|| format!("storage `{storage}` has no CPU implementation"))?;
+        if ck.find(Role::Draw).is_some() && ck.find(Role::Visibility).is_some_and(|v| ck.devices[v] == Device::Cpu) {
+            let kernel = ck.input(Role::Visibility, "rays").context("discovery casts no rays")?;
+            let storage = ck.node(ck.node(kernel).inputs.get("storage").context("the discovery rays walk no storage")?).component.clone();
+            let ty = mr_exec_cpu::storage_type(&storage).with_context(|| format!("storage `{storage}` has no CPU implementation"))?;
             consts.push(format!("const CPU_WORLD: Option<fn() -> mr_exec_gpu::CpuWorld> = Some(mr_exec_gpu::CpuWorld::of::<{ty}>);"));
             baked.insert(0, ("storage".into(), storage.as_str().into()));
         }
-        let knobs = baked
-            .iter()
-            .map(|(k, v)| Ok(format!("({k:?}, {})", rust(v)?)))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        consts.insert(
-            0,
-            format!(
-                "const KNOBS: &'static [(&'static str, &'static str)] = &[{}];",
-                knobs.join(", ")
-            ),
-        );
+        let knobs = baked.iter().map(|(k, v)| Ok(format!("({k:?}, {})", rust(v)?))).collect::<anyhow::Result<Vec<_>>>()?;
+        consts.insert(0, format!("const KNOBS: &'static [(&'static str, &'static str)] = &[{}];", knobs.join(", ")));
         consts.push("const NATIVE: bool = true;".into());
-        return Ok(Some(Bake {
-            graph,
-            executor,
-            entry,
-            consts,
-        }));
+        return Ok(Some(Bake { graph, executor, entry, consts }));
     }
-    consts.push(format!(
-        "const TONE: Option<mr_exec_cpu::Tone> = Some(mr_exec_cpu::Tone::{:?});",
-        ck.tone()
-    ));
+    consts.push(format!("const TONE: Option<mr_exec_cpu::Tone> = Some(mr_exec_cpu::Tone::{:?});", ck.tone()));
     if let Some((_, v)) = baked.iter().find(|(k, _)| k == "shadows") {
-        consts.push(format!(
-            "const SHADOWS: Option<mr_exec_cpu::Shadows> = Some(mr_exec_cpu::Shadows::{});",
-            variant(v.as_str().context("shadows: a choice")?)
-        ));
+        consts.push(format!("const SHADOWS: Option<mr_exec_cpu::Shadows> = Some(mr_exec_cpu::Shadows::{});", variant(v.as_str().context("shadows: a choice")?)));
     }
     // The output's pixel (the post's format).
     let px = match ck.tone().format() {
@@ -232,72 +167,35 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
         // The raster region's shading is the reference model's (tone and shadows read at run time).
         consts.clear();
         format!("mr_exec_cpu::raster_entry::<Baked, {px}>()")
-    } else if ck
-        .find(Role::Visibility)
-        .is_some_and(|v| ck.node(v).component == "columns")
-    {
+    } else if ck.find(Role::Visibility).is_some_and(|v| ck.node(v).component == "columns") {
         format!("mr_exec_cpu::columns_entry::<Baked, {px}>()")
     } else {
         // Ray casting: the primary walk, the strategy's kernel and its storage.
-        let kernel = ck
-            .input(Role::Visibility, "primary")
-            .context("no primary rays")?;
+        let kernel = ck.input(Role::Visibility, "primary").context("no primary rays")?;
         let k = ck.node(kernel);
-        let storage = ck
-            .node(
-                k.inputs
-                    .get("storage")
-                    .context("the kernel walks no storage")?,
-            )
-            .component
-            .clone();
-        let ty = mr_exec_cpu::storage_type(&storage)
-            .with_context(|| format!("storage `{storage}` has no CPU implementation"))?;
+        let storage = ck.node(k.inputs.get("storage").context("the kernel walks no storage")?).component.clone();
+        let ty = mr_exec_cpu::storage_type(&storage).with_context(|| format!("storage `{storage}` has no CPU implementation"))?;
         let knob = |n: &str| k.knobs.get(n);
         let on = |n: &str| knob(n).and_then(|v| v.as_bool()).unwrap_or(true);
         let traversal = mr_exec_cpu::traversal(&k.component, on("exact"))?;
         consts.push(format!("const TRAVERSAL: Option<mr_exec_cpu::Traversal> = Some(mr_exec_cpu::Traversal::{traversal:?});"));
         if let Some(p) = knob("packet") {
-            let n: usize = p
-                .as_str()
-                .and_then(|p| p.parse().ok())
-                .context("packet: a width")?;
+            let n: usize = p.as_str().and_then(|p| p.parse().ok()).context("packet: a width")?;
             consts.push(format!("const PACKET: Option<usize> = Some({n});"));
         }
         if traversal != mr_exec_cpu::Traversal::Refloor {
-            consts.push(format!(
-                "const LEVELS: Option<u32> = Some({:#b});",
-                mr_exec_cpu::level_mask(["skip2", "skip4", "skip8", "skip16"].map(on))
-            ));
+            consts.push(format!("const LEVELS: Option<u32> = Some({:#b});", mr_exec_cpu::level_mask(["skip2", "skip4", "skip8", "skip16"].map(on))));
         }
-        let shadow = mr_exec_cpu::shadow_kernel(&ck)?
-            .map(|(t, l)| format!("Some((mr_exec_cpu::Traversal::{t:?}, {l:#b}))"));
-        consts.push(format!(
-            "const SHADOW: Option<Option<(mr_exec_cpu::Traversal, u32)>> = Some({});",
-            shadow.as_deref().unwrap_or("None")
-        ));
+        let shadow = mr_exec_cpu::shadow_kernel(&ck)?.map(|(t, l)| format!("Some((mr_exec_cpu::Traversal::{t:?}, {l:#b}))"));
+        consts.push(format!("const SHADOW: Option<Option<(mr_exec_cpu::Traversal, u32)>> = Some({});", shadow.as_deref().unwrap_or("None")));
         baked.insert(0, ("storage".into(), storage.as_str().into()));
         baked.insert(1, ("traversal".into(), k.component.as_str().into()));
         format!("mr_exec_cpu::raycast_entry::<{ty}, Baked, {px}>()")
     };
-    let knobs = baked
-        .iter()
-        .map(|(k, v)| Ok(format!("({k:?}, {})", rust(v)?)))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    consts.insert(
-        0,
-        format!(
-            "const KNOBS: &'static [(&'static str, &'static str)] = &[{}];",
-            knobs.join(", ")
-        ),
-    );
+    let knobs = baked.iter().map(|(k, v)| Ok(format!("({k:?}, {})", rust(v)?))).collect::<anyhow::Result<Vec<_>>>()?;
+    consts.insert(0, format!("const KNOBS: &'static [(&'static str, &'static str)] = &[{}];", knobs.join(", ")));
     consts.push("const NATIVE: bool = true;".into());
-    Ok(Some(Bake {
-        graph,
-        executor,
-        entry,
-        consts,
-    }))
+    Ok(Some(Bake { graph, executor, entry, consts }))
 }
 
 /// The generated crate's `src/main.rs`.
@@ -332,18 +230,9 @@ fn tool(var: &str, name: &str) -> Command {
 }
 
 fn manifest(repo: &Path, executor: Executor) -> String {
-    let dep = |name: &str, path: &str| {
-        format!(
-            "{name} = {{ path = {} }}\n",
-            toml::Value::String(repo.join(path).to_string_lossy().into_owned())
-        )
-    };
+    let dep = |name: &str, path: &str| format!("{name} = {{ path = {} }}\n", toml::Value::String(repo.join(path).to_string_lossy().into_owned()));
     let (name, path, _) = executor.parts();
-    let gpu = if executor == Executor::Gpu {
-        dep("mr-gpu", "crates/mr-gpu")
-    } else {
-        String::new()
-    };
+    let gpu = if executor == Executor::Gpu { dep("mr-gpu", "crates/mr-gpu") } else { String::new() };
     format!(
         "[package]\nname = \"mr-pipeline\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\n{}{gpu}{}{}{}\n\
          [profile.release]\ndebug = \"line-tables-only\"\ncodegen-units = 16\n\n\
@@ -359,19 +248,13 @@ use mr_core::cache_dir;
 
 /// FNV-1a: stable across runs and builds.
 fn fnv(h: u64, bytes: &[u8]) -> u64 {
-    bytes
-        .iter()
-        .fold(h, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
+    bytes.iter().fold(h, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
 }
 
 /// A hash over every source file the generated crate of `executor` compiles against (and the
 /// lock file).
 fn sources_hash(repo: &Path, executor: Executor) -> anyhow::Result<u64> {
-    let mut files = vec![
-        repo.join("Cargo.lock"),
-        repo.join("Cargo.toml"),
-        repo.join(".cargo/config.toml"),
-    ];
+    let mut files = vec![repo.join("Cargo.lock"), repo.join("Cargo.toml"), repo.join(".cargo/config.toml")];
     // Every crate but the other executor.
     let other = match executor {
         Executor::Cpu => Executor::Gpu,
@@ -386,13 +269,7 @@ fn sources_hash(repo: &Path, executor: Executor) -> anyhow::Result<u64> {
     files.sort();
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for f in files {
-        h = fnv(
-            h,
-            f.strip_prefix(repo)
-                .unwrap_or(&f)
-                .to_string_lossy()
-                .as_bytes(),
-        );
+        h = fnv(h, f.strip_prefix(repo).unwrap_or(&f).to_string_lossy().as_bytes());
         h = fnv(h, &std::fs::read(&f).unwrap_or_default());
     }
     Ok(h)
@@ -405,10 +282,7 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
             if p.file_name().is_some_and(|n| n != "target") {
                 collect(&p, out)?;
             }
-        } else if p
-            .extension()
-            .is_some_and(|x| x == "rs" || x == "toml" || x == "wgsl")
-        {
+        } else if p.extension().is_some_and(|x| x == "rs" || x == "toml" || x == "wgsl") {
             out.push(p);
         }
     }
@@ -417,21 +291,10 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
 
 /// The toolchain and CPU parts of the cache key.
 fn machine_id() -> anyhow::Result<String> {
-    let rustc = tool("RUSTC", "rustc")
-        .arg("-vV")
-        .output()
-        .context("running rustc -vV (a Rust toolchain builds the pipelines)")?;
+    let rustc = tool("RUSTC", "rustc").arg("-vV").output().context("running rustc -vV (a Rust toolchain builds the pipelines)")?;
     let cpu = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
-    let model: Vec<&str> = cpu
-        .lines()
-        .filter(|l| l.starts_with("model name") || l.starts_with("flags"))
-        .take(2)
-        .collect();
-    Ok(format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&rustc.stdout),
-        model.join("\n")
-    ))
+    let model: Vec<&str> = cpu.lines().filter(|l| l.starts_with("model name") || l.starts_with("flags")).take(2).collect();
+    Ok(format!("{}\n{}", String::from_utf8_lossy(&rustc.stdout), model.join("\n")))
 }
 
 /// The cache key of `b` built at `level` on this machine and source state: the pipeline's
@@ -449,15 +312,8 @@ pub fn key(b: &Bake, level: Compile) -> anyhow::Result<String> {
         Executor::Cpu => "cpu",
         Executor::Gpu => "gpu",
     };
-    let suffix = if level == Compile::BreakIn {
-        "-break-in"
-    } else {
-        ""
-    };
-    Ok(format!(
-        "{prefix}-{}-{h:016x}{suffix}",
-        b.graph.key().map_err(anyhow::Error::msg)?
-    ))
+    let suffix = if level == Compile::BreakIn { "-break-in" } else { "" };
+    Ok(format!("{prefix}-{}-{h:016x}{suffix}", b.graph.key().map_err(anyhow::Error::msg)?))
 }
 
 /// The same forced code alignment as the workspace (`.cargo/config.toml`), plus this CPU.
@@ -465,17 +321,8 @@ const FLAGS: &str = "-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all
 
 /// Builds the crate in `src` with `profile` into `target` (`RUSTFLAGS` = [`FLAGS`] + `extra`)
 /// and returns the worker executable.
-fn cargo(
-    key: &str,
-    src: &Path,
-    target: &Path,
-    profile: &str,
-    extra: &str,
-) -> anyhow::Result<PathBuf> {
-    tracing::info!(
-        "compiling pipeline {key} (cargo, profile {profile}, target {})",
-        target.display()
-    );
+fn cargo(key: &str, src: &Path, target: &Path, profile: &str, extra: &str) -> anyhow::Result<PathBuf> {
+    tracing::info!("compiling pipeline {key} (cargo, profile {profile}, target {})", target.display());
     let out = tool("CARGO", "cargo")
         .args(["build", "--quiet", "--profile", profile, "--manifest-path"])
         .arg(src.join("Cargo.toml"))
@@ -484,10 +331,7 @@ fn cargo(
         .output()
         .context("running cargo (a Rust toolchain builds the pipelines)")?;
     if !out.status.success() {
-        bail!(
-            "building pipeline {key} ({profile}) failed:\n{}",
-            tail(&out.stderr, 30)
-        );
+        bail!("building pipeline {key} ({profile}) failed:\n{}", tail(&out.stderr, 30));
     }
     Ok(target.join(profile).join(exe_name("mr-pipeline")))
 }
@@ -506,30 +350,13 @@ fn tail(out: &[u8], n: usize) -> String {
 
 /// The toolchain's `llvm-profdata` (rustup component `llvm-tools`: its LLVM is rustc's).
 fn profdata() -> anyhow::Result<PathBuf> {
-    let sysroot = tool("RUSTC", "rustc")
-        .args(["--print", "sysroot"])
-        .output()
-        .context("running rustc --print sysroot")?;
-    let vv = tool("RUSTC", "rustc")
-        .arg("-vV")
-        .output()
-        .context("running rustc -vV")?;
+    let sysroot = tool("RUSTC", "rustc").args(["--print", "sysroot"]).output().context("running rustc --print sysroot")?;
+    let vv = tool("RUSTC", "rustc").arg("-vV").output().context("running rustc -vV")?;
     let vv = String::from_utf8_lossy(&vv.stdout);
-    let host = vv
-        .lines()
-        .find_map(|l| l.strip_prefix("host: "))
-        .context("rustc -vV names no host")?;
-    let exe = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim())
-        .join("lib")
-        .join("rustlib")
-        .join(host)
-        .join("bin")
-        .join(exe_name("llvm-profdata"));
+    let host = vv.lines().find_map(|l| l.strip_prefix("host: ")).context("rustc -vV names no host")?;
+    let exe = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim()).join("lib").join("rustlib").join(host).join("bin").join(exe_name("llvm-profdata"));
     if !exe.exists() {
-        bail!(
-            "break-in needs llvm-profdata ({} is missing): rustup component add llvm-tools",
-            exe.display()
-        );
+        bail!("break-in needs llvm-profdata ({} is missing): rustup component add llvm-tools", exe.display());
     }
     Ok(exe)
 }
@@ -555,51 +382,20 @@ const BREAK_IN: &[(&str, &str, &str, bool)] = &[
 
 /// Flies `b`'s graph (lit and unlit, `frames` frames, 960x540) under `dir` with worker `exe`
 /// (and `env`) and returns the run's report.
-fn fly(
-    b: &Bake,
-    dir: &Path,
-    exe: &Path,
-    options: toml::Table,
-    frames: u32,
-    env: &[(&str, &std::ffi::OsStr)],
-) -> anyhow::Result<serde_json::Value> {
+fn fly(b: &Bake, dir: &Path, exe: &Path, options: toml::Table, frames: u32, env: &[(&str, &std::ffi::OsStr)]) -> anyhow::Result<serde_json::Value> {
     std::fs::create_dir_all(dir)?;
-    std::fs::write(
-        dir.join("plan.toml"),
-        check_plan(
-            b,
-            &dir.join("run"),
-            &["off"],
-            options,
-            frames,
-            [960, 540],
-            false,
-        )?,
-    )?;
+    std::fs::write(dir.join("plan.toml"), check_plan(b, &dir.join("run"), &["off"], options, frames, [960, 540], false)?)?;
     let mut cmd = Command::new(crate::worker::self_exe()?);
-    cmd.arg("run")
-        .arg(dir.join("plan.toml"))
-        .env("MR_PIPELINE_CHECK", "1")
-        .env("MR_WORKER_EXE", exe);
+    cmd.arg("run").arg(dir.join("plan.toml")).env("MR_PIPELINE_CHECK", "1").env("MR_WORKER_EXE", exe);
     for (k, v) in env {
         cmd.env(k, v);
     }
     let out = cmd.output()?;
     if !out.status.success() {
-        bail!(
-            "the run in {} failed:\n{}",
-            dir.display(),
-            tail(&out.stderr, 20)
-        );
+        bail!("the run in {} failed:\n{}", dir.display(), tail(&out.stderr, 20));
     }
-    let run = std::fs::read_dir(dir.join("run"))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .find(|p| p.join("report.json").exists())
-        .context("the run wrote no report")?;
-    Ok(serde_json::from_slice(&std::fs::read(
-        run.join("report.json"),
-    )?)?)
+    let run = std::fs::read_dir(dir.join("run"))?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.join("report.json").exists()).context("the run wrote no report")?;
+    Ok(serde_json::from_slice(&std::fs::read(run.join("report.json"))?)?)
 }
 
 /// The break-in builds of the crate in `src`, each timed here, the fastest kept: the native
@@ -616,49 +412,21 @@ fn break_in(b: &Bake, key: &str, src: &Path, root: &Path) -> anyhow::Result<Path
     // The instrumented build: one fixed profile path for every pipeline (the training run
     // names its own files), so the shared target keeps its dependencies.
     let scratch = root.join("pgo-scratch");
-    let instrumented = cargo(
-        key,
-        src,
-        &root.join("target-pgo"),
-        "release",
-        &format!("-C profile-generate={}", scratch.display()),
-    )?;
+    let instrumented = cargo(key, src, &root.join("target-pgo"), "release", &format!("-C profile-generate={}", scratch.display()))?;
     let t = Instant::now();
     let profiles = train.join("profiles");
     std::fs::create_dir_all(&profiles)?;
-    fly(
-        b,
-        &train.join("train"),
-        &instrumented,
-        train_options(b),
-        90,
-        &[(
-            "LLVM_PROFILE_FILE",
-            profiles.join("%p-%m.profraw").as_os_str(),
-        )],
-    )?;
-    let raw: Vec<PathBuf> = std::fs::read_dir(&profiles)
-        .map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).collect())
-        .unwrap_or_default();
+    fly(b, &train.join("train"), &instrumented, train_options(b), 90, &[("LLVM_PROFILE_FILE", profiles.join("%p-%m.profraw").as_os_str())])?;
+    let raw: Vec<PathBuf> = std::fs::read_dir(&profiles).map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).collect()).unwrap_or_default();
     if raw.is_empty() {
         bail!("the training run wrote no profile");
     }
     let merged = train.join("merged.profdata");
-    let out = Command::new(profdata)
-        .arg("merge")
-        .arg("-o")
-        .arg(&merged)
-        .args(&raw)
-        .output()
-        .context("running llvm-profdata")?;
+    let out = Command::new(profdata).arg("merge").arg("-o").arg(&merged).args(&raw).output().context("running llvm-profdata")?;
     if !out.status.success() {
         bail!("llvm-profdata merge failed:\n{}", tail(&out.stderr, 20));
     }
-    tracing::info!(
-        "pipeline {key}: trained in {:.1} s ({} profiles)",
-        t.elapsed().as_secs_f64(),
-        raw.len()
-    );
+    tracing::info!("pipeline {key}: trained in {:.1} s ({} profiles)", t.elapsed().as_secs_f64(), raw.len());
     // The candidates, each copied out of its target (the targets are shared).
     let use_profile = format!("-C profile-use={}", merged.display());
     let mut candidates = vec![];
@@ -682,14 +450,7 @@ fn break_in(b: &Bake, key: &str, src: &Path, root: &Path) -> anyhow::Result<Path
     let mut ms: Vec<Vec<f64>> = vec![vec![]; candidates.len()];
     for round in 0..3 {
         for (i, (name, exe)) in candidates.iter().enumerate() {
-            let report = fly(
-                b,
-                &train.join(format!("time-{name}-{round}")),
-                exe,
-                toml::Table::new(),
-                150,
-                &[],
-            )?;
+            let report = fly(b, &train.join(format!("time-{name}-{round}")), exe, toml::Table::new(), 150, &[])?;
             let passes = report.as_array().context("a report is a list of passes")?;
             let fps: Vec<f64> = passes.iter().filter_map(|p| p["fps"].as_f64()).collect();
             if fps.is_empty() || fps.iter().any(|&f| f <= 0.0) {
@@ -704,35 +465,18 @@ fn break_in(b: &Bake, key: &str, src: &Path, root: &Path) -> anyhow::Result<Path
         v[v.len() / 2]
     };
     let times: Vec<f64> = ms.iter().map(|v| median(v)).collect();
-    let best = (0..times.len())
-        .min_by(|&a, &b| times[a].total_cmp(&times[b]))
-        .unwrap();
-    let table: Vec<String> = candidates
-        .iter()
-        .zip(&times)
-        .map(|((n, _), t)| format!("{n} {t:.3} ms"))
-        .collect();
-    let summary = format!(
-        "chose {} ({}; median of 3 rounds, timed in {:.1} s)",
-        candidates[best].0,
-        table.join(", "),
-        t.elapsed().as_secs_f64()
-    );
+    let best = (0..times.len()).min_by(|&a, &b| times[a].total_cmp(&times[b])).unwrap();
+    let table: Vec<String> = candidates.iter().zip(&times).map(|((n, _), t)| format!("{n} {t:.3} ms")).collect();
+    let summary = format!("chose {} ({}; median of 3 rounds, timed in {:.1} s)", candidates[best].0, table.join(", "), t.elapsed().as_secs_f64());
     tracing::info!("pipeline {key}: {summary}");
     std::fs::write(train.join("chosen.txt"), &summary)?;
     // Kept: the choice and the profile; the runs and the other candidates go.
     let chosen = train.join(exe_name("worker"));
     std::fs::rename(&candidates[best].1, &chosen)?;
-    for e in std::fs::read_dir(&train)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-    {
+    for e in std::fs::read_dir(&train)?.filter_map(|e| e.ok()).map(|e| e.path()) {
         if e.is_dir() {
             let _ = std::fs::remove_dir_all(&e);
-        } else if e
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy().starts_with("worker-"))
-        {
+        } else if e.file_name().is_some_and(|n| n.to_string_lossy().starts_with("worker-")) {
             let _ = std::fs::remove_file(&e);
         }
     }
@@ -748,15 +492,8 @@ pub fn ensure(b: &Bake, level: Compile) -> anyhow::Result<Compiled> {
     let exe = root.join("bin").join(exe_name(&key));
     if exe.exists() {
         // Its use, for the cache's least-recently-used order.
-        let _ = std::fs::File::options()
-            .write(true)
-            .open(&exe)
-            .and_then(|f| f.set_modified(std::time::SystemTime::now()));
-        return Ok(Compiled {
-            exe,
-            key,
-            build_s: None,
-        });
+        let _ = std::fs::File::options().write(true).open(&exe).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        return Ok(Compiled { exe, key, build_s: None });
     }
     let t = Instant::now();
     let src = root.join("src").join(&key);
@@ -781,28 +518,19 @@ pub fn ensure(b: &Bake, level: Compile) -> anyhow::Result<Compiled> {
     let build_s = t.elapsed().as_secs_f64();
     tracing::info!("compiled pipeline {key} in {build_s:.1} s");
     prune(&root, &key, cache_limit());
-    Ok(Compiled {
-        exe,
-        key,
-        build_s: Some(build_s),
-    })
+    Ok(Compiled { exe, key, build_s: Some(build_s) })
 }
 
 /// The cache's size limit: `$MR_PIPELINE_CACHE_GB`, else 4 GB.
 fn cache_limit() -> u64 {
-    let gb = std::env::var("MR_PIPELINE_CACHE_GB")
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(4.0);
+    let gb = std::env::var("MR_PIPELINE_CACHE_GB").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(4.0);
     (gb * 1e9) as u64
 }
 
 /// The bytes under `p` (0 if it is missing).
 pub fn size(p: &Path) -> u64 {
     match std::fs::symlink_metadata(p) {
-        Ok(m) if m.is_dir() => std::fs::read_dir(p)
-            .map(|d| d.filter_map(|e| e.ok()).map(|e| size(&e.path())).sum())
-            .unwrap_or(0),
+        Ok(m) if m.is_dir() => std::fs::read_dir(p).map(|d| d.filter_map(|e| e.ok()).map(|e| size(&e.path())).sum()).unwrap_or(0),
         Ok(m) => m.len(),
         Err(_) => 0,
     }
@@ -811,11 +539,7 @@ pub fn size(p: &Path) -> u64 {
 /// Removes worker `key` and everything kept for it.
 fn forget(root: &Path, key: &str) {
     let exe = root.join("bin").join(exe_name(key));
-    for f in [
-        exe.with_extension("trusted"),
-        exe.with_extension("rejected"),
-        exe,
-    ] {
+    for f in [exe.with_extension("trusted"), exe.with_extension("rejected"), exe] {
         let _ = std::fs::remove_file(f);
     }
     for d in ["src", "train", "check"] {
@@ -829,23 +553,14 @@ fn forget(root: &Path, key: &str) {
 /// directories (the next build fills them again).
 fn prune(root: &Path, key: &str, limit: u64) {
     let level = |k: &str| k.ends_with("-break-in");
-    let pipeline = |k: &str| {
-        k.trim_end_matches("-break-in")
-            .rsplit_once('-')
-            .map(|(p, _)| p.to_string())
-    };
+    let pipeline = |k: &str| k.trim_end_matches("-break-in").rsplit_once('-').map(|(p, _)| p.to_string());
     // Workers: the files without an extension (`.exe` on Windows); not `.trusted` and the like.
     let mut workers: Vec<(std::time::SystemTime, String)> = std::fs::read_dir(root.join("bin"))
         .into_iter()
         .flatten()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_none_or(|x| x == "exe"))
-        .filter_map(|e| {
-            Some((
-                e.metadata().ok()?.modified().ok()?,
-                e.path().file_stem()?.to_string_lossy().into_owned(),
-            ))
-        })
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path().file_stem()?.to_string_lossy().into_owned())))
         .filter(|(_, k)| !k.starts_with('.'))
         .collect();
     workers.retain(|(_, k)| {
@@ -862,27 +577,15 @@ fn prune(root: &Path, key: &str, limit: u64) {
         if total <= limit {
             return;
         }
-        tracing::info!(
-            "pipeline cache over {:.1} GB: {k} removed (least recently used)",
-            limit as f64 / 1e9
-        );
+        tracing::info!("pipeline cache over {:.1} GB: {k} removed (least recently used)", limit as f64 / 1e9);
         forget(root, k);
         total = size(root);
     }
-    for d in [
-        "target-pgo",
-        "target-lto",
-        "target-break-in",
-        "target-pgo-use",
-        "target",
-    ] {
+    for d in ["target-pgo", "target-lto", "target-break-in", "target-pgo-use", "target"] {
         if total <= limit {
             return;
         }
-        tracing::info!(
-            "pipeline cache over {:.1} GB: {d} removed",
-            limit as f64 / 1e9
-        );
+        tracing::info!("pipeline cache over {:.1} GB: {d} removed", limit as f64 / 1e9);
         let _ = std::fs::remove_dir_all(root.join(d));
         total = size(root);
     }
@@ -911,35 +614,21 @@ pub fn trusted(b: &Bake, level: Compile) -> anyhow::Result<Compiled> {
         Ok(summary) => {
             // The check's frames are not needed once it passed (a failure keeps them).
             let _ = std::fs::remove_dir_all(cache_dir().join("check").join(&c.key));
-            tracing::info!(
-                "pipeline {} trusted in {:.1} s: {summary}",
-                c.key,
-                t.elapsed().as_secs_f64()
-            );
+            tracing::info!("pipeline {} trusted in {:.1} s: {summary}", c.key, t.elapsed().as_secs_f64());
             std::fs::write(&ok, summary)?;
             Ok(c)
         }
         Err(e) => {
             std::fs::write(&bad, format!("{e:#}"))?;
-            Err(e.context(format!(
-                "pipeline {} differs from the generic build; not used",
-                c.key
-            )))
+            Err(e.context(format!("pipeline {} differs from the generic build; not used", c.key)))
         }
     }
 }
 
+
 /// A terrain flight (lit and unlit) of `b`'s graph under `dir`, one lane per `compile` level
 /// with knobs `options`; with `save`, every frame is saved (the check).
-fn check_plan(
-    b: &Bake,
-    dir: &Path,
-    lanes: &[&str],
-    options: toml::Table,
-    frames: u32,
-    resolution: [u32; 2],
-    save: bool,
-) -> anyhow::Result<String> {
+fn check_plan(b: &Bake, dir: &Path, lanes: &[&str], options: toml::Table, frames: u32, resolution: [u32; 2], save: bool) -> anyhow::Result<String> {
     let lane = |compile: &&str| -> anyhow::Result<toml::Value> {
         let mut t = toml::Table::new();
         t.insert("graph".into(), toml::Value::try_from(&b.graph)?);
@@ -948,10 +637,7 @@ fn check_plan(
         Ok(toml::Value::Table(t))
     };
     let mut t = toml::Table::new();
-    t.insert(
-        "renderer".into(),
-        toml::Value::Array(lanes.iter().map(lane).collect::<anyhow::Result<_>>()?),
-    );
+    t.insert("renderer".into(), toml::Value::Array(lanes.iter().map(lane).collect::<anyhow::Result<_>>()?));
     let renderers = toml::to_string(&t)?;
     let save = if save { "save = { every = 1 }" } else { "" };
     Ok(format!(
@@ -972,62 +658,27 @@ fn verify(b: &Bake, c: &Compiled, level: Compile) -> anyhow::Result<String> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     // The pipeline twice, as its graph: the generic build and the compiled one.
-    let plan = check_plan(
-        b,
-        &dir.join("run"),
-        &["off", level.name()],
-        toml::Table::new(),
-        4,
-        [480, 270],
-        true,
-    )?;
+    let plan = check_plan(b, &dir.join("run"), &["off", level.name()], toml::Table::new(), 4, [480, 270], true)?;
     std::fs::write(dir.join("check.toml"), &plan)?;
-    let out = Command::new(crate::worker::self_exe()?)
-        .arg("run")
-        .arg(dir.join("check.toml"))
-        .env("MR_PIPELINE_CHECK", "1")
-        .output()?;
+    let out = Command::new(crate::worker::self_exe()?).arg("run").arg(dir.join("check.toml")).env("MR_PIPELINE_CHECK", "1").output()?;
     if !out.status.success() {
         bail!("check run failed:\n{}", tail(&out.stderr, 20));
     }
     // frames/<label>-<mode>/<frame>.png: the generic lane and the compiled one (`<label> [<level>]`).
     let marker = format!("__{}_", level.name());
-    let run = std::fs::read_dir(dir.join("run"))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .find(|p| p.join("frames").is_dir())
-        .context("check run saved no frames")?;
-    let lanes: Vec<PathBuf> = std::fs::read_dir(run.join("frames"))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .collect();
+    let run = std::fs::read_dir(dir.join("run"))?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.join("frames").is_dir()).context("check run saved no frames")?;
+    let lanes: Vec<PathBuf> = std::fs::read_dir(run.join("frames"))?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
     let (mut frames, mut differ) = (0, vec![]);
-    for native in lanes
-        .iter()
-        .filter(|p| p.to_string_lossy().contains(&marker))
-    {
-        let name = native
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .replace(&marker, "");
+    for native in lanes.iter().filter(|p| p.to_string_lossy().contains(&marker)) {
+        let name = native.file_name().unwrap().to_string_lossy().replace(&marker, "");
         let generic = run.join("frames").join(&name);
-        for f in std::fs::read_dir(native)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| !p.to_string_lossy().ends_with("-diff.png"))
-        {
+        for f in std::fs::read_dir(native)?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| !p.to_string_lossy().ends_with("-diff.png")) {
             let a = image::open(&f)?.to_rgb8();
-            let g = image::open(generic.join(f.file_name().unwrap()))
-                .with_context(|| format!("generic frame for {}", f.display()))?
-                .to_rgb8();
+            let g = image::open(generic.join(f.file_name().unwrap())).with_context(|| format!("generic frame for {}", f.display()))?.to_rgb8();
             frames += 1;
             let n = a.pixels().zip(g.pixels()).filter(|(x, y)| x != y).count();
             if n > 0 || a.dimensions() != g.dimensions() {
-                differ.push(format!(
-                    "{}: {n} pixels differ",
-                    f.strip_prefix(&run).unwrap_or(&f).display()
-                ));
+                differ.push(format!("{}: {n} pixels differ", f.strip_prefix(&run).unwrap_or(&f).display()));
             }
         }
     }
@@ -1035,20 +686,10 @@ fn verify(b: &Bake, c: &Compiled, level: Compile) -> anyhow::Result<String> {
         bail!("the check compared no frames (lanes: {lanes:?})");
     }
     if !differ.is_empty() {
-        let more = if differ.len() > 4 {
-            format!("; ... ({} more)", differ.len() - 4)
-        } else {
-            String::new()
-        };
-        bail!(
-            "{} of {frames} frames differ: {}{more}",
-            differ.len(),
-            differ[..differ.len().min(4)].join("; ")
-        );
+        let more = if differ.len() > 4 { format!("; ... ({} more)", differ.len() - 4) } else { String::new() };
+        bail!("{} of {frames} frames differ: {}{more}", differ.len(), differ[..differ.len().min(4)].join("; "));
     }
-    Ok(format!(
-        "{frames} frames pixel-identical to the generic build"
-    ))
+    Ok(format!("{frames} frames pixel-identical to the generic build"))
 }
 
 #[cfg(test)]
@@ -1068,12 +709,7 @@ mod tests {
         let worker = |k: &str, age: u64| {
             let p = root.join("bin").join(exe_name(k));
             std::fs::write(&p, [0; 1000]).unwrap();
-            std::fs::File::options()
-                .write(true)
-                .open(&p)
-                .unwrap()
-                .set_modified(t0 + std::time::Duration::from_secs(age))
-                .unwrap();
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(t0 + std::time::Duration::from_secs(age)).unwrap();
             std::fs::write(p.with_extension("trusted"), "").unwrap();
         };
         let (old, new) = ("cpu-aaaa-1111", "cpu-aaaa-2222");
@@ -1084,42 +720,19 @@ mod tests {
         worker(new, 4);
         let has = |k: &str| root.join("bin").join(exe_name(k)).exists();
         prune(&root, new, 100_000);
-        assert!(
-            !has(old)
-                && !root
-                    .join("bin")
-                    .join(old)
-                    .with_extension("trusted")
-                    .exists(),
-            "the older build of the same pipeline went"
-        );
-        assert!(
-            has("cpu-aaaa-1111-break-in")
-                && has("cpu-bbbb-1111")
-                && has("cpu-cccc-1111")
-                && has(new)
-        );
+        assert!(!has(old) && !root.join("bin").join(old).with_extension("trusted").exists(), "the older build of the same pipeline went");
+        assert!(has("cpu-aaaa-1111-break-in") && has("cpu-bbbb-1111") && has("cpu-cccc-1111") && has(new));
         prune(&root, new, 3_000);
-        assert!(
-            !has("cpu-aaaa-1111-break-in")
-                && !has("cpu-bbbb-1111")
-                && has("cpu-cccc-1111")
-                && has(new),
-            "least recently used first"
-        );
+        assert!(!has("cpu-aaaa-1111-break-in") && !has("cpu-bbbb-1111") && has("cpu-cccc-1111") && has(new), "least recently used first");
         assert!(root.join("target").exists());
         prune(&root, new, 1_500);
-        assert!(
-            !has("cpu-cccc-1111") && has(new) && !root.join("target").exists(),
-            "then the target; never the new worker"
-        );
+        assert!(!has("cpu-cccc-1111") && has(new) && !root.join("target").exists(), "then the target; never the new worker");
         let _ = std::fs::remove_dir_all(&root);
     }
 
     fn spec(r: &str, options: &[(&str, toml::Value)]) -> RendererSpec {
         let mut s = RendererSpec::from_cli(r).unwrap();
-        s.options
-            .extend(options.iter().map(|(k, v)| (k.to_string(), v.clone())));
+        s.options.extend(options.iter().map(|(k, v)| (k.to_string(), v.clone())));
         s.resolve().unwrap();
         s
     }
@@ -1131,313 +744,98 @@ mod tests {
     fn every_cpu_graph_has_a_source() {
         let base = mr_components::graph::shipped("raycast-cpu").unwrap();
         let (storages, kernels) = (base.choices("storage"), base.choices("kernel"));
-        assert!(
-            storages.len() > 1 && kernels.len() > 1,
-            "{storages:?} {kernels:?}"
-        );
+        assert!(storages.len() > 1 && kernels.len() > 1, "{storages:?} {kernels:?}");
         for st in storages {
             for &k in &kernels {
-                let b = bake(&spec(
-                    &format!("raycast-cpu,storage={st},kernel={k}"),
-                    &[("packet", "4".into())],
-                ))
-                .unwrap()
-                .unwrap();
+                let b = bake(&spec(&format!("raycast-cpu,storage={st},kernel={k}"), &[("packet", "4".into())])).unwrap().unwrap();
                 let s = source(&b).unwrap();
-                assert!(
-                    s.contains("NATIVE: bool = true")
-                        && s.contains(&format!(
-                            "raycast_entry::<{}, Baked, [u8; 4]>",
-                            mr_exec_cpu::storage_type(st).unwrap()
-                        )),
-                    "{s}"
-                );
-                assert_eq!(
-                    s.contains("PACKET: Option<usize> = Some(4)"),
-                    k == "refloor",
-                    "{s}"
-                );
+                assert!(s.contains("NATIVE: bool = true") && s.contains(&format!("raycast_entry::<{}, Baked, [u8; 4]>", mr_exec_cpu::storage_type(st).unwrap())), "{s}");
+                assert_eq!(s.contains("PACKET: Option<usize> = Some(4)"), k == "refloor", "{s}");
                 assert_eq!(s.contains("LEVELS"), k != "refloor", "{s}");
-                assert!(
-                    s.contains(&format!("(\"storage\", \"\\\"{st}\\\"\")")),
-                    "{s}"
-                );
+                assert!(s.contains(&format!("(\"storage\", \"\\\"{st}\\\"\")")), "{s}");
             }
         }
         let s = source(&bake(&spec("raycast-cpu,storage=prefix,kernel=incremental,shading.shadow=traversal:refloor,traversal.storage=storage,+post=post:aces", &[("shadows", "sun".into()), ("skip4", false.into())])).unwrap().unwrap()).unwrap();
-        for want in [
-            "SHADOW: Option<Option<(mr_exec_cpu::Traversal, u32)>> = Some(Some((mr_exec_cpu::Traversal::Refloor, 0b111111)))",
-            "LEVELS: Option<u32> = Some(0b111011)",
-            "Tone::Aces",
-            "Shadows::Sun",
-            "(\"skip4\", \"false\")",
-        ] {
+        for want in ["SHADOW: Option<Option<(mr_exec_cpu::Traversal, u32)>> = Some(Some((mr_exec_cpu::Traversal::Refloor, 0b111111)))", "LEVELS: Option<u32> = Some(0b111011)", "Tone::Aces", "Shadows::Sun", "(\"skip4\", \"false\")"] {
             assert!(s.contains(want), "{want} in {s}");
         }
         let s = source(&bake(&spec("columns-cpu", &[])).unwrap().unwrap()).unwrap();
-        assert!(
-            s.contains("columns_entry::<Baked, [u8; 4]>")
-                && s.contains("Shadows::All")
-                && s.contains("Tone::Clamp"),
-            "{s}"
-        );
-        let s = source(
-            &bake(&spec("raster-cpu,geometry=naive", &[]))
-                .unwrap()
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(
-            s.contains("raster_entry::<Baked, [u8; 4]>")
-                && s.contains("KNOBS: &'static [(&'static str, &'static str)] = &[];")
-                && !s.contains("TONE"),
-            "{s}"
-        );
+        assert!(s.contains("columns_entry::<Baked, [u8; 4]>") && s.contains("Shadows::All") && s.contains("Tone::Clamp"), "{s}");
+        let s = source(&bake(&spec("raster-cpu,geometry=naive", &[])).unwrap().unwrap()).unwrap();
+        assert!(s.contains("raster_entry::<Baked, [u8; 4]>") && s.contains("KNOBS: &'static [(&'static str, &'static str)] = &[];") && !s.contains("TONE"), "{s}");
         // `hdr`: every lane writes float pixels.
-        for (r, entry) in [
-            (
-                "raycast-cpu,+post=post:hdr",
-                "raycast_entry::<mr_components::storage::bricks::cpu::U16, Baked, mr_exec_cpu::Half4>",
-            ),
-            (
-                "columns-cpu,+post=post:hdr",
-                "columns_entry::<Baked, mr_exec_cpu::Half4>",
-            ),
-            (
-                "raster-cpu,+post=post:hdr",
-                "raster_entry::<Baked, mr_exec_cpu::Half4>",
-            ),
-        ] {
+        for (r, entry) in [("raycast-cpu,+post=post:hdr", "raycast_entry::<mr_components::storage::bricks::cpu::U16, Baked, mr_exec_cpu::Half4>"), ("columns-cpu,+post=post:hdr", "columns_entry::<Baked, mr_exec_cpu::Half4>"), ("raster-cpu,+post=post:hdr", "raster_entry::<Baked, mr_exec_cpu::Half4>")] {
             let s = source(&bake(&spec(r, &[])).unwrap().unwrap()).unwrap();
             assert!(s.contains(entry), "{entry} in {s}");
         }
-        for (b, folded) in [
-            (
-                "raycast-cpu",
-                vec![
-                    "exact", "packet", "shadows", "skip16", "skip2", "skip4", "skip8",
-                ],
-            ),
-            ("raster-cpu", vec![]),
-            ("columns-cpu", vec!["shadows"]),
-        ] {
+        for (b, folded) in [("raycast-cpu", vec!["exact", "packet", "shadows", "skip16", "skip2", "skip4", "skip8"]), ("raster-cpu", vec![]), ("columns-cpu", vec!["shadows"])] {
             let (e, params) = executor_of(&spec(b, &[]).pipeline().unwrap()).unwrap();
             assert_eq!(e, Executor::Cpu);
-            let mut declared: Vec<&str> = params
-                .iter()
-                .filter(|p| p.baked && p.owner.is_some())
-                .map(|p| p.name.as_str())
-                .collect();
+            let mut declared: Vec<&str> = params.iter().filter(|p| p.baked && p.owner.is_some()).map(|p| p.name.as_str()).collect();
             declared.sort();
-            assert_eq!(
-                declared, folded,
-                "{b}: the knobs declared specialisable on a node are the ones the generated code folds"
-            );
+            assert_eq!(declared, folded, "{b}: the knobs declared specialisable on a node are the ones the generated code folds");
         }
-        assert!(
-            executor_of(&spec("raycast-gpu", &[]).pipeline().unwrap())
-                .is_some_and(|(e, _)| e == Executor::Gpu)
-        );
-        assert!(
-            manifest(repo(), Executor::Cpu).contains("[workspace]"),
-            "the generated crate is its own workspace"
-        );
+        assert!(executor_of(&spec("raycast-gpu", &[]).pipeline().unwrap()).is_some_and(|(e, _)| e == Executor::Gpu));
+        assert!(manifest(repo(), Executor::Cpu).contains("[workspace]"), "the generated crate is its own workspace");
     }
 
     /// Every GPU-executor graph has a generated worker, built for this CPU; discovery on the
     /// CPU walks the graph's storage alone, baked (refused otherwise).
     #[test]
     fn every_gpu_graph_has_a_source() {
-        for b in [
-            "raster-gpu",
-            "discover-gpu",
-            "discover-cpu",
-            "raycast-gpu",
-            "rayquery-gpu",
-            "splat-gpu",
-            "columns-gpu",
-        ] {
+        for b in ["raster-gpu", "discover-gpu", "discover-cpu", "raycast-gpu", "rayquery-gpu", "splat-gpu", "columns-gpu"] {
             let bk = bake(&spec(b, &[])).unwrap().unwrap();
             assert_eq!(bk.executor, Executor::Gpu, "{b}");
             let s = source(&bk).unwrap();
-            for want in [
-                "impl mr_exec_gpu::Spec for Baked",
-                "mr_exec_gpu::compiled_entry::<Baked>()",
-                "mr_gpu::devices",
-                "NATIVE: bool = true",
-            ] {
+            for want in ["impl mr_exec_gpu::Spec for Baked", "mr_exec_gpu::compiled_entry::<Baked>()", "mr_gpu::devices", "NATIVE: bool = true"] {
                 assert!(s.contains(want), "{b}: {want} in {s}");
             }
             assert_eq!(s.contains("CPU_WORLD"), b == "discover-cpu", "{s}");
         }
         let prefix = spec("discover-cpu,storage=prefix", &[]);
         let s = source(&bake(&prefix).unwrap().unwrap()).unwrap();
-        assert!(
-            s.contains("CpuWorld::of::<mr_components::storage::prefix::cpu::Prefix>")
-                && s.contains("(\"storage\", \"\\\"prefix\\\"\")"),
-            "{s}"
-        );
+        assert!(s.contains("CpuWorld::of::<mr_components::storage::prefix::cpu::Prefix>") && s.contains("(\"storage\", \"\\\"prefix\\\"\")"), "{s}");
         let m = manifest(repo(), Executor::Gpu);
-        assert!(
-            m.contains("mr-exec-gpu") && m.contains("mr-gpu") && !m.contains("mr-exec-cpu"),
-            "{m}"
-        );
-        let key = |r: &str, o: &[(&str, toml::Value)]| {
-            self::key(&bake(&spec(r, o)).unwrap().unwrap(), Compile::Native).unwrap()
-        };
+        assert!(m.contains("mr-exec-gpu") && m.contains("mr-gpu") && !m.contains("mr-exec-cpu"), "{m}");
+        let key = |r: &str, o: &[(&str, toml::Value)]| self::key(&bake(&spec(r, o)).unwrap().unwrap(), Compile::Native).unwrap();
         assert!(key("raycast-gpu", &[]).starts_with("gpu-"));
-        assert_ne!(
-            self::key(&bake(&prefix).unwrap().unwrap(), Compile::Native).unwrap(),
-            key("discover-cpu", &[])
-        );
+        assert_ne!(self::key(&bake(&prefix).unwrap().unwrap(), Compile::Native).unwrap(), key("discover-cpu", &[]));
     }
 
     /// Break-in is a level of the same pipeline: its own worker under the same graph key, its training run on one thread where the executor has the knob.
     #[test]
     fn break_in_is_its_own_build() {
         let b = bake(&spec("raycast-cpu", &[])).unwrap().unwrap();
-        let (native, broken) = (
-            key(&b, Compile::Native).unwrap(),
-            key(&b, Compile::BreakIn).unwrap(),
-        );
-        assert!(
-            broken.ends_with("-break-in") && broken != format!("{native}-break-in"),
-            "its recipe in the hash: {broken}"
-        );
-        assert_eq!(
-            broken.split('-').nth(1),
-            native.split('-').nth(1),
-            "the same graph"
-        );
+        let (native, broken) = (key(&b, Compile::Native).unwrap(), key(&b, Compile::BreakIn).unwrap());
+        assert!(broken.ends_with("-break-in") && broken != format!("{native}-break-in"), "its recipe in the hash: {broken}");
+        assert_eq!(broken.split('-').nth(1), native.split('-').nth(1), "the same graph");
         let m = manifest(repo(), Executor::Cpu);
-        assert!(
-            m.contains(
-                "[profile.break-in]\ninherits = \"release\"\nlto = \"fat\"\ncodegen-units = 1"
-            ),
-            "{m}"
-        );
+        assert!(m.contains("[profile.break-in]\ninherits = \"release\"\nlto = \"fat\"\ncodegen-units = 1"), "{m}");
         let p: crate::plan::Plan = crate::plan::Plan::parse("[scene]\ngenerator = { type = \"terrain\" }\ncamera = { type = \"line\", from = [0, 1, 0], to = [1, 1, 0] }\n[run]\ncompile = \"break-in\"\n[[renderer]]\ngraph = \"raycast-cpu\"\n", &[]).unwrap();
         assert_eq!(p.renderers[0].compiled(&p.run), Some(Compile::BreakIn));
-        let plan = check_plan(
-            &b,
-            Path::new("/x"),
-            &["off"],
-            train_options(&b),
-            90,
-            [960, 540],
-            false,
-        )
-        .unwrap();
-        assert!(
-            plan.contains("threads = 1") && !plan.contains("save"),
-            "{plan}"
-        );
-        assert!(
-            train_options(&bake(&spec("raycast-gpu", &[])).unwrap().unwrap()).is_empty(),
-            "no threads knob"
-        );
+        let plan = check_plan(&b, Path::new("/x"), &["off"], train_options(&b), 90, [960, 540], false).unwrap();
+        assert!(plan.contains("threads = 1") && !plan.contains("save"), "{plan}");
+        assert!(train_options(&bake(&spec("raycast-gpu", &[])).unwrap().unwrap()).is_empty(), "no threads knob");
     }
 
     /// The cache key is the pipeline's graph with its baked values: knobs it does not use
     /// leave it alone, and the check run's plan (the graph twice) bakes the same pipeline.
     #[test]
     fn the_graph_is_the_key() {
-        let key = |r: &str, o: &[(&str, toml::Value)]| {
-            bake(&spec(r, o)).unwrap().unwrap().graph.key().unwrap()
-        };
-        assert_ne!(
-            key(
-                "raycast-cpu,storage=prefix,kernel=refloor",
-                &[("packet", "4".into())]
-            ),
-            key(
-                "raycast-cpu,storage=prefix,kernel=refloor",
-                &[("packet", "8".into())]
-            )
-        );
-        assert_eq!(
-            key(
-                "raycast-cpu,storage=prefix,kernel=incremental",
-                &[("packet", "4".into())]
-            ),
-            key(
-                "raycast-cpu,storage=prefix,kernel=incremental",
-                &[("packet", "8".into())]
-            ),
-            "packet is moot for incremental"
-        );
-        assert_ne!(
-            key(
-                "raycast-cpu,storage=prefix,kernel=incremental",
-                &[("exact", false.into())]
-            ),
-            key("raycast-cpu,storage=prefix,kernel=incremental", &[])
-        );
-        assert_eq!(
-            key(
-                "raycast-cpu,storage=prefix,kernel=refloor",
-                &[("exact", false.into())]
-            ),
-            key("raycast-cpu,storage=prefix,kernel=refloor", &[]),
-            "exact is moot for refloor"
-        );
-        assert_eq!(
-            key(
-                "raycast-cpu,storage=prefix,kernel=refloor",
-                &[("view", "steps".into())]
-            ),
-            key("raycast-cpu,storage=prefix,kernel=refloor", &[]),
-            "not baked by the generated code"
-        );
-        assert_ne!(
-            key("raycast-cpu,storage=prefix,kernel=refloor", &[]),
-            key("raycast-cpu,storage=bricks,kernel=refloor", &[])
-        );
-        assert_ne!(
-            key("raycast-cpu,storage=prefix,kernel=refloor", &[]),
-            key(
-                "raycast-cpu,storage=prefix,kernel=refloor,shading.shadow=traversal:incremental,traversal.storage=storage",
-                &[]
-            ),
-            "the shadow rays' own kernel"
-        );
-        assert_ne!(
-            key(
-                "raycast-cpu,storage=prefix,kernel=incremental",
-                &[("skip8", false.into())]
-            ),
-            key("raycast-cpu,storage=prefix,kernel=incremental", &[])
-        );
-        assert_eq!(
-            key(
-                "raycast-cpu,storage=prefix,kernel=refloor",
-                &[("skip8", false.into())]
-            ),
-            key("raycast-cpu,storage=prefix,kernel=refloor", &[]),
-            "levels are moot for refloor"
-        );
-        assert_ne!(
-            key(
-                "raycast-cpu,storage=prefix,kernel=refloor",
-                &[("shadows", "sun".into())]
-            ),
-            key("raycast-cpu,storage=prefix,kernel=refloor", &[])
-        );
-        assert_ne!(
-            key("columns-cpu", &[("shadows", "none".into())]),
-            key("columns-cpu", &[])
-        );
+        let key = |r: &str, o: &[(&str, toml::Value)]| bake(&spec(r, o)).unwrap().unwrap().graph.key().unwrap();
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=refloor", &[("packet", "4".into())]), key("raycast-cpu,storage=prefix,kernel=refloor", &[("packet", "8".into())]));
+        assert_eq!(key("raycast-cpu,storage=prefix,kernel=incremental", &[("packet", "4".into())]), key("raycast-cpu,storage=prefix,kernel=incremental", &[("packet", "8".into())]), "packet is moot for incremental");
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=incremental", &[("exact", false.into())]), key("raycast-cpu,storage=prefix,kernel=incremental", &[]));
+        assert_eq!(key("raycast-cpu,storage=prefix,kernel=refloor", &[("exact", false.into())]), key("raycast-cpu,storage=prefix,kernel=refloor", &[]), "exact is moot for refloor");
+        assert_eq!(key("raycast-cpu,storage=prefix,kernel=refloor", &[("view", "steps".into())]), key("raycast-cpu,storage=prefix,kernel=refloor", &[]), "not baked by the generated code");
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=refloor", &[]), key("raycast-cpu,storage=bricks,kernel=refloor", &[]));
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=refloor", &[]), key("raycast-cpu,storage=prefix,kernel=refloor,shading.shadow=traversal:incremental,traversal.storage=storage", &[]), "the shadow rays' own kernel");
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=incremental", &[("skip8", false.into())]), key("raycast-cpu,storage=prefix,kernel=incremental", &[]));
+        assert_eq!(key("raycast-cpu,storage=prefix,kernel=refloor", &[("skip8", false.into())]), key("raycast-cpu,storage=prefix,kernel=refloor", &[]), "levels are moot for refloor");
+        assert_ne!(key("raycast-cpu,storage=prefix,kernel=refloor", &[("shadows", "sun".into())]), key("raycast-cpu,storage=prefix,kernel=refloor", &[]));
+        assert_ne!(key("columns-cpu", &[("shadows", "none".into())]), key("columns-cpu", &[]));
         // The check run's lanes: the bake's graph in a plan bakes the same pipeline.
-        for (r, o) in [
-            (
-                "raycast-cpu,storage=hier,kernel=incremental",
-                vec![("exact", toml::Value::from(false))],
-            ),
-            (
-                "raycast-cpu,storage=bits,kernel=refloor,shading.shadow=traversal:incremental,traversal.storage=storage",
-                vec![("packet", "8".into())],
-            ),
-        ] {
+        for (r, o) in [("raycast-cpu,storage=hier,kernel=incremental", vec![("exact", toml::Value::from(false))]), ("raycast-cpu,storage=bits,kernel=refloor,shading.shadow=traversal:incremental,traversal.storage=storage", vec![("packet", "8".into())])] {
             let b = bake(&spec(r, &o)).unwrap().unwrap();
             let mut s = RendererSpec::new("raycast-cpu");
             s.graph = Some(b.graph.clone());
@@ -1446,26 +844,12 @@ mod tests {
         }
         // The values are the nodes': two kernels with two values of a baked knob are no one build.
         let mut g = bake(&spec("raycast-cpu,storage=prefix,kernel=incremental,shading.shadow=traversal:incremental,traversal.storage=storage", &[])).unwrap().unwrap().graph;
-        let kernels: Vec<String> = g
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.role == mr_components::graph::Role::Traversal)
-            .map(|(id, _)| id.clone())
-            .collect();
+        let kernels: Vec<String> = g.nodes.iter().filter(|(_, n)| n.role == mr_components::graph::Role::Traversal).map(|(id, _)| id.clone()).collect();
         assert_eq!(kernels.len(), 2, "{kernels:?}");
-        g.nodes
-            .get_mut(&kernels[0])
-            .unwrap()
-            .knobs
-            .insert("exact".into(), false.into());
+        g.nodes.get_mut(&kernels[0]).unwrap().knobs.insert("exact".into(), false.into());
         let mut s = RendererSpec::new("raycast-cpu");
         s.graph = Some(g);
         s.resolve().unwrap();
-        assert!(
-            bake(&s)
-                .unwrap_err()
-                .to_string()
-                .contains("`exact` differs between nodes")
-        );
+        assert!(bake(&s).unwrap_err().to_string().contains("`exact` differs between nodes"));
     }
 }

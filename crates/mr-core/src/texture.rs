@@ -72,18 +72,13 @@ impl BlockRegistry {
     }
 
     pub fn find(&self, name: &str) -> Option<BlockId> {
-        self.blocks
-            .iter()
-            .position(|b| b.name == name)
-            .map(|i| BlockId(i as u16))
+        self.blocks.iter().position(|b| b.name == name).map(|i| BlockId(i as u16))
     }
 
     /// The block's class (an id past the registry: opaque).
     #[inline]
     pub fn class(&self, block: BlockId) -> BlockClass {
-        self.blocks
-            .get(block.0 as usize)
-            .map_or(BlockClass::Opaque, |b| b.class)
+        self.blocks.get(block.0 as usize).map_or(BlockClass::Opaque, |b| b.class)
     }
 
     /// Whether `block` is solid and lets light through (cutout or translucent).
@@ -109,28 +104,19 @@ impl BlockRegistry {
             ChunkData::Uniform(b) => self.see_through(*b),
             ChunkData::Dense(d) => self.see_through_ids().is_some_and(|(lo, hi)| {
                 let span = hi - lo;
-                d.0.chunks(64).any(|c| {
-                    c.iter()
-                        .fold(false, |a, b| a | (b.0.wrapping_sub(lo) <= span))
-                }) && d.0.iter().any(|&b| self.see_through(b))
+                d.0.chunks(64).any(|c| c.iter().fold(false, |a, b| a | (b.0.wrapping_sub(lo) <= span))) && d.0.iter().any(|&b| self.see_through(b))
             }),
         }
     }
 
     /// Flat `[block][face] -> texture index` table, handy for GPU upload.
     pub fn face_table(&self) -> Vec<u32> {
-        self.blocks
-            .iter()
-            .flat_map(|b| b.faces.map(u32::from))
-            .collect()
+        self.blocks.iter().flat_map(|b| b.faces.map(u32::from)).collect()
     }
 
     /// All texels of all textures, each packed as little-endian RGBA8 in a `u32` (alpha 255).
     pub fn packed_texels(&self) -> Vec<u32> {
-        self.textures
-            .iter()
-            .flat_map(|t| t.texels.iter().map(|&p| u32::from_le_bytes(p)))
-            .collect()
+        self.textures.iter().flat_map(|t| t.texels.iter().map(|&p| u32::from_le_bytes(p))).collect()
     }
 
     /// For GPU upload after [`Self::packed_texels`]: every texture's coverage, four texels per
@@ -140,13 +126,7 @@ impl BlockRegistry {
         let mut out: Vec<u32> = self
             .textures
             .iter()
-            .flat_map(|t| {
-                (0..TEX_SIZE * TEX_SIZE / 4).map(move |w| {
-                    u32::from_le_bytes(std::array::from_fn(|i| {
-                        t.alpha.get(w * 4 + i).copied().unwrap_or(255)
-                    }))
-                })
-            })
+            .flat_map(|t| (0..TEX_SIZE * TEX_SIZE / 4).map(move |w| u32::from_le_bytes(std::array::from_fn(|i| t.alpha.get(w * 4 + i).copied().unwrap_or(255)))))
             .collect();
         let mut bits = vec![0u32; self.blocks.len().div_ceil(32)];
         for b in (0..self.blocks.len()).filter(|&b| self.see_through(BlockId(b as u16))) {

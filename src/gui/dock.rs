@@ -26,16 +26,7 @@ pub(super) enum Pane {
 }
 
 impl Pane {
-    const ALL: [Pane; 8] = [
-        Pane::Form,
-        Pane::Toml,
-        Pane::Metrics,
-        Pane::Compare,
-        Pane::Benchmark,
-        Pane::Keys,
-        Pane::Log,
-        Pane::Pipeline,
-    ];
+    const ALL: [Pane; 8] = [Pane::Form, Pane::Toml, Pane::Metrics, Pane::Compare, Pane::Benchmark, Pane::Keys, Pane::Log, Pane::Pipeline];
 
     fn title(self) -> &'static str {
         match self {
@@ -59,9 +50,7 @@ impl Pane {
             Pane::Benchmark => "Results of the last benchmark run",
             Pane::Keys => "Key bindings (H)",
             Pane::Log => "The live session's log",
-            Pane::Pipeline => {
-                "The pipeline editor: a renderer's graph (✏ graph on a renderer opens it)"
-            }
+            Pane::Pipeline => "The pipeline editor: a renderer's graph (✏ graph on a renderer opens it)",
         }
     }
 
@@ -129,20 +118,12 @@ pub(super) struct Docks {
 
 impl Default for Docks {
     fn default() -> Self {
-        let dock = |panes: &[Pane]| Dock {
-            panes: panes.to_vec(),
-            active: 0,
-            collapsed: false,
-            size: None,
-        };
+        let dock = |panes: &[Pane]| Dock { panes: panes.to_vec(), active: 0, collapsed: false, size: None };
         Self {
             left: dock(&[Pane::Form, Pane::Toml]),
             right: dock(&[Pane::Metrics, Pane::Compare, Pane::Benchmark, Pane::Keys]),
             bottom: dock(&[Pane::Log]),
-            windows: vec![Torn {
-                pane: Pane::Pipeline,
-                back: Side::Bottom,
-            }],
+            windows: vec![Torn { pane: Pane::Pipeline, back: Side::Bottom }],
             middle: None,
             peek: None,
             hovered: None,
@@ -177,9 +158,7 @@ impl Docks {
     }
 
     fn side_of(&self, p: Pane) -> Option<Side> {
-        Side::ALL
-            .into_iter()
-            .find(|&s| self.dock(s).panes.contains(&p))
+        Side::ALL.into_iter().find(|&s| self.dock(s).panes.contains(&p))
     }
 
     /// Takes `p` out of its dock, window or the middle; returns the dock it belongs to.
@@ -250,9 +229,7 @@ impl Docks {
     pub(super) fn arrange(&mut self, spec: &str) -> anyhow::Result<()> {
         let name = |s: &str| toml::Value::String(s.to_string());
         for item in spec.split(',').filter(|s| !s.is_empty()) {
-            let (a, b) = item
-                .split_once(':')
-                .ok_or_else(|| anyhow::anyhow!("{item}: expected a:b"))?;
+            let (a, b) = item.split_once(':').ok_or_else(|| anyhow::anyhow!("{item}: expected a:b"))?;
             if b == "collapsed" {
                 self.dock_mut(Side::deserialize(name(a))?).collapsed = true;
             } else if b == "window" {
@@ -278,10 +255,7 @@ impl Docks {
         for p in Pane::ALL.into_iter().filter(|p| !seen.contains(p)) {
             match default.windows.iter().find(|t| t.pane == p) {
                 Some(&t) => self.windows.push(t),
-                None => self
-                    .dock_mut(default.side_of(p).unwrap_or(Side::Right))
-                    .panes
-                    .push(p),
+                None => self.dock_mut(default.side_of(p).unwrap_or(Side::Right)).panes.push(p),
             }
         }
         for s in Side::ALL {
@@ -301,15 +275,8 @@ impl Docks {
             return Self::default();
         }
         let text = Self::file().and_then(|f| std::fs::read_to_string(f).ok());
-        let stored = text
-            .and_then(|t| toml::from_str::<toml::Table>(&t).ok())
-            .and_then(|t| known(t).try_into::<Docks>().ok());
-        stored
-            .map(|d| Docks {
-                saved: true,
-                ..d.repaired()
-            })
-            .unwrap_or_default()
+        let stored = text.and_then(|t| toml::from_str::<toml::Table>(&t).ok()).and_then(|t| known(t).try_into::<Docks>().ok());
+        stored.map(|d| Docks { saved: true, ..d.repaired() }).unwrap_or_default()
     }
 
     fn save(&mut self) {
@@ -362,26 +329,12 @@ impl App {
                 Side::Right => egui::Panel::right(id),
                 Side::Bottom => egui::Panel::bottom(id),
             };
-            let panel = if thin {
-                panel.exact_size(STRIP).resizable(false)
-            } else {
-                panel.resizable(true).default_size(size)
-            };
-            let shown = panel.show(ui, |ui| {
-                if thin {
-                    strip(ui, side, &mut self.docks)
-                } else {
-                    self.dock_ui(ui, side, false)
-                }
-            });
+            let panel = if thin { panel.exact_size(STRIP).resizable(false) } else { panel.resizable(true).default_size(size) };
+            let shown = panel.show(ui, |ui| if thin { strip(ui, side, &mut self.docks) } else { self.dock_ui(ui, side, false) });
             let rect = shown.response.rect;
             let mut action = shown.inner;
             if !thin {
-                let now = if side == Side::Bottom {
-                    rect.height()
-                } else {
-                    rect.width()
-                };
+                let now = if side == Side::Bottom { rect.height() } else { rect.width() };
                 if (now - size).abs() > 0.5 {
                     self.docks.dock_mut(side).size = Some(now);
                     self.docks.saved = false;
@@ -394,40 +347,22 @@ impl App {
     }
 
     /// A collapsed dock shown over the view beside its strip, until the pointer leaves both.
-    fn peek(
-        &mut self,
-        ctx: &egui::Context,
-        side: Side,
-        strip: egui::Rect,
-        size: f32,
-    ) -> Option<Action> {
+    fn peek(&mut self, ctx: &egui::Context, side: Side, strip: egui::Rect, size: f32) -> Option<Action> {
         let area = match side {
             Side::Left => egui::Rect::from_min_size(strip.min, egui::vec2(size, strip.height())),
-            Side::Right => {
-                egui::Rect::from_min_max(egui::pos2(strip.max.x - size, strip.min.y), strip.max)
-            }
-            Side::Bottom => {
-                egui::Rect::from_min_max(egui::pos2(strip.min.x, strip.max.y - size), strip.max)
-            }
+            Side::Right => egui::Rect::from_min_max(egui::pos2(strip.max.x - size, strip.min.y), strip.max),
+            Side::Bottom => egui::Rect::from_min_max(egui::pos2(strip.min.x, strip.max.y - size), strip.max),
         };
-        let shown = egui::Area::new(egui::Id::new(("dock-peek", side)))
-            .order(egui::Order::Foreground)
-            .fixed_pos(area.min)
-            .constrain(false)
-            .show(ctx, |ui| {
-                egui::Frame::side_top_panel(ui.style()).show(ui, |ui| {
-                    let inner = area.shrink(8.0).size();
-                    ui.set_min_size(inner);
-                    ui.set_max_size(inner);
-                    self.dock_ui(ui, side, true)
-                })
-            });
-        let hold = egui::DragAndDrop::has_any_payload(ctx)
-            || egui::Popup::is_any_open(ctx)
-            || ctx.input(|i| i.pointer.any_down());
-        let inside = ctx
-            .pointer_latest_pos()
-            .is_some_and(|p| area.union(strip).expand(4.0).contains(p));
+        let shown = egui::Area::new(egui::Id::new(("dock-peek", side))).order(egui::Order::Foreground).fixed_pos(area.min).constrain(false).show(ctx, |ui| {
+            egui::Frame::side_top_panel(ui.style()).show(ui, |ui| {
+                let inner = area.shrink(8.0).size();
+                ui.set_min_size(inner);
+                ui.set_max_size(inner);
+                self.dock_ui(ui, side, true)
+            })
+        });
+        let hold = egui::DragAndDrop::has_any_payload(ctx) || egui::Popup::is_any_open(ctx) || ctx.input(|i| i.pointer.any_down());
+        let inside = ctx.pointer_latest_pos().is_some_and(|p| area.union(strip).expand(4.0).contains(p));
         if !inside && !hold {
             self.docks.peek = None;
         }
@@ -526,9 +461,7 @@ impl App {
                 Pane::Pipeline => [1400.0, 640.0],
                 _ => [520.0, 760.0],
             };
-            let vb = egui::ViewportBuilder::default()
-                .with_title(format!("MultiRenderer — {}", t.pane.title()))
-                .with_inner_size(size);
+            let vb = egui::ViewportBuilder::default().with_title(format!("MultiRenderer — {}", t.pane.title())).with_inner_size(size);
             let mut back = false;
             let mut closed = false;
             ctx.show_viewport_immediate(t.pane.viewport(), vb, |ui, _| {
@@ -536,21 +469,10 @@ impl App {
                 egui::CentralPanel::default().show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.strong(t.pane.title());
-                        if ui
-                            .button("↙ Dock")
-                            .on_hover_text(format!("Back into the {} dock", t.back.name()))
-                            .clicked()
-                        {
+                        if ui.button("↙ Dock").on_hover_text(format!("Back into the {} dock", t.back.name())).clicked() {
                             back = true;
                         }
-                        if t.pane == Pane::Pipeline
-                            && ui
-                                .button("⛶ Middle")
-                                .on_hover_text(
-                                    "Show the editor in the main window, in place of the view",
-                                )
-                                .clicked()
-                        {
+                        if t.pane == Pane::Pipeline && ui.button("⛶ Middle").on_hover_text("Show the editor in the main window, in place of the view").clicked() {
                             self.docks.set_middle(t.pane);
                         }
                     });
@@ -569,9 +491,7 @@ impl App {
     /// Whether the middle shows a pane instead of the viewport (the pipeline editor only while
     /// it is open).
     pub(super) fn middle_pane(&self) -> Option<Pane> {
-        self.docks
-            .middle()
-            .filter(|&p| p != Pane::Pipeline || self.graph_win.is_some())
+        self.docks.middle().filter(|&p| p != Pane::Pipeline || self.graph_win.is_some())
     }
 
     /// The pane in place of the viewport, with buttons to send it back.
@@ -579,21 +499,10 @@ impl App {
         let back = self.docks.middle.map_or(Side::Bottom, |t| t.back);
         ui.horizontal(|ui| {
             ui.strong(p.title());
-            if ui
-                .button("↙ Dock")
-                .on_hover_text(format!(
-                    "Into the {} dock; the view comes back",
-                    back.name()
-                ))
-                .clicked()
-            {
+            if ui.button("↙ Dock").on_hover_text(format!("Into the {} dock; the view comes back", back.name())).clicked() {
                 self.docks.move_to(p, back);
             }
-            if ui
-                .button("↗ Own window")
-                .on_hover_text("In an OS window of its own; the view comes back")
-                .clicked()
-            {
+            if ui.button("↗ Own window").on_hover_text("In an OS window of its own; the view comes back").clicked() {
                 self.docks.tear(p);
             }
         });
@@ -624,15 +533,13 @@ impl App {
             Pane::Keys => steady_scroll(ui, "keys", input::help),
             Pane::Pipeline => self.pipeline(ui),
             Pane::Log => {
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        if let Some(l) = &self.live {
-                            for line in l.shared.lock().unwrap().log.iter() {
-                                ui.monospace(line);
-                            }
+                egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                    if let Some(l) = &self.live {
+                        for line in l.shared.lock().unwrap().log.iter() {
+                            ui.monospace(line);
                         }
-                    });
+                    }
+                });
             }
         }
     }
@@ -645,15 +552,10 @@ fn strip(ui: &mut egui::Ui, side: Side, docks: &mut Docks) -> Option<Action> {
     let panes = &docks.dock(side).panes;
     let r = ui.allocate_rect(area, Sense::click());
     if r.hovered() {
-        ui.painter()
-            .rect_filled(area, 2.0, ui.visuals().widgets.hovered.bg_fill);
+        ui.painter().rect_filled(area, 2.0, ui.visuals().widgets.hovered.bg_fill);
     }
     let names: Vec<&str> = panes.iter().map(|p| p.title()).collect();
-    let r = r.on_hover_text(if names.is_empty() {
-        format!("The {} dock: drop a tab here", side.name())
-    } else {
-        format!("{} (click to keep it open)", names.join(", "))
-    });
+    let r = r.on_hover_text(if names.is_empty() { format!("The {} dock: drop a tab here", side.name()) } else { format!("{} (click to keep it open)", names.join(", ")) });
     let open = (r.clicked() && !panes.is_empty()).then_some(Action::Collapse(side, false));
     let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
     if r.hovered() && !panes.is_empty() && !dragging {
@@ -663,14 +565,12 @@ fn strip(ui: &mut egui::Ui, side: Side, docks: &mut Docks) -> Option<Action> {
                 if now - since >= PEEK_DELAY {
                     docks.peek = Some(side);
                 } else {
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_secs_f64(PEEK_DELAY));
+                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(PEEK_DELAY));
                 }
             }
             _ => {
                 docks.hovered = Some((side, now));
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_secs_f64(PEEK_DELAY));
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(PEEK_DELAY));
             }
         }
     } else if docks.hovered.is_some_and(|(s, _)| s == side) {
@@ -683,15 +583,9 @@ fn strip(ui: &mut egui::Ui, side: Side, docks: &mut Docks) -> Option<Action> {
 fn drop_zone(ui: &mut egui::Ui, area: egui::Rect, side: Side) -> Option<Action> {
     let r = ui.interact(area, ui.id().with(("dock-drop", side)), Sense::hover());
     if r.dnd_hover_payload::<Pane>().is_some() {
-        ui.painter().rect_stroke(
-            area.shrink(1.0),
-            2.0,
-            egui::Stroke::new(2.0, Color32::LIGHT_BLUE),
-            egui::StrokeKind::Inside,
-        );
+        ui.painter().rect_stroke(area.shrink(1.0), 2.0, egui::Stroke::new(2.0, Color32::LIGHT_BLUE), egui::StrokeKind::Inside);
     }
-    r.dnd_release_payload::<Pane>()
-        .map(|p| Action::Move(*p, side))
+    r.dnd_release_payload::<Pane>().map(|p| Action::Move(*p, side))
 }
 
 /// Stored layout `t` without the panes this build no longer has (a retired pane).
@@ -705,9 +599,7 @@ fn known(mut t: toml::Table) -> toml::Table {
     if let Some(toml::Value::Array(w)) = t.get_mut("windows") {
         w.retain(|w| w.get("pane").is_some_and(ok));
     }
-    if t.get("middle")
-        .is_some_and(|m| !m.get("pane").is_some_and(ok))
-    {
+    if t.get("middle").is_some_and(|m| !m.get("pane").is_some_and(ok)) {
         t.remove("middle");
     }
     t
@@ -718,12 +610,7 @@ mod tests {
     use super::*;
 
     fn all(d: &Docks) -> Vec<Pane> {
-        let mut v: Vec<Pane> = Side::ALL
-            .into_iter()
-            .flat_map(|s| d.dock(s).panes.clone())
-            .chain(d.windows.iter().map(|t| t.pane))
-            .chain(d.middle())
-            .collect();
+        let mut v: Vec<Pane> = Side::ALL.into_iter().flat_map(|s| d.dock(s).panes.clone()).chain(d.windows.iter().map(|t| t.pane)).chain(d.middle()).collect();
         v.sort_by_key(|p| Pane::ALL.iter().position(|q| q == p));
         v
     }
@@ -733,34 +620,14 @@ mod tests {
         let mut d = Docks::default();
         d.right.active = 3; // Keys
         d.move_to(Pane::Compare, Side::Bottom);
-        assert_eq!(
-            d.right.panes[d.right.active],
-            Pane::Keys,
-            "the active tab stays when one before it leaves"
-        );
-        assert_eq!(
-            (d.bottom.panes.clone(), d.bottom.active),
-            (vec![Pane::Log, Pane::Compare], 1)
-        );
+        assert_eq!(d.right.panes[d.right.active], Pane::Keys, "the active tab stays when one before it leaves");
+        assert_eq!((d.bottom.panes.clone(), d.bottom.active), (vec![Pane::Log, Pane::Compare], 1));
         d.tear(Pane::Compare);
-        assert_eq!(
-            d.windows.last(),
-            Some(&Torn {
-                pane: Pane::Compare,
-                back: Side::Bottom
-            })
-        );
+        assert_eq!(d.windows.last(), Some(&Torn { pane: Pane::Compare, back: Side::Bottom }));
         d.move_to(Pane::Compare, Side::Bottom);
-        assert!(
-            !d.windows.iter().any(|t| t.pane == Pane::Compare)
-                && d.bottom.panes.contains(&Pane::Compare)
-        );
+        assert!(!d.windows.iter().any(|t| t.pane == Pane::Compare) && d.bottom.panes.contains(&Pane::Compare));
         d.move_to(Pane::Form, Side::Left);
-        assert_eq!(
-            d.left.panes,
-            vec![Pane::Form, Pane::Toml],
-            "a move to its own dock changes nothing"
-        );
+        assert_eq!(d.left.panes, vec![Pane::Form, Pane::Toml], "a move to its own dock changes nothing");
         d.move_to(Pane::Form, Side::Right);
         d.move_to(Pane::Toml, Side::Right);
         assert!(d.left.panes.is_empty());
@@ -773,31 +640,15 @@ mod tests {
         d.tear(Pane::Keys);
         d.bottom.collapsed = true;
         let back: Docks = toml::from_str(&toml::to_string(&d).unwrap()).unwrap();
-        assert!(
-            back == Docks {
-                saved: back.saved,
-                ..d.clone()
-            }
-        );
+        assert!(back == Docks { saved: back.saved, ..d.clone() });
         let odd: Docks = toml::from_str("[left]\npanes = [\"form\", \"form\"]\nactive = 7\ncollapsed = false\n[right]\npanes = []\nactive = 0\ncollapsed = false\n[bottom]\npanes = [\"log\"]\nactive = 0\ncollapsed = false\n").unwrap();
         let fixed = odd.repaired();
         assert_eq!(all(&fixed), Pane::ALL);
         assert_eq!(fixed.left.active, 1);
-        assert_eq!(
-            fixed.windows,
-            vec![Torn {
-                pane: Pane::Pipeline,
-                back: Side::Bottom
-            }],
-            "a pane missing from an older layout goes where it starts"
-        );
+        assert_eq!(fixed.windows, vec![Torn { pane: Pane::Pipeline, back: Side::Bottom }], "a pane missing from an older layout goes where it starts");
         let old: toml::Table = toml::from_str("[left]\npanes = [\"form\", \"schemes\"]\nactive = 0\ncollapsed = false\n[right]\npanes = []\nactive = 0\ncollapsed = false\n[bottom]\npanes = []\nactive = 0\ncollapsed = false\n[[windows]]\npane = \"schemes\"\nback = \"left\"\n").unwrap();
         let old: Docks = known(old).try_into().unwrap();
-        assert_eq!(
-            (old.left.panes, old.windows),
-            (vec![Pane::Form], vec![]),
-            "a pane this build no longer has is dropped"
-        );
+        assert_eq!((old.left.panes, old.windows), (vec![Pane::Form], vec![]), "a pane this build no longer has is dropped");
         let mut sized = Docks::default();
         sized.left.size = Some(512.0);
         let back: Docks = toml::from_str(&toml::to_string(&sized).unwrap()).unwrap();
@@ -810,17 +661,11 @@ mod tests {
         d.set_middle(Pane::Pipeline);
         assert!(d.windows.is_empty() && d.middle() == Some(Pane::Pipeline));
         d.move_to(Pane::Pipeline, Side::Right);
-        assert_eq!(
-            (d.middle(), d.right.panes.last()),
-            (None, Some(&Pane::Pipeline))
-        );
+        assert_eq!((d.middle(), d.right.panes.last()), (None, Some(&Pane::Pipeline)));
         d.set_middle(Pane::Pipeline);
         d.set_middle(Pane::Keys);
         assert_eq!(d.middle(), Some(Pane::Keys));
-        assert!(
-            d.right.panes.contains(&Pane::Pipeline),
-            "the pane in the middle before goes back to its dock"
-        );
+        assert!(d.right.panes.contains(&Pane::Pipeline), "the pane in the middle before goes back to its dock");
         assert_eq!(all(&d), Pane::ALL);
     }
 }

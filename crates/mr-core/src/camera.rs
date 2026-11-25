@@ -22,13 +22,7 @@ pub struct Camera {
 
 impl Default for Camera {
     fn default() -> Self {
-        Self {
-            position: DVec3::ZERO,
-            yaw: 0.0,
-            pitch: 0.0,
-            fov_y: 70f32.to_radians(),
-            near: 0.05,
-        }
+        Self { position: DVec3::ZERO, yaw: 0.0, pitch: 0.0, fov_y: 70f32.to_radians(), near: 0.05 }
     }
 }
 
@@ -53,13 +47,7 @@ impl Camera {
         let d = (target - position).as_vec3().normalize_or(Vec3::NEG_Z);
         let pitch = d.y.clamp(-1.0, 1.0).asin();
         let yaw = d.x.atan2(-d.z);
-        Self {
-            position,
-            yaw,
-            pitch,
-            fov_y: fov_y_deg.to_radians(),
-            ..Default::default()
-        }
+        Self { position, yaw, pitch, fov_y: fov_y_deg.to_radians(), ..Default::default() }
     }
 
     /// Normalised direction of the primary ray through pixel `(px, py)` for a `w x h` image.

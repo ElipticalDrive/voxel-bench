@@ -79,36 +79,9 @@ impl Forward {
     fn new(gpu: &Gpu, f: &ForwardSpec) -> Self {
         use wgpu::CompareFunction::{Equal, Greater};
         Self {
-            fill: pipeline(
-                gpu,
-                "mesh fill",
-                f.module,
-                f.layout,
-                Some("mesh_fs"),
-                f.format,
-                true,
-                Greater,
-            ),
-            depth: pipeline(
-                gpu,
-                "mesh depth",
-                f.module,
-                f.layout,
-                None,
-                f.format,
-                true,
-                Greater,
-            ),
-            equal: pipeline(
-                gpu,
-                "mesh equal",
-                f.module,
-                f.layout,
-                Some("mesh_fs"),
-                f.format,
-                false,
-                Equal,
-            ),
+            fill: pipeline(gpu, "mesh fill", f.module, f.layout, Some("mesh_fs"), f.format, true, Greater),
+            depth: pipeline(gpu, "mesh depth", f.module, f.layout, None, f.format, true, Greater),
+            equal: pipeline(gpu, "mesh equal", f.module, f.layout, Some("mesh_fs"), f.format, false, Equal),
         }
     }
 }
@@ -116,35 +89,13 @@ impl Forward {
 /// A mesh pipeline: `mesh_vs` over the shapes' vertices and the instance table (an
 /// instance-rate buffer: the matrix rows, the first vertex and triangle), fragment `entry` (none: depth only)
 /// into `target`, depth `compare` with (`write`) or without writing, no culling.
-fn pipeline(
-    gpu: &Gpu,
-    label: &str,
-    module: &wgpu::ShaderModule,
-    layout: &wgpu::PipelineLayout,
-    entry: Option<&str>,
-    target: wgpu::TextureFormat,
-    write: bool,
-    compare: wgpu::CompareFunction,
-) -> wgpu::RenderPipeline {
+fn pipeline(gpu: &Gpu, label: &str, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, entry: Option<&str>, target: wgpu::TextureFormat, write: bool, compare: wgpu::CompareFunction) -> wgpu::RenderPipeline {
     let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Float32x3];
-    let attr = |shader_location, format, words: usize| wgpu::VertexAttribute {
-        format,
-        offset: words as u64 * 4,
-        shader_location,
-    };
+    let attr = |shader_location, format, words: usize| wgpu::VertexAttribute { format, offset: words as u64 * 4, shader_location };
     use wgpu::VertexFormat::{Float32x4, Uint32x2};
-    let inst = [
-        attr(3, Float32x4, 0),
-        attr(4, Float32x4, 4),
-        attr(5, Float32x4, 8),
-        attr(6, Uint32x2, layout::INST_FIRST_VERTEX),
-    ];
+    let inst = [attr(3, Float32x4, 0), attr(4, Float32x4, 4), attr(5, Float32x4, 8), attr(6, Uint32x2, layout::INST_FIRST_VERTEX)];
     const _: () = assert!(layout::INST_BASE == layout::INST_FIRST_VERTEX + 1);
-    let targets = [Some(wgpu::ColorTargetState {
-        format: target,
-        blend: None,
-        write_mask: wgpu::ColorWrites::ALL,
-    })];
+    let targets = [Some(wgpu::ColorTargetState { format: target, blend: None, write_mask: wgpu::ColorWrites::ALL })];
     gpu.device.render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(layout),
@@ -153,37 +104,14 @@ fn pipeline(
             entry_point: Some("mesh_vs"),
             compilation_options: Default::default(),
             buffers: &[
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attrs,
-                }),
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: layout::INST_WORDS as u64 * 4,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &inst,
-                }),
+                Some(wgpu::VertexBufferLayout { array_stride: size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attrs }),
+                Some(wgpu::VertexBufferLayout { array_stride: layout::INST_WORDS as u64 * 4, step_mode: wgpu::VertexStepMode::Instance, attributes: &inst }),
             ],
         },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            cull_mode: None,
-            ..Default::default()
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: Some(write),
-            depth_compare: Some(compare),
-            stencil: Default::default(),
-            bias: Default::default(),
-        }),
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(write), depth_compare: Some(compare), stencil: Default::default(), bias: Default::default() }),
         multisample: Default::default(),
-        fragment: entry.map(|e| wgpu::FragmentState {
-            module,
-            entry_point: Some(e),
-            compilation_options: Default::default(),
-            targets: &targets,
-        }),
+        fragment: entry.map(|e| wgpu::FragmentState { module, entry_point: Some(e), compilation_options: Default::default(), targets: &targets }),
         multiview_mask: None,
         cache: gpu.cache(),
     })
@@ -222,43 +150,17 @@ impl GpuMeshes {
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                 count: None,
             }],
         });
-        let frame_buf = dev.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mesh frame"),
-            size: size_of::<MeshFrame>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let bind = dev.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("mesh frame"),
-            layout: &layout0,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: frame_buf.as_entire_binding(),
-            }],
-        });
+        let frame_buf = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh frame"), size: size_of::<MeshFrame>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let bind = dev.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("mesh frame"), layout: &layout0, entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() }] });
         use wgpu::CompareFunction::Greater;
         use wgpu::TextureFormat::{R32Uint, Rg32Uint};
         let forward = forward.map(|f| Forward::new(gpu, &f));
-        let module = crate::program::compile(
-            dev,
-            "mesh records",
-            &Program::world(None),
-            &records_root(),
-            &[VOXELS, COMMON],
-        );
-        let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("mesh records"),
-            bind_group_layouts: &[Some(&layout0)],
-            immediate_size: 0,
-        });
+        let module = crate::program::compile(dev, "mesh records", &Program::world(None), &records_root(), &[VOXELS, COMMON]);
+        let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("mesh records"), bind_group_layouts: &[Some(&layout0)], immediate_size: 0 });
         Self {
             data: HashMap::new(),
             instances: vec![],
@@ -273,26 +175,8 @@ impl GpuMeshes {
             frame_buf,
             bind,
             forward,
-            records: pipeline(
-                gpu,
-                "mesh records",
-                &module,
-                &pl,
-                Some("mesh_record_fs"),
-                Rg32Uint,
-                true,
-                Greater,
-            ),
-            ids: pipeline(
-                gpu,
-                "mesh ids",
-                &module,
-                &pl,
-                Some("mesh_id_fs"),
-                R32Uint,
-                true,
-                Greater,
-            ),
+            records: pipeline(gpu, "mesh records", &module, &pl, Some("mesh_record_fs"), Rg32Uint, true, Greater),
+            ids: pipeline(gpu, "mesh ids", &module, &pl, Some("mesh_id_fs"), R32Uint, true, Greater),
         }
     }
 
@@ -303,12 +187,7 @@ impl GpuMeshes {
 
     /// Vertices are drawn and, as storage, read by [`surface_wgsl`]'s decoding.
     fn vertex_buffer(gpu: &Gpu, size: u64) -> wgpu::Buffer {
-        gpu.storage(
-            "mesh vertices",
-            size,
-            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            || "the meshes in view (their vertices and instances)".into(),
-        )
+        gpu.storage("mesh vertices", size, wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || "the meshes in view (their vertices and instances)".into())
     }
 
     /// The two-level buffer ([`layout`]) for [`surface_wgsl`]'s binding. It may be replaced by [`Self::prepare`].
@@ -346,21 +225,10 @@ impl GpuMeshes {
     /// triangles and BLASes); when instances moved or the camera's block changed, the
     /// instances' part (table and TLAS). Call once per frame before drawing. Returns whether
     /// the buffer was replaced (bind groups holding [`Self::vertices`] then need rebuilding).
-    pub fn prepare(
-        &mut self,
-        gpu: &Gpu,
-        cam: &Camera,
-        view_proj: glam::Mat4,
-        mode: RenderMode,
-    ) -> bool {
+    pub fn prepare(&mut self, gpu: &Gpu, cam: &Camera, view_proj: glam::Mat4, mode: RenderMode) -> bool {
         let (cam_block, frac) = cam.split_position();
-        let f = MeshFrame {
-            view_proj: view_proj.to_cols_array_2d(),
-            cam_frac: frac.to_array(),
-            mode: (mode == RenderMode::Lit) as u32,
-        };
-        gpu.queue
-            .write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&f));
+        let f = MeshFrame { view_proj: view_proj.to_cols_array_2d(), cam_frac: frac.to_array(), mode: (mode == RenderMode::Lit) as u32 };
+        gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&f));
         let mut shapes = std::mem::take(&mut self.shapes_dirty);
         if shapes {
             self.shapes = layout::Shapes::build(&self.data);
@@ -385,17 +253,12 @@ impl GpuMeshes {
         if shapes {
             let verts: &[u8] = bytemuck::cast_slice(&self.shapes.verts);
             let nodes: &[u8] = bytemuck::cast_slice(&self.shapes.nodes);
-            gpu.queue
-                .write_buffer(&self.vbuf, layout::HEAD as u64 * 4, verts);
-            gpu.queue
-                .write_buffer(&self.vbuf, self.shapes.blas_start() as u64 * 4, nodes);
+            gpu.queue.write_buffer(&self.vbuf, layout::HEAD as u64 * 4, verts);
+            gpu.queue.write_buffer(&self.vbuf, self.shapes.blas_start() as u64 * 4, nodes);
         }
-        gpu.queue
-            .write_buffer(&self.vbuf, 0, bytemuck::cast_slice(&placed.header.words()));
-        gpu.queue
-            .write_buffer(&self.vbuf, end, bytemuck::cast_slice(&placed.words));
-        (self.draws, self.placed_tris, self.table_at) =
-            (placed.draws, placed.header.triangles, end);
+        gpu.queue.write_buffer(&self.vbuf, 0, bytemuck::cast_slice(&placed.header.words()));
+        gpu.queue.write_buffer(&self.vbuf, end, bytemuck::cast_slice(&placed.words));
+        (self.draws, self.placed_tris, self.table_at) = (placed.draws, placed.header.triangles, end);
         grown
     }
 
@@ -410,10 +273,7 @@ impl GpuMeshes {
             MeshPass::Records => &self.records,
             MeshPass::Ids => &self.ids,
             _ => {
-                let f = self
-                    .forward
-                    .as_ref()
-                    .expect("forward mesh passes need the region's shading (GpuMeshes::new)");
+                let f = self.forward.as_ref().expect("forward mesh passes need the region's shading (GpuMeshes::new)");
                 match kind {
                     MeshPass::Fill => &f.fill,
                     MeshPass::Depth => &f.depth,
@@ -428,10 +288,7 @@ impl GpuMeshes {
         pass.set_vertex_buffer(0, self.vbuf.slice(layout::HEAD as u64 * 4..));
         pass.set_vertex_buffer(1, self.vbuf.slice(self.table_at..));
         for d in &self.draws {
-            pass.draw(
-                d.first_vertex..d.first_vertex + d.vertices,
-                d.instances.clone(),
-            );
+            pass.draw(d.first_vertex..d.first_vertex + d.vertices, d.instances.clone());
         }
     }
 }
@@ -456,10 +313,7 @@ pub const MESH_SURFACE: &str = "mr::mesh_surface";
 /// ([`GpuMeshes::vertices`]) at `group`, `binding`. It depends on the world modules only;
 /// the shading component shades what it decodes (`shade_mesh`, `shading::mesh`).
 pub fn surface_wgsl(group: u32, binding: u32) -> String {
-    format!(
-        "@group({group}) @binding({binding}) var<storage, read> mesh_verts: array<u32>;\n{}",
-        include_str!("mesh_surface.wgsl")
-    )
+    format!("@group({group}) @binding({binding}) var<storage, read> mesh_verts: array<u32>;\n{}", include_str!("mesh_surface.wgsl"))
 }
 
 /// WGSL for ray casters with mesh records (bind group 3, see [`MeshRecords`]; the triangles
@@ -515,23 +369,10 @@ impl MeshRecords {
         let tex = |binding, sample_type| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: stages,
-            ty: wgpu::BindingType::Texture {
-                sample_type,
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
+            ty: wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
             count: None,
         };
-        let buf = |binding, ty| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: stages,
-            ty: wgpu::BindingType::Buffer {
-                ty,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
+        let buf = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: stages, ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None }, count: None };
         let layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mesh records"),
             entries: &[
@@ -541,23 +382,11 @@ impl MeshRecords {
                 buf(3, wgpu::BufferBindingType::Storage { read_only: true }),
             ],
         });
-        let uniform = dev.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mesh records"),
-            size: size_of::<CompUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let uniform = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh records"), size: size_of::<CompUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let (records, depth) = Self::targets(gpu, width, height);
         let meshes = GpuMeshes::new(gpu, None);
         let bind = Self::bind(gpu, &layout, &records, &depth, &uniform, meshes.vertices());
-        Self {
-            meshes,
-            layout,
-            uniform,
-            records,
-            depth,
-            bind,
-        }
+        Self { meshes, layout, uniform, records, depth, bind }
     }
 
     fn targets(gpu: &Gpu, w: u32, h: u32) -> (wgpu::TextureView, wgpu::TextureView) {
@@ -565,68 +394,34 @@ impl MeshRecords {
             gpu.device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
-                    size: wgpu::Extent3d {
-                        width: w.max(1),
-                        height: h.max(1),
-                        depth_or_array_layers: 1,
-                    },
+                    size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
                 })
                 .create_view(&Default::default())
         };
-        (
-            mk("mesh records", wgpu::TextureFormat::Rg32Uint),
-            mk("mesh depth", wgpu::TextureFormat::Depth32Float),
-        )
+        (mk("mesh records", wgpu::TextureFormat::Rg32Uint), mk("mesh depth", wgpu::TextureFormat::Depth32Float))
     }
 
-    fn bind(
-        gpu: &Gpu,
-        layout: &wgpu::BindGroupLayout,
-        records: &wgpu::TextureView,
-        depth: &wgpu::TextureView,
-        uniform: &wgpu::Buffer,
-        verts: &wgpu::Buffer,
-    ) -> wgpu::BindGroup {
+    fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, records: &wgpu::TextureView, depth: &wgpu::TextureView, uniform: &wgpu::Buffer, verts: &wgpu::Buffer) -> wgpu::BindGroup {
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mesh records"),
             layout,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(records),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(depth),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: verts.as_entire_binding(),
-                },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(records) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth) },
+                wgpu::BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: verts.as_entire_binding() },
             ],
         })
     }
 
     fn rebind(&mut self, gpu: &Gpu) {
-        self.bind = Self::bind(
-            gpu,
-            &self.layout,
-            &self.records,
-            &self.depth,
-            &self.uniform,
-            self.meshes.vertices(),
-        );
+        self.bind = Self::bind(gpu, &self.layout, &self.records, &self.depth, &self.uniform, self.meshes.vertices());
     }
 
     /// Layout of bind group 3 for the ray caster's pipeline.
@@ -653,26 +448,9 @@ impl MeshRecords {
     /// Rasterises the meshes' records for this frame (when `meshes` is on) ahead of the ray
     /// caster's dispatch, and tells the shader whether to read them. `ts` carries the frame's
     /// begin timestamp when [`Self::active`].
-    pub fn encode(
-        &mut self,
-        gpu: &Gpu,
-        enc: &mut wgpu::CommandEncoder,
-        cam: &Camera,
-        aspect: f32,
-        mode: RenderMode,
-        meshes: bool,
-        ts: Option<wgpu::RenderPassTimestampWrites<'_>>,
-    ) {
+    pub fn encode(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, cam: &Camera, aspect: f32, mode: RenderMode, meshes: bool, ts: Option<wgpu::RenderPassTimestampWrites<'_>>) {
         let on = self.active(meshes);
-        gpu.queue.write_buffer(
-            &self.uniform,
-            0,
-            bytemuck::bytes_of(&CompUniform {
-                near: cam.near,
-                enabled: on as u32,
-                _p: [0; 2],
-            }),
-        );
+        gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&CompUniform { near: cam.near, enabled: on as u32, _p: [0; 2] }));
         if !on {
             return;
         }
@@ -686,17 +464,11 @@ impl MeshRecords {
                 view: &self.records,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(0.0),
-                    store: wgpu::StoreOp::Store,
-                }),
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
                 stencil_ops: None,
             }),
             timestamp_writes: ts,
@@ -714,20 +486,10 @@ mod tests {
     #[test]
     fn record_program_composes() {
         use crate::program::{COMMON, Program, VOXELS};
-        let m = Program::world(None)
-            .naga(&super::records_root(), &[VOXELS, COMMON])
-            .unwrap();
-        wgpu::naga::valid::Validator::new(
-            wgpu::naga::valid::ValidationFlags::all(),
-            wgpu::naga::valid::Capabilities::all(),
-        )
-        .validate(&m)
-        .unwrap();
+        let m = Program::world(None).naga(&super::records_root(), &[VOXELS, COMMON]).unwrap();
+        wgpu::naga::valid::Validator::new(wgpu::naga::valid::ValidationFlags::all(), wgpu::naga::valid::Capabilities::all()).validate(&m).unwrap();
         assert!(m.entry_points.iter().all(|e| e.name != "mesh_fs"));
-        assert!(
-            crate::voxels::VOXELS_WGSL
-                .contains(&format!("const MESH_TRIS: u32 = {:#x}u;", super::MESH_TRIS))
-        );
+        assert!(crate::voxels::VOXELS_WGSL.contains(&format!("const MESH_TRIS: u32 = {:#x}u;", super::MESH_TRIS)));
     }
 
     /// `mesh_surface.wgsl` reads the two-level buffer at the offsets `layout` writes.
@@ -735,34 +497,11 @@ mod tests {
     fn surface_constants_match_the_layout() {
         use super::layout::*;
         let wgsl = include_str!("mesh_surface.wgsl");
-        for (name, v) in [
-            ("MESH_HEAD", HEAD),
-            ("MESH_VERT_WORDS", VERT_WORDS),
-            ("MESH_INST_WORDS", INST_WORDS),
-            ("MESH_INST_INVERSE", INST_INVERSE),
-            ("MESH_INST_ROOT", INST_ROOT),
-            ("MESH_INST_FIRST_VERTEX", INST_FIRST_VERTEX),
-            ("MESH_INST_BASE", INST_BASE),
-        ] {
-            assert!(
-                wgsl.contains(&format!("const {name}: u32 = {v}u;")),
-                "{name} = {v}"
-            );
+        for (name, v) in [("MESH_HEAD", HEAD), ("MESH_VERT_WORDS", VERT_WORDS), ("MESH_INST_WORDS", INST_WORDS), ("MESH_INST_INVERSE", INST_INVERSE), ("MESH_INST_ROOT", INST_ROOT), ("MESH_INST_FIRST_VERTEX", INST_FIRST_VERTEX), ("MESH_INST_BASE", INST_BASE)] {
+            assert!(wgsl.contains(&format!("const {name}: u32 = {v}u;")), "{name} = {v}");
         }
         assert_eq!(NODE_WORDS, 8, "the walks step nodes by 8 words");
-        let h = Header {
-            blas: 1,
-            instances: 2,
-            instance_count: 3,
-            tlas: 4,
-            items: 5,
-            triangles: 6,
-        }
-        .words();
-        assert_eq!(
-            h[..5],
-            [1, 2, 3, 4, 5],
-            "mesh_verts[0..5]: blas, instances, count, tlas, items"
-        );
+        let h = Header { blas: 1, instances: 2, instance_count: 3, tlas: 4, items: 5, triangles: 6 }.words();
+        assert_eq!(h[..5], [1, 2, 3, 4, 5], "mesh_verts[0..5]: blas, instances, count, tlas, items");
     }
 }

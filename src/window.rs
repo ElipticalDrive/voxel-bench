@@ -18,13 +18,7 @@ use winit::window::{Window, WindowId};
 
 pub enum UiEvent {
     /// A lane's frame in its worker's format (RGBA16F extended sRGB for an `hdr` post).
-    Frame {
-        lane: usize,
-        width: u32,
-        height: u32,
-        format: PixelFormat,
-        pixels: Arc<Vec<u8>>,
-    },
+    Frame { lane: usize, width: u32, height: u32, format: PixelFormat, pixels: Arc<Vec<u8>> },
     Lanes(usize),
     Title(String),
     /// The frames' 1.0 on an HDR surface, relative to SDR white.
@@ -77,13 +71,11 @@ pub fn run_with_window<T: Send + 'static>(
         closed: Arc::new(AtomicBool::new(false)),
     };
     let h2 = handle.clone();
-    let worker = std::thread::Builder::new()
-        .name("session".into())
-        .spawn(move || {
-            let r = body(h2.clone());
-            h2.send(UiEvent::Exit);
-            r
-        })?;
+    let worker = std::thread::Builder::new().name("session".into()).spawn(move || {
+        let r = body(h2.clone());
+        h2.send(UiEvent::Exit);
+        r
+    })?;
     let mut app = App {
         title: title.to_string(),
         window: None,
@@ -96,9 +88,7 @@ pub fn run_with_window<T: Send + 'static>(
     };
     event_loop.run_app(&mut app)?;
     handle.closed.store(true, Ordering::Relaxed);
-    worker
-        .join()
-        .map_err(|_| anyhow::anyhow!("session thread panicked"))?
+    worker.join().map_err(|_| anyhow::anyhow!("session thread panicked"))?
 }
 
 struct Frame {
@@ -152,43 +142,22 @@ impl Encoding {
 
 /// The surface configuration: HDR if the display offers it (`hdr`), else SDR. HDR order:
 /// extended sRGB (the frames' own encoding), scRGB, HDR10.
-fn choose(
-    caps: &wgpu::SurfaceCapabilities,
-    hdr: bool,
-) -> Option<(wgpu::TextureFormat, wgpu::SurfaceColorSpace, Encoding)> {
+fn choose(caps: &wgpu::SurfaceCapabilities, hdr: bool) -> Option<(wgpu::TextureFormat, wgpu::SurfaceColorSpace, Encoding)> {
     use wgpu::{SurfaceColorSpace as C, TextureFormat as F};
     if hdr {
         for (f, c, e) in [
             (F::Rgba16Float, C::ExtendedSrgb, Encoding::Extended),
-            (
-                F::Rgba16Float,
-                C::ExtendedSrgbLinear,
-                Encoding::ExtendedLinear,
-            ),
+            (F::Rgba16Float, C::ExtendedSrgbLinear, Encoding::ExtendedLinear),
             (F::Rgb10a2Unorm, C::Bt2100Pq, Encoding::Pq),
             (F::Rgba16Float, C::Bt2100Pq, Encoding::Pq),
         ] {
-            if c.to_color_spaces()
-                .is_some_and(|s| caps.color_spaces(f).contains(s))
-            {
+            if c.to_color_spaces().is_some_and(|s| caps.color_spaces(f).contains(s)) {
                 return Some((f, c, e));
             }
         }
     }
-    let f = caps
-        .formats
-        .iter()
-        .find(|f| !f.is_srgb())
-        .or(caps.formats.first())?;
-    Some((
-        *f,
-        wgpu::SurfaceColorSpace::Auto,
-        if f.is_srgb() {
-            Encoding::SdrSrgbFormat
-        } else {
-            Encoding::Sdr
-        },
-    ))
+    let f = caps.formats.iter().find(|f| !f.is_srgb()).or(caps.formats.first())?;
+    Some((*f, wgpu::SurfaceColorSpace::Auto, if f.is_srgb() { Encoding::SdrSrgbFormat } else { Encoding::Sdr }))
 }
 
 const PRESENT_WGSL: &str = r"
@@ -282,80 +251,31 @@ impl Gpu {
             compatible_surface: Some(&surface),
             ..Default::default()
         }))?;
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("view window"),
-                ..Default::default()
-            }))?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("view window"), ..Default::default() }))?;
         let info = surface.display_hdr_info(&adapter);
-        tracing::info!(
-            "view window: {} ({:?}); display {info:?}",
-            adapter.get_info().name,
-            adapter.get_info().backend
-        );
-        let sdr_white = info
-            .luminance
-            .and_then(|l| l.sdr_white_nits)
-            .filter(|n| n.is_finite() && *n > 0.0);
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("present"),
-            source: wgpu::ShaderSource::Wgsl(PRESENT_WGSL.into()),
-        });
+        tracing::info!("view window: {} ({:?}); display {info:?}", adapter.get_info().name, adapter.get_info().backend);
+        let sdr_white = info.luminance.and_then(|l| l.sdr_white_nits).filter(|n| n.is_finite() && *n > 0.0);
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("present"), source: wgpu::ShaderSource::Wgsl(PRESENT_WGSL.into()) });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("present"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
             ],
         });
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("present"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "the window's surface is not supported by {}",
-                    adapter.get_info().name
-                )
-            })?;
-        let mut gpu = Self {
-            surface,
-            adapter,
-            device,
-            queue,
-            config,
-            encoding: Encoding::Sdr,
-            hdr: true,
-            gain: 1.0,
-            sdr_white,
-            pipelines: vec![],
-            layout,
-            shader,
-            uniform,
-            textures: vec![],
-        };
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("present"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).ok_or_else(|| anyhow::anyhow!("the window's surface is not supported by {}", adapter.get_info().name))?;
+        let mut gpu = Self { surface, adapter, device, queue, config, encoding: Encoding::Sdr, hdr: true, gain: 1.0, sdr_white, pipelines: vec![], layout, shader, uniform, textures: vec![] };
         gpu.configure(size.width, size.height);
         Ok(gpu)
     }
@@ -363,11 +283,7 @@ impl Gpu {
     /// How it presents: the colour space and, in HDR, the gain.
     fn status(&self) -> String {
         match (self.encoding.hdr(), self.hdr) {
-            (true, _) => format!(
-                "{}, 1.0 at {:.2}× SDR white",
-                self.encoding.name(),
-                self.gain
-            ),
+            (true, _) => format!("{}, 1.0 at {:.2}× SDR white", self.encoding.name(), self.gain),
             (false, true) => "SDR (the display offers no HDR surface)".into(),
             (false, false) => "SDR (H: HDR)".into(),
         }
@@ -376,12 +292,8 @@ impl Gpu {
     /// (Re)configures the surface for the window's size and the HDR choice.
     fn configure(&mut self, width: u32, height: u32) {
         let caps = self.surface.get_capabilities(&self.adapter);
-        let Some((format, color_space, encoding)) = choose(&caps, self.hdr) else {
-            return;
-        };
-        if (format, color_space) != (self.config.format, self.config.color_space)
-            || encoding != self.encoding
-        {
+        let Some((format, color_space, encoding)) = choose(&caps, self.hdr) else { return };
+        if (format, color_space) != (self.config.format, self.config.color_space) || encoding != self.encoding {
             tracing::info!("view window: {format:?}, {color_space:?}");
         }
         self.config.format = format;
@@ -397,36 +309,18 @@ impl Gpu {
         if let Some(i) = self.pipelines.iter().position(|(f, _)| *f == format) {
             return &self.pipelines[i].1;
         }
-        let layout = self
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("present"),
-                bind_group_layouts: &[Some(&self.layout)],
-                immediate_size: 0,
-            });
-        let p = self
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("present"),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &self.shader,
-                    entry_point: Some("vs"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &self.shader,
-                    entry_point: Some("fs"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(format.into())],
-                }),
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                multiview_mask: None,
-                cache: None,
-            });
+        let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("present"), bind_group_layouts: &[Some(&self.layout)], immediate_size: 0 });
+        let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("present"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            fragment: Some(wgpu::FragmentState { module: &self.shader, entry_point: Some("fs"), compilation_options: Default::default(), targets: &[Some(format.into())] }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         self.pipelines.push((format, p));
         &self.pipelines.last().unwrap().1
     }
@@ -447,11 +341,7 @@ impl Gpu {
         if self.textures[lane].as_ref().is_none_or(|(k, ..)| *k != key) {
             let tex = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("view frame"),
-                size: wgpu::Extent3d {
-                    width: f.width,
-                    height: f.height,
-                    depth_or_array_layers: 1,
-                },
+                size: wgpu::Extent3d { width: f.width, height: f.height, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -464,14 +354,8 @@ impl Gpu {
                 label: Some("view frame"),
                 layout: &self.layout,
                 entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.uniform.as_entire_binding(),
-                    },
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: self.uniform.as_entire_binding() },
                 ],
             });
             self.textures[lane] = Some((key, tex, bind));
@@ -480,16 +364,8 @@ impl Gpu {
         self.queue.write_texture(
             tex.as_image_copy(),
             &f.pixels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(f.width * bpp),
-                rows_per_image: None,
-            },
-            wgpu::Extent3d {
-                width: f.width,
-                height: f.height,
-                depth_or_array_layers: 1,
-            },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(f.width * bpp), rows_per_image: None },
+            wgpu::Extent3d { width: f.width, height: f.height, depth_or_array_layers: 1 },
         );
     }
 
@@ -499,8 +375,7 @@ impl Gpu {
             self.configure(width, height);
         }
         let out = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             _ => {
                 self.configure(width, height);
                 return;
@@ -527,15 +402,7 @@ impl Gpu {
                     view: &view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: grey,
-                            g: grey,
-                            b: grey,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: grey, g: grey, b: grey, a: 1.0 }), store: wgpu::StoreOp::Store },
                 })],
                 ..Default::default()
             });
@@ -545,18 +412,13 @@ impl Gpu {
             let rows = n.div_ceil(cols);
             let (tw, th) = (width as usize / cols, height as usize / rows);
             for (i, f) in frames.iter().enumerate() {
-                let (Some(f), Some(Some((_, _, bind)))) = (f, self.textures.get(i)) else {
-                    continue;
-                };
+                let (Some(f), Some(Some((_, _, bind)))) = (f, self.textures.get(i)) else { continue };
                 let (fw, fh) = (f.width as usize, f.height as usize);
                 if fw == 0 || fh == 0 || tw == 0 || th == 0 {
                     continue;
                 }
                 let scale = (tw as f64 / fw as f64).min(th as f64 / fh as f64);
-                let (dw, dh) = (
-                    ((fw as f64 * scale) as usize).max(1),
-                    ((fh as f64 * scale) as usize).max(1),
-                );
+                let (dw, dh) = (((fw as f64 * scale) as usize).max(1), ((fh as f64 * scale) as usize).max(1));
                 let ox = (i % cols) * tw + (tw - dw) / 2;
                 let oy = (i / cols) * th + (th - dh) / 2;
                 pass.set_viewport(ox as f32, oy as f32, dw as f32, dh as f32, 0.0, 1.0);
@@ -575,20 +437,8 @@ const GAMMA_22: bool = !cfg!(windows);
 
 /// `present` of the shader for one grey value (the background's clear colour).
 fn present_cpu(e: Encoding, c: f32, scale: f32) -> f32 {
-    let decode = |c: f32| {
-        if GAMMA_22 {
-            c.powf(2.2)
-        } else {
-            mr_core::lighting::srgb_to_linear_f(c)
-        }
-    };
-    let encode = |l: f32| {
-        if l <= 0.0031308 {
-            l * 12.92
-        } else {
-            1.055 * l.powf(1.0 / 2.4) - 0.055
-        }
-    };
+    let decode = |c: f32| if GAMMA_22 { c.powf(2.2) } else { mr_core::lighting::srgb_to_linear_f(c) };
+    let encode = |l: f32| if l <= 0.0031308 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 };
     match e {
         Encoding::Sdr => c,
         Encoding::SdrSrgbFormat => decode(c),
@@ -615,9 +465,7 @@ struct App {
 
 impl App {
     fn draw(&mut self) {
-        let (Some(window), Some(gpu)) = (&self.window, &mut self.gpu) else {
-            return;
-        };
+        let (Some(window), Some(gpu)) = (&self.window, &mut self.gpu) else { return };
         let size = window.inner_size();
         if size.width == 0 || size.height == 0 {
             return;
@@ -628,9 +476,7 @@ impl App {
     /// H toggles HDR, `[` / `]` change the frames' brightness against SDR white (HDR
     /// surfaces only).
     fn present_key(&mut self, code: KeyCode) {
-        let (Some(window), Some(gpu)) = (&self.window, &mut self.gpu) else {
-            return;
-        };
+        let (Some(window), Some(gpu)) = (&self.window, &mut self.gpu) else { return };
         match code {
             KeyCode::KeyH => gpu.hdr = !gpu.hdr,
             KeyCode::BracketLeft => gpu.gain = (gpu.gain / 2f32.powf(0.25)).max(1.0 / 16.0),
@@ -672,22 +518,11 @@ impl ApplicationHandler<UiEvent> for App {
 
     fn user_event(&mut self, el: &ActiveEventLoop, event: UiEvent) {
         match event {
-            UiEvent::Frame {
-                lane,
-                width,
-                height,
-                format,
-                pixels,
-            } => {
+            UiEvent::Frame { lane, width, height, format, pixels } => {
                 if lane >= self.frames.len() {
                     self.frames.resize_with(lane + 1, || None);
                 }
-                let f = Frame {
-                    width,
-                    height,
-                    format,
-                    pixels,
-                };
+                let f = Frame { width, height, format, pixels };
                 if let Some(g) = &mut self.gpu {
                     g.upload(lane, &f);
                 }
@@ -731,14 +566,7 @@ impl ApplicationHandler<UiEvent> for App {
                 }
             }
             WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(code),
-                        state,
-                        repeat,
-                        ..
-                    },
-                ..
+                event: KeyEvent { physical_key: PhysicalKey::Code(code), state, repeat, .. }, ..
             } => match state {
                 ElementState::Pressed => {
                     input.held.insert(code);
@@ -762,11 +590,7 @@ impl ApplicationHandler<UiEvent> for App {
                     input.held.remove(&code);
                 }
             },
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } => {
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 self.mouse_down = state == ElementState::Pressed;
             }
             WindowEvent::CursorMoved { position, .. } => {

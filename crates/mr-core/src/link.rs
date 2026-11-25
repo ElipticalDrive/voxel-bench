@@ -41,10 +41,7 @@ pub struct LinkSpec {
 impl LinkSpec {
     /// Nothing delayed or lost: the link is not run.
     pub fn free(&self) -> bool {
-        self.latency_ms <= 0.0
-            && self.jitter_ms <= 0.0
-            && self.bandwidth_mbps <= 0.0
-            && self.loss <= 0.0
+        self.latency_ms <= 0.0 && self.jitter_ms <= 0.0 && self.bandwidth_mbps <= 0.0 && self.loss <= 0.0
     }
 }
 
@@ -52,14 +49,8 @@ impl LinkSpec {
 pub fn wire_bytes(u: &WorldUpdate) -> usize {
     const KEY: usize = 13;
     match u {
-        WorldUpdate::ChunkLoad {
-            data: ChunkData::Uniform(_),
-            ..
-        } => 1 + KEY + 1 + size_of::<BlockId>(),
-        WorldUpdate::ChunkLoad {
-            data: ChunkData::Dense(_),
-            ..
-        } => 1 + KEY + 1 + CHUNK_VOLUME * size_of::<BlockId>(),
+        WorldUpdate::ChunkLoad { data: ChunkData::Uniform(_), .. } => 1 + KEY + 1 + size_of::<BlockId>(),
+        WorldUpdate::ChunkLoad { data: ChunkData::Dense(_), .. } => 1 + KEY + 1 + CHUNK_VOLUME * size_of::<BlockId>(),
         WorldUpdate::ChunkUnload { .. } => 1 + KEY,
         WorldUpdate::SetBlocks(e) => 5 + e.len() * size_of::<BlockEdit>(),
         WorldUpdate::LightUpsert(l) => 5 + l.len() * size_of::<Light>(),
@@ -131,15 +122,7 @@ pub struct Link {
 
 impl Link {
     pub fn new(spec: LinkSpec) -> Self {
-        Self {
-            spec,
-            rng: spec.seed ^ 0x9e37_79b9_7f4a_7c15,
-            line: 0.0,
-            last: HashMap::new(),
-            queue: BinaryHeap::new(),
-            seq: 0,
-            stats: LinkStats::default(),
-        }
+        Self { spec, rng: spec.seed ^ 0x9e37_79b9_7f4a_7c15, line: 0.0, last: HashMap::new(), queue: BinaryHeap::new(), seq: 0, stats: LinkStats::default() }
     }
 
     pub fn spec(&self) -> LinkSpec {
@@ -162,10 +145,7 @@ impl Link {
 
     /// Chunks still on the way (holes at the client until they arrive).
     pub fn chunks_in_flight(&self) -> usize {
-        self.queue
-            .iter()
-            .filter(|p| matches!(p.0.msg, WorldUpdate::ChunkLoad { .. }))
-            .count()
+        self.queue.iter().filter(|p| matches!(p.0.msg, WorldUpdate::ChunkLoad { .. })).count()
     }
 
     /// Uniform in [0, 1) (splitmix64).
@@ -196,11 +176,7 @@ impl Link {
                 }
                 u => {
                     let key = match &u {
-                        WorldUpdate::ChunkLoad { key, .. } | WorldUpdate::ChunkUnload { key }
-                            if self.spec.reorder =>
-                        {
-                            Some(*key)
-                        }
+                        WorldUpdate::ChunkLoad { key, .. } | WorldUpdate::ChunkUnload { key } if self.spec.reorder => Some(*key),
                         _ => None,
                     };
                     self.one(now, key, u);
@@ -213,12 +189,7 @@ impl Link {
         let s = self.spec;
         let bytes = wire_bytes(&msg);
         let depart = now.max(self.line);
-        self.line = depart
-            + if s.bandwidth_mbps > 0.0 {
-                bytes as f64 * 8.0 / (s.bandwidth_mbps * 1e6)
-            } else {
-                0.0
-            };
+        self.line = depart + if s.bandwidth_mbps > 0.0 { bytes as f64 * 8.0 / (s.bandwidth_mbps * 1e6) } else { 0.0 };
         let mut arrive = self.line + (s.latency_ms + s.jitter_ms * self.uniform()) * 1e-3;
         let timeout = (2.0 * s.latency_ms + s.jitter_ms).max(10.0) * 1e-3;
         while s.loss > 0.0 && self.uniform() < s.loss.min(0.99) {
@@ -232,11 +203,7 @@ impl Link {
         let last = self.last.entry(stream).or_insert(0);
         *last = (*last).max(at);
         let at = *last;
-        self.queue.push(Reverse(Pending {
-            at,
-            seq: self.seq,
-            msg,
-        }));
+        self.queue.push(Reverse(Pending { at, seq: self.seq, msg }));
         self.seq += 1;
     }
 
@@ -263,13 +230,7 @@ mod tests {
     use glam::IVec3;
 
     fn load(x: i32) -> WorldUpdate {
-        WorldUpdate::ChunkLoad {
-            key: ChunkKey {
-                pos: IVec3::new(x, 0, 0),
-                lod: 0,
-            },
-            data: ChunkData::Uniform(BlockId(1)),
-        }
+        WorldUpdate::ChunkLoad { key: ChunkKey { pos: IVec3::new(x, 0, 0), lod: 0 }, data: ChunkData::Uniform(BlockId(1)) }
     }
 
     fn xs(v: &[WorldUpdate]) -> Vec<i32> {
@@ -286,11 +247,7 @@ mod tests {
     fn latency_and_bandwidth() {
         // One load per second on the line.
         let bytes = wire_bytes(&load(0));
-        let mut l = Link::new(LinkSpec {
-            latency_ms: 100.0,
-            bandwidth_mbps: bytes as f64 * 8.0 * 1e-6,
-            ..Default::default()
-        });
+        let mut l = Link::new(LinkSpec { latency_ms: 100.0, bandwidth_mbps: bytes as f64 * 8.0 * 1e-6, ..Default::default() });
         l.send(0.0, (0..3).map(load).collect());
         let mut out = vec![];
         l.deliver(1.05, &mut out);
@@ -299,39 +256,21 @@ mod tests {
         assert_eq!(xs(&out), [0]);
         l.deliver(3.1, &mut out);
         assert_eq!(xs(&out), [0, 1, 2]);
-        assert_eq!(
-            l.stats(),
-            LinkStats {
-                messages: 3,
-                bytes: 3 * bytes as u64,
-                resent: 0,
-                arrived: 3 * bytes as u64
-            }
-        );
+        assert_eq!(l.stats(), LinkStats { messages: 3, bytes: 3 * bytes as u64, resent: 0, arrived: 3 * bytes as u64 });
     }
 
     /// Jitter and losses reorder only across streams: one stream (or one chunk's) stays in
     /// order, and every message arrives; the same seed gives the same arrivals.
     #[test]
     fn order_per_stream() {
-        let spec = LinkSpec {
-            latency_ms: 20.0,
-            jitter_ms: 50.0,
-            loss: 0.3,
-            ..Default::default()
-        };
+        let spec = LinkSpec { latency_ms: 20.0, jitter_ms: 50.0, loss: 0.3, ..Default::default() };
         let run = |spec: LinkSpec| {
             let mut l = Link::new(spec);
             for f in 0..20 {
                 // Chunk x loads at frame x, unloads and loads again 3 frames later.
                 let mut ups = vec![load(f)];
                 if f >= 3 {
-                    ups.push(WorldUpdate::ChunkUnload {
-                        key: ChunkKey {
-                            pos: IVec3::new(f - 3, 0, 0),
-                            lod: 0,
-                        },
-                    });
+                    ups.push(WorldUpdate::ChunkUnload { key: ChunkKey { pos: IVec3::new(f - 3, 0, 0), lod: 0 } });
                 }
                 l.send(f as f64 / 60.0, ups);
             }
@@ -350,52 +289,26 @@ mod tests {
             }
         }
         assert_eq!(xs(&ordered), expect);
-        let (re, _) = run(LinkSpec {
-            reorder: true,
-            ..spec
-        });
+        let (re, _) = run(LinkSpec { reorder: true, ..spec });
         assert_ne!(xs(&re), expect, "jitter reorders chunks");
         for x in 0..17 {
-            let kinds: Vec<bool> = re
-                .iter()
-                .filter(|u| xs(std::slice::from_ref(u)) == [x])
-                .map(|u| matches!(u, WorldUpdate::ChunkLoad { .. }))
-                .collect();
+            let kinds: Vec<bool> = re.iter().filter(|u| xs(std::slice::from_ref(u)) == [x]).map(|u| matches!(u, WorldUpdate::ChunkLoad { .. })).collect();
             assert_eq!(kinds, [true, false], "chunk {x}'s load before its unload");
         }
-        assert_eq!(
-            xs(&run(LinkSpec {
-                reorder: true,
-                ..spec
-            })
-            .0),
-            xs(&re)
-        );
+        assert_eq!(xs(&run(LinkSpec { reorder: true, ..spec }).0), xs(&re));
     }
 
     /// With `reorder`, an edit batch splits per chunk and each part follows its chunk.
     #[test]
     fn edits_follow_their_chunk() {
-        let mut l = Link::new(LinkSpec {
-            latency_ms: 10.0,
-            jitter_ms: 100.0,
-            reorder: true,
-            seed: 3,
-            ..Default::default()
-        });
-        let e = |x: i32| BlockEdit {
-            pos: IVec3::new(x, 0, 0),
-            block: BlockId(2),
-        };
+        let mut l = Link::new(LinkSpec { latency_ms: 10.0, jitter_ms: 100.0, reorder: true, seed: 3, ..Default::default() });
+        let e = |x: i32| BlockEdit { pos: IVec3::new(x, 0, 0), block: BlockId(2) };
         l.send(0.0, vec![load(0), load(1)]);
         l.send(0.001, vec![WorldUpdate::SetBlocks(vec![e(1), e(40), e(2)])]);
         let mut out = vec![];
         l.deliver(10.0, &mut out);
         let pos = |p: &dyn Fn(&WorldUpdate) -> bool| out.iter().position(p).unwrap();
-        let edits: Vec<&WorldUpdate> = out
-            .iter()
-            .filter(|u| matches!(u, WorldUpdate::SetBlocks(_)))
-            .collect();
+        let edits: Vec<&WorldUpdate> = out.iter().filter(|u| matches!(u, WorldUpdate::SetBlocks(_))).collect();
         assert_eq!(edits.len(), 2);
         let at0 = pos(&|u| matches!(u, WorldUpdate::SetBlocks(v) if v.len() == 2));
         let at1 = pos(&|u| matches!(u, WorldUpdate::SetBlocks(v) if v.len() == 1));

@@ -46,11 +46,7 @@ enum Phase {
     /// Measuring the incumbent configuration.
     Baseline,
     /// Measuring a trial change; `revert` restores the incumbent.
-    Trial {
-        knob: String,
-        revert: ParamValue,
-        value: ParamValue,
-    },
+    Trial { knob: String, revert: ParamValue, value: ParamValue },
     /// A rejected trial was undone; wait for things to settle, then try another.
     Reverting,
 }
@@ -59,10 +55,7 @@ enum Phase {
 enum Stage {
     Explore,
     /// Settled on the best configuration; watching for changes.
-    Hold {
-        violations: u32,
-        windows: u32,
-    },
+    Hold { violations: u32, windows: u32 },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -124,6 +117,5 @@ pub struct Tuner {
 }
 
 fn q(p: Option<f64>) -> String {
-    p.map(|p| format!(", {:.1} dB", p.min(99.0)))
-        .unwrap_or_default()
+    p.map(|p| format!(", {:.1} dB", p.min(99.0))).unwrap_or_default()
 }

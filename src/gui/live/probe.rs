@@ -26,27 +26,10 @@ impl Session {
         });
     }
 
-    pub(super) fn start_probe(
-        &mut self,
-        cam: Camera,
-        mode: PassMode,
-        failures: &mut Vec<(usize, anyhow::Error)>,
-    ) {
+    pub(super) fn start_probe(&mut self, cam: Camera, mode: PassMode, failures: &mut Vec<(usize, anyhow::Error)>) {
         if self.reference.is_none() {
-            let name = self
-                .plan
-                .output
-                .compare
-                .as_ref()
-                .map(|c| c.reference.clone())
-                .unwrap_or_else(|| "cpu-reference".into());
-            let options = self
-                .plan
-                .output
-                .compare
-                .as_ref()
-                .map(|c| c.reference_options.clone())
-                .unwrap_or_default();
+            let name = self.plan.output.compare.as_ref().map(|c| c.reference.clone()).unwrap_or_else(|| "cpu-reference".into());
+            let options = self.plan.output.compare.as_ref().map(|c| c.reference_options.clone()).unwrap_or_default();
             let mut spec = RendererSpec::new(name.clone());
             (spec.label, spec.options) = (Some(format!("{name} (ref)")), options);
             self.shared.lock().unwrap().reference = spec.label().to_string();
@@ -56,9 +39,7 @@ impl Session {
             self.reference = Some(r);
             return;
         }
-        let Some(reference) = &mut self.reference else {
-            return;
-        };
+        let Some(reference) = &mut self.reference else { return };
         if reference.run.worker.is_none() {
             return; // still spawning
         }
@@ -79,10 +60,7 @@ impl Session {
         probe.mode = mode;
         let id = probe.id;
         let layers = self.layers;
-        match reference
-            .run
-            .submit(cam, mode, layers, true, Purpose::Probe(id))
-        {
+        match reference.run.submit(cam, mode, layers, true, Purpose::Probe(id)) {
             Ok(true) => probe.waiting += 1,
             Ok(false) => {}
             Err(e) => failures.push((REFERENCE, e)),
@@ -109,31 +87,15 @@ impl Session {
             sh.log("probe failed: no reference image");
             return;
         };
-        let ref_res = self
-            .reference
-            .as_ref()
-            .map(|r| r.run.res)
-            .unwrap_or(self.plan.run.resolution);
+        let ref_res = self.reference.as_ref().map(|r| r.run.res).unwrap_or(self.plan.run.resolution);
         let mut kept = vec![];
         for (i, lane) in self.lanes.iter_mut().enumerate() {
-            let Some((res, px)) = p.lanes.get(&i) else {
-                continue;
-            };
+            let Some((res, px)) = p.lanes.get(&i) else { continue };
             // Bilinear, centre-aligned: what a display path does with a lower-resolution frame.
-            let px = if *res != ref_res {
-                Arc::new(compare::resample(px, *res, ref_res, true))
-            } else {
-                px.clone()
-            };
+            let px = if *res != ref_res { Arc::new(compare::resample(px, *res, ref_res, true)) } else { px.clone() };
             let q = compare::compare(&reference, &px, ref_res[0]);
             if let Some(v) = sh.lanes.get_mut(i) {
-                v.quality.push_back(QualitySample {
-                    t,
-                    psnr: q.psnr.min(99.0),
-                    ssim_db: q.ssim_db,
-                    ms_ssim_db: q.ms_ssim_db,
-                    bad_pct: q.bad_pct,
-                });
+                v.quality.push_back(QualitySample { t, psnr: q.psnr.min(99.0), ssim_db: q.ssim_db, ms_ssim_db: q.ms_ssim_db, bad_pct: q.bad_pct });
                 if v.quality.len() > 2000 {
                     v.quality.pop_front();
                 }
@@ -142,32 +104,13 @@ impl Session {
                 tu.on_probe(t, q.psnr.min(99.0), q.ms_ssim_db);
             }
             if p.keep_images {
-                kept.push(CompareLane {
-                    label: lane.run.spec.label().to_string(),
-                    quality: q,
-                    diff: Arc::new(compare::diff_image(&reference, &px)),
-                    image: px,
-                });
+                kept.push(CompareLane { label: lane.run.spec.label().to_string(), quality: q, diff: Arc::new(compare::diff_image(&reference, &px)), image: px });
             }
         }
         if p.keep_images {
             self.compare_seq += 1;
-            let summary: Vec<String> = kept
-                .iter()
-                .map(|l| {
-                    format!(
-                        "{} {:.1} dB / {:.2}% bad",
-                        l.label,
-                        l.quality.psnr.min(99.0),
-                        l.quality.bad_pct
-                    )
-                })
-                .collect();
-            sh.log(format!(
-                "compare [{}]: {}",
-                p.mode.name(),
-                summary.join(", ")
-            ));
+            let summary: Vec<String> = kept.iter().map(|l| format!("{} {:.1} dB / {:.2}% bad", l.label, l.quality.psnr.min(99.0), l.quality.bad_pct)).collect();
+            sh.log(format!("compare [{}]: {}", p.mode.name(), summary.join(", ")));
             let reference_label = sh.reference.clone();
             sh.compare = Some(CompareResult {
                 seq: self.compare_seq,
@@ -188,9 +131,7 @@ impl Session {
         let mut probe = false;
         for i in 0..self.lanes.len() {
             let busy = self.lanes[i].standby.is_some() || self.lanes[i].want_res.is_some();
-            let Some(t) = &mut self.lanes[i].tuner else {
-                continue;
-            };
+            let Some(t) = &mut self.lanes[i].tuner else { continue };
             if busy {
                 t.hold(now);
                 continue;

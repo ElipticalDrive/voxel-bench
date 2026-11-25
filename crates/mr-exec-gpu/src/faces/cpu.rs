@@ -48,8 +48,8 @@ use serde::Deserialize;
 
 use super::category::CategoryRaster;
 use super::{CoreOpts, Draw, SourceSpec};
-use crate::Core;
 use crate::exec::{self, Cx, Node, Region};
+use crate::Core;
 
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::CPU_SAMPLER;
 
@@ -96,48 +96,24 @@ fn params() -> Vec<ParamSpec> {
 
 /// What cluster discovery writes for the post's view (its tags, rasterised).
 const QUANTITIES: &[Quantity] = &[
-    Quantity::categorical(
-        "clusters",
-        "clusters found this pass",
-        "one colour per cluster found this pass, faces carried over from earlier passes dark grey (cluster discovery)",
-        &[
-            ("one random colour per cluster found this pass", None),
-            (
-                "carried over from earlier passes (dark grey)",
-                Some([64, 64, 64]),
-            ),
-        ],
-    ),
+    Quantity::categorical("clusters", "clusters found this pass", "one colour per cluster found this pass, faces carried over from earlier passes dark grey (cluster discovery)", &[("one random colour per cluster found this pass", None), ("carried over from earlier passes (dark grey)", Some([64, 64, 64]))]),
     Quantity::categorical(
         "kinds",
         "how each face was found",
         "confirmed faces (all corners visible) green, faces with an occluded corner yellow, faces carried over from earlier passes dark grey (cluster discovery)",
-        &[
-            ("confirmed: all corners visible", Some([51, 230, 77])),
-            ("partial: an occluded corner", Some([255, 217, 26])),
-            (
-                "carried over from earlier passes (dark grey)",
-                Some([64, 64, 64]),
-            ),
-        ],
+        &[("confirmed: all corners visible", Some([51, 230, 77])), ("partial: an occluded corner", Some([255, 217, 26])), ("carried over from earlier passes (dark grey)", Some([64, 64, 64]))],
     ),
 ];
 
 /// The quantities discovery `visibility` writes.
 fn quantities(visibility: &str) -> &'static [Quantity] {
-    if visibility == "cluster" {
-        QUANTITIES
-    } else {
-        &[]
-    }
+    if visibility == "cluster" { QUANTITIES } else { &[] }
 }
 
 /// The post's `view` over them (no ramps: no `view_max`), each needing cluster discovery.
 fn view_knob() -> ParamSpec {
     let [view, _] = mr_components::post::view_knobs(QUANTITIES);
-    QUANTITIES.iter().fold(view, |k, q| {
-        k.needs(q.name, "visibility", None, &["cluster"], "clusters")
-    })
+    QUANTITIES.iter().fold(view, |k, q| k.needs(q.name, "visibility", None, &["cluster"], "clusters"))
 }
 
 /// The region's own knobs (the nodes' are read from the graph).
@@ -193,18 +169,7 @@ struct VisibilityKnobs {
 
 impl Default for VisibilityKnobs {
     fn default() -> Self {
-        Self {
-            seed_step: 16,
-            sky: "corners".into(),
-            tile: 32,
-            criterion: "plane".into(),
-            max_footprint: 4096,
-            strict: true,
-            occluders: 4,
-            jitter: true,
-            dilate: 2,
-            dilate_below: 2,
-        }
+        Self { seed_step: 16, sky: "corners".into(), tile: 32, criterion: "plane".into(), max_footprint: 4096, strict: true, occluders: 4, jitter: true, dilate: 2, dilate_below: 2 }
     }
 }
 
@@ -220,12 +185,7 @@ struct ShadingKnobs {
 
 impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self {
-            shadows: Shadows::All,
-            bounces: 1,
-            spp: 1,
-            accumulate: true,
-        }
+        Self { shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
     }
 }
 
@@ -303,115 +263,48 @@ fn extrapolate(prev: &Camera, cur: &Camera) -> Camera {
 
 impl CpuSampler {
     /// `world`: the CPU world of a pipeline compiled for one storage (else the `storage` knob's).
-    fn new(
-        p: &InitParams,
-        devices: &Devices,
-        waker: Waker,
-        g: &Checked,
-        world: Option<fn() -> grid::CpuWorld>,
-    ) -> anyhow::Result<(Core, Self, Option<crate::remote::Far>)> {
+    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<(Core, Self, Option<crate::remote::Far>)> {
         let mut opts: Options = p.options()?;
-        let site = g
-            .site(Role::Visibility, "rays")
-            .ok_or_else(|| anyhow::anyhow!("discovery rays are not bound"))?;
+        let site = g.site(Role::Visibility, "rays").ok_or_else(|| anyhow::anyhow!("discovery rays are not bound"))?;
         let storage = g.node(site.storage).component.clone();
-        let vis_id = g
-            .find(Role::Visibility)
-            .ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
+        let vis_id = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
         let visibility = g.node(vis_id).component.clone();
         let vis: VisibilityKnobs = g.knobs(vis_id).map_err(anyhow::Error::msg)?;
-        let draw = g
-            .node(
-                g.find(Role::Draw)
-                    .ok_or_else(|| anyhow::anyhow!("no draw node"))?,
-            )
-            .component
-            .clone();
+        let draw = g.node(g.find(Role::Draw).ok_or_else(|| anyhow::anyhow!("no draw node"))?).component.clone();
         let shading = g.node(g.shading()).component.clone();
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         // The faces cross from the CPU to the GPU: the schedule's transfer, whose timing is
         // the pipelining (`prev`: drawn a frame after they were discovered).
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
-        let faces = schedule
-            .transfers
-            .iter()
-            .find(|e| e.port == "faces" && g.node(&e.to).role == Role::Draw)
-            .ok_or_else(|| anyhow::anyhow!("the faces do not cross from the CPU to the GPU"))?;
+        let faces = schedule.transfers.iter().find(|e| e.port == "faces" && g.node(&e.to).role == Role::Draw).ok_or_else(|| anyhow::anyhow!("the faces do not cross from the CPU to the GPU"))?;
         opts.pipelined = faces.when == mr_components::graph::When::Prev;
         // The GPU sites' walks: shadow rays (the shadow stages), bounces their own or the same.
         let mut walks = Walks::of(g);
-        let shadow = walks.site(
-            g,
-            g.site(Role::Shading, "shadow")
-                .ok_or_else(|| anyhow::anyhow!("GPU shadow rays are not bound"))?,
-            STORAGE_GROUPS,
-            false,
-        );
-        let bounce = g
-            .site(Role::Shading, "bounce")
-            .map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+        let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
+        let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
-        let o = CoreOpts {
-            shading: &shading,
-            draw: &draw,
-            bounces: k.bounces,
-            spp: k.spp,
-            accumulate: k.accumulate,
-            shadows: k.shadows,
-            max_steps: opts.max_steps,
-            pool_mb: opts.pool_mb,
-            frames_in_flight: opts.frames_in_flight,
-        };
-        let (mut core, drawing, far) = super::new(
-            p,
-            devices,
-            waker,
-            g,
-            &o,
-            opts.depth_prepass,
-            SourceSpec {
-                wgsl: include_str!("records.wgsl").into(),
-                walks,
-                lead: None,
-                lookup: None,
-                sites: [shadow, bounce],
-                varyings: true,
-                strip: true,
-                meshes: None,
-                draw_meshes: false,
-                features: wgpu::Features::empty(),
-                depth_read: false,
-                nodes: DrawNodes {
-                    draw: g.ids(&[Role::Draw]),
-                    shade: g.ids(&[Role::Shading]),
-                    extra: Vec::new(),
-                },
-            },
-        )?;
+        let o = CoreOpts { shading: &shading, draw: &draw, bounces: k.bounces, spp: k.spp, accumulate: k.accumulate, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
+        let (mut core, drawing, far) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
+            wgsl: include_str!("records.wgsl").into(),
+            walks,
+            lead: None,
+            lookup: None,
+            sites: [shadow, bounce],
+            varyings: true,
+            strip: true,
+            meshes: None,
+            draw_meshes: false,
+            features: wgpu::Features::empty(),
+            depth_read: false,
+            nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
+        })?;
         // The post's view (the drawing's group 0 never binds its quantity buffer).
         let (view, view_max) = mr_components::post::view_chosen(g, "image", 256);
         core.set_view(&view, quantities(&visibility))?;
         core.view_max = view_max;
-        let rec_buf = GrowableBuffer::new(
-            &core.gpu,
-            "visibility: face records",
-            1 << 22,
-            u64::MAX,
-            wgpu::BufferUsages::STORAGE,
-        );
-        let tag_buf = GrowableBuffer::new(
-            &core.gpu,
-            "visibility: face tags",
-            1 << 21,
-            u64::MAX,
-            wgpu::BufferUsages::STORAGE,
-        );
-        let pool = Arc::new(
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(p.devices.cpu_threads(opts.threads))
-                .thread_name(|i| format!("discover-{i}"))
-                .build()?,
-        );
+        let rec_buf = GrowableBuffer::new(&core.gpu, "visibility: face records", 1 << 22, u64::MAX, wgpu::BufferUsages::STORAGE);
+        let tag_buf = GrowableBuffer::new(&core.gpu, "visibility: face tags", 1 << 21, u64::MAX, wgpu::BufferUsages::STORAGE);
+        let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(p.devices.cpu_threads(opts.threads)).thread_name(|i| format!("discover-{i}")).build()?);
         let s = Self {
             cpu: match world {
                 Some(world) => world(),
@@ -443,8 +336,7 @@ impl CpuSampler {
     /// upload, as the state has them).
     fn cancel_pending(&mut self) {
         if let Some(rx) = self.pending.take()
-            && let Ok(out) = rx.recv()
-        {
+            && let Ok(out) = rx.recv() {
             self.receive(&out.records);
             self.state = Some(out.state);
         }
@@ -481,35 +373,24 @@ impl CpuSampler {
             while let Some(a) = runs.next() {
                 let mut b = a;
                 while let Some(&c) = runs.peek()
-                    && c - b <= GAP
-                {
+                    && c - b <= GAP {
                     b = c;
                     runs.next();
                 }
                 let recs = &self.mirror[a as usize..=b as usize];
-                core.gpu.queue.write_buffer(
-                    self.rec_buf.buffer(),
-                    a as u64 * REC_BYTES,
-                    bytemuck::cast_slice(recs),
-                );
+                core.gpu.queue.write_buffer(self.rec_buf.buffer(), a as u64 * REC_BYTES, bytemuck::cast_slice(recs));
                 self.uploaded += recs.len() as u32;
             }
         }
         // Tags for the post's view, when the algorithm provides them.
         let tags = &out.records.tags;
         self.tags_valid = false;
-        if tags.len() == n as usize
-            && !tags.is_empty()
-            && let Some(grew) = self
-                .tag_buf
-                .reserve(&core.gpu, tags.len() as u64 * 4, DEVICE_BOUND)
-        {
+        if tags.len() == n as usize && !tags.is_empty()
+            && let Some(grew) = self.tag_buf.reserve(&core.gpu, tags.len() as u64 * 4, DEVICE_BOUND) {
             if grew {
                 self.bind0 = None;
             }
-            core.gpu
-                .queue
-                .write_buffer(self.tag_buf.buffer(), 0, bytemuck::cast_slice(tags));
+            core.gpu.queue.write_buffer(self.tag_buf.buffer(), 0, bytemuck::cast_slice(tags));
             self.tags_valid = true;
         }
         if bytes <= self.rec_buf.size() { n } else { 0 }
@@ -570,59 +451,31 @@ impl CpuSampler {
     }
 
     /// The storages' groups for the shadow rays, after the acceleration structures.
-    fn store(
-        &mut self,
-        core: &mut Core,
-        enc: &mut wgpu::CommandEncoder,
-        ticket: mr_gpu::Ticket,
-        req: &FrameRequest,
-    ) {
+    fn store(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
         if std::mem::replace(&mut self.frame.stored, true) {
             return;
         }
         self.frame.bound = Some(core.storages.prepare(&core.gpu, &core.world));
         if self.bind0.is_none() {
-            self.bind0 = Some(self.drawing.bind(
-                core,
-                self.rec_buf.buffer(),
-                self.tag_buf.buffer(),
-            ));
+            self.bind0 = Some(self.drawing.bind(core, self.rec_buf.buffer(), self.tag_buf.buffer()));
         }
         if core.build_accel(enc, ticket, req) {
-            self.bind0 = Some(self.drawing.bind(
-                core,
-                self.rec_buf.buffer(),
-                self.tag_buf.buffer(),
-            ));
+            self.bind0 = Some(self.drawing.bind(core, self.rec_buf.buffer(), self.tag_buf.buffer()));
         }
     }
 
     /// The drawer's passes over the frame's groups.
-    fn encode(
-        &self,
-        core: &Core,
-        ticket: mr_gpu::Ticket,
-        req: &FrameRequest,
-        pass: impl FnOnce(&DrawFrame),
-    ) {
+    fn encode(&self, core: &Core, ticket: mr_gpu::Ticket, req: &FrameRequest, pass: impl FnOnce(&DrawFrame)) {
         let f = &self.frame;
         let bound = f.bound.as_ref().expect("stored");
         let (storage_bg, more) = bound.split();
-        let binds: Vec<&wgpu::BindGroup> = [self.bind0.as_ref(), f.world.as_ref(), storage_bg]
-            .into_iter()
-            .flatten()
-            .collect();
+        let binds: Vec<&wgpu::BindGroup> = [self.bind0.as_ref(), f.world.as_ref(), storage_bg].into_iter().flatten().collect();
         let sky = core.sky();
         let frame = DrawFrame {
             out: f.out.as_ref().expect("set up"),
             depth: &self.drawing.depth,
             ids: self.drawing.ids(core),
-            clear: wgpu::Color {
-                r: sky[0],
-                g: sky[1],
-                b: sky[2],
-                a: 1.0,
-            },
+            clear: wgpu::Color { r: sky[0], g: sky[1], b: sky[2], a: 1.0 },
             prepass: self.drawing.depth_prepass && req.mode == RenderMode::Lit,
             keep_depth: false,
             binds: &binds,
@@ -638,13 +491,7 @@ impl CpuSampler {
 
     /// The draw node: one instanced quad per uploaded record, shaded in the fragments when
     /// forward.
-    fn draw(
-        &mut self,
-        core: &mut Core,
-        enc: &mut wgpu::CommandEncoder,
-        ticket: mr_gpu::Ticket,
-        req: &FrameRequest,
-    ) {
+    fn draw(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
         self.store(core, enc, ticket, req);
         if std::mem::replace(&mut self.frame.drawn, true) {
             return;
@@ -662,19 +509,9 @@ impl CpuSampler {
     }
 
     /// The shading node: the deferred drawers' pass over the ids or records.
-    fn shade(
-        &mut self,
-        core: &mut Core,
-        enc: &mut wgpu::CommandEncoder,
-        ticket: mr_gpu::Ticket,
-        req: &FrameRequest,
-    ) {
+    fn shade(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
         self.draw(core, enc, ticket, req);
-        self.encode(core, ticket, req, |f| {
-            self.drawing
-                .drawer
-                .encode_shade(&core.gpu, enc, f, false, false)
-        });
+        self.encode(core, ticket, req, |f| self.drawing.drawer.encode_shade(&core.gpu, enc, f, false, false));
     }
 }
 
@@ -687,22 +524,12 @@ impl exec::State for CpuSampler {
         Ok(())
     }
 
-    fn set_param(
-        &mut self,
-        core: &mut Core,
-        name: &str,
-        value: &ParamValue,
-    ) -> Option<anyhow::Result<()>> {
-        self.set_knob(name, value)
-            .or_else(|| self.drawing.set_param(core, name, value))
+    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        self.set_knob(name, value).or_else(|| self.drawing.set_param(core, name, value))
     }
 
     /// The sampler's algorithm is read every frame; the drawer is the drawing's.
-    fn switch(
-        &mut self,
-        core: &mut Core,
-        s: &mr_components::graph::Switch,
-    ) -> Option<anyhow::Result<()>> {
+    fn switch(&mut self, core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
         match (s.role, &s.component) {
             (Role::Visibility, Some(c)) => {
                 self.visibility = c.clone();
@@ -720,12 +547,8 @@ impl exec::State for CpuSampler {
 
     fn memory(&self, core: &Core) -> (u64, u64) {
         // S (key + entry), the state's records and keys, the mirror.
-        let s = self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16)
-            + self.mirror.len() as u64 * 24;
-        (
-            self.cpu.memory() + s + (core.width as u64 + 1) * (core.height as u64 + 1) * 36,
-            self.rec_buf.size() + self.drawing.memory_bytes(core),
-        )
+        let s = self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16) + self.mirror.len() as u64 * 24;
+        (self.cpu.memory() + s + (core.width as u64 + 1) * (core.height as u64 + 1) * 36, self.rec_buf.size() + self.drawing.memory_bytes(core))
     }
 }
 
@@ -741,10 +564,7 @@ impl Region for CpuSampler {
         let start = Instant::now();
         let (w, h) = (core.width, core.height);
         let grid = self.cpu.snapshot();
-        let viewed = core
-            .view
-            .as_ref()
-            .is_some_and(|v| self.quantities().contains(&v.quantity));
+        let viewed = core.view.as_ref().is_some_and(|v| self.quantities().contains(&v.quantity));
         let settings = self.settings(viewed);
         let c = req.camera;
 
@@ -791,8 +611,7 @@ impl Region for CpuSampler {
         }
 
         // 5. The frame's camera and world for drawing S.
-        self.drawing
-            .write_frame(core, &c, req.mode, out.records.anchor);
+        self.drawing.write_frame(core, &c, req.mode, out.records.anchor);
         let world = core.world.prepare(&core.gpu, &c).clone();
         core.accum.begin(&core.gpu, &c, req.mode);
         let pixels = (w as f64) * (h as f64);
@@ -811,10 +630,7 @@ impl Region for CpuSampler {
             ("build_ms".into(), out.phase_ms[2] as f64),
             ("tiles_accepted".into(), out.tiles_accepted as f64),
             ("discovery_ms".into(), out.ms as f64),
-            (
-                "algorithm_cluster".into(),
-                (self.visibility == "cluster") as u32 as f64,
-            ),
+            ("algorithm_cluster".into(), (self.visibility == "cluster") as u32 as f64),
             ("wait_ms".into(), wait_ms),
         ];
         if let Some((px, faces, hit, ms)) = audit {
@@ -825,35 +641,14 @@ impl Region for CpuSampler {
             counters.push(("audit_ms".into(), ms));
         }
         counters.extend(out.extra);
-        self.frame = Frame {
-            n,
-            world: Some(world),
-            out: Some(core.output.create_view(&Default::default())),
-            counters,
-            discovery_ms: out.ms,
-            ..Frame::default()
-        };
+        self.frame = Frame { n, world: Some(world), out: Some(core.output.create_view(&Default::default())), counters, discovery_ms: out.ms, ..Frame::default() };
     }
 
-    fn stats(
-        &self,
-        core: &Core,
-        req: &FrameRequest,
-    ) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
+    fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
         let f = &self.frame;
         let (accel, accel_stages) = core.accel_stats();
-        let counters = f
-            .counters
-            .iter()
-            .cloned()
-            .chain(core.accum.counter(req.mode))
-            .chain(core.storages.counters())
-            .chain(accel)
-            .collect();
-        let stages = [StageTime::cpu("discover", &self.vis_nodes, f.discovery_ms)]
-            .into_iter()
-            .chain(accel_stages)
-            .collect();
+        let counters = f.counters.iter().cloned().chain(core.accum.counter(req.mode)).chain(core.storages.counters()).chain(accel).collect();
+        let stages = [StageTime::cpu("discover", &self.vis_nodes, f.discovery_ms)].into_iter().chain(accel_stages).collect();
         (counters, None, stages)
     }
 
@@ -863,44 +658,22 @@ impl Region for CpuSampler {
 
     /// The viewed quantity, where it is cluster discovery's: its tags rasterised.
     fn view(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket) {
-        let Some(name) = core
-            .view
-            .as_ref()
-            .map(|v| v.quantity.name)
-            .filter(|_| self.tags_valid)
-        else {
-            return;
-        };
-        let Some(&q) = self.quantities().iter().find(|q| q.name == name) else {
-            return;
-        };
+        let Some(name) = core.view.as_ref().map(|v| v.quantity.name).filter(|_| self.tags_valid) else { return };
+        let Some(&q) = self.quantities().iter().find(|q| q.name == name) else { return };
         if self.views.as_ref().is_none_or(|v| !v.is(core, q.name)) {
             let module = self.drawing.module(core, "discover view", "");
-            self.views = Some(CategoryRaster::new(
-                core,
-                q.name,
-                &self.drawing.pl_draw,
-                &module,
-                &format!("fs_{}", q.name),
-            ));
+            self.views = Some(CategoryRaster::new(core, q.name, &self.drawing.pl_draw, &module, &format!("fs_{}", q.name)));
         }
         // A diagnostic, not a node's work.
         core.ring.stage(enc, ticket, "view", &[]);
         let f = &self.frame;
-        let (Some(bind), Some(world), Some(bound)) =
-            (self.bind0.as_ref(), f.world.as_ref(), f.bound.as_ref())
-        else {
-            return;
-        };
+        let (Some(bind), Some(world), Some(bound)) = (self.bind0.as_ref(), f.world.as_ref(), f.bound.as_ref()) else { return };
         let n = f.n;
-        self.views
-            .as_ref()
-            .unwrap()
-            .encode(core, enc, bind, world, bound, |pass| {
-                if n > 0 {
-                    pass.draw(0..4, 0..n);
-                }
-            });
+        self.views.as_ref().unwrap().encode(core, enc, bind, world, bound, |pass| {
+            if n > 0 {
+                pass.draw(0..4, 0..n);
+            }
+        });
     }
 
     fn finish(&mut self, _: &Core, _: &mut wgpu::CommandEncoder, _: mr_gpu::Ticket) {}
@@ -933,24 +706,14 @@ impl Node<CpuSampler> for Shading {
 
 /// The CPU discovery executor for `g`: storages, drawing and shading as nodes (discovery on
 /// the CPU and the records' upload run before them: the visibility node and its transfer).
-pub(crate) fn create(
-    p: &InitParams,
-    devices: &Devices,
-    waker: Waker,
-    g: &Checked,
-    world: Option<fn() -> grid::CpuWorld>,
-) -> anyhow::Result<Box<dyn Renderer>> {
-    let passes = exec::passes(
-        g,
-        crate::home_slot(g),
-        |role| -> Option<Box<dyn Node<CpuSampler>>> {
-            Some(match role {
-                Role::Storage => Box::new(Storage),
-                Role::Draw => Box::new(DrawFaces),
-                Role::Shading => Box::new(Shading),
-                _ => return None,
-            })
-        },
-    )?;
+pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked, world: Option<fn() -> grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
+    let passes = exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<CpuSampler>>> {
+        Some(match role {
+            Role::Storage => Box::new(Storage),
+            Role::Draw => Box::new(DrawFaces),
+            Role::Shading => Box::new(Shading),
+            _ => return None,
+        })
+    })?;
     crate::exec::run_or_split(CpuSampler::new(p, devices, waker, g, world)?, g, passes)
 }

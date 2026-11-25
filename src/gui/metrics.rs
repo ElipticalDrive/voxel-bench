@@ -22,54 +22,22 @@ impl App {
                 .on_hover_text("Chunks are generated once on the host and streamed to each renderer around its camera");
             let now = sh.start.map_or(0.0, |s| s.elapsed().as_secs_f64());
             for (i, l) in sh.lanes.iter().enumerate() {
-                graph::set_faults(
-                    &mut self.trials,
-                    &format!("{:?}", graph::Of::Lane(i)),
-                    &l.spec,
-                    l.faults(now),
-                );
+                graph::set_faults(&mut self.trials, &format!("{:?}", graph::Of::Lane(i)), &l.spec, l.faults(now));
                 ui.push_id(("lane", i), |ui| {
                     ui.group(|ui| self.lane_panel(ui, i, l, &mut actions));
                 });
             }
             (
+                sh.lanes.iter().map(|l| (l.spec.label().to_string(), window(&l.samples, self.plot_window).to_vec())).collect(),
                 sh.lanes
                     .iter()
-                    .map(|l| {
-                        (
-                            l.spec.label().to_string(),
-                            window(&l.samples, self.plot_window).to_vec(),
-                        )
-                    })
-                    .collect(),
-                sh.lanes
-                    .iter()
-                    .map(|l| {
-                        (
-                            l.spec.label().to_string(),
-                            l.quality
-                                .iter()
-                                .map(|q| {
-                                    [
-                                        q.t,
-                                        if self.plot_ms_ssim {
-                                            q.ms_ssim_db
-                                        } else {
-                                            q.psnr
-                                        },
-                                    ]
-                                })
-                                .collect(),
-                        )
-                    })
+                    .map(|l| (l.spec.label().to_string(), l.quality.iter().map(|q| [q.t, if self.plot_ms_ssim { q.ms_ssim_db } else { q.psnr }]).collect()))
                     .collect(),
             )
         };
         for a in actions {
             match a {
-                LaneAction::Focus(i) => {
-                    self.focus = if self.focus == Some(i) { None } else { Some(i) }
-                }
+                LaneAction::Focus(i) => self.focus = if self.focus == Some(i) { None } else { Some(i) },
                 LaneAction::Restart(i) => {
                     if let Some(spec) = self.plan.renderers.get(i).cloned() {
                         self.send(Cmd::Restart { lane: i, spec });
@@ -83,9 +51,7 @@ impl App {
                     self.textures.clear();
                     self.focus = None;
                 }
-                LaneAction::Set(lane, name, value) => {
-                    self.send(Cmd::SetParam { lane, name, value })
-                }
+                LaneAction::Set(lane, name, value) => self.send(Cmd::SetParam { lane, name, value }),
                 LaneAction::Edits(lane, spec, knobs) => self.send(Cmd::Edits { lane, spec, knobs }),
                 LaneAction::Tune(lane, config) => self.send(Cmd::Tune { lane, config }),
                 LaneAction::SaveToPlan(i, spec) => {
@@ -98,21 +64,10 @@ impl App {
                 }
             }
         }
-        ui.add(
-            egui::Slider::new(&mut self.plot_window, 2.0..=120.0)
-                .text("plot window (s)")
-                .update_while_editing(false),
-        )
-        .on_hover_text("Seconds of history shown in the plots below");
-        let t_end = series
-            .iter()
-            .filter_map(|(_, s)| s.last().map(|x| x.t))
-            .fold(0.0, f64::max);
+        ui.add(egui::Slider::new(&mut self.plot_window, 2.0..=120.0).text("plot window (s)").update_while_editing(false)).on_hover_text("Seconds of history shown in the plots below");
+        let t_end = series.iter().filter_map(|(_, s)| s.last().map(|x| x.t)).fold(0.0, f64::max);
         for (title, f) in [
-            (
-                "frame interval (ms)",
-                (|s: &Sample| Some(s.interval_ms)) as fn(&Sample) -> Option<f32>,
-            ),
+            ("frame interval (ms)", (|s: &Sample| Some(s.interval_ms)) as fn(&Sample) -> Option<f32>),
             ("GPU time (ms)", |s: &Sample| s.gpu_ms),
             ("CPU time (ms)", |s: &Sample| Some(s.cpu_ms)),
         ] {
@@ -129,10 +84,7 @@ impl App {
                 .allow_drag(false)
                 .show(ui, |pu| {
                     for (i, (name, s)) in series.iter().enumerate() {
-                        let pts: Vec<[f64; 2]> = s
-                            .iter()
-                            .filter_map(|x| f(x).map(|v| [x.t - t_end, v as f64]))
-                            .collect();
+                        let pts: Vec<[f64; 2]> = s.iter().filter_map(|x| f(x).map(|v| [x.t - t_end, v as f64])).collect();
                         pu.line(egui_plot::Line::new(name.clone(), pts).color(lane_color(i)));
                     }
                 });
@@ -143,44 +95,19 @@ impl App {
                 ui.selectable_value(&mut self.plot_ms_ssim, false, "PSNR").on_hover_text("Pixel-exact error (≥40 dB looks identical); harsh on resolution changes");
                 ui.selectable_value(&mut self.plot_ms_ssim, true, "MS-SSIM").on_hover_text("Structural similarity over 5 scales; 20 dB = 0.99, 30 dB = 0.999");
             });
-            egui_plot::Plot::new("quality")
-                .height(130.0)
-                .legend(egui_plot::Legend::default())
-                .allow_scroll(false)
-                .allow_drag(false)
-                .show(ui, |pu| {
-                    for (i, (name, q)) in quality.iter().enumerate() {
-                        let pts: Vec<[f64; 2]> = q
-                            .iter()
-                            .filter(|p| p[0] >= t_end - self.plot_window)
-                            .map(|p| [p[0] - t_end, p[1]])
-                            .collect();
-                        pu.line(egui_plot::Line::new(name.clone(), pts).color(lane_color(i)));
-                        pu.points(
-                            egui_plot::Points::new(
-                                name.clone(),
-                                q.iter()
-                                    .filter(|p| p[0] >= t_end - self.plot_window)
-                                    .map(|p| [p[0] - t_end, p[1]])
-                                    .collect::<Vec<_>>(),
-                            )
-                            .color(lane_color(i))
-                            .radius(2.5),
-                        );
-                    }
-                });
+            egui_plot::Plot::new("quality").height(130.0).legend(egui_plot::Legend::default()).allow_scroll(false).allow_drag(false).show(ui, |pu| {
+                for (i, (name, q)) in quality.iter().enumerate() {
+                    let pts: Vec<[f64; 2]> = q.iter().filter(|p| p[0] >= t_end - self.plot_window).map(|p| [p[0] - t_end, p[1]]).collect();
+                    pu.line(egui_plot::Line::new(name.clone(), pts).color(lane_color(i)));
+                    pu.points(egui_plot::Points::new(name.clone(), q.iter().filter(|p| p[0] >= t_end - self.plot_window).map(|p| [p[0] - t_end, p[1]]).collect::<Vec<_>>()).color(lane_color(i)).radius(2.5));
+                }
+            });
         } else {
             ui.weak("Quality plot: set a probe interval in the toolbar (or press C) to score lanes against the reference.");
         }
     }
 
-    fn lane_panel(
-        &mut self,
-        ui: &mut egui::Ui,
-        i: usize,
-        l: &live::LaneView,
-        actions: &mut Vec<LaneAction>,
-    ) {
+    fn lane_panel(&mut self, ui: &mut egui::Ui, i: usize, l: &live::LaneView, actions: &mut Vec<LaneAction>) {
         ui.horizontal(|ui| {
             ui.colored_label(lane_color(i), format!("■ {} {}", i + 1, l.spec.label()));
             ui.weak(format!("{}×{}", l.resolution[0], l.resolution[1])).on_hover_text("Current render resolution (after host.render_scale)");
@@ -250,10 +177,7 @@ impl App {
             }
             v.sort_by(f32::total_cmp);
             let mean = v.iter().sum::<f32>() / v.len() as f32;
-            format!(
-                "{mean:.2} / {:.2}",
-                v[((v.len() - 1) as f32 * 0.99) as usize]
-            )
+            format!("{mean:.2} / {:.2}", v[((v.len() - 1) as f32 * 0.99) as usize])
         };
         egui::CollapsingHeader::new(format!("stats — {fps:.0} fps{}", l.quality.back().map(|q| format!(" · {:.1} dB PSNR · {:.1} dB MS-SSIM", q.psnr, q.ms_ssim_db)).unwrap_or_default()))
             .id_salt(("stats", i))
@@ -481,13 +405,11 @@ impl App {
             }
         });
         if !l.events.is_empty() {
-            egui::CollapsingHeader::new(format!("events ({})", l.events.len()))
-                .id_salt(("ev", i))
-                .show(ui, |ui| {
-                    for (t, e) in l.events.iter().rev().take(20) {
-                        ui.monospace(format!("{t:7.1}s  {e}"));
-                    }
-                });
+            egui::CollapsingHeader::new(format!("events ({})", l.events.len())).id_salt(("ev", i)).show(ui, |ui| {
+                for (t, e) in l.events.iter().rev().take(20) {
+                    ui.monospace(format!("{t:7.1}s  {e}"));
+                }
+            });
         }
     }
 }
@@ -500,11 +422,7 @@ enum LaneAction {
     Remove(usize),
     SaveToPlan(usize, crate::plan::RendererSpec),
     Set(usize, String, mr_core::ParamValue),
-    Edits(
-        usize,
-        crate::plan::RendererSpec,
-        Vec<(String, mr_core::ParamValue)>,
-    ),
+    Edits(usize, crate::plan::RendererSpec, Vec<(String, mr_core::ParamValue)>),
     Tune(usize, Option<tune::TunerConfig>),
 }
 
@@ -524,31 +442,14 @@ pub(super) struct TuneUi {
 impl Default for TuneUi {
     fn default() -> Self {
         let d = tune::TunerConfig::default();
-        Self {
-            goal: 0,
-            fps: 144.0,
-            psnr: 25.0,
-            metric: tune::QualityMetric::MsSsim,
-            algorithm: Algorithm::LocalSearch,
-            allow_restart: false,
-            settle: d.settle_s,
-            window: d.window_s,
-            patience: d.patience,
-        }
+        Self { goal: 0, fps: 144.0, psnr: 25.0, metric: tune::QualityMetric::MsSsim, algorithm: Algorithm::LocalSearch, allow_restart: false, settle: d.settle_s, window: d.window_s, patience: d.patience }
     }
 }
 
 /// Samples within the last `secs` seconds of the newest one.
 fn window(s: &std::collections::VecDeque<Sample>, secs: f64) -> Vec<Sample> {
     let Some(last) = s.back() else { return vec![] };
-    s.iter()
-        .rev()
-        .take_while(|x| x.t >= last.t - secs)
-        .copied()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect()
+    s.iter().rev().take_while(|x| x.t >= last.t - secs).copied().collect::<Vec<_>>().into_iter().rev().collect()
 }
 
 /// (fps, mean gpu ms) over the last `secs` seconds.
@@ -562,10 +463,7 @@ pub(super) fn recent(s: &std::collections::VecDeque<Sample>, secs: f64) -> (f64,
     }
     let span = (w.last().unwrap().t - w[0].t).max(1e-6);
     let g: Vec<f64> = w.iter().filter_map(|x| x.gpu_ms.map(f64::from)).collect();
-    (
-        (w.len() - 1) as f64 / span,
-        (!g.is_empty()).then(|| g.iter().sum::<f64>() / g.len() as f64),
-    )
+    ((w.len() - 1) as f64 / span, (!g.is_empty()).then(|| g.iter().sum::<f64>() / g.len() as f64))
 }
 
 fn lane_color(i: usize) -> Color32 {

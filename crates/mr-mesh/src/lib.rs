@@ -16,14 +16,7 @@ use mr_core::{BlockId, ChunkData, Face};
 
 /// `(normal axis, u axis, v axis)` per face, chosen so that `u x v` is the outward normal
 /// (counter-clockwise front faces). Mirrored in `raster.wgsl`.
-pub const FACE_AXES: [(usize, usize, usize); 6] = [
-    (0, 1, 2),
-    (0, 2, 1),
-    (1, 2, 0),
-    (1, 0, 2),
-    (2, 0, 1),
-    (2, 1, 0),
-];
+pub const FACE_AXES: [(usize, usize, usize); 6] = [(0, 1, 2), (0, 2, 1), (1, 2, 0), (1, 0, 2), (2, 0, 1), (2, 1, 0)];
 
 /// Block id of quads whose blocks vary across the quad (see [`Merge::Exposure`]).
 pub const LOOKUP_BLOCK: u16 = 0xffff;
@@ -82,21 +75,14 @@ pub fn mesh_chunk(center: &ChunkData, neighbors: [Option<&ChunkData>; 6], slot: 
 }
 
 /// [`mesh_chunk`] with a choice of merge criterion.
-pub fn mesh_chunk_merge(
-    center: &ChunkData,
-    neighbors: [Option<&ChunkData>; 6],
-    slot: u16,
-    merge: Merge,
-) -> Mesh {
+pub fn mesh_chunk_merge(center: &ChunkData, neighbors: [Option<&ChunkData>; 6], slot: u16, merge: Merge) -> Mesh {
     let mut quads = vec![];
     let mut counts = [0u32; 6];
     if center.is_air() {
         return Mesh { quads, counts };
     }
     if let ChunkData::Uniform(_) = center {
-        let buried = neighbors
-            .iter()
-            .all(|n| matches!(n, Some(ChunkData::Uniform(b)) if b.is_solid()));
+        let buried = neighbors.iter().all(|n| matches!(n, Some(ChunkData::Uniform(b)) if b.is_solid()));
         if buried {
             return Mesh { quads, counts };
         }
@@ -123,11 +109,7 @@ pub fn mesh_chunk_merge(
                     p[va] = v;
                     let b = view.get(p);
                     let m = if b.is_solid() && view.get(p + n).is_air() {
-                        if merge == Merge::Exposure {
-                            LOOKUP_BLOCK
-                        } else {
-                            b.0
-                        }
+                        if merge == Merge::Exposure { LOOKUP_BLOCK } else { b.0 }
                     } else {
                         0
                     };
@@ -202,17 +184,10 @@ mod tests {
         let m = mesh_chunk(&c, [None; 6], 7);
         for q in &m.quads {
             let d = Quad::decode(*q);
-            assert_eq!(
-                (d.pos, d.w, d.h, d.block, d.slot),
-                (IVec3::new(3, 4, 5), 1, 1, BlockId(9), 7)
-            );
+            assert_eq!((d.pos, d.w, d.h, d.block, d.slot), (IVec3::new(3, 4, 5), 1, 1, BlockId(9), 7));
             let n = d.face.normal().as_vec3();
             let [c0, c1, c2, _] = d.corners();
-            assert!(
-                (c1 - c0).cross(c2 - c0).normalize().dot(n) > 0.99,
-                "{:?} winding",
-                d.face
-            );
+            assert!((c1 - c0).cross(c2 - c0).normalize().dot(n) > 0.99, "{:?} winding", d.face);
         }
     }
 
@@ -230,12 +205,7 @@ mod tests {
         let by_exposure = mesh_chunk_merge(&c, [None; 6], 0, Merge::Exposure);
         assert!(by_block.counts[Face::PosY as usize] > 500);
         assert_eq!(by_exposure.counts, [1; 6]);
-        assert!(
-            by_exposure
-                .quads
-                .iter()
-                .all(|q| Quad::decode(*q).block == BlockId(LOOKUP_BLOCK))
-        );
+        assert!(by_exposure.quads.iter().all(|q| Quad::decode(*q).block == BlockId(LOOKUP_BLOCK)));
     }
 
     #[test]
@@ -263,11 +233,7 @@ pub struct Quad {
 impl Quad {
     pub fn decode(q: [u32; 2]) -> Self {
         Self {
-            pos: IVec3::new(
-                (q[0] & 31) as i32,
-                ((q[0] >> 5) & 31) as i32,
-                ((q[0] >> 10) & 31) as i32,
-            ),
+            pos: IVec3::new((q[0] & 31) as i32, ((q[0] >> 5) & 31) as i32, ((q[0] >> 10) & 31) as i32),
             w: ((q[0] >> 15) & 31) + 1,
             h: ((q[0] >> 20) & 31) + 1,
             face: Face::from_index(((q[0] >> 25) & 7) as usize),
@@ -294,11 +260,7 @@ impl Quad {
 }
 
 /// Meshes the chunk at `pos` using a lookup for neighbouring chunks.
-pub fn mesh_at<'a>(
-    pos: IVec3,
-    get: impl Fn(IVec3) -> Option<&'a ChunkData>,
-    slot: u16,
-) -> Option<Mesh> {
+pub fn mesh_at<'a>(pos: IVec3, get: impl Fn(IVec3) -> Option<&'a ChunkData>, slot: u16) -> Option<Mesh> {
     let center = get(pos)?;
     let neighbors = Face::ALL.map(|f| get(pos + f.normal()));
     Some(mesh_chunk(center, neighbors, slot))

@@ -5,16 +5,16 @@
 //! the lighting reference formulas, the chunk format, and the [`Renderer`] trait itself.
 //! Renderers depend on this crate only.
 
-pub mod baked;
 pub mod camera;
 pub mod chunk;
 pub mod client;
 pub mod face;
 pub mod features;
 pub mod legend;
-pub mod lighting;
 pub mod link;
+pub mod lighting;
 pub mod mesh;
+pub mod baked;
 pub mod params;
 pub mod renderer;
 pub mod shader_clock;
@@ -44,11 +44,7 @@ pub fn cache_dir() -> std::path::PathBuf {
     let base = if cfg!(windows) {
         PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default())
     } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
-            })
+        std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"))
     };
     base.join("multirenderer").join("pipelines")
 }

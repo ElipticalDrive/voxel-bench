@@ -1,7 +1,7 @@
 //! The knobs: the parameter list, each node's knob struct and their live changes.
 
-use mr_components::shading::state as shade_state;
 use mr_core::*;
+use mr_components::shading::state as shade_state;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use serde::Deserialize;
 
@@ -56,12 +56,7 @@ pub(super) struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self {
-            max_steps: 2048,
-            depth_prepass: true,
-            pool_mb: 1536,
-            frames_in_flight: 3,
-        }
+        Self { max_steps: 2048, depth_prepass: true, pool_mb: 1536, frames_in_flight: 3 }
     }
 }
 
@@ -124,14 +119,7 @@ pub(super) struct HolesKnobs {
 
 impl Default for HolesKnobs {
     fn default() -> Self {
-        Self {
-            keep_unseen: 64,
-            refresh: 16,
-            parallax_px: 0.5,
-            reveal_tiles: 4,
-            events: true,
-            still_holes: "now".into(),
-        }
+        Self { keep_unseen: 64, refresh: 16, parallax_px: 0.5, reveal_tiles: 4, events: true, still_holes: "now".into() }
     }
 }
 
@@ -144,9 +132,7 @@ pub(super) struct DrawKnobs {
 
 impl Default for DrawKnobs {
     fn default() -> Self {
-        Self {
-            order: "depth".into(),
-        }
+        Self { order: "depth".into() }
     }
 }
 
@@ -162,22 +148,13 @@ pub(super) struct ShadingKnobs {
 
 impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self {
-            shadows: Shadows::All,
-            bounces: 1,
-            spp: 1,
-            accumulate: true,
-        }
+        Self { shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
     }
 }
 
 impl GpuSampler {
     /// Its own knobs; `None` if `name` is not one.
-    pub(super) fn set_knob(
-        &mut self,
-        name: &str,
-        value: &ParamValue,
-    ) -> Option<anyhow::Result<()>> {
+    pub(super) fn set_knob(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
         match name {
             "tile" => self.vis.tile = int(8),

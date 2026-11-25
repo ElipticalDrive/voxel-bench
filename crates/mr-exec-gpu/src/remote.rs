@@ -7,11 +7,11 @@
 //! storage. The records reach its edge through the edge's transfer ([`crate::transfer`]), the
 //! executors' own; the image is this GPU's.
 
+use mr_gpu::Pipelines as _;
 use mr_components::graph::{self, Device, Role};
 use mr_components::shaders::{self, Walks};
 use mr_components::storage::gpu_data::Bound;
 use mr_core::*;
-use mr_gpu::Pipelines as _;
 use mr_gpu::{GpuNeeds, Ticket, wgpu};
 
 use crate::exec::{self, Cx, Executor, Node};
@@ -56,29 +56,12 @@ pub(crate) struct Shade {
 
 /// The executor of graph `g`'s shading on its own GPU, if that is another than the visibility
 /// node's (`near`, `spec`: the first GPU's core, whose knobs it shares).
-pub(crate) fn create(
-    p: &InitParams,
-    devices: &Devices,
-    waker: Waker,
-    g: &graph::Checked,
-    near: &Core,
-    spec: &CoreSpec,
-) -> anyhow::Result<Option<Far>> {
-    let Some(slot) = far_slot(g) else {
-        return Ok(None);
-    };
-    anyhow::ensure!(
-        near.edges.hits().is_some_and(|h| h.holds_records()),
-        "the shading on gpu{slot} shades the hit records written on another GPU: placement = deferred (rays), draw = gbuffer or visbuffer (faces), or splats"
-    );
+pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, near: &Core, spec: &CoreSpec) -> anyhow::Result<Option<Far>> {
+    let Some(slot) = far_slot(g) else { return Ok(None) };
+    anyhow::ensure!(near.edges.hits().is_some_and(|h| h.holds_records()), "the shading on gpu{slot} shades the hit records written on another GPU: placement = deferred (rays), draw = gbuffer or visbuffer (faces), or splats");
     let mut walks = Walks::of(g);
     let site = |port| g.site(Role::Shading, port);
-    let shadow = walks.site(
-        g,
-        site("shadow").ok_or_else(|| anyhow::anyhow!("the shading's shadow rays are not bound"))?,
-        STORAGE_GROUPS,
-        false,
-    );
+    let shadow = walks.site(g, site("shadow").ok_or_else(|| anyhow::anyhow!("the shading's shadow rays are not bound"))?, STORAGE_GROUPS, false);
     let bounce = site("bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
     walks.set_max_steps(spec.max_steps);
     let core = Core::on(
@@ -88,12 +71,7 @@ pub(crate) fn create(
         waker,
         g,
         CoreSpec {
-            gpu: GpuNeeds {
-                experimental: false,
-                required_features: wgpu::Features::empty(),
-                optional_features: wgpu::Features::TIMESTAMP_QUERY
-                    | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
-            },
+            gpu: GpuNeeds { experimental: false, required_features: wgpu::Features::empty(), optional_features: wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS },
             walks: &walks,
             accel: crate::accel::AccelSpec::of(g, &walks)?,
             stages: wgpu::ShaderStages::COMPUTE,
@@ -104,32 +82,11 @@ pub(crate) fn create(
         },
     )?;
     let dev = &core.gpu.device;
-    let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("remote shading"),
-        entries: &core.layout_entries(),
-    });
-    let pipeline_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("remote shading"),
-        bind_group_layouts: &core
-            .storages
-            .layouts(&[Some(&layout0), Some(core.world.layout())]),
-        immediate_size: 0,
-    });
-    let shade = compile(
-        &core,
-        &pipeline_layout,
-        &walks,
-        shadow,
-        bounce,
-        spec.shading,
-    )?;
+    let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("remote shading"), entries: &core.layout_entries() });
+    let pipeline_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("remote shading"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
+    let shade = compile(&core, &pipeline_layout, &walks, shadow, bounce, spec.shading)?;
     core.gpu.save_cache();
-    tracing::info!(
-        "shading on gpu{slot} ({}): shadow {}, bounce {}",
-        core.gpu.info.name,
-        walks.label(shadow),
-        walks.label(bounce)
-    );
+    tracing::info!("shading on gpu{slot} ({}): shadow {}, bounce {}", core.gpu.info.name, walks.label(shadow), walks.label(bounce));
     let passes = exec::passes(g, slot, |role| -> Option<Box<dyn Node<Shade>>> {
         Some(match role {
             Role::Traversal => Box::new(Accel),
@@ -158,26 +115,14 @@ pub(crate) fn create(
 
 impl Shade {
     /// The frame's acceleration structures (group 0 is bound anew if they changed it).
-    fn accel(
-        &mut self,
-        core: &mut Core,
-        enc: &mut wgpu::CommandEncoder,
-        ticket: Ticket,
-        req: &FrameRequest,
-    ) {
+    fn accel(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest) {
         if !std::mem::replace(&mut self.accel, true) && core.build_accel(enc, ticket, req) {
             self.bind0 = None;
         }
     }
 
     /// The storages' bind groups.
-    fn store(
-        &mut self,
-        core: &mut Core,
-        enc: &mut wgpu::CommandEncoder,
-        ticket: Ticket,
-        req: &FrameRequest,
-    ) {
+    fn store(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest) {
         self.accel(core, enc, ticket, req);
         if !std::mem::replace(&mut self.stored, true) {
             self.bound = core.storages.prepare(&core.gpu, &core.world);
@@ -186,31 +131,14 @@ impl Shade {
 
     /// The deferred pass over the records of the hits edge (after the work before it, if its
     /// nodes had no pass).
-    fn shade(
-        &mut self,
-        core: &mut Core,
-        enc: &mut wgpu::CommandEncoder,
-        ticket: Ticket,
-        req: &FrameRequest,
-    ) {
+    fn shade(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest) {
         self.store(core, enc, ticket, req);
         if self.bind0.is_none() {
             let view = core.output.create_view(&Default::default());
-            self.bind0 = Some(
-                core.gpu
-                    .device
-                    .create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("remote shading"),
-                        layout: &self.layout0,
-                        entries: &core.bind_entries(&view),
-                    }),
-            );
+            self.bind0 = Some(core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("remote shading"), layout: &self.layout0, entries: &core.bind_entries(&view) }));
         }
         core.ring.stage(enc, ticket, "shade", &core.stage_nodes[2]);
-        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("remote shade"),
-            timestamp_writes: core.ring.compute_timestamps(ticket, true, true),
-        });
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("remote shade"), timestamp_writes: core.ring.compute_timestamps(ticket, true, true) });
         pass.set_pipeline(&self.shade);
         pass.set_bind_group(0, self.bind0.as_ref().unwrap(), &[]);
         pass.set_bind_group(1, self.world.as_ref().expect("set up"), &[]);
@@ -222,14 +150,7 @@ impl Shade {
 impl exec::Region for Shade {
     fn compile(&mut self, core: &mut Core, _req: &FrameRequest) -> anyhow::Result<()> {
         if self.shading != self.built_shading {
-            self.shade = compile(
-                core,
-                &self.pipeline_layout,
-                &self.walks,
-                self.shadow,
-                self.bounce,
-                &self.shading,
-            )?;
+            self.shade = compile(core, &self.pipeline_layout, &self.walks, self.shadow, self.bounce, &self.shading)?;
             if core.accum.set_shading(&core.gpu, &self.shading) {
                 self.bind0 = None;
             }
@@ -246,11 +167,7 @@ impl exec::Region for Shade {
         self.world = Some(core.world.prepare(&core.gpu, &req.camera).clone());
     }
 
-    fn stats(
-        &self,
-        core: &Core,
-        req: &FrameRequest,
-    ) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
+    fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
         let (mut counters, stages) = core.accel_stats();
         counters.extend(core.accum.counter(req.mode));
         (counters, None, stages)
@@ -264,20 +181,11 @@ impl exec::State for Shade {
         Ok(())
     }
 
-    fn set_param(
-        &mut self,
-        _core: &mut Core,
-        _name: &str,
-        _value: &ParamValue,
-    ) -> Option<anyhow::Result<()>> {
+    fn set_param(&mut self, _core: &mut Core, _name: &str, _value: &ParamValue) -> Option<anyhow::Result<()>> {
         None
     }
 
-    fn switch(
-        &mut self,
-        _core: &mut Core,
-        s: &mr_components::graph::Switch,
-    ) -> Option<anyhow::Result<()>> {
+    fn switch(&mut self, _core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
         let c = s.component.as_ref().filter(|_| s.role == Role::Shading)?;
         self.shading = c.clone();
         Some(Ok(()))
@@ -319,52 +227,24 @@ impl Node<Shade> for Shading {
 /// The deferred shading pass's shader: the shading's walks (or ray queries' services), the
 /// view and the records that arrived, the common pass (`shade`). Returns the program, its root
 /// and the root's dependencies.
-fn program(
-    walks: &Walks,
-    shadow: usize,
-    bounce: usize,
-    shading: &str,
-) -> (mr_gpu::program::Program, String, Vec<String>) {
+fn program(walks: &Walks, shadow: usize, bounce: usize, shading: &str) -> (mr_gpu::program::Program, String, Vec<String>) {
     let (mut program, rays) = shaders::sites_program(walks, None, shadow, bounce);
-    let services: Vec<&str> = rays
-        .iter()
-        .map(String::as_str)
-        .filter(|r| r.starts_with("rays::"))
-        .collect();
+    let services: Vec<&str> = rays.iter().map(String::as_str).filter(|r| r.starts_with("rays::")).collect();
     shaders::shading(&mut program, shading, &services, 0, crate::STATE_BINDING);
-    let root = format!(
-        "// Remote shading: shading = {shading}\n{}\n{}\n{}",
-        include_str!("raycast/view.wgsl"),
-        crate::hits_wgsl() + include_str!("raycast/records.wgsl"),
-        mr_components::shading::DEFERRED_PACKED_WGSL
-    );
+    let root = format!("// Remote shading: shading = {shading}\n{}\n{}\n{}", include_str!("raycast/view.wgsl"), crate::hits_wgsl() + include_str!("raycast/records.wgsl"), mr_components::shading::DEFERRED_PACKED_WGSL);
     let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string()];
     deps.extend(rays);
     (program, root, deps)
 }
 
-fn compile(
-    core: &Core,
-    layout: &wgpu::PipelineLayout,
-    walks: &Walks,
-    shadow: usize,
-    bounce: usize,
-    shading: &str,
-) -> anyhow::Result<wgpu::ComputePipeline> {
+fn compile(core: &Core, layout: &wgpu::PipelineLayout, walks: &Walks, shadow: usize, bounce: usize, shading: &str) -> anyhow::Result<wgpu::ComputePipeline> {
     let (mut program, root, deps) = program(walks, shadow, bounce, shading);
     core.bind_program(&mut program, "0u");
     let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
     let dev = &core.gpu.device;
     let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = mr_gpu::program::compile(dev, "remote shading", &program, &root, &deps);
-    let pipeline = dev.compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("remote shade"),
-        layout: Some(layout),
-        module: &module,
-        entry_point: Some("shade"),
-        compilation_options: Default::default(),
-        cache: core.gpu.cache(),
-    });
+    let pipeline = dev.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("remote shade"), layout: Some(layout), module: &module, entry_point: Some("shade"), compilation_options: Default::default(), cache: core.gpu.cache() });
     if let Some(e) = pollster::block_on(scope.pop()) {
         anyhow::bail!("compiling the remote shading pass: {e}");
     }
@@ -378,50 +258,21 @@ mod tests {
 
     /// The split graph: the walk on `gpu`, the shading (deferred) with its own walk on `gpu1`.
     pub(crate) fn split(storage: &str, kernel: &str, shading: &str) -> Graph {
-        let mut g = Graph {
-            executor: "gpu".into(),
-            nodes: Default::default(),
-        };
+        let mut g = Graph { executor: "gpu".into(), nodes: Default::default() };
         let mut add = |id: &str, mut n: Node, inputs: &[(&str, &str)]| {
-            n.inputs
-                .extend(inputs.iter().map(|&(p, s)| (p.to_string(), s.to_string())));
+            n.inputs.extend(inputs.iter().map(|&(p, s)| (p.to_string(), s.to_string())));
             g.nodes.insert(id.into(), n);
         };
         add("world", Node::new(Role::World, "world"), &[]);
-        add(
-            "storage",
-            Node::new(Role::Storage, "bricks"),
-            &[("changes", "world")],
-        );
-        add(
-            "kernel",
-            Node::new(Role::Traversal, "refloor"),
-            &[("storage", "storage")],
-        );
-        add(
-            "visibility",
-            Node::new(Role::Visibility, "raycast"),
-            &[("primary", "kernel")],
-        );
-        add(
-            "s.storage",
-            Node::new(Role::Storage, storage),
-            &[("changes", "world")],
-        );
-        add(
-            "s.kernel",
-            Node::new(Role::Traversal, kernel),
-            &[("storage", "s.storage")],
-        );
+        add("storage", Node::new(Role::Storage, "bricks"), &[("changes", "world")]);
+        add("kernel", Node::new(Role::Traversal, "refloor"), &[("storage", "storage")]);
+        add("visibility", Node::new(Role::Visibility, "raycast"), &[("primary", "kernel")]);
+        add("s.storage", Node::new(Role::Storage, storage), &[("changes", "world")]);
+        add("s.kernel", Node::new(Role::Traversal, kernel), &[("storage", "s.storage")]);
         let mut sh = Node::new(Role::Shading, shading);
         sh.device = Some(Device::Gpu(1));
-        sh.knobs
-            .insert("placement".into(), toml::Value::String("deferred".into()));
-        add(
-            "shading",
-            sh,
-            &[("hits", "visibility"), ("shadow", "s.kernel")],
-        );
+        sh.knobs.insert("placement".into(), toml::Value::String("deferred".into()));
+        add("shading", sh, &[("hits", "visibility"), ("shadow", "s.kernel")]);
         g
     }
 
@@ -430,46 +281,21 @@ mod tests {
     #[test]
     fn program_composes() {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
-        for (st, k) in [
-            ("bricks", "refloor"),
-            ("tree64", "sphere"),
-            ("distance", "incremental"),
-        ] {
-            let shadings = mr_components::graph::shipped("raycast-gpu")
-                .unwrap()
-                .choices("shading");
+        for (st, k) in [("bricks", "refloor"), ("tree64", "sphere"), ("distance", "incremental")] {
+            let shadings = mr_components::graph::shipped("raycast-gpu").unwrap().choices("shading");
             assert!(shadings.len() > 1, "{shadings:?}");
             for shading in shadings {
                 let g = split(st, k, shading);
-                let ck = g
-                    .check()
-                    .unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));
-                g.accept()
-                    .unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));
+                let ck = g.check().unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));
+                g.accept().unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));
                 assert_eq!(far_slot(&ck), Some(1));
-                assert_eq!(
-                    (
-                        ck.devices["s.kernel"],
-                        ck.devices["s.storage"],
-                        ck.devices["kernel"]
-                    ),
-                    (Device::Gpu(1), Device::Gpu(1), Device::Gpu(0))
-                );
+                assert_eq!((ck.devices["s.kernel"], ck.devices["s.storage"], ck.devices["kernel"]), (Device::Gpu(1), Device::Gpu(1), Device::Gpu(0)));
                 let mut walks = Walks::of(&ck);
-                let shadow = walks.site(
-                    &ck,
-                    ck.site(Role::Shading, "shadow").unwrap(),
-                    STORAGE_GROUPS,
-                    false,
-                );
+                let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), STORAGE_GROUPS, false);
                 let (program, root, deps) = program(&walks, shadow, shadow, shading);
                 let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
-                let m = program
-                    .naga(&root, &deps)
-                    .unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));
-                Validator::new(ValidationFlags::all(), Capabilities::all())
-                    .validate(&m)
-                    .unwrap_or_else(|e| panic!("{st} {k} {shading}: {e:?}"));
+                let m = program.naga(&root, &deps).unwrap_or_else(|e| panic!("{st} {k} {shading}: {e}"));
+                Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{st} {k} {shading}: {e:?}"));
             }
         }
     }

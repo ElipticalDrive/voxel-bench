@@ -70,10 +70,7 @@ impl Fault {
             return Ok(None);
         }
         let v: serde_json::Value = serde_json::from_str(options_json).unwrap_or_default();
-        v.get("fault")
-            .and_then(|f| f.as_str())
-            .map(Self::parse)
-            .transpose()
+        v.get("fault").and_then(|f| f.as_str()).map(Self::parse).transpose()
     }
 
     /// Fails now if this is the moment.
@@ -119,11 +116,7 @@ pub struct Faulty {
 
 impl Faulty {
     pub fn new(inner: Box<dyn Renderer>, fault: Fault) -> Self {
-        Self {
-            inner,
-            fault,
-            frames: 0,
-        }
+        Self { inner, fault, frames: 0 }
     }
 }
 
@@ -173,25 +166,10 @@ mod tests {
     #[test]
     fn parses_and_trips_only_at_its_moment() {
         let f = Fault::parse("mid:error").unwrap();
-        assert_eq!(
-            f,
-            Fault {
-                at: At::Mid,
-                how: How::Error
-            }
-        );
+        assert_eq!(f, Fault { at: At::Mid, how: How::Error });
         assert!(f.trip(At::First).is_ok());
-        assert!(
-            f.trip(At::Mid)
-                .unwrap_err()
-                .to_string()
-                .contains("injected fault at mid")
-        );
-        assert!(
-            Fault::parse("mid").is_err()
-                && Fault::parse("later:error").is_err()
-                && Fault::parse("mid:explode").is_err()
-        );
+        assert!(f.trip(At::Mid).unwrap_err().to_string().contains("injected fault at mid"));
+        assert!(Fault::parse("mid").is_err() && Fault::parse("later:error").is_err() && Fault::parse("mid:explode").is_err());
         let p = Fault::parse("knob:panic").unwrap();
         assert!(std::panic::catch_unwind(|| p.trip(At::Knob)).is_err());
     }

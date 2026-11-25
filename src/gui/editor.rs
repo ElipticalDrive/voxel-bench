@@ -6,9 +6,7 @@ use mr_world::GenSpec;
 use mr_world::generators::GENERATORS;
 use mr_world::scenario::{CameraPathSpec, EnvSpec, EventSpec, LightSpec};
 
-use crate::plan::{
-    CompareSpec, Compile, Isolation, Pacing, Plan, Readback, RendererSpec, SaveSpec, Streaming,
-};
+use crate::plan::{CompareSpec, Compile, Isolation, Pacing, Plan, Readback, RendererSpec, SaveSpec, Streaming};
 
 /// Context the editor needs besides the plan itself.
 pub struct EditorCtx<'a> {
@@ -34,30 +32,13 @@ fn v3(ui: &mut Ui, v: &mut [f64; 3], speed: f64) -> Changed {
     ui.horizontal(|ui| {
         for (x, l) in v.iter_mut().zip(["x", "y", "z"]) {
             ui.label(l);
-            c |= ui
-                .add(
-                    DragValue::new(x)
-                        .speed(speed)
-                        .max_decimals(2)
-                        .update_while_editing(false),
-                )
-                .on_hover_text(format!(
-                    "{l} in blocks (y is up). Drag or double-click to type."
-                ))
-                .changed();
+            c |= ui.add(DragValue::new(x).speed(speed).max_decimals(2).update_while_editing(false)).on_hover_text(format!("{l} in blocks (y is up). Drag or double-click to type.")).changed();
         }
     });
     c
 }
 
-fn opt_v3(
-    ui: &mut Ui,
-    label: &str,
-    v: &mut Option<[f64; 3]>,
-    default: [f64; 3],
-    cam: Option<Camera>,
-    tip: &str,
-) -> Changed {
+fn opt_v3(ui: &mut Ui, label: &str, v: &mut Option<[f64; 3]>, default: [f64; 3], cam: Option<Camera>, tip: &str) -> Changed {
     let mut c = false;
     ui.horizontal(|ui| {
         let mut on = v.is_some();
@@ -66,11 +47,7 @@ fn opt_v3(
             c = true;
         }
         if let Some(p) = cam
-            && ui
-                .small_button("⌖ cam")
-                .on_hover_text("Use the live camera position")
-                .clicked()
-        {
+            && ui.small_button("⌖ cam").on_hover_text("Use the live camera position").clicked() {
             *v = Some(p.position.to_array());
             c = true;
         }
@@ -89,13 +66,7 @@ fn color(ui: &mut Ui, label: &str, c: &mut [f32; 3], tip: &str) -> Changed {
     .inner
 }
 
-fn opt_color(
-    ui: &mut Ui,
-    label: &str,
-    v: &mut Option<[f32; 3]>,
-    default: [f32; 3],
-    tip: &str,
-) -> Changed {
+fn opt_color(ui: &mut Ui, label: &str, v: &mut Option<[f32; 3]>, default: [f32; 3], tip: &str) -> Changed {
     ui.horizontal(|ui| {
         let mut on = v.is_some();
         let mut c = false;
@@ -111,18 +82,10 @@ fn opt_color(
     .inner
 }
 
-fn num<T: egui::emath::Numeric>(
-    ui: &mut Ui,
-    label: &str,
-    v: &mut T,
-    speed: f64,
-    tip: &str,
-) -> Changed {
+fn num<T: egui::emath::Numeric>(ui: &mut Ui, label: &str, v: &mut T, speed: f64, tip: &str) -> Changed {
     ui.horizontal(|ui| {
         ui.label(label).on_hover_text(tip);
-        ui.add(DragValue::new(v).speed(speed).update_while_editing(false))
-            .on_hover_text(tip)
-            .changed()
+        ui.add(DragValue::new(v).speed(speed).update_while_editing(false)).on_hover_text(tip).changed()
     })
     .inner
 }
@@ -133,47 +96,24 @@ fn block_combo(ui: &mut Ui, id: &str, b: &mut String, names: &[String], toggle: 
         .selected_text(b.as_str())
         .show_ui(ui, |ui| {
             let extra: &[&str] = if toggle { &["air", "toggle"] } else { &["air"] };
-            for n in extra
-                .iter()
-                .map(|s| s.to_string())
-                .chain(names.iter().cloned())
-            {
+            for n in extra.iter().map(|s| s.to_string()).chain(names.iter().cloned()) {
                 c |= ui.selectable_value(b, n.clone(), n).changed();
             }
         })
         .response
-        .on_hover_text(if toggle {
-            "Block to write: air removes, toggle makes air solid and solid air"
-        } else {
-            "Block to write: air removes"
-        });
+        .on_hover_text(if toggle { "Block to write: air removes, toggle makes air solid and solid air" } else { "Block to write: air removes" });
     c
 }
 
 /// `variants` are (name, constructor, tooltip).
-fn variant_combo<T>(
-    ui: &mut Ui,
-    id: &str,
-    current: &str,
-    value: &mut T,
-    variants: &[(&str, fn() -> T, &str)],
-) -> Changed {
+fn variant_combo<T>(ui: &mut Ui, id: &str, current: &str, value: &mut T, variants: &[(&str, fn() -> T, &str)]) -> Changed {
     let mut c = false;
-    let tip = variants
-        .iter()
-        .find(|v| v.0 == current)
-        .map(|v| v.2)
-        .unwrap_or("");
+    let tip = variants.iter().find(|v| v.0 == current).map(|v| v.2).unwrap_or("");
     ComboBox::from_id_salt(id)
         .selected_text(current)
         .show_ui(ui, |ui| {
             for (name, make, tip) in variants {
-                if ui
-                    .selectable_label(*name == current, *name)
-                    .on_hover_text(*tip)
-                    .clicked()
-                    && *name != current
-                {
+                if ui.selectable_label(*name == current, *name).on_hover_text(*tip).clicked() && *name != current {
                     *value = make();
                     c = true;
                 }
@@ -188,31 +128,16 @@ pub fn plan_editor(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed
     let mut c = false;
     ui.horizontal(|ui| {
         ui.label("Name");
-        c |= ui
-            .text_edit_singleline(&mut plan.name)
-            .on_hover_text("Plan name; used in run directory names and reports")
-            .changed();
+        c |= ui.text_edit_singleline(&mut plan.name).on_hover_text("Plan name; used in run directory names and reports").changed();
     });
-    egui::CollapsingHeader::new("World")
-        .default_open(true)
-        .show(ui, |ui| c |= world(ui, plan));
-    egui::CollapsingHeader::new("Camera path")
-        .default_open(true)
-        .show(ui, |ui| c |= camera(ui, plan, ctx.camera));
-    egui::CollapsingHeader::new("Environment")
-        .show(ui, |ui| c |= environment(ui, &mut plan.scene.environment));
-    egui::CollapsingHeader::new(format!("Lights ({})", plan.scene.lights.len()))
-        .show(ui, |ui| c |= lights(ui, &mut plan.scene.lights, ctx.camera));
-    egui::CollapsingHeader::new(format!("Events ({})", plan.scene.events.len()))
-        .show(ui, |ui| c |= events(ui, &mut plan.scene.events, ctx));
-    egui::CollapsingHeader::new(format!("Renderers ({})", plan.renderers.len()))
-        .default_open(true)
-        .show(ui, |ui| c |= renderers(ui, plan, ctx));
-    egui::CollapsingHeader::new("Run settings")
-        .default_open(true)
-        .show(ui, |ui| c |= run(ui, plan));
-    egui::CollapsingHeader::new("Benchmark outputs")
-        .show(ui, |ui| c |= output(ui, plan, ctx.infos));
+    egui::CollapsingHeader::new("World").default_open(true).show(ui, |ui| c |= world(ui, plan));
+    egui::CollapsingHeader::new("Camera path").default_open(true).show(ui, |ui| c |= camera(ui, plan, ctx.camera));
+    egui::CollapsingHeader::new("Environment").show(ui, |ui| c |= environment(ui, &mut plan.scene.environment));
+    egui::CollapsingHeader::new(format!("Lights ({})", plan.scene.lights.len())).show(ui, |ui| c |= lights(ui, &mut plan.scene.lights, ctx.camera));
+    egui::CollapsingHeader::new(format!("Events ({})", plan.scene.events.len())).show(ui, |ui| c |= events(ui, &mut plan.scene.events, ctx));
+    egui::CollapsingHeader::new(format!("Renderers ({})", plan.renderers.len())).default_open(true).show(ui, |ui| c |= renderers(ui, plan, ctx));
+    egui::CollapsingHeader::new("Run settings").default_open(true).show(ui, |ui| c |= run(ui, plan));
+    egui::CollapsingHeader::new("Benchmark outputs").show(ui, |ui| c |= output(ui, plan, ctx.infos));
     c
 }
 
@@ -242,55 +167,29 @@ fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
         })
         .inner;
     c |= gen_fields(ui, g);
-    c |= ui
-        .add(
-            egui::Slider::new(&mut plan.scene.fov_deg, 20.0..=140.0)
-                .text("FOV°")
-                .update_while_editing(false),
-        )
-        .on_hover_text("Vertical field of view in degrees")
-        .changed();
+    c |= ui.add(egui::Slider::new(&mut plan.scene.fov_deg, 20.0..=140.0).text("FOV°").update_while_editing(false)).on_hover_text("Vertical field of view in degrees").changed();
     c
 }
 
 /// The generator's knobs, from its entry's fields; a value its spec refuses is not taken.
 fn gen_fields(ui: &mut Ui, g: &mut GenSpec) -> Changed {
     let info = g.info();
-    let Ok(mut table) = toml::Table::try_from(&*g) else {
-        return false;
-    };
+    let Ok(mut table) = toml::Table::try_from(&*g) else { return false };
     let mut c = false;
     for f in info.fields {
-        let Some(v) = table.get_mut(f.name) else {
-            continue;
-        };
+        let Some(v) = table.get_mut(f.name) else { continue };
         c |= match v {
             toml::Value::Boolean(b) => ui.checkbox(b, f.name).on_hover_text(f.help).changed(),
             toml::Value::Integer(i) => match f.range {
-                Some((lo, hi)) => ui
-                    .add(
-                        egui::Slider::new(i, lo as i64..=hi as i64)
-                            .text(f.name)
-                            .update_while_editing(false),
-                    )
-                    .on_hover_text(f.help)
-                    .changed(),
+                Some((lo, hi)) => ui.add(egui::Slider::new(i, lo as i64..=hi as i64).text(f.name).update_while_editing(false)).on_hover_text(f.help).changed(),
                 None => num(ui, f.name, i, 1.0, f.help),
             },
             toml::Value::Float(x) => match f.range {
-                Some((lo, hi)) => ui
-                    .add(
-                        egui::Slider::new(x, lo..=hi)
-                            .text(f.name)
-                            .update_while_editing(false),
-                    )
-                    .on_hover_text(f.help)
-                    .changed(),
+                Some((lo, hi)) => ui.add(egui::Slider::new(x, lo..=hi).text(f.name).update_while_editing(false)).on_hover_text(f.help).changed(),
                 None => num(ui, f.name, x, 0.01, f.help),
             },
             other => {
-                ui.label(format!("{}: {other}", f.name))
-                    .on_hover_text(f.help);
+                ui.label(format!("{}: {other}", f.name)).on_hover_text(f.help);
                 false
             }
         };
@@ -330,90 +229,34 @@ fn camera(ui: &mut Ui, plan: &mut Plan, cam: Option<Camera>) -> Changed {
         })
         .inner;
     match p {
-        CameraPathSpec::Static {
-            position,
-            target,
-            yaw_deg,
-            pitch_deg,
-        } => {
+        CameraPathSpec::Static { position, target, yaw_deg, pitch_deg } => {
             if let Some(k) = cam
-                && ui
-                    .button("⌖ Set from live camera")
-                    .on_hover_text("Copy the live camera's position and direction")
-                    .clicked()
-            {
+                && ui.button("⌖ Set from live camera").on_hover_text("Copy the live camera's position and direction").clicked() {
                 *position = Some(k.position.to_array());
                 *target = None;
                 *yaw_deg = k.yaw.to_degrees();
                 *pitch_deg = k.pitch.to_degrees();
                 c = true;
             }
-            c |= opt_v3(
-                ui,
-                "position (else spawn)",
-                position,
-                [0.0, 80.0, 0.0],
-                cam,
-                "Camera position in blocks; unset = the generator's spawn point",
-            );
-            c |= opt_v3(
-                ui,
-                "look at target",
-                target,
-                [0.0; 3],
-                None,
-                "Point the camera at this position (overrides yaw and pitch)",
-            );
+            c |= opt_v3(ui, "position (else spawn)", position, [0.0, 80.0, 0.0], cam, "Camera position in blocks; unset = the generator's spawn point");
+            c |= opt_v3(ui, "look at target", target, [0.0; 3], None, "Point the camera at this position (overrides yaw and pitch)");
             if target.is_none() {
                 c |= num(ui, "yaw°", yaw_deg, 1.0, "Horizontal direction in degrees");
-                c |= num(
-                    ui,
-                    "pitch°",
-                    pitch_deg,
-                    1.0,
-                    "Vertical angle in degrees; negative looks down",
-                );
+                c |= num(ui, "pitch°", pitch_deg, 1.0, "Vertical angle in degrees; negative looks down");
             }
         }
-        CameraPathSpec::Orbit {
-            center,
-            radius,
-            height,
-            period,
-        } => {
-            ui.label("center")
-                .on_hover_text("Point the camera circles and looks at");
+        CameraPathSpec::Orbit { center, radius, height, period } => {
+            ui.label("center").on_hover_text("Point the camera circles and looks at");
             c |= v3(ui, center, 0.5);
             c |= num(ui, "radius", radius, 0.5, "Orbit radius in blocks");
             c |= num(ui, "height", height, 0.5, "Camera height above the centre");
-            c |= num(
-                ui,
-                "period (frames)",
-                period,
-                1.0,
-                "Scene frames per full circle",
-            );
+            c |= num(ui, "period (frames)", period, 1.0, "Scene frames per full circle");
         }
         CameraPathSpec::Line { from, to, look_at } => {
-            c |= opt_v3(
-                ui,
-                "from (else spawn)",
-                from,
-                [0.0, 100.0, 0.0],
-                cam,
-                "Start point; unset = spawn point",
-            );
-            ui.label("to")
-                .on_hover_text("End point, reached at the last benchmark frame");
+            c |= opt_v3(ui, "from (else spawn)", from, [0.0, 100.0, 0.0], cam, "Start point; unset = spawn point");
+            ui.label("to").on_hover_text("End point, reached at the last benchmark frame");
             c |= v3(ui, to, 0.5);
-            c |= opt_v3(
-                ui,
-                "look at (else ahead)",
-                look_at,
-                [0.0; 3],
-                cam,
-                "Keep looking at this point; unset = look along the line",
-            );
+            c |= opt_v3(ui, "look at (else ahead)", look_at, [0.0; 3], cam, "Keep looking at this point; unset = look along the line");
         }
         CameraPathSpec::Flythrough { points } => {
             let mut remove = None;
@@ -421,11 +264,7 @@ fn camera(ui: &mut Ui, plan: &mut Plan, cam: Option<Camera>) -> Changed {
                 ui.horizontal(|ui| {
                     ui.label(format!("{i}"));
                     c |= v3(ui, pt, 0.5);
-                    if ui
-                        .small_button("✖")
-                        .on_hover_text("Remove this point")
-                        .clicked()
-                    {
+                    if ui.small_button("✖").on_hover_text("Remove this point").clicked() {
                         remove = Some(i);
                     }
                 });
@@ -435,54 +274,21 @@ fn camera(ui: &mut Ui, plan: &mut Plan, cam: Option<Camera>) -> Changed {
                 c = true;
             }
             ui.horizontal(|ui| {
-                if ui
-                    .button("+ point")
-                    .on_hover_text("Append a point (a copy of the last)")
-                    .clicked()
-                {
+                if ui.button("+ point").on_hover_text("Append a point (a copy of the last)").clicked() {
                     points.push(points.last().copied().unwrap_or([0.0, 100.0, 0.0]));
                     c = true;
                 }
                 if let Some(k) = cam
-                    && ui
-                        .button("+ live camera position")
-                        .on_hover_text(
-                            "Append the live camera's position: fly somewhere, click, repeat",
-                        )
-                        .clicked()
-                {
+                    && ui.button("+ live camera position").on_hover_text("Append the live camera's position: fly somewhere, click, repeat").clicked() {
                     points.push(k.position.to_array());
                     c = true;
                 }
             });
         }
-        CameraPathSpec::Spin {
-            position,
-            period,
-            pitch_deg,
-        } => {
-            c |= opt_v3(
-                ui,
-                "position (else spawn)",
-                position,
-                [0.0, 80.0, 0.0],
-                cam,
-                "Where to stand; unset = spawn point",
-            );
-            c |= num(
-                ui,
-                "period (frames)",
-                period,
-                1.0,
-                "Scene frames per full turn",
-            );
-            c |= num(
-                ui,
-                "pitch°",
-                pitch_deg,
-                1.0,
-                "Vertical angle in degrees; negative looks down",
-            );
+        CameraPathSpec::Spin { position, period, pitch_deg } => {
+            c |= opt_v3(ui, "position (else spawn)", position, [0.0, 80.0, 0.0], cam, "Where to stand; unset = spawn point");
+            c |= num(ui, "period (frames)", period, 1.0, "Scene frames per full turn");
+            c |= num(ui, "pitch°", pitch_deg, 1.0, "Vertical angle in degrees; negative looks down");
         }
     }
     c
@@ -490,24 +296,9 @@ fn camera(ui: &mut Ui, plan: &mut Plan, cam: Option<Camera>) -> Changed {
 
 fn environment(ui: &mut Ui, e: &mut EnvSpec) -> Changed {
     let mut c = false;
-    c |= opt_color(
-        ui,
-        "sky",
-        &mut e.sky,
-        [0.45, 0.65, 0.95],
-        "Sky colour seen where rays hit nothing; unset = default",
-    );
-    c |= opt_color(
-        ui,
-        "ambient",
-        &mut e.ambient,
-        [0.08, 0.08, 0.08],
-        "Light reaching every surface, even in shadow (Lit mode)",
-    );
-    c |= ui
-        .checkbox(&mut e.no_sun, "no sun")
-        .on_hover_text("Disable the sun: only ambient and point lights (night, caves)")
-        .changed();
+    c |= opt_color(ui, "sky", &mut e.sky, [0.45, 0.65, 0.95], "Sky colour seen where rays hit nothing; unset = default");
+    c |= opt_color(ui, "ambient", &mut e.ambient, [0.08, 0.08, 0.08], "Light reaching every surface, even in shadow (Lit mode)");
+    c |= ui.checkbox(&mut e.no_sun, "no sun").on_hover_text("Disable the sun: only ambient and point lights (night, caves)").changed();
     if !e.no_sun {
         ui.horizontal(|ui| {
             let mut on = e.sun_direction.is_some();
@@ -521,34 +312,16 @@ fn environment(ui: &mut Ui, e: &mut EnvSpec) -> Changed {
                 }
             }
         });
-        c |= opt_color(
-            ui,
-            "sun colour",
-            &mut e.sun_color,
-            [1.0, 1.0, 1.0],
-            "Colour and brightness of sunlight",
-        );
+        c |= opt_color(ui, "sun colour", &mut e.sun_color, [1.0, 1.0, 1.0], "Colour and brightness of sunlight");
     }
     ui.horizontal(|ui| {
         let mut on = e.exposure.is_some();
-        if ui
-            .checkbox(&mut on, "exposure")
-            .on_hover_text("Multiplier applied before tone mapping (Lit mode)")
-            .changed()
-        {
+        if ui.checkbox(&mut on, "exposure").on_hover_text("Multiplier applied before tone mapping (Lit mode)").changed() {
             e.exposure = on.then_some(1.0);
             c = true;
         }
         if let Some(x) = &mut e.exposure {
-            c |= ui
-                .add(
-                    DragValue::new(x)
-                        .speed(0.01)
-                        .range(0.0..=20.0)
-                        .update_while_editing(false),
-                )
-                .on_hover_text("1 = neutral; higher is brighter")
-                .changed();
+            c |= ui.add(DragValue::new(x).speed(0.01).range(0.0..=20.0).update_while_editing(false)).on_hover_text("1 = neutral; higher is brighter").changed();
         }
     });
     c
@@ -619,19 +392,8 @@ fn lights(ui: &mut Ui, ls: &mut Vec<LightSpec>, cam: Option<Camera>) -> Changed 
         ls.remove(i);
         c = true;
     }
-    if ui
-        .button("+ light")
-        .on_hover_text("Add a point light (at the live camera if running)")
-        .clicked()
-    {
-        ls.push(LightSpec::Point {
-            position: cam
-                .map(|k| k.position.to_array())
-                .unwrap_or([0.0, 60.0, 0.0]),
-            color: [1.0; 3],
-            intensity: 20.0,
-            radius: 16.0,
-        });
+    if ui.button("+ light").on_hover_text("Add a point light (at the live camera if running)").clicked() {
+        ls.push(LightSpec::Point { position: cam.map(|k| k.position.to_array()).unwrap_or([0.0, 60.0, 0.0]), color: [1.0; 3], intensity: 20.0, radius: 16.0 });
         c = true;
     }
     c
@@ -657,153 +419,49 @@ fn events(ui: &mut Ui, es: &mut Vec<EventSpec>, ctx: &EditorCtx) -> Changed {
                         name,
                         e,
                         &[
-                            (
-                                "sphere",
-                                || EventSpec::Sphere {
-                                    frame: 60,
-                                    center: [0.0, 40.0, 0.0],
-                                    radius: 10.0,
-                                    block: "air".into(),
-                                },
-                                "Fill a sphere with a block at one frame (air = crater)",
-                            ),
-                            (
-                                "box",
-                                || EventSpec::Box {
-                                    frame: 60,
-                                    min: [0, 30, 0],
-                                    max: [4, 80, 4],
-                                    block: "bricks".into(),
-                                },
-                                "Fill a box with a block at one frame",
-                            ),
-                            (
-                                "random_edits",
-                                || EventSpec::RandomEdits {
-                                    every: 1,
-                                    count: 500,
-                                    seed: 0,
-                                    center: None,
-                                    radius: 30.0,
-                                    block: "toggle".into(),
-                                },
-                                "Continuous random block changes: tests incremental updates",
-                            ),
-                            (
-                                "animate_lights",
-                                || EventSpec::AnimateLights {
-                                    amplitude: 2.0,
-                                    period: 90,
-                                },
-                                "Move every point light back and forth",
-                            ),
-                            (
-                                "sun_cycle",
-                                || EventSpec::SunCycle { period: 1200 },
-                                "Rotate the sun through a day",
-                            ),
+                            ("sphere", || EventSpec::Sphere { frame: 60, center: [0.0, 40.0, 0.0], radius: 10.0, block: "air".into() }, "Fill a sphere with a block at one frame (air = crater)"),
+                            ("box", || EventSpec::Box { frame: 60, min: [0, 30, 0], max: [4, 80, 4], block: "bricks".into() }, "Fill a box with a block at one frame"),
+                            ("random_edits", || EventSpec::RandomEdits { every: 1, count: 500, seed: 0, center: None, radius: 30.0, block: "toggle".into() }, "Continuous random block changes: tests incremental updates"),
+                            ("animate_lights", || EventSpec::AnimateLights { amplitude: 2.0, period: 90 }, "Move every point light back and forth"),
+                            ("sun_cycle", || EventSpec::SunCycle { period: 1200 }, "Rotate the sun through a day"),
                         ],
                     );
-                    if ui
-                        .small_button("✖")
-                        .on_hover_text("Remove this event")
-                        .clicked()
-                    {
+                    if ui.small_button("✖").on_hover_text("Remove this event").clicked() {
                         remove = Some(i);
                     }
                 });
                 match e {
-                    EventSpec::Sphere {
-                        frame,
-                        center,
-                        radius,
-                        block,
-                    } => {
-                        c |= num(
-                            ui,
-                            "at frame",
-                            frame,
-                            1.0,
-                            "Scene frame at which the edit happens",
-                        );
+                    EventSpec::Sphere { frame, center, radius, block } => {
+                        c |= num(ui, "at frame", frame, 1.0, "Scene frame at which the edit happens");
                         c |= v3(ui, center, 0.5);
                         c |= num(ui, "radius", radius, 0.5, "Sphere radius in blocks");
                         c |= block_combo(ui, "b", block, ctx.block_names, false);
                     }
-                    EventSpec::Box {
-                        frame,
-                        min,
-                        max,
-                        block,
-                    } => {
-                        c |= num(
-                            ui,
-                            "at frame",
-                            frame,
-                            1.0,
-                            "Scene frame at which the edit happens",
-                        );
+                    EventSpec::Box { frame, min, max, block } => {
+                        c |= num(ui, "at frame", frame, 1.0, "Scene frame at which the edit happens");
                         for (l, v) in [("min", min), ("max", max)] {
                             ui.horizontal(|ui| {
-                                ui.label(l)
-                                    .on_hover_text("Box corner in block coordinates (inclusive)");
+                                ui.label(l).on_hover_text("Box corner in block coordinates (inclusive)");
                                 for x in v.iter_mut() {
-                                    c |= ui
-                                        .add(DragValue::new(x).update_while_editing(false))
-                                        .on_hover_text("Block coordinate")
-                                        .changed();
+                                    c |= ui.add(DragValue::new(x).update_while_editing(false)).on_hover_text("Block coordinate").changed();
                                 }
                             });
                         }
                         c |= block_combo(ui, "b", block, ctx.block_names, false);
                     }
-                    EventSpec::RandomEdits {
-                        every,
-                        count,
-                        seed,
-                        center,
-                        radius,
-                        block,
-                    } => {
-                        c |= num(
-                            ui,
-                            "every n frames",
-                            every,
-                            1.0,
-                            "Apply a batch of edits every this many frames",
-                        );
+                    EventSpec::RandomEdits { every, count, seed, center, radius, block } => {
+                        c |= num(ui, "every n frames", every, 1.0, "Apply a batch of edits every this many frames");
                         c |= num(ui, "count", count, 10.0, "Blocks changed per batch");
                         c |= num(ui, "seed", seed, 1.0, "Random seed");
-                        c |= opt_v3(
-                            ui,
-                            "center (else camera)",
-                            center,
-                            [0.0, 40.0, 0.0],
-                            ctx.camera,
-                            "Where edits happen; unset = around the camera, so they're visible",
-                        );
-                        c |= num(
-                            ui,
-                            "radius",
-                            radius,
-                            0.5,
-                            "Edits fall within this distance of the centre",
-                        );
+                        c |= opt_v3(ui, "center (else camera)", center, [0.0, 40.0, 0.0], ctx.camera, "Where edits happen; unset = around the camera, so they're visible");
+                        c |= num(ui, "radius", radius, 0.5, "Edits fall within this distance of the centre");
                         c |= block_combo(ui, "b", block, ctx.block_names, true);
                     }
                     EventSpec::AnimateLights { amplitude, period } => {
-                        c |= num(
-                            ui,
-                            "amplitude",
-                            amplitude,
-                            0.1,
-                            "How far lights move, in blocks",
-                        );
+                        c |= num(ui, "amplitude", amplitude, 0.1, "How far lights move, in blocks");
                         c |= num(ui, "period", period, 1.0, "Frames per back-and-forth");
                     }
-                    EventSpec::SunCycle { period } => {
-                        c |= num(ui, "period", period, 10.0, "Frames per full day")
-                    }
+                    EventSpec::SunCycle { period } => c |= num(ui, "period", period, 10.0, "Frames per full day"),
                 }
             });
         });
@@ -812,15 +470,8 @@ fn events(ui: &mut Ui, es: &mut Vec<EventSpec>, ctx: &EditorCtx) -> Changed {
         es.remove(i);
         c = true;
     }
-    if ui
-        .button("+ event")
-        .on_hover_text("Add a scripted event (change its kind with the dropdown)")
-        .clicked()
-    {
-        es.push(EventSpec::AnimateLights {
-            amplitude: 2.0,
-            period: 90,
-        });
+    if ui.button("+ event").on_hover_text("Add a scripted event (change its kind with the dropdown)").clicked() {
+        es.push(EventSpec::AnimateLights { amplitude: 2.0, period: 90 });
         c = true;
     }
     c
@@ -828,31 +479,12 @@ fn events(ui: &mut Ui, es: &mut Vec<EventSpec>, ctx: &EditorCtx) -> Changed {
 
 /// A pipeline's summary (`graph::summary`): edits go into it. Returns whether
 /// anything changed.
-fn composition(
-    ui: &mut Ui,
-    i: usize,
-    r: &mut RendererSpec,
-    run: &crate::plan::RunSpec,
-    ctx: &mut EditorCtx,
-) -> Changed {
+fn composition(ui: &mut Ui, i: usize, r: &mut RendererSpec, run: &crate::plan::RunSpec, ctx: &mut EditorCtx) -> Changed {
     use super::graph::{self, Of};
     let params = r.info(run, ctx.infos).map(|i| i.params).unwrap_or_default();
     let values = r.knob_values();
-    let knobs: Vec<_> = params
-        .iter()
-        .map(|p| (p.clone(), super::knobs::option_value(p, &values)))
-        .collect();
-    let edits = graph::summary(
-        ui,
-        &format!("{:?}", Of::Plan(i)),
-        r,
-        &knobs,
-        false,
-        None,
-        ctx.trials,
-        ctx.infos,
-        run,
-    );
+    let knobs: Vec<_> = params.iter().map(|p| (p.clone(), super::knobs::option_value(p, &values))).collect();
+    let edits = graph::summary(ui, &format!("{:?}", Of::Plan(i)), r, &knobs, false, None, ctx.trials, ctx.infos, run);
     let (changed, open) = graph::apply_to_plan(r, edits);
     if let Some(sel) = open {
         *ctx.open_graph = Some((i, sel));
@@ -862,8 +494,7 @@ fn composition(
 
 fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
     let mut c = false;
-    ctx.option_text
-        .resize_with(plan.renderers.len(), String::new);
+    ctx.option_text.resize_with(plan.renderers.len(), String::new);
     let mut remove = None;
     let run = plan.run.clone();
     for (i, r) in plan.renderers.iter_mut().enumerate() {
@@ -937,11 +568,7 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
             }
         });
         for info in ctx.infos {
-            if ui
-                .button(format!("+ {}", info.name))
-                .on_hover_text(format!("Add the standalone renderer: {}", info.description))
-                .clicked()
-            {
+            if ui.button(format!("+ {}", info.name)).on_hover_text(format!("Add the standalone renderer: {}", info.description)).clicked() {
                 plan.renderers.push(RendererSpec::new(info.name.clone()));
                 ctx.option_text.push(String::new());
                 c = true;
@@ -1067,69 +694,28 @@ fn output(ui: &mut Ui, plan: &mut Plan, infos: &[RendererInfo]) -> Changed {
     let o = &mut plan.output;
     let mut c = false;
     ui.horizontal(|ui| {
-        ui.label("read-back")
-            .on_hover_text("Whether frames are copied back to the host each frame");
+        ui.label("read-back").on_hover_text("Whether frames are copied back to the host each frame");
         for (v, n, tip) in [
-            (
-                Readback::Auto,
-                "auto",
-                "Only when a frame is needed (saving, comparison, window)",
-            ),
-            (
-                Readback::Always,
-                "always",
-                "Every frame: measures the cost of getting pixels out, like a real app would pay",
-            ),
+            (Readback::Auto, "auto", "Only when a frame is needed (saving, comparison, window)"),
+            (Readback::Always, "always", "Every frame: measures the cost of getting pixels out, like a real app would pay"),
             (Readback::Never, "never", "Never: pure render speed"),
         ] {
-            c |= ui
-                .selectable_value(&mut o.readback, v, n)
-                .on_hover_text(tip)
-                .changed();
+            c |= ui.selectable_value(&mut o.readback, v, n).on_hover_text(tip).changed();
         }
     });
-    c |= ui
-        .checkbox(&mut o.window, "show window during benchmark")
-        .on_hover_text("Display frames while the benchmark runs (costs read-back)")
-        .changed();
+    c |= ui.checkbox(&mut o.window, "show window during benchmark").on_hover_text("Display frames while the benchmark runs (costs read-back)").changed();
     let mut save = o.save.is_some();
-    if ui
-        .checkbox(&mut save, "save frames")
-        .on_hover_text("Write PNG frames into the run directory")
-        .changed()
-    {
-        o.save = save.then_some(SaveSpec {
-            every: 100,
-            diffs: true,
-        });
+    if ui.checkbox(&mut save, "save frames").on_hover_text("Write PNG frames into the run directory").changed() {
+        o.save = save.then_some(SaveSpec { every: 100, diffs: true });
         c = true;
     }
     if let Some(s) = &mut o.save {
-        c |= num(
-            ui,
-            "  every n frames",
-            &mut s.every,
-            1.0,
-            "Save one frame out of this many",
-        );
-        c |= ui
-            .checkbox(&mut s.diffs, "  with diff images")
-            .on_hover_text("Also save difference images against the reference")
-            .changed();
+        c |= num(ui, "  every n frames", &mut s.every, 1.0, "Save one frame out of this many");
+        c |= ui.checkbox(&mut s.diffs, "  with diff images").on_hover_text("Also save difference images against the reference").changed();
     }
     let mut cmp = o.compare.is_some();
-    if ui
-        .checkbox(&mut cmp, "compare against reference")
-        .on_hover_text("Score frames against a reference renderer (PSNR, SSIM, bad pixels)")
-        .changed()
-    {
-        o.compare = cmp.then(|| CompareSpec {
-            reference: "cpu-reference".into(),
-            reference_options: Default::default(),
-            every: 100,
-            settle: 2,
-            converge: 64,
-        });
+    if ui.checkbox(&mut cmp, "compare against reference").on_hover_text("Score frames against a reference renderer (PSNR, SSIM, bad pixels)").changed() {
+        o.compare = cmp.then(|| CompareSpec { reference: "cpu-reference".into(), reference_options: Default::default(), every: 100, settle: 2, converge: 64 });
         c = true;
     }
     if let Some(cs) = &mut o.compare {
@@ -1145,26 +731,12 @@ fn output(ui: &mut Ui, plan: &mut Plan, infos: &[RendererInfo]) -> Changed {
                 .response
                 .on_hover_text("Renderer treated as ground truth");
         });
-        c |= num(
-            ui,
-            "  every n frames",
-            &mut cs.every,
-            1.0,
-            "Compare one frame out of this many (the reference is slow)",
-        );
+        c |= num(ui, "  every n frames", &mut cs.every, 1.0, "Compare one frame out of this many (the reference is slow)");
     }
     let mut dir = o.dir.clone().unwrap_or_default();
     ui.horizontal(|ui| {
-        ui.label("run dir").on_hover_text(
-            "Directory for benchmark results; each run gets a time-stamped subdirectory",
-        );
-        if ui
-            .add(egui::TextEdit::singleline(&mut dir).hint_text("runs"))
-            .on_hover_text(
-                "Directory for benchmark results; each run gets a time-stamped subdirectory",
-            )
-            .changed()
-        {
+        ui.label("run dir").on_hover_text("Directory for benchmark results; each run gets a time-stamped subdirectory");
+        if ui.add(egui::TextEdit::singleline(&mut dir).hint_text("runs")).on_hover_text("Directory for benchmark results; each run gets a time-stamped subdirectory").changed() {
             o.dir = (!dir.is_empty()).then_some(dir);
             c = true;
         }
@@ -1187,22 +759,13 @@ mod tests {
             plan.scene.generator = (g.default)();
             let before = format!("{:?}", plan.scene.generator);
             let mut changed = false;
-            ctx.run_ui(egui::RawInput::default(), |ui| {
-                changed = world(ui, &mut plan)
-            })
-            .textures_delta
-            .clear();
+            ctx.run_ui(egui::RawInput::default(), |ui| changed = world(ui, &mut plan)).textures_delta.clear();
             assert!(!changed, "{}: drawing changed it", g.name);
             assert_eq!(format!("{:?}", plan.scene.generator), before);
             assert_eq!(plan.scene.generator.name(), g.name);
             let table = toml::Table::try_from(&plan.scene.generator).unwrap();
             for f in g.fields {
-                assert!(
-                    table.contains_key(f.name),
-                    "{}: field {} not in its spec",
-                    g.name,
-                    f.name
-                );
+                assert!(table.contains_key(f.name), "{}: field {} not in its spec", g.name, f.name);
             }
             let back: GenSpec = table.try_into().unwrap();
             assert_eq!(format!("{back:?}"), before);
@@ -1238,39 +801,14 @@ mod refused_tests {
         let mut plan = Plan::parse(crate::gui::DEFAULT_PLAN, &[]).unwrap();
         let good = RendererSpec::from_cli("raycast-gpu").unwrap();
         let g = model::graph_of(&good).unwrap();
-        let shading = g
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role == Role::Shading)
-            .map(|(k, _)| k.clone())
-            .unwrap();
+        let shading = g.nodes.iter().find(|(_, n)| n.role == Role::Shading).map(|(k, _)| k.clone()).unwrap();
         let mut bad = good.clone();
-        bad.graph = Some(
-            bad.graph
-                .clone()
-                .unwrap()
-                .edit(&Change::Bind(
-                    shading,
-                    "hits".into(),
-                    Target::New(Role::Draw, "raster".into()),
-                ))
-                .unwrap(),
-        );
+        bad.graph = Some(bad.graph.clone().unwrap().edit(&Change::Bind(shading, "hits".into(), Target::New(Role::Draw, "raster".into()))).unwrap());
         let why = model::refusal(&bad).expect("refused");
         assert!(why.contains("`draw`"), "{why}");
         let draw = |plan: &mut Plan| {
-            let (mut text, mut restart, mut trials, mut open) =
-                (vec![], None, crate::gui::graph::Trials::default(), None);
-            let mut ectx = EditorCtx {
-                infos: &[],
-                block_names: &[],
-                camera: None,
-                option_text: &mut text,
-                restart_lane: &mut restart,
-                live: false,
-                trials: &mut trials,
-                open_graph: &mut open,
-            };
+            let (mut text, mut restart, mut trials, mut open) = (vec![], None, crate::gui::graph::Trials::default(), None);
+            let mut ectx = EditorCtx { infos: &[], block_names: &[], camera: None, option_text: &mut text, restart_lane: &mut restart, live: false, trials: &mut trials, open_graph: &mut open };
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
                 renderers(ui, plan, &mut ectx);
             });
@@ -1279,20 +817,10 @@ mod refused_tests {
         };
         plan.renderers = vec![good];
         let all = draw(&mut plan);
-        assert!(
-            !all.iter().any(|t| t.starts_with("⚠")),
-            "a renderer that runs is not marked: {all:?}"
-        );
+        assert!(!all.iter().any(|t| t.starts_with("⚠")), "a renderer that runs is not marked: {all:?}");
         plan.renderers = vec![bad];
         let all = draw(&mut plan);
-        assert!(
-            all.iter()
-                .any(|t| t.starts_with("⚠ does not run: ") && t.contains("`draw`")),
-            "the reason on the renderer: {all:?}"
-        );
-        assert!(
-            all.iter().any(|t| t == "⚠ draw"),
-            "the node it names marked in its rows: {all:?}"
-        );
+        assert!(all.iter().any(|t| t.starts_with("⚠ does not run: ") && t.contains("`draw`")), "the reason on the renderer: {all:?}");
+        assert!(all.iter().any(|t| t == "⚠ draw"), "the node it names marked in its rows: {all:?}");
     }
 }

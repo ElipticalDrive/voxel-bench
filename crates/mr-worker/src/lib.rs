@@ -6,11 +6,7 @@
 use mr_core::{RendererEntry, RendererInfo};
 
 pub fn registry() -> Vec<RendererEntry> {
-    vec![
-        mr_reference::entry(),
-        mr_exec_cpu::entry(),
-        mr_exec_gpu::entry(),
-    ]
+    vec![mr_reference::entry(), mr_exec_cpu::entry(), mr_exec_gpu::entry()]
 }
 
 /// The standalone renderers (a pipeline's info is its graph's: the host asks the executor

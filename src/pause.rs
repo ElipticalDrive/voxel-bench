@@ -22,12 +22,7 @@ impl std::error::Error for Paused {}
 
 fn file() -> Option<&'static PathBuf> {
     static FILE: OnceLock<Option<PathBuf>> = OnceLock::new();
-    FILE.get_or_init(|| {
-        std::env::var_os("MR_PAUSE_FILE")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    })
-    .as_ref()
+    FILE.get_or_init(|| std::env::var_os("MR_PAUSE_FILE").filter(|v| !v.is_empty()).map(PathBuf::from)).as_ref()
 }
 
 /// Whether a pause is asked for now.
@@ -42,9 +37,7 @@ pub fn is(e: &anyhow::Error) -> bool {
 
 /// Waits while a pause is asked for.
 pub fn hold() {
-    let Some(f) = file().filter(|f| f.exists()) else {
-        return;
-    };
+    let Some(f) = file().filter(|f| f.exists()) else { return };
     let held = PathBuf::from(format!("{}.held", f.display()));
     let why = std::fs::read_to_string(f).unwrap_or_default();
     tracing::info!("paused ({}: {}); waiting", f.display(), why.trim());

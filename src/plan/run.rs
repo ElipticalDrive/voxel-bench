@@ -72,11 +72,7 @@ impl Default for Watchdog {
     fn default() -> Self {
         // A first build may compile shaders and stream a whole world on a slow software device;
         // a frame twenty times the slowest seen is no longer a slow frame.
-        Self {
-            build_s: 300.0,
-            factor: 20.0,
-            min_s: 2.0,
-        }
+        Self { build_s: 300.0, factor: 20.0, min_s: 2.0 }
     }
 }
 

@@ -61,11 +61,7 @@ pub enum Animation {
         period: u32,
     },
     /// Circle around `center` (default: the mesh's position) in the horizontal plane.
-    Orbit {
-        center: Option<[f64; 3]>,
-        radius: f64,
-        period: u32,
-    },
+    Orbit { center: Option<[f64; 3]>, radius: f64, period: u32 },
     /// Move up and down by `amplitude`.
     Bob { amplitude: f64, period: u32 },
 }
@@ -74,14 +70,7 @@ fn up() -> [f64; 3] {
     [0.0, 1.0, 0.0]
 }
 
-const PALETTE: [[f32; 3]; 6] = [
-    [0.85, 0.25, 0.2],
-    [0.2, 0.55, 0.9],
-    [0.95, 0.75, 0.15],
-    [0.6, 0.3, 0.8],
-    [0.9, 0.9, 0.9],
-    [0.2, 0.75, 0.45],
-];
+const PALETTE: [[f32; 3]; 6] = [[0.85, 0.25, 0.2], [0.2, 0.55, 0.9], [0.95, 0.75, 0.15], [0.6, 0.3, 0.8], [0.9, 0.9, 0.9], [0.2, 0.75, 0.45]];
 
 fn srgb8(c: Vec3) -> [u8; 4] {
     let q = |x: f32| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
@@ -110,9 +99,7 @@ pub fn build(spec: &MeshSpec, id: u32) -> MeshData {
                 for (su, sv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
                     let p = *nrm + *u * su + *v * sv;
                     positions.push((p * 0.75).to_array());
-                    colors.push(srgb8(
-                        base * (0.7 + 0.05 * k as f32 + 0.15 * (p.y + 1.0) * 0.5),
-                    ));
+                    colors.push(srgb8(base * (0.7 + 0.05 * k as f32 + 0.15 * (p.y + 1.0) * 0.5)));
                 }
                 indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
             }
@@ -159,21 +146,12 @@ pub fn build(spec: &MeshSpec, id: u32) -> MeshData {
             }
         }
     }
-    MeshData {
-        id,
-        positions,
-        colors,
-        indices,
-    }
+    MeshData { id, positions, colors, indices }
 }
 
 /// All mesh geometry of a scene, one entry per spec (ids = spec index).
 pub fn build_all(specs: &[MeshSpec]) -> Vec<Arc<MeshData>> {
-    specs
-        .iter()
-        .enumerate()
-        .map(|(i, s)| Arc::new(build(s, i as u32)))
-        .collect()
+    specs.iter().enumerate().map(|(i, s)| Arc::new(build(s, i as u32))).collect()
 }
 
 /// Every instance at `frame`.
@@ -182,51 +160,24 @@ pub fn instances(specs: &[MeshSpec], frame: u32) -> Vec<MeshInstance> {
     for (mi, s) in specs.iter().enumerate() {
         for c in 0..s.count.max(1) {
             let r = |k: i32| unit(hash3(s.seed, mi as i32, c as i32, k)) as f64 * 2.0 - 1.0;
-            let home = DVec3::from_array(s.position)
-                + DVec3::new(r(0), r(1), r(2)) * DVec3::from_array(s.spread);
+            let home = DVec3::from_array(s.position) + DVec3::new(r(0), r(1), r(2)) * DVec3::from_array(s.spread);
             // Copies start their animations at different phases.
-            let phase = if s.count > 1 {
-                unit(hash3(s.seed, mi as i32, c as i32, 7)) as f64
-            } else {
-                0.0
-            };
+            let phase = if s.count > 1 { unit(hash3(s.seed, mi as i32, c as i32, 7)) as f64 } else { 0.0 };
             let mut position = home;
             let mut rotation = DQuat::IDENTITY;
             for a in &s.animate {
-                let t = |period: u32| {
-                    std::f64::consts::TAU * (frame as f64 / period.max(1) as f64 + phase)
-                };
+                let t = |period: u32| std::f64::consts::TAU * (frame as f64 / period.max(1) as f64 + phase);
                 match a {
-                    Animation::Spin { axis, period } => {
-                        rotation =
-                            DQuat::from_axis_angle(DVec3::from_array(*axis).normalize(), t(*period))
-                                * rotation
-                    }
-                    Animation::Orbit {
-                        center,
-                        radius,
-                        period,
-                    } => {
+                    Animation::Spin { axis, period } => rotation = DQuat::from_axis_angle(DVec3::from_array(*axis).normalize(), t(*period)) * rotation,
+                    Animation::Orbit { center, radius, period } => {
                         let cen = center.map(DVec3::from_array).unwrap_or(home);
                         let a = t(*period);
-                        position = DVec3::new(
-                            cen.x + radius * a.cos(),
-                            position.y,
-                            cen.z + radius * a.sin(),
-                        );
+                        position = DVec3::new(cen.x + radius * a.cos(), position.y, cen.z + radius * a.sin());
                     }
-                    Animation::Bob { amplitude, period } => {
-                        position.y += amplitude * t(*period).sin()
-                    }
+                    Animation::Bob { amplitude, period } => position.y += amplitude * t(*period).sin(),
                 }
             }
-            out.push(MeshInstance {
-                id: out.len() as u32,
-                mesh: mi as u32,
-                position,
-                rotation,
-                scale: s.scale,
-            });
+            out.push(MeshInstance { id: out.len() as u32, mesh: mi as u32, position, rotation, scale: s.scale });
         }
     }
     out
@@ -237,17 +188,7 @@ mod tests {
     use super::*;
 
     fn spec(shape: Shape) -> MeshSpec {
-        MeshSpec {
-            shape,
-            position: [0.0; 3],
-            scale: 1.0,
-            color: None,
-            detail: 12,
-            count: 1,
-            spread: [0.0; 3],
-            seed: 0,
-            animate: vec![],
-        }
+        MeshSpec { shape, position: [0.0; 3], scale: 1.0, color: None, detail: 12, count: 1, spread: [0.0; 3], seed: 0, animate: vec![] }
     }
 
     /// Shapes are well formed: indices in range, triangles non-degenerate, radius ~1.
@@ -266,27 +207,14 @@ mod tests {
             if shape != Shape::Sphere {
                 assert_eq!(degenerate.count(), 0, "{shape:?}");
             }
-            assert!(
-                m.radius() > 0.9 && m.radius() < 1.5,
-                "{shape:?} radius {}",
-                m.radius()
-            );
+            assert!(m.radius() > 0.9 && m.radius() < 1.5, "{shape:?} radius {}", m.radius());
         }
     }
 
     #[test]
     fn animation_is_deterministic_and_moves() {
         let mut s = spec(Shape::Torus);
-        s.animate = vec![
-            Animation::Spin {
-                axis: [0.0, 1.0, 0.0],
-                period: 60,
-            },
-            Animation::Bob {
-                amplitude: 2.0,
-                period: 40,
-            },
-        ];
+        s.animate = vec![Animation::Spin { axis: [0.0, 1.0, 0.0], period: 60 }, Animation::Bob { amplitude: 2.0, period: 40 }];
         s.count = 3;
         s.spread = [5.0, 0.0, 5.0];
         let a = instances(&[s.clone()], 10);

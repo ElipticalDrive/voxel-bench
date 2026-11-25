@@ -20,10 +20,7 @@
 //! source's WGSL, the depth buffer.
 
 use glam::IVec3;
-use mr_components::draw::{
-    self,
-    drawer::{DrawMode, DrawNodes, DrawerSpec, FaceDrawer},
-};
+use mr_components::draw::{self, drawer::{DrawMode, DrawNodes, DrawerSpec, FaceDrawer}};
 use mr_components::graph::{self, Device, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state::{self as shade_state};
@@ -41,22 +38,12 @@ pub(crate) mod mesh;
 /// The region for graph `g`: meshing when the drawer's faces are every meshed face (the `faces`
 /// visibility), else discovery on the visibility node's device (on the CPU in `cpu_world`'s
 /// storage when a compiled pipeline names one).
-pub(crate) fn create(
-    p: &InitParams,
-    devices: &Devices,
-    waker: Waker,
-    g: &graph::Checked,
-    cpu_world: Option<fn() -> mr_components::visibility::discover::grid::CpuWorld>,
-) -> anyhow::Result<Box<dyn Renderer>> {
-    let faces = g
-        .input(Role::Draw, "faces")
-        .ok_or_else(|| anyhow::anyhow!("the drawer's faces are not bound"))?;
+pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, cpu_world: Option<fn() -> mr_components::visibility::discover::grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
+    let faces = g.input(Role::Draw, "faces").ok_or_else(|| anyhow::anyhow!("the drawer's faces are not bound"))?;
     if g.node(faces).component == "faces" {
         return mesh::create(p, devices, waker, g);
     }
-    let vis = g
-        .find(Role::Visibility)
-        .ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
+    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
     match g.devices[vis] {
         Device::Cpu => cpu::create(p, devices, waker, g, cpu_world),
         Device::Gpu(_) => gpu::create(p, devices, waker, g),
@@ -174,29 +161,11 @@ struct DrawParts<'a> {
 
 impl DrawParts<'_> {
     fn module(&self, label: &str, rest: &str) -> wgpu::ShaderModule {
-        Self::compile(
-            self.gpu,
-            label,
-            self.program,
-            self.deps,
-            &format!("{}\n{rest}", self.draw_src),
-        )
+        Self::compile(self.gpu, label, self.program, self.deps, &format!("{}\n{rest}", self.draw_src))
     }
 
-    fn compile(
-        gpu: &Gpu,
-        label: &str,
-        program: &mr_gpu::program::Program,
-        deps: &[String],
-        root: &str,
-    ) -> wgpu::ShaderModule {
-        mr_gpu::program::compile(
-            &gpu.device,
-            label,
-            program,
-            root,
-            &deps.iter().map(String::as_str).collect::<Vec<_>>(),
-        )
+    fn compile(gpu: &Gpu, label: &str, program: &mr_gpu::program::Program, deps: &[String], root: &str) -> wgpu::ShaderModule {
+        mr_gpu::program::compile(&gpu.device, label, program, root, &deps.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
     /// A deferred drawer's shade module for frames with meshes, when the source draws them:
@@ -205,58 +174,27 @@ impl DrawParts<'_> {
     fn mesh_shade_module(&self, mode: DrawMode, lit: bool) -> Option<wgpu::ShaderModule> {
         let m = self.meshed?;
         let vis = draw_wgsl(mode, self.shading, self.gpu.device.features());
-        Some(Self::compile(
-            self.gpu,
-            "face drawer with meshes",
-            if lit { &m.program } else { &m.rays_voxels },
-            &m.deps,
-            &format!("{}\n{vis}", self.draw_src),
-        ))
+        Some(Self::compile(self.gpu, "face drawer with meshes", if lit { &m.program } else { &m.rays_voxels }, &m.deps, &format!("{}\n{vis}", self.draw_src)))
     }
 
     /// The face drawer for `draw` (the draw component's WGSL over `draw_src`; forward
     /// drawing shades in the fragment shader). A deferred drawer's shade passes for frames
     /// with meshes are added when a frame needs them ([`Draw::mesh_shade`]).
     fn drawer(&self, draw: &str) -> anyhow::Result<FaceDrawer> {
-        let mode = DrawMode::parse(draw).ok_or_else(|| {
-            anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`")
-        })?;
+        let mode = DrawMode::parse(draw).ok_or_else(|| anyhow::anyhow!("draw must be raster, visbuffer or gbuffer, not `{draw}`"))?;
         let (vis, shade) = if self.draw_only {
             // Only `pack_hit` records cross between GPUs: a gbuffer's target, a visbuffer's
             // ids decoded into the hits edge's records (they decode with their faces).
             let target = draw::target_wgsl(mode.name()).ok_or_else(|| anyhow::anyhow!("the shading on another GPU shades hit records: draw = gbuffer or visbuffer, not `{draw}`"))?;
             match mode {
-                DrawMode::Visbuffer => (
-                    format!(
-                        "{target}\n{}",
-                        crate::exec::Hits::store_wgsl(0, crate::RECORDS_BINDING)
-                    ),
-                    Some("decode"),
-                ),
+                DrawMode::Visbuffer => (format!("{target}\n{}", crate::exec::Hits::store_wgsl(0, crate::RECORDS_BINDING)), Some("decode")),
                 _ => (target.to_string(), None),
             }
         } else {
-            (
-                draw_wgsl(mode, self.shading, self.gpu.device.features()),
-                Some("shade"),
-            )
+            (draw_wgsl(mode, self.shading, self.gpu.device.features()), Some("shade"))
         };
         let module = self.module("face drawer", &vis);
-        FaceDrawer::new(
-            self.gpu,
-            &DrawerSpec {
-                module: &module,
-                render_layout: self.pl_draw,
-                shade_layout: self.pl_shade,
-                strip: self.strip,
-                format: self.format,
-                shade,
-            },
-            mode,
-            self.images,
-            self.width,
-            self.height,
-        )
+        FaceDrawer::new(self.gpu, &DrawerSpec { module: &module, render_layout: self.pl_draw, shade_layout: self.pl_shade, strip: self.strip, format: self.format, shade }, mode, self.images, self.width, self.height)
     }
 }
 
@@ -274,16 +212,10 @@ fn hits_form(draw: &str, draw_only: bool) -> Option<crate::exec::Form> {
 /// A draw-only visbuffer's id target (`None` for any other drawing: its target is the hits
 /// edge's).
 fn own_ids(gpu: &Gpu, draw: &str, draw_only: bool, w: u32, h: u32) -> Option<wgpu::TextureView> {
-    let format = DrawMode::parse(draw)
-        .filter(|m| draw_only && *m == DrawMode::Visbuffer)?
-        .target()?;
+    let format = DrawMode::parse(draw).filter(|m| draw_only && *m == DrawMode::Visbuffer)?.target()?;
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("visibility ids"),
-        size: wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -298,39 +230,19 @@ fn own_ids(gpu: &Gpu, draw: &str, draw_only: bool, w: u32, h: u32) -> Option<wgp
 /// drawing in the fragment shader (on a device with `features`).
 fn draw_wgsl(mode: DrawMode, shading: &str, features: wgpu::Features) -> String {
     let vis = draw::gpu_wgsl(mode.name()).unwrap();
-    if mode.deferred() {
-        vis.to_string()
-    } else {
-        shade_state::fragment_wgsl(shading, vis, "fs", features)
-    }
+    if mode.deferred() { vis.to_string() } else { shade_state::fragment_wgsl(shading, vis, "fs", features) }
 }
 
 /// The walks' program for a source's sites (discovery rays, exposure, shadow, bounce) with
 /// the shading component `shading` (its state in group 0) and the root's dependencies; with
 /// meshes (the mesh-shadow site's walk) also the mesh capability's variant, the triangles in
 /// the images group.
-fn programs(
-    walks: &Walks,
-    lead: Option<(usize, usize)>,
-    lookup: Option<usize>,
-    [shadow, bounce]: [usize; 2],
-    meshes: Option<usize>,
-    shading: &str,
-) -> (mr_gpu::program::Program, Vec<String>, Option<Meshed>) {
+fn programs(walks: &Walks, lead: Option<(usize, usize)>, lookup: Option<usize>, [shadow, bounce]: [usize; 2], meshes: Option<usize>, shading: &str) -> (mr_gpu::program::Program, Vec<String>, Option<Meshed>) {
     use mr_components::shaders;
     let (mut program, sites) = shaders::sites_program(walks, lead, shadow, bounce);
     // The shading's rays are the sites' (`sites_program`: `rays::shadow`, `rays::bounce`).
-    shaders::shading(
-        &mut program,
-        shading,
-        &["rays::shadow", "rays::bounce"],
-        0,
-        crate::STATE_BINDING,
-    );
-    let mut deps = lookup
-        .map(|st| walks.storage_path(st))
-        .into_iter()
-        .collect::<Vec<_>>();
+    shaders::shading(&mut program, shading, &["rays::shadow", "rays::bounce"], 0, crate::STATE_BINDING);
+    let mut deps = lookup.map(|st| walks.storage_path(st)).into_iter().collect::<Vec<_>>();
     if lookup.is_some() {
         program.define("LOOKUP");
     }
@@ -338,35 +250,10 @@ fn programs(
     deps.extend(sites);
     let meshed = meshes.map(|mesh_shadow| {
         let (mut rays_voxels, mut deps) = (program.clone(), deps.clone());
-        deps.splice(
-            0..0,
-            shaders::meshes(
-                &mut rays_voxels,
-                walks,
-                shading,
-                [shadow, bounce],
-                mesh_shadow,
-                3,
-                2,
-                false,
-            ),
-        );
+        deps.splice(0..0, shaders::meshes(&mut rays_voxels, walks, shading, [shadow, bounce], mesh_shadow, 3, 2, false));
         let mut program = program.clone();
-        shaders::meshes(
-            &mut program,
-            walks,
-            shading,
-            [shadow, bounce],
-            mesh_shadow,
-            3,
-            2,
-            true,
-        );
-        Meshed {
-            program,
-            rays_voxels,
-            deps,
-        }
+        shaders::meshes(&mut program, walks, shading, [shadow, bounce], mesh_shadow, 3, 2, true);
+        Meshed { program, rays_voxels, deps }
     });
     (program, deps, meshed)
 }
@@ -374,23 +261,14 @@ fn programs(
 /// The walks' program of a draw-only drawing (the shading on another GPU): no shading, no
 /// shadow or bounce rays; the discovery rays' kernel and exposure storage (`lead`) and the
 /// merged faces' lookup storage only. Returns the program and the root's dependencies.
-fn draw_program(
-    walks: &Walks,
-    lead: Option<(usize, usize)>,
-    lookup: Option<usize>,
-) -> (mr_gpu::program::Program, Vec<String>) {
+fn draw_program(walks: &Walks, lead: Option<(usize, usize)>, lookup: Option<usize>) -> (mr_gpu::program::Program, Vec<String>) {
     let mut program = mr_gpu::program::Program::world(None);
     walks.add_to(&mut program);
-    let mut deps = lookup
-        .map(|st| walks.storage_path(st))
-        .into_iter()
-        .collect::<Vec<_>>();
+    let mut deps = lookup.map(|st| walks.storage_path(st)).into_iter().collect::<Vec<_>>();
     if lookup.is_some() {
         program.define("LOOKUP");
     }
-    deps.extend(lead.map_or(vec![], |(k, st)| {
-        vec![walks.kernel_path(k), walks.storage_path(st)]
-    }));
+    deps.extend(lead.map_or(vec![], |(k, st)| vec![walks.kernel_path(k), walks.storage_path(st)]));
     deps.extend([mr_gpu::program::VOXELS, mr_gpu::program::COMMON].map(String::from));
     (program, deps)
 }
@@ -399,28 +277,14 @@ fn draw_program(
 /// face drawer's vertex stage (the shading component and its state are modules of the
 /// program).
 fn draw_src(source: &str, varyings: bool) -> String {
-    format!(
-        "{}\n{source}\n{}",
-        include_str!("frame.wgsl"),
-        draw::faces_wgsl(varyings)
-    )
+    format!("{}\n{source}\n{}", include_str!("frame.wgsl"), draw::faces_wgsl(varyings))
 }
 
 /// The forward mesh passes' root: the frame as the meshes' camera, then `mesh.wgsl` with
 /// `SHADE` (the fragments shaded through `shade_mesh`; stateful shading once per pixel).
 fn mesh_src(shading: &str, features: wgpu::Features) -> String {
-    let frame =
-        "fn mesh_frame() -> MeshFrame { return MeshFrame(fr.view_proj, fr.cam_frac, fr.mode); }\n";
-    shade_state::fragment_wgsl(
-        shading,
-        &format!(
-            "{}\n{frame}{}",
-            include_str!("frame.wgsl"),
-            mr_gpu::meshes::MESH_WGSL
-        ),
-        "mesh_fs",
-        features,
-    )
+    let frame = "fn mesh_frame() -> MeshFrame { return MeshFrame(fr.view_proj, fr.cam_frac, fr.mode); }\n";
+    shade_state::fragment_wgsl(shading, &format!("{}\n{frame}{}", include_str!("frame.wgsl"), mr_gpu::meshes::MESH_WGSL), "mesh_fs", features)
 }
 
 impl Meshed {
@@ -433,19 +297,11 @@ impl Meshed {
 }
 
 fn depth_view(gpu: &Gpu, w: u32, h: u32, read: bool) -> wgpu::TextureView {
-    let read = if read {
-        wgpu::TextureUsages::TEXTURE_BINDING
-    } else {
-        wgpu::TextureUsages::empty()
-    };
+    let read = if read { wgpu::TextureUsages::TEXTURE_BINDING } else { wgpu::TextureUsages::empty() };
     gpu.device
         .create_texture(&wgpu::TextureDescriptor {
             label: Some("depth"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -458,23 +314,11 @@ fn depth_view(gpu: &Gpu, w: u32, h: u32, read: bool) -> wgpu::TextureView {
 }
 
 /// The core and the drawing for a face source's spec.
-fn new(
-    p: &InitParams,
-    devices: &Devices,
-    waker: Waker,
-    g: &graph::Checked,
-    o: &CoreOpts,
-    depth_prepass: bool,
-    src: SourceSpec,
-) -> anyhow::Result<(Core, Draw, Option<crate::remote::Far>)> {
+fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &CoreOpts, depth_prepass: bool, src: SourceSpec) -> anyhow::Result<(Core, Draw, Option<crate::remote::Far>)> {
     // The shading on another GPU: the drawer draws its target only.
     let draw_only = crate::remote::far_slot(g).is_some();
     let spec = CoreSpec {
-        gpu: GpuNeeds {
-            experimental: false,
-            required_features: src.features,
-            optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE,
-        },
+        gpu: GpuNeeds { experimental: false, required_features: src.features, optional_features: wgpu::Features::TIMESTAMP_QUERY | shade_state::FRAGMENT_FEATURE },
         walks: &src.walks,
         accel: crate::accel::AccelSpec::of(g, &src.walks)?,
         stages: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -497,17 +341,12 @@ fn new(
     let shading = o.shading.to_string();
     // The walks' modules: the roots cast through the discovery rays' kernel and read the
     // exposure storage; shading's rays through theirs.
-    anyhow::ensure!(
-        !(draw_only && src.draw_meshes),
-        "meshes drawn with the faces are not split over two GPUs yet (the shading on another GPU)"
-    );
+    anyhow::ensure!(!(draw_only && src.draw_meshes), "meshes drawn with the faces are not split over two GPUs yet (the shading on another GPU)");
     let (mut program, deps, mut meshed) = if draw_only {
         let (program, deps) = draw_program(&src.walks, src.lead, src.lookup);
         (program, deps, None)
     } else {
-        programs(
-            &src.walks, src.lead, src.lookup, src.sites, src.meshes, &shading,
-        )
+        programs(&src.walks, src.lead, src.lookup, src.sites, src.meshes, &shading)
     };
     // Ray queries at the sites: their bindings and trace in every root.
     core.bind_program(&mut program, "0u");
@@ -519,11 +358,7 @@ fn new(
     let buf = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
+        ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
         count: None,
     };
     // The core's group 0 (the camera, the shading state, the acceleration structures; the
@@ -532,44 +367,15 @@ fn new(
     let mut entries = core.layout_entries_with(false);
     entries.retain(|e| e.binding != crate::view::QUANTITY_BINDING);
     entries.extend([buf(crate::REGION_BINDING), buf(crate::REGION_BINDING + 1)]);
-    let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("face draw"),
-        entries: &entries,
-    });
+    let layout_draw = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("face draw"), entries: &entries });
     let images = FaceDrawer::images_layout(dev, meshed.is_some(), core.output_format());
-    let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("face draw"),
-        bind_group_layouts: &core
-            .storages
-            .layouts(&[Some(&layout_draw), Some(core.world.layout())]),
-        immediate_size: 0,
-    });
+    let pl_draw = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("face draw"), bind_group_layouts: &core.storages.layouts(&[Some(&layout_draw), Some(core.world.layout())]), immediate_size: 0 });
     let pl_shade = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("face deferred shade"),
-        bind_group_layouts: &core.storages.layouts(&[
-            Some(&layout_draw),
-            Some(core.world.layout()),
-            None,
-            Some(&images),
-        ]),
+        bind_group_layouts: &core.storages.layouts(&[Some(&layout_draw), Some(core.world.layout()), None, Some(&images)]),
         immediate_size: 0,
     });
-    let parts = DrawParts {
-        gpu,
-        program: &program,
-        deps: &deps,
-        meshed: meshed.as_ref().filter(|_| src.draw_meshes),
-        strip: src.strip,
-        draw_src: &draw_src,
-        shading: &shading,
-        pl_draw: &pl_draw,
-        pl_shade: &pl_shade,
-        images: &images,
-        width: p.width,
-        height: p.height,
-        format: core.output_format(),
-        draw_only,
-    };
+    let parts = DrawParts { gpu, program: &program, deps: &deps, meshed: meshed.as_ref().filter(|_| src.draw_meshes), strip: src.strip, draw_src: &draw_src, shading: &shading, pl_draw: &pl_draw, pl_shade: &pl_shade, images: &images, width: p.width, height: p.height, format: core.output_format(), draw_only };
     let drawer = parts.drawer(o.draw)?;
     let draw = Draw {
         drawer,
@@ -600,22 +406,7 @@ fn new(
 impl Draw {
     fn parts<'a>(&'a self, core: &'a Core) -> DrawParts<'a> {
         let meshed = self.meshed.as_ref().filter(|_| self.draw_meshes);
-        DrawParts {
-            gpu: &core.gpu,
-            program: &self.program,
-            deps: &self.deps,
-            meshed,
-            strip: self.strip,
-            draw_src: &self.draw_src,
-            shading: &self.shading,
-            pl_draw: &self.pl_draw,
-            pl_shade: &self.pl_shade,
-            images: &self.images,
-            width: core.width,
-            height: core.height,
-            format: core.output_format(),
-            draw_only: self.draw_only,
-        }
+        DrawParts { gpu: &core.gpu, program: &self.program, deps: &self.deps, meshed, strip: self.strip, draw_src: &self.draw_src, shading: &self.shading, pl_draw: &self.pl_draw, pl_shade: &self.pl_shade, images: &self.images, width: core.width, height: core.height, format: core.output_format(), draw_only: self.draw_only }
     }
 
     /// A module over the walks: `draw_src` plus `rest` (the GPU sampler's own raster entry
@@ -631,9 +422,7 @@ impl Draw {
     /// The deferred drawer's target this frame (`DrawFrame::ids`): its own (a draw-only
     /// visbuffer's ids) or the hits edge's.
     fn ids<'a>(&'a self, core: &'a Core) -> Option<&'a wgpu::TextureView> {
-        self.ids
-            .as_ref()
-            .or_else(|| core.edges.hits().map(|h| h.view()))
+        self.ids.as_ref().or_else(|| core.edges.hits().map(|h| h.view()))
     }
 
     /// Adds a deferred drawer's shade pass for frames that draw meshes, `lit` or unlit, the
@@ -642,18 +431,12 @@ impl Draw {
         if !self.drawer.lacks_mesh_shade(lit) {
             return Ok(());
         }
-        let scope = core
-            .gpu
-            .device
-            .push_error_scope(wgpu::ErrorFilter::Validation);
+        let scope = core.gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
         if let Some(module) = self.parts(core).mesh_shade_module(self.drawer.mode(), lit) {
             self.drawer.add_mesh_shade(&core.gpu, lit, &module);
         }
         if let Some(e) = pollster::block_on(scope.pop()) {
-            anyhow::bail!(
-                "compiling the {} drawer's shading with meshes: {e}",
-                self.drawer.mode().name()
-            );
+            anyhow::bail!("compiling the {} drawer's shading with meshes: {e}", self.drawer.mode().name());
         }
         Ok(())
     }
@@ -663,26 +446,13 @@ impl Draw {
     /// layout.
     fn mesh_module(&self, core: &Core) -> Option<wgpu::ShaderModule> {
         let m = self.meshed.as_ref()?;
-        Some(DrawParts::compile(
-            &core.gpu,
-            "forward meshes",
-            &m.forward(),
-            &m.deps,
-            &mesh_src(&self.shading, core.gpu.device.features()),
-        ))
+        Some(DrawParts::compile(&core.gpu, "forward meshes", &m.forward(), &m.deps, &mesh_src(&self.shading, core.gpu.device.features())))
     }
 
     /// Recompiles the drawer for a new face source WGSL (`strip`: its primitive), shading
     /// (also the shading state's) and whether frames draw meshes; returns whether the shading
     /// state's bindings changed (the source's draw bind group is then stale).
-    fn rebuild(
-        &mut self,
-        core: &mut Core,
-        source: String,
-        strip: bool,
-        shading: &str,
-        meshes: bool,
-    ) -> anyhow::Result<bool> {
+    fn rebuild(&mut self, core: &mut Core, source: String, strip: bool, shading: &str, meshes: bool) -> anyhow::Result<bool> {
         let rebound = core.accum.set_shading(&core.gpu, shading);
         self.shading = shading.to_string();
         self.draw_src = draw_src(&source, self.varyings);
@@ -698,23 +468,8 @@ impl Draw {
     fn bind(&self, core: &Core, a: &wgpu::Buffer, b: &wgpu::Buffer) -> wgpu::BindGroup {
         let mut entries = core.bind_entries_with(None);
         entries.retain(|e| e.binding != crate::view::QUANTITY_BINDING);
-        entries.extend([
-            wgpu::BindGroupEntry {
-                binding: crate::REGION_BINDING,
-                resource: a.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: crate::REGION_BINDING + 1,
-                resource: b.as_entire_binding(),
-            },
-        ]);
-        core.gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("face draw"),
-                layout: &self.layout_draw,
-                entries: &entries,
-            })
+        entries.extend([wgpu::BindGroupEntry { binding: crate::REGION_BINDING, resource: a.as_entire_binding() }, wgpu::BindGroupEntry { binding: crate::REGION_BINDING + 1, resource: b.as_entire_binding() }]);
+        core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("face draw"), layout: &self.layout_draw, entries: &entries })
     }
 
     /// Writes the core's camera uniform for `c` (`anchor`: the CPU records' origin).
@@ -725,31 +480,15 @@ impl Draw {
     /// Lit `stateful` shading drawn forward may update its state once per pixel only
     /// (`painter`: the sampler's drawing order, if it has that knob).
     fn check_state(&self, mode: RenderMode, painter: Option<bool>) -> anyhow::Result<()> {
-        if !self.drawer.mode().deferred()
-            && shade_state::stateful(&self.shading)
-            && mode == RenderMode::Lit
-            && (painter == Some(true) || !self.depth_prepass)
-        {
-            let order = if painter.is_some() {
-                "order = depth and "
-            } else {
-                ""
-            };
-            anyhow::bail!(
-                "`{}` shading with draw = raster needs {order}depth_prepass in lit mode (exactly one fragment per pixel may update its state)",
-                self.shading
-            );
+        if !self.drawer.mode().deferred() && shade_state::stateful(&self.shading) && mode == RenderMode::Lit && (painter == Some(true) || !self.depth_prepass) {
+            let order = if painter.is_some() { "order = depth and " } else { "" };
+            anyhow::bail!("`{}` shading with draw = raster needs {order}depth_prepass in lit mode (exactly one fragment per pixel may update its state)", self.shading);
         }
         Ok(())
     }
 
     /// The drawing's knobs; `None` if `name` is not one.
-    fn set_param(
-        &mut self,
-        _core: &mut Core,
-        name: &str,
-        value: &ParamValue,
-    ) -> Option<anyhow::Result<()>> {
+    fn set_param(&mut self, _core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         Some(match name {
             "depth_prepass" => {
                 self.depth_prepass = value.as_bool().unwrap_or(true);
@@ -761,24 +500,17 @@ impl Draw {
 
     /// The drawer replaced while running (drawing only: the face set is unaffected); `None`
     /// if `s` is not the drawer.
-    fn switch(
-        &mut self,
-        core: &mut Core,
-        s: &mr_components::graph::Switch,
-    ) -> Option<anyhow::Result<()>> {
+    fn switch(&mut self, core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
         let draw = s.component.as_deref().filter(|_| s.role == Role::Draw)?;
         // Split: the transfer and the second GPU keep the edge's form (refused live: the
         // session builds the pipeline anew).
         let form = hits_form(draw, self.draw_only);
         if self.draw_only && form != hits_form(&self.draw, true) {
-            return Some(Err(anyhow::anyhow!(
-                "the hits edge between the two GPUs changes form with draw = {draw}"
-            )));
+            return Some(Err(anyhow::anyhow!("the hits edge between the two GPUs changes form with draw = {draw}")));
         }
         // The drawer's target is the hits edge's resource: remade in the new drawer's form.
         Some(self.drawer(core, draw).and_then(|d| {
-            core.edges
-                .set_hits(&core.gpu, core.width, core.height, form)?;
+            core.edges.set_hits(&core.gpu, core.width, core.height, form)?;
             self.drawer = d;
             self.draw = draw.into();
             Ok(())
@@ -787,13 +519,7 @@ impl Draw {
 
     fn resize(&mut self, core: &Core) {
         self.depth = depth_view(&core.gpu, core.width, core.height, self.depth_read);
-        self.ids = own_ids(
-            &core.gpu,
-            &self.draw,
-            self.draw_only,
-            core.width,
-            core.height,
-        );
+        self.ids = own_ids(&core.gpu, &self.draw, self.draw_only, core.width, core.height);
         self.drawer.resize(core.width, core.height);
     }
 
@@ -812,74 +538,31 @@ mod tests {
     /// raster's fragment stage with the sampler's own entry points) composes and validates
     /// over `program`, and over the mesh capability's variant where deferred drawers have it;
     /// with meshes, the forward mesh passes too.
-    pub(crate) fn drawers(
-        program: &mr_gpu::program::Program,
-        deps: &[String],
-        meshed: Option<&super::Meshed>,
-        draw_src: &str,
-        shading: &str,
-        what: &str,
-        draws: &[&str],
-        draw_only: (
-            &mr_components::shaders::Walks,
-            Option<(usize, usize)>,
-            Option<usize>,
-        ),
-    ) {
+    pub(crate) fn drawers(program: &mr_gpu::program::Program, deps: &[String], meshed: Option<&super::Meshed>, draw_src: &str, shading: &str, what: &str, draws: &[&str], draw_only: (&mr_components::shaders::Walks, Option<(usize, usize)>, Option<usize>)) {
         use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
-        let check =
-            |program: &mr_gpu::program::Program, deps: &[String], root: &str, what: &str| {
-                let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
-                let m = program
-                    .naga(root, &deps)
-                    .unwrap_or_else(|e| panic!("{what}: {e}"));
-                Validator::new(ValidationFlags::all(), Capabilities::all())
-                    .validate(&m)
-                    .unwrap_or_else(|e| panic!("{what}: {e:?}"));
-            };
+        let check = |program: &mr_gpu::program::Program, deps: &[String], root: &str, what: &str| {
+            let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+            let m = program.naga(root, &deps).unwrap_or_else(|e| panic!("{what}: {e}"));
+            Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        };
         assert!(!draws.is_empty(), "{what}: no drawer");
         for d in draws {
             let mode = DrawMode::parse(d).unwrap();
-            let root = format!(
-                "{draw_src}\n{}",
-                super::draw_wgsl(
-                    mode,
-                    shading,
-                    mr_components::shading::state::FRAGMENT_FEATURE
-                )
-            );
+            let root = format!("{draw_src}\n{}", super::draw_wgsl(mode, shading, mr_components::shading::state::FRAGMENT_FEATURE));
             check(program, deps, &root, &format!("drawer {what} {d}"));
             if let Some(m) = meshed.filter(|_| mode.deferred()) {
-                check(
-                    &m.program,
-                    &m.deps,
-                    &root,
-                    &format!("drawer with meshes {what} {d}"),
-                );
+                check(&m.program, &m.deps, &root, &format!("drawer with meshes {what} {d}"));
             }
         }
         // Draw-only (the shading on another GPU): the deferred drawers' targets alone.
         let (walks, lead, lookup) = draw_only;
         let (program, deps) = super::draw_program(walks, lead, lookup);
         let store = crate::exec::Hits::store_wgsl(0, crate::RECORDS_BINDING);
-        for d in draws
-            .iter()
-            .filter_map(|d| mr_components::draw::target_wgsl(d))
-        {
-            check(
-                &program,
-                &deps,
-                &format!("{draw_src}\n{d}\n{store}"),
-                &format!("draw-only {what}"),
-            );
+        for d in draws.iter().filter_map(|d| mr_components::draw::target_wgsl(d)) {
+            check(&program, &deps, &format!("{draw_src}\n{d}\n{store}"), &format!("draw-only {what}"));
         }
         if let Some(m) = meshed {
-            check(
-                &m.forward(),
-                &m.deps,
-                &super::mesh_src(shading, mr_components::shading::state::FRAGMENT_FEATURE),
-                &format!("forward meshes {what}"),
-            );
+            check(&m.forward(), &m.deps, &super::mesh_src(shading, mr_components::shading::state::FRAGMENT_FEATURE), &format!("forward meshes {what}"));
         }
     }
 
@@ -894,39 +577,15 @@ mod tests {
         assert!(storages.len() > 1, "{storages:?}");
         for st in storages {
             for shading in ["direct", "pathtrace"] {
-                let bounce = (shading == "pathtrace")
-                    .then(|| Change::bind("shading", "bounce", "shadow.kernel"));
-                let edits: Vec<Change> = [
-                    Change::component("shadow.storage", st),
-                    Change::component("shading", shading),
-                ]
-                .into_iter()
-                .chain(bounce)
-                .collect();
+                let bounce = (shading == "pathtrace").then(|| Change::bind("shading", "bounce", "shadow.kernel"));
+                let edits: Vec<Change> = [Change::component("shadow.storage", st), Change::component("shading", shading)].into_iter().chain(bounce).collect();
                 let ck = base.with_edits(&edits).unwrap().check().unwrap();
                 let mut walks = Walks::of(&ck);
                 let groups = &[2, 4];
-                let shadow = walks.site(
-                    &ck,
-                    ck.site(Role::Shading, "shadow").unwrap(),
-                    groups,
-                    false,
-                );
-                let bounce = ck
-                    .site(Role::Shading, "bounce")
-                    .map_or(shadow, |s| walks.site(&ck, s, groups, false));
-                let (program, deps, _) =
-                    super::programs(&walks, None, None, [shadow, bounce], None, shading);
-                drawers(
-                    &program,
-                    &deps,
-                    None,
-                    &super::draw_src(include_str!("records.wgsl"), true),
-                    shading,
-                    &format!("discover-cpu {st} {shading}"),
-                    &base.choices("draw"),
-                    (&walks, None, None),
-                );
+                let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), groups, false);
+                let bounce = ck.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(&ck, s, groups, false));
+                let (program, deps, _) = super::programs(&walks, None, None, [shadow, bounce], None, shading);
+                drawers(&program, &deps, None, &super::draw_src(include_str!("records.wgsl"), true), shading, &format!("discover-cpu {st} {shading}"), &base.choices("draw"), (&walks, None, None));
             }
         }
     }

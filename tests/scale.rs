@@ -30,18 +30,11 @@ save = {{ every = 0 }}
         d.join("out").to_str().unwrap(),
     );
     std::fs::write(d.join("plan.toml"), plan).unwrap();
-    let o = Command::new(env!("CARGO_BIN_EXE_multirenderer"))
-        .arg("run")
-        .arg(d.join("plan.toml"))
-        .env("MR_GPU_LIMITS", "sizes")
-        .env("RUST_LOG", "warn")
-        .output()
-        .unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_multirenderer")).arg("run").arg(d.join("plan.toml")).env("MR_GPU_LIMITS", "sizes").env("RUST_LOG", "warn").output().unwrap();
     let log = String::from_utf8_lossy(&o.stderr).into_owned() + &String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success(), "the run failed:\n{log}");
     let report = walk(&d.join("out")).unwrap_or_else(|| panic!("no report:\n{log}"));
-    let r: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(report).unwrap()).unwrap();
+    let r: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(report).unwrap()).unwrap();
     r[0]["error"].as_str().map(str::to_string)
 }
 
@@ -70,8 +63,5 @@ fn clipmap_past_its_texture_is_refused_naming_the_limit() {
 edits = [{ node = "storage", component = "clipmap" }]"#;
     assert_eq!(lane_error(&dir, clipmap, 31), None);
     let e = lane_error(&dir, clipmap, 32).expect("radius 32 rendered");
-    assert!(
-        e.contains("max_texture_dimension_3d") && e.contains("radius of 31 at most"),
-        "{e}"
-    );
+    assert!(e.contains("max_texture_dimension_3d") && e.contains("radius of 31 at most"), "{e}");
 }

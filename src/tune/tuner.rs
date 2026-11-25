@@ -5,18 +5,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use mr_core::{ParamSpec, ParamValue};
 
 use super::config::NEVER_TUNED;
-use super::{
-    Action, Algorithm, Eval, Goal, HistoryPoint, Phase, PointKind, QualityMetric, Stage, Tuner,
-    TunerConfig, q,
-};
+use super::{Action, Algorithm, Eval, Goal, HistoryPoint, Phase, PointKind, QualityMetric, Stage, Tuner, TunerConfig, q};
 
 impl Tuner {
-    pub fn new(
-        cfg: TunerConfig,
-        specs: Vec<ParamSpec>,
-        values: BTreeMap<String, ParamValue>,
-        now: f64,
-    ) -> Self {
+    pub fn new(cfg: TunerConfig, specs: Vec<ParamSpec>, values: BTreeMap<String, ParamValue>, now: f64) -> Self {
         let steps = specs.iter().map(|s| (s.name.clone(), 0.15)).collect();
         let mut t = Self {
             cfg,
@@ -42,12 +34,7 @@ impl Tuner {
             accepted: 0,
             bo: None,
         };
-        t.note(format!(
-            "started: {:?} (quality = {}) via {:?}",
-            t.cfg.goal,
-            t.cfg.metric.name(),
-            t.cfg.algorithm
-        ));
+        t.note(format!("started: {:?} (quality = {}) via {:?}", t.cfg.goal, t.cfg.metric.name(), t.cfg.algorithm));
         t
     }
 
@@ -72,9 +59,7 @@ impl Tuner {
 
     /// Short description of the best result: score, fps and quality.
     pub fn best_summary(&self) -> Option<String> {
-        self.best
-            .as_ref()
-            .map(|(_, e)| format!("score {:.2} · {:.0} fps{}", e.score, e.fps, q(e.psnr)))
+        self.best.as_ref().map(|(_, e)| format!("score {:.2} · {:.0} fps{}", e.score, e.fps, q(e.psnr)))
     }
 
     pub fn holding(&self) -> bool {
@@ -83,19 +68,11 @@ impl Tuner {
 
     pub fn status(&self) -> String {
         if let Stage::Hold { violations, .. } = self.stage {
-            return if violations > 0 {
-                format!("holding best · goal off-target {violations}/3 checks")
-            } else {
-                "holding best · watching for changes".into()
-            };
+            return if violations > 0 { format!("holding best · goal off-target {violations}/3 checks") } else { "holding best · watching for changes".into() };
         }
         if let Some(bo) = &self.bo {
             return match bo.predicted {
-                Some((f, p)) => format!(
-                    "exploring · evaluation {} (model predicts {f:.0} fps{})",
-                    bo.evals + 1,
-                    q(p)
-                ),
+                Some((f, p)) => format!("exploring · evaluation {} (model predicts {f:.0} fps{})", bo.evals + 1, q(p)),
                 None => format!("exploring · evaluation {}", bo.evals + 1),
             };
         }
@@ -105,11 +82,7 @@ impl Tuner {
         match &self.phase {
             Phase::Baseline if self.incumbent.is_none() => "measuring baseline".into(),
             Phase::Baseline => "re-measuring the current best".into(),
-            Phase::Trial { knob, value, .. } => format!(
-                "exploring · trying {knob} = {} ({} without improvement)",
-                value.display(),
-                self.stale
-            ),
+            Phase::Trial { knob, value, .. } => format!("exploring · trying {knob} = {} ({} without improvement)", value.display(), self.stale),
             Phase::Reverting => "reverting a rejected trial".into(),
         }
     }
@@ -137,9 +110,7 @@ impl Tuner {
     /// (Completion intervals are useless: GPU renderers with several frames in flight
     /// complete them in bursts.)
     pub(super) fn measure(&self) -> (f64, f64) {
-        let (Some(&a), Some(&b)) = (self.times.first(), self.times.last()) else {
-            return (0.0, 0.0);
-        };
+        let (Some(&a), Some(&b)) = (self.times.first(), self.times.last()) else { return (0.0, 0.0) };
         if b <= a {
             return (0.0, 0.0);
         }
@@ -158,12 +129,7 @@ impl Tuner {
 
     pub(super) fn evaluate(&self) -> Eval {
         let (fps, noise) = self.measure();
-        Eval {
-            score: self.cfg.goal.score(fps, self.psnr),
-            fps,
-            noise,
-            psnr: self.psnr,
-        }
+        Eval { score: self.cfg.goal.score(fps, self.psnr), fps, noise, psnr: self.psnr }
     }
 
     /// Required improvement over `best`: the goal's margin or the measurement noise
@@ -184,39 +150,16 @@ impl Tuner {
     }
 
     pub(super) fn tunable(&self) -> Vec<ParamSpec> {
-        self.specs
-            .iter()
-            .filter(|s| {
-                !self.cfg.locked.contains(&s.name)
-                    && !NEVER_TUNED.contains(&s.name.as_str())
-                    && (s.live || self.cfg.allow_restart)
-            })
-            .cloned()
-            .collect()
+        self.specs.iter().filter(|s| !self.cfg.locked.contains(&s.name) && !NEVER_TUNED.contains(&s.name.as_str()) && (s.live || self.cfg.allow_restart)).cloned().collect()
     }
 
     fn knob_snapshot(&self) -> Vec<(String, f64)> {
-        self.tunable()
-            .iter()
-            .map(|s| {
-                (
-                    s.name.clone(),
-                    crate::bayes::encode(s, self.values.get(&s.name).unwrap_or(&s.default)),
-                )
-            })
-            .collect()
+        self.tunable().iter().map(|s| (s.name.clone(), crate::bayes::encode(s, self.values.get(&s.name).unwrap_or(&s.default)))).collect()
     }
 
     pub(super) fn push_history(&mut self, now: f64, e: &Eval, kind: PointKind) {
         let knobs = self.knob_snapshot();
-        self.history.push(HistoryPoint {
-            t: now,
-            score: e.score,
-            fps: e.fps,
-            psnr: e.psnr,
-            kind,
-            knobs,
-        });
+        self.history.push(HistoryPoint { t: now, score: e.score, fps: e.fps, psnr: e.psnr, kind, knobs });
     }
 
     pub(super) fn set(&mut self, name: &str, v: ParamValue, now: f64) -> Action {
@@ -227,20 +170,12 @@ impl Tuner {
 
     /// Applies a whole configuration (only the differences).
     pub(super) fn apply(&mut self, target: &BTreeMap<String, ParamValue>, now: f64) -> Action {
-        let changes: Vec<(String, ParamValue)> = target
-            .iter()
-            .filter(|(k, v)| self.values.get(*k) != Some(v))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let changes: Vec<(String, ParamValue)> = target.iter().filter(|(k, v)| self.values.get(*k) != Some(v)).map(|(k, v)| (k.clone(), v.clone())).collect();
         for (k, v) in &changes {
             self.values.insert(k.clone(), v.clone());
         }
         self.restart_phase(now);
-        if changes.is_empty() {
-            Action::Idle
-        } else {
-            Action::Set(changes)
-        }
+        if changes.is_empty() { Action::Idle } else { Action::Set(changes) }
     }
 
     /// Restart the current measurement (call while the system is in flux: hot swaps,
@@ -287,11 +222,7 @@ impl Tuner {
 
     pub(super) fn collapsed(&self, now: f64) -> bool {
         match self.cfg.goal {
-            Goal::MaxQualityAtFps { fps } => {
-                now - self.phase_start > self.cfg.settle_s + 0.3
-                    && self.times.len() >= 5
-                    && self.measure().0 < fps * 0.5
-            }
+            Goal::MaxQualityAtFps { fps } => now - self.phase_start > self.cfg.settle_s + 0.3 && self.times.len() >= 5 && self.measure().0 < fps * 0.5,
             _ => false,
         }
     }
@@ -305,11 +236,7 @@ impl Tuner {
         }
         if let Some((_, b)) = &self.best {
             // An unmet goal earns three times the patience before giving up on it.
-            let patience = if self.cfg.goal.satisfied(b.fps, b.psnr) {
-                self.cfg.patience
-            } else {
-                self.cfg.patience * 3
-            };
+            let patience = if self.cfg.goal.satisfied(b.fps, b.psnr) { self.cfg.patience } else { self.cfg.patience * 3 };
             if self.cfg.patience > 0 && self.stale >= patience {
                 return self.settle(now);
             }
@@ -323,15 +250,8 @@ impl Tuner {
     /// Converged: apply the best configuration and start watching it.
     fn settle(&mut self, now: f64) -> Action {
         let (values, _) = self.best.clone().unwrap();
-        self.note(format!(
-            "settled after {} trials without improvement: {}",
-            self.stale,
-            self.best_summary().unwrap_or_default()
-        ));
-        self.stage = Stage::Hold {
-            violations: 0,
-            windows: 0,
-        };
+        self.note(format!("settled after {} trials without improvement: {}", self.stale, self.best_summary().unwrap_or_default()));
+        self.stage = Stage::Hold { violations: 0, windows: 0 };
         self.phase = Phase::Baseline;
         self.apply(&values, now)
     }
@@ -339,18 +259,10 @@ impl Tuner {
     /// Holding: re-measure the best configuration; resume exploring if the goal is
     /// violated or the result degraded for three consecutive checks.
     fn watch(&mut self, now: f64) -> Action {
-        let Stage::Hold {
-            violations,
-            windows,
-        } = self.stage
-        else {
-            return Action::Idle;
-        };
+        let Stage::Hold { violations, windows } = self.stage else { return Action::Idle };
         // Quality is only re-probed every third check (probes cost reference time).
         let needs_q = self.cfg.goal.needs_quality() && windows % 3 == 0;
-        if now - self.phase_start < self.cfg.settle_s + self.cfg.window_s.max(1.0)
-            || self.times.len() < 4
-        {
+        if now - self.phase_start < self.cfg.settle_s + self.cfg.window_s.max(1.0) || self.times.len() < 4 {
             return Action::Idle;
         }
         if needs_q && self.psnr.is_none() {
@@ -363,15 +275,8 @@ impl Tuner {
         let best = self.best.as_ref().map(|b| b.1.clone()).unwrap();
         let (fps, noise) = self.measure();
         let psnr = self.psnr.or(best.psnr);
-        let e = Eval {
-            score: self.cfg.goal.score(fps, psnr),
-            fps,
-            noise,
-            psnr,
-        };
-        let off = !self.cfg.goal.satisfied(fps, psnr)
-            && self.cfg.goal.satisfied(best.fps, best.psnr)
-            || e.score < best.score - self.cfg.goal.degradation(best.score);
+        let e = Eval { score: self.cfg.goal.score(fps, psnr), fps, noise, psnr };
+        let off = !self.cfg.goal.satisfied(fps, psnr) && self.cfg.goal.satisfied(best.fps, best.psnr) || e.score < best.score - self.cfg.goal.degradation(best.score);
         self.push_history(now, &e, PointKind::Hold);
         let violations = if off { violations + 1 } else { 0 };
         if !off {
@@ -385,10 +290,7 @@ impl Tuner {
             }
         }
         if violations >= 3 {
-            self.note(format!(
-                "conditions changed ({fps:.0} fps{}): exploring again from the best known settings",
-                q(psnr)
-            ));
+            self.note(format!("conditions changed ({fps:.0} fps{}): exploring again from the best known settings", q(psnr)));
             self.stage = Stage::Explore;
             self.stale = 0;
             self.rejected.clear();
@@ -401,11 +303,9 @@ impl Tuner {
             self.restart_phase(now);
             return Action::Idle;
         }
-        self.stage = Stage::Hold {
-            violations,
-            windows: windows + 1,
-        };
+        self.stage = Stage::Hold { violations, windows: windows + 1 };
         self.restart_phase(now);
         Action::Idle
     }
+
 }

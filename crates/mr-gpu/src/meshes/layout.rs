@@ -62,16 +62,7 @@ pub struct Header {
 
 impl Header {
     pub fn words(&self) -> [u32; HEAD] {
-        [
-            self.blas,
-            self.instances,
-            self.instance_count,
-            self.tlas,
-            self.items,
-            self.triangles,
-            0,
-            0,
-        ]
+        [self.blas, self.instances, self.instance_count, self.tlas, self.items, self.triangles, 0, 0]
     }
 }
 
@@ -115,11 +106,7 @@ impl Shapes {
                 .map(|t| {
                     let p: [Vec3; 3] = t.map(|k| Vec3::from_array(m.positions[k as usize]));
                     let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
-                    std::array::from_fn(|k| Vertex {
-                        pos: p[k].to_array(),
-                        color: m.colors[t[k] as usize],
-                        normal: n.to_array(),
-                    })
+                    std::array::from_fn(|k| Vertex { pos: p[k].to_array(), color: m.colors[t[k] as usize], normal: n.to_array() })
                 })
                 .collect();
             if tris.is_empty() {
@@ -127,23 +114,10 @@ impl Shapes {
             }
             let root = build_bvh(&mut tris, &mut nodes, 0, &bounds);
             let (lo, hi) = (nodes[root].lo, nodes[root].hi);
-            spans.insert(
-                id,
-                Span {
-                    first_vertex: verts.len() as u32,
-                    tris: tris.len() as u32,
-                    root: root as u32,
-                    lo,
-                    hi,
-                },
-            );
+            spans.insert(id, Span { first_vertex: verts.len() as u32, tris: tris.len() as u32, root: root as u32, lo, hi });
             verts.extend(tris.into_iter().flatten());
         }
-        Self {
-            spans,
-            verts,
-            nodes: node_words(&nodes),
-        }
+        Self { spans, verts, nodes: node_words(&nodes) }
     }
 
     /// Where the BLAS nodes start (words).
@@ -163,10 +137,7 @@ impl Shapes {
 
     /// [`Self::place`] with at most `limit` triangles placed.
     fn place_within(&self, instances: &[MeshInstance], origin: DVec3, limit: usize) -> Placed {
-        let mut order: Vec<(&MeshInstance, Span)> = instances
-            .iter()
-            .filter_map(|i| self.spans.get(&i.mesh).map(|s| (i, *s)))
-            .collect();
+        let mut order: Vec<(&MeshInstance, Span)> = instances.iter().filter_map(|i| self.spans.get(&i.mesh).map(|s| (i, *s))).collect();
         order.sort_by_key(|(i, _)| i.mesh);
         let mut table = vec![];
         let mut boxes = vec![];
@@ -177,30 +148,17 @@ impl Shapes {
                 dropped += s.tris as usize;
                 continue;
             }
-            let m = DMat4::from_scale_rotation_translation(
-                DVec3::splat(inst.scale),
-                inst.rotation,
-                inst.position - origin,
-            );
+            let m = DMat4::from_scale_rotation_translation(DVec3::splat(inst.scale), inst.rotation, inst.position - origin);
             let k = (table.len() / INST_WORDS) as u32;
             let mut w = [0u32; INST_WORDS];
             rows(&m, &mut w[..12]);
             rows(&m.inverse(), &mut w[INST_INVERSE..INST_INVERSE + 12]);
-            (
-                w[INST_ROOT],
-                w[INST_FIRST_VERTEX],
-                w[INST_BASE],
-                w[INST_TRIS],
-            ) = (s.root, s.first_vertex, base, s.tris);
+            (w[INST_ROOT], w[INST_FIRST_VERTEX], w[INST_BASE], w[INST_TRIS]) = (s.root, s.first_vertex, base, s.tris);
             table.extend_from_slice(&w);
             boxes.push(world_box(&m, s.lo, s.hi));
             match draws.last_mut() {
                 Some(d) if d.first_vertex == s.first_vertex => d.instances.end = k + 1,
-                _ => draws.push(Draw {
-                    first_vertex: s.first_vertex,
-                    vertices: s.tris * 3,
-                    instances: k..k + 1,
-                }),
+                _ => draws.push(Draw { first_vertex: s.first_vertex, vertices: s.tris * 3, instances: k..k + 1 }),
             }
             base += s.tris;
         }
@@ -222,12 +180,7 @@ impl Shapes {
         let mut words = table;
         words.extend(tlas);
         words.extend(items);
-        Placed {
-            header,
-            words,
-            draws,
-            dropped,
-        }
+        Placed { header, words, draws, dropped }
     }
 }
 
@@ -264,11 +217,7 @@ fn rows(m: &DMat4, out: &mut [u32]) {
 fn world_box(m: &DMat4, lo: DVec3, hi: DVec3) -> (DVec3, DVec3) {
     let (mut a, mut b) = (DVec3::INFINITY, DVec3::NEG_INFINITY);
     for k in 0..8 {
-        let c = DVec3::new(
-            if k & 1 == 0 { lo.x } else { hi.x },
-            if k & 2 == 0 { lo.y } else { hi.y },
-            if k & 4 == 0 { lo.z } else { hi.z },
-        );
+        let c = DVec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z });
         let p = m.transform_point3(c);
         (a, b) = (a.min(p), b.max(p));
     }
@@ -285,11 +234,7 @@ fn node_words(nodes: &[BvhNode]) -> Vec<u32> {
             w[i] = down(n.lo[i]).to_bits();
             w[3 + i] = up(n.hi[i]).to_bits();
         }
-        (w[6], w[7]) = if n.leaf {
-            (n.a as u32, (n.b - n.a) as u32)
-        } else {
-            (n.a as u32, n.b as u32 | (n.axis as u32) << 29 | 1 << 31)
-        };
+        (w[6], w[7]) = if n.leaf { (n.a as u32, (n.b - n.a) as u32) } else { (n.a as u32, n.b as u32 | (n.axis as u32) << 29 | 1 << 31) };
     }
     words
 }
@@ -332,52 +277,24 @@ mod tests {
                 positions.extend((0..3).map(|_| (c + r.v(0.6)).to_array()));
             }
             let colors = vec![[200, 100, 50, 255]; positions.len()];
-            meshes.insert(
-                id,
-                Arc::new(MeshData {
-                    id,
-                    positions,
-                    colors,
-                    indices: (0..3 * n as u32).collect(),
-                }),
-            );
+            meshes.insert(id, Arc::new(MeshData { id, positions, colors, indices: (0..3 * n as u32).collect() }));
         }
         // An empty mesh and an instance of a mesh never sent: neither is placed.
-        meshes.insert(
-            5,
-            Arc::new(MeshData {
-                id: 5,
-                positions: vec![],
-                colors: vec![],
-                indices: vec![],
-            }),
-        );
+        meshes.insert(5, Arc::new(MeshData { id: 5, positions: vec![], colors: vec![], indices: vec![] }));
         let mut instances = vec![];
         for id in 0..14u32 {
             let mesh = [11, 3, 7, 11, 5, 3, 99][id as usize % 7];
             let axis = r.v(1.0).as_dvec3().normalize_or(DVec3::Y);
             let rotation = DQuat::from_axis_angle(axis, r.f(3.0) as f64);
             let position = DVec3::new(1000.0, 64.0, -2000.0) + r.v(9.0).as_dvec3();
-            instances.push(MeshInstance {
-                id,
-                mesh,
-                position,
-                rotation,
-                scale: 0.5 + r.f(1.0).abs() as f64 * 1.5,
-            });
+            instances.push(MeshInstance { id, mesh, position, rotation, scale: 0.5 + r.f(1.0).abs() as f64 * 1.5 });
         }
         (meshes, instances)
     }
 
     /// The whole buffer, as the GPU gets it.
     fn buffer(shapes: &Shapes, placed: &Placed) -> Vec<u32> {
-        [
-            &placed.header.words()[..],
-            bytemuck::cast_slice(&shapes.verts),
-            &shapes.nodes,
-            &placed.words,
-        ]
-        .concat()
+        [&placed.header.words()[..], bytemuck::cast_slice(&shapes.verts), &shapes.nodes, &placed.words].concat()
     }
 
     fn f(buf: &[u32], w: u32) -> f32 {
@@ -412,9 +329,7 @@ mod tests {
 
     /// Row-major 3x4 at word `w`, applied to (`p`, `one`).
     fn apply(buf: &[u32], w: u32, p: Vec3, one: f32) -> Vec3 {
-        Vec3::from_array(std::array::from_fn(|r| {
-            v3(buf, w + 4 * r as u32).dot(p) + f(buf, w + 4 * r as u32 + 3) * one
-        }))
+        Vec3::from_array(std::array::from_fn(|r| v3(buf, w + 4 * r as u32).dot(p) + f(buf, w + 4 * r as u32 + 3) * one))
     }
 
     /// The slab test of node word `w` against a ray, up to `max_t`.
@@ -429,15 +344,7 @@ mod tests {
 
     /// Walks a BVH whose nodes start at word `nodes`, from `root`; `leaf(first, count, best)`
     /// tests a leaf's items, lowering `best`.
-    fn walk(
-        buf: &[u32],
-        nodes: u32,
-        root: u32,
-        o: Vec3,
-        d: Vec3,
-        best: &mut (f32, Option<u32>),
-        leaf: &mut dyn FnMut(u32, u32, &mut (f32, Option<u32>)),
-    ) {
+    fn walk(buf: &[u32], nodes: u32, root: u32, o: Vec3, d: Vec3, best: &mut (f32, Option<u32>), leaf: &mut dyn FnMut(u32, u32, &mut (f32, Option<u32>))) {
         let inv = safe_inv(d);
         let mut stack = vec![root];
         while let Some(k) = stack.pop() {
@@ -448,11 +355,7 @@ mod tests {
             let (a, b) = (buf[w as usize + 6], buf[w as usize + 7]);
             if b & 1 << 31 != 0 {
                 let second = b & 0x1fff_ffff;
-                let (near, far) = if d[(b >> 29 & 3) as usize] < 0.0 {
-                    (second, a)
-                } else {
-                    (a, second)
-                };
+                let (near, far) = if d[(b >> 29 & 3) as usize] < 0.0 { (second, a) } else { (a, second) };
                 stack.extend([far, near]);
             } else {
                 leaf(a, b, best);
@@ -473,12 +376,8 @@ mod tests {
             for item in a..a + n {
                 let i = buf[(h[4] + item) as usize];
                 let iw = h[1] + INST_WORDS as u32 * i;
-                let (lo, ld) = (
-                    apply(buf, iw + INST_INVERSE as u32, o, 1.0),
-                    apply(buf, iw + INST_INVERSE as u32, d, 0.0),
-                );
-                let [root, first, base] =
-                    [INST_ROOT, INST_FIRST_VERTEX, INST_BASE].map(|k| buf[iw as usize + k]);
+                let (lo, ld) = (apply(buf, iw + INST_INVERSE as u32, o, 1.0), apply(buf, iw + INST_INVERSE as u32, d, 0.0));
+                let [root, first, base] = [INST_ROOT, INST_FIRST_VERTEX, INST_BASE].map(|k| buf[iw as usize + k]);
                 walk(buf, h[0], root, lo, ld, best, &mut |a, n, best| {
                     for t in a..a + n {
                         let v = HEAD as u32 + (first + 3 * t) * VERT_WORDS as u32;
@@ -501,11 +400,7 @@ mod tests {
         let (mut lo, mut hi) = (0, h[2]);
         while hi - lo > 1 {
             let mid = (lo + hi) / 2;
-            if buf[(h[1] + INST_WORDS as u32 * mid) as usize + INST_BASE] <= tri {
-                lo = mid
-            } else {
-                hi = mid
-            }
+            if buf[(h[1] + INST_WORDS as u32 * mid) as usize + INST_BASE] <= tri { lo = mid } else { hi = mid }
         }
         lo
     }
@@ -514,51 +409,22 @@ mod tests {
     /// by the instance's matrix (as `mesh_surface` will decode a record).
     fn decode(buf: &[u32], tri: u32) -> [Vec3; 3] {
         let iw = buf[1] + INST_WORDS as u32 * instance_of(buf, tri);
-        let (first, base) = (
-            buf[iw as usize + INST_FIRST_VERTEX],
-            buf[iw as usize + INST_BASE],
-        );
-        [0, 1, 2].map(|k| {
-            apply(
-                buf,
-                iw,
-                v3(
-                    buf,
-                    HEAD as u32 + (first + 3 * (tri - base) + k) * VERT_WORDS as u32,
-                ),
-                1.0,
-            )
-        })
+        let (first, base) = (buf[iw as usize + INST_FIRST_VERTEX], buf[iw as usize + INST_BASE]);
+        [0, 1, 2].map(|k| apply(buf, iw, v3(buf, HEAD as u32 + (first + 3 * (tri - base) + k) * VERT_WORDS as u32), 1.0))
     }
 
     /// Every placed triangle in camera-block-relative space, transformed in f64 from the
     /// meshes themselves (independent of the buffer), by global id, with their instance's
     /// table index; in the table's order (instances by mesh, then as given), each mesh's
     /// triangles as given.
-    fn world_tris(
-        meshes: &HashMap<u32, Arc<MeshData>>,
-        instances: &[MeshInstance],
-        origin: DVec3,
-    ) -> Vec<[Vec3; 3]> {
-        let mut sorted: Vec<&MeshInstance> = instances
-            .iter()
-            .filter(|i| meshes.get(&i.mesh).is_some_and(|m| !m.indices.is_empty()))
-            .collect();
+    fn world_tris(meshes: &HashMap<u32, Arc<MeshData>>, instances: &[MeshInstance], origin: DVec3) -> Vec<[Vec3; 3]> {
+        let mut sorted: Vec<&MeshInstance> = instances.iter().filter(|i| meshes.get(&i.mesh).is_some_and(|m| !m.indices.is_empty())).collect();
         sorted.sort_by_key(|i| i.mesh);
         let mut out = vec![];
         for i in sorted {
             let m = &meshes[&i.mesh];
-            let x = DMat4::from_scale_rotation_translation(
-                DVec3::splat(i.scale),
-                i.rotation,
-                i.position - origin,
-            );
-            out.extend(m.indices.as_chunks::<3>().0.iter().map(|t| {
-                t.map(|k| {
-                    x.transform_point3(Vec3::from_array(m.positions[k as usize]).as_dvec3())
-                        .as_vec3()
-                })
-            }));
+            let x = DMat4::from_scale_rotation_translation(DVec3::splat(i.scale), i.rotation, i.position - origin);
+            out.extend(m.indices.as_chunks::<3>().0.iter().map(|t| t.map(|k| x.transform_point3(Vec3::from_array(m.positions[k as usize]).as_dvec3()).as_vec3())));
         }
         out
     }
@@ -576,36 +442,18 @@ mod tests {
         let buf = buffer(&shapes, &placed);
         let tris = world_tris(&meshes, &instances, origin);
         assert_eq!(placed.header.triangles as usize, tris.len());
-        assert_eq!(
-            placed.header.instance_count, 10,
-            "the empty mesh's and the unknown mesh's instances are left out"
-        );
+        assert_eq!(placed.header.instance_count, 10, "the empty mesh's and the unknown mesh's instances are left out");
         let (mut hits, mut grazes) = (0, 0);
         for _ in 0..3000 {
             let o = r.v(16.0);
             let d = (r.v(8.0) - o).normalize();
             let max_t = 5.0 + r.f(1.0).abs() * 30.0;
-            let all: Vec<(f32, u32)> = tris
-                .iter()
-                .enumerate()
-                .map(|(i, p)| (tri_t(*p, o, d), i as u32))
-                .filter(|&(t, _)| t > 1e-4 && t < max_t)
-                .collect();
+            let all: Vec<(f32, u32)> = tris.iter().enumerate().map(|(i, p)| (tri_t(*p, o, d), i as u32)).filter(|&(t, _)| t > 1e-4 && t < max_t).collect();
             let brute = all.iter().copied().min_by(|a, b| a.0.total_cmp(&b.0));
             // Grazing: a near-tie, or an edge within rounding of the ray.
-            let graze = |p: [Vec3; 3]| {
-                tri_t(p.map(|v| v + Vec3::splat(2e-4)), o, d) > 0.0
-                    && tri_t(p.map(|v| v - Vec3::splat(2e-4)), o, d) < 0.0
-                    || tri_t(p.map(|v| v - Vec3::splat(2e-4)), o, d) > 0.0
-                        && tri_t(p.map(|v| v + Vec3::splat(2e-4)), o, d) < 0.0
-            };
-            if tris.iter().any(|p| graze(*p))
-                || all
-                    .iter()
-                    .filter(|h| brute.is_some_and(|b| h.0 - b.0 < 1e-3))
-                    .count()
-                    > 1
-            {
+            let graze = |p: [Vec3; 3]| tri_t(p.map(|v| v + Vec3::splat(2e-4)), o, d) > 0.0 && tri_t(p.map(|v| v - Vec3::splat(2e-4)), o, d) < 0.0
+                || tri_t(p.map(|v| v - Vec3::splat(2e-4)), o, d) > 0.0 && tri_t(p.map(|v| v + Vec3::splat(2e-4)), o, d) < 0.0;
+            if tris.iter().any(|p| graze(*p)) || all.iter().filter(|h| brute.is_some_and(|b| h.0 - b.0 < 1e-3)).count() > 1 {
                 grazes += 1;
                 continue;
             }
@@ -616,17 +464,8 @@ mod tests {
                     // Ids name triangles in their BLAS's order: compare the triangle the id
                     // decodes to (its instance by the bases, moved by the table's matrix).
                     let p = decode(&buf, i);
-                    assert!(
-                        p.iter()
-                            .zip(tris[bi as usize])
-                            .all(|(a, b)| a.distance(b) < 1e-3),
-                        "ray {o} {d}: triangle {p:?} vs {:?}",
-                        tris[bi as usize]
-                    );
-                    assert!(
-                        (t - bt).abs() < 1e-3 * bt.max(1.0),
-                        "ray {o} {d}: t {t} vs {bt}"
-                    );
+                    assert!(p.iter().zip(tris[bi as usize]).all(|(a, b)| a.distance(b) < 1e-3), "ray {o} {d}: triangle {p:?} vs {:?}", tris[bi as usize]);
+                    assert!((t - bt).abs() < 1e-3 * bt.max(1.0), "ray {o} {d}: t {t} vs {bt}");
                     hits += 1;
                 }
                 _ => panic!("ray {o} {d}: two-level {got:?}, brute force {brute:?}"),
@@ -649,19 +488,13 @@ mod tests {
         let h = placed.header;
         for tri in 0..h.triangles {
             let w = (h.instances + INST_WORDS as u32 * instance_of(&buf, tri)) as usize;
-            assert!(
-                buf[w + INST_BASE] <= tri && tri < buf[w + INST_BASE] + buf[w + INST_TRIS],
-                "triangle {tri}"
-            );
+            assert!(buf[w + INST_BASE] <= tri && tri < buf[w + INST_BASE] + buf[w + INST_TRIS], "triangle {tri}");
         }
         let mut seen = vec![];
         for d in &placed.draws {
             for i in d.instances.clone() {
                 let w = (h.instances + INST_WORDS as u32 * i) as usize;
-                assert_eq!(
-                    (buf[w + INST_FIRST_VERTEX], buf[w + INST_TRIS] * 3),
-                    (d.first_vertex, d.vertices)
-                );
+                assert_eq!((buf[w + INST_FIRST_VERTEX], buf[w + INST_TRIS] * 3), (d.first_vertex, d.vertices));
                 seen.push(i);
             }
         }
@@ -678,25 +511,10 @@ mod tests {
     fn too_many_triangles_drops_whole_instances() {
         let n = 30;
         let positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let m = MeshData {
-            id: 1,
-            colors: vec![[0; 4]; 3],
-            positions,
-            indices: [0, 1, 2].repeat(n),
-        };
+        let m = MeshData { id: 1, colors: vec![[0; 4]; 3], positions, indices: [0, 1, 2].repeat(n) };
         let shapes = Shapes::build(&HashMap::from([(1, Arc::new(m))]));
-        let inst = |id| MeshInstance {
-            id,
-            mesh: 1,
-            position: DVec3::ZERO,
-            rotation: DQuat::IDENTITY,
-            scale: 1.0,
-        };
-        let placed = shapes.place_within(
-            &[inst(0), inst(1), inst(2), inst(3)],
-            DVec3::ZERO,
-            2 * n + n / 2,
-        );
+        let inst = |id| MeshInstance { id, mesh: 1, position: DVec3::ZERO, rotation: DQuat::IDENTITY, scale: 1.0 };
+        let placed = shapes.place_within(&[inst(0), inst(1), inst(2), inst(3)], DVec3::ZERO, 2 * n + n / 2);
         assert_eq!(placed.header.instance_count, 2);
         assert_eq!(placed.header.triangles as usize, 2 * n);
         assert_eq!(placed.dropped, 2 * n);

@@ -41,11 +41,7 @@ const FAULT_ENV: &str = "MR_GUI_FAULT";
 static LOST: Mutex<Option<String>> = Mutex::new(None);
 /// What a hand-over needs, kept current every frame: the plan file and, when it has unsaved
 /// changes, the plan; and the faults the fresh GUI gets.
-static KEEP: Mutex<Keep> = Mutex::new(Keep {
-    plan_path: None,
-    unsaved: None,
-    faults: String::new(),
-});
+static KEEP: Mutex<Keep> = Mutex::new(Keep { plan_path: None, unsaved: None, faults: String::new() });
 
 struct Keep {
     plan_path: Option<PathBuf>,
@@ -98,35 +94,17 @@ impl GuiGpu {
             s.device.on_uncaptured_error(Arc::new(move |err| {
                 // Errors after the loss are its echo, not news.
                 if LOST.lock().unwrap().is_none() {
-                    e.lock().unwrap().push(
-                        err.to_string()
-                            .lines()
-                            .take(6)
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                    );
+                    e.lock().unwrap().push(err.to_string().lines().take(6).collect::<Vec<_>>().join(" "));
                     c.request_repaint();
                 }
             }));
         }
-        GuiGpu {
-            device: state.map(|s| s.device.clone()),
-            errors,
-            faults: faults(),
-            since: Instant::now(),
-            unseen: false,
-        }
+        GuiGpu { device: state.map(|s| s.device.clone()), errors, faults: faults(), since: Instant::now(), unseen: false }
     }
 
     /// Once per frame, with what a hand-over would need: injected faults, then what the device
     /// reported.
-    pub fn poll(
-        &mut self,
-        ctx: &egui::Context,
-        plan_path: &Option<PathBuf>,
-        unsaved: Option<&Plan>,
-        message: &mut String,
-    ) -> Option<Event> {
+    pub fn poll(&mut self, ctx: &egui::Context, plan_path: &Option<PathBuf>, unsaved: Option<&Plan>, message: &mut String) -> Option<Event> {
         let mut event = None;
         if let Some(&(f, at, _)) = self.faults.front() {
             let t = self.since.elapsed().as_secs_f64();
@@ -143,14 +121,7 @@ impl GuiGpu {
                         event = Some(Event::MarkDirty);
                     }
                     Fault::DeviceLost | Fault::DeviceLostUnseen => {
-                        eprintln!(
-                            "fault injection: destroying the GUI's GPU device{}",
-                            if f == Fault::DeviceLostUnseen {
-                                " (drawing finds out)"
-                            } else {
-                                ""
-                            }
-                        );
+                        eprintln!("fault injection: destroying the GUI's GPU device{}", if f == Fault::DeviceLostUnseen { " (drawing finds out)" } else { "" });
                         self.unseen = f == Fault::DeviceLostUnseen;
                         if let Some(d) = &self.device {
                             d.destroy();
@@ -165,20 +136,13 @@ impl GuiGpu {
         }
         // The next fault's moment wakes the GUI (an idle GUI draws no frames).
         if let Some(&(_, at, _)) = self.faults.front() {
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(
-                (at - self.since.elapsed().as_secs_f64()).max(0.0),
-            ));
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64((at - self.since.elapsed().as_secs_f64()).max(0.0)));
         }
         {
             let mut k = KEEP.lock().unwrap();
             k.plan_path.clone_from(plan_path);
             k.unsaved = unsaved.cloned();
-            k.faults = self
-                .faults
-                .iter()
-                .map(|(_, _, item)| item.as_str())
-                .collect::<Vec<_>>()
-                .join(",");
+            k.faults = self.faults.iter().map(|(_, _, item)| item.as_str()).collect::<Vec<_>>().join(",");
         }
         if let Some(d) = &self.device {
             // Delivers the loss callback (wgpu calls it from a poll or a submit).
@@ -231,8 +195,7 @@ fn faults() -> VecDeque<(Fault, f64, String)> {
 /// recovery copy, the plan file that copy stands in for (`Some(None)`: an untitled plan).
 pub fn restarted() -> Option<(String, Option<Option<PathBuf>>)> {
     let why = std::env::var(RESTARTED_ENV).ok()?;
-    let original =
-        std::env::var_os(ORIGINAL_ENV).map(|o| if o.is_empty() { None } else { Some(o.into()) });
+    let original = std::env::var_os(ORIGINAL_ENV).map(|o| if o.is_empty() { None } else { Some(o.into()) });
     Some((why, original))
 }
 
@@ -250,9 +213,7 @@ pub fn hand_over(why: &str) -> anyhow::Result<()> {
                 (Some(f), Some(plan_path))
             }
             Err(e) => {
-                eprintln!(
-                    "the unsaved plan could not be written ({e:#}); the fresh GUI opens the plan as last saved"
-                );
+                eprintln!("the unsaved plan could not be written ({e:#}); the fresh GUI opens the plan as last saved");
                 (plan_path, None)
             }
         },
@@ -263,25 +224,16 @@ pub fn hand_over(why: &str) -> anyhow::Result<()> {
     if let Some(p) = &plan {
         cmd.arg(p);
     }
-    cmd.env(RESTARTED_ENV, why)
-        .env(FAULT_ENV, faults)
-        .env_remove(ORIGINAL_ENV);
+    cmd.env(RESTARTED_ENV, why).env(FAULT_ENV, faults).env_remove(ORIGINAL_ENV);
     if let Some(o) = &original {
-        cmd.env(
-            ORIGINAL_ENV,
-            o.as_deref().map(Path::as_os_str).unwrap_or_default(),
-        );
+        cmd.env(ORIGINAL_ENV, o.as_deref().map(Path::as_os_str).unwrap_or_default());
     }
-    cmd.spawn().map_err(|e| {
-        anyhow::anyhow!("the GUI's GPU device was {why}, and a fresh GUI could not be started: {e}")
-    })?;
+    cmd.spawn().map_err(|e| anyhow::anyhow!("the GUI's GPU device was {why}, and a fresh GUI could not be started: {e}"))?;
     Ok(())
 }
 
 fn write_recovery(plan: &Plan) -> anyhow::Result<PathBuf> {
-    let f = super::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("no configuration directory"))?
-        .join("recovered-plan.toml");
+    let f = super::config_dir().ok_or_else(|| anyhow::anyhow!("no configuration directory"))?.join("recovered-plan.toml");
     std::fs::create_dir_all(f.parent().unwrap())?;
     std::fs::write(&f, plan.to_toml()?)?;
     Ok(f)

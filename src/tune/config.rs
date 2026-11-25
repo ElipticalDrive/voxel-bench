@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use mr_core::ParamSpec;
 use serde::{Deserialize, Serialize};
 
+
 /// Host-side knobs every lane has, alongside its renderer's own parameters.
 /// Knobs that change what is shown rather than how fast the same image is made (diagnostic
 /// views; `meshes = none` drops the meshes): never tuned.
@@ -12,31 +13,9 @@ pub(super) const NEVER_TUNED: &[&str] = &["view", "view_max", "meshes"];
 
 pub fn host_params(base_view_radius: u32) -> Vec<ParamSpec> {
     vec![
-        ParamSpec::float(
-            "host.render_scale",
-            "Render resolution relative to the plan's (frames are upscaled for display)",
-            0.2,
-            1.0,
-            false,
-            1.0,
-            true,
-        ),
-        ParamSpec::int(
-            "host.view_radius",
-            "Chunks (32 blocks each) its client holds around the camera: view distance vs memory",
-            1,
-            64,
-            base_view_radius as i64,
-            true,
-        ),
-        ParamSpec::int(
-            "host.in_flight",
-            "Frames the host lets this renderer queue",
-            1,
-            8,
-            2,
-            true,
-        ),
+        ParamSpec::float("host.render_scale", "Render resolution relative to the plan's (frames are upscaled for display)", 0.2, 1.0, false, 1.0, true),
+        ParamSpec::int("host.view_radius", "Chunks (32 blocks each) its client holds around the camera: view distance vs memory", 1, 64, base_view_radius as i64, true),
+        ParamSpec::int("host.in_flight", "Frames the host lets this renderer queue", 1, 8, 2, true),
     ]
 }
 

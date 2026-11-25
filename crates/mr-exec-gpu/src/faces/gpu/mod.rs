@@ -65,9 +65,9 @@ use std::sync::atomic::AtomicU8;
 use std::collections::HashMap;
 
 use glam::IVec3;
+use mr_core::*;
 use mr_components::graph::{Checked, Role};
 use mr_components::storage::gpu_data::Bound;
-use mr_core::*;
 use mr_gpu::wgpu;
 
 use super::Draw;
@@ -287,25 +287,16 @@ impl Node<GpuSampler> for Shading {
 /// The GPU discovery executor for `g`: storages, hole detection, discovery, drawing and
 /// shading as nodes, each running what it reads first (the drawer's faces iterate through
 /// hole detection and discovery: last frame's list, then this frame's).
-pub(crate) fn create(
-    p: &InitParams,
-    devices: &Devices,
-    waker: Waker,
-    g: &Checked,
-) -> anyhow::Result<Box<dyn Renderer>> {
-    let passes = exec::passes(
-        g,
-        crate::home_slot(g),
-        |role| -> Option<Box<dyn Node<GpuSampler>>> {
-            Some(match role {
-                Role::Storage => Box::new(Storage),
-                Role::Holes => Box::new(Holes),
-                Role::Visibility => Box::new(Visibility),
-                Role::Draw => Box::new(DrawFaces),
-                Role::Shading => Box::new(Shading),
-                _ => return None,
-            })
-        },
-    )?;
+pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
+    let passes = exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<GpuSampler>>> {
+        Some(match role {
+            Role::Storage => Box::new(Storage),
+            Role::Holes => Box::new(Holes),
+            Role::Visibility => Box::new(Visibility),
+            Role::Draw => Box::new(DrawFaces),
+            Role::Shading => Box::new(Shading),
+            _ => return None,
+        })
+    })?;
     crate::exec::run_or_split(GpuSampler::new(p, devices, waker, g)?, g, passes)
 }

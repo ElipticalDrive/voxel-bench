@@ -114,19 +114,8 @@ pub(super) struct Sized {
 }
 
 /// A storage buffer; `set_by` names what sets its size (when over the device's limit).
-pub(super) fn storage(
-    gpu: &Gpu,
-    label: &str,
-    size: u64,
-    extra: wgpu::BufferUsages,
-    set_by: &str,
-) -> wgpu::Buffer {
-    gpu.storage(
-        label,
-        size,
-        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra,
-        || set_by.to_string(),
-    )
+pub(super) fn storage(gpu: &Gpu, label: &str, size: u64, extra: wgpu::BufferUsages, set_by: &str) -> wgpu::Buffer {
+    gpu.storage(label, size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra, || set_by.to_string())
 }
 
 fn tiles_max(lat_w: u32, lat_h: u32) -> u32 {
@@ -153,36 +142,19 @@ pub(super) fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
             .device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("face ids"),
-                size: wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::R32Uint,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
             .create_view(&Default::default()),
         // Tiles are at least 2 px, so the lattice has at most (lat_w/2) x (lat_h/2) tiles.
-        need: storage(
-            gpu,
-            "tile needs",
-            4 * tiles_max(lat_w, lat_h) as u64 * 4,
-            none,
-            res,
-        ),
+        need: storage(gpu, "tile needs", 4 * tiles_max(lat_w, lat_h) as u64 * 4, none, res),
         need_off: tiles_max(lat_w, lat_h),
-        changed_tiles: storage(
-            gpu,
-            "changed tiles",
-            tiles_max(lat_w, lat_h) as u64 * 4,
-            none,
-            res,
-        ),
+        changed_tiles: storage(gpu, "changed tiles", tiles_max(lat_w, lat_h) as u64 * 4, none, res),
         sky: [0, 1].map(|_| storage(gpu, "sky mask", w as u64 * h as u64 * 4, none, res)),
     }
 }

@@ -71,46 +71,21 @@ pub(crate) struct Hits {
 impl Edges {
     /// The edges of `g` on `gpu`; `hits`: the form of the shading's hits when they cross
     /// between passes (`None`: the shading is fused into the pass that finds them).
-    pub fn of(
-        gpu: &Gpu,
-        g: &graph::Checked,
-        width: u32,
-        height: u32,
-        hits: Option<Form>,
-    ) -> anyhow::Result<Self> {
+    pub fn of(gpu: &Gpu, g: &graph::Checked, width: u32, height: u32, hits: Option<Form>) -> anyhow::Result<Self> {
         let to = g.shading();
-        let ends = g
-            .input(Role::Shading, "hits")
-            .map(|from| (from.to_string(), to.to_string()));
+        let ends = g.input(Role::Shading, "hits").map(|from| (from.to_string(), to.to_string()));
         let mut edges = Self { ends, hits: None };
-        edges
-            .set_hits(gpu, width, height, hits)
-            .map_err(|e| anyhow::anyhow!("`{to}`: {e}"))?;
+        edges.set_hits(gpu, width, height, hits).map_err(|e| anyhow::anyhow!("`{to}`: {e}"))?;
         Ok(edges)
     }
 
     /// The hits edge's resource for `form` (`None`: fused, no resource): at creation, and when
     /// a live knob changes what its writer writes.
-    pub fn set_hits(
-        &mut self,
-        gpu: &Gpu,
-        width: u32,
-        height: u32,
-        form: Option<Form>,
-    ) -> anyhow::Result<()> {
+    pub fn set_hits(&mut self, gpu: &Gpu, width: u32, height: u32, form: Option<Form>) -> anyhow::Result<()> {
         self.hits = match form {
             Some(form) => {
-                let (from, to) = self.ends.clone().ok_or_else(|| {
-                    anyhow::anyhow!("no node's hits to shade (its `hits` input is not bound)")
-                })?;
-                Some(Hits {
-                    from,
-                    to,
-                    form,
-                    layers: 1,
-                    bytes: form.bytes(width, height),
-                    resource: Hits::resource_on(gpu, form, width, height, 1),
-                })
+                let (from, to) = self.ends.clone().ok_or_else(|| anyhow::anyhow!("no node's hits to shade (its `hits` input is not bound)"))?;
+                Some(Hits { from, to, form, layers: 1, bytes: form.bytes(width, height), resource: Hits::resource_on(gpu, form, width, height, 1) })
             }
             None => None,
         };
@@ -137,11 +112,7 @@ impl Edges {
     /// `layers` records per pixel in the records edge from now on (a new, larger buffer:
     /// group 0 is bound anew); nothing without one.
     pub fn set_layers(&mut self, gpu: &Gpu, width: u32, height: u32, layers: u32) {
-        if let Some(h) = self
-            .hits
-            .as_mut()
-            .filter(|h| h.form == Form::Records && h.layers != layers)
-        {
+        if let Some(h) = self.hits.as_mut().filter(|h| h.form == Form::Records && h.layers != layers) {
             h.layers = layers;
             h.bytes = h.form.bytes(width, height) * layers as u64;
             h.resource = Hits::resource_on(gpu, h.form, width, height, layers);
@@ -163,41 +134,20 @@ impl Hits {
         match form {
             Form::Records | Form::Ids => {
                 // The records are copied out and written by the transfers between GPUs.
-                let usage = if form == Form::Records {
-                    wgpu::BufferUsages::STORAGE
-                        | wgpu::BufferUsages::COPY_SRC
-                        | wgpu::BufferUsages::COPY_DST
-                } else {
-                    wgpu::BufferUsages::STORAGE
-                };
-                let label = if form == Form::Records {
-                    "hit records"
-                } else {
-                    "hit ids"
-                };
-                Resource::Buffer(gpu.storage(
-                    label,
-                    form.bytes(width, height) * layers as u64,
-                    usage,
-                    || format!("the resolution ({width}x{height}, {layers} layer(s))"),
-                ))
+                let usage = if form == Form::Records { wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::STORAGE };
+                let label = if form == Form::Records { "hit records" } else { "hit ids" };
+                Resource::Buffer(gpu.storage(label, form.bytes(width, height) * layers as u64, usage, || format!("the resolution ({width}x{height}, {layers} layer(s))")))
             }
             Form::Image(format) => {
                 let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("hits"),
-                    size: wgpu::Extent3d {
-                        width,
-                        height,
-                        depth_or_array_layers: 1,
-                    },
+                    size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format,
                     // Copied out by the transfer between GPUs.
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::COPY_SRC,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
                     view_formats: &[],
                 });
                 Resource::Image(texture.create_view(&Default::default()), texture)
@@ -209,10 +159,7 @@ impl Hits {
     pub fn buffer(&self) -> &wgpu::Buffer {
         match &self.resource {
             Resource::Buffer(b) => b,
-            Resource::Image(..) => panic!(
-                "`{}` -> `{}`.hits is a render target, not a buffer",
-                self.from, self.to
-            ),
+            Resource::Image(..) => panic!("`{}` -> `{}`.hits is a render target, not a buffer", self.from, self.to),
         }
     }
 
@@ -221,10 +168,7 @@ impl Hits {
     pub fn view(&self) -> &wgpu::TextureView {
         match &self.resource {
             Resource::Image(v, _) => v,
-            Resource::Buffer(_) => panic!(
-                "`{}` -> `{}`.hits is a buffer, not a render target",
-                self.from, self.to
-            ),
+            Resource::Buffer(_) => panic!("`{}` -> `{}`.hits is a buffer, not a render target", self.from, self.to),
         }
     }
 
@@ -239,10 +183,7 @@ impl Hits {
     /// Whether the edge carries `pack_hit` records (a buffer of them, or a target of 8-byte
     /// texels holding them: `gbuffer`'s), what a second GPU's shading reads.
     pub fn holds_records(&self) -> bool {
-        matches!(
-            self.form,
-            Form::Records | Form::Image(wgpu::TextureFormat::Rg32Uint)
-        )
+        matches!(self.form, Form::Records | Form::Image(wgpu::TextureFormat::Rg32Uint))
     }
 
     /// The declaration a program attaches the records with, and `record_at` (the common
@@ -264,11 +205,7 @@ impl Hits {
     }
 
     /// A buffer form's layout entry at `binding`.
-    pub fn layout_entry(
-        &self,
-        binding: u32,
-        visibility: wgpu::ShaderStages,
-    ) -> wgpu::BindGroupLayoutEntry {
+    pub fn layout_entry(&self, binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
         crate::storage_entry(binding, false, visibility)
     }
 
@@ -306,12 +243,7 @@ pub(crate) trait State {
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()>;
     fn update_meshes(&mut self, _update: MeshUpdate) {}
     /// Its knobs; `None` if `name` is not one.
-    fn set_param(
-        &mut self,
-        core: &mut Core,
-        name: &str,
-        value: &ParamValue,
-    ) -> Option<anyhow::Result<()>>;
+    fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>>;
     /// A node to replace while running (an edit to the graph, which the region builds
     /// edited): `None` if it is not a node this region replaces.
     fn switch(&mut self, _core: &mut Core, _s: &graph::Switch) -> Option<anyhow::Result<()>> {
@@ -332,11 +264,7 @@ pub(crate) trait Region: State {
     /// The frame's state before its passes (camera, shading state, world).
     fn setup(&mut self, core: &mut Core, req: &FrameRequest);
     /// The frame's counters, legend and CPU stage times.
-    fn stats(
-        &self,
-        core: &Core,
-        req: &FrameRequest,
-    ) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>);
+    fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>);
     /// Before the frame's submission, after its nodes' passes (readbacks, diagnostics).
     fn finish(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket);
     /// After the frame's submission (readbacks' mapping).
@@ -352,17 +280,9 @@ pub(crate) trait Region: State {
 
 /// The nodes of `g`'s passes on GPU slot `slot` in frame order, each by its node's role
 /// (`node`; a role without one has no pass of its own here).
-pub(crate) fn passes<R>(
-    g: &graph::Checked,
-    slot: usize,
-    node: impl Fn(Role) -> Option<Box<dyn Node<R>>>,
-) -> anyhow::Result<Vec<Box<dyn Node<R>>>> {
+pub(crate) fn passes<R>(g: &graph::Checked, slot: usize, node: impl Fn(Role) -> Option<Box<dyn Node<R>>>) -> anyhow::Result<Vec<Box<dyn Node<R>>>> {
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
-    Ok(schedule
-        .passes()
-        .filter(|p| matches!(p.device, graph::Device::Gpu(i) if i as usize == slot))
-        .filter_map(|p| node(g.node(&p.node).role))
-        .collect())
+    Ok(schedule.passes().filter(|p| matches!(p.device, graph::Device::Gpu(i) if i as usize == slot)).filter_map(|p| node(g.node(&p.node).role)).collect())
 }
 
 /// One GPU slot's executor: its core, a region and its nodes' passes in frame order (static
@@ -376,22 +296,14 @@ pub(crate) struct Executor<R> {
 }
 
 /// The renderer running `region`'s `passes` over `core`.
-pub(crate) fn run<R: Region + 'static>(
-    core: Core,
-    region: R,
-    passes: Vec<Box<dyn Node<R>>>,
-) -> anyhow::Result<Box<dyn Renderer>> {
+pub(crate) fn run<R: Region + 'static>(core: Core, region: R, passes: Vec<Box<dyn Node<R>>>) -> anyhow::Result<Box<dyn Renderer>> {
     core.gpu.save_cache();
     Ok(Box::new(Executor::new(core, region, passes)))
 }
 
 /// The renderer of a region's GPU, alone or (the shading on another GPU, `far`) split with
 /// that GPU's executor.
-pub(crate) fn run_or_split<R: Region + 'static>(
-    (core, region, far): (Core, R, Option<crate::remote::Far>),
-    g: &graph::Checked,
-    passes: Vec<Box<dyn Node<R>>>,
-) -> anyhow::Result<Box<dyn Renderer>> {
+pub(crate) fn run_or_split<R: Region + 'static>((core, region, far): (Core, R, Option<crate::remote::Far>), g: &graph::Checked, passes: Vec<Box<dyn Node<R>>>) -> anyhow::Result<Box<dyn Renderer>> {
     match far {
         Some(far) => split(g, Executor::new(core, region, passes), far),
         None => run(core, region, passes),
@@ -400,21 +312,12 @@ pub(crate) fn run_or_split<R: Region + 'static>(
 
 impl<R: Region> Executor<R> {
     pub fn new(core: Core, region: R, passes: Vec<Box<dyn Node<R>>>) -> Self {
-        Self {
-            core,
-            region,
-            passes,
-            instances: vec![],
-        }
+        Self { core, region, passes, instances: vec![] }
     }
 
     /// The frame's commands on this GPU, before their submission: its ticket on the ring
     /// (frames completing to `sink`), its passes and its stats.
-    fn encode(
-        &mut self,
-        req: &FrameRequest,
-        sink: &mut dyn FrameSink,
-    ) -> anyhow::Result<(wgpu::CommandEncoder, Ticket, FrameStats)> {
+    fn encode(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<(wgpu::CommandEncoder, Ticket, FrameStats)> {
         let (core, region) = (&mut self.core, &mut self.region);
         region.compile(core, req)?;
         let ticket = core.ring.begin(&core.gpu, sink)?;
@@ -424,13 +327,7 @@ impl<R: Region> Executor<R> {
         if let Some(v) = &core.view {
             v.clear(&mut enc);
         }
-        let mut cx = Cx {
-            core,
-            region,
-            enc: &mut enc,
-            ticket,
-            req,
-        };
+        let mut cx = Cx { core, region, enc: &mut enc, ticket, req };
         for pass in &mut self.passes {
             pass.run(&mut cx);
         }
@@ -445,36 +342,15 @@ impl<R: Region> Executor<R> {
         });
         let (counters, legend, stages) = region.stats(core, req);
         let legend = viewed.or(legend);
-        let stats = FrameStats {
-            cpu_ms: start.elapsed().as_secs_f32() * 1e3,
-            gpu_ms: None,
-            counters,
-            legend,
-            stages,
-        };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
         region.finish(core, &mut enc, ticket);
         Ok((enc, ticket, stats))
     }
 
     /// Submits the frame as this GPU's image and completes finished frames.
-    fn submit(
-        &mut self,
-        enc: wgpu::CommandEncoder,
-        ticket: Ticket,
-        req: &FrameRequest,
-        stats: FrameStats,
-        sink: &mut dyn FrameSink,
-    ) -> anyhow::Result<()> {
+    fn submit(&mut self, enc: wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, stats: FrameStats, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
         let core = &mut self.core;
-        core.ring.submit(
-            &core.gpu,
-            enc,
-            ticket,
-            &core.output,
-            req.frame_id,
-            req.readback,
-            stats,
-        );
+        core.ring.submit(&core.gpu, enc, ticket, &core.output, req.frame_id, req.readback, stats);
         self.region.submitted(core);
         core.ring.poll(&core.gpu, sink, false)
     }
@@ -489,11 +365,7 @@ impl<R: Region> Executor<R> {
                     return Some(Err(e));
                 }
                 // A region whose own passes write its quantities has nothing to recompile.
-                return Some(
-                    self.region
-                        .set_param(&mut self.core, name, value)
-                        .unwrap_or(Ok(())),
-                );
+                return Some(self.region.set_param(&mut self.core, name, value).unwrap_or(Ok(())));
             }
             "view_max" => {
                 self.core.view_max = value.as_i64().unwrap_or(256).clamp(1, 16384) as u32;
@@ -520,18 +392,9 @@ impl<R: Region> Executor<R> {
 }
 
 /// Every node of `switches` replaced by the first of `replace` that has it.
-fn switched(
-    switches: &[graph::Switch],
-    mut replace: impl FnMut(&graph::Switch) -> Option<anyhow::Result<()>>,
-) -> anyhow::Result<()> {
+fn switched(switches: &[graph::Switch], mut replace: impl FnMut(&graph::Switch) -> Option<anyhow::Result<()>>) -> anyhow::Result<()> {
     for s in switches {
-        replace(s).unwrap_or_else(|| {
-            anyhow::bail!(
-                "{} node `{}` cannot change while running",
-                s.role.name(),
-                s.node
-            )
-        })?;
+        replace(s).unwrap_or_else(|| anyhow::bail!("{} node `{}` cannot change while running", s.role.name(), s.node))?;
     }
     Ok(())
 }
@@ -554,12 +417,10 @@ impl<R: Region> Renderer for Executor<R> {
     fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
         let moved = match &update {
             MeshUpdate::Meshes(_) => true,
-            MeshUpdate::Instances(i) => {
-                *i != self.instances && {
-                    self.instances.clone_from(i);
-                    true
-                }
-            }
+            MeshUpdate::Instances(i) => *i != self.instances && {
+                self.instances.clone_from(i);
+                true
+            },
         };
         if moved {
             self.core.accum.invalidate();
@@ -578,8 +439,7 @@ impl<R: Region> Renderer for Executor<R> {
     }
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
-        self.offer(name, value)
-            .unwrap_or_else(|| anyhow::bail!("`{name}` cannot change while running"))
+        self.offer(name, value).unwrap_or_else(|| anyhow::bail!("`{name}` cannot change while running"))
     }
 
     fn edit(&mut self, edits: &str) -> anyhow::Result<()> {
@@ -601,11 +461,7 @@ impl<R: Region> Renderer for Executor<R> {
 
     fn memory(&self) -> MemoryReport {
         let (cpu, gpu) = self.region.memory(&self.core);
-        MemoryReport {
-            cpu_bytes: cpu,
-            gpu_bytes: self.core.memory_bytes() + gpu,
-            gpu_device_bytes: self.core.gpu.peak_allocated_bytes(),
-        }
+        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu, gpu_device_bytes: self.core.gpu.peak_allocated_bytes() }
     }
 }
 
@@ -622,18 +478,10 @@ struct Split<R, F> {
 }
 
 /// The renderer running `near` and `far`, the executors of graph `g`'s two GPU slots.
-pub(crate) fn split<R: Region + 'static, F: Region + 'static>(
-    g: &graph::Checked,
-    near: Executor<R>,
-    far: Executor<F>,
-) -> anyhow::Result<Box<dyn Renderer>> {
+pub(crate) fn split<R: Region + 'static, F: Region + 'static>(g: &graph::Checked, near: Executor<R>, far: Executor<F>) -> anyhow::Result<Box<dyn Renderer>> {
     near.core.gpu.save_cache();
     let transfer = Transfer::of(g, &near.core, &far.core)?;
-    Ok(Box::new(Split {
-        near,
-        transfer,
-        far,
-    }))
+    Ok(Box::new(Split { near, transfer, far }))
 }
 
 impl<R: Region, F: Region> Renderer for Split<R, F> {
@@ -653,18 +501,13 @@ impl<R: Region, F: Region> Renderer for Split<R, F> {
         transfer.send(&mut near.core, enc, ticket, req, stats);
         near.region.submitted(&near.core);
         let (mut stats, camera) = transfer.arrive(&mut near.core, &far.core, req)?;
-        let req = FrameRequest {
-            camera,
-            ..req.clone()
-        };
+        let req = FrameRequest { camera, ..req.clone() };
         let (enc, ticket, shaded) = far.encode(&req, sink)?;
         let (stage, wait_ms, cpu_ms) = transfer.times();
         stats.stages.push(stage);
         stats.counters.extend(shaded.counters);
         stats.stages.extend(shaded.stages);
-        stats
-            .counters
-            .push(("transfer_wait_ms".into(), wait_ms as f64));
+        stats.counters.push(("transfer_wait_ms".into(), wait_ms as f64));
         stats.cpu_ms += shaded.cpu_ms + cpu_ms;
         far.submit(enc, ticket, &req, stats, sink)
     }
@@ -686,12 +529,10 @@ impl<R: Region, F: Region> Renderer for Split<R, F> {
     /// A replaced node reaches both executors, like a knob.
     fn edit(&mut self, edits: &str) -> anyhow::Result<()> {
         let (g, switches) = graph::live(&self.near.core.graph, edits)?;
-        switched(&switches, |s| {
-            match (self.far.replace(s), self.near.replace(s)) {
-                (Some(Err(e)), _) => Some(Err(e)),
-                (_, Some(r)) | (Some(r), None) => Some(r),
-                (None, None) => None,
-            }
+        switched(&switches, |s| match (self.far.replace(s), self.near.replace(s)) {
+            (Some(Err(e)), _) => Some(Err(e)),
+            (_, Some(r)) | (Some(r), None) => Some(r),
+            (None, None) => None,
         })?;
         self.far.core.graph = g.graph.clone();
         self.near.core.graph = g.graph;
@@ -711,14 +552,6 @@ impl<R: Region, F: Region> Renderer for Split<R, F> {
 
     fn memory(&self) -> MemoryReport {
         let (near, far) = (self.near.memory(), self.far.memory());
-        MemoryReport {
-            cpu_bytes: near.cpu_bytes + far.cpu_bytes,
-            gpu_bytes: near.gpu_bytes + far.gpu_bytes + self.transfer.memory_bytes(),
-            gpu_device_bytes: if std::sync::Arc::ptr_eq(&self.near.core.gpu, &self.far.core.gpu) {
-                near.gpu_device_bytes
-            } else {
-                near.gpu_device_bytes + far.gpu_device_bytes
-            },
-        }
+        MemoryReport { cpu_bytes: near.cpu_bytes + far.cpu_bytes, gpu_bytes: near.gpu_bytes + far.gpu_bytes + self.transfer.memory_bytes(), gpu_device_bytes: if std::sync::Arc::ptr_eq(&self.near.core.gpu, &self.far.core.gpu) { near.gpu_device_bytes } else { near.gpu_device_bytes + far.gpu_device_bytes } }
     }
 }

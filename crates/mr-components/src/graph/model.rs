@@ -372,11 +372,7 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
         (Role::Storage | Role::Geometry, _) => CHANGES,
         (Role::Meshes, _) => MESHES,
         (Role::Prepass, _) => ON_STORAGE,
-        (Role::Traversal, _)
-            if crate::caps::needs(role, name, Role::Geometry, crate::Cap::Accel) =>
-        {
-            ON_GEOMETRY
-        }
+        (Role::Traversal, _) if crate::caps::needs(role, name, Role::Geometry, crate::Cap::Accel) => ON_GEOMETRY,
         (Role::Traversal, _) => ON_STORAGE,
         (Role::Visibility, "raycast") => RAYCAST,
         (Role::Visibility, "quadtree") => QUADTREE,
@@ -421,9 +417,7 @@ pub fn state(role: Role, name: &str) -> Option<&'static str> {
         (Role::Storage, _) => "the representation, patched from the change log",
         (Role::Geometry, _) => "the faces, remeshed per changed chunk",
         (Role::Meshes, _) => "the mesh instances",
-        (Role::Traversal, _)
-            if crate::caps::needs(role, name, Role::Geometry, crate::Cap::Accel) =>
-        {
+        (Role::Traversal, _) if crate::caps::needs(role, name, Role::Geometry, crate::Cap::Accel) => {
             "acceleration structures built from its geometry"
         }
         (Role::Visibility, "quadtree" | "cluster") => {
@@ -512,27 +506,15 @@ pub const POSTS: &[&str] = &["clamp", "reinhard", "aces", "hdr"];
 /// components carry theirs (`ComponentInfo::description`).
 pub fn host_description(role: Role, name: &str) -> Option<&'static str> {
     Some(match (role, name) {
-        (Role::World, "world") => {
-            "The authoritative world on the server: chunks and their change log"
-        }
-        (Role::Generator, "procedural") => {
-            "Generates the world's chunks from its spec (a shared seed): on the server, or on the client's cpu"
-        }
+        (Role::World, "world") => "The authoritative world on the server: chunks and their change log",
+        (Role::Generator, "procedural") => "Generates the world's chunks from its spec (a shared seed): on the server, or on the client's cpu",
         (Role::Link, "free") => "Everything the server sends arrives at once, in order",
         (Role::Link, "net") => "A modelled network: latency, jitter, bandwidth, loss, reordering",
-        (Role::Client, "pick") => {
-            "Holds what arrived: the server's LOD levels, picked by its radius and levels"
-        }
-        (Role::Client, "derive") => {
-            "Holds what arrived and derives its coarser LOD levels from LOD 0 itself"
-        }
+        (Role::Client, "pick") => "Holds what arrived: the server's LOD levels, picked by its radius and levels",
+        (Role::Client, "derive") => "Holds what arrived and derives its coarser LOD levels from LOD 0 itself",
         (Role::Post, "clamp") => "Linear colour clamped to the output range",
-        (Role::Post, "reinhard") => {
-            "Reinhard tone mapping of the linear colour, compiled into the shading's output"
-        }
-        (Role::Post, "aces") => {
-            "ACES filmic tone mapping of the linear colour, compiled into the shading's output"
-        }
+        (Role::Post, "reinhard") => "Reinhard tone mapping of the linear colour, compiled into the shading's output",
+        (Role::Post, "aces") => "ACES filmic tone mapping of the linear colour, compiled into the shading's output",
         (Role::Post, "hdr") => "No limit: a float output for HDR displays",
         _ => return None,
     })

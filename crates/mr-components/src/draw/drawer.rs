@@ -232,8 +232,7 @@ impl FaceDrawer {
     /// it, so pipelines whose frames never draw meshes compile neither.
     pub fn add_mesh_shade(&mut self, gpu: &Gpu, lit: bool, module: &wgpu::ShaderModule) {
         if let Pipes::Deferred { mesh_shade, .. } = &mut self.pipes {
-            mesh_shade[lit as usize] =
-                Some(shade_pipeline(gpu, &self.shade_layout, module, "shade"));
+            mesh_shade[lit as usize] = Some(shade_pipeline(gpu, &self.shade_layout, module, "shade"));
         }
     }
 
@@ -257,42 +256,43 @@ impl FaceDrawer {
                       write: bool,
                       compare,
                       fragment: bool| {
-            gpu.device.render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(spec.render_layout),
-                vertex: wgpu::VertexState {
-                    module: spec.module,
-                    entry_point: Some("vs"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: if spec.strip {
-                        wgpu::PrimitiveTopology::TriangleStrip
-                    } else {
-                        wgpu::PrimitiveTopology::TriangleList
+            gpu.device
+                .render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(spec.render_layout),
+                    vertex: wgpu::VertexState {
+                        module: spec.module,
+                        entry_point: Some("vs"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
                     },
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: Some(wgpu::Face::Back),
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(write),
-                    depth_compare: Some(compare),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                fragment: fragment.then(|| wgpu::FragmentState {
-                    module: spec.module,
-                    entry_point: Some("fs"),
-                    compilation_options: Default::default(),
-                    targets,
-                }),
-                multiview_mask: None,
-                cache: gpu.cache(),
-            })
+                    primitive: wgpu::PrimitiveState {
+                        topology: if spec.strip {
+                            wgpu::PrimitiveTopology::TriangleStrip
+                        } else {
+                            wgpu::PrimitiveTopology::TriangleList
+                        },
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: Some(wgpu::Face::Back),
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(write),
+                        depth_compare: Some(compare),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: fragment.then(|| wgpu::FragmentState {
+                        module: spec.module,
+                        entry_point: Some("fs"),
+                        compilation_options: Default::default(),
+                        targets,
+                    }),
+                    multiview_mask: None,
+                    cache: gpu.cache(),
+                })
         };
         use wgpu::CompareFunction::{Equal, Greater};
         use wgpu::TextureFormat::{R32Uint, Rg32Uint};

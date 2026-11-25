@@ -23,104 +23,39 @@ use std::path::{Path, PathBuf};
 
 /// Functions a component interface asks of every implementer (one per back end by design).
 const INTERFACE: &[(&str, &str)] = &[
-    (
-        "src_vertex",
-        "face source (visibility/faces.wgsl): one per face record format",
-    ),
+    ("src_vertex", "face source (visibility/faces.wgsl): one per face record format"),
     ("src_origin", "face source"),
     ("src_block", "face source"),
     ("src_lookup", "face source"),
     ("src_view", "face source: each source's diagnostic views"),
-    (
-        "record_at",
-        "deferred shading pass (shading/deferred.wgsl): where the back end keeps its hit records",
-    ),
-    (
-        "record_hit",
-        "deferred shading pass: one per record encoding (packed, face ids, point ids)",
-    ),
-    (
-        "record_decode",
-        "deferred shading pass: one per record encoding",
-    ),
-    (
-        "record_view",
-        "deferred shading pass: one per record encoding (the source's diagnostic views)",
-    ),
-    (
-        "view_surface",
-        "deferred shading pass, packed records: the strategy's own normal (columns' slope), or the surface as decoded",
-    ),
-    (
-        "view_ray",
-        "deferred shading pass: the back end's primary ray",
-    ),
-    (
-        "view_origin",
-        "deferred shading pass: the back end's camera",
-    ),
-    (
-        "view_miss",
-        "deferred shading pass: what the back end shows where nothing was hit",
-    ),
+    ("record_at", "deferred shading pass (shading/deferred.wgsl): where the back end keeps its hit records"),
+    ("record_hit", "deferred shading pass: one per record encoding (packed, face ids, point ids)"),
+    ("record_decode", "deferred shading pass: one per record encoding"),
+    ("record_view", "deferred shading pass: one per record encoding (the source's diagnostic views)"),
+    ("view_surface", "deferred shading pass, packed records: the strategy's own normal (columns' slope), or the surface as decoded"),
+    ("view_ray", "deferred shading pass: the back end's primary ray"),
+    ("view_origin", "deferred shading pass: the back end's camera"),
+    ("view_miss", "deferred shading pass: what the back end shows where nothing was hit"),
     ("view_lit", "deferred shading pass: the back end's mode"),
-    (
-        "record_is_mesh",
-        "deferred shading pass with meshes: one per record encoding (packed, face ids)",
-    ),
-    (
-        "record_mesh",
-        "deferred shading pass with meshes: one per record encoding",
-    ),
-    (
-        "mesh_frame",
-        "mesh passes (mr-gpu mesh.wgsl): the camera as a MeshFrame, the record passes' own uniform or a forward drawer's frame",
-    ),
+    ("record_is_mesh", "deferred shading pass with meshes: one per record encoding (packed, face ids)"),
+    ("record_mesh", "deferred shading pass with meshes: one per record encoding"),
+    ("mesh_frame", "mesh passes (mr-gpu mesh.wgsl): the camera as a MeshFrame, the record passes' own uniform or a forward drawer's frame"),
 ];
 
 /// Lighting internals only the shading components (and the lighting model) may call.
-const LIGHTING_WGSL: &[&str] = &[
-    "shade_lit(",
-    "direct_light(",
-    "attenuation(",
-    "lookup_light_cell(",
-];
+const LIGHTING_WGSL: &[&str] = &["shade_lit(", "direct_light(", "attenuation(", "lookup_light_cell("];
 /// Light computed in Rust outside the shading component and the reference model.
-const LIGHTING_RUST: &[&str] = &[
-    "point_light(",
-    "light_at(",
-    "env.ambient",
-    "env.sun",
-    ".sun_shadows",
-];
+const LIGHTING_RUST: &[&str] = &["point_light(", "light_at(", "env.ambient", "env.sun", ".sun_shadows"];
 
 /// Places allowed to use the lighting internals, with the reason.
 const LIGHTING_ALLOWED: &[(&str, &str)] = &[
-    (
-        "crates/mr-components/src/shading/",
-        "the shading components",
-    ),
-    (
-        "crates/mr-gpu/src/lighting.wgsl",
-        "the lighting model itself",
-    ),
-    (
-        "crates/mr-gpu/src/voxels.rs",
-        "uploads the environment for the lighting model",
-    ),
-    (
-        "crates/mr-world/",
-        "scene description (sun direction, ambient), not lighting",
-    ),
-    (
-        "crates/mr-core/",
-        "the lighting model's shared math and the environment type",
-    ),
+    ("crates/mr-components/src/shading/", "the shading components"),
+    ("crates/mr-gpu/src/lighting.wgsl", "the lighting model itself"),
+    ("crates/mr-gpu/src/voxels.rs", "uploads the environment for the lighting model"),
+    ("crates/mr-world/", "scene description (sun direction, ambient), not lighting"),
+    ("crates/mr-core/", "the lighting model's shared math and the environment type"),
     ("crates/mr-reference/", "the reference renderer's f64 model"),
-    (
-        "crates/mr-gpu/src/program.rs",
-        "the module system's test links a root to the lighting module",
-    ),
+    ("crates/mr-gpu/src/program.rs", "the module system's test links a root to the lighting module"),
 ];
 
 /// Each executor region's shading entry point (a string its sources must contain), by its path
@@ -128,14 +63,8 @@ const LIGHTING_ALLOWED: &[(&str, &str)] = &[
 const SHADING_USE: &[(&str, &str)] = &[
     // `shaders::shading`: the shading component's module (`shading::gpu_wgsl`).
     // The ray-casting region (raycast-gpu and rayquery-gpu): each caster.
-    (
-        "gpu/src/raycast/walk.rs",
-        "shaders::shading(&mut program, shading, &rays",
-    ),
-    (
-        "gpu/src/raycast/rayquery.rs",
-        "shaders::shading(&mut program, shading, &rays",
-    ),
+    ("gpu/src/raycast/walk.rs", "shaders::shading(&mut program, shading, &rays"),
+    ("gpu/src/raycast/rayquery.rs", "shaders::shading(&mut program, shading, &rays"),
     // The faces region (raster-gpu, discover-gpu and discover-cpu).
     ("gpu/src/faces", "shaders::shading(&mut program, shading"),
     ("gpu/src/splat.rs", "shading::gpu_wgsl("),
@@ -171,22 +100,15 @@ fn files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 
 fn rel(p: &Path) -> String {
     // '/'-separated on every OS: the allow-lists and owners are written that way.
-    p.strip_prefix(root())
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "/")
+    p.strip_prefix(root()).unwrap().to_string_lossy().replace('\\', "/")
 }
 
 /// Owner of a source file: the executor's region (`gpu/faces`: `crates/mr-exec-gpu/src/faces...`),
 /// the executor for its own files, or "shared".
 fn owner(rel: &str) -> String {
-    let Some(r) = rel.strip_prefix("crates/mr-exec-") else {
-        return "shared".into();
-    };
+    let Some(r) = rel.strip_prefix("crates/mr-exec-") else { return "shared".into() };
     match r.split('/').collect::<Vec<_>>().as_slice() {
-        [ex, "src", region, ..] if *region != "lib.rs" => {
-            format!("{ex}/{}", region.trim_end_matches(".rs"))
-        }
+        [ex, "src", region, ..] if *region != "lib.rs" => format!("{ex}/{}", region.trim_end_matches(".rs")),
         [ex, ..] => ex.to_string(),
         [] => unreachable!(),
     }
@@ -247,23 +169,14 @@ fn functions(text: &str) -> Vec<(String, String, bool)> {
         // A definition: at a line start (after indentation) or after an attribute.
         let line_start = text[..at].rfind('\n').map_or(0, |n| n + 1);
         let before = text[line_start..at].trim();
-        if !(before.is_empty() || before.ends_with(')'))
-            || !before
-                .chars()
-                .all(|c| c.is_whitespace() || c == '@' || c.is_alphanumeric() || "()_,".contains(c))
-        {
+        if !(before.is_empty() || before.ends_with(')')) || !before.chars().all(|c| c.is_whitespace() || c == '@' || c.is_alphanumeric() || "()_,".contains(c)) {
             continue;
         }
-        let name: String = text[at + 3..]
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
+        let name: String = text[at + 3..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
         if name.is_empty() || !text[at + 3 + name.len()..].starts_with('(') {
             continue;
         }
-        let Some(open) = text[at..].find('{').map(|o| at + o) else {
-            continue;
-        };
+        let Some(open) = text[at..].find('{').map(|o| at + o) else { continue };
         let mut depth = 0;
         let mut end = open;
         for (k, &b) in bytes.iter().enumerate().skip(open) {
@@ -277,20 +190,11 @@ fn functions(text: &str) -> Vec<(String, String, bool)> {
                 }
             }
         }
-        let body: String = text[open..=end]
-            .lines()
-            .map(|l| l.split("//").next().unwrap().trim())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let body: String = text[open..=end].lines().map(|l| l.split("//").next().unwrap().trim()).collect::<Vec<_>>().join(" ");
         let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
         // An entry point: an attribute on this line or the previous one.
-        let prev = text[..line_start.saturating_sub(1)]
-            .rsplit('\n')
-            .next()
-            .unwrap_or("");
-        let entry = [before, prev]
-            .iter()
-            .any(|l| l.contains("@compute") || l.contains("@vertex") || l.contains("@fragment"));
+        let prev = text[..line_start.saturating_sub(1)].rsplit('\n').next().unwrap_or("");
+        let entry = [before, prev].iter().any(|l| l.contains("@compute") || l.contains("@vertex") || l.contains("@fragment"));
         out.push((name, body, entry));
         i = end.max(i);
     }
@@ -314,12 +218,7 @@ fn definitions() -> BTreeMap<String, Vec<Def>> {
         let text = wgsl_text(&p);
         // Rust sources: only literals that look like WGSL functions count.
         for (name, body, entry) in functions(&text) {
-            defs.entry(name).or_default().push(Def {
-                owner: owner(&file),
-                file: file.clone(),
-                body,
-                entry,
-            });
+            defs.entry(name).or_default().push(Def { owner: owner(&file), file: file.clone(), body, entry });
         }
     }
     defs
@@ -334,35 +233,15 @@ fn no_wgsl_function_is_defined_twice() {
         if interface.contains(name.as_str()) || ds.iter().all(|d| d.entry) {
             continue;
         }
-        let backends: BTreeSet<&str> = ds
-            .iter()
-            .filter(|d| d.owner != "shared")
-            .map(|d| d.owner.as_str())
-            .collect();
+        let backends: BTreeSet<&str> = ds.iter().filter(|d| d.owner != "shared").map(|d| d.owner.as_str()).collect();
         if backends.len() > 1 {
-            problems.push(format!(
-                "`{name}` is defined by several back ends: {}",
-                ds.iter()
-                    .map(|d| d.file.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+            problems.push(format!("`{name}` is defined by several back ends: {}", ds.iter().map(|d| d.file.as_str()).collect::<Vec<_>>().join(", ")));
         }
         if ds.iter().any(|d| d.owner == "shared") && !backends.is_empty() {
-            problems.push(format!(
-                "`{name}` is shared but redefined by a back end: {}",
-                ds.iter()
-                    .map(|d| d.file.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+            problems.push(format!("`{name}` is shared but redefined by a back end: {}", ds.iter().map(|d| d.file.as_str()).collect::<Vec<_>>().join(", ")));
         }
     }
-    assert!(
-        problems.is_empty(),
-        "redundant WGSL functions:\n  {}",
-        problems.join("\n  ")
-    );
+    assert!(problems.is_empty(), "redundant WGSL functions:\n  {}", problems.join("\n  "));
 }
 
 #[test]
@@ -371,27 +250,15 @@ fn no_wgsl_body_is_copied_under_another_name() {
     let mut by_body: BTreeMap<&str, BTreeSet<(String, String)>> = BTreeMap::new();
     for (name, ds) in &defs {
         for d in ds.iter().filter(|d| !d.entry && d.body.len() >= 80) {
-            by_body
-                .entry(d.body.as_str())
-                .or_default()
-                .insert((name.clone(), d.file.clone()));
+            by_body.entry(d.body.as_str()).or_default().insert((name.clone(), d.file.clone()));
         }
     }
     let problems: Vec<String> = by_body
         .values()
         .filter(|fs| fs.iter().map(|(n, _)| n).collect::<BTreeSet<_>>().len() > 1)
-        .map(|fs| {
-            fs.iter()
-                .map(|(n, f)| format!("{n} ({f})"))
-                .collect::<Vec<_>>()
-                .join(" = ")
-        })
+        .map(|fs| fs.iter().map(|(n, f)| format!("{n} ({f})")).collect::<Vec<_>>().join(" = "))
         .collect();
-    assert!(
-        problems.is_empty(),
-        "identical WGSL bodies under different names:\n  {}",
-        problems.join("\n  ")
-    );
+    assert!(problems.is_empty(), "identical WGSL bodies under different names:\n  {}", problems.join("\n  "));
 }
 
 #[test]
@@ -402,30 +269,15 @@ fn lighting_goes_through_the_shading_component() {
     let mut problems = vec![];
     for p in &paths {
         let file = rel(p);
-        if LIGHTING_ALLOWED
-            .iter()
-            .any(|&(prefix, _)| file.starts_with(prefix))
-        {
+        if LIGHTING_ALLOWED.iter().any(|&(prefix, _)| file.starts_with(prefix)) {
             continue;
         }
         let src = fs::read_to_string(p).unwrap();
-        let needles = if file.ends_with(".wgsl") {
-            LIGHTING_WGSL
-        } else {
-            LIGHTING_RUST
-        };
+        let needles = if file.ends_with(".wgsl") { LIGHTING_WGSL } else { LIGHTING_RUST };
         // Rust sources may also carry WGSL in literals.
-        let wgsl = if file.ends_with(".rs") {
-            wgsl_text(p)
-        } else {
-            String::new()
-        };
+        let wgsl = if file.ends_with(".rs") { wgsl_text(p) } else { String::new() };
         for n in needles {
-            if src.lines().any(|l| {
-                !l.trim_start().starts_with("//")
-                    && l.contains(n)
-                    && !l.contains(&format!("fn {n}"))
-            }) {
+            if src.lines().any(|l| !l.trim_start().starts_with("//") && l.contains(n) && !l.contains(&format!("fn {n}"))) {
                 problems.push(format!("{file} uses `{n}`"));
             }
         }
@@ -437,47 +289,21 @@ fn lighting_goes_through_the_shading_component() {
     }
     for &(backend, needle) in SHADING_USE {
         let mut srcs = vec![];
-        files(
-            &root().join(format!("crates/mr-exec-{backend}")),
-            "rs",
-            &mut srcs,
-        );
-        if !srcs
-            .iter()
-            .any(|p| fs::read_to_string(p).unwrap().contains(needle))
-        {
-            problems.push(format!(
-                "back end `{backend}` does not shade through `{needle}`"
-            ));
+        files(&root().join(format!("crates/mr-exec-{backend}")), "rs", &mut srcs);
+        if !srcs.iter().any(|p| fs::read_to_string(p).unwrap().contains(needle)) {
+            problems.push(format!("back end `{backend}` does not shade through `{needle}`"));
         }
     }
     let mut backends = vec![];
     if let Ok(rd) = fs::read_dir(root().join("crates")) {
-        backends = rd
-            .flatten()
-            .filter_map(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .strip_prefix("mr-exec-")
-                    .map(str::to_owned)
-            })
-            .collect();
+        backends = rd.flatten().filter_map(|e| e.file_name().to_string_lossy().strip_prefix("mr-exec-").map(str::to_owned)).collect();
     }
     for b in backends {
-        if !SHADING_USE
-            .iter()
-            .any(|&(n, _)| n.starts_with(&format!("{b}/")))
-        {
-            problems.push(format!(
-                "executor `{b}` has no entry in SHADING_USE (how does it shade?)"
-            ));
+        if !SHADING_USE.iter().any(|&(n, _)| n.starts_with(&format!("{b}/"))) {
+            problems.push(format!("executor `{b}` has no entry in SHADING_USE (how does it shade?)"));
         }
     }
-    assert!(
-        problems.is_empty(),
-        "lighting outside the shading component:\n  {}",
-        problems.join("\n  ")
-    );
+    assert!(problems.is_empty(), "lighting outside the shading component:\n  {}", problems.join("\n  "));
 }
 
 /// The guard itself: catches a planted duplicate, a renamed copy and an own lighting call.
@@ -488,19 +314,10 @@ fn components_are_the_graphs() {
     use mr_components::graph::Role;
     let mut infos = mr_exec_cpu::infos();
     infos.extend(mr_exec_gpu::infos());
-    assert!(
-        infos.len() == mr_components::graph::REGIONS.len()
-            && infos.iter().all(|i| !i.params.is_empty()),
-        "every region lists its knobs"
-    );
+    assert!(infos.len() == mr_components::graph::REGIONS.len() && infos.iter().all(|i| !i.params.is_empty()), "every region lists its knobs");
     for i in &infos {
         for p in &i.params {
-            assert!(
-                Role::ALL.iter().all(|r| r.name() != p.name) && !p.name.starts_with("shadow_"),
-                "{}: knob `{}` names a component's role",
-                i.name,
-                p.name
-            );
+            assert!(Role::ALL.iter().all(|r| r.name() != p.name) && !p.name.starts_with("shadow_"), "{}: knob `{}` names a component's role", i.name, p.name);
         }
     }
 }
@@ -515,9 +332,7 @@ fn the_guard_catches_what_it_should() {
     assert_eq!(fa[0].0, "face_axes");
     assert_eq!(fb[0].0, "face_axes_d");
     assert_eq!(fa[0].1, fb[0].1, "renamed copies have equal bodies");
-    let entry = functions(
-        "@compute @workgroup_size(8)\nfn main(@builtin(global_invocation_id) g: vec3<u32>) {\n    let x = 1u;\n}\n",
-    );
+    let entry = functions("@compute @workgroup_size(8)\nfn main(@builtin(global_invocation_id) g: vec3<u32>) {\n    let x = 1u;\n}\n");
     assert!(entry[0].2, "entry points are recognised");
     let rs = "let s = \"fn occluded(p: vec3<f32>) -> bool {{ return ctrace(p).hit; }}\\n\";";
     let dir = std::env::temp_dir().join(format!("guard-{}", std::process::id()));
@@ -526,11 +341,7 @@ fn the_guard_catches_what_it_should() {
     fs::write(&f, rs).unwrap();
     let w = wgsl_text(&f);
     fs::remove_dir_all(&dir).ok();
-    assert_eq!(
-        functions(&w).first().map(|f| f.0.as_str()),
-        Some("occluded"),
-        "WGSL in Rust literals is read: {w}"
-    );
+    assert_eq!(functions(&w).first().map(|f| f.0.as_str()), Some("occluded"), "WGSL in Rust literals is read: {w}");
 }
 
 /// Every storage buffer goes through `Gpu::storage` (its size checked against the device's
@@ -550,24 +361,14 @@ fn storage_buffers_are_checked_against_the_device() {
         let src = fs::read_to_string(p).unwrap();
         for (at, _) in src.match_indices("create_buffer(") {
             let rest = &src[at..];
-            let desc = &rest[..rest
-                .find("mapped_at_creation")
-                .unwrap_or(rest.len().min(600))];
+            let desc = &rest[..rest.find("mapped_at_creation").unwrap_or(rest.len().min(600))];
             let line = src[..at].lines().count();
             if desc.contains("STORAGE") {
-                problems.push(format!(
-                    "{file}:{line} creates a storage buffer (use `Gpu::storage`)"
-                ));
+                problems.push(format!("{file}:{line} creates a storage buffer (use `Gpu::storage`)"));
             } else if !desc.contains("usage: wgpu::BufferUsages::") {
-                problems.push(format!(
-                    "{file}:{line} creates a buffer of a usage not spelled out"
-                ));
+                problems.push(format!("{file}:{line} creates a buffer of a usage not spelled out"));
             }
         }
     }
-    assert!(
-        problems.is_empty(),
-        "storage buffers past the device check:\n  {}",
-        problems.join("\n  ")
-    );
+    assert!(problems.is_empty(), "storage buffers past the device check:\n  {}", problems.join("\n  "));
 }

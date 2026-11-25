@@ -55,18 +55,10 @@ pub struct Features {
 impl Features {
     /// A region's features (without LOD; see [`Features::with_lod`]).
     pub fn of(have: &[Feature]) -> Self {
-        let mut have: Vec<Feature> = have
-            .iter()
-            .copied()
-            .filter(|&f| f != Feature::Lod)
-            .collect();
+        let mut have: Vec<Feature> = have.iter().copied().filter(|&f| f != Feature::Lod).collect();
         have.sort();
         have.dedup();
-        Features {
-            have,
-            lacks: vec![],
-            lod_levels: 0,
-        }
+        Features { have, lacks: vec![], lod_levels: 0 }
     }
 
     /// With LOD levels up to `max` (none when 0).
@@ -110,25 +102,17 @@ impl Features {
         if self.has(f) {
             return None;
         }
-        Some(self.lacks.iter().find(|(x, _)| *x == f).map_or_else(
-            || "its executor does not build it".into(),
-            |(_, w)| w.clone(),
-        ))
+        Some(self.lacks.iter().find(|(x, _)| *x == f).map_or_else(|| "its executor does not build it".into(), |(_, w)| w.clone()))
     }
 
     /// The coarsest LOD level it holds (0: full-resolution chunks only).
     pub fn max_lod(&self) -> u8 {
-        if self.has(Feature::Lod) {
-            self.lod_levels
-        } else {
-            0
-        }
+        if self.has(Feature::Lod) { self.lod_levels } else { 0 }
     }
 
     /// Whether it draws passes of mode `m` at all.
     pub fn supports(&self, m: PassMode) -> bool {
-        (m.lighting == RenderMode::Unlit || self.has(Feature::Lit))
-            && (!m.meshes || self.has(Feature::Meshes))
+        (m.lighting == RenderMode::Unlit || self.has(Feature::Lit)) && (!m.meshes || self.has(Feature::Meshes))
     }
 
     /// What a pass of mode `m` (`None`: an interactive view) with LOD levels up to `max_lod`,
@@ -158,9 +142,7 @@ impl Features {
             missing(f);
         }
         if max_lod > self.max_lod() {
-            let why = self
-                .why_not(Feature::Lod)
-                .unwrap_or_else(|| format!("it holds levels up to {}", self.max_lod()));
+            let why = self.why_not(Feature::Lod).unwrap_or_else(|| format!("it holds levels up to {}", self.max_lod()));
             out.push(format!("max_lod {max_lod}: {why}"));
         }
         out
@@ -168,26 +150,9 @@ impl Features {
 
     /// One line: what it has, then what it lacks and why.
     pub fn describe(&self) -> String {
-        let have: Vec<String> = self
-            .iter()
-            .map(|f| {
-                if f == Feature::Lod {
-                    format!("lod<={}", self.lod_levels)
-                } else {
-                    f.name().into()
-                }
-            })
-            .collect();
-        let lacks: Vec<String> = self
-            .lacks
-            .iter()
-            .map(|(f, w)| format!("no {}: {w}", f.name()))
-            .collect();
-        [have.join(","), lacks.join("; ")]
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("; ")
+        let have: Vec<String> = self.iter().map(|f| if f == Feature::Lod { format!("lod<={}", self.lod_levels) } else { f.name().into() }).collect();
+        let lacks: Vec<String> = self.lacks.iter().map(|(f, w)| format!("no {}: {w}", f.name())).collect();
+        [have.join(","), lacks.join("; ")].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("; ")
     }
 }
 
@@ -197,48 +162,20 @@ mod tests {
 
     #[test]
     fn narrowing_and_left_out() {
-        let mut f = Features::of(&[
-            Feature::Lit,
-            Feature::Meshes,
-            Feature::MeshRays,
-            Feature::Volume,
-        ])
-        .with_lod(6);
+        let mut f = Features::of(&[Feature::Lit, Feature::Meshes, Feature::MeshRays, Feature::Volume]).with_lod(6);
         assert_eq!(f.max_lod(), 6);
-        let lit_meshes = PassMode {
-            lighting: RenderMode::Lit,
-            meshes: true,
-        };
+        let lit_meshes = PassMode { lighting: RenderMode::Lit, meshes: true };
         assert!(f.supports(lit_meshes) && f.left_out(Some(lit_meshes), 6, &[]).is_empty());
         f.lack(Feature::MeshRays, "draw `raster` shades forward");
         f.lack(Feature::Lod, "storage `tree64` lacks lod");
         assert!(f.supports(lit_meshes));
-        assert_eq!(
-            f.left_out(Some(lit_meshes), 2, &[]),
-            vec![
-                "mesh rays: draw `raster` shades forward".to_string(),
-                "max_lod 2: storage `tree64` lacks lod".into()
-            ]
-        );
+        assert_eq!(f.left_out(Some(lit_meshes), 2, &[]), vec!["mesh rays: draw `raster` shades forward".to_string(), "max_lod 2: storage `tree64` lacks lod".into()]);
         assert!(f.left_out(Some(PassMode::UNLIT), 0, &[]).is_empty());
         f.lack(Feature::Transparency, "visibility `raycast` lacks layers");
         assert!(f.supports(PassMode::UNLIT), "a world's ask skips no pass");
-        assert_eq!(
-            f.left_out(Some(PassMode::UNLIT), 0, &[Feature::Transparency]),
-            vec!["transparency: visibility `raycast` lacks layers".to_string()]
-        );
-        let plain =
-            Features::of(&[Feature::Lit]).lacking(Feature::Volume, "storage `heightmap` is 2.5D");
-        assert!(
-            !plain.supports(lit_meshes) && plain.supports(PassMode::LIT),
-            "a heightmap skips no pass"
-        );
-        assert_eq!(
-            plain.left_out(None, 1, &[]),
-            vec![
-                "volume: storage `heightmap` is 2.5D".to_string(),
-                "max_lod 1: its executor does not build it".into()
-            ]
-        );
+        assert_eq!(f.left_out(Some(PassMode::UNLIT), 0, &[Feature::Transparency]), vec!["transparency: visibility `raycast` lacks layers".to_string()]);
+        let plain = Features::of(&[Feature::Lit]).lacking(Feature::Volume, "storage `heightmap` is 2.5D");
+        assert!(!plain.supports(lit_meshes) && plain.supports(PassMode::LIT), "a heightmap skips no pass");
+        assert_eq!(plain.left_out(None, 1, &[]), vec!["volume: storage `heightmap` is 2.5D".to_string(), "max_lod 1: its executor does not build it".into()]);
     }
 }

@@ -58,18 +58,9 @@ pub struct SceneFeatures {
 impl SceneFeatures {
     /// Measures `spec` over `frames` frames at view radius `radius` (chunks), against
     /// `world` (chunks are generated as needed and stay cached for the run).
-    pub fn measure(
-        spec: &SceneSpec,
-        blocks: Arc<BlockRegistry>,
-        world: &mut World,
-        frames: u32,
-        radius: u32,
-    ) -> anyhow::Result<Self> {
+    pub fn measure(spec: &SceneSpec, blocks: Arc<BlockRegistry>, world: &mut World, frames: u32, radius: u32) -> anyhow::Result<Self> {
         let mut scene = Scene::new(spec.clone(), blocks, world, frames)?;
-        let mut f = SceneFeatures {
-            lights: scene.initial_lights().len() as u32,
-            ..Default::default()
-        };
+        let mut f = SceneFeatures { lights: scene.initial_lights().len() as u32, ..Default::default() };
         let cams: Vec<_> = (0..frames).map(|i| scene.camera(i)).collect();
 
         // Camera motion.
@@ -88,10 +79,7 @@ impl SceneFeatures {
         for (i, c) in cams.iter().enumerate() {
             out.clear();
             s.update(world, c.position, &mut out);
-            let n = out
-                .iter()
-                .filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. }))
-                .count() as f64;
+            let n = out.iter().filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. })).count() as f64;
             if i == 0 {
                 f.chunks_initial = n;
             } else {
@@ -101,9 +89,7 @@ impl SceneFeatures {
         (f.chunk_loads, f.chunk_loads_max) = mean_max(&loads);
 
         // Occupancy and what the camera sees, at sampled frames.
-        let picks: Vec<usize> = (0..SAMPLES)
-            .map(|k| k * (cams.len().max(1) - 1) / (SAMPLES - 1))
-            .collect();
+        let picks: Vec<usize> = (0..SAMPLES).map(|k| k * (cams.len().max(1) - 1) / (SAMPLES - 1)).collect();
         let (mut fill, mut solid, mut surface) = (0.0, 0.0, 0.0);
         let mut hits = vec![];
         let mut rays = 0usize;
@@ -138,16 +124,8 @@ impl SceneFeatures {
             f.sun_moves |= ev.environment.is_some();
         }
         (f.edits, f.edits_max) = mean_max(&edits);
-        let tris: std::collections::HashMap<u32, u64> = scene
-            .mesh_data()
-            .iter()
-            .map(|m| (m.id, m.indices.len() as u64 / 3))
-            .collect();
-        f.mesh_triangles = scene
-            .mesh_instances(0)
-            .iter()
-            .map(|i| tris.get(&i.mesh).copied().unwrap_or(0))
-            .sum();
+        let tris: std::collections::HashMap<u32, u64> = scene.mesh_data().iter().map(|m| (m.id, m.indices.len() as u64 / 3)).collect();
+        f.mesh_triangles = scene.mesh_instances(0).iter().map(|i| tris.get(&i.mesh).copied().unwrap_or(0)).sum();
         Ok(f)
     }
 
@@ -168,11 +146,7 @@ impl SceneFeatures {
             self.hit_distance_median,
             self.edits,
             self.lights,
-            if self.lights_animated {
-                " (animated)"
-            } else {
-                ""
-            },
+            if self.lights_animated { " (animated)" } else { "" },
             if self.sun_moves { ", moving sun" } else { "" },
             self.mesh_triangles
         )
@@ -183,10 +157,7 @@ fn mean_max(v: &[f64]) -> (f64, f64) {
     if v.is_empty() {
         return (0.0, 0.0);
     }
-    (
-        v.iter().sum::<f64>() / v.len() as f64,
-        v.iter().copied().fold(f64::MIN, f64::max),
-    )
+    (v.iter().sum::<f64>() / v.len() as f64, v.iter().copied().fold(f64::MIN, f64::max))
 }
 
 /// (non-air chunk share, solid voxel share, surface voxel share) of the LOD-0 chunk cube of
@@ -218,14 +189,7 @@ fn occupancy(world: &mut World, pos: DVec3, r: i32) -> (f64, f64, f64) {
         }
         chunks.get(&ck).is_none_or(|d| d.get(q & (n - 1)).is_air())
     };
-    let dirs = [
-        IVec3::X,
-        IVec3::NEG_X,
-        IVec3::Y,
-        IVec3::NEG_Y,
-        IVec3::Z,
-        IVec3::NEG_Z,
-    ];
+    let dirs = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
     let exposed = |c: IVec3, p: IVec3| dirs.iter().any(|&d| air(c, p + d));
     let (filled, solid, surface) = chunks
         .par_iter()
@@ -265,11 +229,7 @@ fn occupancy(world: &mut World, pos: DVec3, r: i32) -> (f64, f64, f64) {
         })
         .reduce(|| (0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2));
     let voxels = total * mr_core::CHUNK_VOLUME as f64;
-    (
-        filled as f64 / total,
-        solid as f64 / voxels,
-        surface as f64 / voxels,
-    )
+    (filled as f64 / total, solid as f64 / voxels, surface as f64 / voxels)
 }
 
 #[cfg(test)]
@@ -284,23 +244,10 @@ mod tests {
         let text = "generator = { type = \"flat\" }\ncamera = { type = \"static\", position = [0, 20, 0], target = [100, 12, 100] }\n";
         let spec: SceneSpec = toml::from_str(text).unwrap();
         let mut world = World::new(spec.generator.build());
-        let f =
-            SceneFeatures::measure(&spec, Arc::new(default_registry()), &mut world, 10, 3).unwrap();
-        assert_eq!(
-            (f.cam_speed, f.cam_turn_deg, f.chunk_loads, f.edits),
-            (0.0, 0.0, 0.0, 0.0)
-        );
-        assert!(
-            f.chunks_initial > 0.0
-                && f.chunk_fill > 0.0
-                && f.solid_fraction > 0.0
-                && f.surface_fraction > 0.0
-        );
-        assert!(
-            f.sky_fraction > 0.0 && f.sky_fraction < 1.0,
-            "{}",
-            f.describe()
-        );
+        let f = SceneFeatures::measure(&spec, Arc::new(default_registry()), &mut world, 10, 3).unwrap();
+        assert_eq!((f.cam_speed, f.cam_turn_deg, f.chunk_loads, f.edits), (0.0, 0.0, 0.0, 0.0));
+        assert!(f.chunks_initial > 0.0 && f.chunk_fill > 0.0 && f.solid_fraction > 0.0 && f.surface_fraction > 0.0);
+        assert!(f.sky_fraction > 0.0 && f.sky_fraction < 1.0, "{}", f.describe());
         assert!(f.hit_distance > 0.0);
     }
 }

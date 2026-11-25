@@ -10,8 +10,8 @@ use anyhow::{Context, bail};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 
-use mr_core::lighting::PixelFormat;
 use mr_core::{BlockRegistry, Environment, InitParams, RendererInfo};
+use mr_core::lighting::PixelFormat;
 use mr_ipc::{FrameSlots, HostMsg, PROTOCOL_VERSION, WorkerMsg};
 
 use crate::plan::{Isolation, RendererSpec, RunSpec, Watchdog};
@@ -74,16 +74,10 @@ pub fn spawn_renderer(
 ) -> anyhow::Result<Worker> {
     let [width, height] = resolution;
     // A pipeline compiled for this machine, if asked for and the renderer has one.
-    let exe = match (
-        spec.compile.unwrap_or(run.compile),
-        crate::pipelines::bake(spec)?,
-    ) {
+    let exe = match (spec.compile.unwrap_or(run.compile), crate::pipelines::bake(spec)?) {
         (level @ (crate::plan::Compile::Native | crate::plan::Compile::BreakIn), Some(b)) => {
             if run.isolation != Isolation::Process {
-                anyhow::bail!(
-                    "{}: compiled pipelines run in their own process (isolation = \"process\")",
-                    spec.label()
-                );
+                anyhow::bail!("{}: compiled pipelines run in their own process (isolation = \"process\")", spec.label());
             }
             let c = crate::pipelines::trusted(&b, level)?;
             if let Some(s) = c.build_s {
@@ -103,11 +97,7 @@ pub fn spawn_renderer(
         view_radius_chunks: spec.view_radius(run),
         max_lod: spec.max_lod(run, u8::MAX),
         options_json: serde_json::to_string(&spec.options)?,
-        graph_json: graph
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?
-            .unwrap_or_default(),
+        graph_json: graph.as_ref().map(serde_json::to_string).transpose()?.unwrap_or_default(),
         devices: spec.devices(run),
         stage_times: run.stage_times,
         client: spec.levels(),
@@ -125,10 +115,7 @@ pub fn spawn_renderer(
         watchdog: run.watchdog.clone(),
     })?;
     if spec.generates() {
-        w.send(HostMsg::Generate {
-            world: serde_json::to_string(world)?,
-            budget: run.budget().map(|b| b as u32),
-        })?;
+        w.send(HostMsg::Generate { world: serde_json::to_string(world)?, budget: run.budget().map(|b| b as u32) })?;
     }
     Ok(w)
 }
@@ -165,9 +152,7 @@ impl Worker {
                     Some(e) => e.clone(),
                     None if cfg.launcher.is_empty() => self_exe()?,
                     // A launcher runs it by its path (`/proc/self/exe` would be the launcher).
-                    None => std::env::var_os("MR_WORKER_EXE")
-                        .map(PathBuf::from)
-                        .map_or_else(std::env::current_exe, Ok)?,
+                    None => std::env::var_os("MR_WORKER_EXE").map(PathBuf::from).map_or_else(std::env::current_exe, Ok)?,
                 };
                 let mut cmd = match cfg.launcher.split_first() {
                     Some((first, rest)) => {
@@ -177,34 +162,19 @@ impl Worker {
                     }
                     None => Command::new(&exe),
                 };
-                cmd.arg("worker")
-                    .arg("--socket")
-                    .arg(&sock)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::piped());
-                let mut c = cmd
-                    .spawn()
-                    .with_context(|| format!("spawning worker for {}", cfg.renderer))?;
-                forward_stderr(
-                    c.stderr.take().unwrap(),
-                    cfg.label.to_string(),
-                    cfg.log_path.clone(),
-                );
+                cmd.arg("worker").arg("--socket").arg(&sock).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+                let mut c = cmd.spawn().with_context(|| format!("spawning worker for {}", cfg.renderer))?;
+                forward_stderr(c.stderr.take().unwrap(), cfg.label.to_string(), cfg.log_path.clone());
                 child = Some(c);
             }
             Isolation::Thread => {
                 let s = sock.clone();
                 let label = cfg.label.to_string();
-                thread = Some(
-                    std::thread::Builder::new()
-                        .name(format!("worker-{label}"))
-                        .spawn(move || {
-                            if let Err(e) = mr_worker::run(&s) {
-                                tracing::error!("[{label}] worker failed: {e:#}");
-                            }
-                        })?,
-                );
+                thread = Some(std::thread::Builder::new().name(format!("worker-{label}")).spawn(move || {
+                    if let Err(e) = mr_worker::run(&s) {
+                        tracing::error!("[{label}] worker failed: {e:#}");
+                    }
+                })?);
             }
         }
 
@@ -214,16 +184,10 @@ impl Worker {
         let left = || until.saturating_duration_since(Instant::now());
         // Silence past it is a hang: said so, and a process killed (dropping a `Child` would
         // leave it running) or a thread abandoned.
-        let fate = if child.is_some() {
-            "its process killed"
-        } else {
-            "its thread abandoned"
-        };
+        let fate = if child.is_some() { "its process killed" } else { "its thread abandoned" };
         let hung = |e: anyhow::Error| {
             if e.to_string().starts_with("worker timed out") {
-                anyhow::anyhow!(
-                    "hung while building: no answer within {build:.1?} (run.watchdog.build_s); {fate}"
-                )
+                anyhow::anyhow!("hung while building: no answer within {build:.1?} (run.watchdog.build_s); {fate}")
             } else {
                 e
             }
@@ -234,71 +198,50 @@ impl Worker {
         let (mut input, mut output) = mr_ipc::split::<WorkerMsg, HostMsg>(stream);
 
         let (ev_tx, rx) = crossbeam_channel::unbounded();
-        std::thread::Builder::new()
-            .name(format!("rx-{}", cfg.label))
-            .spawn(move || {
-                loop {
-                    match input.recv() {
-                        Ok(Some(m)) => {
-                            if ev_tx.send(WorkerEvent::Msg(m)).is_err() {
-                                return;
-                            }
-                        }
-                        _ => {
-                            let _ = ev_tx.send(WorkerEvent::Closed);
+        std::thread::Builder::new().name(format!("rx-{}", cfg.label)).spawn(move || {
+            loop {
+                match input.recv() {
+                    Ok(Some(m)) => {
+                        if ev_tx.send(WorkerEvent::Msg(m)).is_err() {
                             return;
                         }
                     }
-                }
-            })?;
-        let (tx, msg_rx) = crossbeam_channel::unbounded::<HostMsg>();
-        std::thread::Builder::new()
-            .name(format!("tx-{}", cfg.label))
-            .spawn(move || {
-                for m in msg_rx {
-                    if output.send(&m).is_err() {
+                    _ => {
+                        let _ = ev_tx.send(WorkerEvent::Closed);
                         return;
                     }
                 }
-            })?;
+            }
+        })?;
+        let (tx, msg_rx) = crossbeam_channel::unbounded::<HostMsg>();
+        std::thread::Builder::new().name(format!("tx-{}", cfg.label)).spawn(move || {
+            for m in msg_rx {
+                if output.send(&m).is_err() {
+                    return;
+                }
+            }
+        })?;
 
         let pid = match recv_timeout(&rx, left()).map_err(hung)? {
             WorkerMsg::Hello { pid, protocol, .. } if protocol == PROTOCOL_VERSION => pid,
-            WorkerMsg::Hello { protocol, .. } => {
-                bail!("worker speaks protocol {protocol}, host {PROTOCOL_VERSION}")
-            }
+            WorkerMsg::Hello { protocol, .. } => bail!("worker speaks protocol {protocol}, host {PROTOCOL_VERSION}"),
             m => bail!("unexpected first message {m:?}"),
         };
         // A standalone renderer (no graph) writes RGBA8.
-        let format = mr_components::graph::of_init(cfg.renderer, &cfg.params)
-            .map_or(PixelFormat::Rgba8, |g| g.tone().format());
+        let format = mr_components::graph::of_init(cfg.renderer, &cfg.params).map_or(PixelFormat::Rgba8, |g| g.tone().format());
         let slot_bytes = (cfg.params.width * cfg.params.height * format.bytes()) as u64;
         let mut shm = FrameSlots::create(&tag, cfg.slots, slot_bytes)?;
-        tx.send(HostMsg::Init {
-            renderer: cfg.renderer.to_string(),
-            params: cfg.params,
-            shm: shm.spec().clone(),
-        })?;
+        tx.send(HostMsg::Init { renderer: cfg.renderer.to_string(), params: cfg.params, shm: shm.spec().clone() })?;
         let ready = recv_timeout(&rx, left()).map_err(|e| {
             // A process gone while building says how (a signal names a crash it could not report).
             let closed = e.to_string().starts_with("worker exited");
-            match child.0.as_mut().and_then(|c| {
-                if closed {
-                    c.wait().ok()
-                } else {
-                    c.try_wait().ok().flatten()
-                }
-            }) {
+            match child.0.as_mut().and_then(|c| if closed { c.wait().ok() } else { c.try_wait().ok().flatten() }) {
                 Some(status) => e.context(format!("worker process ended: {status}")),
                 None => hung(e),
             }
         });
         let (info, init_ms, shaders) = match ready? {
-            WorkerMsg::Ready {
-                info,
-                init_ms,
-                shaders,
-            } => (info, init_ms, shaders),
+            WorkerMsg::Ready { info, init_ms, shaders } => (info, init_ms, shaders),
             m => bail!("[{}] expected Ready, got {m:?}", cfg.label),
         };
         // Both sides have it mapped now; unlinking means nothing leaks if we're killed.
@@ -327,9 +270,7 @@ impl Worker {
     pub fn deadline(&self) -> Duration {
         match self.slowest {
             None => Duration::from_secs_f64(self.watchdog.build_s.max(0.0)),
-            Some(s) => s
-                .mul_f64(self.watchdog.factor.max(1.0))
-                .max(Duration::from_secs_f64(self.watchdog.min_s.max(0.0))),
+            Some(s) => s.mul_f64(self.watchdog.factor.max(1.0)).max(Duration::from_secs_f64(self.watchdog.min_s.max(0.0))),
         }
     }
 
@@ -360,9 +301,7 @@ impl Worker {
         let d = self.deadline();
         let t = Instant::now();
         let r = recv_timeout(&self.rx, d);
-        if r.as_ref()
-            .is_err_and(|e| e.to_string().starts_with("worker timed out"))
-        {
+        if r.as_ref().is_err_and(|e| e.to_string().starts_with("worker timed out")) {
             self.check_hung(d.max(t.elapsed()))?;
         }
         if r.is_ok() {
@@ -387,34 +326,20 @@ impl Worker {
             }
             None => "its thread abandoned",
         };
-        let why = if self.slowest.is_some() {
-            format!("{}x its slowest wait so far", self.watchdog.factor)
-        } else {
-            "the build allowance".into()
-        };
+        let why = if self.slowest.is_some() { format!("{}x its slowest wait so far", self.watchdog.factor) } else { "the build allowance".into() };
         bail!("hung: no answer within {d:.1?} ({why}, run.watchdog); {fate}")
     }
 
     pub fn send(&self, m: HostMsg) -> anyhow::Result<()> {
-        self.tx
-            .send(m)
-            .map_err(|_| anyhow::anyhow!("[{}] worker connection closed", self.label))
+        self.tx.send(m).map_err(|_| anyhow::anyhow!("[{}] worker connection closed", self.label))
     }
 
     /// Changes the render resolution. All frames in flight must have completed (their
     /// slots returned); a fresh shared-memory region is created for the new size.
     pub fn resize(&mut self, width: u32, height: u32, slots: u32) -> anyhow::Result<()> {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut shm = FrameSlots::create(
-            &format!("multirenderer-{}-{n}", std::process::id()),
-            slots,
-            (width * height * self.format.bytes()) as u64,
-        )?;
-        self.send(HostMsg::Resize {
-            width,
-            height,
-            shm: shm.spec().clone(),
-        })?;
+        let mut shm = FrameSlots::create(&format!("multirenderer-{}-{n}", std::process::id()), slots, (width * height * self.format.bytes()) as u64)?;
+        self.send(HostMsg::Resize { width, height, shm: shm.spec().clone() })?;
         // The worker maps it while handling Resize; Flushed below proves it has.
         self.send(HostMsg::Flush)?;
         loop {
@@ -446,10 +371,7 @@ impl Worker {
     }
 
     /// Blocks until the worker answers `Flushed`, handing other messages to `on_msg`.
-    pub fn flush(
-        &mut self,
-        mut on_msg: impl FnMut(WorkerMsg) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
+    pub fn flush(&mut self, mut on_msg: impl FnMut(WorkerMsg) -> anyhow::Result<()>) -> anyhow::Result<()> {
         self.send(HostMsg::Flush)?;
         loop {
             match self.recv() {
@@ -483,11 +405,7 @@ impl Worker {
     /// otherwise it only looks.
     pub fn exit_status(&mut self, closed: bool) -> Option<String> {
         let c = self.child.as_mut()?;
-        let status = if closed {
-            c.wait().ok()
-        } else {
-            c.try_wait().ok().flatten()
-        };
+        let status = if closed { c.wait().ok() } else { c.try_wait().ok().flatten() };
         status.map(|s| s.to_string())
     }
 
@@ -496,14 +414,7 @@ impl Worker {
     /// not stop: a process is then killed, a thread abandoned).
     pub fn shutdown(mut self) -> Option<String> {
         if self.hung {
-            return Some(
-                if self.child.is_some() {
-                    "hung earlier; its process was killed"
-                } else {
-                    "hung earlier; its thread was abandoned"
-                }
-                .into(),
-            );
+            return Some(if self.child.is_some() { "hung earlier; its process was killed" } else { "hung earlier; its thread was abandoned" }.into());
         }
         let _ = self.tx.send(HostMsg::Shutdown);
         let wait = self.deadline();
@@ -518,15 +429,9 @@ impl Worker {
                 }
                 break;
             }
-            let step = if self.thread.is_some() {
-                until.min(Instant::now() + Duration::from_millis(5))
-            } else {
-                until
-            };
+            let step = if self.thread.is_some() { until.min(Instant::now() + Duration::from_millis(5)) } else { until };
             match self.rx.recv_deadline(step) {
-                Ok(WorkerEvent::Msg(WorkerMsg::Error(e))) => {
-                    problem = Some(format!("failed while stopping: {e}"))
-                }
+                Ok(WorkerEvent::Msg(WorkerMsg::Error(e))) => problem = Some(format!("failed while stopping: {e}")),
                 Ok(WorkerEvent::Msg(_)) => {}
                 Ok(WorkerEvent::Closed) | Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) if Instant::now() < until => {}
@@ -544,10 +449,7 @@ impl Worker {
             if t.is_finished() {
                 let _ = t.join();
             } else {
-                problem = Some(format!(
-                    "{}; its thread abandoned",
-                    problem.unwrap_or_else(|| format!("did not stop within {wait:.1?}"))
-                ));
+                problem = Some(format!("{}; its thread abandoned", problem.unwrap_or_else(|| format!("did not stop within {wait:.1?}"))));
             }
         }
         if let Some(mut c) = self.child.take() {
@@ -564,10 +466,7 @@ impl Worker {
                 if Instant::now() >= until {
                     let _ = c.kill();
                     let _ = c.wait();
-                    problem = Some(format!(
-                        "{}; its process killed",
-                        problem.unwrap_or_else(|| format!("did not stop within {wait:.1?}"))
-                    ));
+                    problem = Some(format!("{}; its process killed", problem.unwrap_or_else(|| format!("did not stop within {wait:.1?}"))));
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -606,26 +505,19 @@ pub fn recv_timeout(rx: &Receiver<WorkerEvent>, t: Duration) -> anyhow::Result<W
     match rx.recv_timeout(t) {
         Ok(WorkerEvent::Msg(WorkerMsg::Error(e))) => bail!("worker error: {e}"),
         Ok(WorkerEvent::Msg(m)) => Ok(m),
-        Ok(WorkerEvent::Closed) | Err(RecvTimeoutError::Disconnected) => {
-            bail!("worker exited (see its log)")
-        }
+        Ok(WorkerEvent::Closed) | Err(RecvTimeoutError::Disconnected) => bail!("worker exited (see its log)"),
         Err(RecvTimeoutError::Timeout) => bail!("worker timed out after {t:?}"),
     }
 }
 
-fn accept(
-    l: &mr_ipc::Listener,
-    child: &mut Option<Child>,
-    timeout: Duration,
-) -> anyhow::Result<mr_ipc::Stream> {
+fn accept(l: &mr_ipc::Listener, child: &mut Option<Child>, timeout: Duration) -> anyhow::Result<mr_ipc::Stream> {
     let start = Instant::now();
     loop {
         if let Some(s) = mr_ipc::try_accept(l)? {
             return Ok(s);
         }
         if let Some(c) = child
-            && let Some(status) = c.try_wait()?
-        {
+            && let Some(status) = c.try_wait()? {
             bail!("worker exited before connecting: {status}");
         }
         if start.elapsed() > timeout {
@@ -638,18 +530,12 @@ fn accept(
 /// Copies worker stderr into its log file, echoing warnings and errors to the host log.
 fn forward_stderr(stderr: std::process::ChildStderr, label: String, log: Option<PathBuf>) {
     std::thread::spawn(move || {
-        let mut file = log
-            .as_deref()
-            .and_then(|p: &Path| std::fs::File::create(p).ok());
+        let mut file = log.as_deref().and_then(|p: &Path| std::fs::File::create(p).ok());
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
             if let Some(f) = &mut file {
                 let _ = writeln!(f, "{line}");
             }
-            if line.contains(" WARN ")
-                || line.contains("ERROR")
-                || line.contains("panicked")
-                || file.is_none()
-            {
+            if line.contains(" WARN ") || line.contains("ERROR") || line.contains("panicked") || file.is_none() {
                 eprintln!("[{label}] {line}");
             }
         }

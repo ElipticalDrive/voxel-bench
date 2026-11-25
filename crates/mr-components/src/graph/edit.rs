@@ -353,11 +353,7 @@ fn alternatives(
     let except = match t.remove("except") {
         None => vec![],
         Some(toml::Value::Array(a)) => a,
-        Some(x) => {
-            return Err(format!(
-                "edit `{v}`: `except` is a list of values, not `{x}`"
-            ));
-        }
+        Some(x) => return Err(format!("edit `{v}`: `except` is a list of values, not `{x}`")),
     };
     let t = &t;
     let list = |x: &toml::Value| x.is_array() || x.as_str() == Some("*");
@@ -369,17 +365,13 @@ fn alternatives(
     };
     let values = match &t[k] {
         toml::Value::Array(_) if !except.is_empty() => {
-            return Err(format!(
-                "edit `{v}`: `except` goes with `\"*\"`, not a list (leave the values out of it)"
-            ));
+            return Err(format!("edit `{v}`: `except` goes with `\"*\"`, not a list (leave the values out of it)"));
         }
         toml::Value::Array(a) => a.clone(),
         _ => every(base, new, t, k).map_err(|e| format!("edit `{v}`: {e}"))?,
     };
     if let Some(x) = except.iter().find(|x| !values.contains(x)) {
-        return Err(format!(
-            "edit `{v}`: `except` names {x}, which `\"*\"` does not offer"
-        ));
+        return Err(format!("edit `{v}`: `except` names {x}, which `\"*\"` does not offer"));
     }
     values
         .into_iter()
@@ -1016,11 +1008,7 @@ mod tests {
         use crate::graph::{host_description, role_components};
         for role in [Role::Generator, Role::Link, Role::Client, Role::Post] {
             for c in role_components(role) {
-                assert!(
-                    host_description(role, c).is_some_and(|d| !d.is_empty()),
-                    "{} `{c}` has no description",
-                    role.name()
-                );
+                assert!(host_description(role, c).is_some_and(|d| !d.is_empty()), "{} `{c}` has no description", role.name());
             }
         }
         assert!(host_description(Role::World, "world").is_some());

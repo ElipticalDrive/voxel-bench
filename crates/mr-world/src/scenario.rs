@@ -70,15 +70,9 @@ impl EnvSpec {
         if self.no_sun {
             e.sun = None;
         } else if self.sun_direction.is_some() || self.sun_color.is_some() {
-            let d = self
-                .sun_direction
-                .map(Vec3::from_array)
-                .unwrap_or(Vec3::new(-0.4, -1.0, -0.25));
+            let d = self.sun_direction.map(Vec3::from_array).unwrap_or(Vec3::new(-0.4, -1.0, -0.25));
             let c = self.sun_color.map(Vec3::from_array).unwrap_or(Vec3::ONE);
-            e.sun = Some(Sun {
-                direction: d.normalize(),
-                color: c,
-            });
+            e.sun = Some(Sun { direction: d.normalize(), color: c });
         }
         e
     }
@@ -164,19 +158,9 @@ pub enum CameraPathSpec {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EventSpec {
     /// Fill (or dig, with `block = "air"`) a sphere at a given frame.
-    Sphere {
-        frame: u32,
-        center: V3,
-        radius: f64,
-        block: String,
-    },
+    Sphere { frame: u32, center: V3, radius: f64, block: String },
     /// Fill an axis-aligned box `[min, max]` (inclusive) at a given frame.
-    Box {
-        frame: u32,
-        min: [i32; 3],
-        max: [i32; 3],
-        block: String,
-    },
+    Box { frame: u32, min: [i32; 3], max: [i32; 3], block: String },
     /// Every `every` frames, set `count` random blocks within `radius` of `center`
     /// (default: the camera). `block = "toggle"` flips air/solid.
     RandomEdits {
@@ -219,29 +203,14 @@ pub struct Scene {
 
 impl Scene {
     /// `frames` is the run length used to parametrise non-periodic camera paths.
-    pub fn new(
-        spec: SceneSpec,
-        blocks: Arc<BlockRegistry>,
-        world: &mut World,
-        frames: u32,
-    ) -> anyhow::Result<Self> {
+    pub fn new(spec: SceneSpec, blocks: Arc<BlockRegistry>, world: &mut World, frames: u32) -> anyhow::Result<Self> {
         let spawn = world.generator.spawn();
         let environment = spec.environment.build();
-        let mut s = Self {
-            spec,
-            blocks,
-            environment,
-            base_lights: vec![],
-            spawn,
-            frames: frames.max(1),
-        };
+        let mut s = Self { spec, blocks, environment, base_lights: vec![], spawn, frames: frames.max(1) };
         s.base_lights = s.build_lights(world)?;
         for e in &s.spec.events {
-            if let EventSpec::Sphere { block, .. }
-            | EventSpec::Box { block, .. }
-            | EventSpec::RandomEdits { block, .. } = e
-                && block != "toggle"
-            {
+            if let EventSpec::Sphere { block, .. } | EventSpec::Box { block, .. } | EventSpec::RandomEdits { block, .. } = e
+                && block != "toggle" {
                 s.block_id(block)?;
             }
         }
@@ -252,9 +221,7 @@ impl Scene {
         if name == "air" {
             return Ok(BlockId::AIR);
         }
-        self.blocks
-            .find(name)
-            .with_context(|| format!("unknown block `{name}`"))
+        self.blocks.find(name).with_context(|| format!("unknown block `{name}`"))
     }
 
     /// Mesh geometry (mesh mode), one per `meshes` entry.
@@ -275,37 +242,21 @@ impl Scene {
         let mut out = vec![];
         for spec in &self.spec.lights {
             match spec {
-                LightSpec::Point {
-                    position,
-                    color,
-                    intensity,
-                    radius,
-                } => out.push(Light {
+                LightSpec::Point { position, color, intensity, radius } => out.push(Light {
                     id: out.len() as u32,
                     position: v(*position),
                     color: Vec3::from_array(*color),
                     intensity: *intensity,
                     radius: *radius,
                 }),
-                LightSpec::Scatter {
-                    count,
-                    seed,
-                    center,
-                    extent,
-                    color,
-                    intensity,
-                    radius,
-                    on_surface,
-                } => {
+                LightSpec::Scatter { count, seed, center, extent, color, intensity, radius, on_surface } => {
                     let c = center.map(v).unwrap_or(self.spawn);
                     let ext = v(*extent);
                     let mut i = 0u32;
                     let mut placed = 0;
                     while placed < *count {
                         if i > count * 20 + 1000 {
-                            bail!(
-                                "could not place {count} lights (placed {placed}); is the scatter box solid?"
-                            );
+                            bail!("could not place {count} lights (placed {placed}); is the scatter box solid?");
                         }
                         let n = i as i32;
                         let r = |k: i32| unit(hash3(*seed, n, k, 0x11)) as f64 * 2.0 - 1.0;
@@ -315,10 +266,7 @@ impl Scene {
                             let top = (c.y + ext.y) as i32;
                             let bottom = (c.y - ext.y) as i32;
                             let (x, z) = (p.x.floor() as i32, p.z.floor() as i32);
-                            let Some(y) = (bottom..=top)
-                                .rev()
-                                .find(|&y| world.block(IVec3::new(x, y, z)).is_solid())
-                            else {
+                            let Some(y) = (bottom..=top).rev().find(|&y| world.block(IVec3::new(x, y, z)).is_solid()) else {
                                 continue;
                             };
                             if world.block(IVec3::new(x, y + 1, z)).is_solid() {
@@ -332,13 +280,7 @@ impl Scene {
                             let h = hash3(*seed, i as i32, 0, 0x22);
                             Vec3::new(1.0, 0.55 + unit(h) * 0.4, 0.25 + unit(h >> 16) * 0.5)
                         });
-                        out.push(Light {
-                            id: out.len() as u32,
-                            position: p,
-                            color: col,
-                            intensity: *intensity,
-                            radius: *radius,
-                        });
+                        out.push(Light { id: out.len() as u32, position: p, color: col, intensity: *intensity, radius: *radius });
                         placed += 1;
                     }
                 }
@@ -351,29 +293,14 @@ impl Scene {
         let fov = self.spec.fov_deg;
         let t = frame as f64 / self.frames as f64;
         let mut cam = match &self.spec.camera {
-            CameraPathSpec::Static {
-                position,
-                target,
-                yaw_deg,
-                pitch_deg,
-            } => {
+            CameraPathSpec::Static { position, target, yaw_deg, pitch_deg } => {
                 let p = position.map(v).unwrap_or(self.spawn);
                 match target {
                     Some(tg) => Camera::look_at(p, v(*tg), fov),
-                    None => Camera {
-                        position: p,
-                        yaw: yaw_deg.to_radians(),
-                        pitch: pitch_deg.to_radians(),
-                        ..Default::default()
-                    },
+                    None => Camera { position: p, yaw: yaw_deg.to_radians(), pitch: pitch_deg.to_radians(), ..Default::default() },
                 }
             }
-            CameraPathSpec::Orbit {
-                center,
-                radius,
-                height,
-                period,
-            } => {
+            CameraPathSpec::Orbit { center, radius, height, period } => {
                 let a = std::f64::consts::TAU * frame as f64 / *period.max(&1) as f64;
                 let c = v(*center);
                 let p = c + DVec3::new(a.sin() * radius, *height, a.cos() * radius);
@@ -389,18 +316,10 @@ impl Scene {
                 let pts: Vec<DVec3> = points.iter().copied().map(v).collect();
                 let p = catmull_rom(&pts, t);
                 let ahead = catmull_rom(&pts, (t + 0.002).min(1.0));
-                let ahead = if (ahead - p).length() < 1e-6 {
-                    p + (p - catmull_rom(&pts, t - 0.002))
-                } else {
-                    ahead
-                };
+                let ahead = if (ahead - p).length() < 1e-6 { p + (p - catmull_rom(&pts, t - 0.002)) } else { ahead };
                 Camera::look_at(p, ahead, fov)
             }
-            CameraPathSpec::Spin {
-                position,
-                period,
-                pitch_deg,
-            } => Camera {
+            CameraPathSpec::Spin { position, period, pitch_deg } => Camera {
                 position: position.map(v).unwrap_or(self.spawn),
                 yaw: std::f32::consts::TAU * frame as f32 / *period.max(&1) as f32,
                 pitch: pitch_deg.to_radians(),
@@ -416,12 +335,7 @@ impl Scene {
         let mut ev = FrameEvents::default();
         for e in self.spec.events.clone() {
             match e {
-                EventSpec::Sphere {
-                    frame: f,
-                    center,
-                    radius,
-                    block,
-                } if f == frame => {
+                EventSpec::Sphere { frame: f, center, radius, block } if f == frame => {
                     let b = self.block_id(&block)?;
                     let c = v(center);
                     let r = radius.ceil() as i32;
@@ -437,46 +351,23 @@ impl Scene {
                         }
                     }
                 }
-                EventSpec::Box {
-                    frame: f,
-                    min,
-                    max,
-                    block,
-                } if f == frame => {
+                EventSpec::Box { frame: f, min, max, block } if f == frame => {
                     let b = self.block_id(&block)?;
                     for z in min[2]..=max[2] {
                         for y in min[1]..=max[1] {
                             for x in min[0]..=max[0] {
-                                ev.edits.push(BlockEdit {
-                                    pos: IVec3::new(x, y, z),
-                                    block: b,
-                                });
+                                ev.edits.push(BlockEdit { pos: IVec3::new(x, y, z), block: b });
                             }
                         }
                     }
                 }
-                EventSpec::RandomEdits {
-                    every,
-                    count,
-                    seed,
-                    center,
-                    radius,
-                    block,
-                } if frame.is_multiple_of(every.max(1)) => {
+                EventSpec::RandomEdits { every, count, seed, center, radius, block } if frame.is_multiple_of(every.max(1)) => {
                     let toggle = block == "toggle";
-                    let b = if toggle {
-                        BlockId::AIR
-                    } else {
-                        self.block_id(&block)?
-                    };
+                    let b = if toggle { BlockId::AIR } else { self.block_id(&block)? };
                     let c = center.map(v).unwrap_or(camera.position);
                     for i in 0..count {
-                        let r = |k: i32| {
-                            unit(hash3(seed ^ frame as u64, i as i32, k, 0x33)) as f64 * 2.0 - 1.0
-                        };
-                        let p = (c + DVec3::new(r(0), r(1), r(2)) * radius)
-                            .floor()
-                            .as_ivec3();
+                        let r = |k: i32| unit(hash3(seed ^ frame as u64, i as i32, k, 0x33)) as f64 * 2.0 - 1.0;
+                        let p = (c + DVec3::new(r(0), r(1), r(2)) * radius).floor().as_ivec3();
                         let block = if toggle {
                             // Toggling needs the current state; resolved by the host against its world.
                             BlockId(u16::MAX)
@@ -493,15 +384,8 @@ impl Scene {
                         .iter()
                         .map(|l| {
                             let ph = l.id as f64 * 1.618;
-                            let off = DVec3::new(
-                                (a + ph).sin(),
-                                (a * 0.7 + ph).sin() * 0.3,
-                                (a * 1.3 + ph).cos(),
-                            );
-                            Light {
-                                position: l.position + off * amplitude,
-                                ..*l
-                            }
+                            let off = DVec3::new((a + ph).sin(), (a * 0.7 + ph).sin() * 0.3, (a * 1.3 + ph).cos());
+                            Light { position: l.position + off * amplitude, ..*l }
                         })
                         .collect();
                 }
@@ -509,10 +393,7 @@ impl Scene {
                     let a = std::f32::consts::TAU * frame as f32 / period.max(1) as f32;
                     let mut env = self.environment;
                     let color = env.sun.map(|s| s.color).unwrap_or(Vec3::ONE);
-                    env.sun = Some(Sun {
-                        direction: Vec3::new(a.sin(), -a.cos(), -0.3).normalize(),
-                        color,
-                    });
+                    env.sun = Some(Sun { direction: Vec3::new(a.sin(), -a.cos(), -0.3).normalize(), color });
                     ev.environment = Some(env);
                 }
                 _ => {}
@@ -531,18 +412,10 @@ fn catmull_rom(p: &[DVec3], t: f64) -> DVec3 {
             let i = (t.floor() as usize).min(n - 2);
             let f = t - i as f64;
             let get = |k: isize| p[k.clamp(0, n as isize - 1) as usize];
-            let (p0, p1, p2, p3) = (
-                get(i as isize - 1),
-                get(i as isize),
-                get(i as isize + 1),
-                get(i as isize + 2),
-            );
+            let (p0, p1, p2, p3) = (get(i as isize - 1), get(i as isize), get(i as isize + 1), get(i as isize + 2));
             let f2 = f * f;
             let f3 = f2 * f;
-            0.5 * (2.0 * p1
-                + (p2 - p0) * f
-                + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * f2
-                + (3.0 * p1 - p0 - 3.0 * p2 + p3) * f3)
+            0.5 * (2.0 * p1 + (p2 - p0) * f + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * f2 + (3.0 * p1 - p0 - 3.0 * p2 + p3) * f3)
         }
     }
 }
@@ -554,11 +427,7 @@ pub fn resolve_edits(world: &mut World, edits: Vec<BlockEdit>) -> Vec<BlockEdit>
     let mut order = vec![];
     for e in edits {
         let b = if e.block.0 == u16::MAX {
-            if world.block(e.pos).is_solid() {
-                BlockId::AIR
-            } else {
-                crate::textures::blocks::STONE
-            }
+            if world.block(e.pos).is_solid() { BlockId::AIR } else { crate::textures::blocks::STONE }
         } else {
             e.block
         };
@@ -566,11 +435,5 @@ pub fn resolve_edits(world: &mut World, edits: Vec<BlockEdit>) -> Vec<BlockEdit>
             order.push(e.pos);
         }
     }
-    order
-        .into_iter()
-        .map(|p| BlockEdit {
-            pos: p,
-            block: last[&p],
-        })
-        .collect()
+    order.into_iter().map(|p| BlockEdit { pos: p, block: last[&p] }).collect()
 }

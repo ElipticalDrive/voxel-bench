@@ -15,10 +15,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use naga_oil::compose::{
-    ComposableModuleDescriptor, Composer, NagaModuleDescriptor, ShaderDefValue, ShaderLanguage,
-    ShaderType,
-};
+use naga_oil::compose::{ComposableModuleDescriptor, Composer, NagaModuleDescriptor, ShaderDefValue, ShaderLanguage, ShaderType};
 
 use wgpu::naga;
 
@@ -87,11 +84,7 @@ impl Program {
 
     /// Adds (or replaces) the module at `path`.
     pub fn add(&mut self, path: &str, source: impl Into<String>, deps: &[&str]) -> &mut Self {
-        let m = Module {
-            path: path.into(),
-            source: source.into(),
-            deps: deps.iter().map(|d| d.to_string()).collect(),
-        };
+        let m = Module { path: path.into(), source: source.into(), deps: deps.iter().map(|d| d.to_string()).collect() };
         match self.modules.iter_mut().find(|x| x.path == path) {
             Some(x) => *x = m,
             None => self.modules.push(m),
@@ -118,18 +111,11 @@ impl Program {
 
     /// `root` with the program's root code.
     fn full_root(&self, root: &str) -> String {
-        if self.root_code.is_empty() {
-            root.to_string()
-        } else {
-            format!("{root}\n{}", self.root_code.join("\n"))
-        }
+        if self.root_code.is_empty() { root.to_string() } else { format!("{root}\n{}", self.root_code.join("\n")) }
     }
 
     fn shader_defs(&self) -> HashMap<String, ShaderDefValue> {
-        self.defs
-            .iter()
-            .map(|d| (d.clone(), ShaderDefValue::Bool(true)))
-            .collect()
+        self.defs.iter().map(|d| (d.clone(), ShaderDefValue::Bool(true))).collect()
     }
 
     pub fn has(&self, path: &str) -> bool {
@@ -137,16 +123,7 @@ impl Program {
     }
 
     fn get(&self, path: &str) -> Result<&Module, String> {
-        self.modules.iter().find(|m| m.path == path).ok_or_else(|| {
-            format!(
-                "no shader module `{path}` (have: {})",
-                self.modules
-                    .iter()
-                    .map(|m| m.path.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })
+        self.modules.iter().find(|m| m.path == path).ok_or_else(|| format!("no shader module `{path}` (have: {})", self.modules.iter().map(|m| m.path.as_str()).collect::<Vec<_>>().join(", ")))
     }
 
     /// The `#import` lines for a module with `source` and dependencies `deps`.
@@ -155,10 +132,7 @@ impl Program {
     fn imports(&self, source: &str, deps: &[String]) -> Result<String, String> {
         let source = active(source, &self.defs);
         let own: HashSet<String> = declared(&source).into_iter().collect();
-        let mut wanted: HashSet<String> = used(&source)
-            .into_iter()
-            .filter(|n| !own.contains(n))
-            .collect();
+        let mut wanted: HashSet<String> = used(&source).into_iter().filter(|n| !own.contains(n)).collect();
         let mut by_module: Vec<(String, Vec<String>)> = Vec::new();
         let mut seen = HashSet::new();
         let mut queue: VecDeque<String> = deps.iter().cloned().collect();
@@ -167,37 +141,22 @@ impl Program {
                 continue;
             }
             let m = self.get(&path)?;
-            let mut names: Vec<String> = declared(&active(&m.source, &self.defs))
-                .into_iter()
-                .filter(|n| wanted.remove(n))
-                .collect();
+            let mut names: Vec<String> = declared(&active(&m.source, &self.defs)).into_iter().filter(|n| wanted.remove(n)).collect();
             names.sort();
             if !names.is_empty() {
                 by_module.push((path, names));
             }
             queue.extend(m.deps.iter().cloned());
         }
-        Ok(by_module
-            .iter()
-            .map(|(p, names)| format!("#import {p}::{{{}}}\n", names.join(", ")))
-            .collect())
+        Ok(by_module.iter().map(|(p, names)| format!("#import {p}::{{{}}}\n", names.join(", "))).collect())
     }
 
     /// The modules `root` reaches through `deps`, dependencies first.
     fn order(&self, deps: &[String]) -> Result<Vec<&Module>, String> {
-        fn visit<'a>(
-            p: &'a Program,
-            path: &str,
-            done: &mut HashMap<String, bool>,
-            out: &mut Vec<&'a Module>,
-        ) -> Result<(), String> {
+        fn visit<'a>(p: &'a Program, path: &str, done: &mut HashMap<String, bool>, out: &mut Vec<&'a Module>) -> Result<(), String> {
             match done.get(path) {
                 Some(true) => return Ok(()),
-                Some(false) => {
-                    return Err(format!(
-                        "shader modules depend on each other in a cycle through `{path}`"
-                    ));
-                }
+                Some(false) => return Err(format!("shader modules depend on each other in a cycle through `{path}`")),
                 None => {}
             }
             done.insert(path.to_string(), false);
@@ -220,25 +179,12 @@ impl Program {
     /// what is compiled, for dumps and error messages.
     pub fn text(&self, root: &str, deps: &[&str]) -> Result<String, String> {
         let deps: Vec<String> = deps.iter().map(|d| d.to_string()).collect();
-        let mut s = if self.defs.is_empty() {
-            String::new()
-        } else {
-            format!("// ---- shader defs: {}\n", self.defs.join(", "))
-        };
+        let mut s = if self.defs.is_empty() { String::new() } else { format!("// ---- shader defs: {}\n", self.defs.join(", ")) };
         for m in self.order(&deps)? {
-            s += &format!(
-                "// ---- module {}\n#define_import_path {}\n{}{}\n",
-                m.path,
-                m.path,
-                self.imports(&m.source, &m.deps)?,
-                m.source
-            );
+            s += &format!("// ---- module {}\n#define_import_path {}\n{}{}\n", m.path, m.path, self.imports(&m.source, &m.deps)?, m.source);
         }
         let root = self.full_root(root);
-        s += &format!(
-            "// ---- root\n{}",
-            with_imports(&root, &self.imports(&root, &deps)?)
-        );
+        s += &format!("// ---- root\n{}", with_imports(&root, &self.imports(&root, &deps)?));
         Ok(s)
     }
 
@@ -247,99 +193,42 @@ impl Program {
         let deps: Vec<String> = deps.iter().map(|d| d.to_string()).collect();
         let mut c = Composer::default().with_capabilities(naga::valid::Capabilities::all());
         for m in self.order(&deps)? {
-            let src = format!(
-                "#define_import_path {}\n{}{}",
-                m.path,
-                self.imports(&m.source, &m.deps)?,
-                m.source
-            );
-            if let Err(e) = c.add_composable_module(ComposableModuleDescriptor {
-                source: &src,
-                file_path: &m.path,
-                language: ShaderLanguage::Wgsl,
-                shader_defs: self.shader_defs(),
-                ..Default::default()
-            }) {
-                return Err(format!(
-                    "shader module `{}`: {}",
-                    m.path,
-                    e.emit_to_string(&c)
-                ));
+            let src = format!("#define_import_path {}\n{}{}", m.path, self.imports(&m.source, &m.deps)?, m.source);
+            if let Err(e) = c.add_composable_module(ComposableModuleDescriptor { source: &src, file_path: &m.path, language: ShaderLanguage::Wgsl, shader_defs: self.shader_defs(), ..Default::default() }) {
+                return Err(format!("shader module `{}`: {}", m.path, e.emit_to_string(&c)));
             }
         }
         let root = self.full_root(root);
         let src = with_imports(&root, &self.imports(&root, &deps)?);
-        c.make_naga_module(NagaModuleDescriptor {
-            source: &src,
-            file_path: "root",
-            shader_type: ShaderType::Wgsl,
-            shader_defs: self.shader_defs(),
-            ..Default::default()
-        })
-        .map_err(|e| e.emit_to_string(&c))
+        c.make_naga_module(NagaModuleDescriptor { source: &src, file_path: "root", shader_type: ShaderType::Wgsl, shader_defs: self.shader_defs(), ..Default::default() }).map_err(|e| e.emit_to_string(&c))
     }
 }
 
 /// Composes and creates a shader module. With `MR_DUMP_WGSL=dir`, the program's text
 /// ([`Program::text`]) is written to `dir/<label>-<hash>.wgsl` (zero-cost checks: a refactor
 /// that must not change what runs leaves the set of files identical).
-pub fn compile(
-    dev: &wgpu::Device,
-    label: &str,
-    p: &Program,
-    root: &str,
-    deps: &[&str],
-) -> wgpu::ShaderModule {
+pub fn compile(dev: &wgpu::Device, label: &str, p: &Program, root: &str, deps: &[&str]) -> wgpu::ShaderModule {
     mr_core::shader_clock::module(|| compile_untimed(dev, label, p, root, deps))
 }
 
-fn compile_untimed(
-    dev: &wgpu::Device,
-    label: &str,
-    p: &Program,
-    root: &str,
-    deps: &[&str],
-) -> wgpu::ShaderModule {
+fn compile_untimed(dev: &wgpu::Device, label: &str, p: &Program, root: &str, deps: &[&str]) -> wgpu::ShaderModule {
     if let Some(dir) = std::env::var_os("MR_DUMP_WGSL") {
         let text = p.text(root, deps).unwrap_or_else(|e| e);
         crate::dump_wgsl(&dir, label, &text);
     }
-    let module = p
-        .naga(root, deps)
-        .unwrap_or_else(|e| panic!("shader `{label}`: {e}"));
-    let reads_pool = module.global_variables.iter().any(|(_, g)| {
-        g.binding
-            == Some(naga::ResourceBinding {
-                group: 1,
-                binding: 2,
-            })
-    });
-    assert!(
-        p.pool.is_some() || !reads_pool,
-        "shader `{label}` reads the voxel pool, but its program was not given the pool's pages (`Program::pool`)"
-    );
-    dev.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
-        source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
-    })
+    let module = p.naga(root, deps).unwrap_or_else(|e| panic!("shader `{label}`: {e}"));
+    let reads_pool = module.global_variables.iter().any(|(_, g)| g.binding == Some(naga::ResourceBinding { group: 1, binding: 2 }));
+    assert!(p.pool.is_some() || !reads_pool, "shader `{label}` reads the voxel pool, but its program was not given the pool's pages (`Program::pool`)");
+    dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)) })
 }
 
 /// `src` with `imports` after its directives (`enable ...;` must come first).
 fn with_imports(src: &str, imports: &str) -> String {
-    let (mut directives, rest): (Vec<&str>, Vec<&str>) = src
-        .lines()
-        .partition(|l| l.starts_with("enable ") || l.starts_with("requires "));
+    let (mut directives, rest): (Vec<&str>, Vec<&str>) = src.lines().partition(|l| l.starts_with("enable ") || l.starts_with("requires "));
     // Once each (a root and its program's root code may both enable ray queries).
     let mut seen = HashSet::new();
     directives.retain(|l| seen.insert(*l));
-    format!(
-        "{}{imports}{}\n",
-        directives
-            .iter()
-            .map(|l| format!("{l}\n"))
-            .collect::<String>(),
-        rest.join("\n")
-    )
+    format!("{}{imports}{}\n", directives.iter().map(|l| format!("{l}\n")).collect::<String>(), rest.join("\n"))
 }
 
 /// The lines of `src` the module system compiles with shader defs `defs` set (every other
@@ -350,10 +239,7 @@ fn active(src: &str, defs: &[String]) -> String {
     let mut out = String::with_capacity(src.len());
     for line in src.lines() {
         let t = line.trim_start();
-        let def = |rest: &str| {
-            defs.iter()
-                .any(|d| d == rest.split_whitespace().next().unwrap_or(""))
-        };
+        let def = |rest: &str| defs.iter().any(|d| d == rest.split_whitespace().next().unwrap_or(""));
         if let Some(rest) = t.strip_prefix("#ifdef ") {
             open.push(def(rest));
         } else if let Some(rest) = t.strip_prefix("#ifndef ") {
@@ -399,30 +285,13 @@ pub fn declared(src: &str) -> Vec<String> {
         if rest.starts_with("override fn ") {
             continue;
         }
-        let Some(kw) = [
-            "fn ",
-            "virtual fn ",
-            "const ",
-            "struct ",
-            "alias ",
-            "override ",
-            "var",
-        ]
-        .into_iter()
-        .find(|k| rest.starts_with(k)) else {
-            continue;
-        };
+        let Some(kw) = ["fn ", "virtual fn ", "const ", "struct ", "alias ", "override ", "var"].into_iter().find(|k| rest.starts_with(k)) else { continue };
         let mut after = &rest[kw.len()..];
         if kw == "var"
-            && let Some(r) = after.strip_prefix('<')
-        {
+            && let Some(r) = after.strip_prefix('<') {
             after = &r[r.find('>').map_or(r.len(), |i| i + 1)..];
         }
-        let name: String = after
-            .trim_start()
-            .chars()
-            .take_while(|&c| ident(c))
-            .collect();
+        let name: String = after.trim_start().chars().take_while(|&c| ident(c)).collect();
         if !name.is_empty() {
             names.push(name);
         }
@@ -483,54 +352,21 @@ mod tests {
         let storage = "@group(S_GROUP) @binding(0) var<storage, read> sdata: array<u32>;\nfn s_probe(i: u32) -> u32 { return sdata[i]; }\n";
         let kernel = "fn ctrace(i: u32) -> Hit { var h: Hit; ct_iters += 1u; h.hit = s_probe(i) != 0u && LOD; return h; }\n";
         let mut p = Program::world(Some("shadow"));
-        p.add(
-            "s1",
-            format!("const S_GROUP: u32 = 2u;\n{storage}"),
-            &[VOXELS],
-        );
-        p.add(
-            "s2",
-            format!("const S_GROUP: u32 = 4u;\n{storage}"),
-            &[VOXELS],
-        );
-        p.add(
-            "k1",
-            format!("const LOD: bool = true;\n{kernel}"),
-            &["s1", VOXELS],
-        );
-        p.add(
-            "k2",
-            format!("const LOD: bool = false;\n{kernel}"),
-            &["s2", VOXELS],
-        );
+        p.add("s1", format!("const S_GROUP: u32 = 2u;\n{storage}"), &[VOXELS]);
+        p.add("s2", format!("const S_GROUP: u32 = 4u;\n{storage}"), &[VOXELS]);
+        p.add("k1", format!("const LOD: bool = true;\n{kernel}"), &["s1", VOXELS]);
+        p.add("k2", format!("const LOD: bool = false;\n{kernel}"), &["s2", VOXELS]);
         p.add("shadow", "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return ctrace(0u).hit; }\n", &["k2"]);
         let root = "@group(0) @binding(0) var<storage, read_write> out: array<u32>;\n\
                     @compute @workgroup_size(64) fn main(@builtin(local_invocation_index) i: u32) {\n\
                     out[i] = select(0u, 1u, ctrace(i).hit) + u32(shade_lit(vec4<f32>(1.0), vec3<f32>(0.0), vec3<f32>(0.0, 1.0, 0.0)).x) + ct_iters;\n}\n";
-        let m = p
-            .naga(root, &["k1", LIGHTING])
-            .unwrap_or_else(|e| panic!("{e}"));
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::all(),
-        )
-        .validate(&m)
-        .unwrap();
+        let m = p.naga(root, &["k1", LIGHTING]).unwrap_or_else(|e| panic!("{e}"));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m).unwrap();
         let text = p.text(root, &["k1", LIGHTING]).unwrap();
-        assert!(
-            text.contains("#import k1::{ctrace}") && text.contains("#import k2::{ctrace}"),
-            "{text}"
-        );
-        assert!(
-            text.contains("#import mr::voxels::{Hit, ct_iters}"),
-            "{text}"
-        );
+        assert!(text.contains("#import k1::{ctrace}") && text.contains("#import k2::{ctrace}"), "{text}");
+        assert!(text.contains("#import mr::voxels::{Hit, ct_iters}"), "{text}");
         // Both storages' bindings are in the module, at their own groups.
-        let groups: HashSet<u32> = m
-            .global_variables
-            .iter()
-            .filter_map(|(_, v)| v.binding.as_ref().map(|b| b.group))
-            .collect();
+        let groups: HashSet<u32> = m.global_variables.iter().filter_map(|(_, v)| v.binding.as_ref().map(|b| b.group)).collect();
         assert!(groups.contains(&2) && groups.contains(&4), "{groups:?}");
     }
 
@@ -540,9 +376,6 @@ mod tests {
         assert_eq!(declared(src), ["aux", "A", "S", "f", "main", "g"]);
         let u = used(src);
         // Member accesses (`s.x`) and comments (`B`) are not uses.
-        assert!(
-            u.contains("A") && u.contains("S") && !u.contains("x") && !u.contains("B"),
-            "{u:?}"
-        );
+        assert!(u.contains("A") && u.contains("S") && !u.contains("x") && !u.contains("B"), "{u:?}");
     }
 }

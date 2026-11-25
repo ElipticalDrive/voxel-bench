@@ -38,9 +38,7 @@ impl Session {
                 if inst != self.instances {
                     self.instances = inst.clone();
                     for l in self.lanes.iter_mut().chain(self.reference.as_mut()) {
-                        l.run
-                            .pending_meshes
-                            .push(MeshUpdate::Instances(inst.clone()));
+                        l.run.pending_meshes.push(MeshUpdate::Instances(inst.clone()));
                         if let Some(s) = &mut l.standby {
                             s.pending_meshes.push(MeshUpdate::Instances(inst.clone()));
                         }
@@ -69,27 +67,15 @@ impl Session {
         }
         // The server's region: as large as the largest any lane needs streamed at each level
         // (none for lanes generating the world).
-        let runners = || {
-            self.lanes
-                .iter()
-                .flat_map(|l| std::iter::once(&l.run).chain(l.standby.as_ref()))
-        };
+        let runners = || self.lanes.iter().flat_map(|l| std::iter::once(&l.run).chain(l.standby.as_ref()));
         let mut stream = vec![];
         if runners().any(|r| !r.region.generates) {
-            let radii = crate::stream::union(
-                runners().map(|r| r.region.streamed()),
-                self.plan.run.view_radius,
-            );
+            let radii = crate::stream::union(runners().map(|r| r.region.streamed()), self.plan.run.view_radius);
             self.server.set_radii(&radii, &mut stream);
-            self.server
-                .update(&mut self.world, cam.position, &mut stream);
+            self.server.update(&mut self.world, cam.position, &mut stream);
         }
         let (world, server) = (&mut self.world, &self.server);
-        for r in self
-            .lanes
-            .iter_mut()
-            .flat_map(|l| std::iter::once(&mut l.run).chain(l.standby.as_mut()))
-        {
+        for r in self.lanes.iter_mut().flat_map(|l| std::iter::once(&mut l.run).chain(l.standby.as_mut())) {
             if r.worker.is_none() {
                 continue;
             }
@@ -115,10 +101,7 @@ impl Session {
         self.apply_resizes(&mut failures);
 
         // Quality probes.
-        if ctl.probe_interval > 0.0
-            && self.probe.is_none()
-            && self.last_probe.elapsed().as_secs_f64() >= ctl.probe_interval
-        {
+        if ctl.probe_interval > 0.0 && self.probe.is_none() && self.last_probe.elapsed().as_secs_f64() >= ctl.probe_interval {
             self.request_probe(false);
         }
         if self.probe.as_ref().is_some_and(|p| !p.started) {
@@ -132,29 +115,15 @@ impl Session {
             if lane.run.worker.is_none() || lane.want_res.is_some() {
                 continue;
             }
-            let in_flight = lane
-                .values
-                .get("host.in_flight")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(2)
-                .max(1) as usize;
+            let in_flight = lane.values.get("host.in_flight").and_then(|v| v.as_i64()).unwrap_or(2).max(1) as usize;
             if lane.run.in_flight.len() >= in_flight {
                 continue;
             }
-            if ctl.fps_cap > 0.0
-                && lane
-                    .last_sent
-                    .is_some_and(|t| instant.duration_since(t).as_secs_f64() < 1.0 / ctl.fps_cap)
-            {
+            if ctl.fps_cap > 0.0 && lane.last_sent.is_some_and(|t| instant.duration_since(t).as_secs_f64() < 1.0 / ctl.fps_cap) {
                 continue;
             }
-            let display = lane.last_display.is_none_or(|t| {
-                instant.duration_since(t).as_secs_f64() >= 1.0 / ctl.display_hz.max(1.0)
-            });
-            match lane
-                .run
-                .submit(cam, ctl.mode, layers, display, Purpose::Live)
-            {
+            let display = lane.last_display.is_none_or(|t| instant.duration_since(t).as_secs_f64() >= 1.0 / ctl.display_hz.max(1.0));
+            match lane.run.submit(cam, ctl.mode, layers, display, Purpose::Live) {
                 Ok(true) => {
                     if display {
                         lane.last_display = Some(instant);
@@ -173,11 +142,7 @@ impl Session {
                 Err(e) => failures.push((i, e)),
             }
         }
-        if self
-            .probe
-            .as_ref()
-            .is_some_and(|p| p.started && p.waiting == 0)
-        {
+        if self.probe.as_ref().is_some_and(|p| p.started && p.waiting == 0) {
             self.finish_probe();
         }
         for (i, e) in failures {
@@ -191,11 +156,7 @@ impl Session {
         let mut busy = false;
         let n = self.lanes.len();
         for i in (0..n).chain(self.reference.is_some().then_some(REFERENCE)) {
-            let result = match self
-                .lane_mut(i)
-                .and_then(|l| l.run.spawning.as_ref())
-                .map(|rx| rx.try_recv())
-            {
+            let result = match self.lane_mut(i).and_then(|l| l.run.spawning.as_ref()).map(|rx| rx.try_recv()) {
                 Some(Ok(r)) => r,
                 _ => continue,
             };
@@ -210,11 +171,7 @@ impl Session {
                     // Renderer knob values as its spec sets them (else defaults).
                     let values = lane.run.spec.knob_values();
                     for p in info.params.iter().chain(&lane.run.spec.component_knobs()) {
-                        let v = values
-                            .get(&p.name)
-                            .and_then(|t| serde_json::to_value(t).ok())
-                            .and_then(|j| p.from_json(&j))
-                            .unwrap_or(p.default.clone());
+                        let v = values.get(&p.name).and_then(|t| serde_json::to_value(t).ok()).and_then(|j| p.from_json(&j)).unwrap_or(p.default.clone());
                         lane.values.insert(p.name.clone(), v);
                     }
                     // Now that its LOD support is known, stream the levels it can use.
@@ -228,8 +185,7 @@ impl Session {
                             tracing::error!("reference: {e:#}");
                         }
                     }
-                    lane.values
-                        .insert("host.max_lod".into(), ParamValue::Int(lods as i64));
+                    lane.values.insert("host.max_lod".into(), ParamValue::Int(lods as i64));
                     lane.info = Some(info);
                     lane.run.worker = Some(w);
                     if i != REFERENCE {
@@ -255,8 +211,7 @@ impl Session {
                         self.shared.lock().unwrap().comparing = false;
                     } else {
                         let msg = format!("{e:#}");
-                        self.shared.lock().unwrap().lanes[i].status =
-                            LaneStatus::Failed(msg.clone());
+                        self.shared.lock().unwrap().lanes[i].status = LaneStatus::Failed(msg.clone());
                         self.log(format!("lane {} failed to start: {msg}", i + 1));
                     }
                 }
@@ -265,12 +220,8 @@ impl Session {
         let run_spec = self.plan.run.clone();
         for i in 0..n {
             let lane = &mut self.lanes[i];
-            let Some(sb) = &mut lane.standby else {
-                continue;
-            };
-            let Some(result) = sb.spawning.as_ref().and_then(|rx| rx.try_recv().ok()) else {
-                continue;
-            };
+            let Some(sb) = &mut lane.standby else { continue };
+            let Some(result) = sb.spawning.as_ref().and_then(|rx| rx.try_recv().ok()) else { continue };
             sb.spawning = None;
             busy = true;
             match result {
@@ -291,18 +242,11 @@ impl Session {
     }
 
     /// Streams to standbys, warms them with unseen frames, and swaps them in when ready.
-    fn progress_swaps(
-        &mut self,
-        cam: Camera,
-        mode: PassMode,
-        failures: &mut Vec<(usize, anyhow::Error)>,
-    ) -> bool {
+    fn progress_swaps(&mut self, cam: Camera, mode: PassMode, failures: &mut Vec<(usize, anyhow::Error)>) -> bool {
         let mut busy = false;
         for i in 0..self.lanes.len() {
             let lane = &mut self.lanes[i];
-            let Some(sb) = &mut lane.standby else {
-                continue;
-            };
+            let Some(sb) = &mut lane.standby else { continue };
             if sb.worker.is_none() {
                 continue;
             }
@@ -328,30 +272,22 @@ impl Session {
                             }
                             done += 1;
                         }
-                        WorkerEvent::Msg(WorkerMsg::Error(e))
-                        | WorkerEvent::Msg(WorkerMsg::ParamError { error: e, .. }) => {
+                        WorkerEvent::Msg(WorkerMsg::Error(e)) | WorkerEvent::Msg(WorkerMsg::ParamError { error: e, .. }) => {
                             failures.push((i, anyhow::anyhow!("hot swap: {e}")));
                         }
-                        WorkerEvent::Closed => {
-                            failures.push((i, anyhow::anyhow!("hot swap: replacement exited")))
-                        }
+                        WorkerEvent::Closed => failures.push((i, anyhow::anyhow!("hot swap: replacement exited"))),
                         _ => {}
                     }
                 }
                 // The watchdog, as for the lane's own worker: its oldest warm-up frame.
                 if let Some(f) = sb.in_flight.front()
-                    && let Err(e) = w.check_hung(f.sent.elapsed())
-                {
+                    && let Err(e) = w.check_hung(f.sent.elapsed()) {
                     failures.push((i, e.context("hot swap")));
                     continue;
                 }
             }
             lane.standby_warm += done;
-            let progress = if pending > 0 {
-                format!("loading world ({pending} chunks left)")
-            } else {
-                format!("warming up ({}/3)", lane.standby_warm)
-            };
+            let progress = if pending > 0 { format!("loading world ({pending} chunks left)") } else { format!("warming up ({}/3)", lane.standby_warm) };
             if lane.standby_warm < 3 {
                 self.shared.lock().unwrap().lanes[i].swap = Some(progress);
                 continue;
@@ -361,24 +297,15 @@ impl Session {
             if let Some(old) = std::mem::replace(&mut lane.run, sb).worker {
                 std::thread::spawn(move || old.shutdown());
             }
-            let info = lane
-                .run
-                .worker
-                .as_ref()
-                .map(|w| (w.info.clone(), w.init_ms, w.shaders));
+            let info = lane.run.worker.as_ref().map(|w| (w.info.clone(), w.init_ms, w.shaders));
             if let Some((info, init_ms, shaders)) = info {
                 if let Some(v) = self.shared.lock().unwrap().lanes.get_mut(i) {
                     // The replacement's own start and memory from here on.
-                    (v.init_ms, v.shaders, v.gpu_peak_mb, v.device_peak_mb) =
-                        (init_ms, shaders, None, None);
+                    (v.init_ms, v.shaders, v.gpu_peak_mb, v.device_peak_mb) = (init_ms, shaders, None, None);
                 }
                 let values = lane.run.spec.knob_values();
                 for p in info.params.iter().chain(&lane.run.spec.component_knobs()) {
-                    let v = values
-                        .get(&p.name)
-                        .and_then(|t| serde_json::to_value(t).ok())
-                        .and_then(|j| p.from_json(&j))
-                        .unwrap_or(p.default.clone());
+                    let v = values.get(&p.name).and_then(|t| serde_json::to_value(t).ok()).and_then(|j| p.from_json(&j)).unwrap_or(p.default.clone());
                     lane.values.insert(p.name.clone(), v);
                 }
                 lane.info = Some(info);
@@ -422,12 +349,8 @@ impl Session {
         let shared = self.shared.clone();
         let server_pending = self.server.pending();
         let presenting = self.presenters.contains_key(&i);
-        let Some(lane) = self.lane_mut(i) else {
-            return Ok(false);
-        };
-        let Some(w) = &mut lane.run.worker else {
-            return Ok(false);
-        };
+        let Some(lane) = self.lane_mut(i) else { return Ok(false) };
+        let Some(w) = &mut lane.run.worker else { return Ok(false) };
         let mut busy = false;
         let mut repaint = false;
         let mut probe_px: Vec<(u64, [u32; 2], Arc<Vec<u8>>)> = vec![];
@@ -455,10 +378,7 @@ impl Session {
                     if let Some(v) = shared.lock().unwrap().lanes.get_mut(i) {
                         let mb = |b: u64| (b > 0).then(|| b as f64 / 1048576.0);
                         v.gpu_mb = mb(m.gpu_bytes);
-                        v.gpu_peak_mb = [v.gpu_mb, v.gpu_peak_mb]
-                            .into_iter()
-                            .flatten()
-                            .reduce(f64::max);
+                        v.gpu_peak_mb = [v.gpu_mb, v.gpu_peak_mb].into_iter().flatten().reduce(f64::max);
                         v.device_peak_mb = mb(m.gpu_device_bytes);
                     }
                 }
@@ -470,16 +390,8 @@ impl Session {
                     }
                     sh.log(format!("lane {}: {what}", i.wrapping_add(1)));
                 }
-                WorkerMsg::FrameDone {
-                    frame_id,
-                    stats,
-                    slot,
-                    update_ms,
-                    arrivals,
-                } => {
-                    let Some(f) = lane.run.in_flight.pop_front() else {
-                        anyhow::bail!("unexpected frame")
-                    };
+                WorkerMsg::FrameDone { frame_id, stats, slot, update_ms, arrivals } => {
+                    let Some(f) = lane.run.in_flight.pop_front() else { anyhow::bail!("unexpected frame") };
                     if f.id != frame_id {
                         anyhow::bail!("frames out of order");
                     }
@@ -495,22 +407,12 @@ impl Session {
                     match f.purpose {
                         Purpose::Live => {
                             let t = now.duration_since(start).as_secs_f64();
-                            let interval_ms = lane
-                                .last_done
-                                .map(|d| now.duration_since(d).as_secs_f32() * 1e3)
-                                .unwrap_or(0.0);
+                            let interval_ms = lane.last_done.map(|d| now.duration_since(d).as_secs_f32() * 1e3).unwrap_or(0.0);
                             lane.last_done = Some(now);
                             if let Some(tu) = &mut lane.tuner {
                                 tu.on_frame(t, interval_ms as f64);
                             }
-                            let sample = Sample {
-                                t,
-                                interval_ms,
-                                latency_ms: now.duration_since(f.sent).as_secs_f32() * 1e3,
-                                cpu_ms: stats.cpu_ms,
-                                gpu_ms: stats.gpu_ms,
-                                update_ms,
-                            };
+                            let sample = Sample { t, interval_ms, latency_ms: now.duration_since(f.sent).as_secs_f32() * 1e3, cpu_ms: stats.cpu_ms, gpu_ms: stats.gpu_ms, update_ms };
                             let mut sh = shared.lock().unwrap();
                             if let Some(v) = sh.lanes.get_mut(i) {
                                 v.samples.push_back(sample);
@@ -524,12 +426,7 @@ impl Session {
                                 v.frames += 1;
                                 if let Some(px) = pixels {
                                     lane.seq += 1;
-                                    v.frame = Some(LiveFrame {
-                                        width: res[0],
-                                        height: res[1],
-                                        pixels: px,
-                                        seq: lane.seq,
-                                    });
+                                    v.frame = Some(LiveFrame { width: res[0], height: res[1], pixels: px, seq: lane.seq });
                                     repaint = true;
                                 }
                             }
@@ -550,17 +447,14 @@ impl Session {
             w.check_hung(f.sent.elapsed())?;
         }
         if let (Some((res, format, px)), Some(p)) = (shown, self.presenters.get_mut(&i))
-            && let Err(e) = p.offer(res[0], res[1], format, &px)
-        {
+            && let Err(e) = p.offer(res[0], res[1], format, &px) {
             tracing::info!("lane {}: window: {e:#}", i + 1);
             self.presenters.remove(&i);
             self.shared.lock().unwrap().closed_windows.push(i);
         }
         for (id, res, px) in probe_px {
             if let Some(p) = &mut self.probe
-                && p.id == id
-                && p.waiting > 0
-            {
+                && p.id == id && p.waiting > 0 {
                 p.waiting -= 1;
                 if i == REFERENCE {
                     p.reference = Some(px);
@@ -581,15 +475,8 @@ impl Session {
         let closed = format!("{e:#}").contains("exited");
         let swap = format!("{e:#}").starts_with("hot swap");
         if let Some(lane) = self.lane_mut(i) {
-            let w = if swap {
-                lane.standby.as_mut().and_then(|s| s.worker.as_mut())
-            } else {
-                lane.run.worker.as_mut()
-            };
-            if let Some(status) = w
-                .filter(|w| !w.is_hung())
-                .and_then(|w| w.exit_status(closed))
-            {
+            let w = if swap { lane.standby.as_mut().and_then(|s| s.worker.as_mut()) } else { lane.run.worker.as_mut() };
+            if let Some(status) = w.filter(|w| !w.is_hung()).and_then(|w| w.exit_status(closed)) {
                 e = e.context(format!("worker process ended: {status}"));
             }
         }
@@ -602,9 +489,7 @@ impl Session {
             sh.log(format!("reference failed: {msg}"));
             return;
         }
-        let Some(lane) = self.lanes.get_mut(i) else {
-            return;
-        };
+        let Some(lane) = self.lanes.get_mut(i) else { return };
         if swap {
             if let Some(w) = lane.standby.take().and_then(|s| s.worker) {
                 std::thread::spawn(move || w.shutdown());
@@ -619,15 +504,12 @@ impl Session {
         sh.log(format!("lane {} failed: {msg}", i + 1));
         let t = self.now();
         if let Some(v) = sh.lanes.get_mut(i) {
-            v.events
-                .push((t, format!("failed: {}", msg.lines().next().unwrap_or(""))));
+            v.events.push((t, format!("failed: {}", msg.lines().next().unwrap_or(""))));
             v.status = LaneStatus::Failed(msg);
         }
         drop(sh);
         if let Some(p) = &mut self.probe
-            && p.started
-            && !p.lanes.contains_key(&i)
-        {
+            && p.started && !p.lanes.contains_key(&i) {
             p.waiting = p.waiting.saturating_sub(1);
         }
     }
@@ -636,30 +518,16 @@ impl Session {
         self.presenters.clear();
         let mut handles = vec![];
         let n = self.lanes.len();
-        for (i, l) in self
-            .lanes
-            .drain(..)
-            .chain(self.reference.take())
-            .enumerate()
-        {
-            for w in [l.run.worker, l.standby.and_then(|s| s.worker)]
-                .into_iter()
-                .flatten()
-            {
+        for (i, l) in self.lanes.drain(..).chain(self.reference.take()).enumerate() {
+            for w in [l.run.worker, l.standby.and_then(|s| s.worker)].into_iter().flatten() {
                 handles.push((i, std::thread::spawn(move || w.shutdown())));
             }
         }
         // What went wrong while stopping (an error, a panic, an unclean exit, a hang) is said.
         for (i, h) in handles {
-            let problem = h
-                .join()
-                .unwrap_or_else(|_| Some("panicked while stopping".into()));
+            let problem = h.join().unwrap_or_else(|_| Some("panicked while stopping".into()));
             if let Some(p) = problem {
-                let who = if i == n {
-                    "the reference".into()
-                } else {
-                    format!("lane {}", i + 1)
-                };
+                let who = if i == n { "the reference".into() } else { format!("lane {}", i + 1) };
                 self.log(format!("{who} while stopping: {p}"));
             }
         }

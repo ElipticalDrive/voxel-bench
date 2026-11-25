@@ -6,12 +6,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::World;
 use glam::{DVec3, IVec3};
 use mr_core::chunk::CHUNK_BITS;
-use mr_core::client::Levels;
 use mr_core::renderer::BlockEdit;
+use mr_core::client::Levels;
 use mr_core::{ChunkData, ChunkKey, WorldUpdate};
+use crate::World;
 
 /// What a client takes of the stream: its renderer's radius and LOD levels, how it gets
 /// the levels, and whether it generates its chunks itself. The host sizes the server's
@@ -81,12 +81,7 @@ impl Streamer {
         let max_lod = radii.len() as u8 - 1;
         if radii.len() < self.radii.len() {
             self.pending.retain(|k| k.lod <= max_lod);
-            let gone: Vec<ChunkKey> = self
-                .resident
-                .keys()
-                .filter(|k| k.lod > max_lod)
-                .copied()
-                .collect();
+            let gone: Vec<ChunkKey> = self.resident.keys().filter(|k| k.lod > max_lod).copied().collect();
             for k in gone {
                 if self.resident.remove(&k) == Some(true) {
                     out.push(WorldUpdate::ChunkUnload { key: k });
@@ -111,17 +106,11 @@ impl Streamer {
     /// Of the chunks not yet delivered, those within `radii` (per LOD level) of the camera:
     /// a client's share of the backlog.
     pub fn pending_within(&self, radii: &[u32]) -> usize {
-        if radii.len() >= self.radii.len()
-            && radii.iter().zip(&self.radii).all(|(&a, &b)| a as i32 >= b)
-        {
+        if radii.len() >= self.radii.len() && radii.iter().zip(&self.radii).all(|(&a, &b)| a as i32 >= b) {
             return self.pending.len();
         }
         let inside = |k: &&ChunkKey| {
-            let (Some(r), Some(Some(c))) =
-                (radii.get(k.lod as usize), self.centers.get(k.lod as usize))
-            else {
-                return false;
-            };
+            let (Some(r), Some(Some(c))) = (radii.get(k.lod as usize), self.centers.get(k.lod as usize)) else { return false };
             (k.pos - *c).abs().max_element() <= *r as i32
         };
         self.pending.iter().filter(inside).count()
@@ -140,12 +129,7 @@ impl Streamer {
             self.centers[lod as usize] = Some(center);
             let r = self.radii[lod as usize];
             let inside = |k: &ChunkKey| k.lod != lod || (k.pos - center).abs().max_element() <= r;
-            let unloads: Vec<ChunkKey> = self
-                .resident
-                .keys()
-                .filter(|k| !inside(k))
-                .copied()
-                .collect();
+            let unloads: Vec<ChunkKey> = self.resident.keys().filter(|k| !inside(k)).copied().collect();
             for k in unloads {
                 if self.resident.remove(&k) == Some(true) {
                     out.push(WorldUpdate::ChunkUnload { key: k });
@@ -154,10 +138,7 @@ impl Streamer {
             for z in -r..=r {
                 for y in -r..=r {
                     for x in -r..=r {
-                        let key = ChunkKey {
-                            pos: center + IVec3::new(x, y, z),
-                            lod,
-                        };
+                        let key = ChunkKey { pos: center + IVec3::new(x, y, z), lod };
                         if !self.resident.contains_key(&key) && world.may_contain_blocks(key) {
                             self.pending.push(key);
                         }
@@ -180,8 +161,7 @@ impl Streamer {
                 let c = centers[k.lod as usize].unwrap();
                 (k.pos - c).abs().max_element() <= radii[k.lod as usize] && seen.insert(*k)
             });
-            self.pending
-                .sort_unstable_by_key(|k| std::cmp::Reverse(dist(k)));
+            self.pending.sort_unstable_by_key(|k| std::cmp::Reverse(dist(k)));
         }
         if self.pending.is_empty() {
             return;
@@ -201,35 +181,19 @@ impl Streamer {
 
     /// What a client joining now receives: every chunk the stream holds.
     pub fn snapshot(&self, world: &mut World) -> Vec<WorldUpdate> {
-        let keys: Vec<ChunkKey> = self
-            .resident
-            .iter()
-            .filter(|e| *e.1)
-            .map(|e| *e.0)
-            .collect();
+        let keys: Vec<ChunkKey> = self.resident.iter().filter(|e| *e.1).map(|e| *e.0).collect();
         let data = world.get_many(&keys);
-        keys.into_iter()
-            .zip(data)
-            .map(|(key, data)| WorldUpdate::ChunkLoad { key, data })
-            .collect()
+        keys.into_iter().zip(data).map(|(key, data)| WorldUpdate::ChunkLoad { key, data }).collect()
     }
 
     /// Forwards edits: block edits for chunks the renderer holds, full chunk loads for
     /// chunks it knew as air. `changed` are the LOD-0 chunks the edits modified.
-    pub fn edits(
-        &mut self,
-        edits: &[BlockEdit],
-        changed: &[(ChunkKey, ChunkData)],
-        out: &mut Vec<WorldUpdate>,
-    ) {
+    pub fn edits(&mut self, edits: &[BlockEdit], changed: &[(ChunkKey, ChunkData)], out: &mut Vec<WorldUpdate>) {
         if edits.is_empty() {
             return;
         }
-        let held: Vec<BlockEdit> = edits
-            .iter()
-            .filter(|e| self.resident.get(&ChunkKey::of_block(e.pos)) == Some(&true))
-            .copied()
-            .collect();
+        let held: Vec<BlockEdit> =
+            edits.iter().filter(|e| self.resident.get(&ChunkKey::of_block(e.pos)) == Some(&true)).copied().collect();
         if !held.is_empty() {
             out.push(WorldUpdate::SetBlocks(held));
         }
@@ -237,16 +201,11 @@ impl Streamer {
         for (key, data) in changed {
             // Chunks it knew as air, or never considered (e.g. built above the generator's
             // height range) but within range.
-            let in_range =
-                center.is_some_and(|c| (key.pos - c).abs().max_element() <= self.radii[0]);
-            let unknown_in_range =
-                !self.resident.contains_key(key) && in_range && !self.pending.contains(key);
+            let in_range = center.is_some_and(|c| (key.pos - c).abs().max_element() <= self.radii[0]);
+            let unknown_in_range = !self.resident.contains_key(key) && in_range && !self.pending.contains(key);
             if (self.resident.get(key) == Some(&false) || unknown_in_range) && !data.is_air() {
                 self.resident.insert(*key, true);
-                out.push(WorldUpdate::ChunkLoad {
-                    key: *key,
-                    data: data.clone(),
-                });
+                out.push(WorldUpdate::ChunkLoad { key: *key, data: data.clone() });
                 self.chunks_sent += 1;
             }
         }
@@ -265,10 +224,7 @@ impl Generating {
     /// A generator for `spec`, streaming `radii` (per LOD level) around the camera,
     /// `budget` chunks per update.
     pub fn new(spec: &crate::GenSpec, radii: Vec<u32>, budget: Option<usize>) -> Self {
-        Self {
-            world: World::new(spec.build()),
-            streamer: Streamer::new(radii, budget),
-        }
+        Self { world: World::new(spec.build()), streamer: Streamer::new(radii, budget) }
     }
 
     pub fn set_radii(&mut self, radii: &[u32], out: &mut Vec<WorldUpdate>) {
@@ -308,10 +264,10 @@ impl Generating {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generators::GenSpec;
     use mr_core::BlockId;
     use mr_core::chunk::{CHUNK_BITS, local_of_block};
     use mr_core::client::Client;
+    use crate::generators::GenSpec;
 
     /// What a renderer holds after applying messages.
     fn apply(held: &mut HashMap<ChunkKey, ChunkData>, ups: &[WorldUpdate]) {
@@ -325,9 +281,7 @@ mod tests {
                 }
                 WorldUpdate::SetBlocks(edits) => {
                     for e in edits {
-                        held.get_mut(&ChunkKey::of_block(e.pos))
-                            .expect("an edit of a chunk not held")
-                            .set(local_of_block(e.pos), e.block);
+                        held.get_mut(&ChunkKey::of_block(e.pos)).expect("an edit of a chunk not held").set(local_of_block(e.pos), e.block);
                     }
                 }
                 _ => {}
@@ -338,26 +292,14 @@ mod tests {
     /// A client of a larger stream holds what a stream of its own region would give it.
     #[test]
     fn client_derives_its_region() {
-        let mut world = World::new(
-            GenSpec::Terrain {
-                seed: 3,
-                caves: true,
-                trees: true,
-            }
-            .build(),
-        );
+        let mut world = World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build());
         let mut server = Streamer::new(vec![4; 3], None);
         let mut own = Streamer::new(vec![2; 2], None);
         let mut client = Client::new(2, 1, Levels::Pick);
         let (mut a, mut b) = (HashMap::new(), HashMap::new());
         for f in 0..40 {
             let cam = DVec3::new(f as f64 * 13.0, 60.0, f as f64 * -7.0);
-            let edits: Vec<BlockEdit> = (0..20)
-                .map(|i| BlockEdit {
-                    pos: IVec3::new(f * 13 + i, 40 + i % 30, -f * 7 - i),
-                    block: if i % 2 == 0 { BlockId::AIR } else { BlockId(1) },
-                })
-                .collect();
+            let edits: Vec<BlockEdit> = (0..20).map(|i| BlockEdit { pos: IVec3::new(f * 13 + i, 40 + i % 30, -f * 7 - i), block: if i % 2 == 0 { BlockId::AIR } else { BlockId(1) } }).collect();
             let changed = world.apply_edits(&edits);
             let (mut stream, mut ups, mut direct) = (vec![], vec![], vec![]);
             server.edits(&edits, &changed, &mut stream);
@@ -372,10 +314,7 @@ mod tests {
             for (k, d) in &b {
                 let c = &a[k];
                 let cells = (0..mr_core::CHUNK_VOLUME).map(mr_core::chunk::cell_of_index);
-                assert!(
-                    c == d || cells.into_iter().all(|p| c.get(p) == d.get(p)),
-                    "frame {f}: {k:?}"
-                );
+                assert!(c == d || cells.into_iter().all(|p| c.get(p) == d.get(p)), "frame {f}: {k:?}");
             }
         }
     }
@@ -387,57 +326,19 @@ mod tests {
     fn client_behind_a_link() {
         use mr_core::link::{Link, LinkSpec};
         let same = |a: &HashMap<ChunkKey, ChunkData>, b: &HashMap<ChunkKey, ChunkData>| {
-            a.len() == b.len()
-                && b.iter().all(|(k, d)| {
-                    a.get(k).is_some_and(|c| {
-                        c == d
-                            || (0..mr_core::CHUNK_VOLUME)
-                                .map(mr_core::chunk::cell_of_index)
-                                .all(|p| c.get(p) == d.get(p))
-                    })
-                })
+            a.len() == b.len() && b.iter().all(|(k, d)| a.get(k).is_some_and(|c| c == d || (0..mr_core::CHUNK_VOLUME).map(mr_core::chunk::cell_of_index).all(|p| c.get(p) == d.get(p))))
         };
-        let caught_up =
-            |a: &HashMap<ChunkKey, ChunkData>, b: &HashMap<ChunkKey, ChunkData>| a.len() == b.len();
-        for (levels, reorder) in [
-            (Levels::Pick, false),
-            (Levels::Pick, true),
-            (Levels::Derive, true),
-        ] {
-            let mut world = World::new(
-                GenSpec::Terrain {
-                    seed: 3,
-                    caves: true,
-                    trees: true,
-                }
-                .build(),
-            );
+        let caught_up = |a: &HashMap<ChunkKey, ChunkData>, b: &HashMap<ChunkKey, ChunkData>| a.len() == b.len();
+        for (levels, reorder) in [(Levels::Pick, false), (Levels::Pick, true), (Levels::Derive, true)] {
+            let mut world = World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build());
             let mut server = Streamer::new(mr_core::client::reach(2, 2, levels), Some(40));
-            let spec = LinkSpec {
-                latency_ms: 40.0,
-                jitter_ms: 120.0,
-                bandwidth_mbps: 400.0,
-                loss: 0.2,
-                reorder,
-                seed: 5,
-            };
+            let spec = LinkSpec { latency_ms: 40.0, jitter_ms: 120.0, bandwidth_mbps: 400.0, loss: 0.2, reorder, seed: 5 };
             let mut link = Link::new(spec);
             let (mut free, mut linked) = (Client::new(2, 2, levels), Client::new(2, 2, levels));
             let (mut a, mut b) = (HashMap::new(), HashMap::new());
             let mut holes = 0;
             // The whole region at once (no budget, no link): what "no holes" must mean.
-            let (mut whole_world, mut whole_server, mut whole) = (
-                World::new(
-                    GenSpec::Terrain {
-                        seed: 3,
-                        caves: true,
-                        trees: true,
-                    }
-                    .build(),
-                ),
-                Streamer::new(mr_core::client::reach(2, 2, levels), None),
-                Client::new(2, 2, levels),
-            );
+            let (mut whole_world, mut whole_server, mut whole) = (World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build()), Streamer::new(mr_core::client::reach(2, 2, levels), None), Client::new(2, 2, levels));
             let mut c = HashMap::new();
             let (mut counted, mut complete) = (0, 0);
             // Until everything arrived and the renderer caught up.
@@ -448,16 +349,7 @@ mod tests {
                 let t = f as f64 / 60.0;
                 let g = f.min(30);
                 let cam = DVec3::new(g as f64 * 13.0, 60.0, g as f64 * -7.0);
-                let edits: Vec<BlockEdit> = if f < 30 {
-                    (0..20)
-                        .map(|i| BlockEdit {
-                            pos: IVec3::new(f * 13 + i, 40 + i % 30, -f * 7 - i),
-                            block: if i % 2 == 0 { BlockId::AIR } else { BlockId(1) },
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                };
+                let edits: Vec<BlockEdit> = if f < 30 { (0..20).map(|i| BlockEdit { pos: IVec3::new(f * 13 + i, 40 + i % 30, -f * 7 - i), block: if i % 2 == 0 { BlockId::AIR } else { BlockId(1) } }).collect() } else { vec![] };
                 let changed = world.apply_edits(&edits);
                 let (mut stream, mut ups, mut direct, mut got) = (vec![], vec![], vec![], vec![]);
                 server.edits(&edits, &changed, &mut stream);
@@ -479,69 +371,30 @@ mod tests {
                 whole.update(cam, &mut w);
                 apply(&mut c, &w);
                 // The holes counted: none only when it holds the whole region.
-                assert_eq!(
-                    server.pending_within(&mr_core::client::reach(2, 2, levels)),
-                    server.pending()
-                );
+                assert_eq!(server.pending_within(&mr_core::client::reach(2, 2, levels)), server.pending());
                 let n = server.pending() + link.chunks_in_flight();
                 if n == 0 {
                     complete += 1;
-                    assert!(
-                        c.keys().all(|k| a.contains_key(k)),
-                        "{levels:?} reorder {reorder} frame {f}: no holes counted, {} of {} chunks held",
-                        c.keys().filter(|k| a.contains_key(k)).count(),
-                        c.len()
-                    );
+                    assert!(c.keys().all(|k| a.contains_key(k)), "{levels:?} reorder {reorder} frame {f}: no holes counted, {} of {} chunks held", c.keys().filter(|k| a.contains_key(k)).count(), c.len());
                 }
                 counted += (n > 0) as u32;
             }
-            assert!(
-                counted > 5 && complete > 0,
-                "{levels:?} reorder {reorder}: {counted} frames with holes counted, {complete} without"
-            );
+            assert!(counted > 5 && complete > 0, "{levels:?} reorder {reorder}: {counted} frames with holes counted, {complete} without");
             assert_eq!(link.in_flight(), 0, "{levels:?} reorder {reorder}");
-            assert!(
-                holes > 5 && link.stats().resent > 0,
-                "{levels:?} reorder {reorder}: holes {holes}, {:?}",
-                link.stats()
-            );
-            assert!(
-                same(&a, &b),
-                "{levels:?} reorder {reorder}: {} chunks held against {}",
-                a.len(),
-                b.len()
-            );
+            assert!(holes > 5 && link.stats().resent > 0, "{levels:?} reorder {reorder}: holes {holes}, {:?}", link.stats());
+            assert!(same(&a, &b), "{levels:?} reorder {reorder}: {} chunks held against {}", a.len(), b.len());
         }
     }
 
     /// A client's share of the server's backlog: the chunks not yet sent within its radius.
     #[test]
     fn backlog_within_a_region() {
-        let mut world = World::new(
-            GenSpec::Terrain {
-                seed: 3,
-                caves: true,
-                trees: true,
-            }
-            .build(),
-        );
+        let mut world = World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build());
         let mut server = Streamer::new(vec![3, 3], Some(0));
         let cam = DVec3::new(5.0, 60.0, 5.0);
         server.update(&mut world, cam, &mut vec![]);
         let center = (cam / 32.0).floor().as_ivec3();
-        let within = |r: i32| {
-            (-r..=r)
-                .flat_map(|z| {
-                    (-r..=r).flat_map(move |y| (-r..=r).map(move |x| IVec3::new(x, y, z)))
-                })
-                .filter(|d| {
-                    world.may_contain_blocks(ChunkKey {
-                        pos: center + *d,
-                        lod: 0,
-                    })
-                })
-                .count()
-        };
+        let within = |r: i32| (-r..=r).flat_map(|z| (-r..=r).flat_map(move |y| (-r..=r).map(move |x| IVec3::new(x, y, z)))).filter(|d| world.may_contain_blocks(ChunkKey { pos: center + *d, lod: 0 })).count();
         let n = within(1);
         assert!(n > 0 && server.pending() > n);
         assert_eq!(server.pending_within(&[1]), n);
@@ -553,21 +406,9 @@ mod tests {
     /// joining late with the edits so far (`World::edits`), once its budget caught up.
     #[test]
     fn client_generating_the_world() {
-        let spec = GenSpec::Terrain {
-            seed: 3,
-            caves: true,
-            trees: true,
-        };
+        let spec = GenSpec::Terrain { seed: 3, caves: true, trees: true };
         let same = |a: &HashMap<ChunkKey, ChunkData>, b: &HashMap<ChunkKey, ChunkData>| {
-            a.len() == b.len()
-                && b.iter().all(|(k, d)| {
-                    a.get(k).is_some_and(|c| {
-                        c == d
-                            || (0..mr_core::CHUNK_VOLUME)
-                                .map(mr_core::chunk::cell_of_index)
-                                .all(|p| c.get(p) == d.get(p))
-                    })
-                })
+            a.len() == b.len() && b.iter().all(|(k, d)| a.get(k).is_some_and(|c| c == d || (0..mr_core::CHUNK_VOLUME).map(mr_core::chunk::cell_of_index).all(|p| c.get(p) == d.get(p))))
         };
         for levels in [Levels::Pick, Levels::Derive] {
             let (radius, max_lod) = (2, 2);
@@ -575,25 +416,13 @@ mod tests {
             let mut world = World::new(spec.build());
             let mut server = Streamer::new(reach.clone(), None);
             let mut ours = Generating::new(&spec, reach.clone(), None);
-            let (mut streamed, mut local) = (
-                Client::new(radius, max_lod, levels),
-                Client::new(radius, max_lod, levels),
-            );
+            let (mut streamed, mut local) = (Client::new(radius, max_lod, levels), Client::new(radius, max_lod, levels));
             let (mut a, mut b) = (HashMap::new(), HashMap::new());
             let mut late: Option<(Generating, Client, HashMap<ChunkKey, ChunkData>)> = None;
             for f in 0..40 {
                 let g = f.min(30);
                 let cam = DVec3::new(g as f64 * 13.0, 60.0, g as f64 * -7.0);
-                let edits: Vec<BlockEdit> = if f < 30 {
-                    (0..20)
-                        .map(|i| BlockEdit {
-                            pos: IVec3::new(f * 13 + i * 3, 30 + i * 2, -f * 7 - i),
-                            block: if i % 2 == 0 { BlockId::AIR } else { BlockId(1) },
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                };
+                let edits: Vec<BlockEdit> = if f < 30 { (0..20).map(|i| BlockEdit { pos: IVec3::new(f * 13 + i * 3, 30 + i * 2, -f * 7 - i), block: if i % 2 == 0 { BlockId::AIR } else { BlockId(1) } }).collect() } else { vec![] };
                 let changed = world.apply_edits(&edits);
                 let (mut stream, mut ups) = (vec![], vec![]);
                 server.edits(&edits, &changed, &mut stream);
@@ -603,10 +432,7 @@ mod tests {
                 apply(&mut a, &ups);
                 // The server sends the generating clients this frame's edits only.
                 let sent = [WorldUpdate::SetBlocks(edits)];
-                let generated = |g: &mut Generating,
-                                 client: &mut Client,
-                                 held: &mut HashMap<ChunkKey, ChunkData>,
-                                 sent: &[WorldUpdate]| {
+                let generated = |g: &mut Generating, client: &mut Client, held: &mut HashMap<ChunkKey, ChunkData>, sent: &[WorldUpdate]| {
                     let (mut chunks, mut ups) = (vec![], vec![]);
                     g.receive(sent, &mut chunks);
                     g.update(cam, &mut chunks);
@@ -615,54 +441,24 @@ mod tests {
                     apply(held, &ups);
                 };
                 generated(&mut ours, &mut local, &mut b, &sent);
-                assert!(
-                    same(&b, &a),
-                    "{levels:?} frame {f}: {} chunks held against {}",
-                    b.len(),
-                    a.len()
-                );
+                assert!(same(&b, &a), "{levels:?} frame {f}: {} chunks held against {}", b.len(), a.len());
                 if let Some((g, c, h)) = &mut late {
                     generated(g, c, h, &sent);
                     // What it holds already is right (`derive`'s coarse levels only once their
                     // LOD 0 arrived: they are built from what it has).
                     let exact = |k: &ChunkKey| k.lod == 0 || levels == Levels::Pick;
-                    let part: HashMap<ChunkKey, ChunkData> = a
-                        .iter()
-                        .filter(|(k, _)| h.contains_key(k) && exact(k))
-                        .map(|(k, d)| (*k, d.clone()))
-                        .collect();
-                    let mine: HashMap<ChunkKey, ChunkData> = h
-                        .iter()
-                        .filter(|(k, _)| exact(k))
-                        .map(|(k, d)| (*k, d.clone()))
-                        .collect();
-                    assert!(
-                        same(&mine, &part),
-                        "{levels:?}, joined late, frame {f}: holds what the server's client does not"
-                    );
+                    let part: HashMap<ChunkKey, ChunkData> = a.iter().filter(|(k, _)| h.contains_key(k) && exact(k)).map(|(k, d)| (*k, d.clone())).collect();
+                    let mine: HashMap<ChunkKey, ChunkData> = h.iter().filter(|(k, _)| exact(k)).map(|(k, d)| (*k, d.clone())).collect();
+                    assert!(same(&mine, &part), "{levels:?}, joined late, frame {f}: holds what the server's client does not");
                 }
                 if f == 20 {
-                    let mut l = (
-                        Generating::new(&spec, reach.clone(), Some(400)),
-                        Client::new(radius, max_lod, levels),
-                        HashMap::new(),
-                    );
-                    generated(
-                        &mut l.0,
-                        &mut l.1,
-                        &mut l.2,
-                        &[WorldUpdate::SetBlocks(world.edits())],
-                    );
+                    let mut l = (Generating::new(&spec, reach.clone(), Some(400)), Client::new(radius, max_lod, levels), HashMap::new());
+                    generated(&mut l.0, &mut l.1, &mut l.2, &[WorldUpdate::SetBlocks(world.edits())]);
                     late = Some(l);
                 }
             }
             let (_, _, h) = late.unwrap();
-            assert!(
-                same(&h, &a),
-                "{levels:?}, joined late: {} chunks held against {}",
-                h.len(),
-                a.len()
-            );
+            assert!(same(&h, &a), "{levels:?}, joined late: {} chunks held against {}", h.len(), a.len());
             assert!(ours.chunks() > 0);
         }
     }
@@ -673,21 +469,8 @@ mod tests {
         if lod == 0 {
             return world.block(cell);
         }
-        let order = [
-            (0, 1, 0),
-            (1, 1, 0),
-            (0, 1, 1),
-            (1, 1, 1),
-            (0, 0, 0),
-            (1, 0, 0),
-            (0, 0, 1),
-            (1, 0, 1),
-        ];
-        order
-            .iter()
-            .map(|&(x, y, z)| derived(world, lod - 1, cell * 2 + IVec3::new(x, y, z)))
-            .find(|b| !b.is_air())
-            .unwrap_or(BlockId::AIR)
+        let order = [(0, 1, 0), (1, 1, 0), (0, 1, 1), (1, 1, 1), (0, 0, 0), (1, 0, 0), (0, 0, 1), (1, 0, 1)];
+        order.iter().map(|&(x, y, z)| derived(world, lod - 1, cell * 2 + IVec3::new(x, y, z))).find(|b| !b.is_air()).unwrap_or(BlockId::AIR)
     }
 
     /// A `derive` client builds its coarse levels from the LOD 0 it receives: each held
@@ -695,14 +478,7 @@ mod tests {
     /// are air, edits reach every level, and LOD 0 is what a stream of its own gives.
     #[test]
     fn client_derives_its_levels() {
-        let mut world = World::new(
-            GenSpec::Terrain {
-                seed: 3,
-                caves: true,
-                trees: true,
-            }
-            .build(),
-        );
+        let mut world = World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build());
         let (radius, max_lod) = (2, 2);
         let reach = mr_core::client::reach(radius, max_lod, Levels::Derive);
         assert_eq!(reach, vec![11]);
@@ -713,12 +489,7 @@ mod tests {
         let (mut a, mut b) = (HashMap::new(), HashMap::new());
         for f in 0..24 {
             let cam = DVec3::new(f as f64 * 13.0, 60.0, f as f64 * -7.0);
-            let edits: Vec<BlockEdit> = (0..20)
-                .map(|i| BlockEdit {
-                    pos: IVec3::new(f * 13 + i * 3, 30 + i * 2, -f * 7 - i),
-                    block: if i % 2 == 0 { BlockId::AIR } else { BlockId(1) },
-                })
-                .collect();
+            let edits: Vec<BlockEdit> = (0..20).map(|i| BlockEdit { pos: IVec3::new(f * 13 + i * 3, 30 + i * 2, -f * 7 - i), block: if i % 2 == 0 { BlockId::AIR } else { BlockId(1) } }).collect();
             let changed = world.apply_edits(&edits);
             let (mut stream, mut ups, mut direct) = (vec![], vec![], vec![]);
             server.edits(&edits, &changed, &mut stream);
@@ -732,32 +503,19 @@ mod tests {
             let lod0: HashMap<_, _> = a.iter().filter(|(k, _)| k.lod == 0).collect();
             assert_eq!(lod0.len(), b.len(), "frame {f}");
             for (k, d) in &b {
-                assert!(
-                    lod0[k] == d
-                        || (0..mr_core::CHUNK_VOLUME)
-                            .map(mr_core::chunk::cell_of_index)
-                            .all(|p| lod0[k].get(p) == d.get(p)),
-                    "frame {f}: {k:?}"
-                );
+                assert!(lod0[k] == d || (0..mr_core::CHUNK_VOLUME).map(mr_core::chunk::cell_of_index).all(|p| lod0[k].get(p) == d.get(p)), "frame {f}: {k:?}");
             }
             // The coarse cells over this frame's edits.
             for lod in 1..=max_lod {
                 for e in &edits {
                     let cell = e.pos >> lod as i32;
-                    let key = ChunkKey {
-                        pos: cell >> CHUNK_BITS as i32,
-                        lod,
-                    };
-                    let center = (cam / (1u64 << (CHUNK_BITS + lod as u32)) as f64)
-                        .floor()
-                        .as_ivec3();
+                    let key = ChunkKey { pos: cell >> CHUNK_BITS as i32, lod };
+                    let center = (cam / (1u64 << (CHUNK_BITS + lod as u32)) as f64).floor().as_ivec3();
                     if (key.pos - center).abs().max_element() > radius as i32 {
                         continue;
                     }
                     let want = derived(&mut world, lod, cell);
-                    let got = a.get(&key).map_or(BlockId::AIR, |c| {
-                        c.get(cell - key.origin() / key.extent() * mr_core::CHUNK_SIZE)
-                    });
+                    let got = a.get(&key).map_or(BlockId::AIR, |c| c.get(cell - key.origin() / key.extent() * mr_core::CHUNK_SIZE));
                     assert_eq!(got, want, "frame {f}: edit {:?} at lod {lod}", e.pos);
                 }
             }
@@ -766,36 +524,22 @@ mod tests {
             }
             // Every coarse chunk of the region, sampled.
             for lod in 1..=max_lod {
-                let center = (cam / (1u64 << (CHUNK_BITS + lod as u32)) as f64)
-                    .floor()
-                    .as_ivec3();
+                let center = (cam / (1u64 << (CHUNK_BITS + lod as u32)) as f64).floor().as_ivec3();
                 let r = radius as i32;
                 for z in -r..=r {
                     for y in -r..=r {
                         for x in -r..=r {
-                            let key = ChunkKey {
-                                pos: center + IVec3::new(x, y, z),
-                                lod,
-                            };
+                            let key = ChunkKey { pos: center + IVec3::new(x, y, z), lod };
                             let base = key.pos * mr_core::CHUNK_SIZE;
                             for i in (0..mr_core::CHUNK_VOLUME).step_by(997) {
                                 let l = mr_core::chunk::cell_of_index(i);
                                 let got = a.get(&key).map_or(BlockId::AIR, |c| c.get(l));
-                                assert_eq!(
-                                    got,
-                                    derived(&mut world, lod, base + l),
-                                    "frame {f}: {key:?} cell {l}"
-                                );
+                                assert_eq!(got, derived(&mut world, lod, base + l), "frame {f}: {key:?} cell {l}");
                             }
                         }
                     }
                 }
-                assert!(
-                    a.keys()
-                        .filter(|k| k.lod == lod)
-                        .all(|k| (k.pos - center).abs().max_element() <= r),
-                    "frame {f}: a level-{lod} chunk outside the region"
-                );
+                assert!(a.keys().filter(|k| k.lod == lod).all(|k| (k.pos - center).abs().max_element() <= r), "frame {f}: a level-{lod} chunk outside the region");
             }
         }
     }

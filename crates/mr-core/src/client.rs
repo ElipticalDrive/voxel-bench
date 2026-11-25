@@ -10,10 +10,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::chunk::{CHUNK_BITS, CHUNK_SIZE, cell_index, local_of_block};
-use crate::{BlockId, ChunkData, ChunkKey, DenseChunk, WorldUpdate};
 use glam::IVec3;
 use serde::{Deserialize, Serialize};
+use crate::chunk::{CHUNK_BITS, CHUNK_SIZE, cell_index, local_of_block};
+use crate::{BlockId, ChunkData, ChunkKey, DenseChunk, WorldUpdate};
 
 /// How a client gets its LOD levels: the graph's `client` node's component.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -88,9 +88,7 @@ impl Client {
     /// whose region covers it takes the stream as it is.
     pub fn follow(&mut self, radii: &[u32]) {
         let mine = reach(self.radius as u32, self.max_lod, self.levels);
-        self.whole = !self.derives()
-            && radii.len() <= mine.len()
-            && radii.iter().zip(&mine).all(|(s, m)| m >= s);
+        self.whole = !self.derives() && radii.len() <= mine.len() && radii.iter().zip(&mine).all(|(s, m)| m >= s);
     }
 
     pub fn radius(&self) -> u32 {
@@ -123,12 +121,7 @@ impl Client {
             self.dirty = vec![HashMap::new(); max_lod as usize + 1];
             self.coarse.clear();
             if self.derives() {
-                let keys: Vec<ChunkKey> = self
-                    .replica
-                    .keys()
-                    .filter(|k| k.lod == 0)
-                    .copied()
-                    .collect();
+                let keys: Vec<ChunkKey> = self.replica.keys().filter(|k| k.lod == 0).copied().collect();
                 for k in keys {
                     self.mark(k, (IVec3::ZERO, IVec3::splat(CHUNK_SIZE - 1)));
                 }
@@ -137,19 +130,11 @@ impl Client {
     }
 
     fn inside(&self, k: &ChunkKey) -> bool {
-        self.centers
-            .get(k.lod as usize)
-            .copied()
-            .flatten()
-            .is_some_and(|c| (k.pos - c).abs().max_element() <= self.radius)
+        self.centers.get(k.lod as usize).copied().flatten().is_some_and(|c| (k.pos - c).abs().max_element() <= self.radius)
     }
 
     fn data(&self, k: &ChunkKey) -> Option<&ChunkData> {
-        if k.lod == 0 || !self.derives() {
-            self.replica.get(k)
-        } else {
-            self.coarse.get(k)
-        }
+        if k.lod == 0 || !self.derives() { self.replica.get(k) } else { self.coarse.get(k) }
     }
 
     /// `derive`: the cells of `child` that changed make the cells above them in its parent
@@ -161,9 +146,7 @@ impl Client {
         let half = CHUNK_SIZE / 2;
         let off = (child.pos & 1) * half;
         let (lo, hi) = (off + (lo >> 1), off + (hi >> 1));
-        let e = self.dirty[child.lod as usize + 1]
-            .entry(child.pos >> 1)
-            .or_insert((lo, hi));
+        let e = self.dirty[child.lod as usize + 1].entry(child.pos >> 1).or_insert((lo, hi));
         *e = (e.0.min(lo), e.1.max(hi));
     }
 
@@ -179,8 +162,7 @@ impl Client {
         for u in stream {
             match u {
                 // The server's levels are for clients that pick them.
-                WorldUpdate::ChunkLoad { key, .. } | WorldUpdate::ChunkUnload { key }
-                    if key.lod > 0 && self.derives() => {}
+                WorldUpdate::ChunkLoad { key, .. } | WorldUpdate::ChunkUnload { key } if key.lod > 0 && self.derives() => {}
                 WorldUpdate::ChunkLoad { key, data } => {
                     self.replica.insert(*key, data.clone());
                     self.mark(*key, all);
@@ -206,11 +188,7 @@ impl Client {
                             self.mark(key, (local, local));
                         }
                     }
-                    let held: Vec<_> = edits
-                        .iter()
-                        .filter(|e| self.held.contains(&ChunkKey::of_block(e.pos)))
-                        .copied()
-                        .collect();
+                    let held: Vec<_> = edits.iter().filter(|e| self.held.contains(&ChunkKey::of_block(e.pos))).copied().collect();
                     if !held.is_empty() {
                         out.push(WorldUpdate::SetBlocks(held));
                     }
@@ -227,10 +205,7 @@ impl Client {
             let dirty = std::mem::take(&mut self.dirty[lod as usize]);
             for (pos, cells) in dirty {
                 let key = ChunkKey { pos, lod };
-                let mut c = self
-                    .coarse
-                    .remove(&key)
-                    .unwrap_or(ChunkData::Uniform(BlockId::AIR));
+                let mut c = self.coarse.remove(&key).unwrap_or(ChunkData::Uniform(BlockId::AIR));
                 if !self.build(key, cells, &mut c) {
                     if !c.is_air() {
                         self.coarse.insert(key, c);
@@ -246,10 +221,7 @@ impl Client {
                     continue;
                 }
                 if self.held.contains(&key) {
-                    out.push(WorldUpdate::ChunkLoad {
-                        key,
-                        data: c.clone(),
-                    });
+                    out.push(WorldUpdate::ChunkLoad { key, data: c.clone() });
                 } else {
                     self.fresh.push(key);
                 }
@@ -273,10 +245,7 @@ impl Client {
             if olo.cmpgt(ohi).any() {
                 continue;
             }
-            let child = self.data(&ChunkKey {
-                pos: key.pos * 2 + oct,
-                lod: key.lod - 1,
-            });
+            let child = self.data(&ChunkKey { pos: key.pos * 2 + oct, lod: key.lod - 1 });
             let fill = match child {
                 None => Some(BlockId::AIR),
                 Some(ChunkData::Uniform(b)) => Some(*b),
@@ -284,8 +253,7 @@ impl Client {
             };
             // A uniform chunk keeps its block where the octant brings the same.
             if let (Some(b), ChunkData::Uniform(u), None) = (fill, &*c, &out)
-                && b == *u
-            {
+                && b == *u {
                 continue;
             }
             let d = out.get_or_insert_with(|| match c {
@@ -300,11 +268,7 @@ impl Client {
                             (Some(b), _) => b,
                             (None, Some(ChunkData::Dense(src))) => {
                                 let base = cell_index((p - oct * half) * 2);
-                                ORDER
-                                    .iter()
-                                    .map(|q| src.0[base + q])
-                                    .find(|b| !b.is_air())
-                                    .unwrap_or(BlockId::AIR)
+                                ORDER.iter().map(|q| src.0[base + q]).find(|b| !b.is_air()).unwrap_or(BlockId::AIR)
                             }
                             _ => unreachable!(),
                         };
@@ -340,12 +304,7 @@ impl Client {
             }
         }
         if moved {
-            let gone: Vec<ChunkKey> = self
-                .held
-                .iter()
-                .filter(|k| !self.inside(k))
-                .copied()
-                .collect();
+            let gone: Vec<ChunkKey> = self.held.iter().filter(|k| !self.inside(k)).copied().collect();
             for k in gone {
                 self.held.remove(&k);
                 out.push(WorldUpdate::ChunkUnload { key: k });
@@ -354,40 +313,19 @@ impl Client {
         let mut loads: Vec<ChunkKey> = if moved {
             self.fresh.clear();
             let coarse = self.coarse.keys().filter(|_| self.derives());
-            self.replica
-                .keys()
-                .filter(|k| k.lod == 0 || !self.derives())
-                .chain(coarse)
-                .filter(|k| !self.held.contains(k) && self.inside(k))
-                .copied()
-                .collect()
+            self.replica.keys().filter(|k| k.lod == 0 || !self.derives()).chain(coarse).filter(|k| !self.held.contains(k) && self.inside(k)).copied().collect()
         } else {
             let mut seen = HashSet::new();
-            std::mem::take(&mut self.fresh)
-                .into_iter()
-                .filter(|k| {
-                    self.data(k).is_some()
-                        && !self.held.contains(k)
-                        && self.inside(k)
-                        && seen.insert(*k)
-                })
-                .collect()
+            std::mem::take(&mut self.fresh).into_iter().filter(|k| self.data(k).is_some() && !self.held.contains(k) && self.inside(k) && seen.insert(*k)).collect()
         };
         let centers = &self.centers;
         loads.sort_unstable_by_key(|k| {
             let d = k.pos - centers[k.lod as usize].unwrap();
-            (
-                ((d.x * d.x + d.y * d.y + d.z * d.z) as i64) << (2 * k.lod as i64),
-                k.lod,
-                k.pos.to_array(),
-            )
+            (((d.x * d.x + d.y * d.y + d.z * d.z) as i64) << (2 * k.lod as i64), k.lod, k.pos.to_array())
         });
         for key in loads {
             self.held.insert(key);
-            out.push(WorldUpdate::ChunkLoad {
-                key,
-                data: self.data(&key).unwrap().clone(),
-            });
+            out.push(WorldUpdate::ChunkLoad { key, data: self.data(&key).unwrap().clone() });
         }
     }
 }

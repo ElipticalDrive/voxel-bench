@@ -20,9 +20,9 @@
 //! Every pipeline is monomorphised over the output's [`Pixel`]: RGBA8 (`[u8; 4]`), or RGBA16F
 //! ([`Half4`]) for the `hdr` post. The precompiled build holds both and picks by the post.
 
+use mr_reference::World;
 use mr_components::graph::{self, Role};
 use mr_core::*;
-use mr_reference::World;
 
 mod columns;
 mod exec;
@@ -30,9 +30,9 @@ mod perf;
 mod raster;
 mod raycast;
 
-use mr_core::lighting::PixelFormat;
-pub use mr_core::lighting::{Half4, Pixel, Tone};
 pub use mr_reference::Shadows;
+pub use mr_core::lighting::{Half4, Pixel, Tone};
+use mr_core::lighting::PixelFormat;
 pub use raycast::{Traversal, level_mask, shadow_kernel, storage_type, traversal};
 
 /// What a pipeline compiled for one graph bakes in: a generated crate
@@ -66,33 +66,16 @@ impl Spec for Generic {}
 
 /// A value the pipeline folds when `S` baked it, else its run-time one; creation fails if a baked
 /// graph value (tone, shadow kernel) differs from the graph's.
-fn fixed<T: PartialEq + std::fmt::Debug>(
-    what: &str,
-    baked: Option<T>,
-    actual: T,
-) -> anyhow::Result<T> {
+fn fixed<T: PartialEq + std::fmt::Debug>(what: &str, baked: Option<T>, actual: T) -> anyhow::Result<T> {
     match baked {
-        Some(b) if b != actual => anyhow::bail!(
-            "this pipeline was compiled for {what} {b:?} (not {actual:?}); a change needs another build"
-        ),
+        Some(b) if b != actual => anyhow::bail!("this pipeline was compiled for {what} {b:?} (not {actual:?}); a change needs another build"),
         _ => Ok(actual),
     }
 }
 
 /// The CPU executor: the pipeline its graph picks.
 pub fn entry() -> RendererEntry {
-    RendererEntry {
-        name: "cpu",
-        info: |p| {
-            Ok(info(
-                graph::of_init("cpu", p)?
-                    .region
-                    .expect("of_init: a region")
-                    .id,
-            ))
-        },
-        create: |p, _, _| create(p),
-    }
+    RendererEntry { name: "cpu", info: |p| Ok(info(graph::of_init("cpu", p)?.region.expect("of_init: a region").id)), create: |p, _, _| create(p) }
 }
 
 /// The knobs of every region.
@@ -162,9 +145,7 @@ fn create_as<P: Pixel>(p: &InitParams, g: &graph::Checked) -> anyhow::Result<Box
     if g.find(Role::Draw).is_some() {
         return raster::executor::<Generic, P>(p, g);
     }
-    let vis = g
-        .find(Role::Visibility)
-        .ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
+    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
     match g.node(vis).component.as_str() {
         "columns" => columns::executor::<Generic, P>(p, g),
         _ => raycast::create::<P>(p, g),
@@ -174,12 +155,7 @@ fn create_as<P: Pixel>(p: &InitParams, g: &graph::Checked) -> anyhow::Result<Box
 /// The world for graph `g` with the `shadows` knob, its pixels `P` the post's.
 fn world<P: Pixel>(p: &InitParams, g: &graph::Checked, shadows: Shadows) -> anyhow::Result<World> {
     let format = g.tone().format();
-    anyhow::ensure!(
-        P::FORMAT == format,
-        "this pipeline writes {:?} pixels, the post `{}` {format:?}",
-        P::FORMAT,
-        g.tone().name()
-    );
+    anyhow::ensure!(P::FORMAT == format, "this pipeline writes {:?} pixels, the post `{}` {format:?}", P::FORMAT, g.tone().name());
     let mut world = World::new(p);
     world.shadows = shadows;
     world.tone = g.tone();
@@ -207,16 +183,11 @@ mod tests {
             let e = format!("{:?}", ck.region.unwrap().id);
             let key = ck.graph.canonical().unwrap();
             if let Err(why) = ck.built() {
-                assert!(
-                    ck.graph.accept().is_err(),
-                    "`{e}` refuses a graph `accept` takes ({why}): {key}"
-                );
+                assert!(ck.graph.accept().is_err(), "`{e}` refuses a graph `accept` takes ({why}): {key}");
                 refused += 1;
                 continue;
             }
-            ck.graph.accept().unwrap_or_else(|why| {
-                panic!("`{e}` builds a graph `accept` refuses ({why}): {key}")
-            });
+            ck.graph.accept().unwrap_or_else(|why| panic!("`{e}` builds a graph `accept` refuses ({why}): {key}"));
             let opts = ck.graph.preset_options().unwrap();
             let p = InitParams {
                 width: 32,
@@ -227,16 +198,12 @@ mod tests {
                 max_lod: 0,
                 options_json: serde_json::to_string(&opts).unwrap(),
                 graph_json: serde_json::to_string(&ck.graph).unwrap(),
-                devices: DeviceConfig {
-                    gpus: vec![],
-                    cpu_threads: 1,
-                },
+                devices: DeviceConfig { gpus: vec![], cpu_threads: 1 },
                 stage_times: false,
                 client: Default::default(),
                 link: Default::default(),
             };
-            let made =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| create(p).map(drop)));
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| create(p).map(drop)));
             match made {
                 Ok(Ok(())) => {}
                 Ok(Err(why)) => panic!("`{e}` fails building {key}: {why}"),

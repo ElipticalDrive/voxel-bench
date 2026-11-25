@@ -44,14 +44,7 @@ pub fn sample_chunk(key: ChunkKey, f: impl Fn(IVec3) -> BlockId) -> ChunkData {
     } else {
         let (a, b) = (step / 4, step * 3 / 4);
         // Highest samples first so the first solid one is the topmost.
-        [b, a]
-            .iter()
-            .flat_map(|&y| {
-                [a, b]
-                    .into_iter()
-                    .flat_map(move |z| [a, b].into_iter().map(move |x| IVec3::new(x, y, z)))
-            })
-            .collect()
+        [b, a].iter().flat_map(|&y| [a, b].into_iter().flat_map(move |z| [a, b].into_iter().map(move |x| IVec3::new(x, y, z)))).collect()
     };
     let mut d = DenseChunk::filled(AIR);
     for y in 0..CHUNK_SIZE {
@@ -59,11 +52,7 @@ pub fn sample_chunk(key: ChunkKey, f: impl Fn(IVec3) -> BlockId) -> ChunkData {
             for x in 0..CHUNK_SIZE {
                 let local = IVec3::new(x, y, z);
                 let base = origin + local * step;
-                d.0[cell_index(local)] = offsets
-                    .iter()
-                    .map(|o| f(base + *o))
-                    .find(|b| b.is_solid())
-                    .unwrap_or(AIR);
+                d.0[cell_index(local)] = offsets.iter().map(|o| f(base + *o)).find(|b| b.is_solid()).unwrap_or(AIR);
             }
         }
     }
@@ -89,21 +78,13 @@ pub enum GenSpec {
         checker: bool,
     },
     /// Menger sponge of `3^level` blocks per side with its minimum corner at the origin.
-    Menger {
-        level: u32,
-    },
+    Menger { level: u32 },
     /// Closed room (white floor/ceiling, red/green side walls, blue back) with some
     /// blocks inside: the voxel Cornell box. Inner size `size` blocks.
-    Room {
-        size: i32,
-    },
+    Room { size: i32 },
     /// Cube of side `size` centred at the origin, each block solid with probability
     /// `density`. Worst case for many renderers.
-    Random {
-        size: i32,
-        density: f32,
-        seed: u64,
-    },
+    Random { size: i32, density: f32, seed: u64 },
     /// Every block type on a row, plus debug-textured blocks, for checking textures/UVs.
     Showcase,
     /// Infinite street grid of hollow towers (floors every 5 blocks, window openings):
@@ -226,19 +207,11 @@ pub struct GenField {
 }
 
 const fn field(name: &'static str, help: &'static str) -> GenField {
-    GenField {
-        name,
-        help,
-        range: None,
-    }
+    GenField { name, help, range: None }
 }
 
 const fn ranged(name: &'static str, help: &'static str, lo: f64, hi: f64) -> GenField {
-    GenField {
-        name,
-        help,
-        range: Some((lo, hi)),
-    }
+    GenField { name, help, range: Some((lo, hi)) }
 }
 
 /// A world generator as the GUI and the tests list it: its name (the spec's `type`), what it
@@ -256,45 +229,24 @@ pub const GENERATORS: &[GenInfo] = &[
     GenInfo {
         name: "terrain",
         description: "Infinite noise terrain with caves and trees: the streaming workload",
-        default: || GenSpec::Terrain {
-            seed: 0,
-            caves: true,
-            trees: true,
-        },
+        default: || GenSpec::Terrain { seed: 0, caves: true, trees: true },
         fields: &[
-            field(
-                "seed",
-                "Random seed: a different seed gives a different landscape",
-            ),
-            field(
-                "caves",
-                "Carve caves underground (hidden geometry renderers must skip)",
-            ),
-            field(
-                "trees",
-                "Place trees on the surface (fine detail at a distance)",
-            ),
+            field("seed", "Random seed: a different seed gives a different landscape"),
+            field("caves", "Carve caves underground (hidden geometry renderers must skip)"),
+            field("trees", "Place trees on the surface (fine detail at a distance)"),
         ],
     },
     GenInfo {
         name: "flat",
         description: "Infinite flat ground",
         default: || GenSpec::Flat { checker: false },
-        fields: &[field(
-            "checker",
-            "Alternate every block type across the ground instead of one",
-        )],
+        fields: &[field("checker", "Alternate every block type across the ground instead of one")],
     },
     GenInfo {
         name: "menger",
         description: "Menger sponge fractal: many holes, worst case for traversal",
         default: || GenSpec::Menger { level: 4 },
-        fields: &[ranged(
-            "level",
-            "Recursion depth (3^level blocks across): each level triples the size (level 5 = 243 blocks)",
-            1.0,
-            7.0,
-        )],
+        fields: &[ranged("level", "Recursion depth (3^level blocks across): each level triples the size (level 5 = 243 blocks)", 1.0, 7.0)],
     },
     GenInfo {
         name: "room",
@@ -305,11 +257,7 @@ pub const GENERATORS: &[GenInfo] = &[
     GenInfo {
         name: "random",
         description: "A cube of random blocks: incoherent rays, no large empty spaces",
-        default: || GenSpec::Random {
-            size: 128,
-            density: 0.1,
-            seed: 0,
-        },
+        default: || GenSpec::Random { size: 128, density: 0.1, seed: 0 },
         fields: &[
             field("size", "Edge length of the random cube in blocks"),
             ranged("density", "Fraction of cells that are solid", 0.0, 1.0),
@@ -319,133 +267,68 @@ pub const GENERATORS: &[GenInfo] = &[
     GenInfo {
         name: "city",
         description: "Street grid of hollow towers with windows: long rays down the streets, deep overdraw behind the facades",
-        default: || GenSpec::City {
-            seed: 0,
-            block: default_city_block(),
-            max_height: default_city_height(),
-        },
+        default: || GenSpec::City { seed: 0, block: default_city_block(), max_height: default_city_height() },
         fields: &[
             field("seed", "Random seed: building heights and materials"),
-            field(
-                "block",
-                "Street grid period in blocks (a 10-block street, the rest one building plot)",
-            ),
-            field(
-                "max_height",
-                "Tallest possible tower; most buildings are much lower",
-            ),
+            field("block", "Street grid period in blocks (a 10-block street, the rest one building plot)"),
+            field("max_height", "Tallest possible tower; most buildings are much lower"),
         ],
     },
     GenInfo {
         name: "islands",
         description: "Floating islands in a tall volume: mostly empty space, most rays hit nothing",
-        default: || GenSpec::Islands {
-            seed: 0,
-            spacing: default_islands_spacing(),
-            height: default_islands_height(),
-            fill: default_islands_fill(),
-        },
+        default: || GenSpec::Islands { seed: 0, spacing: default_islands_spacing(), height: default_islands_height(), fill: default_islands_fill() },
         fields: &[
             field("seed", "Random seed"),
-            field(
-                "spacing",
-                "Cell size in blocks: at most one island per cell, up to about a third of it across",
-            ),
-            field(
-                "height",
-                "Height of the island volume in blocks (from y = 0)",
-            ),
+            field("spacing", "Cell size in blocks: at most one island per cell, up to about a third of it across"),
+            field("height", "Height of the island volume in blocks (from y = 0)"),
             ranged("fill", "Fraction of cells holding an island", 0.0, 1.0),
         ],
     },
     GenInfo {
         name: "lattice",
         description: "Jungle gym of thin beams: every ray grazes geometry; thin features at LOD",
-        default: || GenSpec::Lattice {
-            period: default_lattice_period(),
-            thickness: default_one(),
-            height: default_lattice_height(),
-        },
+        default: || GenSpec::Lattice { period: default_lattice_period(), thickness: default_one(), height: default_lattice_height() },
         fields: &[
             field("period", "Distance between beams in blocks"),
-            field(
-                "thickness",
-                "Beam thickness in blocks (less than the period)",
-            ),
+            field("thickness", "Beam thickness in blocks (less than the period)"),
             field("height", "Height of the lattice in blocks"),
         ],
     },
     GenInfo {
         name: "gyroid",
         description: "Gyroid caves: curved walls nothing can merge, two interleaved tunnel networks",
-        default: || GenSpec::Gyroid {
-            period: default_gyroid_period(),
-            thickness: default_gyroid_thickness(),
-            height: default_gyroid_height(),
-        },
+        default: || GenSpec::Gyroid { period: default_gyroid_period(), thickness: default_gyroid_thickness(), height: default_gyroid_height() },
         fields: &[
             field("period", "Repeat length of the gyroid in blocks"),
-            ranged(
-                "thickness",
-                "Wall half-thickness in units of the gyroid function; above about 1 the caves close up",
-                0.05,
-                1.2,
-            ),
+            ranged("thickness", "Wall half-thickness in units of the gyroid function; above about 1 the caves close up", 0.05, 1.2),
             field("height", "Height of the cave volume in blocks"),
         ],
     },
     GenInfo {
         name: "checker",
         description: "3D checkerboard cube: every block shows all six faces, yet perfectly regular",
-        default: || GenSpec::Checker {
-            size: 96,
-            cell: default_one(),
-        },
-        fields: &[
-            field("size", "Edge length of the cube in blocks"),
-            field(
-                "cell",
-                "Checker cell size in blocks (1 = every other block)",
-            ),
-        ],
+        default: || GenSpec::Checker { size: 96, cell: default_one() },
+        fields: &[field("size", "Edge length of the cube in blocks"), field("cell", "Checker cell size in blocks (1 = every other block)")],
     },
     GenInfo {
         name: "glass",
         description: "Glass panes, a glass cube and a grate: see-through blocks, several surfaces per pixel",
-        default: || GenSpec::Glass {
-            size: default_glass_size(),
-            panes: default_glass_panes(),
-        },
+        default: || GenSpec::Glass { size: default_glass_size(), panes: default_glass_panes() },
         fields: &[
             field("size", "Edge length of the yard in blocks"),
-            field(
-                "panes",
-                "Parallel glass walls one behind the other (a ray through all crosses twice as many surfaces)",
-            ),
+            field("panes", "Parallel glass walls one behind the other (a ray through all crosses twice as many surfaces)"),
         ],
     },
-    GenInfo {
-        name: "showcase",
-        description: "One of every block type, for checking textures",
-        default: || GenSpec::Showcase,
-        fields: &[],
-    },
-    GenInfo {
-        name: "empty",
-        description: "No blocks (sky only)",
-        default: || GenSpec::Empty,
-        fields: &[],
-    },
+    GenInfo { name: "showcase", description: "One of every block type, for checking textures", default: || GenSpec::Showcase, fields: &[] },
+    GenInfo { name: "empty", description: "No blocks (sky only)", default: || GenSpec::Empty, fields: &[] },
 ];
 
 impl GenSpec {
     /// Its entry in [`GENERATORS`] (by variant).
     pub fn info(&self) -> &'static GenInfo {
         let d = std::mem::discriminant(self);
-        GENERATORS
-            .iter()
-            .find(|g| std::mem::discriminant(&(g.default)()) == d)
-            .expect("every GenSpec variant is in GENERATORS (test every_generator_is_listed)")
+        GENERATORS.iter().find(|g| std::mem::discriminant(&(g.default)()) == d).expect("every GenSpec variant is in GENERATORS (test every_generator_is_listed)")
     }
 
     /// Its name, the spec's `type`.
@@ -458,71 +341,21 @@ impl GenSpec {
             GenSpec::Empty => Arc::new(EmptyGen),
             GenSpec::Terrain { seed, caves, trees } => Arc::new(TerrainGen { seed, caves, trees }),
             GenSpec::Flat { checker } => Arc::new(FlatGen { checker }),
-            GenSpec::Menger { level } => Arc::new(MengerGen {
-                size: 3i32.pow(level),
-            }),
+            GenSpec::Menger { level } => Arc::new(MengerGen { size: 3i32.pow(level) }),
             GenSpec::Room { size } => Arc::new(RoomGen { size }),
-            GenSpec::Random {
-                size,
-                density,
-                seed,
-            } => Arc::new(RandomGen {
-                size,
-                density,
-                seed,
-            }),
+            GenSpec::Random { size, density, seed } => Arc::new(RandomGen { size, density, seed }),
             GenSpec::Showcase => Arc::new(ShowcaseGen),
-            GenSpec::City {
-                seed,
-                block,
-                max_height,
-            } => Arc::new(CityGen {
-                seed,
-                block: block.max(16),
-                max_height: max_height.max(8),
-            }),
-            GenSpec::Islands {
-                seed,
-                spacing,
-                height,
-                fill,
-            } => Arc::new(IslandsGen {
-                seed,
-                spacing: spacing.max(24),
-                height: height.max(1),
-                fill,
-            }),
-            GenSpec::Lattice {
-                period,
-                thickness,
-                height,
-            } => {
+            GenSpec::City { seed, block, max_height } => Arc::new(CityGen { seed, block: block.max(16), max_height: max_height.max(8) }),
+            GenSpec::Islands { seed, spacing, height, fill } => Arc::new(IslandsGen { seed, spacing: spacing.max(24), height: height.max(1), fill }),
+            GenSpec::Lattice { period, thickness, height } => {
                 let period = period.max(2);
-                Arc::new(LatticeGen {
-                    period,
-                    thickness: thickness.clamp(1, period - 1),
-                    height: height.max(1),
-                })
+                Arc::new(LatticeGen { period, thickness: thickness.clamp(1, period - 1), height: height.max(1) })
             }
-            GenSpec::Gyroid {
-                period,
-                thickness,
-                height,
-            } => Arc::new(GyroidGen {
-                period: period.max(4),
-                thickness,
-                height: height.max(1),
-            }),
-            GenSpec::Checker { size, cell } => Arc::new(CheckerGen {
-                size: size.max(1),
-                cell: cell.max(1),
-            }),
+            GenSpec::Gyroid { period, thickness, height } => Arc::new(GyroidGen { period: period.max(4), thickness, height: height.max(1) }),
+            GenSpec::Checker { size, cell } => Arc::new(CheckerGen { size: size.max(1), cell: cell.max(1) }),
             GenSpec::Glass { size, panes } => {
                 let size = size.max(32);
-                Arc::new(GlassGen {
-                    size,
-                    panes: panes.clamp(0, (size - 26) / 3),
-                })
+                Arc::new(GlassGen { size, panes: panes.clamp(0, (size - 26) / 3) })
             }
         }
     }
@@ -631,21 +464,10 @@ impl WorldGen for RoomGen {
         if inside(p.x) && inside(p.y) && inside(p.z) {
             // A tall pillar, a short box and a floating debug block.
             let (a, b) = (s / 4, s / 2);
-            let pillar =
-                (a..a + s / 5).contains(&p.x) && (a..a + s / 5).contains(&p.z) && p.y < s * 3 / 5;
-            let boxb = (b + 1..b + 1 + s / 4).contains(&p.x)
-                && (b..b + s / 4).contains(&p.z)
-                && p.y < s / 4;
+            let pillar = (a..a + s / 5).contains(&p.x) && (a..a + s / 5).contains(&p.z) && p.y < s * 3 / 5;
+            let boxb = (b + 1..b + 1 + s / 4).contains(&p.x) && (b..b + s / 4).contains(&p.z) && p.y < s / 4;
             let float = p == IVec3::new(s / 2, s * 3 / 4, s / 4);
-            return if pillar {
-                WHITE
-            } else if boxb {
-                PLANKS
-            } else if float {
-                DEBUG
-            } else {
-                AIR
-            };
+            return if pillar { WHITE } else if boxb { PLANKS } else if float { DEBUG } else { AIR };
         }
         if p.x == -1 {
             RED
@@ -683,18 +505,11 @@ impl WorldGen for RandomGen {
             return AIR;
         }
         let r = hash3(self.seed, p.x, p.y, p.z);
-        if unit(r) < self.density {
-            BlockId(1 + ((r >> 8) % 11) as u16)
-        } else {
-            AIR
-        }
+        if unit(r) < self.density { BlockId(1 + ((r >> 8) % 11) as u16) } else { AIR }
     }
     fn chunk_y_range(&self) -> (i32, i32) {
         let h = self.size / 2;
-        (
-            (-h).div_euclid(CHUNK_SIZE),
-            (self.size - h + CHUNK_SIZE - 1).div_euclid(CHUNK_SIZE),
-        )
+        ((-h).div_euclid(CHUNK_SIZE), (self.size - h + CHUNK_SIZE - 1).div_euclid(CHUNK_SIZE))
     }
     fn spawn(&self) -> DVec3 {
         DVec3::new(0.0, 0.0, self.size as f64)
@@ -706,11 +521,7 @@ pub struct ShowcaseGen;
 impl WorldGen for ShowcaseGen {
     fn block(&self, p: IVec3) -> BlockId {
         if p.y == -1 {
-            return if (p.x + p.z).rem_euclid(2) == 0 {
-                WHITE
-            } else {
-                GRAVEL
-            };
+            return if (p.x + p.z).rem_euclid(2) == 0 { WHITE } else { GRAVEL };
         }
         if p.y == 1 && p.z == 0 && p.x >= 0 && p.x % 2 == 0 && p.x / 2 < 18 {
             return BlockId(1 + (p.x / 2) as u16);
@@ -751,10 +562,7 @@ impl CityGen {
         // Cubed: mostly low blocks, a few towers.
         let t = unit(crate::noise::hash(r));
         let h = 10 + (t * t * t * (self.max_height - 10) as f32) as i32;
-        (
-            h,
-            [BRICKS, STONE, WHITE, COBBLE, PLANKS][(r >> 20) as usize % 5],
-        )
+        (h, [BRICKS, STONE, WHITE, COBBLE, PLANKS][(r >> 20) as usize % 5])
     }
 }
 
@@ -795,11 +603,7 @@ impl WorldGen for CityGen {
         let (wx, wz) = (lx == lo || lx == hi, lz == lo || lz == hi);
         if storey == 0 {
             // Wooden floors inside, so the openings show against the facade.
-            return if wx || wz || mat == PLANKS {
-                mat
-            } else {
-                PLANKS
-            };
+            return if wx || wz || mat == PLANKS { mat } else { PLANKS };
         }
         if wx || wz {
             let along = if wx { lz } else { lx };
@@ -821,13 +625,7 @@ impl WorldGen for CityGen {
         }
         if o.y >= 0 {
             let xs = o.x.div_euclid(b)..=(o.x + e - 1).div_euclid(b);
-            let top = xs
-                .flat_map(|ix| {
-                    (o.z.div_euclid(b)..=(o.z + e - 1).div_euclid(b)).map(move |iz| (ix, iz))
-                })
-                .map(|(ix, iz)| self.plot(ix, iz).0)
-                .max()
-                .unwrap_or(0);
+            let top = xs.flat_map(|ix| (o.z.div_euclid(b)..=(o.z + e - 1).div_euclid(b)).map(move |iz| (ix, iz))).map(|(ix, iz)| self.plot(ix, iz).0).max().unwrap_or(0);
             if o.y >= top {
                 return ChunkData::Uniform(AIR);
             }
@@ -867,38 +665,20 @@ impl IslandsGen {
         let rmax = s as f32 / 2.6 - 2.0;
         let r = 4.0 + unit(crate::noise::hash(h)) * (rmax - 4.0).max(0.0);
         let (side, below, above) = Self::reach(r);
-        let pick = |k: u64, lo: i32, hi: i32| {
-            lo + (crate::noise::hash(h ^ k) % (hi - lo).max(1) as u64) as i32
-        };
-        let local = IVec3::new(
-            pick(1, side, s - side),
-            pick(2, below, s - above),
-            pick(3, side, s - side),
-        );
-        Some(Island {
-            centre: cell * s + local,
-            r,
-        })
+        let pick = |k: u64, lo: i32, hi: i32| lo + (crate::noise::hash(h ^ k) % (hi - lo).max(1) as u64) as i32;
+        let local = IVec3::new(pick(1, side, s - side), pick(2, below, s - above), pick(3, side, s - side));
+        Some(Island { centre: cell * s + local, r })
     }
 
     /// Blocks an island of radius `r` can reach from its centre: sideways, below, above.
     fn reach(r: f32) -> (i32, i32, i32) {
-        (
-            (r * 1.15).ceil() as i32 + 1,
-            (r * 1.4).ceil() as i32 + 1,
-            (r * 0.4).ceil() as i32 + 1,
-        )
+        ((r * 1.15).ceil() as i32 + 1, (r * 1.4).ceil() as i32 + 1, (r * 0.4).ceil() as i32 + 1)
     }
 
     /// A grassy dome on top, a rough stone cone beneath.
     fn island_block(&self, i: &Island, p: IVec3) -> BlockId {
         let d = (p - i.centre).as_vec3();
-        let n = perlin3(
-            self.seed ^ 0x15,
-            p.x as f32 / 9.0,
-            p.y as f32 / 9.0,
-            p.z as f32 / 9.0,
-        );
+        let n = perlin3(self.seed ^ 0x15, p.x as f32 / 9.0, p.y as f32 / 9.0, p.z as f32 / 9.0);
         let re = i.r * (1.0 + 0.15 * n.clamp(-1.0, 1.0));
         let across = (d.x * d.x + d.z * d.z).sqrt();
         if across >= re {
@@ -910,62 +690,38 @@ impl IslandsGen {
         }
         if d.y >= 0.0 {
             let depth = top - d.y;
-            return if depth < 1.0 {
-                GRASS
-            } else if depth < 3.0 {
-                DIRT
-            } else {
-                STONE
-            };
+            return if depth < 1.0 { GRASS } else if depth < 3.0 { DIRT } else { STONE };
         }
         if d.y < -1.2 * (re - across) {
             return AIR;
         }
-        if unit(hash3(self.seed, p.x, p.y, p.z)) < 0.02 {
-            ORE
-        } else {
-            STONE
-        }
+        if unit(hash3(self.seed, p.x, p.y, p.z)) < 0.02 { ORE } else { STONE }
     }
 }
 
 impl WorldGen for IslandsGen {
     fn block(&self, p: IVec3) -> BlockId {
-        self.island(p.div_euclid(IVec3::splat(self.spacing)))
-            .map_or(AIR, |i| self.island_block(&i, p))
+        self.island(p.div_euclid(IVec3::splat(self.spacing))).map_or(AIR, |i| self.island_block(&i, p))
     }
     fn chunk_y_range(&self) -> (i32, i32) {
-        (
-            0,
-            (self.cells_y() * self.spacing + CHUNK_SIZE - 1) / CHUNK_SIZE,
-        )
+        (0, (self.cells_y() * self.spacing + CHUNK_SIZE - 1) / CHUNK_SIZE)
     }
     fn spawn(&self) -> DVec3 {
         // The middle of the first empty cell at mid height along +x.
         let y = self.cells_y() / 2;
-        let x = (0..64)
-            .find(|&x| self.island(IVec3::new(x, y, 0)).is_none())
-            .unwrap_or(0);
+        let x = (0..64).find(|&x| self.island(IVec3::new(x, y, 0)).is_none()).unwrap_or(0);
         (IVec3::new(x, y, 0) * self.spacing).as_dvec3() + DVec3::splat(self.spacing as f64 / 2.0)
     }
     fn chunk(&self, key: ChunkKey) -> ChunkData {
         let (o, e, s) = (key.origin(), key.extent(), self.spacing);
-        let (lo, hi) = (
-            o.div_euclid(IVec3::splat(s)),
-            (o + e - 1).div_euclid(IVec3::splat(s)),
-        );
+        let (lo, hi) = (o.div_euclid(IVec3::splat(s)), (o + e - 1).div_euclid(IVec3::splat(s)));
         let mut any = false;
         'cells: for cy in lo.y.max(0)..=hi.y.min(self.cells_y() - 1) {
             for cz in lo.z..=hi.z {
                 for cx in lo.x..=hi.x {
-                    let Some(i) = self.island(IVec3::new(cx, cy, cz)) else {
-                        continue;
-                    };
+                    let Some(i) = self.island(IVec3::new(cx, cy, cz)) else { continue };
                     let (side, below, above) = Self::reach(i.r);
-                    let (a, b) = (
-                        i.centre - IVec3::new(side, below, side),
-                        i.centre + IVec3::new(side, above, side),
-                    );
+                    let (a, b) = (i.centre - IVec3::new(side, below, side), i.centre + IVec3::new(side, above, side));
                     if a.cmplt(o + e).all() && b.cmpge(o).all() {
                         any = true;
                         break 'cells;
@@ -1043,11 +799,7 @@ impl WorldGen for GyroidGen {
             return AIR;
         }
         let band = (p.y / 8 % 2) as usize;
-        if g >= 0.0 {
-            [BRICKS, PLANKS][band]
-        } else {
-            [STONE, COBBLE][band]
-        }
+        if g >= 0.0 { [BRICKS, PLANKS][band] } else { [STONE, COBBLE][band] }
     }
     fn chunk_y_range(&self) -> (i32, i32) {
         (-1, (self.height + CHUNK_SIZE - 1) / CHUNK_SIZE)
@@ -1055,13 +807,7 @@ impl WorldGen for GyroidGen {
     fn spawn(&self) -> DVec3 {
         // Deepest in a channel along a line at mid height.
         let y = self.height / self.period / 2 * self.period + self.period / 4;
-        let x = (0..self.period)
-            .max_by(|&a, &b| {
-                self.f(IVec3::new(a, y, 0))
-                    .abs()
-                    .total_cmp(&self.f(IVec3::new(b, y, 0)).abs())
-            })
-            .unwrap_or(0);
+        let x = (0..self.period).max_by(|&a, &b| self.f(IVec3::new(a, y, 0)).abs().total_cmp(&self.f(IVec3::new(b, y, 0)).abs())).unwrap_or(0);
         IVec3::new(x, y, 0).as_dvec3() + 0.5
     }
 }
@@ -1077,11 +823,7 @@ impl WorldGen for CheckerGen {
             return AIR;
         }
         let q = p / self.cell;
-        if (q.x + q.y + q.z) % 2 == 0 {
-            [WHITE, RED, GREEN, BLUE][(q.y % 4) as usize]
-        } else {
-            AIR
-        }
+        if (q.x + q.y + q.z) % 2 == 0 { [WHITE, RED, GREEN, BLUE][(q.y % 4) as usize] } else { AIR }
     }
     fn chunk_y_range(&self) -> (i32, i32) {
         (0, (self.size + CHUNK_SIZE - 1) / CHUNK_SIZE)
@@ -1111,11 +853,7 @@ impl WorldGen for GlassGen {
     fn block(&self, p: IVec3) -> BlockId {
         let s = self.size;
         if p.y == -1 && (-8..s + 8).contains(&p.x) && (-8..s + 8).contains(&p.z) {
-            return if (p.x + p.z).rem_euclid(2) == 0 {
-                WHITE
-            } else {
-                GRAVEL
-            };
+            return if (p.x + p.z).rem_euclid(2) == 0 { WHITE } else { GRAVEL };
         }
         if p.y < 0 || !(0..s).contains(&p.x) || !(0..s).contains(&p.z) {
             return AIR;
@@ -1124,12 +862,7 @@ impl WorldGen for GlassGen {
         let (x0, x1) = (s / 8, s - s / 8);
         let front = s - 6;
         let back = front - 3 * (self.panes - 1);
-        if self.panes > 0
-            && (back..=front).contains(&p.z)
-            && (front - p.z) % 3 == 0
-            && (x0..x1).contains(&p.x)
-            && p.y < s / 4
-        {
+        if self.panes > 0 && (back..=front).contains(&p.z) && (front - p.z) % 3 == 0 && (x0..x1).contains(&p.x) && p.y < s / 4 {
             return [GLASS, GLASS_RED, GLASS_GREEN, GLASS_BLUE][((front - p.z) / 3 % 4) as usize];
         }
         // Two hollow 7-block cubes holding an opaque block, a pillar between them.
@@ -1147,9 +880,7 @@ impl WorldGen for GlassGen {
                 Some(AIR)
             }
         };
-        if let Some(b) = shell(IVec3::new(x0, 0, 10), GLASS, GLOW)
-            .or_else(|| shell(IVec3::new(x1 - 7, 0, 10), GRATE, RED))
-        {
+        if let Some(b) = shell(IVec3::new(x0, 0, 10), GLASS, GLOW).or_else(|| shell(IVec3::new(x1 - 7, 0, 10), GRATE, RED)) {
             return b;
         }
         if (s / 2 - 1..s / 2 + 1).contains(&p.x) && (12..14).contains(&p.z) && p.y < s / 3 {
@@ -1170,13 +901,7 @@ impl WorldGen for GlassGen {
     fn chunk(&self, key: ChunkKey) -> ChunkData {
         let (o, e) = (key.origin(), key.extent());
         let (lo, hi) = (-8, self.size + 8);
-        if o.y >= self.size / 2
-            || o.y + e <= -1
-            || o.x >= hi
-            || o.z >= hi
-            || o.x + e <= lo
-            || o.z + e <= lo
-        {
+        if o.y >= self.size / 2 || o.y + e <= -1 || o.x >= hi || o.z >= hi || o.x + e <= lo || o.z + e <= lo {
             return ChunkData::Uniform(AIR);
         }
         sample_chunk(key, |p| self.block(p))
@@ -1207,18 +932,8 @@ impl TerrainGen {
             return false;
         }
         let s = 1.0 / 28.0;
-        let a = perlin3(
-            self.seed ^ 0xcafe,
-            p.x as f32 * s,
-            p.y as f32 * s * 1.6,
-            p.z as f32 * s,
-        );
-        let b = perlin3(
-            self.seed ^ 0xbeef,
-            p.x as f32 * s,
-            p.y as f32 * s * 1.6,
-            p.z as f32 * s,
-        );
+        let a = perlin3(self.seed ^ 0xcafe, p.x as f32 * s, p.y as f32 * s * 1.6, p.z as f32 * s);
+        let b = perlin3(self.seed ^ 0xbeef, p.x as f32 * s, p.y as f32 * s * 1.6, p.z as f32 * s);
         // Intersection of two noise "sheets" gives long spaghetti tunnels.
         a.abs() < 0.07 && b.abs() < 0.07
     }
@@ -1259,9 +974,7 @@ impl TerrainGen {
             for dx in -2..=2 {
                 let (tx, tz) = (p.x + dx, p.z + dz);
                 let h = heights(tx, tz);
-                let Some(trunk) = self.tree_at(tx, tz, h) else {
-                    continue;
-                };
+                let Some(trunk) = self.tree_at(tx, tz, h) else { continue };
                 let top = h + trunk;
                 if dx == 0 && dz == 0 && p.y > h && p.y <= top {
                     return Some(LOG);
@@ -1283,10 +996,8 @@ impl WorldGen for TerrainGen {
     fn block(&self, p: IVec3) -> BlockId {
         let h = self.height(p.x, p.z);
         let b = self.column(p, h);
-        if b.is_air()
-            && p.y > h
-            && let Some(t) = self.tree_block(p, &|x, z| self.height(x, z))
-        {
+        if b.is_air() && p.y > h
+            && let Some(t) = self.tree_block(p, &|x, z| self.height(x, z)) {
             return t;
         }
         b
@@ -1364,18 +1075,10 @@ impl WorldGen for TerrainGen {
                         let y0 = o.y + y * step;
                         if y0 <= hmax + 9 && y0 + step > hmin {
                             let q = (step / 4).max(1);
-                            for off in [
-                                IVec3::new(half, half, half),
-                                IVec3::new(q, half, q),
-                                IVec3::new(step - q, half, step - q),
-                                IVec3::new(q, half, step - q),
-                                IVec3::new(step - q, half, q),
-                            ] {
+                            for off in [IVec3::new(half, half, half), IVec3::new(q, half, q), IVec3::new(step - q, half, step - q), IVec3::new(q, half, step - q), IVec3::new(step - q, half, q)] {
                                 let p = IVec3::new(o.x + x * step, y0, o.z + z * step) + off;
                                 if p.y > self.height(p.x, p.z)
-                                    && let Some(t) =
-                                        self.tree_block(p, &|wx, wz| self.height(wx, wz))
-                                {
+                                    && let Some(t) = self.tree_block(p, &|wx, wz| self.height(wx, wz)) {
                                     b = t;
                                     break;
                                 }
@@ -1398,17 +1101,8 @@ mod tests {
     /// spec, and names each default's fields exactly (serde's own lists are the reference).
     #[test]
     fn every_generator_is_listed() {
-        let err = toml::from_str::<GenSpec>("type = \"no such generator\"")
-            .unwrap_err()
-            .to_string();
-        let variants: Vec<&str> = err
-            .split("expected one of ")
-            .nth(1)
-            .expect(&err)
-            .split(", ")
-            .map(|v| v.trim().trim_matches('`'))
-            .filter(|v| !v.is_empty())
-            .collect();
+        let err = toml::from_str::<GenSpec>("type = \"no such generator\"").unwrap_err().to_string();
+        let variants: Vec<&str> = err.split("expected one of ").nth(1).expect(&err).split(", ").map(|v| v.trim().trim_matches('`')).filter(|v| !v.is_empty()).collect();
         let mut listed: Vec<&str> = GENERATORS.iter().map(|g| g.name).collect();
         let mut want = variants.clone();
         listed.sort();
@@ -1418,40 +1112,19 @@ mod tests {
             let spec = (g.default)();
             assert_eq!(spec.name(), g.name);
             let table = toml::Table::try_from(&spec).unwrap();
-            assert_eq!(
-                table["type"].as_str(),
-                Some(g.name),
-                "{}: its default is another variant",
-                g.name
-            );
-            let mut fields: Vec<&str> = table
-                .keys()
-                .map(String::as_str)
-                .filter(|k| *k != "type")
-                .collect();
+            assert_eq!(table["type"].as_str(), Some(g.name), "{}: its default is another variant", g.name);
+            let mut fields: Vec<&str> = table.keys().map(String::as_str).filter(|k| *k != "type").collect();
             let mut named: Vec<&str> = g.fields.iter().map(|f| f.name).collect();
             fields.sort();
             named.sort();
-            assert_eq!(
-                fields, named,
-                "{}: its knobs against its spec's fields",
-                g.name
-            );
+            assert_eq!(fields, named, "{}: its knobs against its spec's fields", g.name);
         }
     }
 
     #[test]
     fn terrain_fast_path_matches_block() {
-        let g = TerrainGen {
-            seed: 3,
-            caves: true,
-            trees: true,
-        };
-        for pos in [
-            IVec3::new(0, 0, 0),
-            IVec3::new(-3, 1, 5),
-            IVec3::new(10, -1, -7),
-        ] {
+        let g = TerrainGen { seed: 3, caves: true, trees: true };
+        for pos in [IVec3::new(0, 0, 0), IVec3::new(-3, 1, 5), IVec3::new(10, -1, -7)] {
             let key = ChunkKey::lod0(pos);
             let c = g.chunk(key);
             for i in (0..mr_core::CHUNK_VOLUME).step_by(97) {
@@ -1466,47 +1139,22 @@ mod tests {
     #[test]
     fn stress_worlds_chunks_match_block() {
         let specs = [
-            GenSpec::City {
-                seed: 1,
-                block: 48,
-                max_height: 240,
-            },
-            GenSpec::Islands {
-                seed: 2,
-                spacing: 96,
-                height: 512,
-                fill: 0.35,
-            },
-            GenSpec::Lattice {
-                period: 24,
-                thickness: 1,
-                height: 160,
-            },
-            GenSpec::Gyroid {
-                period: 48,
-                thickness: 0.3,
-                height: 192,
-            },
+            GenSpec::City { seed: 1, block: 48, max_height: 240 },
+            GenSpec::Islands { seed: 2, spacing: 96, height: 512, fill: 0.35 },
+            GenSpec::Lattice { period: 24, thickness: 1, height: 160 },
+            GenSpec::Gyroid { period: 48, thickness: 0.3, height: 192 },
             GenSpec::Checker { size: 96, cell: 1 },
             GenSpec::Glass { size: 48, panes: 6 },
         ];
         for spec in specs {
             let g = spec.build();
             let spawn = g.spawn();
-            assert!(
-                g.block(spawn.floor().as_ivec3()).is_air(),
-                "{spec:?}: spawn {spawn} is solid"
-            );
+            assert!(g.block(spawn.floor().as_ivec3()).is_air(), "{spec:?}: spawn {spawn} is solid");
             let mut solid = 0;
             // Around the spawn, and around the origin (the cube worlds are seen from outside).
             for i in 0..54 {
-                let centre = if i < 27 {
-                    ChunkKey::of_block(spawn.as_ivec3()).pos
-                } else {
-                    IVec3::ZERO
-                };
-                let key =
-                    ChunkKey::lod0(centre + (IVec3::new(i % 3, i / 3 % 3, i / 9 % 3) - 1) * 2);
+                let centre = if i < 27 { ChunkKey::of_block(spawn.as_ivec3()).pos } else { IVec3::ZERO };
+                let key = ChunkKey::lod0(centre + (IVec3::new(i % 3, i / 3 % 3, i / 9 % 3) - 1) * 2);
                 let c = g.chunk(key);
                 for i in (0..mr_core::CHUNK_VOLUME).step_by(31) {
                     let l = mr_core::chunk::cell_of_index(i);
@@ -1532,28 +1180,10 @@ mod tests {
                 }
             }
         }
-        for b in [
-            GLASS,
-            GLASS_RED,
-            GLASS_GREEN,
-            GLASS_BLUE,
-            GRATE,
-            GLOW,
-            RED,
-            WHITE,
-            BRICKS,
-            GRAVEL,
-        ] {
+        for b in [GLASS, GLASS_RED, GLASS_GREEN, GLASS_BLUE, GRATE, GLOW, RED, WHITE, BRICKS, GRAVEL] {
             assert!(seen.contains(&b), "{b:?}");
         }
-        let panes = (0..48)
-            .filter(|&z| {
-                matches!(
-                    g.block(IVec3::new(24, 2, z)),
-                    GLASS | GLASS_RED | GLASS_GREEN | GLASS_BLUE
-                )
-            })
-            .count();
+        let panes = (0..48).filter(|&z| matches!(g.block(IVec3::new(24, 2, z)), GLASS | GLASS_RED | GLASS_GREEN | GLASS_BLUE)).count();
         assert_eq!(panes, 6);
     }
 
@@ -1563,21 +1193,12 @@ mod tests {
     fn worlds_ask_transparency_by_their_blocks() {
         use mr_core::Feature::Transparency;
         let blocks = crate::textures::default_registry();
-        assert_eq!(
-            crate::World::new(GenSpec::Glass { size: 48, panes: 6 }.build()).asks(&blocks),
-            vec![Transparency]
-        );
+        assert_eq!(crate::World::new(GenSpec::Glass { size: 48, panes: 6 }.build()).asks(&blocks), vec![Transparency]);
         let mut w = crate::World::new(GenSpec::Room { size: 32 }.build());
         assert!(w.asks(&blocks).is_empty());
-        w.apply_edits(&[mr_core::renderer::BlockEdit {
-            pos: IVec3::new(3, 3, 3),
-            block: RED,
-        }]);
+        w.apply_edits(&[mr_core::renderer::BlockEdit { pos: IVec3::new(3, 3, 3), block: RED }]);
         assert!(w.asks(&blocks).is_empty(), "an opaque edit");
-        w.apply_edits(&[mr_core::renderer::BlockEdit {
-            pos: IVec3::new(4, 3, 3),
-            block: GLASS,
-        }]);
+        w.apply_edits(&[mr_core::renderer::BlockEdit { pos: IVec3::new(4, 3, 3), block: GLASS }]);
         assert_eq!(w.asks(&blocks), vec![Transparency]);
     }
 
@@ -1588,11 +1209,7 @@ mod tests {
     fn generators_ask_for_the_blocks_they_place() {
         let blocks = crate::textures::default_registry();
         // (`Empty` has no chunks at all.)
-        let gens = GENERATORS
-            .iter()
-            .map(|g| (g.default)())
-            .filter(|g| !matches!(g, GenSpec::Empty))
-            .chain([GenSpec::Flat { checker: true }]);
+        let gens = GENERATORS.iter().map(|g| (g.default)()).filter(|g| !matches!(g, GenSpec::Empty)).chain([GenSpec::Flat { checker: true }]);
         let mut asking = 0;
         for spec in gens {
             let g = spec.build();
@@ -1600,25 +1217,14 @@ mod tests {
             let at = ChunkKey::of_block(g.spawn().floor().as_ivec3()).pos;
             let (y0, y1) = g.chunk_y_range();
             let mut chunks = 0;
-            let seen = (y0..y1)
-                .flat_map(|y| {
-                    (-2..=2)
-                        .flat_map(move |z| (-2..=2).map(move |x| IVec3::new(at.x + x, y, at.z + z)))
-                })
-                .any(|pos| {
-                    chunks += 1;
-                    blocks.chunk_see_through(&g.chunk(ChunkKey::lod0(pos)))
-                });
+            let seen = (y0..y1).flat_map(|y| (-2..=2).flat_map(move |z| (-2..=2).map(move |x| IVec3::new(at.x + x, y, at.z + z)))).any(|pos| {
+                chunks += 1;
+                blocks.chunk_see_through(&g.chunk(ChunkKey::lod0(pos)))
+            });
             assert!(chunks > 0, "{spec:?}: no chunks sampled");
-            assert!(
-                !seen || asks,
-                "{spec:?} places see-through blocks without asking transparency"
-            );
+            assert!(!seen || asks, "{spec:?} places see-through blocks without asking transparency");
             if asks {
-                assert!(
-                    seen,
-                    "{spec:?} asks transparency but its spawn has no see-through block"
-                );
+                assert!(seen, "{spec:?} asks transparency but its spawn has no see-through block");
                 asking += 1;
             }
         }

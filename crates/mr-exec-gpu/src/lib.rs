@@ -64,22 +64,14 @@ pub fn compiled_entry<S: Spec>() -> RendererEntry {
         create: |p, d, w| {
             mr_core::baked::check(S::KNOBS, &p, &info_of(&p)?.params)?;
             let inner = create_with(p, d, w, S::CPU_WORLD)?;
-            Ok(Box::new(Compiled {
-                inner,
-                baked: S::KNOBS,
-                native: S::NATIVE,
-            }))
+            Ok(Box::new(Compiled { inner, baked: S::KNOBS, native: S::NATIVE }))
         },
     }
 }
 
 /// The GPU executor: the region its graph picks.
 pub fn entry() -> RendererEntry {
-    RendererEntry {
-        name: "gpu",
-        info: info_of,
-        create: |p, d, w| create_with(p, d, w, None),
-    }
+    RendererEntry { name: "gpu", info: info_of, create: |p, d, w| create_with(p, d, w, None) }
 }
 
 /// What the pipeline of `p`'s graph supports: its region's, less what its components lack.
@@ -92,17 +84,7 @@ fn info_of(p: &InitParams) -> anyhow::Result<RendererInfo> {
 
 /// The knobs of every region.
 pub fn infos() -> Vec<RendererInfo> {
-    [
-        RegionId::CpuSampler,
-        RegionId::GpuSampler,
-        RegionId::GpuSplat,
-        RegionId::GpuColumns,
-        RegionId::GpuWalk,
-        RegionId::GpuMeshing,
-        RegionId::GpuRayQuery,
-    ]
-    .map(info)
-    .into()
+    [RegionId::CpuSampler, RegionId::GpuSampler, RegionId::GpuSplat, RegionId::GpuColumns, RegionId::GpuWalk, RegionId::GpuMeshing, RegionId::GpuRayQuery].map(info).into()
 }
 
 /// The knobs of `region`.
@@ -147,19 +129,11 @@ impl Renderer for Compiled {
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        if self.native {
-            self.inner.render(req, &mut Native(sink))
-        } else {
-            self.inner.render(req, sink)
-        }
+        if self.native { self.inner.render(req, &mut Native(sink)) } else { self.inner.render(req, sink) }
     }
 
     fn poll(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        if self.native {
-            self.inner.poll(&mut Native(sink))
-        } else {
-            self.inner.poll(sink)
-        }
+        if self.native { self.inner.poll(&mut Native(sink)) } else { self.inner.poll(sink) }
     }
 
     fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
@@ -172,11 +146,7 @@ impl Renderer for Compiled {
     }
 
     fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        if self.native {
-            self.inner.flush(&mut Native(sink))
-        } else {
-            self.inner.flush(sink)
-        }
+        if self.native { self.inner.flush(&mut Native(sink)) } else { self.inner.flush(sink) }
     }
 
     fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
@@ -191,19 +161,12 @@ impl Renderer for Compiled {
 /// The executor for `p`'s graph: the faces' regions when a drawer draws them, else the region of
 /// the visibility node's component; CPU discovery in `cpu_world`'s storage when a compiled
 /// pipeline names one.
-fn create_with(
-    p: InitParams,
-    devices: &Devices,
-    waker: Waker,
-    cpu_world: Option<fn() -> CpuWorld>,
-) -> anyhow::Result<Box<dyn Renderer>> {
+fn create_with(p: InitParams, devices: &Devices, waker: Waker, cpu_world: Option<fn() -> CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
     let g = graph::of_init("gpu", &p)?;
     if g.find(Role::Draw).is_some() {
         return faces::create(&p, devices, waker, &g, cpu_world);
     }
-    let vis = g
-        .find(Role::Visibility)
-        .ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
+    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
     match g.node(vis).component.as_str() {
         "splat" => splat::create(&p, devices, waker, &g),
         "columns" => columns::create(&p, devices, waker, &g),
@@ -321,43 +284,17 @@ fn home_slot(g: &graph::Checked) -> usize {
 }
 
 /// A storage buffer's layout entry.
-fn storage_entry(
-    binding: u32,
-    read_only: bool,
-    visibility: wgpu::ShaderStages,
-) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
+fn storage_entry(binding: u32, read_only: bool, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry { binding, visibility, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None }, count: None }
 }
 
 impl Core {
-    fn new(
-        p: &InitParams,
-        devices: &Devices,
-        waker: Waker,
-        g: &graph::Checked,
-        s: CoreSpec,
-    ) -> anyhow::Result<Self> {
+    fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, s: CoreSpec) -> anyhow::Result<Self> {
         Self::on(home_slot(g), p, devices, waker, g, s)
     }
 
     /// The core on GPU slot `slot`.
-    fn on(
-        slot: usize,
-        p: &InitParams,
-        devices: &Devices,
-        waker: Waker,
-        g: &graph::Checked,
-        s: CoreSpec,
-    ) -> anyhow::Result<Self> {
+    fn on(slot: usize, p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, s: CoreSpec) -> anyhow::Result<Self> {
         // The host hands the device in (the slot's adapter); the executor only states its
         // needs (ray queries' with acceleration structures).
         let mut needs = s.gpu;
@@ -368,11 +305,7 @@ impl Core {
         let gpu = mr_gpu::gpu(devices, slot, &needs)?;
         // Every pipeline of this graph goes through one persistent cache.
         gpu.open_cache(&g.graph.key().map_err(anyhow::Error::msg)?);
-        let accel = s
-            .accel
-            .as_ref()
-            .map(|a| accel::Accel::new(&gpu, a))
-            .transpose()?;
+        let accel = s.accel.as_ref().map(|a| accel::Accel::new(&gpu, a)).transpose()?;
         let world = VoxelWorld::new(
             &gpu,
             &p.blocks,
@@ -380,69 +313,28 @@ impl Core {
             VoxelWorldConfig {
                 max_lod: s.max_lod,
                 // Region storages (tree64, ...) hold their own data instead of the voxel pool.
-                upload_voxels: s.voxels
-                    || StorageSet::needs_pool(s.walks)
-                    || accel.as_ref().is_some_and(|a| a.reads_voxels()),
+                upload_voxels: s.voxels || StorageSet::needs_pool(s.walks) || accel.as_ref().is_some_and(|a| a.reads_voxels()),
                 pool_mb: s.pool_mb,
                 view_radius: p.view_radius_chunks,
                 shadows: s.shadows,
                 visibility: s.stages,
             },
         )?;
-        let storages = StorageSet::new(
-            &gpu,
-            s.walks,
-            s.stages,
-            gpu_data::Limits {
-                mb: s.pool_mb,
-                view_radius: p.view_radius_chunks,
-                wide_ids: p.blocks.blocks.len() > 256,
-            },
-        );
+        let storages = StorageSet::new(&gpu, s.walks, s.stages, gpu_data::Limits { mb: s.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
         if storages.groups_end() > gpu.device.limits().max_bind_groups {
-            anyhow::bail!(
-                "{} storages need {} bind groups; this device has {}",
-                s.walks.storages.len(),
-                storages.groups_end(),
-                gpu.device.limits().max_bind_groups
-            );
+            anyhow::bail!("{} storages need {} bind groups; this device has {}", s.walks.storages.len(), storages.groups_end(), gpu.device.limits().max_bind_groups);
         }
         let fif = s.frames_in_flight.max(1);
         Ok(Self {
             graph: g.graph.clone(),
-            accum: ShadeState::new(
-                &gpu,
-                p.width,
-                p.height,
-                s.shading,
-                s.bounces,
-                s.spp,
-                s.accumulate,
-            ),
-            camera_buf: gpu.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("camera"),
-                size: size_of::<CameraUniform>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
+            accum: ShadeState::new(&gpu, p.width, p.height, s.shading, s.bounces, s.spp, s.accumulate),
+            camera_buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("camera"), size: size_of::<CameraUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
             edges: exec::Edges::of(&gpu, g, p.width, p.height, s.hits)?,
             output: mr_gpu::output_texture(&gpu, p.width, p.height, s.walks.post.format()),
             stages: s.stages,
-            ring: FrameRing::new(
-                &gpu,
-                p.width,
-                p.height,
-                s.walks.post.format(),
-                fif,
-                waker.clone(),
-            )
-            .with_stages(p.stage_times),
+            ring: FrameRing::new(&gpu, p.width, p.height, s.walks.post.format(), fif, waker.clone()).with_stages(p.stage_times),
             frames_in_flight: fif,
-            stage_nodes: [
-                g.ids(&[Role::Visibility, Role::Shading]),
-                g.ids(&[Role::Visibility]),
-                g.ids(&[Role::Shading]),
-            ],
+            stage_nodes: [g.ids(&[Role::Visibility, Role::Shading]), g.ids(&[Role::Visibility]), g.ids(&[Role::Shading])],
             width: p.width,
             height: p.height,
             waker,
@@ -465,10 +357,7 @@ impl Core {
     /// The sky past 1: with `hdr`, its extended sRGB when a channel passes 1 (`None`: the sky
     /// is what RGBA8 holds, quantised to it, so every path writes `clamp`'s value).
     fn sky_hdr(&self) -> Option<glam::Vec3> {
-        let c = self
-            .tone
-            .map(self.world.env.sky)
-            .map(mr_core::lighting::linear_to_srgb_extended);
+        let c = self.tone.map(self.world.env.sky).map(mr_core::lighting::linear_to_srgb_extended);
         (self.tone == mr_core::lighting::Tone::Hdr && c.max_element() > 1.0).then_some(c)
     }
 
@@ -476,10 +365,7 @@ impl Core {
     fn sky(&self) -> [f64; 4] {
         match self.sky_hdr() {
             Some(c) => [c.x as f64, c.y as f64, c.z as f64, 1.0],
-            None => self
-                .tone
-                .encode(self.world.env.sky)
-                .map(|v| v as f64 / 255.0),
+            None => self.tone.encode(self.world.env.sky).map(|v| v as f64 / 255.0),
         }
     }
 
@@ -506,15 +392,8 @@ impl Core {
     /// This frame's acceleration structures, built into `enc` before the region's passes (its
     /// clock starts first, so the frame's GPU time holds the builds; a timed stage of the
     /// geometry node). Returns whether group 0's bindings changed.
-    fn build_accel(
-        &mut self,
-        enc: &mut wgpu::CommandEncoder,
-        ticket: mr_gpu::Ticket,
-        req: &FrameRequest,
-    ) -> bool {
-        let Some(a) = &mut self.accel else {
-            return false;
-        };
+    fn build_accel(&mut self, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) -> bool {
+        let Some(a) = &mut self.accel else { return false };
         self.ring.start_clock(&self.gpu, enc, ticket);
         self.ring.stage(enc, ticket, "geometry", &self.accel_nodes);
         a.build(&self.world, enc, req.camera.split_position().0)
@@ -522,16 +401,7 @@ impl Core {
 
     /// The acceleration structures' counters and CPU stage time.
     fn accel_stats(&self) -> (Vec<(String, f64)>, Vec<StageTime>) {
-        self.accel.as_ref().map_or_else(Default::default, |a| {
-            (
-                a.counters(),
-                vec![StageTime::cpu(
-                    "geometry",
-                    &self.accel_nodes,
-                    a.build_ms as f32,
-                )],
-            )
-        })
+        self.accel.as_ref().map_or_else(Default::default, |a| (a.counters(), vec![StageTime::cpu("geometry", &self.accel_nodes, a.build_ms as f32)]))
     }
 
     /// Group 0's entries before the region's.
@@ -545,38 +415,22 @@ impl Core {
         let mut e = vec![wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: self.stages,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
             count: None,
         }];
         if output {
             e.push(wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::StorageTexture {
-                    access: wgpu::StorageTextureAccess::WriteOnly,
-                    format: self.output_format(),
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                },
+                ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: self.output_format(), view_dimension: wgpu::TextureViewDimension::D2 },
                 count: None,
             });
         }
         // Writable buffers are not visible to vertex shaders (the faces').
         let writable = self.stages - wgpu::ShaderStages::VERTEX;
         e.extend(ShadeState::layout_entries(STATE_BINDING, writable));
-        e.extend(
-            self.edges
-                .records()
-                .map(|h| h.layout_entry(RECORDS_BINDING, writable)),
-        );
-        e.extend(
-            self.accel
-                .iter()
-                .flat_map(|a| a.layout_entries(self.stages)),
-        );
+        e.extend(self.edges.records().map(|h| h.layout_entry(RECORDS_BINDING, writable)));
+        e.extend(self.accel.iter().flat_map(|a| a.layout_entries(self.stages)));
         e.extend(self.view.iter().map(|v| v.layout_entry(writable)));
         e
     }
@@ -586,18 +440,9 @@ impl Core {
         self.bind_entries_with(Some(view))
     }
 
-    fn bind_entries_with<'a>(
-        &'a self,
-        view: Option<&'a wgpu::TextureView>,
-    ) -> Vec<wgpu::BindGroupEntry<'a>> {
-        let mut e = vec![wgpu::BindGroupEntry {
-            binding: 0,
-            resource: self.camera_buf.as_entire_binding(),
-        }];
-        e.extend(view.map(|v| wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::TextureView(v),
-        }));
+    fn bind_entries_with<'a>(&'a self, view: Option<&'a wgpu::TextureView>) -> Vec<wgpu::BindGroupEntry<'a>> {
+        let mut e = vec![wgpu::BindGroupEntry { binding: 0, resource: self.camera_buf.as_entire_binding() }];
+        e.extend(view.map(|v| wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(v) }));
         e.extend(self.accum.bind_entries(STATE_BINDING));
         e.extend(self.edges.records().map(|h| h.bind_entry(RECORDS_BINDING)));
         e.extend(self.accel.iter().flat_map(|a| a.bind_entries()));
@@ -638,22 +483,14 @@ impl Core {
             view_proj: (c.projection(aspect) * c.view_rotation()).to_cols_array_2d(),
             anchor: [anchor.x, anchor.y, anchor.z, 0],
         };
-        self.gpu
-            .queue
-            .write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
+        self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
     }
 
     /// The knobs every region shares; `None` if `name` is not one.
     fn set_param(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
         Some(match name {
             "shadows" => self.world.cfg.shadows.set(value).map(|_| ()),
-            _ => {
-                return self
-                    .accel
-                    .as_mut()
-                    .and_then(|a| a.set_param(name, value))
-                    .or_else(|| self.accum.set_param(name, value).map(|_| Ok(())));
-            }
+            _ => return self.accel.as_mut().and_then(|a| a.set_param(name, value)).or_else(|| self.accum.set_param(name, value).map(|_| Ok(()))),
         })
     }
 
@@ -666,24 +503,10 @@ impl Core {
         if let Some(v) = &mut self.view {
             v.resize(&self.gpu, width, height);
         }
-        self.ring = FrameRing::new(
-            &self.gpu,
-            width,
-            height,
-            self.tone.format(),
-            self.frames_in_flight,
-            self.waker.clone(),
-        )
-        .with_stages(self.ring.stages());
+        self.ring = FrameRing::new(&self.gpu, width, height, self.tone.format(), self.frames_in_flight, self.waker.clone()).with_stages(self.ring.stages());
     }
 
     fn memory_bytes(&self) -> u64 {
-        self.world.memory_bytes()
-            + self.storages.memory_bytes()
-            + self.accel.as_ref().map_or(0, |a| a.memory_bytes())
-            + self.accum.memory_bytes()
-            + self.edges.memory_bytes()
-            + self.view.as_ref().map_or(0, |v| v.memory_bytes())
-            + self.width as u64 * self.height as u64 * self.tone.format().bytes() as u64
+        self.world.memory_bytes() + self.storages.memory_bytes() + self.accel.as_ref().map_or(0, |a| a.memory_bytes()) + self.accum.memory_bytes() + self.edges.memory_bytes() + self.view.as_ref().map_or(0, |v| v.memory_bytes()) + self.width as u64 * self.height as u64 * self.tone.format().bytes() as u64
     }
 }

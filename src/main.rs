@@ -2,13 +2,13 @@
 //! worker process.
 
 mod bayes;
-mod catalogue;
 mod compare;
 #[cfg(test)]
 mod contract;
 mod features;
-mod gui;
 mod journal;
+mod catalogue;
+mod gui;
 mod observe;
 mod pause;
 mod pipelines;
@@ -134,16 +134,11 @@ fn main() -> anyhow::Result<()> {
     let worker = matches!(cmd, Cmd::Worker { .. });
     let filter = tracing_subscriber::EnvFilter::try_from_env("MR_LOG")
         .unwrap_or_else(|_| "info,wgpu_core=warn,wgpu_hal=error,naga=warn".into());
-    let sub = tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(filter);
+    let sub = tracing_subscriber::fmt().with_writer(std::io::stderr).with_env_filter(filter);
     if worker {
         // Its stderr is a pipe to the host, gone when the host dies: a failed write is dropped,
         // not reported (the report is an `eprintln!` to the same pipe, which panics).
-        sub.with_ansi(false)
-            .without_time()
-            .log_internal_errors(false)
-            .init();
+        sub.with_ansi(false).without_time().log_internal_errors(false).init();
     } else {
         sub.init();
     }
@@ -168,13 +163,8 @@ fn main() -> anyhow::Result<()> {
                 // No key: `-`, no label, and why (the third column), e.g. a component since removed.
                 let o = observe::Observation::parse(&line).map_err(|e| e.to_string());
                 let g = match o {
-                    Ok(Some(o)) => o
-                        .pipeline()
-                        .ok_or_else(|| "a standalone renderer".to_string()),
-                    Ok(None) => Err(format!(
-                        "a pipeline record older than version {} (a form this build no longer reads)",
-                        observe::VERSION
-                    )),
+                    Ok(Some(o)) => o.pipeline().ok_or_else(|| "a standalone renderer".to_string()),
+                    Ok(None) => Err(format!("a pipeline record older than version {} (a form this build no longer reads)", observe::VERSION)),
                     Err(e) => Err(e),
                 };
                 match g.and_then(|g| Ok((g.key()?, g.label()?))) {
@@ -185,33 +175,15 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Graph { renderer, .. } => {
-            let renderer = renderer.context(
-                "which renderer? e.g. `graph raycast-gpu,storage=prefix,kernel=incremental`",
-            )?;
+            let renderer = renderer.context("which renderer? e.g. `graph raycast-gpu,storage=prefix,kernel=incremental`")?;
             let mut spec = plan::RendererSpec::from_cli(&renderer)?;
             spec.resolve()?;
-            let g = spec.pipeline().with_context(|| {
-                format!("`{renderer}` is not a pipeline (a graph file, then edits)")
-            })?;
+            let g = spec.pipeline().with_context(|| format!("`{renderer}` is not a pipeline (a graph file, then edits)"))?;
             println!("# {}\n{}", spec.label(), toml::to_string(&g)?);
-            println!(
-                "# canonical: {}\n# key: {}",
-                g.canonical().map_err(anyhow::Error::msg)?,
-                g.key().map_err(anyhow::Error::msg)?
-            );
-            let schedule = g
-                .check()
-                .and_then(|c| c.schedule())
-                .map_err(anyhow::Error::msg)?;
+            println!("# canonical: {}\n# key: {}", g.canonical().map_err(anyhow::Error::msg)?, g.key().map_err(anyhow::Error::msg)?);
+            let schedule = g.check().and_then(|c| c.schedule()).map_err(anyhow::Error::msg)?;
             println!("# schedule (passes in frame order, [fused nodes compiled in]):");
-            print!(
-                "{}",
-                schedule
-                    .to_string()
-                    .lines()
-                    .map(|l| format!("#{l}\n"))
-                    .collect::<String>()
-            );
+            print!("{}", schedule.to_string().lines().map(|l| format!("#{l}\n")).collect::<String>());
             Ok(())
         }
         Cmd::Audit => {
@@ -225,34 +197,14 @@ fn main() -> anyhow::Result<()> {
         Cmd::Cache { clear } => {
             let root = mr_core::cache_dir();
             if clear {
-                std::fs::remove_dir_all(&root)
-                    .or_else(|e| {
-                        if e.kind() == std::io::ErrorKind::NotFound {
-                            Ok(())
-                        } else {
-                            Err(e)
-                        }
-                    })
-                    .with_context(|| format!("removing {}", root.display()))?;
+                std::fs::remove_dir_all(&root).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).with_context(|| format!("removing {}", root.display()))?;
                 println!("cleared {}", root.display());
                 return Ok(());
             }
             let gb = |p: &std::path::Path| pipelines::size(p) as f64 / 1e9;
-            println!(
-                "{}: {:.2} GB (limit: MR_PIPELINE_CACHE_GB, default 4)",
-                root.display(),
-                gb(&root)
-            );
-            for e in std::fs::read_dir(&root)
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.ok())
-            {
-                println!(
-                    "  {:<16} {:>7.2} GB",
-                    e.file_name().to_string_lossy(),
-                    gb(&e.path())
-                );
+            println!("{}: {:.2} GB (limit: MR_PIPELINE_CACHE_GB, default 4)", root.display(), gb(&root));
+            for e in std::fs::read_dir(&root).into_iter().flatten().filter_map(|e| e.ok()) {
+                println!("  {:<16} {:>7.2} GB", e.file_name().to_string_lossy(), gb(&e.path()));
             }
             Ok(())
         }
@@ -260,71 +212,36 @@ fn main() -> anyhow::Result<()> {
             let ia = image::open(&a)?.to_rgba8();
             let ib = image::open(&b)?.to_rgba8();
             if ia.dimensions() != ib.dimensions() {
-                bail!(
-                    "size mismatch: {:?} vs {:?}",
-                    ia.dimensions(),
-                    ib.dimensions()
-                );
+                bail!("size mismatch: {:?} vs {:?}", ia.dimensions(), ib.dimensions());
             }
             let q = compare::compare(&ia, &ib, ia.width());
-            println!(
-                "PSNR {:.2} dB, SSIM {:.4} ({:.1} dB), MAE {:.5}, bad pixels {:.3}%",
-                q.psnr, q.ssim, q.ssim_db, q.mae, q.bad_pct
-            );
+            println!("PSNR {:.2} dB, SSIM {:.4} ({:.1} dB), MAE {:.5}, bad pixels {:.3}%", q.psnr, q.ssim, q.ssim_db, q.mae, q.bad_pct);
             if let Some(o) = out {
                 let (w, h) = ia.dimensions();
-                image::save_buffer(
-                    o,
-                    &compare::diff_image(&ia, &ib),
-                    w,
-                    h,
-                    image::ExtendedColorType::Rgba8,
-                )?;
+                image::save_buffer(o, &compare::diff_image(&ia, &ib), w, h, image::ExtendedColorType::Rgba8)?;
             }
             Ok(())
         }
-        Cmd::Catalogue {
-            paths,
-            out,
-            min_psnr,
-        } => {
+        Cmd::Catalogue { paths, out, min_psnr } => {
             let files = observe::find(&paths);
             if files.is_empty() {
                 bail!("no observations.jsonl under {paths:?}");
             }
             let (obs, left_out) = observe::read(&files)?;
             if obs.is_empty() {
-                bail!(
-                    "no readable observations under {paths:?} ({left_out} of older versions this build no longer reads)"
-                );
+                bail!("no readable observations under {paths:?} ({left_out} of older versions this build no longer reads)");
             }
-            let out = out
-                .or_else(|| paths.first().filter(|p| p.is_dir()).cloned())
-                .unwrap_or_else(|| PathBuf::from("."));
+            let out = out.or_else(|| paths.first().filter(|p| p.is_dir()).cloned()).unwrap_or_else(|| PathBuf::from("."));
             let cat = catalogue::Catalogue::build(&obs, min_psnr);
             std::fs::create_dir_all(&out)?;
             std::fs::write(out.join("catalogue.md"), cat.markdown())?;
             std::fs::write(out.join("catalogue.csv"), cat.csv())?;
             println!("{}", cat.summary());
-            let older = if left_out > 0 {
-                format!(" ({left_out} more of older versions this build no longer reads, left out)")
-            } else {
-                String::new()
-            };
-            println!(
-                "{} observations from {} files{older} → {}",
-                obs.len(),
-                files.len(),
-                out.join("catalogue.md").display()
-            );
+            let older = if left_out > 0 { format!(" ({left_out} more of older versions this build no longer reads, left out)") } else { String::new() };
+            println!("{} observations from {} files{older} → {}", obs.len(), files.len(), out.join("catalogue.md").display());
             Ok(())
         }
-        Cmd::Run {
-            plan: path,
-            overrides,
-            unset,
-            list: true,
-        } => {
+        Cmd::Run { plan: path, overrides, unset, list: true } => {
             let mut plan = Plan::load_with(&path, &overrides, &unset)?;
             plan.distinct_labels();
             let infos = mr_worker::infos();
@@ -332,55 +249,29 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", r.label());
             }
             let swept = plan.renderers.iter().filter(|s| s.swept).count();
-            println!(
-                "# {}: {} renderers ({swept} swept)",
-                plan.name,
-                plan.renderers.len()
-            );
+            println!("# {}: {} renderers ({swept} swept)", plan.name, plan.renderers.len());
             for &mode in &plan.run.modes {
                 let (specs, moot) = plan.passes(mode, &infos);
-                println!(
-                    "# {} mode: {} passes ({moot} more swept pipelines the same in this mode)",
-                    mode.name(),
-                    specs.len()
-                );
+                println!("# {} mode: {} passes ({moot} more swept pipelines the same in this mode)", mode.name(), specs.len());
             }
             Ok(())
         }
-        Cmd::Run {
-            plan: path,
-            overrides,
-            unset,
-            ..
-        } => {
+        Cmd::Run { plan: path, overrides, unset, .. } => {
             let mut plan = Plan::load_with(&path, &overrides, &unset)?;
             plan.distinct_labels();
-            let resumed = plan
-                .output
-                .resume
-                .then(|| journal::unfinished(&run_base(&plan), &sanitize(&plan.name)))
-                .flatten();
+            let resumed = plan.output.resume.then(|| journal::unfinished(&run_base(&plan), &sanitize(&plan.name))).flatten();
             let run_dir = match &resumed {
                 Some(d) => d.clone(),
                 None => make_run_dir(&plan)?,
             };
             let text = std::fs::read_to_string(&path)?;
             if resumed.is_none() {
-                std::fs::write(
-                    run_dir.join("plan.toml"),
-                    format!("# overrides: {overrides:?}, unset: {unset:?}\n{text}"),
-                )?;
+                std::fs::write(run_dir.join("plan.toml"), format!("# overrides: {overrides:?}, unset: {unset:?}\n{text}"))?;
             }
-            tracing::info!(
-                "run directory {}{}",
-                run_dir.display(),
-                if resumed.is_some() { " (resumed)" } else { "" }
-            );
+            tracing::info!("run directory {}{}", run_dir.display(), if resumed.is_some() { " (resumed)" } else { "" });
             let (reports, scene_features) = if plan.output.window {
                 let (p, d) = (plan.clone(), run_dir.clone());
-                window::run_with_window(&format!("multirenderer — {}", plan.name), move |ui| {
-                    run_plan(&p, &d, Some(ui))
-                })?
+                window::run_with_window(&format!("multirenderer — {}", plan.name), move |ui| run_plan(&p, &d, Some(ui)))?
             } else {
                 run_plan(&plan, &run_dir, None)?
             };
@@ -397,34 +288,14 @@ fn main() -> anyhow::Result<()> {
             println!("\n{table}");
             std::fs::write(run_dir.join("summary.txt"), &table)?;
             // Compact: every frame of every pass (pretty-printed it was 2.6 times the size).
-            std::fs::write(
-                run_dir.join("report.json"),
-                serde_json::to_string(&reports)?,
-            )?;
-            let run_name = run_dir
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let n = observe::write(
-                &run_dir.join("observations.jsonl"),
-                &reports,
-                &plan,
-                &run_name,
-                &observe::Machine::detect(),
-                scene_features.as_ref(),
-            )?;
+            std::fs::write(run_dir.join("report.json"), serde_json::to_string(&reports)?)?;
+            let run_name = run_dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let n = observe::write(&run_dir.join("observations.jsonl"), &reports, &plan, &run_name, &observe::Machine::detect(), scene_features.as_ref())?;
             let _ = std::fs::remove_file(run_dir.join(journal::FILE));
-            println!(
-                "report: {} ({n} observations)",
-                run_dir.join("report.json").display()
-            );
+            println!("report: {} ({n} observations)", run_dir.join("report.json").display());
             Ok(())
         }
-        Cmd::View {
-            plan: path,
-            renderers,
-            overrides,
-        } => {
+        Cmd::View { plan: path, renderers, overrides } => {
             let mut plan = Plan::load(&path, &overrides)?;
             if !renderers.is_empty() {
                 plan.renderers = renderers
@@ -450,84 +321,37 @@ fn main() -> anyhow::Result<()> {
 fn list() -> anyhow::Result<String> {
     use std::fmt::Write as _;
     let mut s = String::new();
-    writeln!(
-        s,
-        "A renderer is a pipeline graph: a graph file and the edits made to it.\n  plan: graph = \"raycast-gpu\", edits = [{{ node = \"storage\", component = \"tree64\" }}] (`vary` sweeps them; docs/plans.md)\n  CLI:  -r <graph>[,<edit>,...] with <graph> a shipped file's name or a path, and an edit one of\n          node=component          -r raycast-gpu,storage=prefix,kernel=incremental\n          node.input=source       an existing node, or a new one as role:component (its id: the role's name); empty: unbound\n                                  -r raycast-gpu,shading=pathtrace,shading.bounce=traversal:sphere,traversal.storage=storage\n          node.knob=value         -r raycast-gpu,shading=pathtrace,shading.bounces=2\n          node@device             -r raycast-gpu,shading@gpu1\n          -node                   -r raycast-gpu,-meshes\n          {{...}}                   any edit as the plan's inline table: -r 'raycast-gpu,{{node=\"kernel\",api=\"rayquery\"}}'\n  `multirenderer graph <renderer>` prints the graph, its label, key and schedule.\n\nShipped graph files (pipelines/*.toml; starting points: the pipeline is the graph, which may take any valid shape), each with its label:"
-    )?;
+    writeln!(s, "A renderer is a pipeline graph: a graph file and the edits made to it.\n  plan: graph = \"raycast-gpu\", edits = [{{ node = \"storage\", component = \"tree64\" }}] (`vary` sweeps them; docs/plans.md)\n  CLI:  -r <graph>[,<edit>,...] with <graph> a shipped file's name or a path, and an edit one of\n          node=component          -r raycast-gpu,storage=prefix,kernel=incremental\n          node.input=source       an existing node, or a new one as role:component (its id: the role's name); empty: unbound\n                                  -r raycast-gpu,shading=pathtrace,shading.bounce=traversal:sphere,traversal.storage=storage\n          node.knob=value         -r raycast-gpu,shading=pathtrace,shading.bounces=2\n          node@device             -r raycast-gpu,shading@gpu1\n          -node                   -r raycast-gpu,-meshes\n          {{...}}                   any edit as the plan's inline table: -r 'raycast-gpu,{{node=\"kernel\",api=\"rayquery\"}}'\n  `multirenderer graph <renderer>` prints the graph, its label, key and schedule.\n\nShipped graph files (pipelines/*.toml; starting points: the pipeline is the graph, which may take any valid shape), each with its label:")?;
     // Each file's graph and, per node, what the node may be instead.
-    let files: Vec<_> = mr_components::graph::start_files()
-        .map(|(name, about)| {
-            (
-                name,
-                about,
-                mr_components::graph::shipped(name).expect("a shipped file"),
-            )
-        })
-        .collect();
-    let choices: Vec<Vec<(mr_components::graph::Role, Vec<&str>)>> = files
-        .iter()
-        .map(|(.., g)| {
-            g.nodes
-                .iter()
-                .map(|(id, n)| (n.role, g.choices(id)))
-                .collect()
-        })
-        .collect();
+    let files: Vec<_> = mr_components::graph::start_files().map(|(name, about)| (name, about, mr_components::graph::shipped(name).expect("a shipped file"))).collect();
+    let choices: Vec<Vec<(mr_components::graph::Role, Vec<&str>)>> = files.iter().map(|(.., g)| g.nodes.iter().map(|(id, n)| (n.role, g.choices(id))).collect()).collect();
     for (name, about, g) in &files {
-        writeln!(
-            s,
-            "  {name:<12} {about}\n               {}",
-            g.label().map_err(anyhow::Error::msg)?
-        )?;
+        writeln!(s, "  {name:<12} {about}\n               {}", g.label().map_err(anyhow::Error::msg)?)?;
     }
-    writeln!(
-        s,
-        "\nComponents, by the role of the node they fill (in: the shipped files with a node that may be it; others take it by an edit that adds the node):"
-    )?;
+    writeln!(s, "\nComponents, by the role of the node they fill (in: the shipped files with a node that may be it; others take it by an edit that adds the node):")?;
     for role in mr_components::graph::Role::ALL {
         let names = mr_components::graph::role_components(role);
         if !names.is_empty() {
             writeln!(s, "\n{}:", role.name())?;
         }
         for c in names {
-            let on: Vec<&str> = files
-                .iter()
-                .zip(&choices)
-                .filter(|(_, ch)| ch.iter().any(|(r, of)| *r == role && of.contains(&c)))
-                .map(|((name, ..), _)| *name)
-                .collect();
-            let on = if on.is_empty() {
-                String::new()
-            } else {
-                format!(" (in {})", on.join(","))
-            };
+            let on: Vec<&str> = files.iter().zip(&choices).filter(|(_, ch)| ch.iter().any(|(r, of)| *r == role && of.contains(&c))).map(|((name, ..), _)| *name).collect();
+            let on = if on.is_empty() { String::new() } else { format!(" (in {})", on.join(",")) };
             match mr_components::component(role, c) {
                 Some(i) => writeln!(s, "  {c:<12} [{}]{on} {}", i.impls_label(), i.description)?,
                 None => writeln!(s, "{}", format!("  {c:<12}{on}").trim_end())?,
             }
         }
     }
-    writeln!(
-        s,
-        "\nStandalone renderers (-r name; cpu-reference defines the reference images):"
-    )?;
+    writeln!(s, "\nStandalone renderers (-r name; cpu-reference defines the reference images):")?;
     for i in mr_worker::infos() {
-        writeln!(
-            s,
-            "  {:<16} [{}] {}\n      {}",
-            i.name,
-            i.tags.join(","),
-            i.features.describe(),
-            i.description
-        )?;
+        writeln!(s, "  {:<16} [{}] {}\n      {}", i.name, i.tags.join(","), i.features.describe(), i.description)?;
     }
     Ok(s)
 }
 
 fn make_run_dir(plan: &Plan) -> anyhow::Result<PathBuf> {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs() as i64;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
     let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
     // Civil-from-days (Howard Hinnant), UTC.
     let z = days + 719468;
@@ -539,12 +363,7 @@ fn make_run_dir(plan: &Plan) -> anyhow::Result<PathBuf> {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + (m <= 2) as i64;
-    let stamp = format!(
-        "{y:04}{m:02}{d:02}-{:02}{:02}{:02}",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60
-    );
+    let stamp = format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}", rem / 3600, rem % 3600 / 60, rem % 60);
     let dir = run_base(plan).join(format!("{stamp}-{}", sanitize(&plan.name)));
     std::fs::create_dir_all(dir.join("logs"))?;
     Ok(dir)
@@ -586,12 +405,7 @@ impl Ctx<'_> {
         }
     }
 
-    fn spawn_lanes(
-        &self,
-        specs: &[RendererSpec],
-        mode: Option<PassMode>,
-        asks: &[mr_core::Feature],
-    ) -> (Vec<Lane>, Vec<PassReport>) {
+    fn spawn_lanes(&self, specs: &[RendererSpec], mode: Option<PassMode>, asks: &[mr_core::Feature]) -> (Vec<Lane>, Vec<PassReport>) {
         let run = &self.plan.run;
         let [w, h] = run.resolution;
         let (mut lanes, mut failed) = (vec![], vec![]);
@@ -599,21 +413,8 @@ impl Ctx<'_> {
             let label = self.label(spec);
             let mut report = self.base_report(spec, mode);
             let mode_tag = mode.map(|m| m.name()).unwrap_or("view");
-            let log = self.run_dir.map(|d| {
-                d.join("logs")
-                    .join(format!("{}-{mode_tag}.log", sanitize(&label)))
-            });
-            let spawn = || {
-                worker::spawn_renderer(
-                    run,
-                    spec,
-                    &self.plan.scene.generator,
-                    self.blocks.clone(),
-                    log,
-                    run.resolution,
-                    run.in_flight + 2,
-                )
-            };
+            let log = self.run_dir.map(|d| d.join("logs").join(format!("{}-{mode_tag}.log", sanitize(&label))));
+            let spawn = || worker::spawn_renderer(run, spec, &self.plan.scene.generator, self.blocks.clone(), log, run.resolution, run.in_flight + 2);
             match spawn() {
                 Ok(worker) => {
                     report.init_ms = worker.init_ms;
@@ -626,16 +427,7 @@ impl Ctx<'_> {
                     let mut lane = Lane::new(worker, region, report, i, w, h);
                     // A reference records for the region it was given; a pipeline given another
                     // region than the full-resolution reference is scored against that one too.
-                    lane.like = spec.like.or(plan::Like::of(
-                        &lane.region,
-                        mode.map(|m| spec.lighting(m)).unwrap_or_default(),
-                        plan::Leaves::of(&lane.worker.info.features, mode, asks),
-                        run,
-                    )
-                    .filter(|_| {
-                        self.plan.output.compare.is_some()
-                            && spec.name != self.plan.output.compare.as_ref().unwrap().reference
-                    }));
+                    lane.like = spec.like.or(plan::Like::of(&lane.region, mode.map(|m| spec.lighting(m)).unwrap_or_default(), plan::Leaves::of(&lane.worker.info.features, mode, asks), run).filter(|_| self.plan.output.compare.is_some() && spec.name != self.plan.output.compare.as_ref().unwrap().reference));
                     if spec.like.is_none() {
                         lane.report.like = lane.like.map(|l| l.to_string());
                     }
@@ -650,14 +442,7 @@ impl Ctx<'_> {
         }
         if let Some(ui) = &self.ui {
             ui.send(UiEvent::Lanes(lanes.len()));
-            ui.send(UiEvent::Title(format!(
-                "multirenderer — {}",
-                specs
-                    .iter()
-                    .map(|s| s.label())
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            )));
+            ui.send(UiEvent::Title(format!("multirenderer — {}", specs.iter().map(|s| s.label()).collect::<Vec<_>>().join(" | "))));
         }
         (lanes, failed)
     }
@@ -665,24 +450,15 @@ impl Ctx<'_> {
     /// The reference's pass: its sampled frames recorded for the comparisons. With `like`, the
     /// reference given that region (its LOD levels) instead of everything at full resolution,
     /// computing that lighting model (path tracing, converged) instead of direct lighting.
-    fn reference(
-        &self,
-        like: Option<plan::Like>,
-        mode: PassMode,
-        base: &World,
-        out: &mut Outputs,
-    ) -> anyhow::Result<Vec<PassReport>> {
-        let Some(c) = &self.plan.output.compare else {
-            return Ok(vec![]);
-        };
+    fn reference(&self, like: Option<plan::Like>, mode: PassMode, base: &World, out: &mut Outputs) -> anyhow::Result<Vec<PassReport>> {
+        let Some(c) = &self.plan.output.compare else { return Ok(vec![]) };
         let mut spec = RendererSpec::new(c.reference.clone());
         spec.options = c.reference_options.clone();
         spec.label = Some(match like {
             Some(l) => {
                 spec.options.insert("lod".into(), true.into());
                 if let plan::Lighting::Paths { bounces } = l.lighting {
-                    spec.options
-                        .insert("bounces".into(), (bounces as i64).into());
+                    spec.options.insert("bounces".into(), (bounces as i64).into());
                 }
                 if l.leaves.mesh_rays {
                     spec.options.insert("mesh_rays".into(), false.into());
@@ -708,22 +484,12 @@ impl Ctx<'_> {
     /// own over the same frames, the compared ones held still for `held` more renders
     /// (`CompareSpec::held`) and the last one scored (against the like reference where it
     /// has one).
-    fn settled(
-        &self,
-        spec: &RendererSpec,
-        mode: PassMode,
-        base: &World,
-        out: &mut Outputs,
-        held: u32,
-    ) -> anyhow::Result<Option<report::QualitySummary>> {
+    fn settled(&self, spec: &RendererSpec, mode: PassMode, base: &World, out: &mut Outputs, held: u32) -> anyhow::Result<Option<report::QualitySummary>> {
         let mut still = spec.clone();
         still.label = Some(format!("{} (settled)", spec.label()));
         let label = self.label(&still);
         let reports = self.pass(&[still], mode, base, out, None, held)?;
-        Ok(reports
-            .into_iter()
-            .find(|r| r.label == label)
-            .and_then(|r| r.quality_like.or(r.quality)))
+        Ok(reports.into_iter().find(|r| r.label == label).and_then(|r| r.quality_like.or(r.quality)))
     }
 
     /// One pass: the given renderers run together through the scripted timeline. With
@@ -731,22 +497,12 @@ impl Ctx<'_> {
     /// frames that many more times, held still, and the last recorded. Every pass has the
     /// plan's warm-up: what a budgeted stream has sent by a frame depends on it.
     /// A pause asked for while it runs (`pause`) drops it; it runs again on resume.
-    fn pass(
-        &self,
-        specs: &[RendererSpec],
-        mode: PassMode,
-        base: &World,
-        out: &mut Outputs,
-        only_every: Option<u32>,
-        settle: u32,
-    ) -> anyhow::Result<Vec<PassReport>> {
+    fn pass(&self, specs: &[RendererSpec], mode: PassMode, base: &World, out: &mut Outputs, only_every: Option<u32>, settle: u32) -> anyhow::Result<Vec<PassReport>> {
         // The references these lanes recorded, kept when the pass is redone (not recorded again).
         let mut refs = vec![];
         loop {
             pause::hold();
-            if let Some(mut reports) =
-                self.attempt(specs, mode, base, out, only_every, settle, &mut refs)?
-            {
+            if let Some(mut reports) = self.attempt(specs, mode, base, out, only_every, settle, &mut refs)? {
                 refs.append(&mut reports);
                 return Ok(refs);
             }
@@ -756,43 +512,20 @@ impl Ctx<'_> {
 
     /// One attempt at `pass`; None when a pause dropped it.
     #[allow(clippy::too_many_arguments)]
-    fn attempt(
-        &self,
-        specs: &[RendererSpec],
-        mode: PassMode,
-        base: &World,
-        out: &mut Outputs,
-        only_every: Option<u32>,
-        settle: u32,
-        refs: &mut Vec<PassReport>,
-    ) -> anyhow::Result<Option<Vec<PassReport>>> {
+    fn attempt(&self, specs: &[RendererSpec], mode: PassMode, base: &World, out: &mut Outputs, only_every: Option<u32>, settle: u32, refs: &mut Vec<PassReport>) -> anyhow::Result<Option<Vec<PassReport>>> {
         let run = &self.plan.run;
         let mut world = base.clone();
-        let scene = Scene::new(
-            self.plan.scene.clone(),
-            self.blocks.clone(),
-            &mut world,
-            run.frames,
-        )?;
+        let scene = Scene::new(self.plan.scene.clone(), self.blocks.clone(), &mut world, run.frames)?;
         let lights = scene.initial_lights().to_vec();
-        let mesh_data = if mode.meshes {
-            scene.mesh_data()
-        } else {
-            vec![]
-        };
-        let (mut lanes, mut reports) =
-            self.spawn_lanes(specs, Some(mode), &world.asks(&self.blocks));
+        let mesh_data = if mode.meshes { scene.mesh_data() } else { vec![] };
+        let (mut lanes, mut reports) = self.spawn_lanes(specs, Some(mode), &world.asks(&self.blocks));
         if lanes.is_empty() {
             return Ok(Some(reports));
         }
         // The references given what these lanes are given, recorded before the lanes run.
         if !out.recording_reference && out.compare_every.is_some() {
             for like in lanes.iter().filter_map(|l| l.like).collect::<Vec<_>>() {
-                if !out
-                    .references
-                    .keys()
-                    .any(|k| k.0 == Some(like) && k.1 == mode)
-                {
+                if !out.references.keys().any(|k| k.0 == Some(like) && k.1 == mode) {
                     refs.extend(self.reference(Some(like), mode, base, out)?);
                 }
             }
@@ -800,29 +533,9 @@ impl Ctx<'_> {
         let names: Vec<_> = lanes.iter().map(|l| l.report.label.clone()).collect();
         tracing::info!("pass: {} [{}]", names.join(", "), mode.name());
         let env = scene.environment;
-        let mut driver = ScriptedDriver::new(
-            scene,
-            mode,
-            run.warmup,
-            run.frames,
-            only_every,
-            run.clock_fps,
-        );
-        driver.settle = out
-            .compare_every
-            .filter(|_| settle > 0)
-            .map(|every| (every, settle));
-        let result = run_pass(
-            &mut lanes,
-            &mut driver,
-            &mut world,
-            env,
-            &lights,
-            &mesh_data,
-            &self.blocks,
-            run,
-            out,
-        );
+        let mut driver = ScriptedDriver::new(scene, mode, run.warmup, run.frames, only_every, run.clock_fps);
+        driver.settle = out.compare_every.filter(|_| settle > 0).map(|every| (every, settle));
+        let result = run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, &self.blocks, run, out);
         if result.as_ref().is_err_and(pause::is) {
             for lane in lanes {
                 lane.worker.shutdown();
@@ -847,21 +560,11 @@ impl Ctx<'_> {
         }
         // Pipelines with an edge a frame late, or that accumulate frames held still, are
         // scored again on settled frames.
-        if let Some(c) = self
-            .plan
-            .output
-            .compare
-            .as_ref()
-            .filter(|_| only_every.is_none() && settle == 0 && out.compare_every.is_some())
-        {
+        if let Some(c) = self.plan.output.compare.as_ref().filter(|_| only_every.is_none() && settle == 0 && out.compare_every.is_some()) {
             for spec in specs {
                 let held = c.held(spec, mode);
                 let label = self.label(spec);
-                if held == 0
-                    || !reports
-                        .iter()
-                        .any(|r| r.label == label && r.error.is_none())
-                {
+                if held == 0 || !reports.iter().any(|r| r.label == label && r.error.is_none()) {
                     continue;
                 }
                 let settled = self.settled(spec, mode, base, out, held)?;
@@ -870,39 +573,20 @@ impl Ctx<'_> {
                 (r.late, r.converged_spp, r.quality_settled) = (spec.late(), converged, settled);
             }
         }
-        println!(
-            "{}",
-            report::table(&reports)
-                .lines()
-                .skip(1)
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
+        println!("{}", report::table(&reports).lines().skip(1).collect::<Vec<_>>().join("\n"));
         Ok(Some(reports))
     }
 }
 
 /// Runs every pass of `plan`; returns the reports and the scene's measured features.
-fn run_plan(
-    plan: &Plan,
-    run_dir: &Path,
-    ui: Option<UiHandle>,
-) -> anyhow::Result<(Vec<PassReport>, Option<features::SceneFeatures>)> {
+fn run_plan(plan: &Plan, run_dir: &Path, ui: Option<UiHandle>) -> anyhow::Result<(Vec<PassReport>, Option<features::SceneFeatures>)> {
     let infos = mr_worker::infos();
     for r in &plan.renderers {
         if r.info(&plan.run, &infos).is_none() {
-            bail!(
-                "unknown renderer `{}` (see `multirenderer list`)",
-                r.label()
-            );
+            bail!("unknown renderer `{}` (see `multirenderer list`)", r.label());
         }
     }
-    let ctx = Ctx {
-        plan,
-        blocks: Arc::new(default_registry()),
-        run_dir: Some(run_dir),
-        ui: ui.clone(),
-    };
+    let ctx = Ctx { plan, blocks: Arc::new(default_registry()), run_dir: Some(run_dir), ui: ui.clone() };
     let run = &plan.run;
 
     // Pre-generate every chunk the camera path will need, so world generation never
@@ -910,25 +594,13 @@ fn run_plan(
     let mut base = World::new(plan.scene.generator.build());
     {
         let t = Instant::now();
-        let scene = Scene::new(
-            plan.scene.clone(),
-            ctx.blocks.clone(),
-            &mut base,
-            run.frames,
-        )?;
+        let scene = Scene::new(plan.scene.clone(), ctx.blocks.clone(), &mut base, run.frames)?;
         // One streamer per distinct region the server streams (none for renderers generating
         // the world themselves).
         let mut configs: Vec<Vec<u32>> = plan
             .renderers
             .iter()
-            .map(|r| {
-                r.region(
-                    run,
-                    r.info(&plan.run, &infos)
-                        .map_or(0, |i| i.features.max_lod()),
-                )
-                .streamed()
-            })
+            .map(|r| r.region(run, r.info(&plan.run, &infos).map_or(0, |i| i.features.max_lod())).streamed())
             .filter(|r| !r.is_empty())
             .chain(std::iter::once(vec![run.view_radius]))
             .collect();
@@ -942,27 +614,13 @@ fn run_plan(
                 sink.clear();
             }
         }
-        tracing::info!(
-            "pre-generated {} chunks in {:.1}s",
-            base.cached_chunks(),
-            t.elapsed().as_secs_f32()
-        );
+        tracing::info!("pre-generated {} chunks in {:.1}s", base.cached_chunks(), t.elapsed().as_secs_f32());
     }
     // Renderer-independent properties of the scenario, stored with the observations.
     let t = Instant::now();
-    let scene_features = match features::SceneFeatures::measure(
-        &plan.scene,
-        ctx.blocks.clone(),
-        &mut base,
-        run.frames,
-        run.view_radius,
-    ) {
+    let scene_features = match features::SceneFeatures::measure(&plan.scene, ctx.blocks.clone(), &mut base, run.frames, run.view_radius) {
         Ok(f) => {
-            tracing::info!(
-                "scene features ({:.1}s): {}",
-                t.elapsed().as_secs_f32(),
-                f.describe()
-            );
+            tracing::info!("scene features ({:.1}s): {}", t.elapsed().as_secs_f32(), f.describe());
             Some(f)
         }
         Err(e) => {
@@ -971,24 +629,11 @@ fn run_plan(
         }
     };
 
-    let save = plan
-        .output
-        .save
-        .clone()
-        .map(|s| (s, run_dir.join("frames")));
-    let mut out = Outputs::new(
-        ui,
-        plan.output.readback,
-        save,
-        plan.output.compare.as_ref().map(|c| c.every),
-        run.frames,
-    );
+    let save = plan.output.save.clone().map(|s| (s, run_dir.join("frames")));
+    let mut out = Outputs::new(ui, plan.output.readback, save, plan.output.compare.as_ref().map(|c| c.every), run.frames);
     let mut journal = journal::Journal::open(run_dir)?;
     if !journal.kept.is_empty() {
-        tracing::info!(
-            "resumed: {} reports of passes an earlier run finished stand",
-            journal.kept.len()
-        );
+        tracing::info!("resumed: {} reports of passes an earlier run finished stand", journal.kept.len());
     }
     let mut reports = vec![];
     for &mode in &run.modes {
@@ -997,41 +642,20 @@ fn run_plan(
             reports.extend(ctx.reference(None, mode, &base, &mut out)?);
         }
         let (specs, moot) = plan.passes(mode, &infos);
-        for s in plan.renderers.iter().filter(|s| {
-            !s.swept
-                && !s
-                    .info(&plan.run, &infos)
-                    .is_some_and(|i| s.supports(&i, mode))
-        }) {
-            tracing::warn!(
-                "{} does not support {} mode; skipped",
-                s.label(),
-                mode.name()
-            );
+        for s in plan.renderers.iter().filter(|s| !s.swept && !s.info(&plan.run, &infos).is_some_and(|i| s.supports(&i, mode))) {
+            tracing::warn!("{} does not support {} mode; skipped", s.label(), mode.name());
         }
         if moot > 0 {
-            tracing::info!(
-                "{} mode: {} swept pipelines run, {moot} more are the same in this mode",
-                mode.name(),
-                specs.iter().filter(|s| s.swept).count()
-            );
+            tracing::info!("{} mode: {} swept pipelines run, {moot} more are the same in this mode", mode.name(), specs.iter().filter(|s| s.swept).count());
         }
         // Repeats go round-robin (A B C A B C ...) so slow drifts in clocks and
         // temperature spread over all renderers instead of favouring whichever ran first.
         for repeat in 0..run.repeats.max(1) {
             let mut batch = vec![];
-            let groups: Vec<&[RendererSpec]> = if run.parallel {
-                vec![&specs[..]]
-            } else {
-                specs.chunks(1).collect()
-            };
+            let groups: Vec<&[RendererSpec]> = if run.parallel { vec![&specs[..]] } else { specs.chunks(1).collect() };
             for group in groups {
                 // The passes an earlier run finished stand; one it died in too often is failed.
-                let key = |s: &RendererSpec| journal::Key {
-                    label: ctx.label(s),
-                    mode: mode.name().to_string(),
-                    repeat,
-                };
+                let key = |s: &RendererSpec| journal::Key { label: ctx.label(s), mode: mode.name().to_string(), repeat };
                 let mut todo = vec![];
                 for s in group {
                     let k = key(s);
@@ -1081,32 +705,16 @@ fn run_plan(
 /// The reports of the passes earlier runs finished (`kept`, a resumed run's), then this run's;
 /// a reference both recorded, once (this run's).
 fn with_kept(kept: Vec<PassReport>, reports: Vec<PassReport>) -> Vec<PassReport> {
-    let fresh: std::collections::HashSet<_> = reports
-        .iter()
-        .map(|r| (r.label.clone(), r.mode, r.repeat))
-        .collect();
-    let mut all: Vec<PassReport> = kept
-        .into_iter()
-        .filter(|r| !fresh.contains(&(r.label.clone(), r.mode, r.repeat)))
-        .collect();
+    let fresh: std::collections::HashSet<_> = reports.iter().map(|r| (r.label.clone(), r.mode, r.repeat)).collect();
+    let mut all: Vec<PassReport> = kept.into_iter().filter(|r| !fresh.contains(&(r.label.clone(), r.mode, r.repeat))).collect();
     all.extend(reports);
     all
 }
 
 fn view(plan: &Plan, ui: UiHandle) -> anyhow::Result<()> {
-    let ctx = Ctx {
-        plan,
-        blocks: Arc::new(default_registry()),
-        run_dir: None,
-        ui: Some(ui.clone()),
-    };
+    let ctx = Ctx { plan, blocks: Arc::new(default_registry()), run_dir: None, ui: Some(ui.clone()) };
     let mut world = World::new(plan.scene.generator.build());
-    let scene = Scene::new(
-        plan.scene.clone(),
-        ctx.blocks.clone(),
-        &mut world,
-        plan.run.frames,
-    )?;
+    let scene = Scene::new(plan.scene.clone(), ctx.blocks.clone(), &mut world, plan.run.frames)?;
     let lights = scene.initial_lights().to_vec();
     let mesh_data = scene.mesh_data();
     let (mut lanes, failed) = ctx.spawn_lanes(&plan.renderers, None, &world.asks(&ctx.blocks));
@@ -1120,18 +728,7 @@ fn view(plan: &Plan, ui: UiHandle) -> anyhow::Result<()> {
     let env = scene.environment;
     let mut driver = InteractiveDriver::new(ui.clone(), scene, mode);
     let mut out = Outputs::new(Some(ui), plan::Readback::Auto, None, None, u32::MAX);
-    run_pass(
-        &mut lanes,
-        &mut driver,
-        &mut world,
-        env,
-        &lights,
-        &mesh_data,
-        &ctx.blocks,
-        &plan.run,
-        &mut out,
-    )
-    .context("view session")?;
+    run_pass(&mut lanes, &mut driver, &mut world, env, &lights, &mesh_data, &ctx.blocks, &plan.run, &mut out).context("view session")?;
     if lanes.iter().all(|l| l.report.error.is_some()) {
         bail!("every renderer failed");
     }
