@@ -117,12 +117,12 @@ impl Graph {
             .any(|n| n.role == Role::Generator && n.device.is_some_and(|d| d != Device::Server))
     }
 
-    /// The client node's component (`pick` when the graph has none).
+    /// The client node's component (its identity, `pick`, when the graph has none).
     pub fn client(&self) -> &str {
         self.nodes
             .values()
             .find(|n| n.role == Role::Client)
-            .map_or("pick", |n| n.component.as_str())
+            .map_or(identity(Role::Client).unwrap(), |n| n.component.as_str())
     }
 
     /// The client's knob `name` ([`CLIENT_KNOBS`]), if set.

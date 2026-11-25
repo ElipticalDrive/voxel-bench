@@ -30,6 +30,7 @@ pub mod geometry;
 pub mod graph;
 pub mod holes;
 pub mod impls;
+pub mod knobs;
 pub mod post;
 pub mod prepass;
 pub mod shaders;

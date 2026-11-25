@@ -38,9 +38,9 @@ impl Graph {
             }
         };
         let world = one(&mut g, Role::World, "world")?;
-        let generator = one(&mut g, Role::Generator, "procedural")?;
-        let link = one(&mut g, Role::Link, "free")?;
-        let client = one(&mut g, Role::Client, "pick")?;
+        let generator = one(&mut g, Role::Generator, identity(Role::Generator).unwrap())?;
+        let link = one(&mut g, Role::Link, identity(Role::Link).unwrap())?;
+        let client = one(&mut g, Role::Client, identity(Role::Client).unwrap())?;
         // The generator feeds what runs on its device: the world on the server, else the client.
         let local = g.nodes[&generator]
             .device
@@ -122,7 +122,7 @@ impl Graph {
             }
             // The post after the shading: `clamp` if missing, reading the
             // shading if unbound.
-            let post = one(&mut g, Role::Post, "clamp")?;
+            let post = one(&mut g, Role::Post, identity(Role::Post).unwrap())?;
             g.nodes
                 .get_mut(&post)
                 .unwrap()

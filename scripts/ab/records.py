@@ -4,8 +4,9 @@
 # Pipelines are keyed by their canonical graph (`graph_key`) and shown by their graph's label, both recomputed for
 # every record by `multirenderer graph --keys` (MR_BIN, default target/release/multirenderer), so records written
 # under an older canonical form compare by one key. Records of pipelines from before version 6 (the flat
-# `composition`) are not read by the binary: left out and counted.
-import glob, gzip, json, os, subprocess
+# `composition`) are not read by the binary: left out and counted. Records newer than the binary reads (a
+# `version` above its observations' version) are refused by name: rebuild it.
+import collections, glob, gzip, json, os, subprocess, sys
 
 
 def graph_keys(records):
@@ -14,7 +15,10 @@ def graph_keys(records):
     if records:
         exe = os.environ.get('MR_BIN', 'target/release/multirenderer')
         text = ''.join(json.dumps(o) + '\n' for o in records)
-        lines = subprocess.run([exe, 'graph', '--keys'], input=text, capture_output=True, text=True, check=True).stdout.splitlines()
+        run = subprocess.run([exe, 'graph', '--keys'], input=text, capture_output=True, text=True)
+        if run.returncode:
+            sys.exit(f'{exe} graph --keys: {run.stderr.strip()}')
+        lines = run.stdout.splitlines()
         assert len(lines) == len(records), (len(lines), len(records))
         for o, line in zip(records, lines):
             k, _, label = line.partition('\t')
@@ -27,7 +31,8 @@ def key(o):
 
 
 def load_all(d):
-    """{key: [records…]} (several when the sweep repeated passes) and how many were left out."""
+    """{key: [records…]} (several when the sweep repeated passes), how many were left out, and how many
+    records of each observation version were read ({version: count})."""
     records = []
     for f in sorted(glob.glob(d + '/*/observations.jsonl*')):
         op = gzip.open if f.endswith('.gz') else open
@@ -38,12 +43,13 @@ def load_all(d):
             o.pop('graph_key', None)
             records.append(o)
     graph_keys(records)
+    versions = collections.Counter(o.get('version') for o in records)
     out = {}
     for o in records:
         if 'graph_key' in o: out.setdefault(key(o), []).append(o)
     unread = sum(1 for o in records if 'graph_key' not in o)
     if unread: print(f'{d}: {unread} of {len(records)} records left out (pipelines in a form this build no longer reads)')
-    return out, unread
+    return out, unread, dict(sorted(versions.items(), key=lambda kv: kv[0] or 0))
 
 
 def load(d):

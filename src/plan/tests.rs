@@ -383,7 +383,7 @@ nodes.out = { role = "shading", component = "direct", inputs = { hits = "v", sha
     let own = graph.replace("shadow = \"k\" } }", "shadow = \"k2\" } }\nnodes.k2 = { role = \"traversal\", component = \"incremental\", inputs = { storage = \"s\" }, knobs = { exact = true, skip8 = false } }");
     let p = Plan::parse(&format!("{base}{own}"), &[]).unwrap();
     let r = &p.renderers[0];
-    assert_eq!(r.label(), "gpu: prefix + incremental(exact=false) + raycast + incremental(exact=true, skip8=false) + direct");
+    assert_eq!(r.label(), "gpu: prefix + incremental(exact=false) + raycast + incremental(skip8=false) + direct", "a knob at its default says nothing");
     assert_eq!(r.knob_values().get("exact"), Some(&toml::Value::Boolean(false)), "the primary kernel's knob");
     assert!(r.options.is_empty());
     assert!(r.pipeline().unwrap().nodes.contains_key("k2"));

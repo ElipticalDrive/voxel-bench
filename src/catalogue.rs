@@ -693,6 +693,10 @@ mod tests {
         assert!(parse(&standalone).is_some_and(|o| o.pipeline().is_none() && o.renderer == "cpu-reference"));
         assert_eq!(parse(&now).and_then(|o| o.pipeline()).and_then(|g| g.key().ok()), new.graph_key);
         assert!(Observation::parse(&line(&|m| drop(m.insert("fps".into(), "fast".into())))).is_err(), "a record of this version that does not read is an error");
+        // A newer record is refused by name, whatever it holds.
+        let newer = line(&|m| drop(m.insert("version".into(), (crate::observe::VERSION + 1).into())));
+        let why = Observation::parse(&newer).unwrap_err().to_string();
+        assert!(why.contains(&format!("version {}, newer than this build reads (version {})", crate::observe::VERSION + 1, crate::observe::VERSION)), "{why}");
         let dir = std::env::temp_dir().join(format!("mr-older-records-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("observations.jsonl");

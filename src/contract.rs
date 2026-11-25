@@ -264,3 +264,100 @@ fn a_registered_visibility_is_offered_everywhere() {
         debt: &["Graph::choices", "sweep expansion", "list", "audit", "catalogue", "reference class", "GUI choices"],
     });
 }
+
+/// Baselines stay comparable across turns: the guard matches passes by graph key, recomputed
+/// by the current binary from each record's graph, so a turn that registers a component or
+/// gives a component a knob (with its default) leaves every existing pipeline's key alone.
+/// The probe: with a component registered, no shipped graph's key or label moves; a node
+/// that sets a knob to its default ([`mr_components::knobs`]) keys as the node leaving it
+/// unset, and off its default apart; a node that is its role's identity
+/// ([`graph::identity`]), set to nothing else, keys as the graph without it.
+#[test]
+fn keys_stay_across_turns() {
+    use mr_components::knobs;
+    let shipped = || graph::SHIPPED.iter().map(|(name, _)| (*name, graph::shipped(name).unwrap()));
+    let seen = |g: &Graph| (g.key().unwrap(), g.label().unwrap());
+    let before: Vec<_> = shipped().map(|(_, g)| seen(&g)).collect();
+    mr_components::register_on_this_thread(&REGISTERED);
+    assert_eq!(shipped().map(|(_, g)| seen(&g)).collect::<Vec<_>>(), before, "registering a component moved a shipped graph's key or label");
+
+    // Knobs at their defaults, on every node of every shipped graph as every component it may be.
+    let mut tried = 0;
+    for (name, g) in shipped() {
+        for id in g.nodes.keys() {
+            for c in g.choices(id) {
+                let Ok(h) = g.edit(&graph::Change::component(id, c)) else { continue };
+                if h.key().is_err() {
+                    continue;
+                }
+                let role = h.nodes[id].role;
+                for (knob, d) in knobs::DEFAULTS.iter().filter(|(r, n, _)| *r == role && *n == c).flat_map(|(_, _, ks)| ks.iter()) {
+                    let set = |v: toml::Value| {
+                        let mut s = h.clone();
+                        s.nodes.get_mut(id).unwrap().knobs.insert(knob.to_string(), v);
+                        s
+                    };
+                    assert_eq!(seen(&set(d.value())), seen(&h), "{name} `{id}` = {c}: {knob} at its default keys apart");
+                    let off = match *d {
+                        knobs::Value::Bool(b) => (!b).into(),
+                        knobs::Value::Int(i) => (i + 1).into(),
+                        knobs::Value::Float(f) => (f + 1.0).into(),
+                        knobs::Value::Str(s) => format!("{s}-not").into(),
+                    };
+                    assert_ne!(set(off).key().unwrap(), h.key().unwrap(), "{name} `{id}` = {c}: {knob} off its default keys as unset");
+                    tried += 1;
+                }
+            }
+        }
+    }
+    assert!(tried > 30, "the knobs probed: {tried}");
+
+    // The identities: written out, the same graph; another component there, another.
+    for (name, g) in shipped() {
+        for role in Role::ALL.iter().copied().filter(|r| graph::identity(*r).is_some()) {
+            if g.nodes.values().any(|n| n.role == role) {
+                continue;
+            }
+            let with = |c: &str| {
+                let mut edits = vec![graph::Change::add(role.name(), role, c)];
+                if role == Role::Post {
+                    let shading = g.nodes.iter().find(|(_, n)| n.role == Role::Shading).map(|(k, _)| k.clone()).unwrap();
+                    edits.push(graph::Change::bind(role.name(), "image", &shading));
+                }
+                g.with_edits(&edits).unwrap()
+            };
+            let identity = graph::identity(role).unwrap();
+            assert_eq!(seen(&with(identity)), seen(&g), "{name} with its {} `{identity}` written out", role.name());
+            if let Some(other) = graph::role_components(role).into_iter().find(|c| *c != identity && with(c).key().is_ok()) {
+                assert_ne!(with(other).key().unwrap(), g.key().unwrap(), "{name} with its {} `{other}`", role.name());
+            }
+        }
+    }
+}
+
+/// The knob defaults the key reads ([`mr_components::knobs::DEFAULTS`]) are the executors':
+/// a component's knob is listed exactly when every region declaring it (`ParamSpec` with an
+/// owner) gives it one default, and with that default.
+#[test]
+fn knob_defaults_are_the_executors() {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut declared: BTreeMap<(String, String, String), BTreeSet<String>> = BTreeMap::new();
+    for b in graph::REGIONS {
+        let info = if b.executor() == "cpu" { mr_exec_cpu::info(b.id) } else { mr_exec_gpu::info(b.id) };
+        for p in &info.params {
+            let Some((role, components)) = &p.owner else { continue };
+            let v = toml::Value::try_from(p.default.to_json()).unwrap().to_string();
+            for c in components {
+                declared.entry((role.clone(), c.clone(), p.name.clone())).or_default().insert(v.clone());
+            }
+        }
+    }
+    let want: BTreeMap<_, _> = declared.into_iter().filter(|(_, v)| v.len() == 1).map(|(k, v)| (k, v.into_iter().next().unwrap())).collect();
+    let have: BTreeMap<_, _> = mr_components::knobs::DEFAULTS
+        .iter()
+        .flat_map(|(r, c, ks)| ks.iter().map(move |(k, d)| ((r.name().to_string(), c.to_string(), k.to_string()), d.value().to_string())))
+        .collect();
+    let missing: Vec<_> = want.iter().filter(|(k, v)| have.get(*k) != Some(v)).collect();
+    let extra: Vec<_> = have.iter().filter(|(k, _)| !want.contains_key(*k)).collect();
+    assert!(missing.is_empty() && extra.is_empty(), "knobs::DEFAULTS differs from the executors' knobs: to add or correct (role, component, knob) = default: {missing:#?}; to remove: {extra:#?}");
+}

@@ -21,11 +21,12 @@ struct Entry {
 
 impl Graph {
     /// The nodes that say something, in visiting order from the output (inputs by port
-    /// name). Left out: the default link (`free`) and client (`pick`), nothing else set
-    /// (their readers are written as reading what they read, as before the link and client
-    /// were nodes, which keeps the keys), the generator on the server, and the default post
-    /// (`clamp`: the shading's image is the output, as before). `region`: the client's
-    /// region knobs count (the workload, not the pipeline: the key leaves them out).
+    /// name). Left out: the nodes that are their role's [`identity`] and set nothing else
+    /// (the link `free` and client `pick`, whose readers are written as reading what they
+    /// read; the generator on the server, read by no one then; the post `clamp`, the
+    /// shading's image the output), and knobs set to their defaults ([`crate::knobs`]).
+    /// `region`: the client's region knobs count (the workload, not the pipeline: the key
+    /// leaves them out).
     fn entries(&self, region: bool) -> Result<Vec<Entry>, String> {
         let c = self.check()?;
         let g = &c.graph;
@@ -38,62 +39,50 @@ impl Graph {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
                 Role::Link => link_spec(n).map(|l| link_knobs(&l)).unwrap_or_default(),
-                _ => n.knobs.clone(),
+                _ => n
+                    .knobs
+                    .iter()
+                    .filter(|(k, v)| {
+                        crate::knobs::default(n.role, &n.component, k).as_ref() != Some(*v)
+                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
             }
         };
-        let plain = |id: &str| {
+        // Where a node runs unset: the post where its image is made, the others by default.
+        let unset = |n: &Node| match n.role {
+            Role::Post => c.devices[&n.inputs["image"]],
+            _ => default_device(&g.executor, n.role, &n.component),
+        };
+        let quiet = |id: &str| {
             let n = &g.nodes[id];
-            matches!(
-                (n.role, n.component.as_str()),
-                (Role::Client, "pick") | (Role::Link, "free")
-            ) && knobs(n).is_empty()
+            let first = inputs(n.role, &n.component).first().map(|p| p.name);
+            identity(n.role) == Some(n.component.as_str())
+                && knobs(n).is_empty()
                 && n.timing.is_empty()
                 && n.api.is_none()
-                && n.device.is_none_or(|d| d == Device::Cpu)
-                && !n.inputs.contains_key("chunks")
+                && n.device.is_none_or(|d| d == unset(n))
+                && n.inputs.keys().all(|p| Some(p.as_str()) == first)
         };
-        let served = |id: &str| {
-            g.nodes[id].role == Role::Generator
-                && c.devices[id] == Device::Server
-                && g.nodes[id].component == "procedural"
-                && knobs(&g.nodes[id]).is_empty()
-        };
-        let src = |s: &'_ str| -> String {
+        // What reading `s` comes to: through the quiet nodes to what they read; `None` for a
+        // quiet node that reads nothing.
+        let src = |s: &'_ str| -> Option<String> {
             let mut s = s;
-            while plain(s) {
-                s = &g.nodes[s].inputs["changes"];
+            while quiet(s) {
+                s = g.nodes[s].inputs.values().next()?;
             }
-            s.to_string()
+            Some(s.to_string())
         };
         let mut seen: HashSet<String> = HashSet::new();
         let mut order: Vec<String> = Vec::new();
-        let out = &g.nodes[&c.output];
-        let start = if out.role == Role::Post
-            && out.component == "clamp"
-            && out
-                .device
-                .is_none_or(|d| d == c.devices[&out.inputs["image"]])
-            && out.api.is_none()
-            && out.timing.is_empty()
-        {
-            out.inputs["image"].clone()
-        } else {
-            c.output.clone()
-        };
+        let start = src(&c.output).ok_or("the output is a node that reads nothing")?;
         let mut stack = vec![start];
         while let Some(id) = stack.pop() {
             if !seen.insert(id.clone()) {
                 continue;
             }
             // Reversed so the first port by name is visited first.
-            stack.extend(
-                g.nodes[&id]
-                    .inputs
-                    .values()
-                    .filter(|s| !served(s))
-                    .rev()
-                    .map(|s| src(s)),
-            );
+            stack.extend(g.nodes[&id].inputs.values().rev().filter_map(|s| src(s)));
             order.push(id);
         }
         // APIs only where the executor offers a choice (elsewhere a set API is checked to be
@@ -116,8 +105,7 @@ impl Graph {
                     ins: n
                         .inputs
                         .iter()
-                        .filter(|(_, s)| !served(s))
-                        .map(|(p, s)| (p.clone(), src(s), n.when(p)))
+                        .filter_map(|(p, s)| Some((p.clone(), src(s)?, n.when(p))))
                         .collect(),
                     knobs: knobs(n),
                     id,

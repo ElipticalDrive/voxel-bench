@@ -144,10 +144,14 @@ fn main() -> anyhow::Result<()> {
         Cmd::Worker { socket } => mr_worker::run(&socket),
         Cmd::Present { socket, title } => present::run(&socket, &title),
         Cmd::Graph { keys: true, .. } => {
-            for line in std::io::stdin().lines() {
+            for (i, line) in std::io::stdin().lines().enumerate() {
                 let line = line?;
                 if line.trim().is_empty() {
                     continue;
+                }
+                // A record newer than this build is refused (by name), not left out.
+                if let Some(why) = observe::newer(&line) {
+                    bail!("record {}: {why}", i + 1);
                 }
                 let g = observe::Observation::parse(&line).ok().flatten().and_then(|o| o.pipeline());
                 let key = g.as_ref().and_then(|g| g.key().ok());

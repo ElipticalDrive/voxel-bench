@@ -251,7 +251,8 @@ rays it casts make no difference; without meshes: the meshes node and its shadow
 - what rendered it: the label, the executor (`renderer`: `cpu`, `gpu`; a standalone
   renderer's name), the pipeline (`graph`, always, and `graph_key`) and its knobs (`options`);
   records of pipelines from before version 6 (a flat `composition`) are no longer read: `catalogue`
-  leaves them out and says how many;
+  leaves them out and says how many; a record newer than the build (its `version` above the
+  build's) is refused, naming both versions;
 - the results: fps, frame interval (mean, p50, p99), GPU and CPU ms, latency, init and load
   time, memory (`peak_rss_mb`; `gpu_mb`, what the renderer counts it sizes; `gpu_device_mb`,
   measured: the most its GPU devices' allocators held, every buffer, texture and acceleration
@@ -325,7 +326,8 @@ Python, for Linux and Windows (`scripts/`):
   compares every shader both builds assemble; `sweepcmp.py` compares two sweeps' records,
   matched by pipeline key.
 - `ab/guard.py NEW [--base DIR]`: the regression guard. It compares a sweep with the baseline
-  (the newest `baselines/sweep-*`), pass by pass (plan, mode, graph key, knobs). It prints
+  (the newest `baselines/sweep-*`), pass by pass (plan, mode, graph key, knobs), and first
+  prints the observation versions each side holds. It prints
   only what moved beyond noise: passes slower or faster (GPU ms, else fps; default ±10 %, since
   a sweep runs each pass once, so a pass's verdict is a candidate to confirm with `perf.py`),
   scores worse or better (the score the catalogue's floor uses; 0.5 dB, or crossing the floor),
