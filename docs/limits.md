@@ -76,9 +76,38 @@ as the CPU pipelines.
   the device is out of memory, with the most this renderer was seen holding and the knobs
   that size it.
 
+## Far from the origin, frame sizes, generator sizes
+
+Not radius but position and size parameters, each checked at the smallest size that showed
+the break (tests named).
+
+| limit | where it is refused | what broke past it (before) |
+|---|---|---|
+| A camera within 2^30 blocks of the origin on each axis (`WORLD_LIMIT`) | plan load: every point of the camera path (`scene.camera: ... past the world's reach`) | at `i32::MAX` less the view reach, every pipeline rendered the far side of the world, no error (`sizes_past_the_limits_are_refused`) |
+| A generator size (blocks or counts) within 2^30; menger level ≤ 18 (3^18 blocks) | plan load and the editor's fields (the spec does not parse) | room overflowed `i32` from size 715827883, menger from level 20, the others near `i32::MAX`; gyroid's spawn scanned the whole period (31 s at 2^30) (`generator_sizes_hold_out_to_the_worlds_reach`) |
+| A frame of at most `u32::MAX` pixels, both sides ≥ 1 | plan load, a live resize | pixel indices are `u32` in the shaders and the CPU frame buffers; byte sizes were `u32` products too, so an RGBA16F frame of 23171² sized its shared memory slot 3 MiB (`frame_sizes_are_counted_wide`) |
+
+Inside these, pipelines render the same image anywhere: a flat world seen from the origin,
+from 2^19, 2^24 and ±(2^30 - 1024) blocks out gives pixel-identical frames on every shipped
+graph (the renderers work camera-relative in `i32` blocks plus an `f32` fraction; the camera
+is `f64`). Two things did not, fixed:
+
+- The CPU discovery (discover-cpu) keyed faces by 20 bits of each absolute coordinate and
+  read them back as if near the origin: from 2^19 blocks out it drew nothing right (8.7 dB at
+  2^24). Keys are now read back as the cell nearest the camera, which holds while a face is
+  within 2^19 blocks of it (`face_keys_hold_anywhere_in_the_world`).
+- Terrain (and the islands' and caves' noise) took `f32` block coordinates, whole only up to
+  2^24: 8 % of terrain heights were wrong there, 63 % at 2^28 (neighbouring columns merged).
+  The noise now finds its lattice cell in `f64` (`noise_resolves_blocks_out_to_the_worlds_reach`).
+  Near the origin 33 of 4.2 million terrain heights moved by one block (rounding).
+
+Frames between processes: a message is refused past 4 GiB (its `u32` length); frames go
+through shared memory slots sized in `u64`.
+
 ## Not yet covered
 
-f32 precision far from the origin (the camera far out, not a large radius), byte offsets past
-4 GiB in one buffer (no buffer reaches it: bindings stop at 2 GiB and pools page), link frame
-sizes at large resolutions, the generators' own size parameters (menger level, room and random
-size, instance, point and face counts), `max_lod > 0`, and lavapipe's limits.
+Byte offsets past 4 GiB in one buffer (no buffer reaches it: bindings stop at 2 GiB and pools
+page), frames at the largest resolutions a GPU takes (16384² and up: only the arithmetic is
+checked, no such frame was rendered), instance, point and face counts (the meshes'
+instances, the splats' points), `max_lod > 0` (the view reach at LOD is radius x 2^max_lod
+chunks; checked only through the reach above), and lavapipe's limits.

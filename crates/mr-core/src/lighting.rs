@@ -257,6 +257,29 @@ impl PixelFormat {
             PixelFormat::Rgba16F => 8,
         }
     }
+
+    /// Bytes of a `width` x `height` frame, counted wide: an RGBA16F frame passes 4 GiB at
+    /// 23171², which a `u32` product wraps.
+    pub fn frame_bytes(self, width: u32, height: u32) -> usize {
+        width as usize * height as usize * self.bytes() as usize
+    }
+}
+
+/// Refuses a resolution the pipelines cannot address: a pixel's index is a `u32` (in the
+/// shaders and the CPU executors' frame buffers), so a frame holds at most `u32::MAX`
+/// pixels; and a zero size has no pixels to render.
+pub fn check_resolution(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err(format!("resolution {width}x{height}: both sides must be at least 1"));
+    }
+    if width as u64 * height as u64 > u32::MAX as u64 {
+        return Err(format!(
+            "resolution {width}x{height}: {} pixels, over the {} a frame can index (a pixel's index is a u32)",
+            width as u64 * height as u64,
+            u32::MAX
+        ));
+    }
+    Ok(())
 }
 
 /// The extended sRGB transfer (`hdr`'s encoding): sRGB's curve continued past 1.
@@ -414,6 +437,18 @@ const LUMA: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Frame sizes are counted wide (an RGBA16F frame of 23171² is past 4 GiB, which a `u32`
+    /// product wrapped to 3 MiB), and a frame past `u32::MAX` pixels is refused naming it.
+    #[test]
+    fn frame_sizes_are_counted_wide() {
+        assert_eq!(PixelFormat::Rgba16F.frame_bytes(23171, 23171), 23171 * 23171 * 8);
+        assert!(PixelFormat::Rgba16F.frame_bytes(23171, 23171) > u32::MAX as usize);
+        assert!(check_resolution(65535, 65537).is_ok());
+        let e = check_resolution(65536, 65536).unwrap_err();
+        assert!(e.contains("u32") && e.contains("4294967295"), "{e}");
+        assert!(check_resolution(0, 720).unwrap_err().contains("at least 1"));
+    }
 
     #[test]
     fn rgb9e5_roundtrip() {

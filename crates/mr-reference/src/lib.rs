@@ -496,7 +496,7 @@ impl CpuReference {
             Chunks::default()
         };
         let paths = opts.bounces.map(|bounces| Paths { bounces, paths: opts.paths.unwrap_or(PATHS).max(1) });
-        Ok(Self { width: p.width, height: p.height, pixels: vec![0; (p.width * p.height * 4) as usize], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths, mesh_rays: opts.mesh_rays.unwrap_or(true), transparency: opts.transparency.unwrap_or(true) })
+        Ok(Self { width: p.width, height: p.height, pixels: vec![0; p.width as usize * p.height as usize * 4], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths, mesh_rays: opts.mesh_rays.unwrap_or(true), transparency: opts.transparency.unwrap_or(true) })
     }
 }
 
@@ -1156,7 +1156,7 @@ impl Renderer for CpuReference {
     fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
         self.width = width;
         self.height = height;
-        self.pixels = vec![0; (width * height * 4) as usize];
+        self.pixels = vec![0; width as usize * height as usize * 4];
         Ok(())
     }
 

@@ -7,6 +7,14 @@ pub const CHUNK_BITS: u32 = 5;
 pub const CHUNK_SIZE: i32 = 1 << CHUNK_BITS;
 pub const CHUNK_VOLUME: usize = (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize;
 
+/// How far from the origin, in blocks on each axis, a world reaches and a camera may go:
+/// 2^30. Block positions are `i32` and the renderers work camera-relative in them, so a view
+/// that reaches past `i32::MAX` wraps with no error (measured: a camera 64 blocks short of
+/// it renders the far side of the world). Inside this range every block in view of the
+/// camera, and the difference of any two such positions, fits an `i32` with room for any
+/// view radius. Generator sizes and camera paths past it are refused naming it.
+pub const WORLD_LIMIT: i32 = 1 << 30;
+
 /// Block type index into the [`crate::BlockRegistry`]. `0` is air (empty, transparent);
 /// every other block is an opaque unit cube.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

@@ -229,7 +229,7 @@ impl Worker {
         };
         // A standalone renderer (no graph) writes RGBA8.
         let format = mr_components::graph::of_init(cfg.renderer, &cfg.params).map_or(PixelFormat::Rgba8, |g| g.tone().format());
-        let slot_bytes = (cfg.params.width * cfg.params.height * format.bytes()) as u64;
+        let slot_bytes = format.frame_bytes(cfg.params.width, cfg.params.height) as u64;
         let mut shm = FrameSlots::create(&tag, cfg.slots, slot_bytes)?;
         tx.send(HostMsg::Init { renderer: cfg.renderer.to_string(), params: cfg.params, shm: shm.spec().clone() })?;
         let ready = recv_timeout(&rx, left()).map_err(|e| {
@@ -337,8 +337,9 @@ impl Worker {
     /// Changes the render resolution. All frames in flight must have completed (their
     /// slots returned); a fresh shared-memory region is created for the new size.
     pub fn resize(&mut self, width: u32, height: u32, slots: u32) -> anyhow::Result<()> {
+        mr_core::lighting::check_resolution(width, height).map_err(anyhow::Error::msg)?;
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut shm = FrameSlots::create(&format!("multirenderer-{}-{n}", std::process::id()), slots, (width * height * self.format.bytes()) as u64)?;
+        let mut shm = FrameSlots::create(&format!("multirenderer-{}-{n}", std::process::id()), slots, self.format.frame_bytes(width, height) as u64)?;
         self.send(HostMsg::Resize { width, height, shm: shm.spec().clone() })?;
         // The worker maps it while handling Resize; Flushed below proves it has.
         self.send(HostMsg::Flush)?;

@@ -71,7 +71,8 @@ pub(crate) const MISS: u64 = u64::MAX;
 const COORD_BITS: u32 = 20;
 const COORD_MASK: u64 = (1 << COORD_BITS) - 1;
 
-/// Packs absolute cell + face into a u64 key (20 bits per axis, two's complement).
+/// Packs absolute cell + face into a u64 key: each axis's low 20 bits, so the key wraps every
+/// 2^20 blocks and [`unpack_key`] recovers a cell from the cell nearest a reference point.
 #[inline]
 pub fn face_key(cell: IVec3, face: u32) -> u64 {
     (cell.x as u64 & COORD_MASK)
@@ -80,14 +81,18 @@ pub fn face_key(cell: IVec3, face: u32) -> u64 {
         | (face as u64) << 60
 }
 
+/// The cell and face of a key: of the cells it stands for (every 2^20 blocks per axis), the
+/// one nearest `near` (the camera's block), so keys hold anywhere in the world as long as a
+/// face lies within 2^19 blocks of the camera on each axis (the view radius is far less).
 #[inline]
-pub fn unpack_key(k: u64) -> (IVec3, u32) {
-    let s = |v: u64| ((v as i64) << (64 - COORD_BITS) >> (64 - COORD_BITS)) as i32;
+pub fn unpack_key(k: u64, near: IVec3) -> (IVec3, u32) {
+    // The offset from `near`, sign-extended from 20 bits.
+    let s = |v: u64, n: i32| n.wrapping_add((((v.wrapping_sub(n as u64)) as i64) << (64 - COORD_BITS) >> (64 - COORD_BITS)) as i32);
     (
         IVec3::new(
-            s(k & COORD_MASK),
-            s(k >> 20 & COORD_MASK),
-            s(k >> 40 & COORD_MASK),
+            s(k & COORD_MASK, near.x),
+            s(k >> 20 & COORD_MASK, near.y),
+            s(k >> 40 & COORD_MASK, near.z),
         ),
         (k >> 60) as u32,
     )
@@ -434,7 +439,7 @@ fn changes<G: World>(
 ) -> Result<Vec<(u64, Option<[u32; 2]>)>, ()> {
     st.s.par_iter()
         .filter_map(|(&k, e)| {
-            let (cell, face) = unpack_key(k);
+            let (cell, face) = unpack_key(k, cam.unwrap_or(anchor));
             let block = grid.block(cell);
             let exposed =
                 block != 0 && grid.block(cell + Face::from_index(face as usize).normal()) == 0;
@@ -498,6 +503,21 @@ mod tests {
 
     use super::*;
     use crate::visibility::discover::grid::Hit;
+
+    /// A face key holds its cell anywhere in the world: unpacked near the camera, as the
+    /// discovery does. Keys keep 20 bits per axis, so before, every cell from 2^19 blocks out
+    /// came back 2^20 blocks off (CPU discovery drew nothing at a camera 2^24 out).
+    #[test]
+    fn face_keys_hold_anywhere_in_the_world() {
+        let l = mr_core::chunk::WORLD_LIMIT;
+        for c in [IVec3::ZERO, IVec3::new(1 << 19, 3, -(1 << 19)), IVec3::new(-l, l, 1 << 24), IVec3::splat(l), IVec3::splat(-l)] {
+            for off in [IVec3::ZERO, IVec3::new(300, -300, 17), IVec3::new(-4096, 4096, 0)] {
+                for face in [0, 5] {
+                    assert_eq!(unpack_key(face_key(c, face), c + off), (c, face), "cell {c} seen from {off} away");
+                }
+            }
+        }
+    }
 
     /// Blocks by cell; rays are not cast here.
     struct Blocks(HashMap<IVec3, u16>);
@@ -568,14 +588,14 @@ mod tests {
             if pass == 103 {
                 assert_eq!(r.count as usize, gpu.len());
                 assert!(
-                    st.s.keys().any(|&k| unpack_key(k).0.x < 100),
+                    st.s.keys().any(|&k| unpack_key(k, cam).0.x < 100),
                     "near faces still in S, not drawn"
                 );
             }
             let mut want: Vec<[u32; 2]> =
                 st.s.keys()
                     .filter_map(|&k| {
-                        let (cell, face) = unpack_key(k);
+                        let (cell, face) = unpack_key(k, cam);
                         let block = world.block(cell);
                         (block != 0
                             && world.block(cell + Face::from_index(face as usize).normal()) == 0)
