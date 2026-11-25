@@ -80,8 +80,10 @@ def main():
     if not a.base:
         sys.exit('no baseline: baselines/sweep-* is empty; name one with --base')
     print(f'base {os.path.relpath(a.base)}  new {os.path.relpath(a.new)}')
-    base, bu = load_all(a.base)
-    new, nu = load_all(a.new)
+    base, bu, bv = load_all(a.base)
+    new, nu, nv = load_all(a.new)
+    versions = lambda v: ', '.join(f'v{k}: {n}' for k, n in v.items()) or 'none'
+    print(f'observation versions: base {versions(bv)}; new {versions(nv)}')
     common = sorted(k for k in base if k in new)
     print(f'passes: base {len(base)}, new {len(new)}, common {len(common)}, only base {len(set(base) - set(new))}, only new {len(set(new) - set(base))}')
     if not common:

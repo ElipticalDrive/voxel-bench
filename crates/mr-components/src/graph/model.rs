@@ -457,6 +457,21 @@ impl When {
     }
 }
 
+/// The component that stands for `role` where a graph has no node of it (the normaliser adds
+/// it): its identity, a node that changes nothing. Set to nothing else (no knob off its
+/// default, timing, API, device but where it runs unset, input but its first port), such a
+/// node is left out of the key and the label, its readers written as reading its input (or,
+/// with none, as not reading it): a graph says the same with it as without it.
+pub fn identity(role: Role) -> Option<&'static str> {
+    match role {
+        Role::Generator => Some("procedural"),
+        Role::Link => Some("free"),
+        Role::Client => Some("pick"),
+        Role::Post => Some("clamp"),
+        _ => None,
+    }
+}
+
 /// The client's components (`mr_core::client::Levels`): `pick` takes the server's LOD
 /// levels, `derive` builds them on the client from LOD 0.
 pub const CLIENTS: &[&str] = &["pick", "derive"];

@@ -277,9 +277,13 @@ impl Observation {
 
     /// The record in `line`; `None` for one this build no longer reads: a pipeline's from
     /// before version 6 (named in a form since removed). A standalone renderer's reads at
-    /// any version.
+    /// any version. A record newer than this build ([`VERSION`]) is an error naming both
+    /// versions: what it holds may mean something this build would misread.
     pub fn parse(line: &str) -> serde_json::Result<Option<Self>> {
         let older = |v: &serde_json::Value| v["version"].as_u64().is_some_and(|n| n < VERSION as u64);
+        if let Some(why) = newer(line) {
+            return Err(serde::de::Error::custom(why));
+        }
         match serde_json::from_str::<Self>(line) {
             Ok(o) if o.version >= VERSION => Ok(Some(o)),
             Ok(o) => {
@@ -290,6 +294,13 @@ impl Observation {
             Err(e) => Err(e),
         }
     }
+}
+
+/// Why the record in `line` is refused, if it is newer than this build ([`VERSION`]).
+pub fn newer(line: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let n = v["version"].as_u64().filter(|n| *n > VERSION as u64)?;
+    Some(format!("an observation of version {n}, newer than this build reads (version {VERSION}): rebuild"))
 }
 
 /// Writes the run's observations (every pass except the reference's) as JSON lines.

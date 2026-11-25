@@ -126,6 +126,14 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
         // (A knob whose owner is not in the graph is moot: not compiled in.)
         baked.extend(value.map(|v| (k.to_string(), v)));
     }
+    // A knob changed between frames and not specialisable is read at run time by every
+    // build alike (`view`): the build is the same without it.
+    for p in params.iter().filter(|p| !p.baked && p.live) {
+        let Some((role, comps)) = &p.owner else { continue };
+        for n in graph.nodes.values_mut().filter(|n| n.role.name() == *role && comps.contains(&n.component)) {
+            n.knobs.remove(&p.name);
+        }
+    }
     let ck = graph.check().map_err(anyhow::Error::msg)?;
     let rust = |v: &toml::Value| -> anyhow::Result<String> { Ok(format!("{:?}", serde_json::to_string(v)?)) };
     let variant = |s: &str| s[..1].to_uppercase() + &s[1..];

@@ -192,6 +192,13 @@ that node's own.
 its canonical form, its cache key and its schedule: the passes in frame order, with the
 nodes that are fused into each pass and the transfers between devices.
 
+The canonical form writes only what makes a pipeline differ, so keys stay comparable as the
+bench grows: a knob a node sets to its default (`crates/mr-components/src/knobs.rs`, kept equal
+to the executors' knobs by a test) is dropped, and so is a node that is its role's identity
+(`graph::identity`: the link `free`, the client `pick`, the generator `procedural` on the
+server, the post `clamp`) and sets nothing else. A component or a knob (with a default) added
+later leaves every existing key alone (`src/contract.rs` probes it).
+
 ## Capabilities and adapters
 
 An interface has a required core and optional capabilities (`crates/mr-components/src/caps.rs`): a
