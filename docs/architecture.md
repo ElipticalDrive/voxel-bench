@@ -133,6 +133,26 @@ host's devices, and `mr_gpu::gpu(devices, slot, &GpuNeeds { .. })` returns one w
 features asked for. Asynchronous renderers call the `Waker` when work may have finished;
 `mr_gpu::FrameRing` does this for you.
 
+### What a component costs the build
+
+`scripts/buildcost.py storage` builds the release binary, adds a CPU storage (`new.py storage`,
+a copy of `bricks`), builds again, restores the tree and prints both; `--time` adds the rebuild
+and `check.py` times (an idle machine only). Measured 2026-11-24 (commit 79ee13c, sizes only):
+
+| one more | binary | `.text` | functions | instantiated for it | rebuild | `check.py` |
+|---|---|---|---|---|---|---|
+| CPU storage | +6.1 MB (+2.2 %) | +1.8 MB (+4.2 %) | +340 (+0.7 %) | 305 | not yet timed | not yet timed |
+| walk, shading | not yet measured (no scaffold) | | | | | |
+
+Why: the generic CPU build monomorphises each region per storage (`by_storage!` in
+`mr-exec-cpu/src/raycast.rs`), and inside that the ray caster's tile loop
+(`render_rect_*`) per ISA (scalar, AVX2, AVX-512) x pixel (`[u8; 4]`, `Half4`) x two const
+flags: 24 instances of about 65 KB per storage, 1.6 MB of the 1.8. The walk and the shading are
+matched at run time *inside* each instance, so one more storage costs a fixed amount, but one
+more CPU walk or shading grows all 24 instances of every storage: the generic build's size
+grows with storages x (walks + shadings). Compiled pipelines (`run.compile`) instantiate one
+combination and are not affected.
+
 ## Verifying a change
 
 - `cargo build --release` with no warnings; `cargo test -q --workspace` (unit tests,

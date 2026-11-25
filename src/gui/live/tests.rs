@@ -5,7 +5,11 @@ use crate::tune;
 
 use super::*;
 
+/// Waits up to `secs`, times `MR_TEST_SLOW` (a factor; `check.py lavapipe` sets it: software
+/// Vulkan on a CI runner's few cores shares them with the CPU reference and every worker).
 fn wait(shared: &Arc<Mutex<Shared>>, what: &str, secs: u64, f: impl Fn(&Shared) -> bool) {
+    let slow = std::env::var("MR_TEST_SLOW").ok().and_then(|v| v.parse::<f64>().ok()).filter(|f| *f >= 1.0).unwrap_or(1.0);
+    let secs = (secs as f64 * slow).ceil() as u64;
     let t = Instant::now();
     while t.elapsed() < Duration::from_secs(secs) {
         if f(&shared.lock().unwrap()) {

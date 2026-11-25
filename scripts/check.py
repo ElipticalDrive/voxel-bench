@@ -11,7 +11,7 @@ GPU graph on a device clamped to WebGPU's baseline sizes);
 only `gui_screenshot` stays manual. `lavapipe`: the GPU tests that fit Mesa's software Vulkan
 (the device pool, the live sessions of the GPU graphs, the split, meshes, the headless GUI;
 not the HDR window, which needs a display, the compiled build, nor the tuner and scale-curve
-demos, which time things) on lavapipe,
+demos, which time things) on lavapipe, their waits times `MR_TEST_SLOW` (default 3 here),
 whatever GPU the machine has: what CI runs, where no GPU is. `windows`: zero-warning
 cross-checks for both Windows targets (`rustup target add x86_64-pc-windows-gnu
 x86_64-pc-windows-msvc`). `wine`: the unit and GPU end-to-end tests of the `-gnu` build under
@@ -111,6 +111,7 @@ for w in what:
             rc = True
             continue
         os.environ.update(VK_DRIVER_FILES=icd, VK_ICD_FILENAMES=icd)
+        os.environ.setdefault("MR_TEST_SLOW", "3")  # the live tests' waits, scaled for software Vulkan
         subprocess.run(["cargo", "build", "--release", "-q"], cwd=ROOT, capture_output=True)  # the sessions' workers
         e2e = ["gui::live::tests::live_session_end_to_end", "gui::live::tests::live_meshes_end_to_end", "gui::live::tests::live_split_end_to_end", "gui::tests::gui_headless_smoke"]
         for name, args in (("lavapipe e2e", ["--bin", "multirenderer", "--", "--ignored", "--exact", *e2e]), ("lavapipe pool", ["-p", "mr-gpu", "--", "--ignored"])):
