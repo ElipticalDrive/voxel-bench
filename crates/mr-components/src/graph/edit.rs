@@ -1002,16 +1002,33 @@ mod tests {
             .map_err(|e| e.message().to_string())
     }
 
-    /// Every component of a role outside the registry says what it does (the editor shows it).
+    /// Every component of a role outside the registry is listed once, in the one table, says
+    /// what it does (the editor shows it), and is a name what runs it takes: the client's
+    /// `Levels`, the post's `Tone` (every tone listed), the generator's identity; the
+    /// timings' picker lists every `When`.
     #[test]
     fn host_components_are_described() {
-        use crate::graph::{host_description, role_components};
+        use crate::graph::{HOST_COMPONENTS, host_components, host_description, is_host_role, role_components};
+        for c in HOST_COMPONENTS {
+            assert!(is_host_role(c.role), "`{}` is a registry role's", c.name);
+            assert!(!c.about.is_empty(), "{} `{}` has no description", c.role.name(), c.name);
+            assert_eq!(HOST_COMPONENTS.iter().filter(|o| o.role == c.role && o.name == c.name).count(), 1, "`{}` listed twice", c.name);
+        }
         for role in [Role::Generator, Role::Link, Role::Client, Role::Post] {
-            for c in role_components(role) {
-                assert!(host_description(role, c).is_some_and(|d| !d.is_empty()), "{} `{c}` has no description", role.name());
-            }
+            assert_eq!(role_components(role), host_components(role));
+            assert!(crate::graph::identity(role).is_some_and(|i| host_components(role).contains(&i)), "{}'s identity is listed", role.name());
         }
         assert!(host_description(Role::World, "world").is_some());
+        for c in host_components(Role::Client) {
+            assert!(mr_core::client::Levels::of(c).is_some(), "client `{c}`");
+        }
+        let posts = host_components(Role::Post);
+        assert_eq!(posts, mr_core::lighting::Tone::ALL.map(|t| t.name()).to_vec());
+        mr_core::choice::check::<crate::graph::When>(|w| match toml::Value::try_from(w).unwrap() {
+            toml::Value::String(s) => s,
+            toml::Value::Table(t) => t.keys().next().unwrap().clone(),
+            v => panic!("{v}"),
+        });
     }
 
     /// Every region has one shipped file, whose graph it builds; the files' keys are pinned

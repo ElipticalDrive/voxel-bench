@@ -130,3 +130,18 @@ fn noise_does_not_produce_false_improvements() {
     assert!(t.trials > 20);
     assert!(t.accepted <= 2, "accepted {} of {} trials on pure noise\n{:?}", t.accepted, t.trials, t.log);
 }
+
+/// The tuner panel's goals, metrics and algorithms list every variant once, by its serde name.
+#[test]
+fn tuner_choices_are_complete() {
+    fn tag<T: serde::Serialize>(v: &T) -> String {
+        match serde_json::to_value(v).unwrap() {
+            serde_json::Value::String(s) => s,
+            serde_json::Value::Object(o) => o.keys().next().unwrap().clone(),
+            v => panic!("{v}"),
+        }
+    }
+    mr_core::choice::check::<Goal>(tag);
+    mr_core::choice::check::<QualityMetric>(tag);
+    mr_core::choice::check::<Algorithm>(tag);
+}

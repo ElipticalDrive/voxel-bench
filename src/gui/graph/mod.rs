@@ -84,10 +84,12 @@ const DRAFT: egui::Color32 = egui::Color32::from_rgb(230, 160, 60);
 /// renderer picked.
 fn choices(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, selected: &str, tip: &str, options: Vec<(String, Change, bool, String)>, trial: &mut Trial, infos: &[RendererInfo]) -> Option<RendererSpec> {
     let mut pick = None;
-    ComboBox::from_id_salt(id)
+    let filter_id = ui.id().with(("choices-filter", &id));
+    let shown = ComboBox::from_id_salt(&id)
         .selected_text(selected)
         .show_ui(ui, |ui| {
-            for (text, change, on, hover) in options {
+            let want = list_filter(ui, filter_id, options.len());
+            for (text, change, on, hover) in options.into_iter().filter(|o| shows(&o.0, &want)) {
                 if on {
                     ui.add(egui::Button::selectable(true, &text)).on_hover_text(hover);
                     continue;
@@ -106,10 +108,42 @@ fn choices(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, selected: &s
                     }
                 }
             }
-        })
-        .response
-        .on_hover_text(tip);
+        });
+    if shown.inner.is_none() {
+        list_filter_closed(ui, filter_id);
+    }
+    shown.response.on_hover_text(tip);
     pick
+}
+
+/// In a popup list of `n` entries: when they are more than the popup holds, a filter field on
+/// top (focused as it opens); returns the filter in lower case ("" without one). Entries
+/// match by [`shows`]. Call [`list_filter_closed`] when the popup is closed.
+pub(crate) fn list_filter(ui: &mut Ui, id: egui::Id, n: usize) -> String {
+    let fits = (ui.spacing().combo_height / ui.spacing().interact_size.y) as usize;
+    if n <= fits {
+        return String::new();
+    }
+    let mut filter: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let r = ui.add(egui::TextEdit::singleline(&mut filter).hint_text("filter").desired_width(f32::INFINITY)).on_hover_text("Show only the entries containing every word typed (any case)");
+    if r.changed() {
+        ui.data_mut(|d| d.insert_temp(id, filter.clone()));
+    }
+    if !r.has_focus() && filter.is_empty() {
+        r.request_focus();
+    }
+    filter.to_lowercase()
+}
+
+/// The popup of [`list_filter`] `id` is closed: its next opening starts unfiltered.
+pub(crate) fn list_filter_closed(ui: &mut Ui, id: egui::Id) {
+    ui.data_mut(|d| d.remove::<String>(id));
+}
+
+/// Whether a list entry `text` matches filter `want` (lower case words, each in the text).
+pub(crate) fn shows(text: &str, want: &str) -> bool {
+    let t = text.to_lowercase();
+    want.split_whitespace().all(|w| t.contains(w))
 }
 
 fn description(role: Role, component: &str) -> String {
@@ -180,10 +214,15 @@ fn bind_options(g: &Graph, id: &str, port: &mr_components::graph::Port) -> Vec<(
 }
 
 fn timing_options(n: &mr_components::graph::Node, id: &str, port: &str) -> Vec<(String, Change, bool, String)> {
+    use mr_core::Choices;
     let w = n.when(port);
-    [(When::Now, "this frame's value"), (When::Prev, "the previous frame's value (closes a cycle; across devices: overlaps the two)"), (When::Iterate(2), "two passes a frame, the first on last frame's value")]
-        .into_iter()
-        .map(|(t, h)| (t.label(), Change::Timing(id.into(), port.into(), t), w == t, h.to_string()))
+    // The port's own value where it is of that choice (an `iterate 3` stays three).
+    When::CHOICES
+        .iter()
+        .map(|c| {
+            let t = if w.same_choice(&(c.make)()) { w } else { (c.make)() };
+            (t.label(), Change::Timing(id.into(), port.into(), t), w == t, c.about.to_string())
+        })
         .collect()
 }
 
@@ -401,9 +440,11 @@ fn editor(ui: &mut Ui, win: &mut Window, title: &str, spec: &RendererSpec, knobs
             win.undo.push(spec.clone());
             return edits.push(Edit::Spec(next));
         }
-        ui.menu_button("start from…", |ui| {
+        let filter_id = ui.id().with("start-from-filter");
+        let menu = ui.menu_button("start from…", |ui| {
             ui.weak("A graph file's pipeline (then change anything)");
-            for (file, about) in start_files() {
+            let want = list_filter(ui, filter_id, start_files().count());
+            for (file, about) in start_files().filter(|(f, a)| shows(&format!("{f} {a}"), &want)) {
                 if ui.button(file).on_hover_text(about).clicked() {
                     match RendererSpec::from_file(file) {
                         Ok(mut s) => {
@@ -419,6 +460,9 @@ fn editor(ui: &mut Ui, win: &mut Window, title: &str, spec: &RendererSpec, knobs
                 }
             }
         });
+        if menu.inner.is_none() {
+            list_filter_closed(ui, filter_id);
+        }
         if ui.button("fit").on_hover_text("Lay the graph out again and fit it to the window (dragged nodes go back); a double click on the background fits without moving nodes").clicked() {
             win.canvas = Default::default();
         }
@@ -690,6 +734,39 @@ mod tests {
         assert_eq!(g1.live_edits(&g0).unwrap().1.iter().map(|s| (s.role, s.component.as_deref())).collect::<Vec<_>>(), [(Role::Holes, None)]);
         // Storage is not live on discover-gpu.
         assert!(live_edits(&old, &spec(",storage=tree64"), &knobs).is_none());
+    }
+
+    /// A choice list longer than its popup holds gets a filter field, a short one none; the
+    /// filter keeps the entries holding every word typed, in any case; the timings' picker
+    /// lists every `When` and keeps an input's own iteration count.
+    #[test]
+    fn long_lists_are_filtered() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("t");
+        let draw = |n: usize, typed: &str| {
+            ctx.data_mut(|d| d.insert_temp(id, typed.to_string()));
+            let mut want = None;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| want = Some(list_filter(ui, id, n)));
+            out.textures_delta.clear();
+            fn has_edit(s: &egui::Shape) -> bool {
+                match s {
+                    egui::Shape::Text(t) => t.galley.text() == "filter" || t.galley.text() == "Raster",
+                    egui::Shape::Vec(v) => v.iter().any(has_edit),
+                    _ => false,
+                }
+            }
+            (want.unwrap(), out.shapes.iter().any(|c| has_edit(&c.shape)))
+        };
+        assert_eq!(draw(3, ""), (String::new(), false), "three entries fit");
+        assert_eq!(draw(100, ""), (String::new(), true), "a hundred get the field (its hint shown)");
+        assert_eq!(draw(100, "Raster").0, "raster");
+        assert!(shows("new draw raster", "raster draw") && !shows("new draw splat", "raster"));
+        assert!(shows("anything", ""));
+        let mut n = mr_components::graph::Node::new(Role::Draw, "faces");
+        n.timing.insert("faces".into(), When::Iterate(3));
+        let opts = timing_options(&n, "draw", "faces");
+        assert_eq!(opts.iter().map(|o| o.0.as_str()).collect::<Vec<_>>(), ["now", "prev", "iterate 3"]);
+        assert_eq!(opts.iter().map(|o| o.2).collect::<Vec<_>>(), [false, false, true]);
     }
 
     /// A live lane's failure and refused knobs land on the node at fault: the failure by the

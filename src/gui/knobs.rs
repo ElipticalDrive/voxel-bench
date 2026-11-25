@@ -99,11 +99,13 @@ pub fn knob_widget(ui: &mut Ui, spec: &ParamSpec, value: &ParamValue, left_out: 
         ParamKind::Choice(opts) => {
             let cur = value.as_str().unwrap_or("").to_string();
             let mut out = None;
-            ComboBox::from_id_salt(&spec.name)
+            let filter_id = ui.id().with(("knob-filter", &spec.name));
+            let shown = ComboBox::from_id_salt(&spec.name)
                 .width(VALUE_W - ui.spacing().item_spacing.x)
                 .selected_text(&cur)
                 .show_ui(ui, |ui| {
-                    for o in opts {
+                    let want = super::graph::list_filter(ui, filter_id, opts.len());
+                    for o in opts.iter().filter(|o| super::graph::shows(o, &want)) {
                         let why = left_out(spec, o);
                         let r = ui.add_enabled(why.is_none(), egui::Button::selectable(*o == cur, o));
                         if let Some(why) = why {
@@ -112,9 +114,11 @@ pub fn knob_widget(ui: &mut Ui, spec: &ParamSpec, value: &ParamValue, left_out: 
                             out = Some((ParamValue::Choice(o.clone()), true));
                         }
                     }
-                })
-                .response
-                .on_hover_text(&spec.description);
+                });
+            if shown.inner.is_none() {
+                super::graph::list_filter_closed(ui, filter_id);
+            }
+            shown.response.on_hover_text(&spec.description);
             out
         }
     }

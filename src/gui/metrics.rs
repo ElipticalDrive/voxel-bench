@@ -3,6 +3,7 @@
 use egui::Color32;
 
 use crate::tune::{self, Algorithm};
+use mr_core::Choices;
 
 use super::live::{LaneStatus, Sample};
 
@@ -291,47 +292,14 @@ impl App {
         let running = l.tuner.is_some();
         egui::CollapsingHeader::new(if running { "auto-tune (running)" } else { "auto-tune" }).id_salt(("tune", i)).default_open(running).show(ui, |ui| {
             let t = self.tune_ui.entry(i).or_default();
-            ui.horizontal(|ui| {
-                ui.label("goal").on_hover_text("What the tuner optimises. Locked knobs (🔒 in the knob list above) are never touched.");
-                ui.selectable_value(&mut t.goal, 0, "max quality @ fps").on_hover_text("Hold at least the target frame rate; spend whatever headroom remains on image quality");
-                ui.selectable_value(&mut t.goal, 1, "max fps @ quality").on_hover_text("Keep quality at or above a floor (dB vs the reference); go as fast as possible");
-                ui.selectable_value(&mut t.goal, 2, "max fps").on_hover_text("As fast as possible; quality is ignored (no reference probes needed)");
-            });
-            match t.goal {
-                0 => {
-                    ui.add(egui::DragValue::new(&mut t.fps).range(1.0..=10000.0).prefix("target ").suffix(" fps").update_while_editing(false)).on_hover_text("Frame rate to hold. Measured as throughput over each window; 2 % below still counts as met.");
-                }
-                1 => {
-                    ui.add(egui::DragValue::new(&mut t.psnr).range(5.0..=99.0).prefix("floor ").suffix(" dB").update_while_editing(false)).on_hover_text("Minimum quality vs the reference renderer, in dB of the chosen metric.\nMS-SSIM: 20 dB = 0.99, 30 dB = 0.999. PSNR: ≥40 dB is visually near-identical.");
-                }
-                _ => {}
-            }
-            if t.goal != 2 {
-                ui.horizontal(|ui| {
-                    ui.label("quality metric").on_hover_text("How quality is measured: the current view is rendered by the reference renderer and compared");
-                    ui.selectable_value(&mut t.metric, tune::QualityMetric::MsSsim, "MS-SSIM").on_hover_text("Multi-scale structural similarity: degrades gracefully with resolution (recommended)");
-                    ui.selectable_value(&mut t.metric, tune::QualityMetric::Psnr, "PSNR").on_hover_text("Pixel-exact: any resolution change on pixel-scale detail costs ~30 dB at once");
-                });
-            }
-            ui.horizontal(|ui| {
-                ui.label("algorithm").on_hover_text("How the next configuration to try is chosen");
-                ui.selectable_value(&mut t.algorithm, Algorithm::LocalSearch, "local search").on_hover_text("Randomised hill climbing: changes one unlocked knob at a time, keeps it if the goal improves");
-                ui.selectable_value(&mut t.algorithm, Algorithm::ResolutionController, "resolution controller").on_hover_text("Dynamic resolution: steers host.render_scale continuously to hold the fps target (needs the fps goal)");
-                ui.selectable_value(&mut t.algorithm, Algorithm::Bayesian, "bayesian").on_hover_text("Learns a model of fps and quality over all unlocked knobs and picks the most promising point; changes several at once");
-            });
-            ui.checkbox(&mut t.allow_restart, "may change ↻ knobs (hot swaps)").on_hover_text("Knobs marked ↻ need the renderer to restart. The replacement loads while the old one keeps rendering, but each trial costs a load.");
-            ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut t.settle).range(0.05..=10.0).speed(0.05).prefix("settle ").suffix(" s").update_while_editing(false)).on_hover_text("Seconds ignored after each change (pipelines warm up, streaming settles)");
-                ui.add(egui::DragValue::new(&mut t.window).range(0.1..=30.0).speed(0.05).prefix("measure ").suffix(" s").update_while_editing(false)).on_hover_text("Seconds of frames measured per trial. Longer = less noise, slower search.");
-                ui.add(egui::DragValue::new(&mut t.patience).range(0..=200).prefix("patience ").update_while_editing(false)).on_hover_text("Trials without improvement before the tuner settles on the best configuration and only watches it.\nIt resumes exploring if the goal stops being met. 0 = explore forever.");
-            });
+            tune_settings(ui, t);
             let t = t.clone();
             let locked: std::collections::BTreeSet<String> = self.locks.iter().filter(|(lane, _)| *lane == i).map(|(_, n)| n.clone()).collect();
             let config = tune::TunerConfig {
                 goal: match t.goal {
-                    0 => tune::Goal::MaxQualityAtFps { fps: t.fps },
-                    1 => tune::Goal::MaxFpsAtQuality { psnr: t.psnr },
-                    _ => tune::Goal::MaxFps,
+                    tune::Goal::MaxQualityAtFps { .. } => tune::Goal::MaxQualityAtFps { fps: t.fps },
+                    tune::Goal::MaxFpsAtQuality { .. } => tune::Goal::MaxFpsAtQuality { psnr: t.psnr },
+                    tune::Goal::MaxFps => tune::Goal::MaxFps,
                 },
                 algorithm: t.algorithm,
                 metric: t.metric,
@@ -433,7 +401,8 @@ enum LaneAction {
 
 #[derive(Clone)]
 pub(super) struct TuneUi {
-    goal: u8,
+    /// The goal chosen (its target is `fps` / `psnr`, kept apart so switching keeps both).
+    goal: tune::Goal,
     fps: f64,
     psnr: f64,
     metric: tune::QualityMetric,
@@ -447,7 +416,7 @@ pub(super) struct TuneUi {
 impl Default for TuneUi {
     fn default() -> Self {
         let d = tune::TunerConfig::default();
-        Self { goal: 0, fps: 144.0, psnr: 25.0, metric: tune::QualityMetric::MsSsim, algorithm: Algorithm::LocalSearch, allow_restart: false, settle: d.settle_s, window: d.window_s, patience: d.patience }
+        Self { goal: d.goal, fps: 144.0, psnr: 25.0, metric: d.metric, algorithm: d.algorithm, allow_restart: false, settle: d.settle_s, window: d.window_s, patience: d.patience }
     }
 }
 
@@ -496,4 +465,91 @@ pub(super) fn settled_text(l: &super::live::LaneView) -> Option<String> {
         Some(q) => format!("PSNR {:.1} · MS-SSIM {:.1} dB · {:.2}% bad ({:.0} s ago)", q.psnr, q.ms_ssim_db, q.bad_pct, now - q.t),
         None => format!("none yet: hold the view still for {} renders before a probe", last.held),
     })
+}
+
+/// A tuner choice's plan name as the panel shows it (`max-fps-at-quality`: max fps at quality).
+pub(super) fn tune_label(name: &str) -> String {
+    name.replace('-', " ")
+}
+
+/// The tuner's settings: goal and its target, metric, algorithm and the trial timings, each
+/// list read off its type (`mr_core::Choices`).
+pub(super) fn tune_settings(ui: &mut egui::Ui, t: &mut TuneUi) {
+    ui.horizontal(|ui| {
+        ui.label("goal").on_hover_text("What the tuner optimises. Locked knobs (🔒 in the knob list above) are never touched.");
+        for c in tune::Goal::CHOICES {
+            if ui.selectable_label(t.goal.same_choice(&(c.make)()), tune_label(c.name)).on_hover_text(c.about).clicked() {
+                t.goal = (c.make)();
+            }
+        }
+    });
+    match t.goal {
+        tune::Goal::MaxQualityAtFps { .. } => {
+            ui.add(egui::DragValue::new(&mut t.fps).range(1.0..=10000.0).prefix("target ").suffix(" fps").update_while_editing(false)).on_hover_text("Frame rate to hold. Measured as throughput over each window; 2 % below still counts as met.");
+        }
+        tune::Goal::MaxFpsAtQuality { .. } => {
+            ui.add(egui::DragValue::new(&mut t.psnr).range(5.0..=99.0).prefix("floor ").suffix(" dB").update_while_editing(false)).on_hover_text("Minimum quality vs the reference renderer, in dB of the chosen metric.\nMS-SSIM: 20 dB = 0.99, 30 dB = 0.999. PSNR: ≥40 dB is visually near-identical.");
+        }
+        tune::Goal::MaxFps => {}
+    }
+    if t.goal.needs_quality() {
+        ui.horizontal(|ui| {
+            ui.label("quality metric").on_hover_text("How quality is measured: the current view is rendered by the reference renderer and compared");
+            for c in tune::QualityMetric::CHOICES {
+                let m = (c.make)();
+                ui.selectable_value(&mut t.metric, m, m.name()).on_hover_text(c.about);
+            }
+        });
+    }
+    ui.horizontal(|ui| {
+        ui.label("algorithm").on_hover_text("How the next configuration to try is chosen");
+        for c in Algorithm::CHOICES {
+            ui.selectable_value(&mut t.algorithm, (c.make)(), tune_label(c.name)).on_hover_text(c.about);
+        }
+    });
+    ui.checkbox(&mut t.allow_restart, "may change ↻ knobs (hot swaps)").on_hover_text("Knobs marked ↻ need the renderer to restart. The replacement loads while the old one keeps rendering, but each trial costs a load.");
+    ui.horizontal(|ui| {
+        ui.add(egui::DragValue::new(&mut t.settle).range(0.05..=10.0).speed(0.05).prefix("settle ").suffix(" s").update_while_editing(false)).on_hover_text("Seconds ignored after each change (pipelines warm up, streaming settles)");
+        ui.add(egui::DragValue::new(&mut t.window).range(0.1..=30.0).speed(0.05).prefix("measure ").suffix(" s").update_while_editing(false)).on_hover_text("Seconds of frames measured per trial. Longer = less noise, slower search.");
+        ui.add(egui::DragValue::new(&mut t.patience).range(0..=200).prefix("patience ").update_while_editing(false)).on_hover_text("Trials without improvement before the tuner settles on the best configuration and only watches it.\nIt resumes exploring if the goal stops being met. 0 = explore forever.");
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(out: &egui::FullOutput) -> Vec<String> {
+        fn walk(s: &egui::Shape, out: &mut Vec<String>) {
+            match s {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut all = vec![];
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut all));
+        all
+    }
+
+    /// The tuner panel, drawn headlessly for each goal: it offers every goal and algorithm its
+    /// type lists, and every quality metric where the goal needs quality; drawing changes nothing.
+    #[test]
+    fn tuner_panel_offers_its_types_choices() {
+        let ctx = egui::Context::default();
+        for g in tune::Goal::CHOICES {
+            let mut t = TuneUi { goal: (g.make)(), ..Default::default() };
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| tune_settings(ui, &mut t));
+            out.textures_delta.clear();
+            let shown = texts(&out);
+            let has = |s: &str| shown.iter().any(|x| x == s);
+            for c in tune::Goal::CHOICES.iter().map(|c| c.name).chain(Algorithm::CHOICES.iter().map(|c| c.name)) {
+                assert!(has(&tune_label(c)), "{}: `{c}` not offered in {shown:?}", g.name);
+            }
+            for m in tune::QualityMetric::CHOICES {
+                assert_eq!(has((m.make)().name()), t.goal.needs_quality(), "{}: metric `{}`", g.name, m.name);
+            }
+            assert!(t.goal.same_choice(&(g.make)()));
+        }
+    }
 }

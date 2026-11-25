@@ -74,7 +74,7 @@ pub fn view_knobs(qs: &[mr_core::Quantity]) -> [mr_core::ParamSpec; 2] {
         (false, false) => "Drawn on the shared colour scale (white above view_max)",
         _ => "Drawn as tints of the greyed image",
     };
-    let posts = crate::graph::POSTS;
+    let posts = &crate::graph::host_components(crate::graph::Role::Post);
     [
         ParamSpec::choice("view", &format!("{}. {how}; the frame is still shaded", help.join(". ")), &names, "image", true).of("post", posts).baked(false),
         ParamSpec::int("view_max", &format!("{} view: the top of the colour scale", tops.join(" / ")), 1, 16384, 256, true).of("post", posts),

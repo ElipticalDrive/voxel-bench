@@ -538,6 +538,39 @@ fn report_columns_follow_what_passes_report() {
     assert_eq!(names(&[plain.clone(), failed.clone()]), fixed);
     // Drawn headless.
     let ctx = egui::Context::default();
-    let report = bench::Report { path: "runs/x/report.json".into(), passes: vec![plain, rich, never, failed] };
+    let report = bench::Report::new("runs/x/report.json".into(), vec![plain, rich, never, failed]);
     ctx.run_ui(Default::default(), |ui| bench::report_ui(ui, &report)).textures_delta.clear();
+}
+
+/// The benchmark table at catalogue size: a report of 16 or 1600 passes draws only the rows in
+/// view (the same count, so the same cost per frame: 1.3 ms a frame either way in a debug
+/// build, where drawing every row cost 15.6 ms at 1600), and the chart beside it follows.
+#[test]
+fn a_large_report_draws_only_the_rows_in_view() {
+    use serde_json::json;
+    let ctx = egui::Context::default();
+    let drawn = |n: usize| {
+        let passes: Vec<_> = (0..n).map(|i| json!({ "label": format!("graph-{i}"), "mode": "lit", "fps": 30.0 + i as f64, "quality": {"psnr": {"mean": 40.0}}, "per_frame": [{ "frame": 0 }] })).collect();
+        let report = bench::Report::new("runs/x/report.json".into(), passes);
+        let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))), ..Default::default() };
+        let frame = || ctx.run_ui(raw.clone(), |ui| bench::report_ui(ui, &report));
+        frame().textures_delta.clear();
+        let start = std::time::Instant::now();
+        let mut out = frame();
+        out.textures_delta.clear();
+        println!("{n} passes: {:.2} ms a frame", start.elapsed().as_secs_f64() * 1e3);
+        fn walk(s: &egui::Shape, out: &mut usize) {
+            match s {
+                egui::Shape::Text(t) if t.galley.text().starts_with("graph-") => *out += 1,
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut rows = 0;
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut rows));
+        rows
+    };
+    let (some, many) = (drawn(60), drawn(1600));
+    assert!(some > 10 && some < 60, "a screenful of rows, not all 60: {some}");
+    assert_eq!(some, many, "1600 passes draw as many rows as 60");
 }

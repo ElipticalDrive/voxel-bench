@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use mr_core::ParamSpec;
+use mr_core::{Choice, Choices, ParamSpec};
 use serde::{Deserialize, Serialize};
 
 
@@ -19,9 +19,9 @@ pub fn host_params(base_view_radius: u32) -> Vec<ParamSpec> {
     ]
 }
 
-// The names are the plans' words for the goals.
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Goal {
     /// Best quality while holding at least `fps`.
     MaxQualityAtFps { fps: f64 },
@@ -93,8 +93,24 @@ impl Goal {
     }
 }
 
+impl Choices for Goal {
+    const CHOICES: &'static [Choice<Self>] = &[
+        Choice { name: "max-quality-at-fps", make: || Goal::MaxQualityAtFps { fps: 144.0 }, about: "Hold at least the target frame rate; spend whatever headroom remains on image quality" },
+        Choice { name: "max-fps-at-quality", make: || Goal::MaxFpsAtQuality { psnr: 25.0 }, about: "Keep quality at or above a floor (dB vs the reference); go as fast as possible" },
+        Choice { name: "max-fps", make: || Goal::MaxFps, about: "As fast as possible; quality is ignored (no reference probes needed)" },
+    ];
+    fn choice(&self) -> usize {
+        match self {
+            Goal::MaxQualityAtFps { .. } => 0,
+            Goal::MaxFpsAtQuality { .. } => 1,
+            Goal::MaxFps => 2,
+        }
+    }
+}
+
 /// Which quality measure (in dB) the tuner's quality goals refer to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum QualityMetric {
     /// Pixel-exact; any resolution change costs ~30 dB at once on pixel-scale detail.
     Psnr,
@@ -103,7 +119,21 @@ pub enum QualityMetric {
     MsSsim,
 }
 
+impl Choices for QualityMetric {
+    const CHOICES: &'static [Choice<Self>] = &[
+        Choice { name: "ms-ssim", make: || QualityMetric::MsSsim, about: "Multi-scale structural similarity: degrades gracefully with resolution (recommended)" },
+        Choice { name: "psnr", make: || QualityMetric::Psnr, about: "Pixel-exact: any resolution change on pixel-scale detail costs ~30 dB at once" },
+    ];
+    fn choice(&self) -> usize {
+        match self {
+            QualityMetric::MsSsim => 0,
+            QualityMetric::Psnr => 1,
+        }
+    }
+}
+
 impl QualityMetric {
+    /// As figures are labelled (`PSNR`, `MS-SSIM`).
     pub fn name(self) -> &'static str {
         match self {
             QualityMetric::Psnr => "PSNR",
@@ -113,6 +143,7 @@ impl QualityMetric {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Algorithm {
     /// Randomised hill climbing with per-knob adaptive steps.
     LocalSearch,
@@ -122,6 +153,21 @@ pub enum Algorithm {
     /// Gaussian-process Bayesian optimisation over all unlocked knobs at once
     /// (constrained expected improvement; see [`crate::bayes`]).
     Bayesian,
+}
+
+impl Choices for Algorithm {
+    const CHOICES: &'static [Choice<Self>] = &[
+        Choice { name: "local-search", make: || Algorithm::LocalSearch, about: "Randomised hill climbing: changes one unlocked knob at a time, keeps it if the goal improves" },
+        Choice { name: "resolution-controller", make: || Algorithm::ResolutionController, about: "Dynamic resolution: steers host.render_scale continuously to hold the fps target (needs the fps goal)" },
+        Choice { name: "bayesian", make: || Algorithm::Bayesian, about: "Learns a model of fps and quality over all unlocked knobs and picks the most promising point; changes several at once" },
+    ];
+    fn choice(&self) -> usize {
+        match self {
+            Algorithm::LocalSearch => 0,
+            Algorithm::ResolutionController => 1,
+            Algorithm::Bayesian => 2,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -461,6 +461,21 @@ impl When {
     }
 }
 
+impl mr_core::Choices for When {
+    const CHOICES: &'static [mr_core::Choice<Self>] = &[
+        mr_core::Choice { name: "now", make: || When::Now, about: "This frame's value" },
+        mr_core::Choice { name: "prev", make: || When::Prev, about: "The previous frame's value (closes a cycle; across devices: overlaps the two)" },
+        mr_core::Choice { name: "iterate", make: || When::Iterate(2), about: "Several passes a frame (here two), the first on last frame's value" },
+    ];
+    fn choice(&self) -> usize {
+        match self {
+            When::Now => 0,
+            When::Prev => 1,
+            When::Iterate(_) => 2,
+        }
+    }
+}
+
 /// The component that stands for `role` where a graph has no node of it (the normaliser adds
 /// it): its identity, a node that changes nothing. Set to nothing else (no knob off its
 /// default, timing, API, device but where it runs unset, input but its first port), such a
@@ -476,9 +491,42 @@ pub fn identity(role: Role) -> Option<&'static str> {
     }
 }
 
-/// The client's components (`mr_core::client::Levels`): `pick` takes the server's LOD
-/// levels, `derive` builds them on the client from LOD 0.
-pub const CLIENTS: &[&str] = &["pick", "derive"];
+/// A component of a role outside the registry (world, generator, link, client, post): its
+/// name as graphs spell it and what it does, as the editor shows it. Registry components
+/// carry theirs (`ComponentInfo::description`).
+pub struct HostComponent {
+    pub role: Role,
+    pub name: &'static str,
+    pub about: &'static str,
+}
+
+/// Every host role's components, in the order offered; the one list their names, checks and
+/// descriptions come from. The client's are `mr_core::client::Levels`; the link's `net` has
+/// `mr_core::link::LinkSpec`'s fields as its knobs; the generator's `procedural` is the
+/// world's generator built from its spec (the run's world: terrain, menger, ...); the post's
+/// are the tone mappers (`crate::post::Tone`), `clamp` (no tone mapping) the default.
+pub const HOST_COMPONENTS: &[HostComponent] = &[
+    HostComponent { role: Role::World, name: "world", about: "The authoritative world on the server: chunks and their change log" },
+    HostComponent { role: Role::Generator, name: "procedural", about: "Generates the world's chunks from its spec (a shared seed): on the server, or on the client's cpu" },
+    HostComponent { role: Role::Link, name: "free", about: "Everything the server sends arrives at once, in order" },
+    HostComponent { role: Role::Link, name: "net", about: "A modelled network: latency, jitter, bandwidth, loss, reordering" },
+    HostComponent { role: Role::Client, name: "pick", about: "Holds what arrived: the server's LOD levels, picked by its radius and levels" },
+    HostComponent { role: Role::Client, name: "derive", about: "Holds what arrived and derives its coarser LOD levels from LOD 0 itself" },
+    HostComponent { role: Role::Post, name: "clamp", about: "Linear colour clamped to the output range" },
+    HostComponent { role: Role::Post, name: "reinhard", about: "Reinhard tone mapping of the linear colour, compiled into the shading's output" },
+    HostComponent { role: Role::Post, name: "aces", about: "ACES filmic tone mapping of the linear colour, compiled into the shading's output" },
+    HostComponent { role: Role::Post, name: "hdr", about: "No limit: a float output for HDR displays" },
+];
+
+/// Whether `role` is a host role (its components in [`HOST_COMPONENTS`], not the registry).
+pub fn is_host_role(role: Role) -> bool {
+    matches!(role, Role::World | Role::Generator | Role::Link | Role::Client | Role::Post)
+}
+
+/// The names of host role `role`'s components, in the order offered.
+pub fn host_components(role: Role) -> Vec<&'static str> {
+    HOST_COMPONENTS.iter().filter(|c| c.role == role).map(|c| c.name).collect()
+}
 
 /// The id of the client node a graph gets when one is added to it (by the host, setting a
 /// client knob).
@@ -489,45 +537,18 @@ pub const CLIENT: &str = "client";
 /// `view_radius` and `max_lod`. The workload, not the pipeline: left out of the key.
 pub const CLIENT_KNOBS: &[&str] = &["radius", "max_lod"];
 
-/// The link's components: `free`, or `net` with `mr_core::link::LinkSpec`'s fields as its
-/// knobs.
-pub const LINKS: &[&str] = &["free", "net"];
-
-/// The generator's components: `procedural`, the world's generator built
-/// from its spec (the run's world: terrain, menger, ...).
-pub const GENERATORS: &[&str] = &["procedural"];
-
-/// The post's components: the tone mappers (`crate::post::Tone`), `clamp`
-/// (no tone mapping) the default, and `hdr` (no limit: a float output for HDR displays).
-pub const POSTS: &[&str] = &["clamp", "reinhard", "aces", "hdr"];
-
-/// What a component of a role outside the registry (world, generator, link, client, post)
-/// does, as the editor shows it; `None` for a name the role does not have. Registry
-/// components carry theirs (`ComponentInfo::description`).
+/// What a host role's component does, as the editor shows it; `None` for a name the role
+/// does not have.
 pub fn host_description(role: Role, name: &str) -> Option<&'static str> {
-    Some(match (role, name) {
-        (Role::World, "world") => "The authoritative world on the server: chunks and their change log",
-        (Role::Generator, "procedural") => "Generates the world's chunks from its spec (a shared seed): on the server, or on the client's cpu",
-        (Role::Link, "free") => "Everything the server sends arrives at once, in order",
-        (Role::Link, "net") => "A modelled network: latency, jitter, bandwidth, loss, reordering",
-        (Role::Client, "pick") => "Holds what arrived: the server's LOD levels, picked by its radius and levels",
-        (Role::Client, "derive") => "Holds what arrived and derives its coarser LOD levels from LOD 0 itself",
-        (Role::Post, "clamp") => "Linear colour clamped to the output range",
-        (Role::Post, "reinhard") => "Reinhard tone mapping of the linear colour, compiled into the shading's output",
-        (Role::Post, "aces") => "ACES filmic tone mapping of the linear colour, compiled into the shading's output",
-        (Role::Post, "hdr") => "No limit: a float output for HDR displays",
-        _ => return None,
-    })
+    HOST_COMPONENTS.iter().find(|c| c.role == role && c.name == name).map(|c| c.about)
 }
 
 /// The components that can fill `role` (the world has none to choose; "none" means the
 /// optional input it would feed is left unbound).
 pub fn role_components(role: Role) -> Vec<&'static str> {
     match role {
-        Role::Client => CLIENTS.to_vec(),
-        Role::Link => LINKS.to_vec(),
-        Role::Generator => GENERATORS.to_vec(),
-        Role::Post => POSTS.to_vec(),
+        Role::World => Vec::new(),
+        r if is_host_role(r) => host_components(r),
         r => crate::components(r)
             .map(|c| c.name)
             .filter(|n| *n != "none")
@@ -538,11 +559,7 @@ pub fn role_components(role: Role) -> Vec<&'static str> {
 /// Whether `role` component `name` exists.
 pub(super) fn known(role: Role, name: &str) -> bool {
     match role {
-        Role::Client => CLIENTS.contains(&name),
-        Role::Link => LINKS.contains(&name),
-        Role::Generator => GENERATORS.contains(&name),
-        Role::Post => POSTS.contains(&name),
-        Role::World => name == "world",
+        r if is_host_role(r) => host_description(r, name).is_some(),
         r => component(r, name).is_some(),
     }
 }

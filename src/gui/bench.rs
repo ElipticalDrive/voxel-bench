@@ -93,12 +93,69 @@ fn strip_ansi(s: &str) -> String {
 pub struct Report {
     pub path: PathBuf,
     pub passes: Vec<Value>,
+    /// The table's text, made once on first draw (a report does not change once loaded).
+    table: std::sync::OnceLock<Table>,
+}
+
+impl Report {
+    pub fn new(path: PathBuf, passes: Vec<Value>) -> Self {
+        Self { path, passes, table: Default::default() }
+    }
+}
+
+/// The report table as drawn: its columns, every row's text, and each column's width (set at
+/// the first draw, when the fonts are known). Made once per report, so a frame costs only the
+/// rows in view, however many passes the report holds.
+struct Table {
+    cols: Vec<Column>,
+    rows: Vec<Row>,
+    widths: std::sync::OnceLock<Vec<f32>>,
+}
+
+struct Row {
+    label: String,
+    /// What else the pass says of itself (left out, a fault while stopping, failed lanes beside).
+    notes: Option<String>,
+    mode: String,
+    /// The error of a failed pass (its cells are not shown).
+    error: Option<String>,
+    cells: Vec<Option<Cell>>,
+}
+
+impl Table {
+    fn of(passes: &[Value]) -> Self {
+        let cols = columns(passes);
+        let rows = passes
+            .iter()
+            .map(|p| {
+                let s = |k: &str| p.get(k).and_then(|x| x.as_str()).unwrap_or("-").to_string();
+                let list = |k: &str| p.get(k).and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("; ")).filter(|x| !x.is_empty());
+                let notes: Vec<String> = [
+                    list("not_supported").map(|x| format!("left out: {x}")),
+                    p.get("shutdown_error").and_then(|x| x.as_str()).map(|x| format!("while stopping: {x}")),
+                    list("beside_failed").map(|x| format!("shared the machine for part of the pass with failed {x}")),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                let error = p.get("error").and_then(|e| e.as_str()).map(String::from);
+                let cells = if error.is_some() { Vec::new() } else { cols.iter().map(|c| (c.cell)(p)).collect() };
+                Row { label: if notes.is_empty() { s("label") } else { format!("{} ⚠", s("label")) }, notes: (!notes.is_empty()).then(|| notes.join("\n")), mode: s("mode"), error, cells }
+            })
+            .collect();
+        Self { cols, rows, widths: Default::default() }
+    }
+
+    /// Whether `row` matches the filter `f` (lower case words, each in its label or mode).
+    fn shows(row: &Row, f: &str) -> bool {
+        crate::gui::graph::shows(&format!("{} {}", row.label, row.mode), f)
+    }
 }
 
 pub fn load_report(path: &Path) -> anyhow::Result<Report> {
     let v: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
     let passes = v.as_array().cloned().unwrap_or_default();
-    Ok(Report { path: path.to_path_buf(), passes })
+    Ok(Report::new(path.to_path_buf(), passes))
 }
 
 /// `runs/*/report.json`, newest first.
@@ -266,54 +323,89 @@ pub fn report_ui(ui: &mut Ui, r: &Report) {
             let _ = Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(d).spawn();
         }
     });
-    let cols = columns(&r.passes);
-    egui::ScrollArea::horizontal().id_salt("report-table").show(ui, |ui| {
-        egui::Grid::new("report").striped(true).show(ui, |ui| {
-            ui.strong("renderer").on_hover_text("Renderer label from the plan");
-            ui.strong("mode").on_hover_text("Unlit (textures only) or lit (sun, sky, point lights, shadows)");
-            for c in &cols {
-                ui.strong(c.name).on_hover_text(c.hover);
+    let t = r.table.get_or_init(|| Table::of(&r.passes));
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let gap = ui.spacing().item_spacing.x;
+    // Each column as wide as its widest text, measured once.
+    let widths = t.widths.get_or_init(|| {
+        let w = |text: &str, ui: &Ui| ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE).size().x);
+        let mut ws: Vec<f32> = ["renderer", "mode"].iter().chain(t.cols.iter().map(|c| &c.name)).map(|h| w(h, ui)).collect();
+        for row in &t.rows {
+            ws[0] = ws[0].max(w(&row.label, ui));
+            ws[1] = ws[1].max(w(&row.mode, ui));
+            if row.error.is_some() {
+                ws[2] = ws[2].max(w("FAILED", ui));
             }
-            ui.end_row();
-            for p in &r.passes {
-                let s = |k: &str| p.get(k).and_then(|x| x.as_str()).unwrap_or("-").to_string();
-                // What else the pass says of itself: what it left out, a fault while stopping,
-                // lanes that failed beside it.
-                let list = |k: &str| p.get(k).and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("; ")).filter(|x| !x.is_empty());
-                let notes: Vec<String> = [
-                    list("not_supported").map(|x| format!("left out: {x}")),
-                    p.get("shutdown_error").and_then(|x| x.as_str()).map(|x| format!("while stopping: {x}")),
-                    list("beside_failed").map(|x| format!("shared the machine for part of the pass with failed {x}")),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                if notes.is_empty() {
-                    ui.label(s("label"));
-                } else {
-                    ui.label(format!("{} ⚠", s("label"))).on_hover_text(notes.join("\n"));
-                }
-                ui.label(s("mode"));
-                if let Some(e) = p.get("error").and_then(|e| e.as_str()) {
-                    ui.colored_label(egui::Color32::LIGHT_RED, "FAILED").on_hover_text(e);
-                    ui.end_row();
-                    continue;
-                }
-                for c in &cols {
-                    match (c.cell)(p) {
-                        Some(Cell { text, hover: Some(h) }) => ui.label(text).on_hover_text(h),
-                        Some(Cell { text, hover: None }) => ui.label(text),
-                        None => ui.label("-"),
-                    };
-                }
-                ui.end_row();
+            for (i, c) in row.cells.iter().enumerate() {
+                ws[i + 2] = ws[i + 2].max(w(c.as_ref().map_or("-", |c| &c.text), ui));
+            }
+        }
+        ws
+    });
+    let filter_id = ui.id().with(("report-filter", &r.path));
+    let mut filter: String = ui.data(|d| d.get_temp(filter_id)).unwrap_or_default();
+    let want = filter.to_lowercase();
+    let shown: Vec<usize> = (0..t.rows.len()).filter(|&i| Table::shows(&t.rows[i], &want)).collect();
+    ui.horizontal(|ui| {
+        ui.label("filter");
+        if ui.add(egui::TextEdit::singleline(&mut filter).hint_text("words in the label or mode").desired_width(220.0)).on_hover_text("Show only the passes whose label or mode contains every word typed (any case)").changed() {
+            ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
+        }
+        ui.weak(format!("{} of {} passes", shown.len(), t.rows.len()));
+    });
+    let row_h = ui.text_style_height(&egui::TextStyle::Body).max(ui.spacing().interact_size.y);
+    // The rows get the height the chart (below) leaves; in a pane that grows without bound
+    // (an outer scroll area), as many rows as the chart is tall, times four.
+    const CHART_H: f32 = 180.0;
+    let left = ui.available_height() - CHART_H - 3.0 * row_h;
+    let body_h = if left.is_finite() { left.max(row_h * 4.0) } else { CHART_H * 4.0 };
+    let cell = |ui: &mut Ui, w: f32, text: egui::WidgetText| ui.add_sized([w, row_h], egui::Label::new(text).truncate());
+    let in_view = egui::ScrollArea::horizontal().id_salt("report-table").show(ui, |ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        ui.horizontal(|ui| {
+            cell(ui, widths[0], egui::RichText::new("renderer").strong().into()).on_hover_text("Renderer label from the plan");
+            cell(ui, widths[1], egui::RichText::new("mode").strong().into()).on_hover_text("Unlit (textures only) or lit (sun, sky, point lights, shadows)");
+            for (c, w) in t.cols.iter().zip(&widths[2..]) {
+                cell(ui, *w, egui::RichText::new(c.name).strong().into()).on_hover_text(c.hover);
             }
         });
-    });
-    // fps per pass (log scale would hide differences; plain bars, reference passes excluded).
-    let bars: Vec<egui_plot::Bar> = r
-        .passes
+        // Only the rows in view are drawn.
+        egui::ScrollArea::vertical().id_salt("report-rows").max_height(body_h).show_rows(ui, row_h, shown.len(), |ui, range| {
+            for (i, row) in shown[range.clone()].iter().map(|&k| &t.rows[k]).enumerate() {
+                let stripe = (range.start + i) % 2 == 1;
+                ui.horizontal(|ui| {
+                    if stripe {
+                        let full = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(widths.iter().sum::<f32>() + gap * widths.len() as f32, row_h));
+                        ui.painter().rect_filled(full, 0.0, ui.visuals().faint_bg_color);
+                    }
+                    let l = cell(ui, widths[0], row.label.clone().into());
+                    if let Some(n) = &row.notes {
+                        l.on_hover_text(n);
+                    }
+                    cell(ui, widths[1], row.mode.clone().into());
+                    if let Some(e) = &row.error {
+                        cell(ui, widths[2], egui::RichText::new("FAILED").color(egui::Color32::LIGHT_RED).into()).on_hover_text(e);
+                        return;
+                    }
+                    for (c, w) in row.cells.iter().zip(&widths[2..]) {
+                        match c {
+                            Some(Cell { text, hover: Some(h) }) => drop(cell(ui, *w, text.clone().into()).on_hover_text(h)),
+                            Some(Cell { text, hover: None }) => drop(cell(ui, *w, text.clone().into())),
+                            None => drop(cell(ui, *w, "-".into())),
+                        }
+                    }
+                });
+            }
+            range
+        })
+        .inner
+    })
+    .inner;
+    // fps of the passes in view (log scale would hide differences; plain bars, reference
+    // passes excluded): scrolling the table scrolls the chart.
+    let bars: Vec<egui_plot::Bar> = shown[in_view]
         .iter()
+        .map(|&k| &r.passes[k])
         .filter(|p| !p.get("label").and_then(|l| l.as_str()).unwrap_or("").ends_with("(ref)"))
         .enumerate()
         .map(|(i, p)| {
@@ -322,7 +414,7 @@ pub fn report_ui(ui: &mut Ui, r: &Report) {
         })
         .collect();
     egui_plot::Plot::new(("fps-bars", r.path.display().to_string()))
-        .height(180.0)
+        .height(CHART_H)
         .y_axis_label("fps")
         .allow_scroll(false)
         .show(ui, |pu| pu.bar_chart(egui_plot::BarChart::new("fps", bars)));

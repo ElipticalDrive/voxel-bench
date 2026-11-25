@@ -166,18 +166,22 @@ fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
         .horizontal(|ui| {
             ui.label("Generator").on_hover_text("How the world's blocks are generated (deterministic; chunks stream in around the camera)");
             let mut c = false;
-            ComboBox::from_id_salt("gen")
+            let filter_id = ui.id().with("gen-filter");
+            let shown = ComboBox::from_id_salt("gen")
                 .selected_text(info.name)
                 .show_ui(ui, |ui| {
-                    for e in GENERATORS {
+                    let want = super::graph::list_filter(ui, filter_id, GENERATORS.len());
+                    for e in GENERATORS.iter().filter(|e| super::graph::shows(&format!("{} {}", e.name, e.description), &want)) {
                         if ui.selectable_label(e.name == info.name, e.name).on_hover_text(e.description).clicked() && e.name != info.name {
                             *g = (e.default)();
                             c = true;
                         }
                     }
-                })
-                .response
-                .on_hover_text(info.description);
+                });
+            if shown.inner.is_none() {
+                super::graph::list_filter_closed(ui, filter_id);
+            }
+            shown.response.on_hover_text(info.description);
             c
         })
         .inner;
@@ -509,9 +513,11 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
         c = true;
     }
     ui.horizontal(|ui| {
-        ui.menu_button("+ renderer", |ui| {
+        let filter_id = ui.id().with("add-renderer-filter");
+        let menu = ui.menu_button("+ renderer", |ui| {
             ui.weak("A pipeline, started from a graph file (then change its graph: ✏ graph)");
-            for (file, about) in super::graph::start_files() {
+            let want = super::graph::list_filter(ui, filter_id, super::graph::start_files().count());
+            for (file, about) in super::graph::start_files().filter(|(f, a)| super::graph::shows(&format!("{f} {a}"), &want)) {
                 if ui.button(file).on_hover_text(about).clicked() {
                     match RendererSpec::from_file(file) {
                         Ok(r) => {
@@ -525,6 +531,9 @@ fn renderers(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
                 }
             }
         });
+        if menu.inner.is_none() {
+            super::graph::list_filter_closed(ui, filter_id);
+        }
         for info in ctx.infos {
             if ui.button(format!("+ {}", info.name)).on_hover_text(format!("Add the standalone renderer: {}", info.description)).clicked() {
                 plan.renderers.push(RendererSpec::new(info.name.clone()));
@@ -668,15 +677,19 @@ fn output(ui: &mut Ui, plan: &mut Plan, infos: &[RendererInfo]) -> Changed {
     if let Some(cs) = &mut o.compare {
         ui.horizontal(|ui| {
             ui.label("  reference").on_hover_text("Renderer treated as ground truth (cpu-reference is the exact categorical reference)");
-            ComboBox::from_id_salt("ref")
+            let filter_id = ui.id().with("ref-filter");
+            let shown = ComboBox::from_id_salt("ref")
                 .selected_text(&cs.reference)
                 .show_ui(ui, |ui| {
-                    for i in infos {
+                    let want = super::graph::list_filter(ui, filter_id, infos.len());
+                    for i in infos.iter().filter(|i| super::graph::shows(&format!("{} {}", i.name, i.description), &want)) {
                         c |= ui.selectable_value(&mut cs.reference, i.name.clone(), &i.name).on_hover_text(&i.description).changed();
                     }
-                })
-                .response
-                .on_hover_text("Renderer treated as ground truth");
+                });
+            if shown.inner.is_none() {
+                super::graph::list_filter_closed(ui, filter_id);
+            }
+            shown.response.on_hover_text("Renderer treated as ground truth");
         });
         c |= num(ui, "  every n frames", &mut cs.every, 1.0, "Compare one frame out of this many (the reference is slow)");
     }

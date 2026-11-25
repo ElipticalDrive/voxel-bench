@@ -153,15 +153,28 @@ pass left out, a fault while its worker stopped, and lanes that failed beside it
 **Choices.** The editor's components per node come from the registry and the graph model
 (`role_components`, tried with `accept` before they are offered); their descriptions from the
 registry (`ComponentInfo::description`) or, for the roles outside it (world, generator, link,
-client, post), from `graph::host_description`. Knobs are the components' declarations; views are
+client, post), from the one table `graph::HOST_COMPONENTS` (role, name, what it does), which
+the graph check, the post's knobs and the editor read. Knobs are the components' declarations; views are
 the quantities the graph's nodes write. The world's generators, their descriptions and their
 knobs come from `mr_world::generators::GENERATORS`. The reference renderer list is the
 registry's renderers. The small enums a plan picks from (camera paths, lights, events,
 read-back, isolation, compile) each list their variants once, beside the type
 (`mr_core::Choices`: the name plans write, a fresh value, what it is); the pickers and their
 tooltips read that list, a new variant does not build until it has its index, and each crate's
-test fails until it is listed. Still spelled in the GUI: the tuner's goals, metrics and
-algorithms (the tuner panel), input timings (`now`, `prev`, `iterate`, the graph model's).
+test fails until it is listed. So do the tuner's goals, quality metrics and algorithms (the
+tuner panel shows the name with spaces: `max fps at quality`) and the input timings (`now`,
+`prev`, `iterate`; an input's own iteration count is kept).
+
+**At catalogue size.** Every list grows with the catalogue: components per node, "new …" nodes
+for an input, graph files ("start from…", "+ renderer"), generators, reference renderers, a
+knob's values, and a benchmark's passes (a turn sweep has over 1,500). A choice list longer
+than its popup holds opens with a filter field (focused; words, each in the entry's text, any
+case; cleared when it closes). An open picker tries each entry once (`accept`, 0.07 ms each,
+remembered), so ten times the components costs a few ms at its first opening, then nothing.
+The benchmark table is made once per report (texts and column widths) and draws only the rows
+in view, under a header that stays put, with a filter by label and mode; the fps chart shows
+the passes in view. A frame costs the same at 60 and 1,600 passes (1.3-1.5 ms in a debug
+build; drawing every row cost 15.6 ms at 1,600): `a_large_report_draws_only_the_rows_in_view`.
 
 ## Knobs and hot swaps
 
@@ -224,7 +237,7 @@ then hardly moves. MS-SSIM degrades gradually, which is why it is the tuner's de
 
 Each lane can tune its unlocked knobs (🔒 locks one) towards a goal:
 
-- **Goals:** *max quality @ fps*, *max fps @ quality floor*, or *max fps*. Constrained goals
+- **Goals:** *max quality at fps*, *max fps at quality* (a floor), or *max fps*. Constrained goals
   are lexicographic: meet the constraint first, then optimise the other quantity.
 - **Algorithms:**
   - *Local search:* randomised hill climbing with an adaptive step for each knob. It aborts

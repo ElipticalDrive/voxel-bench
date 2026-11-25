@@ -241,10 +241,7 @@ impl Graph {
         for (id, n) in &g.nodes {
             if !known(n.role, &n.component) {
                 let have: Vec<&str> = match n.role {
-                    Role::Client => CLIENTS.to_vec(),
-                    Role::Link => LINKS.to_vec(),
-                    Role::Generator => GENERATORS.to_vec(),
-                    Role::Post => POSTS.to_vec(),
+                    r if is_host_role(r) => host_components(r),
                     r => crate::components(r).map(|c| c.name).collect(),
                 };
                 why.push(format!(
@@ -287,7 +284,7 @@ impl Graph {
                             ("view_max", toml::Value::Integer(1..=16384)) => {}
                             _ => why.push(format!(
                                 "`{id}`.{k} = {v}: the post's knobs are `view` (a name) and `view_max` (1 to 16384); its component is the tone mapper ({})",
-                                POSTS.join(", ")
+                                host_components(Role::Post).join(", ")
                             )),
                         }
                     }
