@@ -46,6 +46,34 @@ pub struct RunSpec {
     /// The rate of the simulated clock scripted runs keep: frame `n` (warm-up included) is
     /// at `n / clock_fps` seconds, the time the link's delays are measured in.
     pub clock_fps: f64,
+    /// When a silent renderer counts as hung (then its lane fails and, in a process, its
+    /// worker is killed).
+    pub watchdog: Watchdog,
+}
+
+/// How long the host waits for a renderer before calling it hung. Building (connecting,
+/// creating the renderer, the initial load and the first frame) has no timing of its own to
+/// go by, so it gets `build_s`; after that a wait may last `factor` times the longest the lane
+/// has needed so far for anything (its build, its initial load, a frame, a flush), so a slow
+/// renderer gets long deadlines and a fast one short, though never under `min_s`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct Watchdog {
+    /// Seconds allowed for building (see above); also the bound once nothing has been timed.
+    pub build_s: f64,
+    /// A later wait's deadline as a multiple of the lane's longest wait so far.
+    pub factor: f64,
+    /// The shortest deadline: below it the machine's own hiccups (scheduling, paging, other
+    /// programs) would be what times out, not the renderer.
+    pub min_s: f64,
+}
+
+impl Default for Watchdog {
+    fn default() -> Self {
+        // A first build may compile shaders and stream a whole world on a slow software device;
+        // a frame twenty times the slowest seen is no longer a slow frame.
+        Self { build_s: 300.0, factor: 20.0, min_s: 2.0 }
+    }
 }
 
 impl RunSpec {
@@ -98,6 +126,7 @@ impl Default for RunSpec {
             compile: Compile::Off,
             stage_times: true,
             clock_fps: 60.0,
+            watchdog: Watchdog::default(),
         }
     }
 }

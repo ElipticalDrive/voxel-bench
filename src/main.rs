@@ -530,7 +530,7 @@ impl Ctx<'_> {
             if let (None, Err(e)) = (&r.error, &result) {
                 r.error = Some(format!("{e:#}"));
             }
-            lane.worker.shutdown();
+            r.shutdown_error = lane.worker.shutdown();
             reports.push(r);
         }
         // Pipelines with an edge a frame late, or that accumulate frames held still, are

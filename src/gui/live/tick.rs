@@ -379,6 +379,8 @@ impl Session {
                         anyhow::bail!("frames out of order");
                     }
                     let now = Instant::now();
+                    w.observe(now.duration_since(f.sent));
+                    w.built();
                     let res = lane.run.res;
                     let raw = slot.map(|s| w.take_frame(s, (res[0] * res[1]) as usize));
                     if let (Some(px), Purpose::Live, true) = (&raw, &f.purpose, presenting) {
@@ -422,6 +424,10 @@ impl Session {
                 }
                 m => anyhow::bail!("unexpected message {m:?}"),
             }
+        }
+        // The watchdog: its oldest frame unanswered for too long.
+        if let Some(f) = lane.run.in_flight.front() {
+            w.check_hung(f.sent.elapsed())?;
         }
         if let (Some((res, format, px)), Some(p)) = (shown, self.presenters.get_mut(&i))
             && let Err(e) = p.offer(res[0], res[1], format, &px) {

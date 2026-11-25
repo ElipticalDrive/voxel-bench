@@ -18,7 +18,7 @@ use crate::plan::{Like, Pacing, Readback, RunSpec, SaveSpec};
 use crate::report::{FirstComplete, FrameRecord, PassReport};
 use crate::stream::{Region, Streamer};
 use crate::window::{UiEvent, UiHandle};
-use crate::worker::{Worker, WorkerEvent, recv_timeout};
+use crate::worker::{Worker, WorkerEvent};
 
 pub struct FrameInput {
     /// Index in the measured timeline (warm-up frames use 0).
@@ -395,6 +395,8 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
         bail!("[{}] unexpected message {m:?}", lane.report.label);
     };
     let Some(f) = lane.in_flight.pop_front() else { bail!("[{}] completed a frame never requested", lane.report.label) };
+    // Its first frame ends its build: its deadlines follow its timing from here.
+    lane.worker.built();
     if f.id != frame_id {
         bail!("[{}] frames completed out of order ({} before {})", lane.report.label, frame_id, f.id);
     }
@@ -431,7 +433,7 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
 
 fn pump(lane: &mut Lane, out: &mut Outputs, start: Instant, block: bool) -> anyhow::Result<()> {
     if block {
-        let m = recv_timeout(&lane.worker.rx, Duration::from_secs(600)).map_err(|e| e.context(format!("[{}]", lane.report.label)))?;
+        let m = lane.worker.recv().map_err(|e| e.context(format!("[{}]", lane.report.label)))?;
         on_msg(lane, out, start, m)?;
     }
     while let Ok(ev) = lane.worker.rx.try_recv() {
@@ -447,10 +449,15 @@ fn pump(lane: &mut Lane, out: &mut Outputs, start: Instant, block: bool) -> anyh
 /// A lane's own failure (its worker's error, its exit, its silence) ends that lane, not the pass:
 /// its report carries the error and the other lanes go on.
 fn settle(lane: &mut Lane, r: anyhow::Result<()>) {
+    // The first failure is the cause; what follows (its closed connection) is its echo.
+    if lane.report.error.is_some() {
+        return;
+    }
     if let Err(mut e) = r {
-        // A process that died says how (a signal names a crash the worker could not report).
+        // A process that died says how (a signal names a crash the worker could not report);
+        // one the watchdog killed has said why already.
         let closed = format!("{e:#}").contains("worker exited");
-        if let Some(status) = lane.worker.exit_status(closed) {
+        if let Some(status) = lane.worker.exit_status(closed).filter(|_| !lane.worker.is_hung()) {
             e = e.context(format!("worker process ended: {status}"));
         }
         tracing::error!("[{}] failed; its pass goes on without it: {e:#}", lane.report.label);
@@ -467,7 +474,7 @@ fn live(lanes: &mut [Lane]) -> impl Iterator<Item = &mut Lane> {
 fn flush_lane(lane: &mut Lane, out: &mut Outputs, start: Instant) -> anyhow::Result<()> {
     lane.worker.send(HostMsg::Flush)?;
     loop {
-        let m = recv_timeout(&lane.worker.rx, Duration::from_secs(600)).map_err(|e| e.context(format!("[{}] flushing", lane.report.label)))?;
+        let m = lane.worker.recv().map_err(|e| e.context(format!("[{}] flushing", lane.report.label)))?;
         if let WorkerMsg::Flushed = m {
             return Ok(());
         }
@@ -636,7 +643,7 @@ pub fn run_pass(
         }
         lane.report.peak_rss_mb = lane.worker.peak_rss().map(|b| b as f64 / 1048576.0);
         let _ = lane.worker.send(HostMsg::QueryMemory);
-        if let Ok(WorkerMsg::Memory(m)) = recv_timeout(&lane.worker.rx, Duration::from_secs(30)) {
+        if let Ok(WorkerMsg::Memory(m)) = lane.worker.recv() {
             lane.report.memory = m;
         }
         for (i, rx) in lane.pending_quality.drain(..) {

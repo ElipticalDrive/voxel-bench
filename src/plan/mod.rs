@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 pub use like::{Leaves, Lighting, Like};
 pub use output::{CompareSpec, OutputSpec, Readback, SaveSpec};
 pub use renderer::{RendererSpec, component_knob};
-pub use run::{Compile, Isolation, Pacing, RunSpec, Streaming};
+pub use run::{Compile, Isolation, Pacing, RunSpec, Streaming, Watchdog};
 pub use written::{GraphRef, Written, graph_file};
 
 use cli::apply_override;

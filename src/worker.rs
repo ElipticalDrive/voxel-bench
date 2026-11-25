@@ -14,7 +14,7 @@ use mr_core::{BlockRegistry, Environment, InitParams, RendererInfo};
 use mr_core::lighting::PixelFormat;
 use mr_ipc::{FrameSlots, HostMsg, PROTOCOL_VERSION, WorkerMsg};
 
-use crate::plan::{Isolation, RendererSpec, RunSpec};
+use crate::plan::{Isolation, RendererSpec, RunSpec, Watchdog};
 
 pub enum WorkerEvent {
     Msg(WorkerMsg),
@@ -34,6 +34,14 @@ pub struct Worker {
     pub rx: Receiver<WorkerEvent>,
     child: Option<Child>,
     thread: Option<std::thread::JoinHandle<()>>,
+    watchdog: Watchdog,
+    /// The longest the host has waited on it so far (its build included); None until its
+    /// first frame came back (it is still building: the build allowance applies).
+    slowest: Option<Duration>,
+    /// The longest wait while it was building (its init, initial load, first frame).
+    building: Duration,
+    /// It missed a deadline: killed (a process) or abandoned (a thread).
+    hung: bool,
 }
 
 pub struct SpawnConfig<'a> {
@@ -48,6 +56,7 @@ pub struct SpawnConfig<'a> {
     pub slots: u32,
     /// A compiled pipeline's worker (`pipelines`) instead of this executable.
     pub exe: Option<PathBuf>,
+    pub watchdog: Watchdog,
 }
 
 /// Spawns a worker for `spec` using the plan's run settings; `world` is the world's
@@ -101,6 +110,7 @@ pub fn spawn_renderer(
         log_path,
         slots,
         exe,
+        watchdog: run.watchdog.clone(),
     })?;
     if spec.generates() {
         w.send(HostMsg::Generate { world: serde_json::to_string(world)?, budget: run.budget().map(|b| b as u32) })?;
@@ -166,7 +176,22 @@ impl Worker {
             }
         }
 
-        let stream = accept(&listener, &mut child, Duration::from_secs(20))?;
+        // Connecting, the handshake and the build share the build allowance.
+        let build = Duration::from_secs_f64(cfg.watchdog.build_s.max(0.0));
+        let until = Instant::now() + build;
+        let left = || until.saturating_duration_since(Instant::now());
+        // Silence past it is a hang: said so, and a process killed (dropping a `Child` would
+        // leave it running) or a thread abandoned.
+        let fate = if child.is_some() { "its process killed" } else { "its thread abandoned" };
+        let hung = |e: anyhow::Error| {
+            if e.to_string().starts_with("worker timed out") {
+                anyhow::anyhow!("hung while building: no answer within {build:.1?} (run.watchdog.build_s); {fate}")
+            } else {
+                e
+            }
+        };
+        let mut child = KillOnDrop(child);
+        let stream = accept(&listener, &mut child.0, build)?;
         drop(listener);
         let (mut input, mut output) = mr_ipc::split::<WorkerMsg, HostMsg>(stream);
 
@@ -195,7 +220,7 @@ impl Worker {
             }
         })?;
 
-        let pid = match recv_timeout(&rx, Duration::from_secs(20))? {
+        let pid = match recv_timeout(&rx, left()).map_err(hung)? {
             WorkerMsg::Hello { pid, protocol, .. } if protocol == PROTOCOL_VERSION => pid,
             WorkerMsg::Hello { protocol, .. } => bail!("worker speaks protocol {protocol}, host {PROTOCOL_VERSION}"),
             m => bail!("unexpected first message {m:?}"),
@@ -205,12 +230,12 @@ impl Worker {
         let slot_bytes = (cfg.params.width * cfg.params.height * format.bytes()) as u64;
         let mut shm = FrameSlots::create(&tag, cfg.slots, slot_bytes)?;
         tx.send(HostMsg::Init { renderer: cfg.renderer.to_string(), params: cfg.params, shm: shm.spec().clone() })?;
-        let ready = recv_timeout(&rx, Duration::from_secs(300)).map_err(|e| {
+        let ready = recv_timeout(&rx, left()).map_err(|e| {
             // A process gone while building says how (a signal names a crash it could not report).
             let closed = e.to_string().starts_with("worker exited");
-            match child.as_mut().and_then(|c| if closed { c.wait().ok() } else { c.try_wait().ok().flatten() }) {
+            match child.0.as_mut().and_then(|c| if closed { c.wait().ok() } else { c.try_wait().ok().flatten() }) {
                 Some(status) => e.context(format!("worker process ended: {status}")),
-                None => e,
+                None => hung(e),
             }
         });
         let (info, init_ms) = match ready? {
@@ -229,9 +254,77 @@ impl Worker {
             format,
             tx,
             rx,
-            child,
+            child: child.0.take(),
             thread,
+            watchdog: cfg.watchdog,
+            slowest: None,
+            building: Duration::from_secs_f64(init_ms.max(0.0) as f64 / 1e3),
+            hung: false,
         })
+    }
+
+    /// How long the next wait on it may last before it counts as hung ([`Watchdog`]).
+    pub fn deadline(&self) -> Duration {
+        match self.slowest {
+            None => Duration::from_secs_f64(self.watchdog.build_s.max(0.0)),
+            Some(s) => s.mul_f64(self.watchdog.factor.max(1.0)).max(Duration::from_secs_f64(self.watchdog.min_s.max(0.0))),
+        }
+    }
+
+    /// A wait on it that ended after `took`: the deadlines follow the longest.
+    pub fn observe(&mut self, took: Duration) {
+        match &mut self.slowest {
+            None => self.building = self.building.max(took),
+            Some(s) => *s = (*s).max(took),
+        }
+    }
+
+    /// Its first frame came back: it has built, and later deadlines derive from its timing.
+    pub fn built(&mut self) {
+        if self.slowest.is_none() {
+            self.slowest = Some(self.building);
+        }
+    }
+
+    /// Whether it missed a deadline (and was killed or abandoned).
+    pub fn is_hung(&self) -> bool {
+        self.hung
+    }
+
+    /// The next message, within [`Self::deadline`]; past it the worker is hung: a process is
+    /// killed (freeing what it held), a thread abandoned (it cannot be stopped: that
+    /// isolation's cost), and the error says so.
+    pub fn recv(&mut self) -> anyhow::Result<WorkerMsg> {
+        let d = self.deadline();
+        let t = Instant::now();
+        let r = recv_timeout(&self.rx, d);
+        if r.as_ref().is_err_and(|e| e.to_string().starts_with("worker timed out")) {
+            self.check_hung(d.max(t.elapsed()))?;
+        }
+        if r.is_ok() {
+            self.observe(t.elapsed());
+        }
+        r
+    }
+
+    /// For a host that polls (the GUI): an error, once it has waited `waited` for an answer
+    /// past [`Self::deadline`], with the worker killed (a process) or abandoned (a thread).
+    pub fn check_hung(&mut self, waited: Duration) -> anyhow::Result<()> {
+        let d = self.deadline();
+        if waited < d {
+            return Ok(());
+        }
+        self.hung = true;
+        let fate = match &mut self.child {
+            Some(c) => {
+                let _ = c.kill();
+                let _ = c.wait();
+                "its process killed"
+            }
+            None => "its thread abandoned",
+        };
+        let why = if self.slowest.is_some() { format!("{}x its slowest wait so far", self.watchdog.factor) } else { "the build allowance".into() };
+        bail!("hung: no answer within {d:.1?} ({why}, run.watchdog); {fate}")
     }
 
     pub fn send(&self, m: HostMsg) -> anyhow::Result<()> {
@@ -247,7 +340,7 @@ impl Worker {
         // The worker maps it while handling Resize; Flushed below proves it has.
         self.send(HostMsg::Flush)?;
         loop {
-            match recv_timeout(&self.rx, Duration::from_secs(60))? {
+            match self.recv()? {
                 WorkerMsg::Flushed => break,
                 WorkerMsg::FrameDone { .. } => {}
                 _ => {}
@@ -275,10 +368,10 @@ impl Worker {
     }
 
     /// Blocks until the worker answers `Flushed`, handing other messages to `on_msg`.
-    pub fn flush(&self, mut on_msg: impl FnMut(WorkerMsg) -> anyhow::Result<()>) -> anyhow::Result<()> {
+    pub fn flush(&mut self, mut on_msg: impl FnMut(WorkerMsg) -> anyhow::Result<()>) -> anyhow::Result<()> {
         self.send(HostMsg::Flush)?;
         loop {
-            match recv_timeout(&self.rx, Duration::from_secs(600)) {
+            match self.recv() {
                 Ok(WorkerMsg::Flushed) => return Ok(()),
                 Ok(m) => on_msg(m)?,
                 Err(e) => return Err(e.context(format!("[{}] waiting for flush", self.label))),
@@ -313,31 +406,82 @@ impl Worker {
         status.map(|s| s.to_string())
     }
 
-    pub fn shutdown(mut self) {
+    /// Asks it to stop and waits for its end, within [`Self::deadline`]: None when it ended
+    /// cleanly, else what went wrong (an error it reported, its exit status, or that it did
+    /// not stop: a process is then killed, a thread abandoned).
+    pub fn shutdown(mut self) -> Option<String> {
+        if self.hung {
+            return Some(if self.child.is_some() { "hung earlier; its process was killed" } else { "hung earlier; its thread was abandoned" }.into());
+        }
         let _ = self.tx.send(HostMsg::Shutdown);
+        let wait = self.deadline();
+        let until = Instant::now() + wait;
+        let mut problem = None;
+        // What it says while stopping (an error or panic in its teardown), until it hangs up
+        // or, a thread, ends (its connection may outlive it).
+        loop {
+            if self.thread.as_ref().is_some_and(|t| t.is_finished()) {
+                while let Ok(WorkerEvent::Msg(WorkerMsg::Error(e))) = self.rx.try_recv() {
+                    problem = Some(format!("failed while stopping: {e}"));
+                }
+                break;
+            }
+            let step = if self.thread.is_some() { until.min(Instant::now() + Duration::from_millis(5)) } else { until };
+            match self.rx.recv_deadline(step) {
+                Ok(WorkerEvent::Msg(WorkerMsg::Error(e))) => problem = Some(format!("failed while stopping: {e}")),
+                Ok(WorkerEvent::Msg(_)) => {}
+                Ok(WorkerEvent::Closed) | Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) if Instant::now() < until => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    problem = Some(format!("did not stop within {wait:.1?}"));
+                    break;
+                }
+            }
+        }
         if let Some(t) = self.thread.take() {
             // Thread isolation: let the renderer tear down before the process might exit.
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while !t.is_finished() && Instant::now() < deadline {
+            while !t.is_finished() && Instant::now() < until {
                 std::thread::sleep(Duration::from_millis(5));
             }
             if t.is_finished() {
                 let _ = t.join();
             } else {
-                tracing::warn!("[{}] worker thread did not stop", self.label);
+                problem = Some(format!("{}; its thread abandoned", problem.unwrap_or_else(|| format!("did not stop within {wait:.1?}"))));
             }
         }
         if let Some(mut c) = self.child.take() {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < deadline {
+            loop {
                 if let Ok(Some(status)) = c.try_wait() {
                     if !status.success() {
-                        tracing::warn!("[{}] worker exited uncleanly: {status}", self.label);
+                        problem = Some(match problem {
+                            Some(p) => format!("{p}; exited: {status}"),
+                            None => format!("exited uncleanly: {status}"),
+                        });
                     }
-                    return;
+                    break;
+                }
+                if Instant::now() >= until {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                    problem = Some(format!("{}; its process killed", problem.unwrap_or_else(|| format!("did not stop within {wait:.1?}"))));
+                    break;
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
+        }
+        if let Some(p) = &problem {
+            tracing::warn!("[{}] worker shutdown: {p}", self.label);
+        }
+        problem
+    }
+}
+
+/// A worker process not yet handed to its [`Worker`]: killed if spawning fails.
+struct KillOnDrop(Option<Child>);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(c) = &mut self.0 {
             let _ = c.kill();
             let _ = c.wait();
         }

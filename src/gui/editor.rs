@@ -649,7 +649,7 @@ fn run(ui: &mut Ui, plan: &mut Plan) -> Changed {
         });
         c |= form_row(ui, "isolation", "Where renderers run", |ui| {
             ui.selectable_value(&mut r.isolation, Isolation::Process, "process").on_hover_text("Each renderer in its own process: crashes can't take others down; memory is measured per renderer").changed()
-                | ui.selectable_value(&mut r.isolation, Isolation::Thread, "thread").on_hover_text("In-process threads: faster to start, easier to debug").changed()
+                | ui.selectable_value(&mut r.isolation, Isolation::Thread, "thread").on_hover_text("In-process threads: faster to start, no copy of the world, easier to debug; but an abort or segfault in a renderer ends the whole program, and a hung one is abandoned, not stopped").changed()
         });
         c |= form_row(ui, "compile", "CPU executor pipelines (cpu, raster-cpu, columns-cpu): the generic build, or a pipeline compiled for this machine", |ui| {
             let mut c = ui.selectable_value(&mut r.compile, Compile::Off, "generic").on_hover_text("The precompiled build: every knob live").changed();

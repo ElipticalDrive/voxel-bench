@@ -20,6 +20,29 @@ multirenderer (host: the server)            worker process (one per renderer: a 
   host threads instead, for debugging or profiling in an IDE. `run.launcher` prefixes the
   worker command (for example `systemd-run --user --scope -p MemoryMax=8G`, `nice`,
   `taskset`, or a profiler).
+- **Failure is defined behaviour.** A renderer that errors, panics, crashes or hangs ends
+  its own lane: the lane's report carries the cause (`error`; a failure while stopping goes in
+  `shutdown_error`, the pass's figures standing), the other lanes and the program go on.
+  What each isolation survives:
+
+  | failure (at build, first frame, mid-run, world update, shutdown) | process | thread |
+  |---|---|---|
+  | error, panic | lane fails, says why | lane fails, says why |
+  | abort, segfault, stack overflow | lane fails, names the signal | **the program ends** |
+  | hang | killed after its deadline | abandoned after its deadline (keeps its core and memory) |
+  | memory blow-up | refused or killed; `run.launcher` bounds it (`prlimit --as=...`, `systemd-run -p MemoryMax=...`) | **the host's memory** |
+
+  The thread's limits are that choice's cost (no copy of the world, no frame transfer); the
+  process is the default. The *watchdog* (`run.watchdog`) decides when silence is a hang:
+  building (connecting, creating the renderer, its initial load and first frame) has nothing
+  of its own to go by and gets `build_s` (default 300 s); after its first frame a wait may last
+  `factor` (default 20) times the longest the lane has needed for anything so far, its build
+  and initial load included, never under `min_s` (default 2 s, below which the machine's own
+  hiccups would be what times out). Scripted runs and the GUI apply it alike.
+  `tests/survival.rs` drives the binary through every moment x way in both isolations (with
+  `MR_FAULT_INJECTION=1` and a renderer option `fault = "<at>:<how>"`, see
+  `crates/mr-serve/src/fault.rs`); `knob` faults happen only in the GUI, `oom` runs only in a
+  process, under `prlimit`.
 - **Server and clients.** The host is the server. It owns the authoritative world and sends
   every worker one stream of `WorldUpdate`s: chunk loads and unloads, block edits, lights and
   the environment. In the worker, the graph's `link` node delays, reorders or drops that

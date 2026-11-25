@@ -203,6 +203,10 @@ pub struct PassReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality_settled: Option<QualitySummary>,
     pub error: Option<String>,
+    /// How its worker's shutdown went wrong, if it did (an error or panic while stopping, an
+    /// unclean exit, not stopping in time: killed or abandoned); the pass's figures stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shutdown_error: Option<String>,
     /// The lanes of its pass that failed part-way: its timings shared the machine with them
     /// for a part of the pass only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
