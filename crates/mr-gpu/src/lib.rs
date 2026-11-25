@@ -31,6 +31,60 @@ pub struct Gpu {
     failure: Failure,
     /// The persistent pipeline cache, once opened (`open_cache`).
     cache: std::sync::OnceLock<DiskCache>,
+    /// The most the device's allocator has held ([`Gpu::peak_allocated_bytes`]).
+    peak: AllocPeak,
+}
+
+/// The most a device's allocator has held since the device was opened, sampled where its
+/// holdings peak: after each frame's submission (by the frame ring's waiter thread, before
+/// it polls, so the submission's transient memory such as acceleration-structure build
+/// scratch or queued writes' staging is still held), after a buffer's growth copy (old and
+/// new held at once), after a flush of large uploads, and when it is read.
+///
+/// A sample walks the allocator's allocations (about 40 ns each, under the allocator's
+/// lock), so the waiter's samples are budgeted: one at most every [`Self::BUDGET`] times the
+/// last sample's duration (a device holding few allocations is sampled every frame; one
+/// holding thousands, every few milliseconds), keeping the sampling under 1% of a core and
+/// of the lock's time.
+#[derive(Clone)]
+pub struct AllocPeak(Arc<AllocPeakInner>);
+
+struct AllocPeakInner {
+    device: wgpu::Device,
+    peak: std::sync::atomic::AtomicU64,
+    /// When the next budgeted sample may run.
+    next: std::sync::Mutex<std::time::Instant>,
+}
+
+impl AllocPeak {
+    const BUDGET: u32 = 100;
+
+    fn new(device: &wgpu::Device) -> Self {
+        Self(Arc::new(AllocPeakInner { device: device.clone(), peak: Default::default(), next: std::sync::Mutex::new(std::time::Instant::now()) }))
+    }
+
+    /// Samples now; returns what the allocator holds (0 where the backend gives no report).
+    pub fn sample(&self) -> u64 {
+        let now = self.0.device.generate_allocator_report().map_or(0, |r| r.total_allocated_bytes);
+        self.0.peak.fetch_max(now, Ordering::Relaxed);
+        now
+    }
+
+    /// Samples unless the last sample was too recent for its cost.
+    pub fn sample_budgeted(&self) {
+        let start = std::time::Instant::now();
+        if start < *self.0.next.lock().unwrap() {
+            return;
+        }
+        self.sample();
+        let end = std::time::Instant::now();
+        *self.0.next.lock().unwrap() = end + (end - start) * Self::BUDGET;
+    }
+
+    /// The most seen so far (without sampling).
+    pub fn get(&self) -> u64 {
+        self.0.peak.load(Ordering::Relaxed)
+    }
 }
 
 /// A driver pipeline cache kept in a file (Vulkan's `VkPipelineCache` through wgpu).
@@ -86,7 +140,8 @@ impl Gpu {
         let f = failure.clone();
         device.on_uncaptured_error(Arc::new(move |e| f.set(format!("wgpu error: {}", e.to_string().lines().take(12).collect::<Vec<_>>().join("\n")))));
         let features = device.features();
-        Self { device, queue, info, timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY), adapter_features: features, experimental: false, failure, cache: Default::default() }
+        let peak = AllocPeak::new(&device);
+        Self { device, queue, info, timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY), adapter_features: features, experimental: false, failure, cache: Default::default(), peak }
     }
 
     /// Opens the persistent pipeline cache `name` (the pipelines' graph key): a file per
@@ -156,6 +211,8 @@ impl Gpu {
     /// submission).
     pub fn flush_writes(&self) {
         self.queue.submit([]);
+        // The staging is held until the poll.
+        self.peak.sample();
         if let Err(e) = self.device.poll(wgpu::PollType::wait_indefinitely()) {
             self.fail(format!("waiting for uploads failed: {e}"));
         }
@@ -166,7 +223,19 @@ impl Gpu {
     /// sized. 0 where the backend gives no report (GL, WebGPU). The device is this process's
     /// own unless a [`GpuPool`] shares it.
     pub fn allocated_bytes(&self) -> u64 {
-        self.device.generate_allocator_report().map_or(0, |r| r.total_allocated_bytes)
+        self.peak.sample()
+    }
+
+    /// The most [`Self::allocated_bytes`] has been since the device was opened, as sampled
+    /// ([`AllocPeak`]), now included.
+    pub fn peak_allocated_bytes(&self) -> u64 {
+        self.peak.sample();
+        self.peak.get()
+    }
+
+    /// The device's peak sampler, for threads that outlive a borrow of the device.
+    pub fn alloc_peak(&self) -> AllocPeak {
+        self.peak.clone()
     }
 
     /// Records that frames from here on would be wrong (`why`: what was lost and the knob
@@ -405,11 +474,14 @@ impl FrameRing {
         let (submitted, rx) = std::sync::mpsc::channel::<()>();
         let device = gpu.device.clone();
         let failure = gpu.failure();
+        let peak = gpu.alloc_peak();
         let waiter = std::thread::Builder::new()
             .name("gpu-waiter".into())
             .spawn(move || {
                 while rx.recv().is_ok() {
                     while rx.try_recv().is_ok() {}
+                    // Before the poll frees what the submissions held only for their run.
+                    peak.sample_budgeted();
                     // Fires map/work-done callbacks for everything submitted so far.
                     if let Err(e) = device.poll(wgpu::PollType::wait_indefinitely()) {
                         failure.set(format!("gpu wait failed: {e}"));
@@ -862,6 +934,8 @@ impl GrowableBuffer {
         enc.copy_buffer_to_buffer(&self.buf, 0, &new, 0, self.buf.size());
         // Pending queue writes to the old buffer are flushed before this submission.
         gpu.queue.submit([enc.finish()]);
+        // Old and new are both held until the copy is done: the growth's peak.
+        gpu.alloc_peak().sample();
         tracing::debug!("{} grown to {} MiB", self.label, size >> 20);
         std::mem::replace(&mut self.buf, new).destroy();
         // The old buffer is freed once the copy is done and the device polled: wait for it,
@@ -1135,6 +1209,39 @@ mod tests {
         drop(buf);
         gpu.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         assert!(gpu.allocated_bytes() < during, "still {} after the drop", gpu.allocated_bytes());
+    }
+
+    /// The peak keeps a buffer sampled while held after it is dropped, and a growth's old
+    /// and new buffers held at once; a budgeted sample right after a costly one is skipped.
+    /// Needs a GPU.
+    #[test]
+    #[ignore]
+    fn peak_keeps_what_was_freed() {
+        let gpu = GpuPool::new(&[]).gpu(0, &GpuNeeds::default()).unwrap();
+        let size = 64 << 20;
+        let buf = gpu.storage("transient", size, wgpu::BufferUsages::STORAGE, || unreachable!());
+        let during = gpu.allocated_bytes();
+        if during == 0 {
+            return;
+        }
+        drop(buf);
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let after = gpu.allocated_bytes();
+        assert!(after + size <= during, "{during} -> {after}");
+        assert!(gpu.peak_allocated_bytes() >= during, "peak {} under {during}", gpu.peak_allocated_bytes());
+
+        // A growth from 32 to 64 MiB holds 96 at once; the device then holds 64.
+        let mut grow = GrowableBuffer::new(&gpu, "grown", 32 << 20, 64 << 20, wgpu::BufferUsages::STORAGE);
+        let base = gpu.allocated_bytes();
+        assert_eq!(grow.reserve(&gpu, 64 << 20, "test"), Some(true));
+        assert!(gpu.allocated_bytes() < base + (64 << 20), "the old buffer still held: {base} -> {}", gpu.allocated_bytes());
+        assert!(gpu.alloc_peak().get() >= base + (64 << 20), "growth peak {} from {base}", gpu.alloc_peak().get());
+
+        // Budgeted: a sample defers the next by a hundred times its cost.
+        let fresh = AllocPeak::new(&gpu.device);
+        fresh.sample_budgeted();
+        assert!(fresh.get() > 0);
+        assert!(*fresh.0.next.lock().unwrap() > std::time::Instant::now(), "no deferral after a sample");
     }
 
     /// A growable buffer grows to its maximum, holds what fits, and fails the device (never

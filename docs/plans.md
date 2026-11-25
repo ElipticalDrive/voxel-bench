@@ -254,8 +254,13 @@ rays it casts make no difference; without meshes: the meshes node and its shadow
   leaves them out and says how many;
 - the results: fps, frame interval (mean, p50, p99), GPU and CPU ms, latency, init and load
   time, memory (`peak_rss_mb`; `gpu_mb`, what the renderer counts it sizes; `gpu_device_mb`,
-  measured: what its GPU devices' allocators hold at the pass's end, every buffer, texture and
-  acceleration structure, where the backend reports it: Vulkan, DX12, Metal), PSNR (mean and minimum), bad pixels, the same against the like reference
+  measured: the most its GPU devices' allocators held, every buffer, texture and acceleration
+  structure, where the backend reports it: Vulkan, DX12, Metal; a peak like `peak_rss_mb`,
+  sampled after each frame's submission before the poll that frees its transient memory
+  (acceleration-structure build scratch, queued writes' staging), after a buffer's growth copy
+  and at the pass's end; frame samples cost about 40 ns per allocation, off the render
+  thread, and are spaced to stay under 1% of a core; a few older records hold the
+  pass's end instead), PSNR (mean and minimum), bad pixels, the same against the like reference
   (`like`, `psnr_like`, `bad_pct_like`) and settled (`late`, `psnr_settled`,
   `bad_pct_settled`), stage times, stream counters and the
   renderer's own counters; a read-back frame also counts its host-side copies,

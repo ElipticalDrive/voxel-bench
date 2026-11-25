@@ -37,7 +37,8 @@ pub struct Entry {
     /// Once its late edges caught up (pipelines with an edge a frame late; else none).
     pub psnr_settled: Option<f64>,
     pub bad_pct: Option<f64>,
-    /// Counted by the renderer, and measured (its devices' allocators; older records lack it).
+    /// Counted by the renderer, and measured (its devices' allocators at their peak; older
+    /// records lack it or hold the pass's end).
     pub gpu_mb: Option<f64>,
     pub gpu_device_mb: Option<f64>,
     pub rss_mb: Option<f64>,

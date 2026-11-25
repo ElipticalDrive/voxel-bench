@@ -203,8 +203,10 @@ pub struct MemoryReport {
     /// sizes), not what the driver allocates for it.
     pub cpu_bytes: u64,
     pub gpu_bytes: u64,
-    /// Measured: what its GPU devices' allocators hold (every buffer, texture and acceleration
-    /// structure, with the allocator's rounding), 0 where the API does not say.
+    /// Measured: the most its GPU devices' allocators have held since they were opened (every
+    /// buffer, texture and acceleration structure, with the allocator's rounding; transient
+    /// memory such as build scratch included), sampled after submissions; 0 where the API
+    /// does not say. Devices not shared are summed (an upper bound on their joint peak).
     pub gpu_device_bytes: u64,
 }
 

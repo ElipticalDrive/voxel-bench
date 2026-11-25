@@ -108,7 +108,8 @@ pub struct Observation {
     pub init_ms: f64,
     pub initial_load_ms: f64,
     pub peak_rss_mb: Option<f64>,
-    /// Counted by the renderer (what it sizes) and measured (its devices' allocators).
+    /// Counted by the renderer (what it sizes) and measured (its devices' allocators at their
+    /// peak; a few older records hold the pass's end).
     pub gpu_mb: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_device_mb: Option<f64>,

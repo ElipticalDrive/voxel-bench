@@ -461,7 +461,7 @@ impl<R: Region> Renderer for Executor<R> {
 
     fn memory(&self) -> MemoryReport {
         let (cpu, gpu) = self.region.memory(&self.core);
-        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu, gpu_device_bytes: self.core.gpu.allocated_bytes() }
+        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu, gpu_device_bytes: self.core.gpu.peak_allocated_bytes() }
     }
 }
 
