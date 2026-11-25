@@ -115,7 +115,10 @@ for w in what:
     elif w == "gpu":
         subprocess.run(["cargo", "build", "--release", "-q"], cwd=ROOT, capture_output=True)
         os.environ.setdefault("SECONDS", "8")  # the tuner demo's run, long enough for trials
-        for name, args in (("gpu e2e", ["--bin", "multirenderer", "--", "--ignored", "--skip", "gui_screenshot"]), ("gpu pool", ["-p", "mr-gpu", "--", "--ignored"]), ("gpu scale", ["--test", "scale", "--", "--ignored"])):
+        # One end-to-end test at a time: each starts a GUI and worker processes that fill the
+        # machine, so in parallel they starve each other's waits (11 at once: load 100, three
+        # timed out in 120 s; one at a time: 47 s, all pass).
+        for name, args in (("gpu e2e", ["--bin", "multirenderer", "--", "--ignored", "--skip", "gui_screenshot", "--test-threads=1"]), ("gpu pool", ["-p", "mr-gpu", "--", "--ignored"]), ("gpu scale", ["--test", "scale", "--", "--ignored"])):
             s, t = cargo(["test", "-q", "--release", *args], logs / f"{name.replace(' ', '-')}.log")
             rc |= tests(name, s, t)
         r = subprocess.run([sys.executable, str(ROOT / "scripts" / "limits.py"), "--no-build"], cwd=ROOT, capture_output=True, text=True)
@@ -131,7 +134,7 @@ for w in what:
         os.environ.setdefault("MR_TEST_SLOW", "3")  # the live tests' waits, scaled for software Vulkan
         subprocess.run(["cargo", "build", "--release", "-q"], cwd=ROOT, capture_output=True)  # the sessions' workers
         e2e = ["gui::live::tests::live_session_end_to_end", "gui::live::tests::live_meshes_end_to_end", "gui::live::tests::live_split_end_to_end", "gui::tests::gui_headless_smoke"]
-        for name, args in (("lavapipe e2e", ["--bin", "multirenderer", "--", "--ignored", "--exact", *e2e]), ("lavapipe pool", ["-p", "mr-gpu", "--", "--ignored"])):
+        for name, args in (("lavapipe e2e", ["--bin", "multirenderer", "--", "--ignored", "--test-threads=1", "--exact", *e2e]), ("lavapipe pool", ["-p", "mr-gpu", "--", "--ignored"])):
             s, t = cargo(["test", "-q", "--release", *args], logs / f"{name.replace(' ', '-')}.log")
             rc |= tests(name, s, t)
     elif w == "windows":
