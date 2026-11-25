@@ -9,8 +9,8 @@
                                                 storage exactness, walk agreement), clippy, then with
                                                 --sweep a run of every graph that can take it
   scripts/new.py accept-sweep                   a new component changes the size of the full sweep, which two host
-                                                tests and docs/plans.md state: reads the new size from the failing
-                                                test and rewrites those three places (review the diff)
+                                                tests state: reads the new size from the failing test and rewrites
+                                                it (review the diff)
   scripts/new.py sites                          the hand-kept lists a storage joins (what `storage` edits)
 
 Each edit anchors on the line after which a list ends and fails loudly if the anchor is not
@@ -198,7 +198,7 @@ def cmd_accept_sweep(_):
         print("accept-sweep: the sweep size test passes, nothing to accept" if r.returncode == 0 else "accept-sweep: failed some other way:\n" + (r.stdout + r.stderr)[-1500:])
         return
     new, old = m.group(1), m.group(2)
-    for path in [ROOT / "src/plan/tests.rs", ROOT / "docs/plans.md"]:
+    for path in [ROOT / "src/plan/tests.rs"]:
         text = path.read_text()
         if old in text:
             path.write_text(re.sub(rf"\b{old}\b", new, text))

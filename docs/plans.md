@@ -221,11 +221,10 @@ vary = [
   order and written alike: together they have every value of every entry of `vary` and, of
   any two entries, every pair of values that some pipeline has together (pairwise
   coverage). Greedy and deterministic: the pipeline adding most of what is still missing,
-  the first of equals. It grows with the pairs, not the product: the full sweep is 1883
-  pipelines, pairwise 260. `[sweep] part = k, parts = n` (k from 0) spreads the pairs over
+  the first of equals. It grows with the pairs, not the product: the full sweep is the
+  product, pairwise coverage a small fraction of it (`run PLAN --list` prints both sizes). `[sweep] part = k, parts = n` (k from 0) spreads the pairs over
   n runs, each still with every value: the k-th, (k+n)-th, ... pipeline the greedy choice
-  picks, completed with every value; the n parts together have every pair (the full sweep in
-  15 parts: about 80 pipelines each).
+  picks, completed with every value; the n parts together have every pair (the parts are about equal).
 
 `multirenderer run PLAN --list` (with the same `-s` / `-u`) renders nothing: it prints the
 plan's renderers, sweeps expanded, and per mode how many passes it would run.
