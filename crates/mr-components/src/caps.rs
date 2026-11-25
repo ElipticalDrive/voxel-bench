@@ -50,6 +50,22 @@ pub enum Cap {
     /// Shading: path traces: bounce rays (a `bounce` input), per-pixel state accumulated
     /// over frames, the knobs `bounces`, `spp` and `accumulate`; its reference traces paths.
     Paths,
+    /// Geometry: quads in the `mr_mesh` encoding, grouped per face: what a rasteriser draws
+    /// as strips and a ray query traces as two triangles each.
+    Quads,
+    /// Geometry: one cube instance per block, 36 vertices, the faces derived on the GPU.
+    Cubes,
+    /// Geometry: what a ray query's acceleration structure is built from (quads as two
+    /// triangles each, or one AABB per occupied brick resolved by a DDA through the voxel
+    /// pool). Traversal (`needs`): a ray query, tracing it.
+    Accel,
+    /// Geometry: one point per surface block, which splatting draws.
+    Points,
+    /// Meshes: rasterised into a record and depth target of their own, at whose depth each
+    /// primary ray stops (a ray caster's meshes).
+    RayLimit,
+    /// Meshes: drawn into the voxel faces' own depth buffer (a rasteriser's meshes).
+    FaceDepth,
 }
 
 impl Cap {
@@ -65,6 +81,12 @@ impl Cap {
             Cap::Layers => "layers",
             Cap::Records => "records",
             Cap::Paths => "paths",
+            Cap::Quads => "quads",
+            Cap::Cubes => "cubes",
+            Cap::Accel => "accel",
+            Cap::Points => "points",
+            Cap::RayLimit => "ray_limit",
+            Cap::FaceDepth => "face_depth",
         }
     }
 }
@@ -148,6 +170,12 @@ pub fn provides(kind: Kind, role: Role, name: &str, cap: Cap) -> bool {
 /// wherever it runs: a drawer writing records, a path-tracing shading).
 pub fn declares(role: Role, name: &str, cap: Cap) -> bool {
     component(role, name).is_some_and(|c| c.impls.iter().any(|i| i.provides.contains(&cap)))
+}
+
+/// Whether component `name` in `role` needs `cap` from an input of role `of` (a ray query, the
+/// acceleration structure of a geometry).
+pub fn needs(role: Role, name: &str, of: Role, cap: Cap) -> bool {
+    component(role, name).is_some_and(|c| c.needs.contains(&(of, cap)))
 }
 
 #[cfg(test)]

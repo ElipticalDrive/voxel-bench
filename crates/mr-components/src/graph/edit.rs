@@ -345,19 +345,37 @@ fn alternatives(
     new: &[(String, Role)],
     v: &toml::Value,
 ) -> Result<Vec<Change>, String> {
-    let t = v
+    let mut t = v
         .as_table()
-        .ok_or_else(|| format!("an edit is a table, not `{v}`"))?;
+        .ok_or_else(|| format!("an edit is a table, not `{v}`"))?
+        .clone();
+    // `except`: values a `"*"` leaves out (those another entry takes).
+    let except = match t.remove("except") {
+        None => vec![],
+        Some(toml::Value::Array(a)) => a,
+        Some(x) => return Err(format!("edit `{v}`: `except` is a list of values, not `{x}`")),
+    };
+    let t = &t;
     let list = |x: &toml::Value| x.is_array() || x.as_str() == Some("*");
     let Some(k) = VALUES.into_iter().find(|k| t.get(*k).is_some_and(list)) else {
+        if !except.is_empty() {
+            return Err(format!("edit `{v}`: `except` goes with a value of `\"*\"`"));
+        }
         return Change::try_from(t.clone()).map(|c| vec![c]);
     };
     let values = match &t[k] {
+        toml::Value::Array(_) if !except.is_empty() => {
+            return Err(format!("edit `{v}`: `except` goes with `\"*\"`, not a list (leave the values out of it)"));
+        }
         toml::Value::Array(a) => a.clone(),
         _ => every(base, new, t, k).map_err(|e| format!("edit `{v}`: {e}"))?,
     };
+    if let Some(x) = except.iter().find(|x| !values.contains(x)) {
+        return Err(format!("edit `{v}`: `except` names {x}, which `\"*\"` does not offer"));
+    }
     values
         .into_iter()
+        .filter(|x| !except.contains(x))
         .map(|x| {
             let mut t = t.clone();
             t.insert(k.into(), x);

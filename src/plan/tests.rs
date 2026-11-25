@@ -504,8 +504,13 @@ fn varied_sweeps() {
     };
     // Lists and `*` (every component the graph takes there); options as before.
     let new = plan("graph = \"raycast-gpu\"\nlabel = \"gone\"\nvary = [{ node = \"storage\", component = \"*\" }, { node = \"kernel\", component = [\"refloor\", \"sphere\"] }]\noptions = { exact = false, merge = \"rows\" }").unwrap();
-    // raycast-gpu: 8 storages x 2 kernels.
-    each_once(&new, 16, "storages x two kernels");
+    // How many components `file`'s `node` takes (each alone a pipeline): what a `*` there gives.
+    let takes = |file: &str, node: &str| {
+        let g = mr_components::graph::shipped(file).unwrap();
+        g.choices(node).into_iter().filter(|c| g.edit(&mr_components::graph::Change::component(node, c)).and_then(|h| h.accept()).is_ok()).count()
+    };
+    let storages = takes("raycast-gpu", "storage");
+    each_once(&new, storages * 2, "storages x two kernels");
     assert!(new.renderers.iter().all(|r| region(r) == Some(RegionId::GpuWalk) && r.label != Some("gone".into()) && r.options.get("exact").is_some() && r.options.get("merge").is_none()));
     // Each is written as its file and edits (the entry's own first), and reads back.
     let r = new.renderers.iter().find(|r| r.label().contains("tree64") && r.label().contains("sphere")).unwrap();
@@ -517,10 +522,19 @@ fn varied_sweeps() {
     let all = Plan::parse(base, &[format!("renderer={full}")]).unwrap();
     each_once(&all, 1883, "the full sweep");
     let n = |b: RegionId| all.renderers.iter().filter(|r| region(r) == Some(b)).count();
-    // raycast-gpu: 8 storages x 2 prepasses x 4 kernels x 2 shadings x 2 meshes; the
-    // rasteriser's shadow rays: 8 storages x 4 kernels x 3 geometries x 3 draws x 2 shadings x 2 meshes;
-    // ray query: 3 geometries x 2 shadings, then the bounce walk's 8 storages x 4 kernels.
-    assert_eq!((n(RegionId::GpuWalk), n(RegionId::GpuRayQuery), n(RegionId::GpuMeshing), n(RegionId::CpuColumns)), (8 * 2 * 4 * 2 * 2, 3 * 2 + 8 * 4, 8 * 4 * 3 * 3 * 2 * 2, 1));
+    // raycast-gpu: storages x 2 (prepass or not) x kernels x shadings x 2 (meshes or not); the
+    // rasteriser's shadow rays: storages x kernels x geometries x draws x shadings x 2 (meshes);
+    // ray query: geometries x shadings, then the bounce walk's storages x kernels.
+    let (walk, raster, rq) = (|n: &str| takes("raycast-gpu", n), |n: &str| takes("raster-gpu", n), |n: &str| takes("rayquery-gpu", n));
+    assert_eq!(
+        (n(RegionId::GpuWalk), n(RegionId::GpuRayQuery), n(RegionId::GpuMeshing), n(RegionId::CpuColumns)),
+        (
+            walk("storage") * 2 * walk("kernel") * walk("shading") * 2,
+            rq("geometry") * rq("shading") + walk("storage") * walk("kernel"),
+            raster("storage") * raster("kernel") * raster("geometry") * raster("draw") * raster("shading") * 2,
+            takes("columns-cpu", "shading"),
+        )
+    );
     assert_eq!(mr_components::graph::REGIONS.iter().map(|b| n(b.id)).sum::<usize>(), all.renderers.len(), "every one a region's");
     assert!(mr_components::graph::REGIONS.iter().all(|b| n(b.id) > 0), "every region swept");
     // `plans/stream.toml`: four links, the generator's two places, three clients.
@@ -659,12 +673,17 @@ fn pair_covering_sweeps() {
     let n = |r: &str, more: &str| one(r, more).unwrap().renderers.len();
     assert!(n(&format!("{vary}\ncover = \"pairs\""), "") < n(vary, ""));
     assert_eq!(n(&format!("{vary}\ncover = \"all\""), "[sweep]\ncover = \"pairs\"\n"), n(vary, ""));
+    // `except`: `*` but those.
+    let every = |except: &str| n(&format!("graph = \"raycast-gpu\"\nvary = [{{ node = \"storage\", component = \"*\"{except} }}]"), "");
+    assert_eq!(every(", except = [\"bricks\", \"hier\"]") + 2, every(""));
     for (r, more, why) in [
         (format!("{vary}\ncover = \"some\""), "", "\"all\" (every pipeline"),
         ("graph = \"raycast-gpu\"\ncover = \"pairs\"".to_string(), "", "this renderer has no `vary`"),
         (vary.to_string(), "[sweep]\nlimit = 3\n", "`sweep.limit`"),
         (vary.to_string(), "[sweep]\ncover = \"pairs\"\npart = 15\nparts = 15\n", "the part counted from 0"),
         (vary.to_string(), "[sweep]\ncover = \"pairs\"\npart = 1\n", "both"),
+        ("graph = \"raycast-gpu\"\nvary = [{ node = \"storage\", component = \"*\", except = [\"nope\"] }]".to_string(), "", "which `\"*\"` does not offer"),
+        ("graph = \"raycast-gpu\"\nvary = [{ node = \"storage\", component = [\"bricks\", \"hier\"], except = [\"bricks\"] }]".to_string(), "", "not a list"),
     ] {
         let e = format!("{:#}", one(&r, more).unwrap_err());
         assert!(e.contains(why), "{r}: {e}");

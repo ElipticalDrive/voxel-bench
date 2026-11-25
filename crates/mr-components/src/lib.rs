@@ -488,7 +488,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
             apis: &[Api::RayQuery],
             provides: &[],
         }],
-        needs: &[],
+        needs: &[(Role::Geometry, Cap::Accel)],
     },
     ComponentInfo {
         role: Role::Traversal,
@@ -539,7 +539,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
         impls: &[Impl {
             kind: Kind::Cpu,
             apis: &[Api::Scalar],
-            provides: &[],
+            provides: &[Cap::Quads, Cap::Accel],
         }],
         needs: &[],
     },
@@ -550,7 +550,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
         impls: &[Impl {
             kind: Kind::Cpu,
             apis: &[Api::Scalar],
-            provides: &[],
+            provides: &[Cap::Quads, Cap::Accel],
         }],
         needs: &[],
     },
@@ -561,7 +561,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
         impls: &[Impl {
             kind: Kind::Cpu,
             apis: &[Api::Scalar],
-            provides: &[],
+            provides: &[Cap::Points],
         }],
         needs: &[],
     },
@@ -572,7 +572,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
         impls: &[Impl {
             kind: Kind::Cpu,
             apis: &[Api::Scalar],
-            provides: &[],
+            provides: &[Cap::Accel],
         }],
         needs: &[],
     },
@@ -583,7 +583,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
         impls: &[Impl {
             kind: Kind::Cpu,
             apis: &[Api::Scalar],
-            provides: &[],
+            provides: &[Cap::Cubes],
         }],
         needs: &[],
     },
@@ -636,7 +636,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
         impls: &[Impl {
             kind: Kind::Gpu,
             apis: &[Api::Raster],
-            provides: &[],
+            provides: &[Cap::RayLimit],
         }],
         needs: &[],
     },
@@ -647,7 +647,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
         impls: &[Impl {
             kind: Kind::Gpu,
             apis: &[Api::Raster],
-            provides: &[],
+            provides: &[Cap::FaceDepth],
         }],
         needs: &[],
     },

@@ -10,7 +10,7 @@ use mr_components::impls::{ISAS, SHADER};
 use mr_components::{Api, Cap, ComponentInfo, Impl, Kind};
 use mr_core::PassMode;
 
-use crate::plan::{Leaves, Like, Plan, RendererSpec, RunSpec};
+use crate::plan::{GraphRef, Leaves, Like, Plan, RendererSpec, RunSpec, Written};
 
 /// The new component's name, in every role; no code behind it, nothing here runs a frame.
 const PROBE: &str = "probe";
@@ -24,6 +24,10 @@ struct Probe {
     /// The shipped graphs that should offer it, each with the registered component declaring
     /// the same, whose frames its frames are scored like there (its reference class).
     files: &'static [(&'static str, &'static str)],
+    /// The edits that give the shipped graphs the node, for a role none of them has (a
+    /// prepass, hole detection): empty for the others. With them, `list` and the audit, which
+    /// read the shipped files as they are, are not asked.
+    added: fn() -> Vec<graph::Change>,
     /// The listings that do not offer it yet (each needs a hand edit per component): fixed,
     /// they leave this list, and the test says so.
     debt: &'static [&'static str],
@@ -53,6 +57,39 @@ static WALK: [ComponentInfo; 1] = [ComponentInfo {
     needs: &[(Role::Storage, Cap::Voxels)],
 }];
 
+/// A ray query on the GPU, tracing a geometry's acceleration structure (as `rayquery`).
+static RAY_QUERY: [ComponentInfo; 1] = [ComponentInfo {
+    role: Role::Traversal,
+    name: PROBE,
+    description: "A ray query only a test registers.",
+    impls: &[Impl { kind: Kind::Gpu, apis: &[Api::RayQuery], provides: &[] }],
+    needs: &[(Role::Geometry, Cap::Accel)],
+}];
+
+/// A column storage on the GPU and the CPU (as `heightmap`).
+static HEIGHTS: [ComponentInfo; 1] = [ComponentInfo {
+    role: Role::Storage,
+    name: PROBE,
+    description: "A column storage only a test registers.",
+    impls: &[
+        Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[Cap::Heights] },
+        Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[Cap::Heights] },
+    ],
+    needs: &[],
+}];
+
+/// A march over a storage's columns on the GPU and the CPU (as `heightfield`).
+static MARCH: [ComponentInfo; 1] = [ComponentInfo {
+    role: Role::Traversal,
+    name: PROBE,
+    description: "A column march only a test registers.",
+    impls: &[
+        Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] },
+        Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[] },
+    ],
+    needs: &[(Role::Storage, Cap::Heights)],
+}];
+
 /// A path tracer on the GPU (as `pathtrace`).
 static SHADING: [ComponentInfo; 1] = [ComponentInfo {
     role: Role::Shading,
@@ -71,6 +108,42 @@ static DRAWER: [ComponentInfo; 1] = [ComponentInfo {
     needs: &[],
 }];
 
+/// Quads built on the CPU per chunk (as `greedy`).
+static GEOMETRY: [ComponentInfo; 1] = [ComponentInfo {
+    role: Role::Geometry,
+    name: PROBE,
+    description: "Geometry only a test registers.",
+    impls: &[Impl { kind: Kind::Cpu, apis: &[Api::Scalar], provides: &[Cap::Quads, Cap::Accel] }],
+    needs: &[],
+}];
+
+/// A way to draw meshes on the GPU (as `composite` and `depth`).
+static MESHES: [ComponentInfo; 1] = [ComponentInfo {
+    role: Role::Meshes,
+    name: PROBE,
+    description: "A mesh drawer only a test registers.",
+    impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Raster], provides: &[Cap::RayLimit, Cap::FaceDepth] }],
+    needs: &[],
+}];
+
+/// A prepass on the GPU over a storage's voxels (as `beam`).
+static PREPASS: [ComponentInfo; 1] = [ComponentInfo {
+    role: Role::Prepass,
+    name: PROBE,
+    description: "A prepass only a test registers.",
+    impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }],
+    needs: &[(Role::Storage, Cap::Voxels)],
+}];
+
+/// Hole detection on the GPU (as `coverage`).
+static HOLES: [ComponentInfo; 1] = [ComponentInfo {
+    role: Role::Holes,
+    name: PROBE,
+    description: "Hole detection only a test registers.",
+    impls: &[Impl { kind: Kind::Gpu, apis: &[Api::Compute], provides: &[] }],
+    needs: &[],
+}];
+
 /// A primary-visibility strategy casting rays on the GPU (as `raycast`).
 static VISIBILITY: [ComponentInfo; 1] = [ComponentInfo {
     role: Role::Visibility,
@@ -80,8 +153,27 @@ static VISIBILITY: [ComponentInfo; 1] = [ComponentInfo {
     needs: &[],
 }];
 
-fn with_probe(file: &str, node: &str) -> Option<Graph> {
-    graph::shipped(file).unwrap().edit(&graph::Change::component(node, PROBE)).ok()
+fn none() -> Vec<graph::Change> {
+    vec![]
+}
+
+impl Probe {
+    /// Shipped graph `file` with the node.
+    fn base(&self, file: &str) -> Graph {
+        graph::shipped(file).unwrap().with_edits(&(self.added)()).unwrap()
+    }
+
+    /// `file` with the node, as `component`.
+    fn with(&self, file: &str, component: &str) -> Option<Graph> {
+        self.base(file).edit(&graph::Change::component(self.node, component)).ok()
+    }
+
+    /// The pipeline of `file` with the node as `component`, as a plan writes it.
+    fn spec(&self, file: &str, component: &str) -> anyhow::Result<RendererSpec> {
+        let mut edits = (self.added)();
+        edits.push(graph::Change::component(self.node, component));
+        RendererSpec::try_from(Written { graph: Some(GraphRef::File(file.into())), edits, ..Default::default() })
+    }
 }
 
 /// The reference class of `spec`'s lit frames: what its reference is given and computes.
@@ -107,8 +199,9 @@ fn offered_everywhere(p: &Probe) {
     check("registry", graph::role_components(role).contains(&PROBE), format!("`role_components({})` lacks it", role.name()));
 
     // What a node may be.
+    let added = !(p.added)().is_empty();
     for &file in &files {
-        let g = graph::shipped(file).unwrap();
+        let g = p.base(file);
         let choices = g.choices(node);
         check("Graph::choices", choices.contains(&PROBE), format!("{file} `{node}` may be {choices:?}"));
         if let Err(why) = g.edit(&graph::Change::component(node, PROBE)).and_then(|h| h.accept()) {
@@ -119,7 +212,11 @@ fn offered_everywhere(p: &Probe) {
     // A sweep over every component of the node.
     let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
     for &file in &files {
-        let swept = Plan::parse(&format!("{base}[[renderer]]\ngraph = \"{file}\"\nvary = [{{ node = \"{node}\", component = \"*\" }}]\n"), &[]);
+        let renderer = toml::toml! { graph = file vary = [{ node = node, component = "*" }] };
+        let mut renderer = toml::Value::Table(renderer);
+        renderer.as_table_mut().unwrap().insert("edits".into(), toml::Value::try_from((p.added)()).unwrap());
+        let text = toml::to_string(&toml::toml! { renderer = [renderer] }).unwrap();
+        let swept = Plan::parse(&format!("{base}{text}"), &[]);
         let has = swept.as_ref().is_ok_and(|p| p.renderers.iter().any(|r| r.pipeline().is_some_and(|g| g.nodes[node].component == PROBE)));
         check("sweep expansion", has, format!("{file} `{node} = *`: {:?}", swept.map(|p| p.renderers.iter().map(|r| r.label().to_string()).collect::<Vec<_>>())));
     }
@@ -128,16 +225,16 @@ fn offered_everywhere(p: &Probe) {
     let list = crate::list().unwrap();
     let line = list.lines().find(|l| l.trim_start().starts_with(&format!("{PROBE} "))).unwrap_or_default().to_string();
     check("list", !line.is_empty(), "no line".into());
-    for &file in &files {
+    for &file in files.iter().filter(|_| !added) {
         check("list", line.contains("(in ") && line.contains(file), format!("not offered in {file}: `{line}`"));
     }
 
     // `multirenderer audit`: implemented and reached on each kind it has code for (the first
     // two files suffice; more are slow in debug builds).
     let first: Vec<&str> = files.iter().copied().take(2).collect();
-    let rows = graph::audit_of(first.iter().copied(), false);
+    let rows = if added { vec![] } else { graph::audit_of(first.iter().copied(), false) };
     match rows.iter().find(|r| r.role == role && r.name == PROBE) {
-        None => check("audit", false, "no row".into()),
+        None => check("audit", added, "no row".into()),
         Some(r) => {
             for i in p.registered[0].impls {
                 let u = &r.on[graph::kind_index(i.kind)];
@@ -164,7 +261,7 @@ fn offered_everywhere(p: &Probe) {
     // Beside its twin: a component with other inputs (a path tracer's `bounce`) checks into
     // another graph than one without.
     let (file, twin) = p.files[0];
-    match (with_probe(file, node), with_probe(file, node).and(graph::shipped(file).unwrap().edit(&graph::Change::component(node, twin)).ok())) {
+    match (p.with(file, PROBE), p.with(file, PROBE).and(p.with(file, twin))) {
         (Some(g), Some(like)) => {
             let cat = crate::catalogue::Catalogue::build(&[obs(like, 100.0), obs(g, 120.0)], 35.0);
             let row = cat.components.iter().find(|c| c.role == role.name()).and_then(|c| c.rows.iter().find(|r| r.0 == PROBE));
@@ -177,8 +274,7 @@ fn offered_everywhere(p: &Probe) {
     // what it declares.
     let run = RunSpec { max_lod: 2, ..RunSpec::default() };
     for &(file, twin) in p.files {
-        let spec = |c: &str| RendererSpec::from_cli(&format!("{file},{node}={c}"));
-        match (spec(PROBE), spec(twin)) {
+        match (p.spec(file, PROBE), p.spec(file, twin)) {
             (Ok(probe), Ok(like)) => {
                 let (a, b) = (class(&probe, &run), class(&like, &run));
                 check("reference class", a == b, format!("{file}: {a:?}, {twin} {b:?}"));
@@ -188,13 +284,13 @@ fn offered_everywhere(p: &Probe) {
     }
 
     // The GUI: the editor's choices for the node, not greyed (it runs); the tuner's knob.
-    for &file in &files {
-        let g = graph::shipped(file).unwrap();
+    for &(file, twin) in p.files {
+        let g = p.base(file);
         let options = crate::gui::graph::component_options(&g, node);
         let pick = options.iter().find(|o| o.0 == PROBE);
         check("GUI choices", pick.is_some(), format!("{file}: {:?}", options.iter().map(|o| &o.0).collect::<Vec<_>>()));
         if let Some((.., change, _, _)) = pick {
-            let spec = RendererSpec::from_cli(file).unwrap();
+            let spec = p.spec(file, twin).unwrap();
             let mut trial = crate::gui::graph::model::Trial::new(spec.clone(), g.clone());
             check("GUI choices", trial.try_change(change, &[]).is_ok(), format!("{file}: greyed: {:?}", trial.try_change(change, &[]).err()));
             let knob = spec.component_knobs().into_iter().find(|k| k.name == format!("{node}.component"));
@@ -213,6 +309,7 @@ fn a_registered_storage_is_offered_everywhere() {
         registered: &STORAGE,
         node: "storage",
         files: &[("raycast-gpu", "bricks"), ("raycast-cpu", "bricks")],
+        added: none,
         debt: &[],
     });
 }
@@ -223,6 +320,40 @@ fn a_registered_walk_is_offered_everywhere() {
         registered: &WALK,
         node: "kernel",
         files: &[("raycast-gpu", "incremental"), ("raycast-cpu", "incremental"), ("raster-gpu", "incremental"), ("raster-cpu", "incremental")],
+        added: none,
+        debt: &[],
+    });
+}
+
+#[test]
+fn a_registered_ray_query_is_offered_everywhere() {
+    offered_everywhere(&Probe {
+        registered: &RAY_QUERY,
+        node: "kernel",
+        files: &[("rayquery-gpu", "rayquery")],
+        added: none,
+        debt: &[],
+    });
+}
+
+#[test]
+fn a_registered_column_storage_is_offered_everywhere() {
+    offered_everywhere(&Probe {
+        registered: &HEIGHTS,
+        node: "storage",
+        files: &[("columns-gpu", "heightmap"), ("columns-cpu", "heightmap")],
+        added: none,
+        debt: &[],
+    });
+}
+
+#[test]
+fn a_registered_column_march_is_offered_everywhere() {
+    offered_everywhere(&Probe {
+        registered: &MARCH,
+        node: "kernel",
+        files: &[("columns-gpu", "heightfield"), ("columns-cpu", "heightfield")],
+        added: none,
         debt: &[],
     });
 }
@@ -233,6 +364,7 @@ fn a_registered_shading_is_offered_everywhere() {
         registered: &SHADING,
         node: "shading",
         files: &[("raycast-gpu", "pathtrace"), ("raster-gpu", "pathtrace"), ("rayquery-gpu", "pathtrace"), ("splat-gpu", "pathtrace")],
+        added: none,
         debt: &[],
     });
 }
@@ -243,6 +375,65 @@ fn a_registered_drawer_is_offered_everywhere() {
         registered: &DRAWER,
         node: "draw",
         files: &[("raster-gpu", "gbuffer"), ("discover-gpu", "gbuffer"), ("discover-cpu", "gbuffer")],
+        added: none,
+        debt: &[],
+    });
+}
+
+#[test]
+fn a_registered_geometry_is_offered_everywhere() {
+    offered_everywhere(&Probe {
+        registered: &GEOMETRY,
+        node: "geometry",
+        files: &[("raster-gpu", "greedy"), ("raster-cpu", "greedy"), ("rayquery-gpu", "greedy")],
+        added: none,
+        debt: &[],
+    });
+}
+
+#[test]
+fn a_registered_meshes_is_offered_everywhere() {
+    offered_everywhere(&Probe {
+        registered: &MESHES,
+        node: "meshes",
+        files: &[("raycast-gpu", "composite"), ("raster-gpu", "depth")],
+        added: none,
+        debt: &[],
+    });
+}
+
+#[test]
+fn a_registered_prepass_is_offered_everywhere() {
+    offered_everywhere(&Probe {
+        registered: &PREPASS,
+        node: "prepass",
+        files: &[("raycast-gpu", "beam")],
+        added: || {
+            use graph::Change;
+            vec![Change::add("prepass", Role::Prepass, "beam"), Change::bind("prepass", "storage", "storage"), Change::bind("visibility", "start", "prepass")]
+        },
+        debt: &[],
+    });
+}
+
+#[test]
+fn a_registered_holes_is_offered_everywhere() {
+    offered_everywhere(&Probe {
+        registered: &HOLES,
+        node: "holes",
+        files: &[("discover-gpu", "coverage")],
+        added: || {
+            use graph::{Change, When};
+            vec![
+                Change::add("holes", Role::Holes, "coverage"),
+                Change::bind("holes", "covered", "draw"),
+                Change::bind("holes", "sky", "draw"),
+                Change::bind("holes", "changes", "world"),
+                Change::Timing("holes".into(), "sky".into(), When::Prev),
+                Change::bind("visibility", "where", "holes"),
+                Change::Timing("draw".into(), "faces".into(), When::Iterate(2)),
+            ]
+        },
         debt: &[],
     });
 }
@@ -261,6 +452,7 @@ fn a_registered_visibility_is_offered_everywhere() {
         registered: &VISIBILITY,
         node: "visibility",
         files: &[("raycast-gpu", "raycast")],
+        added: none,
         debt: &["Graph::choices", "sweep expansion", "list", "audit", "catalogue", "reference class", "GUI choices"],
     });
 }

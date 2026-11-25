@@ -351,17 +351,24 @@ const HITS_LATE: &[(Role, &str, &[When])] = &[(Role::Shading, "hits", &[When::No
 /// registry holds a voxel implementation of where the region runs it
 /// (`Pick::Providing(Cap::Voxels)`), any walk (a traversal reading a storage's voxels:
 /// `WALKS`), any drawer and any shading implemented there (`Pick::Every`). The kernels are the
-/// walks and the ray queries; the geometries ray queries trace are named.
+/// walks and the ray queries (a traversal reading a geometry's acceleration structure). Geometries
+/// and meshes are taken by the form they declare: quads and cubes drawn, an acceleration
+/// structure's (quads, boxes) ray-queried, points splatted; meshes stopping a ray caster's
+/// rays or drawn into a rasteriser's depth buffer.
 const WALKS: Pick = Pick::Needing(Role::Storage, Cap::Voxels);
-const GPU_KERNELS: Pick = Pick::Any(&[WALKS, Pick::Named(&["rayquery"])]);
-const RT_GEOMETRY: &[&str] = &["greedy", "naive", "boxes"];
+const GPU_KERNELS: Pick = Pick::Any(&[WALKS, Pick::Needing(Role::Geometry, Cap::Accel)]);
+const RT_GEOMETRY: Pick = Pick::Providing(Cap::Accel);
+/// The column storages' ray marches (a traversal reading a storage's heights).
+const MARCHES: Pick = Pick::Needing(Role::Storage, Cap::Heights);
+const DRAWN_GEOMETRY: Pick = Pick::Any(&[Pick::Providing(Cap::Quads), Pick::Providing(Cap::Cubes)]);
 
-/// Ray queries trace an acceleration structure built from one of `RT_GEOMETRY`.
+/// Ray queries trace an acceleration structure built from one of `RT_GEOMETRY` (only ray
+/// queries have a `geometry` port).
 const RT: Only = Only {
     role: Role::Traversal,
-    of: &["rayquery"],
+    of: &[],
     port: "geometry",
-    components: Pick::Named(RT_GEOMETRY),
+    components: RT_GEOMETRY,
     bound: false,
 };
 /// The shading's shadow rays, walked (`bound`: the executor casts no rays of its own there).
@@ -408,7 +415,7 @@ pub const CPU_RAYCAST: Builds = Builds {
 /// shadow rays through a storage and kernel of the ray caster's.
 pub const CPU_RASTER: Builds = Builds {
     nodes: &[
-        Build::one(Role::Geometry, &["greedy", "naive"], impls::CPU_SCALAR),
+        Build::providing(Role::Geometry, Cap::Quads, impls::CPU_SCALAR),
         Build::one(Role::Visibility, &["faces"], impls::CPU_SCALAR),
         Build::picking(Role::Draw, Pick::Every, impls::CPU_SCALAR),
         Build::providing(Role::Storage, Cap::Voxels, impls::CPU_SCALAR),
@@ -440,8 +447,8 @@ pub const CPU_RASTER: Builds = Builds {
 /// `columns-cpu`: the heightmap, its own ray march (the shadow rays), the column march and the shading.
 pub const CPU_COLUMNS: Builds = Builds {
     nodes: &[
-        Build::one(Role::Storage, &["heightmap"], impls::CPU_SCALAR),
-        Build::one(Role::Traversal, &["heightfield"], impls::CPU_SCALAR),
+        Build::providing(Role::Storage, Cap::Heights, impls::CPU_SCALAR),
+        Build::picking(Role::Traversal, MARCHES, impls::CPU_SCALAR),
         Build::one(Role::Visibility, &["columns"], impls::CPU_SCALAR),
         Build::picking(Role::Shading, Pick::Every, impls::CPU_SCALAR),
     ],
@@ -458,9 +465,9 @@ pub const GPU_WALK: Builds = Builds {
     nodes: &[
         Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DISPATCH).count(0, 4),
         Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_DISPATCH).count(1, 4),
-        Build::one(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR).count(0, 1),
-        Build::one(Role::Meshes, &["composite"], impls::GPU_RASTER).count(0, 1),
-        Build::one(Role::Prepass, &["beam"], impls::GPU_COMPUTE).count(0, 1),
+        Build::picking(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR).count(0, 1),
+        Build::providing(Role::Meshes, Cap::RayLimit, impls::GPU_RASTER).count(0, 1),
+        Build::picking(Role::Prepass, Pick::Every, impls::GPU_COMPUTE).count(0, 1),
         Build::one(Role::Visibility, &["raycast"], impls::GPU_DISPATCH),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_DISPATCH),
     ],
@@ -491,7 +498,7 @@ pub const GPU_WALK: Builds = Builds {
 /// and the shading (on this GPU or another). No meshes and no prepass.
 pub const GPU_RAYQUERY: Builds = Builds {
     nodes: &[
-        Build::one(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR),
+        Build::picking(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR),
         Build::providing(Role::Storage, Cap::Voxels, impls::GPU_RAYQUERY).count(0, 2),
         Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_RAYQUERY).count(1, 3),
         Build::one(Role::Visibility, &["raycast"], impls::GPU_RAYQUERY),
@@ -510,15 +517,15 @@ pub const GPU_RAYQUERY: Builds = Builds {
 /// walks, and the shading, whose shadow rays (and the meshes') are walks.
 pub const GPU_MESHING: Builds = Builds {
     nodes: &[
-        Build::one(
+        Build::picking(
             Role::Geometry,
-            &["greedy", "naive", "cubes", "boxes"],
+            Pick::Any(&[DRAWN_GEOMETRY, RT_GEOMETRY]),
             impls::CPU_SCALAR,
         )
         .count(1, 2),
         Build::one(Role::Visibility, &["faces"], impls::GPU_RASTER),
         Build::picking(Role::Draw, Pick::Every, impls::GPU_RASTER),
-        Build::one(Role::Meshes, &["depth"], impls::GPU_RASTER).count(0, 1),
+        Build::providing(Role::Meshes, Cap::FaceDepth, impls::GPU_RASTER).count(0, 1),
         Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(1, 3),
         Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(1, 3),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_DRAWN),
@@ -529,7 +536,7 @@ pub const GPU_MESHING: Builds = Builds {
             role: Role::Visibility,
             of: &[],
             port: "faces",
-            components: Pick::Named(&["greedy", "naive", "cubes"]),
+            components: DRAWN_GEOMETRY,
             bound: true,
         },
         Only {
@@ -574,9 +581,9 @@ pub const GPU_SAMPLER: Builds = Builds {
     nodes: &[
         Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(1, 4),
         Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(1, 3),
-        Build::one(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR).count(0, 1),
+        Build::picking(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR).count(0, 1),
         Build::one(Role::Visibility, &["quadtree"], impls::GPU_COMPUTE),
-        Build::one(Role::Holes, &["coverage"], impls::GPU_COMPUTE).count(0, 1),
+        Build::picking(Role::Holes, Pick::Every, impls::GPU_COMPUTE).count(0, 1),
         Build::picking(Role::Draw, Pick::Every, impls::GPU_RASTER),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_DRAWN),
     ],
@@ -629,7 +636,7 @@ pub const CPU_SAMPLER: Builds = Builds {
         Build::picking(Role::Draw, Pick::Every, impls::GPU_RASTER),
         Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(0, 2),
         Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(1, 2),
-        Build::one(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR).count(0, 1),
+        Build::picking(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR).count(0, 1),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_DRAWN),
     ],
     same: &[Same {
@@ -659,9 +666,9 @@ pub const CPU_SAMPLER: Builds = Builds {
 /// splat passes, the shading (its shadow rays walked).
 pub const GPU_SPLAT: Builds = Builds {
     nodes: &[
-        Build::one(
+        Build::picking(
             Role::Geometry,
-            &["points", "greedy", "naive", "boxes"],
+            Pick::Any(&[Pick::Providing(Cap::Points), RT_GEOMETRY]),
             impls::CPU_SCALAR,
         )
         .count(1, 2),
@@ -676,7 +683,7 @@ pub const GPU_SPLAT: Builds = Builds {
             role: Role::Visibility,
             of: &[],
             port: "points",
-            components: Pick::Named(&["points"]),
+            components: Pick::Providing(Cap::Points),
             bound: true,
         },
         SHADOW_WALKED,
@@ -690,8 +697,8 @@ pub const GPU_SPLAT: Builds = Builds {
 /// bounce rays), the column march, the shading.
 pub const GPU_COLUMNS: Builds = Builds {
     nodes: &[
-        Build::one(Role::Storage, &["heightmap"], impls::GPU_COMPUTE),
-        Build::one(Role::Traversal, &["heightfield"], impls::GPU_COMPUTE),
+        Build::providing(Role::Storage, Cap::Heights, impls::GPU_COMPUTE),
+        Build::picking(Role::Traversal, MARCHES, impls::GPU_COMPUTE),
         Build::one(Role::Visibility, &["columns"], impls::GPU_COMPUTE),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_COMPUTE),
     ],

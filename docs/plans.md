@@ -202,6 +202,9 @@ vary = [
   for everything the graph offers there: the components of the node's role, the APIs, `now`
   and `prev`, the other nodes (for `from`). Devices and knob values have no such list; name
   them.
+- `except = [...]` beside a `"*"` leaves those values out (taken by another entry already):
+  `{ node = "shadow.storage", component = "*", except = ["bricks"] }`. Each must be one `"*"`
+  offers.
 - `{ any = [[...], [...]] }` chooses between lists of edits, for what one edit cannot say (a
   node added and bound, a node removed, several knobs together). An empty list changes
   nothing. The edits inside may hold lists themselves.

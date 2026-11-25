@@ -97,12 +97,17 @@ New techniques go in as components, not as new renderers:
 2. Register it in `COMPONENTS` (`crates/mr-components/src/lib.rs`): its slot, its implementations per
    device kind and API, what it provides and what it needs from other stages. The
    `registry_is_consistent` test checks that the registry and the implementations agree.
-   A storage needs nothing more: every region takes any storage with a voxel implementation
-   on the device kind it runs the node on (`graph::Pick::Providing`), so registering it makes
-   it a choice in `Graph::choices`, sweeps (`component = "*"`), `list`, `audit`, the
-   catalogue, the reference classes and the GUI; the host's test `contract` checks this
-   with a storage only it registers (`mr_components::register_on_this_thread`). The other
-   roles' regions still name their components (`graph::Builds`): add it there too.
+   The regions (`graph::Builds`) take components by what they declare, not by name: a
+   storage by its interface (`voxels`, or `heights` for the column pipelines), a walk or
+   march by what it needs of its storage, a ray query by needing a geometry's acceleration
+   structure (`accel`), a geometry by its form (`quads`, `cubes`, `accel`, `points`), meshes
+   by where they go (`ray_limit` for a ray caster, `face_depth` for a rasteriser), drawers,
+   shadings, prepasses and hole detection by being implemented on the node's device
+   (`graph::Pick`). So registering a component with the right declaration makes it a choice in
+   `Graph::choices`, sweeps (`component = "*"`), `list`, `audit`, the catalogue, the reference
+   classes and the GUI; the host's test `contract` checks this per role with a component only
+   it registers (`mr_components::register_on_this_thread`). The exception is visibility, the
+   shape of a region (executor code of its own): its regions name it.
 3. Declare its knobs (`ParamSpec::int/float/bool/choice`, owned by the component with
    `ParamSpec::of(slot, &[components])`). Knobs marked `live` are applied in
    `Renderer::set_param`. The GUI and the tuner pick them up automatically. A node whose component

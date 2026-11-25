@@ -1264,7 +1264,7 @@ mod tests {
         );
         bind(&mut g, "shadow", "rq");
         let e = g.validate().unwrap_err();
-        assert!(e.contains("`pts`: the gpu executor (for this shape) builds geometry `greedy`, `naive`, `boxes`, not `points`"), "{e}");
+        assert!(e.contains("`rq` (rayquery) needs accel from `pts`: geometry `points` lacks it"), "{e}");
         let mut g = of("rayquery-gpu");
         rq(&mut g, "geo2", "rq2");
         bind(&mut g, "shadow", "rq2");

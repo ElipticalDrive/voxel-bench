@@ -35,7 +35,7 @@ renderer = [
     ] },
     # The shadow walk's storage beside the CPU visibility (the default `bricks` is in the entry above).
     { graph = "discover-cpu", vary = [
-        { node = "shadow.storage", component = ["hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap"] },
+        { node = "shadow.storage", component = "*", except = ["bricks"] },
         { node = "shadow.kernel", component = "*" },
     ] },
     # Holes filled by coverage (as plans/demo-pathtrace-discovery.toml).

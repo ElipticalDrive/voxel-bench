@@ -372,7 +372,7 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
         (Role::Storage | Role::Geometry, _) => CHANGES,
         (Role::Meshes, _) => MESHES,
         (Role::Prepass, _) => ON_STORAGE,
-        (Role::Traversal, "rayquery") => ON_GEOMETRY,
+        (Role::Traversal, _) if crate::caps::needs(role, name, Role::Geometry, crate::Cap::Accel) => ON_GEOMETRY,
         (Role::Traversal, _) => ON_STORAGE,
         (Role::Visibility, "raycast") => RAYCAST,
         (Role::Visibility, "quadtree") => QUADTREE,
@@ -417,7 +417,9 @@ pub fn state(role: Role, name: &str) -> Option<&'static str> {
         (Role::Storage, _) => "the representation, patched from the change log",
         (Role::Geometry, _) => "the faces, remeshed per changed chunk",
         (Role::Meshes, _) => "the mesh instances",
-        (Role::Traversal, "rayquery") => "acceleration structures built from its geometry",
+        (Role::Traversal, _) if crate::caps::needs(role, name, Role::Geometry, crate::Cap::Accel) => {
+            "acceleration structures built from its geometry"
+        }
         (Role::Visibility, "quadtree" | "cluster") => {
             "the discovered face set (faces kept `keep_frames` passes)"
         }
