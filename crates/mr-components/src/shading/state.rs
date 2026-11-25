@@ -23,8 +23,13 @@ struct Params {
     _pad: [u32; 3],
 }
 
-/// The shading knobs that configure the state (owned by the `pathtrace` component).
+/// The shading knobs that configure the state (owned by the path-tracing components:
+/// `pathtrace`).
 pub fn params() -> Vec<ParamSpec> {
+    let owners: Vec<&str> = crate::components(crate::Role::Shading)
+        .filter(|c| stateful(c.name))
+        .map(|c| c.name)
+        .collect();
     vec![
         ParamSpec::int(
             "bounces",
@@ -34,7 +39,7 @@ pub fn params() -> Vec<ParamSpec> {
             1,
             true,
         )
-        .of("shading", &["pathtrace"])
+        .of("shading", &owners)
         .baked(true),
         ParamSpec::int(
             "spp",
@@ -44,20 +49,20 @@ pub fn params() -> Vec<ParamSpec> {
             1,
             true,
         )
-        .of("shading", &["pathtrace"]),
+        .of("shading", &owners),
         ParamSpec::bool(
             "accumulate",
             "pathtrace shading: average frames while camera and world are still",
             true,
             true,
         )
-        .of("shading", &["pathtrace"]),
+        .of("shading", &owners),
     ]
 }
 
-/// Whether shading component `name` keeps per-pixel state.
+/// Whether shading component `name` keeps per-pixel state (it path traces).
 pub fn stateful(name: &str) -> bool {
-    name == "pathtrace"
+    crate::caps::declares(crate::Role::Shading, name, crate::Cap::Paths)
 }
 
 /// The device feature stateful shading needs when it runs in a fragment shader.

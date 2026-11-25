@@ -290,7 +290,7 @@ impl RendererSpec {
             return None;
         }
         let g = self.worker_graph().ok()??;
-        let n = g.nodes.values().find(|n| n.role == Role::Shading && n.component == "pathtrace")?;
+        let n = g.nodes.values().find(|n| n.role == Role::Shading && mr_components::shading::state::stateful(&n.component))?;
         let defaults = mr_components::shading::state::params();
         let default = |name: &str| defaults.iter().find(|p| p.name == name).map(|p| p.default.clone());
         let on = n.knobs.get("accumulate").and_then(|v| v.as_bool()).or_else(|| default("accumulate")?.as_bool()).unwrap_or(true);
@@ -304,7 +304,7 @@ impl RendererSpec {
         use mr_components::graph::Role;
         let traced = || {
             let g = self.worker_graph().ok()??;
-            let n = g.nodes.values().find(|n| n.role == Role::Shading && n.component == "pathtrace")?;
+            let n = g.nodes.values().find(|n| n.role == Role::Shading && mr_components::shading::state::stateful(&n.component))?;
             let default = mr_components::shading::state::params().iter().find(|p| p.name == "bounces").and_then(|p| p.default.as_i64()).unwrap_or(1);
             // Without bounces it is the direct model.
             match n.knobs.get("bounces").and_then(|v| v.as_integer()).unwrap_or(default) as u8 {

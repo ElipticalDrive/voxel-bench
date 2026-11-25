@@ -404,7 +404,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
         impls: &[Impl {
             kind: Kind::Gpu,
             apis: &[Api::Raster],
-            provides: &[Cap::MeshRays],
+            provides: &[Cap::MeshRays, Cap::Records],
         }],
         needs: &[],
     },
@@ -415,7 +415,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
         impls: &[Impl {
             kind: Kind::Gpu,
             apis: &[Api::Raster],
-            provides: &[Cap::MeshRays],
+            provides: &[Cap::MeshRays, Cap::Records],
         }],
         needs: &[],
     },
@@ -594,7 +594,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
         impls: &[Impl {
             kind: Kind::Gpu,
             apis: SHADER,
-            provides: &[],
+            provides: &[Cap::Paths],
         }],
         needs: &[],
     },

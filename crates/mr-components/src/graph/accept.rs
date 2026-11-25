@@ -183,8 +183,9 @@ fn device_blocker(ck: &Checked) -> Option<String> {
     // `visbuffer`, splats always (ids decoded into records on the first GPU; forward shading
     // has none).
     match hn.role {
-        Role::Draw if !matches!(hn.component.as_str(), "gbuffer" | "visbuffer") => why.push(format!(
-            "`{sid}` on {far} shades the hit records `{hid}` draws on {near}: draw = gbuffer or visbuffer"
+        Role::Draw if !crate::caps::declares(Role::Draw, &hn.component, crate::Cap::Records) => why.push(format!(
+            "`{sid}` on {far} shades the hit records `{hid}` draws on {near}: draw = {}",
+            records_drawers()
         )),
         Role::Draw => {}
         // Splatting settles visibility only once every point is in: its ids are deferred by
@@ -219,10 +220,19 @@ fn lookup_blocker(ck: &Checked) -> Option<String> {
     })
 }
 
+/// The drawers writing hit records (`a or b`).
+fn records_drawers() -> String {
+    let v: Vec<&str> = crate::components(Role::Draw)
+        .filter(|c| crate::caps::declares(Role::Draw, c.name, crate::Cap::Records))
+        .map(|c| c.name)
+        .collect();
+    v.join(" or ")
+}
+
 /// Why the APIs set in `ck` cannot run on its executor, if they can't: a non-fused node's
 /// API must be one its executor's declaration runs that role with on that device kind
 /// ([`Build::at`]), the one a face drawer fixes for the shading behind it (the fragment shader
-/// for `raster`, else a deferred compute pass) when the place has two and the API choice does
+/// for a forward drawer, a deferred compute pass for one writing records) when the place has two and the API choice does
 /// not set it; the stages its `api_choice` sets run with one API.
 fn api_blocker(ck: &Checked) -> Option<String> {
     let g = &ck.graph;
@@ -267,7 +277,7 @@ fn api_blocker(ck: &Checked) -> Option<String> {
                 [x] => Some(*x),
                 _ if chosen => None,
                 _ => drawer.map(|d| {
-                    if d == "raster" {
+                    if !crate::caps::declares(Role::Draw, d, crate::Cap::Records) {
                         Api::Raster
                     } else {
                         Api::Compute

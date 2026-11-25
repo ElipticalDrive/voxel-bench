@@ -382,7 +382,7 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
         (Role::Visibility, _) => FACES,
         (Role::Holes, _) => COVERAGE,
         (Role::Draw, _) => DRAW,
-        (Role::Shading, "pathtrace") => PATHTRACE,
+        (Role::Shading, _) if crate::caps::declares(role, name, crate::Cap::Paths) => PATHTRACE,
         (Role::Shading, _) => DIRECT,
         (Role::Post, _) => POSTED,
     }
@@ -421,7 +421,9 @@ pub fn state(role: Role, name: &str) -> Option<&'static str> {
         (Role::Visibility, "quadtree" | "cluster") => {
             "the discovered face set (faces kept `keep_frames` passes)"
         }
-        (Role::Shading, "pathtrace") => "accumulated radiance (restarted when the view changes)",
+        (Role::Shading, _) if crate::caps::declares(role, name, crate::Cap::Paths) => {
+            "accumulated radiance (restarted when the view changes)"
+        }
         (Role::Holes, _) => {
             "per-tile reveal radii and the sky mask; when each face last covered a pixel"
         }
