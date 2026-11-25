@@ -85,6 +85,11 @@ every face, so UV and orientation mistakes are obvious.
 
 ## Adding a component
 
+`scripts/new.py storage NAME "description"` does step 1 and the hand-kept lists of step 2 for a CPU
+storage (a working copy of `bricks` under its name; `remove storage NAME` undoes it, `try NAME [--sweep]`
+runs what it must pass, `accept-sweep` updates the full-sweep size the tests state; `sites` lists the
+edits). The steps below are what it automates and what stays yours.
+
 New techniques go in as components, not as new renderers:
 
 1. Add a directory `crates/mr-components/src/<slot>/<name>/` with an implementation for each kind of
