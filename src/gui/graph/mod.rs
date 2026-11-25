@@ -52,6 +52,16 @@ impl Trials {
     }
 }
 
+/// Shows a live lane's faults (`model::faults`) on the nodes of the renderer shown under `key`.
+pub fn set_faults(trials: &mut Trials, key: &str, spec: &RendererSpec, faults: std::collections::BTreeMap<String, Vec<String>>) {
+    if let Some(t) = trials.get(key, spec) {
+        t.faults = faults;
+    }
+}
+
+/// The colour of a node a live lane's failure or refusal is about.
+pub const FAULT: egui::Color32 = egui::Color32::from_rgb(235, 90, 75);
+
 /// The colour of a choice that gives a draft (a graph that does not run yet).
 const DRAFT: egui::Color32 = egui::Color32::from_rgb(230, 160, 60);
 
@@ -265,7 +275,16 @@ pub fn summary<'l>(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamS
             let dev = devs.get(&id).map_or(String::new(), |d| d.to_string());
             let fused = output(n.role, &n.component).fused();
             let tip = format!("node `{id}` ({}); {}\nRead by: {}", n.role.name(), if fused { "compiled into its callers".to_string() } else { format!("runs on {dev}") }, model::readers(&g, &id).iter().map(|(r, p)| format!("{r}.{p}")).collect::<Vec<_>>().join(", "));
-            if ui.add_sized([86.0, 18.0], egui::Button::new(RichText::new(&id).small()).frame(false)).on_hover_text(format!("{tip}\n\nClick: open it in the editor")).clicked() {
+            let fault = trial.faults.get(&id).map(|v| v.join("\n"));
+            let label = match &fault {
+                Some(_) => RichText::new(format!("⚠ {id}")).small().color(FAULT),
+                None => RichText::new(&id).small(),
+            };
+            let tip = match &fault {
+                Some(f) => format!("{tip}\n\nThe lane says this node is at fault:\n{f}"),
+                None => tip,
+            };
+            if ui.add_sized([86.0, 18.0], egui::Button::new(label).frame(false)).on_hover_text(format!("{tip}\n\nClick: open it in the editor")).clicked() {
                 edits.push(Edit::Open(Some(id.clone())));
             }
             if let Some(s) = choices(ui, (key, &id, "comp"), &n.component, &description(n.role, &n.component), component_options(&g, &id), trial, infos) {
@@ -645,6 +664,65 @@ mod tests {
         assert_eq!(g1.live_edits(&g0).unwrap().1.iter().map(|s| (s.role, s.component.as_deref())).collect::<Vec<_>>(), [(Role::Holes, None)]);
         // Storage is not live on discover-gpu.
         assert!(live_edits(&old, &spec(",storage=tree64"), &knobs).is_none());
+    }
+
+    /// A live lane's failure and refused knobs land on the node at fault: the failure by the
+    /// component it names (whatever the host put in front), a refusal by the knob's owner;
+    /// the side panel and the editor's canvas then draw that node marked.
+    #[test]
+    fn faults_are_shown_on_the_node_at_fault() {
+        let spec = RendererSpec::from_cli("raycast-gpu,storage=clipmap").unwrap();
+        let g = model::graph_of(&spec).unwrap();
+        let (_, params) = crate::pipelines::executor_of(&spec.pipeline().unwrap()).unwrap();
+        let storage = g.nodes.iter().find(|(_, n)| n.component == "clipmap").map(|(k, _)| k.clone()).unwrap();
+        let failure = "failed: worker error: clipmap: a view radius of 70 chunks needs a volume 141 chunks (4512 texels) wide, over what X allows";
+        let f = model::faults(&g, Some(failure), &[], &params);
+        assert_eq!(f.keys().collect::<Vec<_>>(), [&storage], "{f:?}");
+        assert!(model::faults(&g, Some("failed: worker error: the voxel pool is full"), &[], &params).is_empty());
+        assert!(model::faults(&g, Some("worker exited (signal 11)"), &[], &params).is_empty());
+        // A refused knob: its owner, as the editor files the knob under that node.
+        let (knob, owner) = params
+            .iter()
+            .find_map(|p| {
+                let (slot, comps) = p.owner.as_ref()?;
+                comps.iter().find_map(|c| model::knob_owner(&g, slot, c)).map(|o| (p.name.clone(), o))
+            })
+            .expect("a knob owned by a node");
+        let f = model::faults(&g, None, &[(knob.clone(), "out of range".into())], &params);
+        assert_eq!(f.keys().collect::<Vec<_>>(), [&owner], "{f:?}");
+        assert_eq!(f[&owner], [format!("refused {knob}: out of range")]);
+
+        // Drawn: both the side panel and the editor mark the storage node.
+        let run = RunSpec::default();
+        let knobs: Vec<_> = params.iter().map(|p| (p.clone(), knobs::option_value(p, &spec.knob_values()))).collect();
+        let ctx = egui::Context::default();
+        let key = format!("{:?}", Of::Lane(0));
+        let mut trials = Trials::default();
+        let marked = |out: &egui::FullOutput| {
+            fn texts(s: &egui::Shape, out: &mut Vec<String>) {
+                match s {
+                    egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
+                    _ => {}
+                }
+            }
+            let mut all = vec![];
+            out.shapes.iter().for_each(|c| texts(&c.shape, &mut all));
+            all.iter().any(|t| *t == format!("⚠ {storage}"))
+        };
+        for faulty in [false, true] {
+            let faults = if faulty { model::faults(&g, Some(failure), &[], &params) } else { Default::default() };
+            set_faults(&mut trials, &key, &spec, faults.clone());
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| drop(summary(ui, &key, &spec, &knobs, true, None, &mut trials, &[], &run)));
+            out.textures_delta.clear();
+            assert_eq!(marked(&out), faulty, "side panel");
+            let mut win = Window::new(&ctx, Of::Lane(0), None);
+            set_faults(&mut trials, &key, &spec, faults);
+            let size = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))), ..Default::default() };
+            let mut out = ctx.run_ui(size, |ui| drop(pane(ui, &mut win, "lane", &spec, &knobs, true, &mut trials, &[], &run)));
+            out.textures_delta.clear();
+            assert_eq!(marked(&out), faulty, "canvas");
+        }
     }
 
     /// Every choice the editor lists on every preset's graph is answered (runs, or a reason),

@@ -203,9 +203,18 @@ pub fn show(ui: &mut Ui, view: &mut View, auto_frame: bool, g: &Graph, devs: &Ha
         painter.rect_filled(r, 5.0 * s, fill);
         let head = Rect::from_min_size(r.min, vec2(r.width(), HEAD * s));
         painter.rect_filled(head, egui::CornerRadius { nw: (5.0 * s) as u8, ne: (5.0 * s) as u8, sw: 0, se: 0 }, data_color(output(n.role, &n.component)).gamma_multiply(0.28));
-        let stroke = if sel { Stroke::new(2.0, visuals.selection.stroke.color) } else if resp.hovered() { Stroke::new(1.5, visuals.widgets.hovered.fg_stroke.color) } else { Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color) };
+        // A node the live lane's failure or a refused knob is about: red, the message on hover.
+        let fault = trial.faults.get(&id).map(|v| v.join("\n"));
+        let resp = match &fault {
+            Some(f) => resp.on_hover_text(format!("The lane says this node is at fault:\n{f}")),
+            None => resp,
+        };
+        let stroke = if fault.is_some() { Stroke::new(if sel { 3.0 } else { 2.0 }, super::FAULT) } else if sel { Stroke::new(2.0, visuals.selection.stroke.color) } else if resp.hovered() { Stroke::new(1.5, visuals.widgets.hovered.fg_stroke.color) } else { Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color) };
         painter.rect_stroke(r, 5.0 * s, stroke, StrokeKind::Inside);
-        painter.text(r.min + vec2(7.0, 4.0) * s, Align2::LEFT_TOP, &id, font(10.0), visuals.weak_text_color());
+        match fault {
+            Some(_) => drop(painter.text(r.min + vec2(7.0, 4.0) * s, Align2::LEFT_TOP, format!("⚠ {id}"), font(10.0), super::FAULT)),
+            None => drop(painter.text(r.min + vec2(7.0, 4.0) * s, Align2::LEFT_TOP, &id, font(10.0), visuals.weak_text_color())),
+        }
         painter.text(r.min + vec2(7.0, 17.0) * s, Align2::LEFT_TOP, &n.component, FontId::proportional(13.0 * s), visuals.strong_text_color());
         // Where it runs (fused nodes: with their callers).
         if let Some(d) = devs.get(&id) {

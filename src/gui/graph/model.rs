@@ -47,11 +47,14 @@ pub struct Trial {
     graph: Graph,
     draft: Option<(Graph, String)>,
     memo: HashMap<String, Result<(Graph, RendererSpec), String>>,
+    /// What the live lane running this graph says is wrong with its nodes (`faults`), set
+    /// each frame by whoever shows the lane; empty for a plan's renderer.
+    pub faults: BTreeMap<String, Vec<String>>,
 }
 
 impl Trial {
     pub fn new(base: RendererSpec, graph: Graph) -> Self {
-        Self { base, graph, draft: None, memo: HashMap::new() }
+        Self { base, graph, draft: None, memo: HashMap::new(), faults: BTreeMap::new() }
     }
 
     /// The graph edited: the draft if there is one, else the one running.
@@ -146,6 +149,40 @@ pub fn knob_owner(g: &Graph, slot: &str, component: &str) -> Option<String> {
     let mut v: Vec<&String> = g.nodes.iter().filter(|(_, n)| n.role.registered() && n.role.name() == slot && n.component == component).map(|(k, _)| k).collect();
     v.sort_by_key(|k| (k.as_str() != slot, k.len(), k.to_string()));
     v.first().map(|k| k.to_string())
+}
+
+/// What a live lane's failure and refused knobs say about its nodes: node id -> the
+/// messages, for the editor to show on the node at fault. A failure names a node by its
+/// component (`clipmap: ...`, the convention of build, device-limit and memory errors: a
+/// component's error starts with its name) or by its id in backticks; each `: `-separated
+/// part of the message is tried, so the host's prefixes (`failed: worker error: `) do not
+/// matter. A component used by several nodes marks each. A refused knob marks the node that
+/// owns it. What names no node stays the lane's (its tile and panel show every failure).
+pub fn faults(g: &Graph, failure: Option<&str>, refused: &[(String, String)], params: &[mr_core::ParamSpec]) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    if let Some(e) = failure {
+        let parts: Vec<&str> = e.lines().next().unwrap_or("").split(": ").map(str::trim).collect();
+        for (id, n) in &g.nodes {
+            let named = |p: &&str| *p == n.component || *p == format!("`{id}`");
+            if !n.component.is_empty() && parts.iter().any(named) {
+                out.entry(id.clone()).or_default().push(e.to_string());
+            }
+        }
+    }
+    for (name, error) in refused {
+        let owners: Vec<String> = match params.iter().find(|s| s.name == *name).and_then(|s| s.owner.as_ref()) {
+            Some((slot, comps)) => comps.iter().filter_map(|c| knob_owner(g, slot, c)).collect(),
+            None => name.split_once('.').map(|(node, _)| node).filter(|node| g.nodes.contains_key(*node)).map(String::from).into_iter().collect(),
+        };
+        for id in owners {
+            let what = format!("refused {name}: {error}");
+            let v = out.entry(id).or_default();
+            if !v.contains(&what) {
+                v.push(what);
+            }
+        }
+    }
+    out
 }
 
 /// The nodes in reading order: from the world's side to the output, each after what it reads.

@@ -20,7 +20,9 @@ impl App {
             let sh = shared.lock().unwrap();
             ui.label(format!("{} · {} lights · {} chunks cached on host", sh.status, sh.lights, sh.cached_chunks))
                 .on_hover_text("Chunks are generated once on the host and streamed to each renderer around its camera");
+            let now = sh.start.map_or(0.0, |s| s.elapsed().as_secs_f64());
             for (i, l) in sh.lanes.iter().enumerate() {
+                graph::set_faults(&mut self.trials, &format!("{:?}", graph::Of::Lane(i)), &l.spec, l.faults(now));
                 ui.push_id(("lane", i), |ui| {
                     ui.group(|ui| self.lane_panel(ui, i, l, &mut actions));
                 });

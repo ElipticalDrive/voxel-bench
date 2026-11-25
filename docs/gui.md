@@ -132,6 +132,7 @@ What a renderer, a pass and the registry report, and where the GUI shows it.
 | what the view asks that its pipeline leaves out (meshes, LOD levels, transparency, knobs) | tile |
 | events (started, edits, refusals, hot swaps) of the last seconds | tile |
 | a failure: the error, a dead worker's exit status or signal, the watchdog's verdict on a hung one | tile (first line) and panel (whole) |
+| the node a failure or a refused knob is about: a failure names its component (`clipmap: ...`, the convention of build, device-limit and memory errors) or a node id in backticks; a refusal, the knob's owner | that node, red with ⚠, in the panel's pipeline rows and on the editor's canvas, the message on hover (a refusal as long as the tile shows it; what names no node stays the lane's) |
 | a hot swap in progress | panel |
 
 **A finished benchmark** (the Benchmark tab, one row per pass): fps, frame ms (mean, p99), GPU

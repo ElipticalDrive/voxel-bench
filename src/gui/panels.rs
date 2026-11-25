@@ -362,7 +362,11 @@ impl App {
             }),
             graph::Of::Lane(i) => self.live.as_ref().and_then(|l| {
                 let sh = l.shared.lock().unwrap();
-                sh.lanes.get(i).map(|l| (format!("live lane {} ({})", i + 1, l.spec.label()), l.spec.clone(), l.params.iter().map(|(s, v)| (s.clone(), self.knob_edits.get(&(i, s.name.clone())).cloned().unwrap_or(v.clone()))).collect()))
+                let now = sh.start.map_or(0.0, |s| s.elapsed().as_secs_f64());
+                sh.lanes.get(i).map(|l| {
+                    graph::set_faults(&mut self.trials, &format!("{:?}", graph::Of::Lane(i)), &l.spec, l.faults(now));
+                    (format!("live lane {} ({})", i + 1, l.spec.label()), l.spec.clone(), l.params.iter().map(|(s, v)| (s.clone(), self.knob_edits.get(&(i, s.name.clone())).cloned().unwrap_or(v.clone()))).collect())
+                })
             }),
         };
         let Some((title, spec, knobs)) = target else { return };

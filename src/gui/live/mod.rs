@@ -173,6 +173,24 @@ pub struct LaneView {
 }
 
 impl LaneView {
+    /// What its failure and its knobs refused in the last `EVENT_SECS` (as long as its tile
+    /// shows them) say about its graph's nodes (`graph::model::faults`).
+    pub fn faults(&self, now: f64) -> BTreeMap<String, Vec<String>> {
+        let Some(g) = crate::gui::graph::model::graph_of(&self.spec) else { return Default::default() };
+        let failure = match &self.status {
+            LaneStatus::Failed(m) => Some(m.as_str()),
+            _ => None,
+        };
+        let refused: Vec<(String, String)> = self
+            .events
+            .iter()
+            .filter(|(t, _)| now - t < crate::gui::metrics::EVENT_SECS)
+            .filter_map(|(_, e)| e.strip_prefix("refused ")?.split_once(": ").map(|(n, e)| (n.to_string(), e.to_string())))
+            .collect();
+        let params: Vec<ParamSpec> = self.params.iter().map(|(s, _)| s.clone()).collect();
+        crate::gui::graph::model::faults(&g, failure, &refused, &params)
+    }
+
     /// Folds a frame's stage times into the shown ones (exponential average). A stage the
     /// frame did not run keeps its value for a while (some run only in some frames), then
     /// goes (a swap or a knob removed it).
