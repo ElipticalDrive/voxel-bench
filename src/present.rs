@@ -13,6 +13,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, TryRecvError};
 use mr_core::lighting::PixelFormat;
 use mr_ipc::{FrameSlots, Listener, MsgWriter, PresentMsg, PresentReply};
 
+use crate::plan::Watchdog;
 use crate::window::{UiEvent, UiHandle};
 
 /// What a presenter tells the host ([`Presenter::poll`]).
@@ -39,13 +40,17 @@ pub struct Presenter {
     busy: bool,
     gain: f32,
     title: String,
+    /// When a silent presenter counts as hung (the lanes' [`Watchdog`]): connecting is its
+    /// build; stopping may take `factor` times as long as connecting did.
+    watchdog: Watchdog,
+    connected_in: Option<Duration>,
 }
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 impl Presenter {
     /// Starts a presenter window titled `title`, its frames' 1.0 at `gain` × SDR white.
-    pub fn spawn(title: &str, gain: f32) -> anyhow::Result<Self> {
+    pub fn spawn(title: &str, gain: f32, watchdog: Watchdog) -> anyhow::Result<Self> {
         let tag = format!("multirenderer-{}-present{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
         let sock = mr_ipc::endpoint(&tag);
         let listener = mr_ipc::listen(&sock)?;
@@ -56,7 +61,7 @@ impl Presenter {
             .stdout(Stdio::null())
             .spawn()
             .context("spawning a presenter")?;
-        Ok(Self { child: Some(child), link: Link::Connecting(listener, Instant::now()), shm: None, fresh: false, busy: false, gain, title: title.into() })
+        Ok(Self { child: Some(child), link: Link::Connecting(listener, Instant::now()), shm: None, fresh: false, busy: false, gain, title: title.into(), watchdog, connected_in: None })
     }
 
     fn send(&mut self, m: PresentMsg) -> anyhow::Result<()> {
@@ -74,11 +79,13 @@ impl Presenter {
         }
         if let Link::Connecting(l, since) = &self.link {
             let Some(stream) = mr_ipc::try_accept(l)? else {
-                if since.elapsed() > Duration::from_secs(20) {
-                    bail!("the presenter did not connect");
+                let build = Duration::from_secs_f64(self.watchdog.build_s.max(0.0));
+                if since.elapsed() > build {
+                    bail!("the presenter did not connect within {build:.1?} (run.watchdog.build_s)");
                 }
                 return Ok(vec![]);
             };
+            self.connected_in = Some(since.elapsed());
             let (mut input, tx) = mr_ipc::split::<PresentReply, PresentMsg>(stream);
             let (reply_tx, rx) = crossbeam_channel::unbounded();
             std::thread::Builder::new().name("rx-present".into()).spawn(move || {
@@ -153,12 +160,15 @@ impl Presenter {
 }
 
 impl Drop for Presenter {
-    /// Asks it to close, and kills it if it has not within two seconds.
+    /// Asks it to close, and kills it if it has not within the watchdog's deadline
+    /// (`factor` x its connect time, at least `min_s`; never connected: `min_s`).
     fn drop(&mut self) {
         let _ = self.send(PresentMsg::Shutdown);
         let Some(mut child) = self.child.take() else { return };
+        let w = &self.watchdog;
+        let wait = self.connected_in.map_or(Duration::ZERO, |c| c.mul_f64(w.factor.max(1.0))).max(Duration::from_secs_f64(w.min_s.max(0.0)));
         std::thread::spawn(move || {
-            let until = Instant::now() + Duration::from_secs(2);
+            let until = Instant::now() + wait;
             while Instant::now() < until {
                 if let Ok(Some(_)) = child.try_wait() {
                     return;

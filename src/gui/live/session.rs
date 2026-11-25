@@ -484,7 +484,7 @@ impl Session {
         for i in 0..self.lanes.len().min(64) {
             let want = ctl.windows >> i & 1 != 0;
             if want && !self.presenters.contains_key(&i) {
-                match Presenter::spawn(&self.window_title(i), ctl.paper_white) {
+                match Presenter::spawn(&self.window_title(i), ctl.paper_white, self.plan.run.watchdog.clone()) {
                     Ok(p) => {
                         self.presenters.insert(i, p);
                     }

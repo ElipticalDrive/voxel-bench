@@ -38,11 +38,21 @@ multirenderer (host: the server)            worker process (one per renderer: a 
   of its own to go by and gets `build_s` (default 300 s); after its first frame a wait may last
   `factor` (default 20) times the longest the lane has needed for anything so far, its build
   and initial load included, never under `min_s` (default 2 s, below which the machine's own
-  hiccups would be what times out). Scripted runs and the GUI apply it alike.
+  hiccups would be what times out). Scripted runs and the GUI apply it alike, in the GUI to a
+  lane's worker and to the replacement a hot swap is warming up (a hung replacement ends the
+  swap; the lane keeps its worker). Presenter windows go by it too: connecting is their
+  build (`build_s`), closing may take `factor` times as long as connecting did (at least
+  `min_s`), then the process is killed. A process's death frees the device memory its
+  renderer held (the driver's, measured: 1247 MiB used before, 1459 MiB during, 1247 MiB
+  after each of five runs whose GPU workers segfaulted, aborted or hung and were killed).
   `tests/survival.rs` drives the binary through every moment x way in both isolations (with
   `MR_FAULT_INJECTION=1` and a renderer option `fault = "<at>:<how>"`, see
-  `crates/mr-serve/src/fault.rs`); `knob` faults happen only in the GUI, `oom` runs only in a
-  process, under `prlimit`.
+  `crates/mr-serve/src/fault.rs`), and a sweep's sequential passes past failing ones (each
+  recorded in `observations.jsonl` with its reason, listed as failed in the catalogue);
+  `oom` runs only in a process, under `prlimit`. The GUI's test
+  (`gui_survives_faults`) runs one live session per isolation with a lane per moment x way,
+  `knob` included (a knob's error is a refusal, an event of the lane), and a hung hot swap;
+  what goes wrong while stopping is written to the session log.
 - **Server and clients.** The host is the server. It owns the authoritative world and sends
   every worker one stream of `WorldUpdate`s: chunk loads and unloads, block edits, lights and
   the environment. In the worker, the graph's `link` node delays, reorders or drops that

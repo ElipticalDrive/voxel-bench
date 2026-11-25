@@ -169,3 +169,65 @@ fn survives_every_fault_in_a_process() {
 fn survives_or_ends_as_documented_in_a_thread() {
     matrix("thread");
 }
+
+/// A sweep (as `scripts/sweep.py` runs it: passes one after another, `run.parallel = false`)
+/// goes on past failing passes: each is recorded in `observations.jsonl` with its reason, the
+/// passes after it run, and the catalogue lists it as failed.
+#[test]
+fn a_sweep_records_failed_passes_and_goes_on() {
+    let d = Path::new(env!("CARGO_TARGET_TMPDIR")).join("survival").join("sweep");
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let s = slow();
+    let faults = [("crash", "mid:segv", "SIGSEGV"), ("hangs", "first:hang", "killed"), ("errs", "build:error", "injected fault")];
+    let mut plan = format!(
+        r#"[scene]
+generator = {{ type = "flat" }}
+camera = {{ type = "line", from = [0, 20, 0], to = [40, 20, 0] }}
+[run]
+frames = 15
+warmup = 0
+resolution = [64, 36]
+view_radius = 1
+parallel = false
+watchdog = {{ build_s = {}, factor = 20, min_s = {} }}
+[output]
+dir = {:?}
+save = {{ every = 0 }}
+[[renderer]]
+graph = "raycast-cpu"
+label = "before"
+"#,
+        5.0 * s,
+        2.0 * s,
+        d.join("out").to_str().unwrap(),
+    );
+    for (label, fault, _) in faults {
+        plan += &format!("[[renderer]]\ngraph = \"raycast-cpu\"\nlabel = \"{label}\"\noptions = {{ fault = \"{fault}\" }}\n");
+    }
+    plan += "[[renderer]]\ngraph = \"raycast-cpu\"\nlabel = \"after\"\n";
+    std::fs::write(d.join("plan.toml"), plan).unwrap();
+    let exe = env!("CARGO_BIN_EXE_multirenderer");
+    let o = Command::new(exe).arg("run").arg(d.join("plan.toml")).env("MR_FAULT_INJECTION", "1").env("RUST_LOG", "warn").output().unwrap();
+    let log = String::from_utf8_lossy(&o.stderr).into_owned() + &String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "the sweep ended {}:\n{log}", o.status);
+    let obs = std::fs::read_to_string(find(&d.join("out"), "observations.jsonl").expect("observations.jsonl")).unwrap();
+    let records: Vec<serde_json::Value> = obs.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let error = |label: &str| {
+        let r = records.iter().find(|r| r.to_string().contains(&format!("\"{label}\""))).unwrap_or_else(|| panic!("no record of `{label}` in {obs}"));
+        r["error"].as_str().map(String::from)
+    };
+    for label in ["before", "after"] {
+        assert_eq!(error(label), None, "{label}");
+    }
+    for (label, _, says) in faults {
+        let e = error(label).unwrap_or_else(|| panic!("`{label}` recorded as passed"));
+        assert!(e.contains(says), "`{label}`: {e}");
+    }
+    let o = Command::new(exe).arg("catalogue").arg(d.join("out")).output().unwrap();
+    assert!(o.status.success(), "catalogue: {}", String::from_utf8_lossy(&o.stderr));
+    let cat = std::fs::read_to_string(d.join("out").join("catalogue.md")).unwrap();
+    for (label, _, says) in faults {
+        assert!(cat.lines().any(|l| l.contains(label) && l.contains("FAILED") && l.contains(says)), "the catalogue does not list `{label}` as failed:\n{cat}");
+    }
+}

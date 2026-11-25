@@ -389,3 +389,128 @@ fn live_split_end_to_end() {
     drop(sh);
     drop(live);
 }
+
+/// The live GUI outlives any renderer (`MR_FAULT_INJECTION`): one session per isolation, a
+/// faulty lane per moment x way beside a healthy one. Both run at once, each in a child of this test
+/// binary (`gui_fault_session`), where the environment allows injection (no `set_var` in a
+/// threaded harness). CPU only: runs everywhere.
+#[test]
+fn gui_survives_faults() {
+    let host = built_host();
+    let me = std::env::current_exe().unwrap();
+    let runs: Vec<_> = ["process", "thread"]
+        .into_iter()
+        .map(|iso| {
+            let c = std::process::Command::new(&me)
+                .args(["--exact", "gui::live::tests::gui_fault_session", "--ignored", "--nocapture", "--test-threads=1"])
+                .env("MR_FAULT_INJECTION", "1")
+                .env("MR_WORKER_EXE", &host)
+                .env("MR_GUI_FAULT_ISOLATION", iso)
+                .env("RUST_LOG", "warn")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            (iso, c)
+        })
+        .collect();
+    for (iso, c) in runs {
+        let o = c.wait_with_output().unwrap();
+        let out = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
+        assert!(o.status.success() && out.contains("1 passed"), "{iso}: {}\n{out}", o.status);
+    }
+}
+
+/// One live session with injected faults (run by [`gui_survives_faults`] with the
+/// environment it needs; does nothing without it).
+#[test]
+#[ignore]
+fn gui_fault_session() {
+    let Ok(iso) = std::env::var("MR_GUI_FAULT_ISOLATION") else { return };
+    let slow = std::env::var("MR_TEST_SLOW").ok().and_then(|v| v.parse::<f64>().ok()).filter(|f| *f >= 1.0).unwrap_or(1.0);
+    // A thread shares the host's process: abort and segfault end it (the defined cost, the
+    // scripted survival tests show it), so a thread session leaves them out.
+    let ways: &[&str] = if iso == "process" { &["error", "panic", "abort", "segv", "hang"] } else { &["error", "panic", "hang"] };
+    let moments = ["build", "first", "mid", "knob", "world", "shutdown"];
+    let faults: Vec<(&str, &str)> = moments.iter().flat_map(|a| ways.iter().map(move |h| (*a, *h))).collect();
+    let mut plan = format!(
+        r#"[scene]
+generator = {{ type = "flat" }}
+camera = {{ type = "line", from = [0, 20, 0], to = [40, 20, 0] }}
+[run]
+resolution = [32, 18]
+view_radius = 1
+isolation = "{iso}"
+watchdog = {{ build_s = {}, factor = 20, min_s = {} }}
+[[renderer]]
+graph = "raycast-cpu"
+label = "healthy"
+"#,
+        10.0 * slow,
+        3.0 * slow
+    );
+    for (at, how) in &faults {
+        plan += &format!("[[renderer]]\ngraph = \"raycast-cpu\"\nlabel = \"{at}:{how}\"\noptions = {{ fault = \"{at}:{how}\" }}\n");
+    }
+    // Last, a lane whose hot swap brings a replacement that hangs warming up.
+    plan += "[[renderer]]\ngraph = \"raycast-cpu\"\nlabel = \"swap\"\n";
+    let plan = Plan::parse(&plan, &[]).unwrap();
+    let control = Control { camera: CameraControl::Path, mode: PassMode::UNLIT, scene_frame: 0, events: true, fps_cap: 0.0, display_hz: 30.0, probe_interval: 0.0, windows: 0, paper_white: 1.0 };
+    let live = LiveHandle::start(plan, vec![], control, || {});
+    let shared = live.shared.clone();
+    let swap = faults.len() + 1;
+    let n = swap + 1;
+    let lane = |at: &str, how: &str| 1 + faults.iter().position(|f| *f == (at, how)).unwrap();
+    let says = |how: &str| match (how, iso.as_str()) {
+        ("error", _) => "injected fault",
+        ("panic", _) => "panicked: injected fault",
+        ("abort", _) => "SIGABRT",
+        ("segv", _) => "SIGSEGV",
+        ("hang", "process") => "killed",
+        ("hang", _) => "abandoned",
+        _ => unreachable!(),
+    };
+    // The lanes faulting at build, the first or the tenth frame failed, each saying why.
+    let settled = |s: &Shared, ats: &[&str]| {
+        s.lanes.len() == n && faults.iter().all(|(at, how)| !ats.contains(at) || matches!(&s.lanes[lane(at, how)].status, LaneStatus::Failed(m) if m.contains(says(how))))
+    };
+    wait(&shared, "build, first and mid faults to fail their lanes", 60, |s| settled(s, &["build", "first", "mid"]));
+    // A live knob of the renderer's (a bool toggled, else an integer stepped) changed on every
+    // lane, and a world edit.
+    let (name, value) = {
+        let sh = shared.lock().unwrap();
+        let knob = |want: fn(&ParamValue) -> Option<ParamValue>| sh.lanes[0].params.iter().find_map(|(p, v)| (p.live && !p.name.starts_with("host.")).then(|| want(v)).flatten().map(|w| (p.name.clone(), w)));
+        knob(|v| v.as_bool().map(|b| ParamValue::Bool(!b))).or_else(|| knob(|v| v.as_i64().map(|x| ParamValue::Int(x + 1)))).expect("a live knob on raycast-cpu")
+    };
+    for i in 0..n {
+        live.send(Cmd::SetParam { lane: i, name: name.clone(), value: value.clone() });
+    }
+    live.send(Cmd::Edit { origin: DVec3::new(5.5, 30.0, 0.5), dir: Vec3::NEG_Y, place: None });
+    let mut hangs = shared.lock().unwrap().lanes[swap].spec.clone();
+    hangs.options.insert("fault".into(), toml::Value::String("first:hang".into()));
+    live.send(Cmd::Swap { lane: swap, spec: hangs });
+    // A knob's error is a refusal (an event; the lane goes on); anything worse fails the lane.
+    let knob_ok = |s: &Shared, how: &str| {
+        let l = &s.lanes[lane("knob", how)];
+        matches!(&l.status, LaneStatus::Failed(m) if m.contains(says(how))) || (how == "error" && l.events.iter().any(|(_, e)| e.contains(says(how))))
+    };
+    wait(&shared, "knob and world faults", 60, |s| settled(s, &["build", "first", "mid", "world"]) && ways.iter().all(|h| knob_ok(s, h)));
+    // The hung replacement: the watchdog ends the swap, the lane keeps its own worker.
+    wait(&shared, "the hung hot swap to be given up", 60, |s| s.lanes[swap].events.iter().any(|(_, e)| e.starts_with("hot swap") && e.contains(says("hang"))));
+    // The healthy lane and the shutdown ones render on.
+    let frames: Vec<u64> = shared.lock().unwrap().lanes.iter().map(|l| l.frames).collect();
+    wait(&shared, "the healthy and shutdown lanes rendering on", 30, |s| {
+        [0, swap].into_iter().chain(ways.iter().map(|h| lane("shutdown", h))).all(|i| s.lanes[i].status == LaneStatus::Running && s.lanes[i].frames > frames[i] + 5)
+    });
+    // Stopping ends, and says what went wrong while stopping.
+    let t = Instant::now();
+    drop(live);
+    let sh = shared.lock().unwrap();
+    eprintln!("stopped in {:.1?}; log:\n{}", t.elapsed(), sh.log.join("\n"));
+    for how in ways {
+        let i = lane("shutdown", how);
+        let said = sh.log.iter().any(|l| l.starts_with(&format!("lane {} while stopping", i + 1)));
+        assert!(said, "shutdown:{how}: nothing said while stopping");
+    }
+    assert!(!sh.log.iter().any(|l| l.starts_with("lane 1 ")), "the healthy lane: {:?}", sh.log);
+}

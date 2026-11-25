@@ -261,11 +261,14 @@ impl Session {
                 }
             }
             let mut done = 0;
-            if let Some(w) = &sb.worker {
+            if let Some(w) = &mut sb.worker {
                 while let Ok(ev) = w.rx.try_recv() {
                     match ev {
                         WorkerEvent::Msg(WorkerMsg::FrameDone { .. }) => {
-                            sb.in_flight.pop_front();
+                            if let Some(f) = sb.in_flight.pop_front() {
+                                w.observe(f.sent.elapsed());
+                                w.built();
+                            }
                             done += 1;
                         }
                         WorkerEvent::Msg(WorkerMsg::Error(e)) | WorkerEvent::Msg(WorkerMsg::ParamError { error: e, .. }) => {
@@ -274,6 +277,12 @@ impl Session {
                         WorkerEvent::Closed => failures.push((i, anyhow::anyhow!("hot swap: replacement exited"))),
                         _ => {}
                     }
+                }
+                // The watchdog, as for the lane's own worker: its oldest warm-up frame.
+                if let Some(f) = sb.in_flight.front()
+                    && let Err(e) = w.check_hung(f.sent.elapsed()) {
+                    failures.push((i, e.context("hot swap")));
+                    continue;
                 }
             }
             lane.standby_warm += done;
@@ -452,7 +461,17 @@ impl Session {
         Ok(busy)
     }
 
-    fn fail(&mut self, i: usize, e: anyhow::Error) {
+    fn fail(&mut self, i: usize, mut e: anyhow::Error) {
+        // A process that died says how (a signal names a crash it could not report), as in
+        // scripted runs; one the watchdog killed has said why already.
+        let closed = format!("{e:#}").contains("exited");
+        let swap = format!("{e:#}").starts_with("hot swap");
+        if let Some(lane) = self.lane_mut(i) {
+            let w = if swap { lane.standby.as_mut().and_then(|s| s.worker.as_mut()) } else { lane.run.worker.as_mut() };
+            if let Some(status) = w.filter(|w| !w.is_hung()).and_then(|w| w.exit_status(closed)) {
+                e = e.context(format!("worker process ended: {status}"));
+            }
+        }
         let msg = format!("{e:#}");
         if i == REFERENCE {
             self.reference = None;
@@ -463,7 +482,7 @@ impl Session {
             return;
         }
         let Some(lane) = self.lanes.get_mut(i) else { return };
-        if msg.starts_with("hot swap") {
+        if swap {
             if let Some(w) = lane.standby.take().and_then(|s| s.worker) {
                 std::thread::spawn(move || w.shutdown());
             }
@@ -490,13 +509,19 @@ impl Session {
     pub(super) fn shutdown(&mut self) {
         self.presenters.clear();
         let mut handles = vec![];
-        for l in self.lanes.drain(..).chain(self.reference.take()) {
+        let n = self.lanes.len();
+        for (i, l) in self.lanes.drain(..).chain(self.reference.take()).enumerate() {
             for w in [l.run.worker, l.standby.and_then(|s| s.worker)].into_iter().flatten() {
-                handles.push(std::thread::spawn(move || w.shutdown()));
+                handles.push((i, std::thread::spawn(move || w.shutdown())));
             }
         }
-        for h in handles {
-            let _ = h.join();
+        // What went wrong while stopping (an error, a panic, an unclean exit, a hang) is said.
+        for (i, h) in handles {
+            let problem = h.join().unwrap_or_else(|_| Some("panicked while stopping".into()));
+            if let Some(p) = problem {
+                let who = if i == n { "the reference".into() } else { format!("lane {}", i + 1) };
+                self.log(format!("{who} while stopping: {p}"));
+            }
         }
     }
 }
