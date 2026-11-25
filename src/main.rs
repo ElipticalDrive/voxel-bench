@@ -143,7 +143,10 @@ fn main() -> anyhow::Result<()> {
 
     match cmd {
         Cmd::Gui { plan } => gui::run(plan),
-        Cmd::Worker { socket } => mr_worker::run(&socket),
+        Cmd::Worker { socket } => {
+            mr_serve::own_process();
+            mr_worker::run(&socket)
+        }
         Cmd::Present { socket, title } => present::run(&socket, &title),
         Cmd::Graph { keys: true, .. } => {
             for (i, line) in std::io::stdin().lines().enumerate() {

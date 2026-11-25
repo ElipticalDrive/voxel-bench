@@ -18,8 +18,20 @@ use mr_world::stream::Generating;
 
 pub mod fault;
 
-/// The `worker --socket <endpoint>` arguments a worker process is started with.
+/// Whether this worker is a process of its own (not a thread in the host).
+static OWN_PROCESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Marks this worker as a process of its own: when the host's end of the socket closes
+/// without a shutdown (the host died or gave up on it), the process exits at once, even with
+/// its renderer hung, rather than outliving its host. A worker thread never exits the process.
+pub fn own_process() {
+    OWN_PROCESS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The `worker --socket <endpoint>` arguments a worker process is started with (and marks it
+/// as one, [`own_process`]).
 pub fn socket_arg(mut args: impl Iterator<Item = String>) -> anyhow::Result<String> {
+    own_process();
     while let Some(a) = args.next() {
         if a == "--socket" {
             return args.next().context("--socket needs an endpoint");
@@ -82,9 +94,11 @@ pub fn run(socket: &str, entries: Vec<RendererEntry>, devices: fn(&mr_core::Devi
         let _ = wake_tx.send(Input::Wake);
     });
     std::thread::Builder::new().name("ipc-reader".into()).spawn(move || {
+        let mut shutdown = false;
         loop {
             match input.recv() {
                 Ok(Some(m)) => {
+                    shutdown |= matches!(m, HostMsg::Shutdown);
                     if tx.send(Input::Host(m)).is_err() {
                         break;
                     }
@@ -95,6 +109,12 @@ pub fn run(socket: &str, entries: Vec<RendererEntry>, devices: fn(&mr_core::Devi
                     break;
                 }
             }
+        }
+        // The host is gone without asking us to stop: nobody is left to report to, and a
+        // hung renderer would keep the process (and its device memory) alive forever.
+        if !shutdown && OWN_PROCESS.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!("the host closed the connection without a shutdown; exiting");
+            std::process::exit(3);
         }
     })?;
 
