@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Quiet verification: prints only problems and one-line totals; full logs in target/logs/.
 
-  scripts/check.py [only] [build|clippy|test|gpu|windows|wine|all]...
+  scripts/check.py [only] [build|clippy|test|gpu|lavapipe|windows|wine|all]...
 
 Default: build clippy test. `gpu`, `windows` and `wine` add to the default (`check.py gpu` runs
 build clippy test gpu); `only` runs just what is named (`check.py only gpu`). `build`: dev and release builds, warnings count as failures.
 `clippy`: clippy over the workspace, every warning a failure. `test`: the workspace's tests. `gpu`: the tests that need a GPU (the
 host's end-to-end live sessions, the tuner and scale-curve demos run briefly, the device pool, and `limits.py`: every shipped
 GPU graph on a device clamped to WebGPU's baseline sizes);
-only `gui_screenshot` stays manual. `windows`: zero-warning
+only `gui_screenshot` stays manual. `lavapipe`: the GPU tests that fit Mesa's software Vulkan
+(the device pool, the live sessions of the GPU graphs, the split, meshes, HDR, the headless GUI;
+not the compiled build, nor the tuner and scale-curve demos, which time things) on lavapipe,
+whatever GPU the machine has: what CI runs, where no GPU is. `windows`: zero-warning
 cross-checks for both Windows targets (`rustup target add x86_64-pc-windows-gnu
 x86_64-pc-windows-msvc`). `wine`: the unit and GPU end-to-end tests of the `-gnu` build under
 Wine (mingw64-gcc, wine); not in `all`."""
@@ -89,6 +92,18 @@ for w in what:
         r = subprocess.run([sys.executable, str(ROOT / "scripts" / "limits.py"), "--no-build"], cwd=ROOT, capture_output=True, text=True)
         print(r.stdout.strip() or r.stderr.strip()[-1000:])
         rc |= r.returncode != 0
+    elif w == "lavapipe":
+        icd = next((p for p in ("/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", "/usr/share/vulkan/icd.d/lvp_icd.json") if os.path.exists(p)), None)
+        if icd is None:
+            print("lavapipe: FAILED no lvp_icd json under /usr/share/vulkan/icd.d (package mesa-vulkan-drivers)")
+            rc = True
+            continue
+        os.environ.update(VK_DRIVER_FILES=icd, VK_ICD_FILENAMES=icd)
+        subprocess.run(["cargo", "build", "--release", "-q"], cwd=ROOT, capture_output=True)  # the sessions' workers
+        e2e = ["gui::live::tests::live_session_end_to_end", "gui::live::tests::live_hdr_window", "gui::live::tests::live_meshes_end_to_end", "gui::live::tests::live_split_end_to_end", "gui::tests::gui_headless_smoke"]
+        for name, args in (("lavapipe e2e", ["--bin", "multirenderer", "--", "--ignored", "--exact", *e2e]), ("lavapipe pool", ["-p", "mr-gpu", "--", "--ignored"])):
+            s, t = cargo(["test", "-q", "--release", *args], logs / f"{name.replace(' ', '-')}.log")
+            rc |= tests(name, s, t)
     elif w == "windows":
         for target in ("x86_64-pc-windows-gnu", "x86_64-pc-windows-msvc"):
             s, t = cargo(["check", "--workspace", "--all-targets", "--message-format=short", "--target", target], logs / f"check-{target}.log")

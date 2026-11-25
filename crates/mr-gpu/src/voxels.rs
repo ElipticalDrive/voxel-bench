@@ -35,17 +35,23 @@ const PAGE_BINDING: u32 = 9;
 /// Pages a pool may be split into (more: the pool stops at what they hold, and says so).
 const MAX_PAGES: u32 = 64;
 
+/// The most storage buffers one stage binds besides the pool's pages (faces' discover pass:
+/// 24 of its own group, 7 of the world's and up to 6 of the storage's). A device's per-stage
+/// limit less this is what the pages may take: lavapipe's 48 leaves 11 pages. A shader binding
+/// more fails its pipeline layout on such a device (the GPU tests on lavapipe catch it).
+const OTHER_BUFFERS: u32 = 37;
+
 impl PoolPages {
     pub const ONE: Self = Self { pages: 1, page_slots: u32::MAX };
 
     /// The pages of a pool of up to `want_slots` chunks on a device binding `slots_per_binding`
-    /// chunks at most and `buffers` storage buffers per stage. A last page under a sixteenth of a
+    /// chunks at most and `buffers` storage buffers per stage ([`OTHER_BUFFERS`] of them not the pool's). A last page under a sixteenth of a
     /// binding is not worth the page select: the pool stops at the whole pages (NVIDIA binds
     /// 2 GiB less a byte, so the default `pool_mb = 2048` stays one page, a chunk short).
     fn plan(want_slots: u32, slots_per_binding: u32, buffers: u32) -> Self {
         let per = slots_per_binding.max(1);
         let rest = want_slots % per;
-        let pages = (want_slots / per + (rest >= per / 16) as u32).clamp(1, MAX_PAGES.min(buffers.saturating_sub(16).max(1)));
+        let pages = (want_slots / per + (rest >= per / 16) as u32).clamp(1, MAX_PAGES.min(buffers.saturating_sub(OTHER_BUFFERS).max(1)));
         if pages == 1 { Self { pages: 1, page_slots: want_slots.min(per).max(1) } } else { Self { pages, page_slots: per } }
     }
 
@@ -755,7 +761,8 @@ mod tests {
         assert_eq!(PoolPages::plan(3000, 2048, 1 << 20), PoolPages { pages: 2, page_slots: 2048 });
         assert_eq!(PoolPages::plan(2100, 2048, 1 << 20), PoolPages { pages: 1, page_slots: 2048 });
         assert_eq!(PoolPages::plan(1 << 20, 2048, 1 << 20).pages, MAX_PAGES);
-        assert_eq!(PoolPages::plan(32768, 2048, 20).pages, 4, "headroom of 16 storage buffers for the other groups");
+        assert_eq!(PoolPages::plan(32768, 2048, OTHER_BUFFERS + 4).pages, 4, "headroom for the other groups' storage buffers");
+        assert_eq!(PoolPages::plan(32768, 2048, 48).pages, 11, "lavapipe: 48 a stage");
         assert_eq!(PoolPages::plan(32768, 2048, 8).pages, 1);
     }
 

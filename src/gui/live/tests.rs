@@ -352,9 +352,10 @@ fn live_split_end_to_end() {
     let control = Control { camera: CameraControl::Path, mode, scene_frame: 50, events: true, fps_cap: 0.0, display_hz: 30.0, probe_interval: 0.3, windows: 0, paper_white: 1.0 };
     let live = LiveHandle::start(plan, vec![], control, || {});
     let n = graphs.len() * 2;
-    // Each lane's best of three probes: discovery converges over the first frames, and
-    // discover-cpu's probes dip now and then on a still view (one GPU or two alike).
-    wait(&live.shared, "probes on every lane", 120, |s| s.lanes.len() == n && s.lanes.iter().all(|l| l.quality.len() >= 3));
+    // Each lane's best of five probes: discovery converges over the first frames, and
+    // discover-cpu's probes dip now and then on a still view (one GPU or two alike; three
+    // were not enough on lavapipe, one run in five 2 dB apart).
+    wait(&live.shared, "probes on every lane", 120, |s| s.lanes.len() == n && s.lanes.iter().all(|l| l.quality.len() >= 5));
     let sh = live.shared.lock().unwrap();
     assert!(!sh.log.iter().any(|l| l.contains("failed")), "{:?}", sh.log);
     for (i, (g, edits)) in graphs.iter().enumerate() {

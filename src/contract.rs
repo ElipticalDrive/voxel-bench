@@ -278,7 +278,7 @@ fn keys_stay_across_turns() {
     let shipped = || graph::SHIPPED.iter().map(|(name, _)| (*name, graph::shipped(name).unwrap()));
     let seen = |g: &Graph| (g.key().unwrap(), g.label().unwrap());
     let before: Vec<_> = shipped().map(|(_, g)| seen(&g)).collect();
-    mr_components::register_on_this_thread(&REGISTERED);
+    mr_components::register_on_this_thread(&STORAGE);
     assert_eq!(shipped().map(|(_, g)| seen(&g)).collect::<Vec<_>>(), before, "registering a component moved a shipped graph's key or label");
 
     // Knobs at their defaults, on every node of every shipped graph as every component it may be.

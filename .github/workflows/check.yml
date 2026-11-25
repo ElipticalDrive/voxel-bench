@@ -1,5 +1,6 @@
 # scripts/check.py on every push: builds, clippy and tests without warnings, and the Windows
-# cross-checks. No GPU here, so not the end-to-end tests (`check.py gpu`). The toolchain is the
+# cross-checks. No GPU here: the GPU tests that fit run on Mesa's lavapipe (`check.py
+# lavapipe`), the rest (`check.py gpu`) on a machine with one. The toolchain is the
 # one `rust-toolchain.toml` pins (rustup installs it, with its components and targets).
 name: check
 on:
@@ -17,4 +18,18 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: logs
+          path: target/logs/
+  lavapipe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+      - run: rustup toolchain install && rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: vulkaninfo --summary | grep -iE "deviceName|driverInfo|apiVersion" || true
+      - run: python3 scripts/check.py only lavapipe
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lavapipe-logs
           path: target/logs/

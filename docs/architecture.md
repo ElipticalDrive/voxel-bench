@@ -139,6 +139,12 @@ features asked for. Asynchronous renderers call the `Waker` when work may have f
   `MR_GPU_LIMITS=sizes`, on a small world (renders, the same pixels as unclamped) and a big
   one at 4K (renders or fails naming a `max_...` limit), so a new node cannot quietly assume a
   big binding.
+- GPU tests in CI, `scripts/check.py lavapipe`: the ones that fit Mesa's software Vulkan (the
+  device pool, the live sessions of raycast, meshes, HDR and the two-GPU split, the headless
+  GUI) on lavapipe whatever GPU the machine has; CI's `lavapipe` job runs it on every push. A
+  real small device: 128 MiB a binding and 48 storage buffers a stage, so the voxel pool is
+  paged and a shader binding more than `voxels.rs`'s `OTHER_BUFFERS` besides the pool fails
+  there. Not the compiled build, nor the timing demos.
 - The architecture guard, `cargo test -q --test architecture`: no WGSL function defined twice
   across executors or redefining shared code, no bodies copied under other names, and
   lighting only through the shading component. Exceptions are listed in the test with their
