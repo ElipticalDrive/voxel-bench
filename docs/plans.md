@@ -304,7 +304,10 @@ rays it casts make no difference; without meshes: the meshes node and its shadow
 
 `multirenderer catalogue <dirs…> [--out DIR] [--min-psnr 35]` reads any number of runs and
 writes `catalogue.md` and `catalogue.csv` (the CSV has the scene features as columns, and a
-pipeline as its label, executor and graph key). Per
+pipeline as its label, executor and graph key, and `build`: the build its figures come from,
+`generic` (the precompiled build sweeps run by default) or the level it was compiled at for the
+machine, `native`; a compiled lane's label also ends in ` [native]`, and the guard keys it as
+a pass of its own). `COMPILE=native scripts/turn-sweep.py <plan>` runs a plan's share compiled. Per
 scenario (plan × mode) it ranks the renderers by fps. Renderers below the PSNR floor count as
 incorrect: they are ranked, but never best (the floor applies to `psnr_like` where a renderer
 has one: fewer levels of detail are a loss, not an error; a path tracer is held to its own

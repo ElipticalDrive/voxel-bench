@@ -88,6 +88,10 @@ pub struct Observation {
     #[serde(default)]
     pub graph_key: Option<String>,
     pub options: serde_json::Value,
+    /// The build it ran as when compiled for this machine (`native`, `break-in`); none: the
+    /// generic build, as sweeps run by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled: Option<String>,
     pub repeat: u32,
     pub error: Option<String>,
     /// The lanes of its pass that failed part-way (its timings shared the machine with them).
@@ -167,6 +171,7 @@ impl Observation {
             graph: r.graph.clone(),
             graph_key: r.graph_key.clone(),
             options: serde_json::to_value(&r.options).unwrap_or_default(),
+            compiled: r.compiled.clone(),
             repeat: r.repeat,
             error: r.error.clone(),
             beside_failed: r.beside_failed.clone(),

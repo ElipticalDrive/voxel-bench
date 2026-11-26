@@ -44,6 +44,13 @@ class Records(unittest.TestCase):
                 del os.environ['RENAMES']
             return got, out.getvalue()
 
+    def test_a_compiled_build_is_a_pass_of_its_own(self):
+        native = record()
+        native['compiled'] = 'native'
+        (out, unread, _), _ = self.load([record(), native])
+        self.assertEqual((len(out), unread), (2, 0))
+        self.assertEqual(sorted(str(k[4]) for k in out), ['None', 'native'])
+
     def test_removed_component_counted_with_reason(self):
         (out, unread, _), text = self.load([record(), record(kernel=('component', 'gone'))])
         self.assertEqual((len(out), unread), (1, 1))

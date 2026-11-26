@@ -15,6 +15,7 @@ the guard compares the passes both have.
   RES=480x270 EVERY=20 FRAMES=60 scripts/turn-sweep.py terrain  # a quick correctness pass
   OUT=target/turn/base scripts/turn-sweep.py               # into a given directory (adds to it)
   GPU=radv scripts/turn-sweep.py terrain    # on the GPU adapter whose name contains this
+  COMPILE=native scripts/turn-sweep.py terrain  # the pipelines compiled for this machine (the native sample)
 
 A plan not in the list below takes every pair. Results: target/turn/<time>/<run>/observations.jsonl,
 and target/turn/<time>/catalogue.md / .csv. Runs resume as sweep.py's do: the same command
@@ -48,6 +49,8 @@ def cover(p):
 args = ["-s", full_sweep(), "-s", "run.repeats=1", "-s", "run.parallel=false", "-s", f"output.compare.every={os.environ.get('EVERY', 50)}", "-u", "output.save", "-u", "output.window"]
 if os.environ.get("FRAMES"):
     args += ["-s", f"run.frames={os.environ['FRAMES']}", "-s", "run.warmup=10"]
+if os.environ.get("COMPILE"):  # off (the default), native, break-in: every CPU pipeline compiled for this machine
+    args += ["-s", f'run.compile="{os.environ["COMPILE"]}"']
 if os.environ.get("GPU"):
     args += ["-s", f'run.devices={{gpus=["{os.environ["GPU"]}"]}}']
 if os.environ.get("RES"):

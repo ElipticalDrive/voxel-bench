@@ -33,6 +33,8 @@ sweep = full_sweep()
 args = ["-s", sweep, "-s", "run.repeats=1", "-s", "run.parallel=false", "-s", f"output.compare.every={os.environ.get('EVERY', 50)}", "-s", f'output.dir="{out}"', "-s", "output.resume=true", "-u", "output.save", "-u", "output.window"]
 if os.environ.get("FRAMES"):
     args += ["-s", f"run.frames={os.environ['FRAMES']}", "-s", "run.warmup=10"]
+if os.environ.get("COMPILE"):  # off (the default), native, break-in: every CPU pipeline compiled for this machine
+    args += ["-s", f'run.compile="{os.environ["COMPILE"]}"']
 if os.environ.get("GPU"):
     args += ["-s", f'run.devices={{gpus=["{os.environ["GPU"]}"]}}']
 if os.environ.get("RES"):

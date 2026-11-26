@@ -147,6 +147,10 @@ pub struct PassReport {
     pub graph_key: Option<String>,
     #[serde(skip_serializing_if = "toml::Table::is_empty")]
     pub options: toml::Table,
+    /// The build it ran as when compiled for this machine (`native`, `break-in`); none: the
+    /// generic (precompiled) build.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compiled: Option<String>,
     pub view_radius: u32,
     /// The link its client received the stream over, when not free.
     #[serde(skip_serializing_if = "mr_core::link::LinkSpec::free")]

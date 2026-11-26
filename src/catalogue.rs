@@ -27,6 +27,8 @@ pub struct Entry {
     pub graph: Option<Graph>,
     pub graph_key: Option<String>,
     pub options: String,
+    /// The build its figures come from: `generic` (the precompiled build), or the compiled level.
+    pub build: String,
     /// fps (0 when not measured): what it is ranked by.
     pub fps: f64,
     /// Each metric's median over its records that ran (`crate::metrics`; unknown names kept).
@@ -247,6 +249,7 @@ impl Catalogue {
                         graph: os[0].pipeline(),
                         graph_key: os[0].graph_key.clone(),
                         options: os[0].options.to_string(),
+                        build: os[0].compiled.clone().unwrap_or_else(|| "generic".into()),
                         fps: metrics.get("fps").copied().unwrap_or(0.0),
                         metrics,
                         mem_mb: None,
@@ -499,7 +502,7 @@ impl Catalogue {
         let mut names: Vec<&str> = crate::metrics::METRICS.iter().map(|m| m.name).filter(|n| present.iter().any(|p| p.as_str() == *n)).collect();
         names.extend(present.iter().map(|p| p.as_str()).filter(|p| crate::metrics::get(p).is_none()));
         let mut s = format!(
-            "machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,executor,graph_key,options,rel,valid,mem_mb,mem_rel,frontier,samples,error{}\n",
+            "machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,executor,graph_key,options,build,rel,valid,mem_mb,mem_rel,frontier,samples,error{}\n",
             names.iter().map(|n| format!(",{n}")).collect::<String>()
         );
         let q = |x: &str| format!("\"{}\"", x.replace('"', "\"\""));
@@ -517,11 +520,12 @@ impl Catalogue {
                 let metrics: String = names.iter().map(|n| format!(",{}", e.m(n).map(|x| x.to_string()).unwrap_or_default())).collect();
                 let _ = writeln!(
                     s,
-                    "{scenario},{},{},{},{},{:.4},{},{},{},{},{},{}{metrics}",
+                    "{scenario},{},{},{},{},{},{:.4},{},{},{},{},{},{}{metrics}",
                     q(&e.label),
                     e.graph.as_ref().map_or("", |g| g.runs_on()),
                     e.graph_key.as_deref().unwrap_or(""),
                     q(&e.options),
+                    e.build,
                     e.rel,
                     e.valid,
                     opt(e.mem_mb, 1),
@@ -757,11 +761,13 @@ mod metric_tests {
         let known = Observation::parse(&v.to_string()).unwrap().unwrap();
         assert_eq!(known.metric("test_metric"), Some(3.5));
         let mut other = base.clone();
-        other.label = "other".into();
+        other.label = "other [native]".into();
+        other.compiled = Some("native".into());
         other.metrics.insert("gpu_ms".into(), 1.25);
         let csv = Catalogue::build(&[known, other], 35.0).csv();
         let head = csv.lines().next().unwrap();
-        assert!(head.ends_with(",fps,gpu_ms,test_metric"), "{head}");
+        assert!(head.ends_with(",fps,gpu_ms,test_metric") && head.contains(",options,build,"), "{head}");
+        assert!(csv.lines().any(|l| l.contains(",generic,")) && csv.lines().any(|l| l.contains(",native,")), "the build a figure comes from: {csv}");
         assert!(csv.lines().any(|l| l.ends_with(",10,,3.5")) && csv.lines().any(|l| l.ends_with(",,1.25,")), "{csv}");
     }
 }

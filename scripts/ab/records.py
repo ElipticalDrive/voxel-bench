@@ -123,7 +123,9 @@ def graph_keys(records):
 
 
 def key(o):
-    return (o['plan'], o['mode'], o['graph_key'], json.dumps(o['options'], sort_keys=True))
+    """A pass: plan, mode, pipeline, knobs, and the build (None: generic; `native` ...): a pipeline
+    compiled for the machine is a pass of its own, never compared with the generic build's."""
+    return (o['plan'], o['mode'], o['graph_key'], json.dumps(o['options'], sort_keys=True), o.get('compiled'))
 
 
 def load_all(d):

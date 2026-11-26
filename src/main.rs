@@ -420,6 +420,7 @@ impl Ctx<'_> {
             graph_key: spec.pipeline().and_then(|g| g.key().ok()),
             graph: spec.pipeline(),
             options: spec.options.clone(),
+            compiled: spec.compiled(run).map(|c| c.name().to_string()),
             view_radius: spec.view_radius(run),
             link: spec.link(),
             mode,
