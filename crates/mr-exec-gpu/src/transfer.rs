@@ -15,6 +15,14 @@
 //! The first GPU's edge holds the records in a buffer (rays) or a render target of 8-byte
 //! texels (the `gbuffer` drawer's): a target is copied out with its rows padded to 256 bytes
 //! (wgpu's copy alignment) and written into the second GPU's records buffer unpadded.
+//!
+//! Gates on the edge (`shading.hits` read through gate nodes) put the records read back
+//! through them on the host, in their serialized form ([`Records`]): the frame's id, its size
+//! and the records' bytes. The second executor's edge holds the last records that arrived
+//! (none yet: zeros, which read as sky), shaded with the camera of the frame they were cast
+//! in (the second side knows the cameras it asked for, by frame id; a frame id the network
+//! zeroed finds none, and the frame's own camera is used). The gates' time is a CPU stage
+//! (`gate`); both executors may be one GPU's.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -79,6 +87,44 @@ pub(crate) struct Transfer {
     nodes: Vec<String>,
     wait_ms: f32,
     upload_ms: f32,
+    /// The gates the records cross, if any, and their state.
+    gates: Option<Gated>,
+}
+
+/// The gates on the edge: the chain, the cameras of the frames sent and not yet arrived
+/// (by frame id), the camera of the records the second GPU holds.
+struct Gated {
+    chain: mr_core::gate::GateChain,
+    cameras: VecDeque<(u64, Camera)>,
+    shown: Option<Camera>,
+}
+
+/// A frame's hit records on the wire: its id, width and height, then the records' bytes
+/// (8 per pixel, rows unpadded).
+pub(crate) struct Records {
+    frame_id: u64,
+    width: u32,
+    height: u32,
+    bytes: Vec<u8>,
+}
+
+impl mr_core::gate::Wire for Records {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.reserve(16 + self.bytes.len());
+        let mut p = mr_core::gate::Put(out);
+        p.u64(self.frame_id);
+        p.u32(self.width);
+        p.u32(self.height);
+        p.bytes(&self.bytes);
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, mr_core::gate::WireError> {
+        let mut g = mr_core::gate::Get(bytes);
+        let (frame_id, width, height) = (g.u64()?, g.u32()?, g.u32()?);
+        let n = width as usize * height as usize * 8;
+        let bytes = g.take(n)?.to_vec();
+        g.end()?;
+        Ok(Records { frame_id, width, height, bytes })
+    }
 }
 
 /// The bytes of a row of `width` records as the first GPU's edge is copied out: a render
@@ -106,8 +152,9 @@ impl Transfer {
     pub fn of(g: &graph::Checked, near: &Core, far: &Core) -> anyhow::Result<Self> {
         let (Some(edge), Some(_)) = (near.edges.hits().filter(|h| h.holds_records()), far.edges.records()) else { anyhow::bail!("no hit records cross between the two GPUs (placement = deferred, or draw = gbuffer or visbuffer)") };
         let late = g.graph.nodes.get(&edge.to).is_some_and(|n| n.when("hits") == When::Prev);
-        tracing::info!("`{}` -> `{}`.hits: {} -> {} ({})", edge.from, edge.to, near.gpu.info.name, far.gpu.info.name, if late { "prev" } else { "now" });
-        Ok(Self { staging: staging(near, late), sent: VecDeque::new(), late, near: Captured::default(), nodes: vec![edge.from.clone(), edge.to.clone()], wait_ms: 0.0, upload_ms: 0.0 })
+        let gates = g.gates_on(&edge.to, "hits").map(|e| Gated { chain: mr_core::gate::GateChain::new(&e.edge(), &e.gates), cameras: VecDeque::new(), shown: None });
+        tracing::info!("`{}` -> `{}`.hits: {} -> {} ({}{})", edge.from, edge.to, near.gpu.info.name, far.gpu.info.name, if late { "prev" } else { "now" }, if gates.is_some() { ", through gates" } else { "" });
+        Ok(Self { staging: staging(near, late), sent: VecDeque::new(), late, near: Captured::default(), nodes: vec![edge.from.clone(), edge.to.clone()], wait_ms: 0.0, upload_ms: 0.0, gates })
     }
 
     /// The first GPU's frame sink: its frames' stats, kept for the frame the second completes.
@@ -167,6 +214,36 @@ impl Transfer {
         let staging = &self.staging[s.buffer];
         let records = far.edges.records().expect("checked at creation").buffer();
         let data = staging.slice(..).get_mapped_range()?;
+        if let Some(gated) = &mut self.gates {
+            let (w, h) = (near.width, near.height);
+            let width = w as usize * 8;
+            let bytes = match padded_row(near) {
+                Some(row) => data.chunks(row as usize).take(h as usize).flat_map(|r| &r[..width]).copied().collect(),
+                None => data[..width * h as usize].to_vec(),
+            };
+            drop(data);
+            staging.unmap();
+            self.wait_ms = (arrived - start).as_secs_f32() * 1e3;
+            gated.cameras.push_back((s.frame_id, s.camera));
+            let gate_start = Instant::now();
+            let got = gated.chain.gates.pass(req.time, Some(Records { frame_id: s.frame_id, width: w, height: h, bytes }));
+            let gate_ms = gate_start.elapsed().as_secs_f32() * 1e3;
+            // The last that fits this frame (one sent before a resize does not).
+            if let Some(r) = got.into_iter().rev().find(|r| (r.width, r.height) == (w, h)) {
+                far.gpu.queue.write_buffer(records, 0, &r.bytes);
+                while gated.cameras.front().is_some_and(|(id, _)| *id < r.frame_id) {
+                    gated.cameras.pop_front();
+                }
+                gated.shown = Some(gated.cameras.front().filter(|(id, _)| *id == r.frame_id).map_or(req.camera, |(_, c)| *c));
+            }
+            // The transfer's stage: the records copied out of the read-back and written.
+            self.upload_ms = arrived.elapsed().as_secs_f32() * 1e3 - gate_ms;
+            let mut stats = stats.unwrap_or_default();
+            let ids: Vec<String> = gated.chain.nodes.iter().map(|(id, _)| id.clone()).collect();
+            stats.stages.push(StageTime::cpu("gate", &ids, gate_ms));
+            stats.gates.extend(gated.chain.reports());
+            return Ok((stats, gated.shown.unwrap_or(req.camera)));
+        }
         match padded_row(near) {
             // A target's rows, unpadded into the records.
             Some(row) => {
@@ -202,6 +279,10 @@ impl Transfer {
             self.staging[s.buffer].unmap();
         }
         self.staging = staging(near, self.late);
+        // The second GPU's edge is new (sky) until records of the new size arrive.
+        if let Some(g) = &mut self.gates {
+            g.shown = None;
+        }
         Ok(())
     }
 

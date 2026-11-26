@@ -21,11 +21,14 @@ use crate::{Core, CoreSpec};
 const STORAGE_GROUPS: &[u32] = &[2, 3, 4, 5];
 
 /// The GPU slot the shading runs on, if it is another than that of the node its hits come
-/// from (ray casting's visibility, the face drawer).
+/// from (ray casting's visibility, the face drawer), or the shading's own when gates sit on
+/// its hits: past a gate the shading is a domain of its own, with its own copy of what it
+/// walks, on the same GPU or another.
 pub(crate) fn far_slot(g: &graph::Checked) -> Option<usize> {
     let near = g.input(Role::Shading, "hits").map(|id| g.devices[id]);
+    let gated = g.gates_on(g.shading(), "hits").is_some();
     match (near, g.find(Role::Shading).map(|id| g.devices[id])) {
-        (Some(near), Some(Device::Gpu(far))) if near != Device::Gpu(far) => Some(far as usize),
+        (Some(near), Some(Device::Gpu(far))) if near != Device::Gpu(far) || gated => Some(far as usize),
         _ => None,
     }
 }
@@ -87,7 +90,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
     let shade = compile(&core, &pipeline_layout, &walks, shadow, bounce, spec.shading)?;
     core.gpu.save_cache();
     tracing::info!("shading on gpu{slot} ({}): shadow {}, bounce {}", core.gpu.info.name, walks.label(shadow), walks.label(bounce));
-    let passes = exec::passes(g, slot, |role| -> Option<Box<dyn Node<Shade>>> {
+    let passes = exec::far_passes(g, slot, |role| -> Option<Box<dyn Node<Shade>>> {
         Some(match role {
             Role::Traversal => Box::new(Accel),
             Role::Storage => Box::new(Storage),

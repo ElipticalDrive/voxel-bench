@@ -221,7 +221,7 @@ fn lookup_blocker(ck: &Checked) -> Option<String> {
 }
 
 /// The drawers writing hit records (`a or b`).
-fn records_drawers() -> String {
+pub(super) fn records_drawers() -> String {
     let v: Vec<&str> = crate::components(Role::Draw)
         .filter(|c| crate::caps::declares(Role::Draw, c.name, crate::Cap::Records))
         .map(|c| c.name)

@@ -737,6 +737,34 @@ impl Checked {
         self.built_by(b)
     }
 
+    /// Why the hits `reader`.`port` reads cannot leave the GPU pass that writes them as hit
+    /// records (to cross a gate), if they can't: the reader is the shading, and its source
+    /// writes records (rays deferred, a drawer writing records, splats) with no mesh surfaces
+    /// beside them.
+    fn records_cross(&self, reader: &str, port: &str) -> Option<String> {
+        let g = &self.graph;
+        let sn = g.nodes.get(reader)?;
+        if sn.role != Role::Shading || port != "hits" {
+            return Some(format!("on a GPU only the shading's hits cross as records, not `{reader}`.{port}"));
+        }
+        let hid = sn.inputs.get("hits")?;
+        let hn = g.nodes.get(hid)?;
+        match hn.role {
+            Role::Draw if !crate::caps::declares(Role::Draw, &hn.component, crate::Cap::Records) => {
+                return Some(format!("`{hid}` draws no hit records to send (draw = {})", super::accept::records_drawers()));
+            }
+            Role::Draw => {}
+            Role::Visibility if hn.component == "splat" => {}
+            _ if sn.knobs.get("placement").and_then(|v| v.as_str()) != Some("deferred") => {
+                return Some(format!("with `placement = inline` the hits never leave the visibility pass; set `placement = \"deferred\"` on `{reader}`"));
+            }
+            _ => {}
+        }
+        g.nodes.iter().find(|(_, n)| n.role == Role::Meshes && n.component != "none").map(|(id, n)| {
+            format!("`{id}` ({}): mesh surfaces are rasterised beside the records, and the shading past the gate has not their triangles (remove `{id}`)", n.component)
+        })
+    }
+
     /// Whether region `builds` builds this graph; else the first node (or role) it cannot,
     /// with the reason.
     pub fn built_by(&self, builds: Builds) -> Result<(), String> {
@@ -752,7 +780,7 @@ impl Checked {
                         "{at}: the post is compiled into its shading, no image crosses that edge; put the gate after the post (on the frame)"
                     ));
                 }
-                super::Data::Hits if matches!(builds.id, RegionId::CpuRaycast | RegionId::CpuColumns) => {
+                super::Data::Hits if matches!(builds.id, RegionId::CpuRaycast | RegionId::CpuColumns | RegionId::CpuRaster) => {
                     let placement = self.graph.nodes.get(&e.reader).and_then(|n| n.knobs.get("placement")).and_then(|v| v.as_str());
                     if self.graph.nodes.get(&e.reader).is_some_and(|n| n.role == Role::Shading) && placement != Some("deferred") {
                         return Err(format!(
@@ -761,9 +789,16 @@ impl Checked {
                         ));
                     }
                 }
+                // On a GPU the hits cross as the records a split's second GPU shades: read
+                // back, through the gates, written to the shading's own copy of the edge.
+                super::Data::Hits if builds.split => {
+                    if let Some(why) = self.records_cross(&e.reader, &e.port) {
+                        return Err(format!("{at}: {why}"));
+                    }
+                }
                 super::Data::Hits => {
                     return Err(format!(
-                        "{at}: {executor} gives its hits no serialized form yet (gates on hits run on the CPU ray caster and column marcher)"
+                        "{at}: {executor} gives its hits no serialized form yet (gates on hits run where the hit records can be split off: the CPU ray caster, rasteriser and column marcher, GPU ray casting, face drawers and splats)"
                     ));
                 }
                 d => return Err(format!("{at}: no executor runs gates on {} edges yet", d.name())),
