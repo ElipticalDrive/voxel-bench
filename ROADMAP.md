@@ -112,7 +112,9 @@ rendering, earlier and without a GPU; a build or run that fails anyway stays a d
 spot or several, and simulates the gap between two domains (latency, jitter, bandwidth, loss,
 reorder) for whatever data crosses it: the world stream, hit records, frames. Today's `link`
 node is fixed between the world and the client and carries only the world stream. Multiple
-renderers need not share a server side. Open design points: what a lost unit means per edge
-resource (a chunk is a hole, a tile is missing pixels, a frame is repeated), a gate on a
-same-device GPU edge forcing a read-back, gates on previous-frame edges and cycles, and whether
-device transfers and the process boundary are gates without loss.
+renderers need not share a server side. Settled (user, 2026-11-25): the data crossing a gate is serialized, and loss is simulated on the
+serialized bytes as if they crossed a real network; the serialization cost is part of the
+simulation (a feature, not a bug). Lost bytes do whatever they do to the data: no per-type
+safeguards, the costs (a read-back for a GPU edge) accepted; the user is trusted. Now in the plan
+as G42. Still open: gates on previous-frame edges and cycles, and whether device transfers and
+the process boundary become gates without loss.
