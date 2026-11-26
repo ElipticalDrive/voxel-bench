@@ -13,6 +13,7 @@ mod legend;
 mod live;
 mod metrics;
 mod panels;
+mod prefs;
 mod viewport;
 
 use std::path::{Path, PathBuf};
@@ -142,6 +143,8 @@ struct App {
     dirty: bool,
     /// Where each pane is: in a dock or a window of its own.
     docks: dock::Docks,
+    /// The preferences (text and interface scale) and their window.
+    prefs: prefs::PrefsState,
     toml_text: String,
     /// The pass the TOML pane was last drawn in: shown again after a gap, it re-reads the plan.
     toml_pass: Option<u64>,
@@ -255,6 +258,7 @@ impl App {
             path_text: "plans/untitled.toml".into(),
             dirty: false,
             docks: dock::Docks::load(),
+            prefs: prefs::PrefsState::load(),
             toml_pass: None,
             toml_text: String::new(),
             toml_error: None,
@@ -445,6 +449,7 @@ impl eframe::App for App {
 impl App {
     fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.prefs.apply(&ctx);
         let unsaved = self.dirty.then_some(&self.plan);
         match self.gpu.as_mut().and_then(|g| g.poll(&ctx, &self.plan_path, unsaved, &mut self.message)) {
             Some(gpu::Event::Lost(why)) => self.device_lost(&why),
@@ -479,6 +484,7 @@ impl App {
         };
         self.finish_docks(&ctx);
         self.pane_windows(&ctx);
+        self.prefs.window(&ctx);
         if self.fullscreen {
             self.sync_live(&ctx);
             return;

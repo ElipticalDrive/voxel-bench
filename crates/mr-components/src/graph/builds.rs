@@ -796,10 +796,16 @@ impl Checked {
                         return Err(format!("{at}: {why}"));
                     }
                 }
+                // The CPU rasteriser's faces: the geometry's meshes, the visibility's
+                // screen triangles.
+                super::Data::Faces if matches!(builds.id, RegionId::CpuRaster) => {}
                 super::Data::Hits => {
                     return Err(format!(
                         "{at}: {executor} gives its hits no serialized form yet (gates on hits run where the hit records can be split off: the CPU ray caster, rasteriser and column marcher, GPU ray casting, face drawers and splats)"
                     ));
+                }
+                super::Data::Faces => {
+                    return Err(format!("{at}: {executor} gives its faces no serialized form yet (gates on faces run in the CPU rasteriser)"));
                 }
                 d => return Err(format!("{at}: no executor runs gates on {} edges yet", d.name())),
             }

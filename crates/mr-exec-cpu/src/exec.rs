@@ -90,7 +90,14 @@ pub(crate) trait Node: Send {
 }
 
 /// An edge resource's serialized form, for gates inside the pipeline.
-pub(crate) trait Crossing: Clone + Send + Sync + 'static + Sized {
+pub(crate) trait Crossing: Send + Sync + 'static + Sized {
+    /// Whether the value is seen from its frame's camera (hits, screen triangles): then the
+    /// passes after its gate run with the camera of the frame it was made in. A value that
+    /// is not (the meshes of the world) leaves them this frame's camera.
+    const VIEWED: bool = true;
+    /// What is sent of the producer's output (a copy; state only the producer keeps, such
+    /// as the chunks a geometry remeshes from, left out).
+    fn sent(&self) -> Self;
     fn encode(&self, out: &mut Vec<u8>);
     fn decode(bytes: &[u8]) -> Result<Self, WireError>;
     /// What the reader reads before anything has arrived (no hit anywhere, say).
@@ -115,6 +122,9 @@ pub(crate) fn decode_records(g: &mut Get) -> Result<Vec<Record>, WireError> {
 
 /// Hit records alone (the column marcher's).
 impl Crossing for Vec<Record> {
+    fn sent(&self) -> Self {
+        self.clone()
+    }
     fn encode(&self, out: &mut Vec<u8>) {
         encode_records(self, out)
     }
@@ -180,16 +190,17 @@ impl<T: Crossing> Node for GatePass<T> {
     }
     fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
         let start = std::time::Instant::now();
-        let value = ins[0].downcast_ref::<T>().expect("the gated edge's value").clone();
+        let value = ins[0].downcast_ref::<T>().expect("the gated edge's value").sent();
         self.cameras.push_back((cx.req.frame_id, cx.req.camera));
         let got = self.chain.gates.pass(cx.req.time, Some(OnWire { frame_id: cx.req.frame_id, value }));
         if let Some(v) = got.into_iter().rev().find(|v| v.value.fits(self.width, self.height)) {
             *out.downcast_mut::<T>().expect("the gated edge's value") = v.value;
             // The frames before it are passed: their values can only arrive late now.
-            self.shown = Some(match self.cameras.iter().position(|(id, _)| *id == v.frame_id) {
+            let camera = match self.cameras.iter().position(|(id, _)| *id == v.frame_id) {
                 Some(i) => self.cameras.drain(..=i).next_back().expect("found").1,
                 None => cx.req.camera,
-            });
+            };
+            self.shown = T::VIEWED.then_some(camera);
         }
         // No more cameras kept than messages could still arrive (each is at least a packet).
         let in_flight: usize = self.chain.gates.0.iter().map(|g| g.in_flight()).sum();

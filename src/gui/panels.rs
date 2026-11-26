@@ -54,6 +54,9 @@ impl App {
                     }
                 }
             });
+            if ui.selectable_label(self.prefs.open, "⚙").on_hover_text("Preferences: text and interface scale").clicked() {
+                self.prefs.open = !self.prefs.open;
+            }
             ui.add(egui::TextEdit::singleline(&mut self.path_text).desired_width(240.0)).on_hover_text("Plan file path used by Load path and Save");
             if ui.button("Load path").on_hover_text("Load the plan at the path to the left").clicked() {
                 self.load(&PathBuf::from(self.path_text.clone()));

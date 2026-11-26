@@ -3,6 +3,7 @@
 //! the frame behind the output (in the worker). What crosses is serialized, crosses a lossy
 //! modelled network and is deserialized; the pass reports per gate what crossed (bytes,
 //! packets lost, serialization time) and lives through what the lost bytes did to the data.
+//! The CPU rasteriser's faces (meshes and screen triangles) cross gates too.
 //! Lossless gates change no pixel. A gate on an edge no executor runs gates on yet is
 //! refused, naming it. The GPU's hit records through gates need a GPU (`--ignored`;
 //! `scripts/check.py gpu` runs them).
@@ -204,6 +205,49 @@ fn late_hits_shaded_with_their_own_camera() {
         assert!(last != plain.last().unwrap(), "{graph}: the late records show the current frame");
         assert!(plain[plain.len() - 5..].contains(last), "{graph}: the late records do not show an earlier frame as it was");
     }
+}
+
+/// A gate on each of the CPU rasteriser's faces edges: the geometry's meshes into the
+/// visibility (`m`) and its screen triangles into the drawer (`t`), `meshes` and `tris`
+/// their knobs.
+fn on_faces(meshes: &str, tris: &str) -> String {
+    format!(
+        r#"[
+  {{ add = "m", role = "gate", component = "net" }},
+  {{ node = "m", input = "in", from = "geometry" }},
+  {{ node = "m", knobs = {meshes} }},
+  {{ node = "visibility", input = "faces", from = "m" }},
+  {{ add = "t", role = "gate", component = "net" }},
+  {{ node = "t", input = "in", from = "visibility" }},
+  {{ node = "t", knobs = {tris} }},
+  {{ node = "draw", input = "faces", from = "t" }},
+]"#
+    )
+}
+
+/// The rasteriser's faces cross gates: lossless, no pixel changes; lossy, the pass lives on
+/// and each gate reports what crossed. Meshes late behind a gate are drawn from this frame's
+/// camera (they are the same from every camera): once they have arrived, the frame is the
+/// ungated one's.
+#[test]
+fn raster_faces_cross_gates() {
+    let plain = run(&dir(), "faces-plain", "raster-cpu", "[]");
+    assert!(plain["error"].is_null(), "{}", plain["error"]);
+    let gated = run(&dir(), "faces-gated", "raster-cpu", &on_faces("{}", "{}"));
+    assert!(gated["error"].is_null(), "{}", gated["error"]);
+    assert_eq!(gates(&gated).iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["m:visibility.faces", "t:draw.faces"]);
+    crossed(&gated, false);
+    assert!(last_image(&dir(), "faces-plain") == last_image(&dir(), "faces-gated"), "a lossless gate on the faces changed the frame");
+    // The meshes with resend (each is many packets: one lost unresent and it does not
+    // decode), the triangles without.
+    let lossy = run(&dir(), "faces-lossy", "raster-cpu", &on_faces("{ latency_ms = 10, loss = 0.1, resend = true, mtu = 512, seed = 5 }", "{ latency_ms = 20, loss = 0.2, mtu = 512, seed = 6 }"));
+    assert!(lossy["error"].is_null(), "{}", lossy["error"]);
+    crossed(&lossy, true);
+    let t = &gates(&lossy)["t"].1;
+    assert!(t["bytes"].as_f64().unwrap() > t["messages"].as_f64().unwrap() * 1000.0, "triangles crossed: {t}");
+    let late = run(&dir(), "faces-late", "raster-cpu", &on_faces("{ latency_ms = 40 }", "{}"));
+    assert!(late["error"].is_null(), "{}", late["error"]);
+    assert!(last_image(&dir(), "faces-plain") == last_image(&dir(), "faces-late"), "late meshes were drawn from another frame's camera");
 }
 
 /// What is refused, naming the gate, its edge and why: hits that never leave their pass

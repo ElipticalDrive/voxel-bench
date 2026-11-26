@@ -139,6 +139,72 @@ fn choice_row<T: Choices + PartialEq>(ui: &mut Ui, value: &mut T, enabled: impl 
     c
 }
 
+/// The rows of a plan section: a two-column grid of value | name (`knobs::form_row`), as the
+/// run settings and the pipeline's knobs are drawn.
+fn rows(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
+    egui::Grid::new(id).num_columns(2).spacing([6.0, 2.0]).show(ui, add);
+}
+
+/// A number's row.
+fn num_row<T: egui::emath::Numeric>(ui: &mut Ui, name: &str, v: &mut T, speed: f64, tip: &str) -> Changed {
+    super::knobs::form_row(ui, name, tip, |ui| ui.add(DragValue::new(v).speed(speed).update_while_editing(false)).on_hover_text(tip).changed())
+}
+
+/// A number's row with a slider over `range`.
+fn slider_row<T: egui::emath::Numeric>(ui: &mut Ui, name: &str, v: &mut T, range: std::ops::RangeInclusive<T>, tip: &str) -> Changed {
+    super::knobs::form_row(ui, name, tip, |ui| {
+        super::knobs::fit_slider(ui);
+        ui.add(egui::Slider::new(v, range).update_while_editing(false)).on_hover_text(tip).changed()
+    })
+}
+
+/// A switch's row.
+fn check_row(ui: &mut Ui, name: &str, v: &mut bool, tip: &str) -> Changed {
+    super::knobs::form_row(ui, name, tip, |ui| ui.checkbox(v, "").on_hover_text(tip).changed())
+}
+
+/// A position's row.
+fn v3_row(ui: &mut Ui, name: &str, v: &mut [f64; 3], tip: &str) -> Changed {
+    super::knobs::form_row(ui, name, tip, |ui| v3(ui, v, 0.5))
+}
+
+/// An optional position's row: set or not, from the live camera (`cam`), its value.
+fn opt_v3_row(ui: &mut Ui, name: &str, v: &mut Option<[f64; 3]>, default: [f64; 3], cam: Option<Camera>, tip: &str) -> Changed {
+    super::knobs::form_row(ui, name, tip, |ui| {
+        let mut on = v.is_some();
+        let mut c = false;
+        if ui.checkbox(&mut on, "").on_hover_text(tip).changed() {
+            *v = on.then_some(default);
+            c = true;
+        }
+        if let Some(p) = cam
+            && ui.small_button("⌖").on_hover_text("Use the live camera position").clicked() {
+            *v = Some(p.position.to_array());
+            c = true;
+        }
+        if let Some(x) = v {
+            c |= v3(ui, x, 0.5);
+        }
+        c
+    })
+}
+
+/// An optional colour's row: set or not, its colour.
+fn opt_color_row(ui: &mut Ui, name: &str, v: &mut Option<[f32; 3]>, default: [f32; 3], tip: &str) -> Changed {
+    super::knobs::form_row(ui, name, tip, |ui| {
+        let mut on = v.is_some();
+        let mut c = false;
+        if ui.checkbox(&mut on, "").on_hover_text(tip).changed() {
+            *v = on.then_some(default);
+            c = true;
+        }
+        if let Some(x) = v {
+            c |= ui.color_edit_button_rgb(x).on_hover_text(tip).changed();
+        }
+        c
+    })
+}
+
 pub fn plan_editor(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed {
     let mut c = false;
     ui.horizontal(|ui| {
@@ -161,10 +227,11 @@ pub fn plan_editor(ui: &mut Ui, plan: &mut Plan, ctx: &mut EditorCtx) -> Changed
 /// bool), written back through the spec's serde form.
 fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
     let g = &mut plan.scene.generator;
-    let info = g.info();
-    let mut c = ui
-        .horizontal(|ui| {
-            ui.label("Generator").on_hover_text("How the world's blocks are generated (deterministic; chunks stream in around the camera)");
+    let fov = &mut plan.scene.fov_deg;
+    let mut c = false;
+    rows(ui, "world-rows", |ui| {
+        let info = g.info();
+        c |= super::knobs::form_row(ui, "generator", "How the world's blocks are generated (deterministic; chunks stream in around the camera)", |ui| {
             let mut c = false;
             let filter_id = ui.id().with("gen-filter");
             let shown = ComboBox::from_id_salt("gen")
@@ -183,14 +250,15 @@ fn world(ui: &mut Ui, plan: &mut Plan) -> Changed {
             }
             shown.response.on_hover_text(info.description);
             c
-        })
-        .inner;
-    c |= gen_fields(ui, g);
-    c |= ui.add(egui::Slider::new(&mut plan.scene.fov_deg, 20.0..=140.0).text("FOV°").update_while_editing(false)).on_hover_text("Vertical field of view in degrees").changed();
+        });
+        c |= gen_fields(ui, g);
+        c |= slider_row(ui, "FOV°", fov, 20.0..=140.0, "Vertical field of view in degrees");
+    });
     c
 }
 
-/// The generator's knobs, from its entry's fields; a value its spec refuses is not taken.
+/// The generator's knobs, from its entry's fields, one row each; a value its spec refuses is
+/// not taken.
 fn gen_fields(ui: &mut Ui, g: &mut GenSpec) -> Changed {
     let info = g.info();
     let Ok(mut table) = toml::Table::try_from(&*g) else { return false };
@@ -198,17 +266,18 @@ fn gen_fields(ui: &mut Ui, g: &mut GenSpec) -> Changed {
     for f in info.fields {
         let Some(v) = table.get_mut(f.name) else { continue };
         c |= match v {
-            toml::Value::Boolean(b) => ui.checkbox(b, f.name).on_hover_text(f.help).changed(),
+            toml::Value::Boolean(b) => check_row(ui, f.name, b, f.help),
             toml::Value::Integer(i) => match f.range {
-                Some((lo, hi)) => ui.add(egui::Slider::new(i, lo as i64..=hi as i64).text(f.name).update_while_editing(false)).on_hover_text(f.help).changed(),
-                None => num(ui, f.name, i, 1.0, f.help),
+                Some((lo, hi)) => slider_row(ui, f.name, i, lo as i64..=hi as i64, f.help),
+                None => num_row(ui, f.name, i, 1.0, f.help),
             },
             toml::Value::Float(x) => match f.range {
-                Some((lo, hi)) => ui.add(egui::Slider::new(x, lo..=hi).text(f.name).update_while_editing(false)).on_hover_text(f.help).changed(),
-                None => num(ui, f.name, x, 0.01, f.help),
+                Some((lo, hi)) => slider_row(ui, f.name, x, lo..=hi, f.help),
+                None => num_row(ui, f.name, x, 0.01, f.help),
             },
             other => {
-                ui.label(format!("{}: {other}", f.name)).on_hover_text(f.help);
+                let shown = other.to_string();
+                super::knobs::form_row(ui, f.name, f.help, |ui| ui.label(shown));
                 false
             }
         };
@@ -222,107 +291,113 @@ fn gen_fields(ui: &mut Ui, g: &mut GenSpec) -> Changed {
 
 fn camera(ui: &mut Ui, plan: &mut Plan, cam: Option<Camera>) -> Changed {
     let p = &mut plan.scene.camera;
-    let mut c = ui
-        .horizontal(|ui| {
-            ui.label("Path").on_hover_text("Scripted camera motion, indexed by scene frame (benchmarks follow it; live sessions can too)");
-            choice_combo(ui, "campath", p)
-        })
-        .inner;
-    match p {
-        CameraPathSpec::Static { position, target, yaw_deg, pitch_deg } => {
-            if let Some(k) = cam
-                && ui.button("⌖ Set from live camera").on_hover_text("Copy the live camera's position and direction").clicked() {
-                *position = Some(k.position.to_array());
-                *target = None;
-                *yaw_deg = k.yaw.to_degrees();
-                *pitch_deg = k.pitch.to_degrees();
-                c = true;
+    let mut c = false;
+    rows(ui, "camera-rows", |ui| {
+        c |= super::knobs::form_row(ui, "path", "Scripted camera motion, indexed by scene frame (benchmarks follow it; live sessions can too)", |ui| choice_combo(ui, "campath", p));
+        match p {
+            CameraPathSpec::Static { position, target, yaw_deg, pitch_deg } => {
+                if let Some(k) = cam {
+                    let tip = "Copy the live camera's position and direction";
+                    if super::knobs::form_row(ui, "from live camera", tip, |ui| ui.button("⌖ set").on_hover_text(tip).clicked()) {
+                        *position = Some(k.position.to_array());
+                        *target = None;
+                        *yaw_deg = k.yaw.to_degrees();
+                        *pitch_deg = k.pitch.to_degrees();
+                        c = true;
+                    }
+                }
+                c |= opt_v3_row(ui, "position (else spawn)", position, [0.0, 80.0, 0.0], cam, "Camera position in blocks; unset = the generator's spawn point");
+                c |= opt_v3_row(ui, "look at target", target, [0.0; 3], None, "Point the camera at this position (overrides yaw and pitch)");
+                if target.is_none() {
+                    c |= num_row(ui, "yaw°", yaw_deg, 1.0, "Horizontal direction in degrees");
+                    c |= num_row(ui, "pitch°", pitch_deg, 1.0, "Vertical angle in degrees; negative looks down");
+                }
             }
-            c |= opt_v3(ui, "position (else spawn)", position, [0.0, 80.0, 0.0], cam, "Camera position in blocks; unset = the generator's spawn point");
-            c |= opt_v3(ui, "look at target", target, [0.0; 3], None, "Point the camera at this position (overrides yaw and pitch)");
-            if target.is_none() {
-                c |= num(ui, "yaw°", yaw_deg, 1.0, "Horizontal direction in degrees");
-                c |= num(ui, "pitch°", pitch_deg, 1.0, "Vertical angle in degrees; negative looks down");
+            CameraPathSpec::Orbit { center, radius, height, period } => {
+                c |= v3_row(ui, "center", center, "Point the camera circles and looks at");
+                c |= num_row(ui, "radius", radius, 0.5, "Orbit radius in blocks");
+                c |= num_row(ui, "height", height, 0.5, "Camera height above the centre");
+                c |= num_row(ui, "period (frames)", period, 1.0, "Scene frames per full circle");
             }
-        }
-        CameraPathSpec::Orbit { center, radius, height, period } => {
-            ui.label("center").on_hover_text("Point the camera circles and looks at");
-            c |= v3(ui, center, 0.5);
-            c |= num(ui, "radius", radius, 0.5, "Orbit radius in blocks");
-            c |= num(ui, "height", height, 0.5, "Camera height above the centre");
-            c |= num(ui, "period (frames)", period, 1.0, "Scene frames per full circle");
-        }
-        CameraPathSpec::Line { from, to, look_at } => {
-            c |= opt_v3(ui, "from (else spawn)", from, [0.0, 100.0, 0.0], cam, "Start point; unset = spawn point");
-            ui.label("to").on_hover_text("End point, reached at the last benchmark frame");
-            c |= v3(ui, to, 0.5);
-            c |= opt_v3(ui, "look at (else ahead)", look_at, [0.0; 3], cam, "Keep looking at this point; unset = look along the line");
-        }
-        CameraPathSpec::Flythrough { points } => {
-            let mut remove = None;
-            for (i, pt) in points.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.label(format!("{i}"));
-                    c |= v3(ui, pt, 0.5);
-                    if ui.small_button("✖").on_hover_text("Remove this point").clicked() {
-                        remove = Some(i);
+            CameraPathSpec::Line { from, to, look_at } => {
+                c |= opt_v3_row(ui, "from (else spawn)", from, [0.0, 100.0, 0.0], cam, "Start point; unset = spawn point");
+                c |= v3_row(ui, "to", to, "End point, reached at the last benchmark frame");
+                c |= opt_v3_row(ui, "look at (else ahead)", look_at, [0.0; 3], cam, "Keep looking at this point; unset = look along the line");
+            }
+            CameraPathSpec::Flythrough { points } => {
+                let mut remove = None;
+                for (i, pt) in points.iter_mut().enumerate() {
+                    let tip = "A point the camera flies through, in order";
+                    super::knobs::form_row(ui, &format!("point {i}"), tip, |ui| {
+                        c |= v3(ui, pt, 0.5);
+                        if ui.small_button("✖").on_hover_text("Remove this point").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove {
+                    points.remove(i);
+                    c = true;
+                }
+                super::knobs::form_row(ui, "", "", |ui| {
+                    if ui.button("+ point").on_hover_text("Append a point (a copy of the last)").clicked() {
+                        points.push(points.last().copied().unwrap_or([0.0, 100.0, 0.0]));
+                        c = true;
+                    }
+                    if let Some(k) = cam
+                        && ui.button("+ live camera").on_hover_text("Append the live camera's position: fly somewhere, click, repeat").clicked() {
+                        points.push(k.position.to_array());
+                        c = true;
                     }
                 });
             }
-            if let Some(i) = remove {
-                points.remove(i);
-                c = true;
+            CameraPathSpec::Spin { position, period, pitch_deg } => {
+                c |= opt_v3_row(ui, "position (else spawn)", position, [0.0, 80.0, 0.0], cam, "Where to stand; unset = spawn point");
+                c |= num_row(ui, "period (frames)", period, 1.0, "Scene frames per full turn");
+                c |= num_row(ui, "pitch°", pitch_deg, 1.0, "Vertical angle in degrees; negative looks down");
             }
-            ui.horizontal(|ui| {
-                if ui.button("+ point").on_hover_text("Append a point (a copy of the last)").clicked() {
-                    points.push(points.last().copied().unwrap_or([0.0, 100.0, 0.0]));
-                    c = true;
-                }
-                if let Some(k) = cam
-                    && ui.button("+ live camera position").on_hover_text("Append the live camera's position: fly somewhere, click, repeat").clicked() {
-                    points.push(k.position.to_array());
-                    c = true;
-                }
-            });
         }
-        CameraPathSpec::Spin { position, period, pitch_deg } => {
-            c |= opt_v3(ui, "position (else spawn)", position, [0.0, 80.0, 0.0], cam, "Where to stand; unset = spawn point");
-            c |= num(ui, "period (frames)", period, 1.0, "Scene frames per full turn");
-            c |= num(ui, "pitch°", pitch_deg, 1.0, "Vertical angle in degrees; negative looks down");
-        }
-    }
+    });
     c
 }
 
 fn environment(ui: &mut Ui, e: &mut EnvSpec) -> Changed {
     let mut c = false;
-    c |= opt_color(ui, "sky", &mut e.sky, [0.45, 0.65, 0.95], "Sky colour seen where rays hit nothing; unset = default");
-    c |= opt_color(ui, "ambient", &mut e.ambient, [0.08, 0.08, 0.08], "Light reaching every surface, even in shadow (Lit mode)");
-    c |= ui.checkbox(&mut e.no_sun, "no sun").on_hover_text("Disable the sun: only ambient and point lights (night, caves)").changed();
-    if !e.no_sun {
-        ui.horizontal(|ui| {
-            let mut on = e.sun_direction.is_some();
-            if ui.checkbox(&mut on, "sun direction").on_hover_text("Direction the sunlight travels (x, y, z; normalised). Unset = default afternoon sun.").changed() {
-                e.sun_direction = on.then_some([-0.4, -1.0, -0.25]);
+    rows(ui, "environment-rows", |ui| {
+        c |= opt_color_row(ui, "sky", &mut e.sky, [0.45, 0.65, 0.95], "Sky colour seen where rays hit nothing; unset = default");
+        c |= opt_color_row(ui, "ambient", &mut e.ambient, [0.08, 0.08, 0.08], "Light reaching every surface, even in shadow (Lit mode)");
+        c |= check_row(ui, "no sun", &mut e.no_sun, "Disable the sun: only ambient and point lights (night, caves)");
+        if !e.no_sun {
+            let tip = "Direction the sunlight travels (x, y, z; normalised). Unset = default afternoon sun.";
+            c |= super::knobs::form_row(ui, "sun direction", tip, |ui| {
+                let mut c = false;
+                let mut on = e.sun_direction.is_some();
+                if ui.checkbox(&mut on, "").on_hover_text(tip).changed() {
+                    e.sun_direction = on.then_some([-0.4, -1.0, -0.25]);
+                    c = true;
+                }
+                if let Some(d) = &mut e.sun_direction {
+                    for x in d.iter_mut() {
+                        c |= ui.add(DragValue::new(x).speed(0.01).range(-1.0..=1.0).update_while_editing(false)).on_hover_text("Direction component (x, y, z); y should be negative for daylight").changed();
+                    }
+                }
+                c
+            });
+            c |= opt_color_row(ui, "sun colour", &mut e.sun_color, [1.0, 1.0, 1.0], "Colour and brightness of sunlight");
+        }
+        let tip = "Multiplier applied before tone mapping (Lit mode)";
+        c |= super::knobs::form_row(ui, "exposure", tip, |ui| {
+            let mut c = false;
+            let mut on = e.exposure.is_some();
+            if ui.checkbox(&mut on, "").on_hover_text(tip).changed() {
+                e.exposure = on.then_some(1.0);
                 c = true;
             }
-            if let Some(d) = &mut e.sun_direction {
-                for x in d.iter_mut() {
-                    c |= ui.add(DragValue::new(x).speed(0.01).range(-1.0..=1.0).update_while_editing(false)).on_hover_text("Direction component (x, y, z); y should be negative for daylight").changed();
-                }
+            if let Some(x) = &mut e.exposure {
+                c |= ui.add(DragValue::new(x).speed(0.01).range(0.0..=20.0).update_while_editing(false)).on_hover_text("1 = neutral; higher is brighter").changed();
             }
+            c
         });
-        c |= opt_color(ui, "sun colour", &mut e.sun_color, [1.0, 1.0, 1.0], "Colour and brightness of sunlight");
-    }
-    ui.horizontal(|ui| {
-        let mut on = e.exposure.is_some();
-        if ui.checkbox(&mut on, "exposure").on_hover_text("Multiplier applied before tone mapping (Lit mode)").changed() {
-            e.exposure = on.then_some(1.0);
-            c = true;
-        }
-        if let Some(x) = &mut e.exposure {
-            c |= ui.add(DragValue::new(x).speed(0.01).range(0.0..=20.0).update_while_editing(false)).on_hover_text("1 = neutral; higher is brighter").changed();
-        }
     });
     c
 }
@@ -653,53 +728,55 @@ fn run(ui: &mut Ui, plan: &mut Plan) -> Changed {
 }
 
 fn output(ui: &mut Ui, plan: &mut Plan, infos: &[RendererInfo]) -> Changed {
+    use super::knobs::form_row;
     let o = &mut plan.output;
     let mut c = false;
-    ui.horizontal(|ui| {
-        ui.label("read-back").on_hover_text("Whether frames are copied back to the host each frame");
-        c |= choice_row(ui, &mut o.readback, |_| Ok(()));
-    });
-    c |= ui.checkbox(&mut o.window, "show window during benchmark").on_hover_text("Display frames while the benchmark runs (costs read-back)").changed();
-    let mut save = o.save.is_some();
-    if ui.checkbox(&mut save, "save frames").on_hover_text("Write PNG frames into the run directory").changed() {
-        o.save = save.then_some(SaveSpec { every: 100, diffs: true });
-        c = true;
-    }
-    if let Some(s) = &mut o.save {
-        c |= num(ui, "  every n frames", &mut s.every, 1.0, "Save one frame out of this many");
-        c |= ui.checkbox(&mut s.diffs, "  with diff images").on_hover_text("Also save difference images against the reference").changed();
-    }
-    let mut cmp = o.compare.is_some();
-    if ui.checkbox(&mut cmp, "compare against reference").on_hover_text("Score frames against a reference renderer (PSNR, SSIM, bad pixels)").changed() {
-        o.compare = cmp.then(|| CompareSpec { reference: "cpu-reference".into(), reference_options: Default::default(), every: 100, settle: 2, converge: 64 });
-        c = true;
-    }
-    if let Some(cs) = &mut o.compare {
-        ui.horizontal(|ui| {
-            ui.label("  reference").on_hover_text("Renderer treated as ground truth (cpu-reference is the exact categorical reference)");
-            let filter_id = ui.id().with("ref-filter");
-            let shown = ComboBox::from_id_salt("ref")
-                .selected_text(&cs.reference)
-                .show_ui(ui, |ui| {
-                    let want = super::graph::list_filter(ui, filter_id, infos.len());
-                    for i in infos.iter().filter(|i| super::graph::shows(&format!("{} {}", i.name, i.description), &want)) {
-                        c |= ui.selectable_value(&mut cs.reference, i.name.clone(), &i.name).on_hover_text(&i.description).changed();
-                    }
-                });
-            if shown.inner.is_none() {
-                super::graph::list_filter_closed(ui, filter_id);
-            }
-            shown.response.on_hover_text("Renderer treated as ground truth");
-        });
-        c |= num(ui, "  every n frames", &mut cs.every, 1.0, "Compare one frame out of this many (the reference is slow)");
-    }
-    let mut dir = o.dir.clone().unwrap_or_default();
-    ui.horizontal(|ui| {
-        ui.label("run dir").on_hover_text("Directory for benchmark results; each run gets a time-stamped subdirectory");
-        if ui.add(egui::TextEdit::singleline(&mut dir).hint_text("runs")).on_hover_text("Directory for benchmark results; each run gets a time-stamped subdirectory").changed() {
-            o.dir = (!dir.is_empty()).then_some(dir);
+    rows(ui, "output-rows", |ui| {
+        c |= form_row(ui, "read-back", "Whether frames are copied back to the host each frame", |ui| choice_row(ui, &mut o.readback, |_| Ok(())));
+        c |= check_row(ui, "show window during benchmark", &mut o.window, "Display frames while the benchmark runs (costs read-back)");
+        let mut save = o.save.is_some();
+        if check_row(ui, "save frames", &mut save, "Write PNG frames into the run directory") {
+            o.save = save.then_some(SaveSpec { every: 100, diffs: true });
             c = true;
         }
+        if let Some(s) = &mut o.save {
+            c |= num_row(ui, "  save every n frames", &mut s.every, 1.0, "Save one frame out of this many");
+            c |= check_row(ui, "  with diff images", &mut s.diffs, "Also save difference images against the reference");
+        }
+        let mut cmp = o.compare.is_some();
+        if check_row(ui, "compare against reference", &mut cmp, "Score frames against a reference renderer (PSNR, SSIM, bad pixels)") {
+            o.compare = cmp.then(|| CompareSpec { reference: "cpu-reference".into(), reference_options: Default::default(), every: 100, settle: 2, converge: 64 });
+            c = true;
+        }
+        if let Some(cs) = &mut o.compare {
+            c |= form_row(ui, "  reference", "Renderer treated as ground truth (cpu-reference is the exact categorical reference)", |ui| {
+                let mut c = false;
+                let filter_id = ui.id().with("ref-filter");
+                let shown = ComboBox::from_id_salt("ref")
+                    .selected_text(&cs.reference)
+                    .show_ui(ui, |ui| {
+                        let want = super::graph::list_filter(ui, filter_id, infos.len());
+                        for i in infos.iter().filter(|i| super::graph::shows(&format!("{} {}", i.name, i.description), &want)) {
+                            c |= ui.selectable_value(&mut cs.reference, i.name.clone(), &i.name).on_hover_text(&i.description).changed();
+                        }
+                    });
+                if shown.inner.is_none() {
+                    super::graph::list_filter_closed(ui, filter_id);
+                }
+                shown.response.on_hover_text("Renderer treated as ground truth");
+                c
+            });
+            c |= num_row(ui, "  compare every n frames", &mut cs.every, 1.0, "Compare one frame out of this many (the reference is slow)");
+        }
+        let tip = "Directory for benchmark results; each run gets a time-stamped subdirectory";
+        c |= form_row(ui, "run dir", tip, |ui| {
+            let mut dir = o.dir.clone().unwrap_or_default();
+            let changed = ui.add(egui::TextEdit::singleline(&mut dir).hint_text("runs").desired_width(super::knobs::VALUE_W - 8.0)).on_hover_text(tip).changed();
+            if changed {
+                o.dir = (!dir.is_empty()).then_some(dir);
+            }
+            changed
+        });
     });
     c
 }

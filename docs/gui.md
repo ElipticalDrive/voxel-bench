@@ -8,13 +8,17 @@ The renderers' viewport fills the middle; every other pane is a tab in one of th
 (below, in brackets, where it starts) or in an OS window of its own (see [Docks](#docks)).
 
 - **Form and TOML (left).** A form for every plan setting: world generator, camera path,
-  environment, lights, scripted events, renderers, run settings and benchmark outputs. The
+  environment, lights, scripted events, renderers, run settings and benchmark outputs; the
+  world, camera path, environment, run settings and benchmark outputs are rows of value |
+  name, the values in one column of fixed width (as a node's knobs). The
   TOML pane edits the raw plan (it re-reads the plan whenever it comes into view). Open, save and Ctrl+S are in the toolbar (Ctrl+S saves unless the canvas has the keyboard, i.e. the last click was on it: there it flies fast backwards); 📂 Open lists the
   recently loaded or saved plans first (kept in the user's configuration directory,
   `multirenderer/recent-plans.txt`), and 📂 Open ▸ New is a
   plain start (terrain, the sun, a camera to fly, one renderer: `plans/playground.toml`), and
   🎬 Demos loads a set-up that shows something off (`plans/demo-*.toml`; hovering one says
-  what). "⌖ cam" copies the
+  what). ⚙ opens the preferences: a text scale apart from the interface's scale, and the
+  interface scale (also Ctrl + / Ctrl - / Ctrl 0), both kept between sessions
+  (`multirenderer/prefs.toml` in the configuration directory). "⌖" copies the
   live camera into a position or a camera-path point, which is a quick way to author a
   fly-through.
 - **Viewport (centre).** Every renderer in the plan runs live, tiled side by side. Each one

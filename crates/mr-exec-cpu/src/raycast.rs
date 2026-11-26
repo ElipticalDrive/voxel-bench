@@ -1388,6 +1388,9 @@ mod nodes {
 
     /// On the wire: whether layered, then the records.
     impl exec::Crossing for Hits {
+        fn sent(&self) -> Self {
+            self.clone()
+        }
         fn encode(&self, out: &mut Vec<u8>) {
             out.push(self.layered as u8);
             exec::encode_records(&self.records, out);

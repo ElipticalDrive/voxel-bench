@@ -204,6 +204,7 @@ node reads, one behind something other than the output. Where they run:
 | the client's changes into the renderer (gates reading the client) | the worker, between its client and its renderer (every such edge the same gates: the renderer takes one stream) | each change | the renderer does not hold it yet: holes |
 | hits (`shading.hits`) | the CPU executor, a pass between visibility and shading (`placement = "deferred"`; the ray caster's records, the column marcher's and the rasteriser's) | each frame's records, with its frame id | the shading reads the last records that arrived at this size (no hit before any has); it and the passes after it run with the camera of the frame they were cast in (its own frame's when the id was lost) |
 | hits (`shading.hits`) on a GPU | the GPU executor, as a split at the hit records (the shading's own executor, on the same GPU or another, with its own copy of the storages its rays walk): read back, through the gates on the host, written to the shading's edge (`placement = "deferred"`, a drawer writing records, or splats; no meshes node) | each frame's records, with its frame id and size | the shading reads the last records that arrived at this size (sky before any has), with the camera of the frame they were cast in (its own frame's when the id was lost) |
+| faces into the CPU rasteriser's visibility (`visibility.faces`: the geometry's meshes) and drawer (`draw.faces`: the screen triangles) | the CPU executor, a pass between the two | each frame's meshes of the world (not the chunks the geometry remeshes from), or the frame's triangles with the visible chunks' quads they index, its size and frame id | the reader reads the last that arrived (none before; triangles only at this size); the meshes are the same from every camera, so the passes after them keep this frame's camera, while late triangles are drawn and shaded with the camera of their frame |
 | the frame (behind the output) | the worker, for every executor (read back even when the host asked for no pixels: a GPU pays that) | each frame's pixels | the host gets the last frame that arrived at this size (black before any has) |
 
 The CPU rasteriser's hits are its quad ids with the visible chunks' quads they index (a
@@ -211,7 +212,7 @@ message whose ids do not index its quads fails to decode). Refused by the execut
 naming the gate and the edge: hits of the GPU column marcher (no serialized form yet), hits
 with `placement = inline` or of a forward drawer (they never leave the pass that finds them),
 hits beside mesh surfaces on a GPU (the shading past the gate has not their triangles), an image into the post (the post is compiled into its shading,
-no image crosses: put the gate after the post), and faces, surfaces, tiles and ray starts.
+no image crosses: put the gate after the post), faces outside the CPU rasteriser, and surfaces, tiles and ray starts.
 Reports carry `gates`, one entry per gate node: `gate` (its id), `edge`
 (`reader.port`; the world's side: `client.changes` into the client, `client.chunks`,
 `changes` from the client into the renderer; `frame`) and `stats` (messages, bytes, packets, packets lost,

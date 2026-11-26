@@ -218,13 +218,110 @@ impl Node for Geometry {
         let quads: usize = m.meshes.values().map(|m| m.quads.len()).sum();
         m.chunks.dense_bytes() + quads as u64 * 8
     }
+    fn gate(&self, chain: mr_core::gate::GateChain, w: u32, h: u32) -> Option<Box<dyn Node>> {
+        Some(exec::GatePass::<Meshes>::boxed(chain, w, h))
+    }
 }
 
 /// The visibility's output: the visible chunks' meshes with a global quad numbering for
 /// visibility ids (0 = empty), and their screen-space triangles.
+#[derive(Clone)]
 struct Tris {
     visible: Vec<Visible>,
     tris: Vec<Tri>,
+    /// The frame the triangles are on the screen of.
+    size: (u32, u32),
+}
+
+/// On the wire: the frame's size, the visible set ([`put_visible`]), then the triangles (a
+/// count; each its three (x, y, depth) and its quad id, which must name a visible quad).
+impl exec::Crossing for Tris {
+    fn sent(&self) -> Self {
+        self.clone()
+    }
+    fn encode(&self, out: &mut Vec<u8>) {
+        let mut p = mr_core::gate::Put(out);
+        p.u32(self.size.0);
+        p.u32(self.size.1);
+        put_visible(&mut p, &self.visible);
+        p.u32(self.tris.len() as u32);
+        for t in &self.tris {
+            t.v.iter().flatten().for_each(|&c| p.f32(c));
+            p.u32(t.id);
+        }
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, mr_core::gate::WireError> {
+        let mut g = mr_core::gate::Get(bytes);
+        let size = (g.u32()?, g.u32()?);
+        let (visible, next) = get_visible(&mut g)?;
+        let n = g.count(40)?;
+        let mut tris = Vec::with_capacity(n);
+        for _ in 0..n {
+            let mut v = [[0f32; 3]; 3];
+            for c in v.iter_mut().flatten() {
+                *c = g.f32()?;
+            }
+            let id = g.u32()?;
+            if id == 0 || id >= next {
+                return Err(mr_core::gate::WireError("a triangle names no visible quad".into()));
+            }
+            tris.push(Tri { v, id });
+        }
+        g.end()?;
+        Ok(Tris { visible, tris, size })
+    }
+    fn blank(w: u32, h: u32) -> Self {
+        Tris { visible: vec![], tris: vec![], size: (w, h) }
+    }
+    fn fits(&self, w: u32, h: u32) -> bool {
+        self.size == (w, h)
+    }
+}
+
+/// On the wire: the meshes of the world (a count; each chunk's position, per-face counts
+/// and quads), not the chunks the geometry remeshes from: the visibility reads only the
+/// meshes. They are the same from every camera.
+impl exec::Crossing for Meshes {
+    const VIEWED: bool = false;
+    fn sent(&self) -> Self {
+        Meshes { chunks: Chunks::default(), meshes: self.meshes.clone() }
+    }
+    fn encode(&self, out: &mut Vec<u8>) {
+        let mut p = mr_core::gate::Put(out);
+        p.u32(self.meshes.len() as u32);
+        for (pos, m) in &self.meshes {
+            pos.to_array().into_iter().for_each(|c| p.i32(c));
+            m.counts.iter().for_each(|&c| p.u32(c));
+            p.u32(m.quads.len() as u32);
+            m.quads.iter().flatten().for_each(|&q| p.u32(q));
+        }
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, mr_core::gate::WireError> {
+        let mut g = mr_core::gate::Get(bytes);
+        let n = g.count(4 * 10)?;
+        let mut meshes = HashMap::with_capacity(n);
+        for _ in 0..n {
+            let pos = IVec3::new(g.i32()?, g.i32()?, g.i32()?);
+            let mut counts = [0u32; 6];
+            for c in &mut counts {
+                *c = g.u32()?;
+            }
+            let quads = g.count(8)?;
+            let quads: Vec<[u32; 2]> = (0..quads).map(|_| Ok([g.u32()?, g.u32()?])).collect::<Result<_, mr_core::gate::WireError>>()?;
+            if counts.iter().map(|&c| c as u64).sum::<u64>() != quads.len() as u64 {
+                return Err(mr_core::gate::WireError("a mesh's face counts do not add up to its quads".into()));
+            }
+            meshes.insert(pos, Arc::new(Mesh { quads, counts }));
+        }
+        g.end()?;
+        Ok(Meshes { chunks: Chunks::default(), meshes })
+    }
+    fn blank(_: u32, _: u32) -> Self {
+        Meshes { chunks: Chunks::default(), meshes: HashMap::new() }
+    }
+    fn fits(&self, _: u32, _: u32) -> bool {
+        true
+    }
 }
 
 /// Visibility `faces`: per-chunk frustum culling and per-face-direction culling, transform,
@@ -235,7 +332,7 @@ struct Faces {
 
 impl Node for Faces {
     fn output(&mut self, _: u32, _: u32) -> Res {
-        Box::new(Tris { visible: vec![], tris: vec![] })
+        Box::new(Tris { visible: vec![], tris: vec![], size: (0, 0) })
     }
     fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
         let start = Instant::now();
@@ -247,6 +344,7 @@ impl Node for Faces {
         let planes = frustum_planes(vp);
 
         let out = out.downcast_mut::<Tris>().expect("triangles");
+        out.size = (w, h);
         let visible = &mut out.visible;
         visible.clear();
         let mut next_id = 1u32;
@@ -309,6 +407,9 @@ impl Node for Faces {
         report.stages.push(StageTime::cpu("transform", &self.nodes, t as f32));
         report.counters.extend([("chunks_drawn".into(), visible.len() as f64), ("triangles".into(), tris.len() as f64), ("geometry_ms".into(), t)]);
     }
+    fn gate(&self, chain: mr_core::gate::GateChain, w: u32, h: u32) -> Option<Box<dyn Node>> {
+        Some(exec::GatePass::<Tris>::boxed(chain, w, h))
+    }
 }
 
 /// The drawer's hit records: the quad id per pixel (0 = sky) and the visible set the ids
@@ -319,50 +420,65 @@ struct Ids {
     visible: Vec<Visible>,
 }
 
-/// On the wire: the ids (a count, 4 bytes each), then the visible set (a count; each chunk's
-/// position, first id, per-face counts and quads). What arrives must read as a frame's: the
-/// first ids follow on from 1 without gaps and every id names a quad (else the message is
-/// lost, as a decoder rejects it).
+/// A visible set on the wire: a count; each chunk's position, first id, per-face counts and
+/// quads.
+fn put_visible(p: &mut mr_core::gate::Put, visible: &[Visible]) {
+    p.u32(visible.len() as u32);
+    for (pos, m, base) in visible {
+        pos.to_array().into_iter().for_each(|c| p.i32(c));
+        p.u32(*base);
+        m.counts.iter().for_each(|&c| p.u32(c));
+        p.u32(m.quads.len() as u32);
+        m.quads.iter().flatten().for_each(|&q| p.u32(q));
+    }
+}
+
+/// What [`put_visible`] wrote, and the id after its last quad. It must read as a frame's:
+/// the first ids follow on from 1 without gaps (else the message is lost, as a decoder
+/// rejects it).
+fn get_visible(g: &mut mr_core::gate::Get) -> Result<(Vec<Visible>, u32), mr_core::gate::WireError> {
+    let bad = |w: &str| mr_core::gate::WireError(w.to_string());
+    let chunks = g.count(4 * 11)?;
+    let mut visible = Vec::with_capacity(chunks);
+    let mut next = 1u32;
+    for _ in 0..chunks {
+        let pos = IVec3::new(g.i32()?, g.i32()?, g.i32()?);
+        let base = g.u32()?;
+        let mut counts = [0u32; 6];
+        for c in &mut counts {
+            *c = g.u32()?;
+        }
+        let quads = g.count(8)?;
+        let quads: Vec<[u32; 2]> = (0..quads).map(|_| Ok([g.u32()?, g.u32()?])).collect::<Result<_, mr_core::gate::WireError>>()?;
+        if base != next || counts.iter().map(|&c| c as u64).sum::<u64>() != quads.len() as u64 {
+            return Err(bad("the visible set does not number its quads"));
+        }
+        next = base.checked_add(quads.len() as u32).ok_or_else(|| bad("quad ids past u32"))?;
+        visible.push((pos, Arc::new(Mesh { quads, counts }), base));
+    }
+    Ok((visible, next))
+}
+
+/// On the wire: the ids (a count, 4 bytes each), then the visible set ([`put_visible`]).
+/// Every id must name a quad (else the message is lost, as a decoder rejects it).
 impl exec::Crossing for Ids {
+    fn sent(&self) -> Self {
+        self.clone()
+    }
     fn encode(&self, out: &mut Vec<u8>) {
         let mut p = mr_core::gate::Put(out);
         p.u32(self.ids.len() as u32);
         self.ids.iter().for_each(|&i| p.u32(i));
-        p.u32(self.visible.len() as u32);
-        for (pos, m, base) in &self.visible {
-            pos.to_array().into_iter().for_each(|c| p.i32(c));
-            p.u32(*base);
-            m.counts.iter().for_each(|&c| p.u32(c));
-            p.u32(m.quads.len() as u32);
-            m.quads.iter().flatten().for_each(|&q| p.u32(q));
-        }
+        put_visible(&mut p, &self.visible);
     }
     fn decode(bytes: &[u8]) -> Result<Self, mr_core::gate::WireError> {
-        let bad = |w: &str| mr_core::gate::WireError(w.to_string());
         let mut g = mr_core::gate::Get(bytes);
         let n = g.count(4)?;
         let ids: Vec<u32> = (0..n).map(|_| g.u32()).collect::<Result<_, _>>()?;
-        let chunks = g.count(4 * 11)?;
-        let mut visible = Vec::with_capacity(chunks);
-        let mut next = 1u32;
-        for _ in 0..chunks {
-            let pos = IVec3::new(g.i32()?, g.i32()?, g.i32()?);
-            let base = g.u32()?;
-            let mut counts = [0u32; 6];
-            for c in &mut counts {
-                *c = g.u32()?;
-            }
-            let quads = g.count(8)?;
-            let quads: Vec<[u32; 2]> = (0..quads).map(|_| Ok([g.u32()?, g.u32()?])).collect::<Result<_, mr_core::gate::WireError>>()?;
-            if base != next || counts.iter().map(|&c| c as u64).sum::<u64>() != quads.len() as u64 {
-                return Err(bad("the visible set does not number its quads"));
-            }
-            next = base.checked_add(quads.len() as u32).ok_or_else(|| bad("quad ids past u32"))?;
-            visible.push((pos, Arc::new(Mesh { quads, counts }), base));
-        }
+        let (visible, next) = get_visible(&mut g)?;
         g.end()?;
         if ids.iter().any(|&i| i >= next) {
-            return Err(bad("an id names no visible quad"));
+            return Err(mr_core::gate::WireError("an id names no visible quad".into()));
         }
         Ok(Ids { ids, visible })
     }
