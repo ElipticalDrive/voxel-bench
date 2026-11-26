@@ -81,6 +81,12 @@ pub(crate) trait Node: Send {
     fn gate(&self, _chain: GateChain, _width: u32, _height: u32) -> Option<Box<dyn Node>> {
         None
     }
+    /// The camera of the frame whose value it now outputs, when that is not this frame's (a
+    /// gate's: what arrived was cast earlier). The passes reading it, directly or through
+    /// others, run with that camera.
+    fn shown_camera(&self) -> Option<Camera> {
+        None
+    }
 }
 
 /// An edge resource's serialized form, for gates inside the pipeline.
@@ -126,32 +132,44 @@ impl Crossing for Vec<Record> {
     }
 }
 
-/// A [`Crossing`] as gates take it.
+/// A [`Crossing`] as gates take it: the frame id it was made in, then its form.
 #[derive(Clone)]
-struct OnWire<T>(T);
+struct OnWire<T> {
+    frame_id: u64,
+    value: T,
+}
 
 impl<T: Crossing> Wire for OnWire<T> {
     fn encode(&self, out: &mut Vec<u8>) {
-        self.0.encode(out)
+        out.extend_from_slice(&self.frame_id.to_le_bytes());
+        self.value.encode(out)
     }
     fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        T::decode(bytes).map(OnWire)
+        let mut g = Get(bytes);
+        let frame_id = g.u64()?;
+        Ok(OnWire { frame_id, value: T::decode(g.0)? })
     }
 }
 
 /// The gates on an edge inside the pipeline: each frame its producer's output is serialized
 /// through them (sent at the frame's time); its reader reads the last value that arrived
-/// (the blank one before any has).
+/// (the blank one before any has), and the passes after it run with the camera of the frame
+/// it was made in (looked up by frame id; this frame's when the id was lost or before any
+/// arrived), as the GPU's gated shading does.
 pub(crate) struct GatePass<T> {
     chain: GateChain,
     width: u32,
     height: u32,
+    /// The cameras of the frames sent and not yet arrived or passed, oldest first.
+    cameras: std::collections::VecDeque<(u64, Camera)>,
+    /// The camera of the value it outputs (`None`: none arrived since the start or a resize).
+    shown: Option<Camera>,
     _t: std::marker::PhantomData<T>,
 }
 
 impl<T: Crossing> GatePass<T> {
     pub fn boxed(chain: GateChain, width: u32, height: u32) -> Box<dyn Node> {
-        Box::new(Self { chain, width, height, _t: std::marker::PhantomData })
+        Box::new(Self { chain, width, height, cameras: Default::default(), shown: None, _t: std::marker::PhantomData })
     }
 }
 
@@ -162,11 +180,21 @@ impl<T: Crossing> Node for GatePass<T> {
     }
     fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
         let start = std::time::Instant::now();
-        let sent = ins[0].downcast_ref::<T>().expect("the gated edge's value").clone();
-        let got = self.chain.gates.pass(cx.req.time, Some(OnWire(sent)));
-        if let Some(v) = got.into_iter().rev().find(|v| v.0.fits(self.width, self.height)) {
-            *out.downcast_mut::<T>().expect("the gated edge's value") = v.0;
+        let value = ins[0].downcast_ref::<T>().expect("the gated edge's value").clone();
+        self.cameras.push_back((cx.req.frame_id, cx.req.camera));
+        let got = self.chain.gates.pass(cx.req.time, Some(OnWire { frame_id: cx.req.frame_id, value }));
+        if let Some(v) = got.into_iter().rev().find(|v| v.value.fits(self.width, self.height)) {
+            *out.downcast_mut::<T>().expect("the gated edge's value") = v.value;
+            // The frames before it are passed: their values can only arrive late now.
+            self.shown = Some(match self.cameras.iter().position(|(id, _)| *id == v.frame_id) {
+                Some(i) => self.cameras.drain(..=i).next_back().expect("found").1,
+                None => cx.req.camera,
+            });
         }
+        // No more cameras kept than messages could still arrive (each is at least a packet).
+        let in_flight: usize = self.chain.gates.0.iter().map(|g| g.in_flight()).sum();
+        let drop = self.cameras.len().saturating_sub(in_flight);
+        self.cameras.drain(..drop);
         let nodes: Vec<String> = self.chain.nodes.iter().map(|(id, _)| id.clone()).collect();
         report.stages.push(StageTime::cpu("gate", &nodes, start.elapsed().as_secs_f32() * 1e3));
         report.gates.extend(self.chain.reports());
@@ -174,6 +202,10 @@ impl<T: Crossing> Node for GatePass<T> {
     fn resize(&mut self, out: &mut Res, width: u32, height: u32) {
         (self.width, self.height) = (width, height);
         *out = Box::new(T::blank(width, height));
+        self.shown = None;
+    }
+    fn shown_camera(&self) -> Option<Camera> {
+        self.shown
     }
 }
 
@@ -310,11 +342,21 @@ impl<P: Pixel> Renderer for Executor<P> {
         let view = (!self.values.is_empty()).then_some((self.view.as_str(), self.values.as_slice()));
         let cx = Cx { pool: &self.pool, world: &self.world, req, width: self.width, height: self.height, view };
         self.pool.install(|| {
+            // Per pass, the camera its output was made with when not this frame's (behind a gate).
+            let mut cameras: Vec<Option<Camera>> = Vec::with_capacity(passes.len());
             for (i, pass) in passes.iter_mut().enumerate() {
                 // Inputs come before `i` (checked at creation): split there.
                 let (done, rest) = outs.split_at_mut(i);
                 let ins: Vec<&Res> = pass.ins.iter().map(|&j| &done[j]).collect();
-                pass.node.run(&cx, &ins, &mut rest[0], &mut report);
+                let camera = pass.ins.iter().find_map(|&j| cameras[j]);
+                match camera {
+                    Some(camera) => {
+                        let req = FrameRequest { camera, ..req.clone() };
+                        pass.node.run(&Cx { req: &req, ..cx }, &ins, &mut rest[0], &mut report);
+                    }
+                    None => pass.node.run(&cx, &ins, &mut rest[0], &mut report),
+                }
+                cameras.push(pass.node.shown_camera().or(camera));
             }
         });
         if let Some(legend) = self.show() {

@@ -13,6 +13,11 @@ use std::process::Command;
 
 /// Writes a one-renderer plan of `edits` on `graph` and runs it: its success and log.
 fn launch(dir: &Path, name: &str, graph: &str, edits: &str) -> (bool, String) {
+    launch_saving(dir, name, graph, edits, 0)
+}
+
+/// [`launch`], saving every `every`-th frame (0: the last).
+fn launch_saving(dir: &Path, name: &str, graph: &str, edits: &str, every: u32) -> (bool, String) {
     let d = dir.join(name);
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
@@ -31,7 +36,7 @@ graph = "{graph}"
 edits = {edits}
 [output]
 dir = {:?}
-save = {{ every = 0 }}
+save = {{ every = {every} }}
 "#,
         d.join("out").to_str().unwrap(),
     );
@@ -159,6 +164,45 @@ fn lossless_gates_change_no_pixel() {
         assert_eq!(gates(&gated).iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["f:frame", "h:shading.hits"]);
         crossed(&gated, false);
         assert!(last_image(&dir(), &format!("{graph}-plain")) == last_image(&dir(), &format!("{graph}-gated")), "{graph}: a lossless gate changed the frame");
+    }
+}
+
+/// Every frame a run saved, in frame order (the files' bytes).
+fn images(dir: &Path, name: &str) -> Vec<Vec<u8>> {
+    fn all(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                all(&p, out);
+            } else if p.extension().is_some_and(|e| e == "png") && !p.to_string_lossy().contains("diff") {
+                out.push(p);
+            }
+        }
+    }
+    let mut paths = vec![];
+    all(&dir.join(name).join("out"), &mut paths);
+    paths.sort();
+    paths.iter().map(|p| std::fs::read(p).unwrap()).collect()
+}
+
+/// Hit records late behind a gate are shaded with the camera they were cast with: with the
+/// camera moving, a lossless gate delaying the records by a few frames shows exactly an
+/// earlier frame of the ungated run, on each CPU drawer writing records.
+#[test]
+fn late_hits_shaded_with_their_own_camera() {
+    for graph in ["raycast-cpu", "columns-cpu", "raster-cpu"] {
+        let (plain, gated) = (format!("{graph}-moving-plain"), format!("{graph}-moving-late"));
+        let (ok, log) = launch_saving(&dir(), &plain, graph, r#"[{ node = "shading", knobs = { placement = "deferred" } }]"#, 1);
+        assert!(ok, "{log}");
+        let source = if graph == "raster-cpu" { "draw" } else { "visibility" };
+        let edits = format!("[{}]", inside("{ latency_ms = 40 }", "{}").replace(r#"from = "visibility""#, &format!(r#"from = "{source}""#)));
+        let (ok, log) = launch_saving(&dir(), &gated, graph, &edits, 1);
+        assert!(ok, "{log}");
+        let (plain, gated) = (images(&dir(), &plain), images(&dir(), &gated));
+        let last = gated.last().expect("saved frames");
+        assert!(plain.len() > 4 && plain.last() != plain.get(plain.len() - 4), "{graph}: the camera does not move visibly");
+        assert!(last != plain.last().unwrap(), "{graph}: the late records show the current frame");
+        assert!(plain[plain.len() - 5..].contains(last), "{graph}: the late records do not show an earlier frame as it was");
     }
 }
 
