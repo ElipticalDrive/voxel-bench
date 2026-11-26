@@ -7,6 +7,7 @@ mod compare;
 mod contract;
 mod features;
 mod journal;
+mod metrics;
 mod catalogue;
 mod gui;
 mod observe;
@@ -73,6 +74,13 @@ enum Cmd {
         /// renderer is ranked, but cannot be the best or "good at" a scenario.
         #[arg(long, default_value_t = 35.0)]
         min_psnr: f64,
+    },
+    /// The metrics a pass's record can hold: name, unit, which way is better, method version,
+    /// description, where the report holds it and where version-6 records held it. Markdown,
+    /// or JSON with `--json` (read by the guard and `records.py`).
+    Metrics {
+        #[arg(long)]
+        json: bool,
     },
     /// Fly around a plan's scene interactively with one or more renderers side by side.
     View {
@@ -219,6 +227,17 @@ fn main() -> anyhow::Result<()> {
             if let Some(o) = out {
                 let (w, h) = ia.dimensions();
                 image::save_buffer(o, &compare::diff_image(&ia, &ib), w, h, image::ExtendedColorType::Rgba8)?;
+            }
+            Ok(())
+        }
+        Cmd::Metrics { json } => {
+            if json {
+                println!("{}", metrics::json());
+            } else {
+                println!("| metric | unit | better | method | description |\n|---|---|---|---:|---|");
+                for m in metrics::METRICS {
+                    println!("| `{}` | {} | {:?} | {} | {} |", m.name, m.unit, m.better, m.method, m.description);
+                }
             }
             Ok(())
         }

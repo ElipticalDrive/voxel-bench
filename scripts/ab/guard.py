@@ -27,6 +27,12 @@ pipelines. Passes in only one side are counted and, with --all, listed. Performa
 work (the idle queue), so a pass may lack speed or a score on a side: it is still compared on
 what both sides have, and the passes left uncompared are counted.
 
+Metrics are an open map with a method version each (`multirenderer metrics`): a metric is compared only
+where both sides measured it the same way; a changed method is printed as such ("measured another way"),
+never as slower or faster. Every other metric with a better direction is compared by its median ratio
+over the common passes and listed when it moves more than --shift %; metrics the binary does not know
+are named, not compared.
+
 The baseline is the newest `baselines/sweep-*` unless --base names one. Exit 0 when nothing
 regressed, 1 when something did, 2 when nothing could be compared. Records are read by
 records.py (MR_BIN names the binary that recomputes graph keys): it prints the observation
@@ -36,7 +42,7 @@ baselines/renames.toml it applied, and the records it left out with the reason.
 import argparse, collections, glob, os, statistics as st, sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from records import load_all
+from records import load_all, registry
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -48,21 +54,33 @@ def default_base():
 
 def score(o):
     """The score the catalogue's floor applies, and its bad-pixel share."""
+    m = o['metrics']
     for s, b in (('psnr_settled', 'bad_pct_settled'), ('psnr_like', 'bad_pct_like'), ('psnr', 'bad_pct')):
-        if o.get(s) is not None:
-            return s, o[s], o.get(b)
+        if m.get(s) is not None:
+            return s, m[s], m.get(b)
     return None, None, None
 
 
 def spread(rs, field):
-    """Relative spread (stdev / mean) of a field over a pass's repeats, None with fewer than two."""
-    v = [o[field] for o in rs if o.get(field)]
+    """Relative spread (stdev / mean) of a metric over a pass's repeats, None with fewer than two."""
+    v = [o['metrics'][field] for o in rs if o['metrics'].get(field)]
     return st.stdev(v) / st.mean(v) if len(v) >= 2 else None
 
 
 def mean(rs, field):
-    v = [o[field] for o in rs if o.get(field) is not None]
+    v = [o['metrics'][field] for o in rs if o['metrics'].get(field) is not None]
     return st.mean(v) if v else None
+
+
+def method(rs, field):
+    """The method versions a pass's records measured a metric by (a set; empty: not measured)."""
+    return {(o.get('methods') or {}).get(field, 1) for o in rs if o['metrics'].get(field) is not None}
+
+
+def same_method(b, n, field):
+    """Both sides measured the metric, the same way: comparable."""
+    mb, mn = method(b, field), method(n, field)
+    return bool(mb) and mb == mn
 
 
 def components(o):
@@ -94,7 +112,9 @@ def main():
         print('nothing in common to compare')
         return 2
     slow, fast, worse, better, failed, fixed, ratios = [], [], [], [], [], [], []
-    label, unmeasured = {}, collections.Counter()
+    label, unmeasured, changed = {}, collections.Counter(), collections.Counter()
+    reg, other = registry(), collections.defaultdict(list)
+    unknown = sorted({f for side in (base, new) for k in common for o in side[k] for f in o['metrics'] if f not in reg})
     for k in common:
         b, n = base[k], new[k]
         label[k] = n[-1]['label']
@@ -105,6 +125,16 @@ def main():
         gb, gn = mean(b, 'gpu_ms'), mean(n, 'gpu_ms')
         fb, fn = mean(b, 'fps'), mean(n, 'fps')
         r = None
+        for f in ('gpu_ms', 'fps'):
+            if method(b, f) and method(n, f) and not same_method(b, n, f):
+                changed[f] += 1  # measured another way: not a speed change
+                if f == 'gpu_ms': gb = gn = None
+                else: fb = fn = None
+        for f, m in reg.items():
+            if f in ('gpu_ms', 'fps') or m['better'] == 'neither' or not same_method(b, n, f): continue
+            vb, vn = mean(b, f), mean(n, f)
+            if vb and vn and vb > 0 and vn > 0:
+                other[f].append(vn / vb if m['better'] == 'lower' else vb / vn)  # above 1 is worse
         if gb and gn:
             r, rel, what = gn / gb, a.speed / 100, 'GPU ms'
             noise = max(rel, a.abs_ms / gb, 3 * max(spread(b, 'gpu_ms') or 0, spread(n, 'gpu_ms') or 0))
@@ -183,6 +213,16 @@ def main():
         top = sorted(hit, key=lambda c: (-hit[c] / len(slow), c))[:8]
         print('components of the slowed pipelines (slowed with it / pipelines with it):',
               ', '.join(f'{c} {hit[c]}/{have[c]}' for c in top))
+    moved = sorted((st.median(v), f, len(v)) for f, v in other.items() if len(v) >= 5 and abs(st.median(v) - 1) > a.shift / 100)
+    if moved:
+        print('other metrics moving (median worse/better ratio, above 1 is worse; passes):')
+        for m, f, n_ in sorted(moved, reverse=True):
+            print(f'  {f:28s} {m:.3f}  {n_:5d}  {reg[f]["unit"]}')
+    if changed:
+        print('measured another way (method version changed; not compared as speed): '
+              + ', '.join(f'{f} {n_} passes' for f, n_ in sorted(changed.items())))
+    if unknown:
+        print(f'metrics this build does not know (not compared): {", ".join(unknown)}')
     if unmeasured:
         print('not compared (measured on one side only or neither): '
               + ', '.join(f'{what} {n_} passes' for what, n_ in sorted(unmeasured.items())))

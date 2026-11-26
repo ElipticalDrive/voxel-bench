@@ -7,8 +7,8 @@ if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help,
     sys.exit(print(__doc__))
 base, new = load(sys.argv[1]), load(sys.argv[2])
 shown = {k: v[1] for d in (base, new) for k, v in d.items()}
-base = {k: v[0] for k, v in base.items()}
-new = {k: v[0] for k, v in new.items()}
+base = {k: v[0]['metrics'] | {'error': v[0].get('error')} for k, v in base.items()}
+new = {k: v[0]['metrics'] | {'error': v[0].get('error')} for k, v in new.items()}
 common = [k for k in base if k in new]
 print(f'base {len(base)} obs, new {len(new)} obs, common {len(common)}, only new {len(set(new)-set(base))}, only base {len(set(base)-set(new))}')
 if not common: sys.exit('nothing in common to compare')

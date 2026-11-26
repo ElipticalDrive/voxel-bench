@@ -13,11 +13,13 @@ use crate::features::SceneFeatures;
 use crate::plan::Plan;
 use crate::report::PassReport;
 
-/// Bumped when fields change meaning or are added (2: `features`; 3: `sites`, `graph`,
+/// Bumped only when a field changes meaning (2: `features`; 3: `sites`, `graph`,
 /// `graph_key`; 4: `stages`; 5: `stream`; 6: a pipeline is its `graph`, always, and
-/// `renderer` the executor that ran it). Records of pipelines from before version 6 are not
-/// read (`parse`).
-pub const VERSION: u32 = 6;
+/// `renderer` the executor that ran it; 7: the metrics an open map, `metrics` and `methods`).
+/// A new metric is not a new version: it is an entry in `crate::metrics`. Records of
+/// pipelines from before version 6 are not read; records of version 6 read with their
+/// metrics moved into the map (`parse`).
+pub const VERSION: u32 = 7;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
@@ -94,71 +96,26 @@ pub struct Observation {
     /// What the plan asked of it that it lacks and ran without.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub not_supported: Vec<String>,
-    /// Throughput and pacing: completed frames per second, and the time between
-    /// completions (mean, p50, p99).
-    pub fps: f64,
-    pub frame_ms: Option<f64>,
-    pub frame_p50_ms: Option<f64>,
-    pub frame_p99_ms: Option<f64>,
-    /// Means over the frames: GPU execution time (timestamp queries), the renderer's CPU
-    /// time, and the host-measured latency of a frame.
-    pub gpu_ms: Option<f64>,
-    pub cpu_ms: Option<f64>,
-    pub latency_ms: Option<f64>,
-    pub init_ms: f64,
-    pub initial_load_ms: f64,
-    pub peak_rss_mb: Option<f64>,
-    /// Counted by the renderer (what it sizes) and measured (its devices' allocators at their
-    /// peak; a few older records hold the pass's end).
-    pub gpu_mb: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gpu_device_mb: Option<f64>,
-    /// Against the reference: mean and worst PSNR, mean share of bad pixels.
-    pub psnr: Option<f64>,
-    pub psnr_min: Option<f64>,
-    pub bad_pct: Option<f64>,
-    /// What it is given of the world when less than the reference (its LOD region), and its
-    /// mean PSNR and bad pixels against a reference given the same.
+    /// What was measured, by metric (`crate::metrics`): missing = not measured; a name this
+    /// build does not know is kept and shown raw. `methods` holds each one's method version,
+    /// so a changed way of measuring is told apart from a changed speed (version 7).
+    #[serde(default)]
+    pub metrics: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub methods: BTreeMap<String, u32>,
+    /// What it is given of the world when less than the reference (its LOD region): the
+    /// `*_like` metrics are scored against a reference given the same.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub like: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub psnr_like: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bad_pct_like: Option<f64>,
-    /// Its graph's edges that arrive a frame late, and its mean PSNR and bad pixels once they
-    /// caught up (the compared frames held still; against the like reference where it has one).
+    /// Its graph's edges that arrive a frame late (the `*_settled` metrics are its frames
+    /// once they caught up).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub late: Vec<String>,
-    /// For one that accumulates lit frames: the paths per pixel its settled frames averaged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub converged_spp: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub psnr_settled: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bad_pct_settled: Option<f64>,
     /// The renderer's own counters, averaged over the frames.
     pub counters: BTreeMap<String, f64>,
     /// Time per stage (version 4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<ObservedStage>,
-    /// The stream to its client (version 5).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream: Option<ObservedStream>,
-}
-
-/// What crossed the link and what was missing (`PassReport`'s fields of the same names).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ObservedStream {
-    pub wire_bytes: u64,
-    pub arrived_bytes: u64,
-    pub update_ns_per_byte: Option<f64>,
-    /// Mean and largest chunks missing per frame, and the frames with any.
-    pub holes: f64,
-    pub holes_max: f64,
-    pub frames_with_holes: usize,
-    /// The first frame with nothing missing: its number and wall time from the pass's start.
-    pub first_complete_frame: Option<u32>,
-    pub first_complete_ms: Option<f64>,
 }
 
 /// A stage's mean times over the frames that ran it, and the nodes it ran.
@@ -185,7 +142,7 @@ impl Observation {
                 e.1 += 1;
             }
         }
-        let q = r.quality.as_ref();
+        let (metrics, methods) = crate::metrics::measure(&serde_json::to_value(r).unwrap_or_default());
         Self {
             version: VERSION,
             run: run.into(),
@@ -210,40 +167,12 @@ impl Observation {
             error: r.error.clone(),
             beside_failed: r.beside_failed.clone(),
             not_supported: r.not_supported.clone(),
-            fps: r.fps,
-            frame_ms: r.frame_interval_ms.as_ref().map(|s| s.mean),
-            frame_p50_ms: r.frame_interval_ms.as_ref().map(|s| s.p50),
-            frame_p99_ms: r.frame_interval_ms.as_ref().map(|s| s.p99),
-            gpu_ms: r.gpu_ms.as_ref().map(|s| s.mean),
-            cpu_ms: r.cpu_ms.as_ref().map(|s| s.mean),
-            latency_ms: r.latency_ms.as_ref().map(|s| s.mean),
-            init_ms: r.init_ms as f64,
-            initial_load_ms: r.initial_load_ms,
-            peak_rss_mb: r.peak_rss_mb,
-            gpu_mb: (r.memory.gpu_bytes > 0).then(|| r.memory.gpu_bytes as f64 / 1048576.0),
-            gpu_device_mb: (r.memory.gpu_device_bytes > 0).then(|| r.memory.gpu_device_bytes as f64 / 1048576.0),
-            psnr: q.map(|q| q.psnr.mean),
-            psnr_min: q.map(|q| q.psnr.min),
-            bad_pct: q.map(|q| q.bad_pct.mean),
+            metrics,
+            methods,
             like: r.like.clone(),
-            psnr_like: r.quality_like.as_ref().map(|q| q.psnr.mean),
-            bad_pct_like: r.quality_like.as_ref().map(|q| q.bad_pct.mean),
             late: r.late.clone(),
-            converged_spp: r.converged_spp,
-            psnr_settled: r.quality_settled.as_ref().map(|q| q.psnr.mean),
-            bad_pct_settled: r.quality_settled.as_ref().map(|q| q.bad_pct.mean),
             counters: sums.into_iter().map(|(k, (s, n))| (k, s / n.max(1) as f64)).collect(),
             stages: Vec::new(),
-            stream: (r.error.is_none()).then(|| ObservedStream {
-                wire_bytes: r.wire_bytes,
-                arrived_bytes: r.arrived_bytes,
-                update_ns_per_byte: r.update_ns_per_byte,
-                holes: r.holes.as_ref().map_or(0.0, |h| h.mean),
-                holes_max: r.holes.as_ref().map_or(0.0, |h| h.max),
-                frames_with_holes: r.frames_with_holes,
-                first_complete_frame: r.first_complete.map(|c| c.frame),
-                first_complete_ms: r.first_complete.map(|c| c.ms),
-            }),
         }
         .with_stages(r)
     }
@@ -278,22 +207,28 @@ impl Observation {
 
     /// The record in `line`; `None` for one this build no longer reads: a pipeline's from
     /// before version 6 (named in a form since removed). A standalone renderer's reads at
-    /// any version. A record newer than this build ([`VERSION`]) is an error naming both
-    /// versions: what it holds may mean something this build would misread.
+    /// any version; records before version 7 read with their metrics moved into the map
+    /// (`metrics::from_v6`, method 1). A record newer than this build ([`VERSION`]) is an
+    /// error naming both versions: a field may mean something this build would misread (a
+    /// new metric is not a new version, and reads).
     pub fn parse(line: &str) -> serde_json::Result<Option<Self>> {
-        let older = |v: &serde_json::Value| v["version"].as_u64().is_some_and(|n| n < VERSION as u64);
         if let Some(why) = newer(line) {
             return Err(serde::de::Error::custom(why));
         }
-        match serde_json::from_str::<Self>(line) {
-            Ok(o) if o.version >= VERSION => Ok(Some(o)),
-            Ok(o) => {
-                let v: serde_json::Value = serde_json::from_str(line)?;
-                Ok((v["graph"].is_null() && v["composition"].is_null()).then_some(o))
-            }
-            Err(_) if serde_json::from_str::<serde_json::Value>(line).is_ok_and(|v| older(&v)) => Ok(None),
-            Err(e) => Err(e),
+        let mut v: serde_json::Value = serde_json::from_str(line)?;
+        let version = v["version"].as_u64().unwrap_or(0);
+        if version < 6 && !(v["graph"].is_null() && v["composition"].is_null()) {
+            return Ok(None);
         }
+        if version < 7 {
+            crate::metrics::from_v6(&mut v);
+        }
+        serde_json::from_value(v).map(Some)
+    }
+
+    /// The value of metric `name`, if measured.
+    pub fn metric(&self, name: &str) -> Option<f64> {
+        self.metrics.get(name).copied()
     }
 }
 

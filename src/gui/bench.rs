@@ -139,7 +139,7 @@ impl Table {
                 .flatten()
                 .collect();
                 let error = p.get("error").and_then(|e| e.as_str()).map(String::from);
-                let cells = if error.is_some() { Vec::new() } else { cols.iter().map(|c| (c.cell)(p)).collect() };
+                let cells = if error.is_some() { Vec::new() } else { cols.iter().map(|c| c.cell(p)).collect() };
                 Row { label: if notes.is_empty() { s("label") } else { format!("{} ⚠", s("label")) }, notes: (!notes.is_empty()).then(|| notes.join("\n")), mode: s("mode"), error, cells }
             })
             .collect();
@@ -190,16 +190,30 @@ fn cell(text: String) -> Cell {
     Cell { text, hover: None }
 }
 
-fn num(v: Option<f64>, d: usize) -> Option<Cell> {
-    v.map(|x| cell(format!("{x:.d$}")))
-}
-
 /// A column of the report table after the label and mode: its header, the header's hover,
-/// and a pass's cell (None: "-").
+/// and a pass's cell (None: "-"): one metric (`crate::metrics`), or a view over several
+/// (`covers` names them, so they are not shown again on their own).
 pub struct Column {
     pub name: &'static str,
     pub hover: &'static str,
     pub cell: fn(&Value) -> Option<Cell>,
+    pub metric: Option<&'static crate::metrics::Metric>,
+    pub covers: &'static [&'static str],
+}
+
+impl Column {
+    pub fn cell(&self, p: &Value) -> Option<Cell> {
+        match self.metric {
+            Some(m) => m.of(p).map(|x| cell(m.show(x))),
+            None => (self.cell)(p),
+        }
+    }
+
+    /// The column of metric `name` (a registry entry: headed by its name, its description on hover).
+    fn of(name: &str) -> Self {
+        let m = crate::metrics::get(name).unwrap_or_else(|| panic!("no metric `{name}`"));
+        Column { name: m.name, hover: m.description, cell: |_| None, metric: Some(m), covers: &[] }
+    }
 }
 
 /// The columns `passes` fill: every pass has the first ones; the rest (the like score,
@@ -208,20 +222,16 @@ pub struct Column {
 pub fn columns(passes: &[Value]) -> Vec<Column> {
     let ok: Vec<&Value> = passes.iter().filter(|p| p.get("error").is_none_or(Value::is_null)).collect();
     let always = [
-        Column { name: "fps", hover: "Frames completed per second of wall time over the pass", cell: |p| num(f(p, &["fps"]), 1) },
-        Column { name: "frame ms", hover: "Mean time between completed frames", cell: |p| num(f(p, &["frame_interval_ms", "mean"]), 2) },
-        Column { name: "p99 ms", hover: "99th-percentile time between completed frames (hitches)", cell: |p| num(f(p, &["frame_interval_ms", "p99"]), 2) },
-        Column { name: "gpu ms", hover: "Mean GPU execution time per frame (timestamp queries)", cell: |p| num(f(p, &["gpu_ms", "mean"]), 2) },
-        Column { name: "cpu ms", hover: "Mean renderer-process CPU time per frame", cell: |p| num(f(p, &["cpu_ms", "mean"]), 2) },
-        Column { name: "latency ms", hover: "Mean time from a frame's request to its completion", cell: |p| num(f(p, &["latency_ms", "mean"]), 2) },
-        Column { name: "PSNR", hover: "Mean PSNR vs the reference renderer in dB (higher is better, 99 = exact)", cell: |p| num(f(p, &["quality", "psnr", "mean"]), 1) },
-        Column {
-            name: "settled dB",
-            hover: "PSNR of the frames rendered with the camera held still long enough to settle (accumulating pipelines: converged); the score the catalogue's floor uses where present",
-            cell: |p| num(f(p, &["quality_settled", "psnr", "mean"]), 1),
-        },
-        Column { name: "bad %", hover: "Mean share of pixels off by more than 16/255 vs the reference", cell: |p| num(f(p, &["quality", "bad_pct", "mean"]), 2) },
-        Column { name: "init ms", hover: "Renderer start-up time (device, pipelines)", cell: |p| num(f(p, &["init_ms"]), 0) },
+        Column::of("fps"),
+        Column::of("frame_ms"),
+        Column::of("frame_p99_ms"),
+        Column::of("gpu_ms"),
+        Column::of("cpu_ms"),
+        Column::of("latency_ms"),
+        Column::of("psnr"),
+        Column::of("psnr_settled"),
+        Column::of("bad_pct"),
+        Column::of("init_ms"),
         Column {
             name: "shaders ms",
             hover: "The part of init ms spent on shaders: composing and validating modules, and creating pipelines (the driver's compile)",
@@ -230,14 +240,12 @@ pub fn columns(passes: &[Value]) -> Vec<Column> {
                 let n = |v: Option<f64>| v.map_or("-".into(), |x| format!("{x:.0}"));
                 (!s.iter().all(Option::is_none)).then(|| Cell { text: format!("{} + {}", n(s[0]), n(s[1])), hover: Some("modules + pipelines".into()) })
             },
+            metric: None,
+            covers: &["shader_module_ms", "shader_pipeline_ms"],
         },
-        Column { name: "RSS MB", hover: "Peak resident memory of the renderer process", cell: |p| num(f(p, &["peak_rss_mb"]), 0) },
-        Column { name: "GPU MB", hover: "GPU memory the renderer counts holding", cell: |p| num(f(p, &["memory", "gpu_bytes"]).filter(|x| *x > 0.0).map(|x| x / 1048576.0), 0) },
-        Column {
-            name: "device MB",
-            hover: "Measured: the most its GPU devices' allocators held (rounding and transient memory included)",
-            cell: |p| num(f(p, &["memory", "gpu_device_bytes"]).filter(|x| *x > 0.0).map(|x| x / 1048576.0), 0),
-        },
+        Column::of("peak_rss_mb"),
+        Column::of("gpu_mb"),
+        Column::of("gpu_device_mb"),
     ];
     let optional = [
         Column {
@@ -247,18 +255,12 @@ pub fn columns(passes: &[Value]) -> Vec<Column> {
                 let v = f(p, &["quality_like", "psnr", "mean"])?;
                 Some(Cell { text: format!("{v:.1}"), hover: p.get("like").and_then(Value::as_str).map(|l| format!("like {l}")) })
             },
+            metric: None,
+            covers: &["psnr_like"],
         },
-        Column {
-            name: "spp",
-            hover: "Paths per pixel its settled frames accumulated (pipelines that accumulate lit frames, held still to reach compare.converge)",
-            cell: |p| num(f(p, &["converged_spp"]), 0),
-        },
-        Column { name: "update ms", hover: "Mean time applying world updates per frame (chunk uploads, edits, lights); per byte arrived on hover", cell: update_cell },
-        Column {
-            name: "missed",
-            hover: "Frames not done by their deadline in a paced pass (`run.pacing` at a fixed fps)",
-            cell: |p| num(f(p, &["missed_deadlines"]), 0),
-        },
+        Column::of("converged_spp"),
+        Column { name: "update ms", hover: "Mean time applying world updates per frame (chunk uploads, edits, lights); per byte arrived on hover", cell: update_cell, metric: None, covers: &["update_ms", "update_ns_per_byte"] },
+        Column::of("missed_deadlines"),
         Column {
             name: "wire MB",
             hover: "Bytes sent over its link in the pass, resends and warm-up included; arrived bytes and chunks on hover. Shown for passes over a link that is not free, with holes, or complete only after their first frame",
@@ -267,6 +269,8 @@ pub fn columns(passes: &[Value]) -> Vec<Column> {
                 let mb = |k| f(p, &[k]).unwrap_or(0.0) / 1048576.0;
                 Some(Cell { text: format!("{:.1}", mb("wire_bytes")), hover: Some(format!("{:.1} MB arrived, {:.0} chunks sent", mb("arrived_bytes"), f(p, &["chunks_sent"]).unwrap_or(0.0))) })
             },
+            metric: None,
+            covers: &["wire_bytes", "arrived_bytes"],
         },
         Column {
             name: "holes",
@@ -276,6 +280,8 @@ pub fn columns(passes: &[Value]) -> Vec<Column> {
                 let (mean, max) = (f(p, &["holes", "mean"]).unwrap_or(0.0), f(p, &["holes", "max"]).unwrap_or(0.0));
                 Some(Cell { text: format!("{mean:.1} / {max:.0}"), hover: Some(format!("{:.0} frames with holes", f(p, &["frames_with_holes"]).unwrap_or(0.0))) })
             },
+            metric: None,
+            covers: &["holes", "holes_max", "frames_with_holes"],
         },
         Column {
             name: "first complete",
@@ -290,10 +296,17 @@ pub fn columns(passes: &[Value]) -> Vec<Column> {
                     None => cell("never".into()),
                 })
             },
+            metric: None,
+            covers: &["first_complete_frame", "first_complete_ms"],
         },
     ];
+    // Every other metric a pass that ran measured, in the registry's order (one a view
+    // covers stays in its view, shown or not).
+    let shown: Vec<&str> = always.iter().chain(&optional).flat_map(|c| c.metric.map(|m| m.name).into_iter().chain(c.covers.iter().copied())).collect();
     let mut cols: Vec<Column> = always.into_iter().collect();
-    cols.extend(optional.into_iter().filter(|c| ok.iter().any(|p| (c.cell)(p).is_some())));
+    cols.extend(optional.into_iter().filter(|c| ok.iter().any(|p| c.cell(p).is_some())));
+    let rest: Vec<Column> = crate::metrics::METRICS.iter().filter(|m| !shown.contains(&m.name)).map(|m| Column::of(m.name)).collect();
+    cols.extend(rest.into_iter().filter(|c| ok.iter().any(|p| c.cell(p).is_some())));
     cols
 }
 

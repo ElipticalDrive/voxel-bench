@@ -276,8 +276,18 @@ rays it casts make no difference; without meshes: the meshes node and its shadow
   records of pipelines from before version 6 (a flat `composition`) are no longer read: `catalogue`
   leaves them out and says how many; a record newer than the build (its `version` above the
   build's) is refused, naming both versions;
-- the results: fps, frame interval (mean, p50, p99), GPU and CPU ms, latency, init and load
-  time, memory (`peak_rss_mb`; `gpu_mb`, what the renderer counts it sizes; `gpu_device_mb`,
+- the results, as an open map of **metrics** (`metrics`, name to value) with each one's
+  method version beside it (`methods`). What a metric is (unit, which way is better, method
+  version, description, where the pass's report holds it) is one entry in `src/metrics.rs`,
+  listed by `multirenderer metrics` (`--json` for scripts). A metric missing from a record was
+  not measured (performance data is background work: a pass may lack its timing); a name the
+  build does not know is read and shown raw (the catalogue's CSV, the guard names it). The
+  method version is bumped when how a metric is measured changes, so the guard never reads a
+  changed method as a changed speed. Adding a metric is one entry (and filling the report
+  field it reads); the record's `version` (7) changes only when a field changes meaning, and
+  records of version 6, which held each metric as a field, read into the map as method 1.
+  The metrics today: fps, frame interval (mean, p50, p99), GPU and CPU ms, latency, init and load
+  time, shader module and pipeline time, world-update time, missed deadlines, memory (`peak_rss_mb`; `gpu_mb`, what the renderer counts it sizes; `gpu_device_mb`,
   measured: the most its GPU devices' allocators held, every buffer, texture and acceleration
   structure, where the backend reports it: Vulkan, DX12, Metal; a peak like `peak_rss_mb`,
   sampled after each frame's submission before the poll that frees its transient memory
@@ -286,7 +296,8 @@ rays it casts make no difference; without meshes: the meshes node and its shadow
   thread, and are spaced to stay under 1% of a core; a few older records hold the
   pass's end instead), PSNR (mean and minimum), bad pixels, the same against the like reference
   (`like`, `psnr_like`, `bad_pct_like`) and settled (`late`, `psnr_settled`,
-  `bad_pct_settled`), stage times, stream counters and the
+  `bad_pct_settled`), the stream counters (wire and arrived bytes, holes, first complete
+  frame); beside the metrics: stage times and the
   renderer's own counters; a read-back frame also counts its host-side copies,
   `readback_copy_ms` (out of the GPU's mapping), `readback_shm_ms` (into the shared memory, a
   worker's) and `readback_host_ms` (out of it, with the hand-off to window, saver and comparer).
@@ -354,7 +365,11 @@ Python, for Linux and Windows (`scripts/`):
   only what moved beyond noise: passes slower or faster (GPU ms, else fps; default ±10 %, since
   a sweep runs each pass once, so a pass's verdict is a candidate to confirm with `perf.py`),
   scores worse or better (the score the catalogue's floor uses; 0.5 dB, or crossing the floor),
-  passes failing or passing now. It also prints the per-component speed medians that moved
+  passes failing or passing now. A metric is compared only where both sides measured it by
+  the same method version; a changed method is counted as "measured another way", never as
+  slower. Every other metric with a better direction (`multirenderer metrics`) is compared by
+  its median ratio over the common passes and listed when it moves more than 2 %; metrics
+  the binary does not know are named. It also prints the per-component speed medians that moved
   more than 2 % against the median over all passes: a feature that costs pipelines without it
   shows here. Exits 1 on a regression. It compares only the passes both sides have, and
   counts the rest (`only base`, `only new`; `--all` lists them): a turn sweep against a full

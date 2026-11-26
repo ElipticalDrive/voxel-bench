@@ -255,7 +255,8 @@ fn offered_everywhere(p: &Probe) {
         graph_key: g.key().ok(),
         graph: Some(g),
         options: serde_json::json!({}),
-        fps,
+        metrics: [("fps".to_string(), fps)].into(),
+        methods: [("fps".to_string(), 1)].into(),
         ..Default::default()
     };
     // Beside its twin: a component with other inputs (a path tracer's `bounce`) checks into

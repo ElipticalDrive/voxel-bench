@@ -27,22 +27,11 @@ pub struct Entry {
     pub graph: Option<Graph>,
     pub graph_key: Option<String>,
     pub options: String,
+    /// fps (0 when not measured): what it is ranked by.
     pub fps: f64,
-    pub frame_p99_ms: Option<f64>,
-    pub gpu_ms: Option<f64>,
-    pub cpu_ms: Option<f64>,
-    pub psnr: Option<f64>,
-    /// Against a reference given the same of the world as it (LOD pipelines; else none).
-    pub psnr_like: Option<f64>,
-    /// Once its late edges caught up (pipelines with an edge a frame late; else none).
-    pub psnr_settled: Option<f64>,
-    pub bad_pct: Option<f64>,
-    /// Counted by the renderer, and measured (its devices' allocators at their peak; older
-    /// records lack it or hold the pass's end).
-    pub gpu_mb: Option<f64>,
-    pub gpu_device_mb: Option<f64>,
-    pub rss_mb: Option<f64>,
-    /// The footprint: `rss_mb` plus `gpu_device_mb` (else `gpu_mb`); none if neither is known.
+    /// Each metric's median over its records that ran (`crate::metrics`; unknown names kept).
+    pub metrics: BTreeMap<String, f64>,
+    /// The footprint: `peak_rss_mb` plus `gpu_device_mb` (else `gpu_mb`); none if neither is known.
     pub mem_mb: Option<f64>,
     /// `mem_mb` / the leanest correct renderer's in this scenario (none without figures).
     pub mem_rel: Option<f64>,
@@ -177,6 +166,30 @@ pub struct Catalogue {
     pub components: Vec<ComponentEffect>,
 }
 
+impl Entry {
+    /// The median of metric `name` over its records, if measured.
+    pub fn m(&self, name: &str) -> Option<f64> {
+        self.metrics.get(name).copied()
+    }
+}
+
+/// The metrics a scenario table shows, in this order (the CSV holds every one measured).
+const TABLE: &[&str] = &["fps", "frame_p99_ms", "gpu_ms", "cpu_ms", "psnr", "bad_pct", "gpu_mb", "gpu_device_mb", "peak_rss_mb"];
+
+/// A metric's header: its name, spaced.
+fn header(name: &str) -> String {
+    name.replace('_', " ")
+}
+
+/// A metric's value as shown: with its decimals when known, raw otherwise.
+fn shown(name: &str, v: Option<f64>) -> String {
+    match (v, crate::metrics::get(name)) {
+        (Some(x), Some(m)) => m.show(x),
+        (Some(x), None) => x.to_string(),
+        (None, _) => "-".into(),
+    }
+}
+
 fn median(mut v: Vec<f64>) -> Option<f64> {
     if v.is_empty() {
         return None;
@@ -220,45 +233,37 @@ impl Catalogue {
                 .into_iter()
                 .map(|(label, os)| {
                     let ok: Vec<&&Observation> = os.iter().filter(|o| o.error.is_none()).collect();
-                    let m = |f: &dyn Fn(&Observation) -> Option<f64>| median(ok.iter().filter_map(|o| f(o)).collect());
-                    let psnr = m(&|o| o.psnr);
+                    let names: BTreeSet<&String> = ok.iter().flat_map(|o| o.metrics.keys()).collect();
+                    let metrics: BTreeMap<String, f64> = names
+                        .into_iter()
+                        .filter_map(|n| Some((n.clone(), median(ok.iter().filter_map(|o| o.metric(n)).collect())?)))
+                        .collect();
                     // A pipeline given less than the full-resolution reference is judged
-                    // against the reference given the same: lossy is not incorrect.
-                    let psnr_like = m(&|o| o.psnr_like);
-                    // A pipeline with an edge a frame late is judged on its settled frames:
-                    // late is not incorrect.
-                    let psnr_settled = m(&|o| o.psnr_settled);
+                    // against the reference given the same (lossy is not incorrect); one with
+                    // an edge a frame late, on its settled frames (late is not incorrect).
+                    let score = ["psnr_settled", "psnr_like", "psnr"].iter().find_map(|n| metrics.get(*n).copied());
                     Entry {
                         label,
                         graph: os[0].pipeline(),
                         graph_key: os[0].graph_key.clone(),
                         options: os[0].options.to_string(),
-                        fps: m(&|o| Some(o.fps)).unwrap_or(0.0),
-                        frame_p99_ms: m(&|o| o.frame_p99_ms),
-                        gpu_ms: m(&|o| o.gpu_ms),
-                        cpu_ms: m(&|o| o.cpu_ms),
-                        psnr,
-                        psnr_like,
-                        psnr_settled,
-                        bad_pct: m(&|o| o.bad_pct),
-                        gpu_mb: m(&|o| o.gpu_mb),
-                        gpu_device_mb: m(&|o| o.gpu_device_mb),
-                        rss_mb: m(&|o| o.peak_rss_mb),
+                        fps: metrics.get("fps").copied().unwrap_or(0.0),
+                        metrics,
                         mem_mb: None,
                         mem_rel: None,
                         frontier: false,
                         samples: ok.len(),
                         error: if ok.is_empty() { os.iter().find_map(|o| o.error.clone()) } else { None },
                         rel: 0.0,
-                        valid: !ok.is_empty() && psnr_settled.or(psnr_like).or(psnr).is_none_or(|p| p >= min_psnr),
+                        valid: !ok.is_empty() && score.is_none_or(|p| p >= min_psnr),
                     }
                 })
                 .collect();
             let best = entries.iter().filter(|e| e.valid).map(|e| e.fps).fold(0.0, f64::max);
             for e in &mut entries {
                 e.rel = if best > 0.0 && e.error.is_none() { e.fps / best } else { 0.0 };
-                let gpu = e.gpu_device_mb.or(e.gpu_mb);
-                e.mem_mb = (e.error.is_none() && (e.rss_mb.is_some() || gpu.is_some())).then(|| e.rss_mb.unwrap_or(0.0) + gpu.unwrap_or(0.0)).filter(|&m| m > 0.0);
+                let (rss, gpu) = (e.m("peak_rss_mb"), e.m("gpu_device_mb").or(e.m("gpu_mb")));
+                e.mem_mb = (e.error.is_none() && (rss.is_some() || gpu.is_some())).then(|| rss.unwrap_or(0.0) + gpu.unwrap_or(0.0)).filter(|&m| m > 0.0);
             }
             let lean = entries.iter().filter(|e| e.valid).filter_map(|e| e.mem_mb).fold(f64::INFINITY, f64::min);
             let known: Vec<(f64, f64)> = entries.iter().filter(|e| e.valid).filter_map(|e| Some((e.fps, e.mem_mb?))).collect();
@@ -347,7 +352,7 @@ impl Catalogue {
         let mut v = vec![];
         for sc in &self.scenarios {
             for e in sc.entries.iter().filter(|e| !e.valid) {
-                let why = match (&e.error, e.psnr_settled.map(|p| ("settled", p)).or(e.psnr_like.map(|p| ("like", p))).or(e.psnr.map(|p| ("", p)))) {
+                let why = match (&e.error, e.m("psnr_settled").map(|p| ("settled", p)).or(e.m("psnr_like").map(|p| ("like", p))).or(e.m("psnr").map(|p| ("", p)))) {
                     (Some(err), _) => WrongWhy::Failed(err.lines().next().unwrap_or("")),
                     (None, Some((by, db))) => WrongWhy::Below { by, db },
                     (None, None) => WrongWhy::Failed("no frames"),
@@ -414,7 +419,7 @@ impl Catalogue {
             let (a, b) = (ok.next(), ok.next());
             match a {
                 Some(a) => {
-                    let _ = writeln!(s, "| {} | {} | {:.1} | {} | {} | {} | {} |", sc.name, a.label, a.fps, opt(a.gpu_ms, 2), opt(a.psnr, 1), b.map_or("-".into(), |b| b.label.clone()), b.map_or("-".into(), |b| format!("{:.2}", b.rel)));
+                    let _ = writeln!(s, "| {} | {} | {:.1} | {} | {} | {} | {} |", sc.name, a.label, a.fps, opt(a.m("gpu_ms"), 2), opt(a.m("psnr"), 1), b.map_or("-".into(), |b| b.label.clone()), b.map_or("-".into(), |b| format!("{:.2}", b.rel)));
                 }
                 None => {
                     let _ = writeln!(s, "| {} | (no correct renderer) | | | | | |", sc.name);
@@ -442,30 +447,24 @@ impl Catalogue {
         let _ = writeln!(s, "## Scenarios\n");
         for sc in &self.scenarios {
             let feats = sc.features.as_ref().map(|f| format!(" {}.", f.describe())).unwrap_or_default();
-            let _ = writeln!(s, "### {}\n\n{}×{}.{feats}\n\n| # | renderer | fps | rel | p99 ms | gpu ms | cpu ms | PSNR | bad % | GPU MB | dev MB | RSS MB | mem rel |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|", sc.name, sc.resolution[0], sc.resolution[1]);
+            let heads: Vec<String> = TABLE.iter().map(|n| header(n)).collect();
+            let _ = writeln!(
+                s,
+                "### {}\n\n{}×{}.{feats}\n\n| # | renderer | rel | {} | mem rel |\n|---:|---|---:|{}---:|",
+                sc.name,
+                sc.resolution[0],
+                sc.resolution[1],
+                heads.join(" | "),
+                "---:|".repeat(TABLE.len())
+            );
             for (i, e) in sc.entries.iter().enumerate() {
                 if let Some(err) = &e.error {
-                    let _ = writeln!(s, "| {} | {} | FAILED: {} | | | | | | | | | | |", i + 1, e.label, err.lines().next().unwrap_or("").replace('|', "/"));
+                    let _ = writeln!(s, "| {} | {} | FAILED: {} |{}", i + 1, e.label, err.lines().next().unwrap_or("").replace('|', "/"), " |".repeat(TABLE.len() + 1));
                     continue;
                 }
                 let flag = if !e.valid { " (incorrect)" } else if e.frontier { " ◆" } else { "" };
-                let _ = writeln!(
-                    s,
-                    "| {} | {}{flag} | {:.1} | {:.2} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-                    i + 1,
-                    e.label,
-                    e.fps,
-                    e.rel,
-                    opt(e.frame_p99_ms, 2),
-                    opt(e.gpu_ms, 2),
-                    opt(e.cpu_ms, 2),
-                    opt(e.psnr, 1),
-                    opt(e.bad_pct, 2),
-                    opt(e.gpu_mb, 0),
-                    opt(e.gpu_device_mb, 0),
-                    opt(e.rss_mb, 0),
-                    opt(e.mem_rel, 2)
-                );
+                let cells: Vec<String> = TABLE.iter().map(|n| shown(n, e.m(n))).collect();
+                let _ = writeln!(s, "| {} | {}{flag} | {:.2} | {} | {} |", i + 1, e.label, e.rel, cells.join(" | "), opt(e.mem_rel, 2));
             }
             let _ = writeln!(s);
         }
@@ -495,7 +494,14 @@ impl Catalogue {
 
     /// One row per (scenario, renderer), for spreadsheets and scripts.
     pub fn csv(&self) -> String {
-        let mut s = String::from("machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,executor,graph_key,options,fps,rel,valid,frame_p99_ms,gpu_ms,cpu_ms,psnr,psnr_like,psnr_settled,bad_pct,gpu_mb,gpu_device_mb,rss_mb,mem_mb,mem_rel,frontier,samples,error\n");
+        // Every metric any entry measured: this build's in their order, then unknown ones raw.
+        let present: BTreeSet<&String> = self.scenarios.iter().flat_map(|sc| sc.entries.iter().flat_map(|e| e.metrics.keys())).collect();
+        let mut names: Vec<&str> = crate::metrics::METRICS.iter().map(|m| m.name).filter(|n| present.iter().any(|p| p.as_str() == *n)).collect();
+        names.extend(present.iter().map(|p| p.as_str()).filter(|p| crate::metrics::get(p).is_none()));
+        let mut s = format!(
+            "machine,plan,mode,width,height,cam_speed,cam_turn_deg,chunk_loads,solid_fraction,surface_fraction,sky_fraction,hit_distance,edits,lights,mesh_triangles,label,executor,graph_key,options,rel,valid,mem_mb,mem_rel,frontier,samples,error{}\n",
+            names.iter().map(|n| format!(",{n}")).collect::<String>()
+        );
         let q = |x: &str| format!("\"{}\"", x.replace('"', "\"\""));
         for sc in &self.scenarios {
             // The scenario's columns, including its measured features (empty if unknown).
@@ -508,26 +514,16 @@ impl Catalogue {
             };
             let scenario = format!("{},{},{},{},{},{feats}", q(&sc.machine), q(&sc.plan), sc.mode, sc.resolution[0], sc.resolution[1]);
             for e in &sc.entries {
+                let metrics: String = names.iter().map(|n| format!(",{}", e.m(n).map(|x| x.to_string()).unwrap_or_default())).collect();
                 let _ = writeln!(
                     s,
-                    "{scenario},{},{},{},{},{:.3},{:.4},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                    "{scenario},{},{},{},{},{:.4},{},{},{},{},{},{}{metrics}",
                     q(&e.label),
                     e.graph.as_ref().map_or("", |g| g.runs_on()),
                     e.graph_key.as_deref().unwrap_or(""),
                     q(&e.options),
-                    e.fps,
                     e.rel,
                     e.valid,
-                    opt(e.frame_p99_ms, 3),
-                    opt(e.gpu_ms, 3),
-                    opt(e.cpu_ms, 3),
-                    opt(e.psnr, 2),
-                    opt(e.psnr_like, 2),
-                    opt(e.psnr_settled, 2),
-                    opt(e.bad_pct, 3),
-                    opt(e.gpu_mb, 1),
-                    opt(e.gpu_device_mb, 1),
-                    opt(e.rss_mb, 1),
                     opt(e.mem_mb, 1),
                     opt(e.mem_rel, 3),
                     e.frontier,
@@ -571,9 +567,20 @@ mod tests {
             graph_key: g.key().ok(),
             graph: Some(g),
             options: serde_json::json!({}),
-            fps,
-            psnr,
             ..Default::default()
+        }
+        .measured(&[("fps", Some(fps)), ("psnr", psnr)])
+    }
+
+    impl Observation {
+        fn measured(mut self, values: &[(&str, Option<f64>)]) -> Self {
+            for (n, v) in values {
+                if let Some(v) = v {
+                    self.metrics.insert(n.to_string(), *v);
+                    self.methods.insert(n.to_string(), 1);
+                }
+            }
+            self
         }
     }
 
@@ -613,7 +620,7 @@ mod tests {
     /// relative to the leanest correct renderer, and the speed/footprint frontier.
     #[test]
     fn ranks_by_memory() {
-        let m = |g: Graph, fps: f64, psnr: f64, rss: f64, counted: f64, device: Option<f64>| Observation { peak_rss_mb: Some(rss), gpu_mb: Some(counted), gpu_device_mb: device, ..obs("terrain", g, fps, Some(psnr)) };
+        let m = |g: Graph, fps: f64, psnr: f64, rss: f64, counted: f64, device: Option<f64>| obs("terrain", g, fps, Some(psnr)).measured(&[("peak_rss_mb", Some(rss)), ("gpu_mb", Some(counted)), ("gpu_device_mb", device)]);
         let all = vec![
             m(with("bricks"), 100.0, 50.0, 100.0, 300.0, Some(500.0)), // 600: slower and fatter than prefix
             m(with("prefix"), 120.0, 50.0, 100.0, 200.0, Some(300.0)), // 400: fastest
@@ -689,10 +696,21 @@ mod tests {
         });
         let now = line(&|_| ());
         let parse = |l: &str| Observation::parse(l).unwrap();
+        // Version 6 held each metric as a field: read into the map, method 1.
+        let v6 = line(&|m| {
+            m.insert("version".into(), 6.into());
+            m.remove("metrics");
+            m.remove("methods");
+            m.insert("fps".into(), 42.into());
+            m.insert("gpu_ms".into(), serde_json::Value::Null);
+            m.insert("stream".into(), serde_json::json!({ "wire_bytes": 7, "holes": 0.0 }));
+        });
+        let o = parse(&v6).unwrap();
+        assert_eq!((o.metric("fps"), o.metric("gpu_ms"), o.metric("wire_bytes"), o.methods.get("fps")), (Some(42.0), None, Some(7.0), Some(&1)));
         assert!(parse(&flat).is_none() && parse(&old_graph).is_none() && parse(&unparsed).is_none());
         assert!(parse(&standalone).is_some_and(|o| o.pipeline().is_none() && o.renderer == "cpu-reference"));
         assert_eq!(parse(&now).and_then(|o| o.pipeline()).and_then(|g| g.key().ok()), new.graph_key);
-        assert!(Observation::parse(&line(&|m| drop(m.insert("fps".into(), "fast".into())))).is_err(), "a record of this version that does not read is an error");
+        assert!(Observation::parse(&line(&|m| drop(m.insert("metrics".into(), "fast".into())))).is_err(), "a record of this version that does not read is an error");
         // A newer record is refused by name, whatever it holds.
         let newer = line(&|m| drop(m.insert("version".into(), (crate::observe::VERSION + 1).into())));
         let why = Observation::parse(&newer).unwrap_err().to_string();
@@ -711,10 +729,39 @@ mod tests {
     #[test]
     fn late_is_not_incorrect() {
         let c = with;
-        let settled = |st: &str, s: f64| Observation { late: vec!["draw.faces".into()], psnr_settled: Some(s), ..obs("terrain", c(st), 100.0, Some(30.0)) };
+        let settled = |st: &str, s: f64| Observation { late: vec!["draw.faces".into()], ..obs("terrain", c(st), 100.0, Some(30.0)).measured(&[("psnr_settled", Some(s))]) };
         let cat = Catalogue::build(&[settled("bricks", 50.0), settled("hier", 30.0)], 35.0);
         let valid = |st: &str| cat.scenarios[0].entries.iter().find(|e| e.label.contains(st)).unwrap().valid;
         assert!(valid("bricks") && !valid("hier"));
-        assert!(cat.csv().lines().nth(1).unwrap().contains(",30.00,-,50.00,"), "{}", cat.csv());
+        let csv = cat.csv();
+        let (head, row) = (csv.lines().next().unwrap(), csv.lines().nth(1).unwrap());
+        assert!(head.ends_with(",fps,psnr,psnr_settled") && row.ends_with(",100,30,50"), "{csv}");
+    }
+}
+
+#[cfg(test)]
+mod metric_tests {
+    use super::*;
+    use crate::observe::Observation;
+
+    /// A metric this build does not know (a newer build added it) reads, and the catalogue's
+    /// CSV shows it raw after the known ones; one only some records measured is blank where missing.
+    #[test]
+    fn unknown_and_missing_metrics_read() {
+        let mut g = graph::shipped("raycast-gpu").unwrap();
+        g.nodes.get_mut("storage").unwrap().component = "prefix".into();
+        let base = Observation { version: crate::observe::VERSION, plan: "terrain".into(), mode: "unlit".into(), label: g.label().unwrap(), graph_key: g.key().ok(), graph: Some(g), options: serde_json::json!({}), ..Default::default() };
+        let mut v = serde_json::to_value(&base).unwrap();
+        v["metrics"] = serde_json::json!({ "fps": 10.0, "test_metric": 3.5 });
+        v["methods"] = serde_json::json!({ "fps": 1, "test_metric": 2 });
+        let known = Observation::parse(&v.to_string()).unwrap().unwrap();
+        assert_eq!(known.metric("test_metric"), Some(3.5));
+        let mut other = base.clone();
+        other.label = "other".into();
+        other.metrics.insert("gpu_ms".into(), 1.25);
+        let csv = Catalogue::build(&[known, other], 35.0).csv();
+        let head = csv.lines().next().unwrap();
+        assert!(head.ends_with(",fps,gpu_ms,test_metric"), "{head}");
+        assert!(csv.lines().any(|l| l.ends_with(",10,,3.5")) && csv.lines().any(|l| l.ends_with(",,1.25,")), "{csv}");
     }
 }

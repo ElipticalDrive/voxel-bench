@@ -6,7 +6,10 @@
 # under an older canonical form compare by one key. Records the binary cannot key (a pipeline from before
 # version 6, the flat `composition`; a component since removed) are left out, counted by the binary's reason.
 # Records newer than the binary reads (a `version` above its observations' version) are refused by name:
-# rebuild it.
+# rebuild it. Metrics are an open map (`metrics`, with each one's method version in `methods`); the registry
+# (name, unit, which way is better, method, description) comes from `multirenderer metrics --json` (`registry()`).
+# Records of version 6 or older held each metric as a field: they are read into the map (method 1), so every
+# consumer reads `o['metrics']`. A metric the registry does not know is kept (shown raw by the consumers).
 # Names changed between turns are pairs in `baselines/renames.toml` (RENAMES names another file), each
 # applied to the records written before its date, so a renamed component or knob keys as it did:
 #   [[rename]]
@@ -66,6 +69,41 @@ def rename(o, pairs, used):
                 used[p] += 1
 
 
+_registry = None
+
+
+def registry():
+    """{name: metric} from the binary (MR_BIN): unit, better ('higher', 'lower', 'neither'), method,
+    description, report and v6 paths."""
+    global _registry
+    if _registry is None:
+        exe = os.environ.get('MR_BIN', 'target/release/multirenderer')
+        run = subprocess.run([exe, 'metrics', '--json'], capture_output=True, text=True)
+        if run.returncode:
+            sys.exit(f'{exe} metrics --json: {run.stderr.strip()}')
+        _registry = {m['name']: m for m in json.loads(run.stdout)}
+    return _registry
+
+
+def from_v6(o):
+    """A record of version 6 or older, its metric fields moved into `metrics` / `methods` (method 1)."""
+    if (o.get('version') or 0) >= 7:
+        return
+    failed = bool(o.get('error'))
+    metrics, methods = {}, {}
+    for m in registry().values():
+        if not m['v6']: continue
+        cur = o
+        for part in m['v6'].split('.'):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        if isinstance(cur, (int, float)) and not isinstance(cur, bool) and not (failed and cur == 0):
+            metrics[m['name']], methods[m['name']] = float(cur), 1
+    for m in registry().values():
+        if m['v6'] and '.' not in m['v6']: o.pop(m['v6'], None)
+    o.pop('stream', None)
+    o['metrics'], o['methods'] = metrics, methods
+
+
 def graph_keys(records):
     """Graph keys and labels for every record, computed by the binary (one call for all; a stored key
     may come from an older canonical form, a stored label from the flat form)."""
@@ -100,6 +138,7 @@ def load_all(d):
             if not (o.get('graph') or o.get('composition')): continue  # a standalone renderer
             o['options'] = o.get('options') or {}
             o.pop('graph_key', None)
+            from_v6(o)
             rename(o, pairs, used)
             records.append(o)
     for (date, role, comp, kind, old, new), n in sorted(used.items()):
