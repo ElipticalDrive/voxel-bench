@@ -6,6 +6,11 @@ between 1.7 and 3.0 ms across separate runs (boost clocks, power state), while i
 repeats (`run.repeats`) keep the spread within ±1%. The techniques themselves are
 described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/onkographos).
 
+The baseline (`baselines/sweep-20261125/`, its README lists what it holds) has measured the
+`showcase` and `terrain-flight` plans in the graph architecture (2846 passes); the other plans
+run as background work and are folded in as they finish. Figures below from other plans come
+from earlier, separate runs (dated where known).
+
 ## Storages and walks (GPU)
 
 - `prefix` + `refloor` is the fastest GPU ray walk on open scenes (−13% on terrain, −23% under

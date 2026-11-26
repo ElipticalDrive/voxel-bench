@@ -1,0 +1,51 @@
+# overrides: ["renderer=[\n    { graph = \"raycast-gpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { any = [[], [{ add = \"prepass\", role = \"prepass\", component = \"beam\" }, { node = \"prepass\", input = \"storage\", from = \"storage\" }, { node = \"visibility\", input = \"start\", from = \"prepass\" }]] },\n        { node = \"kernel\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n        { any = [[], [{ remove = \"meshes\" }]] },\n    ] },\n    { graph = \"raycast-cpu\", vary = [{ node = \"storage\", component = \"*\" }, { node = \"kernel\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"rayquery-gpu\", vary = [{ node = \"geometry\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"raster-gpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { node = \"geometry\", component = \"*\" },\n        { node = \"draw\", component = \"*\" },\n        { node = \"kernel\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n        { any = [[], [{ remove = \"meshes\" }]] },\n    ] },\n    { graph = \"raster-cpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { node = \"geometry\", component = \"*\" },\n        { node = \"draw\", component = \"*\" },\n        { node = \"kernel\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n    ] },\n    { graph = \"discover-gpu\", vary = [{ node = \"storage\", component = \"*\" }, { node = \"draw\", component = \"*\" }, { node = \"kernel\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"discover-cpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { any = [[], [{ node = \"visibility\", component = \"cluster\" }, { node = \"visibility\", device = \"default\" }]] },\n        { node = \"draw\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n    ] },\n    # The shadow walk's storage beside the CPU visibility (the default `bricks` is in the entry above).\n    { graph = \"discover-cpu\", vary = [\n        { node = \"shadow.storage\", component = [\"hier\", \"prefix\", \"distance\", \"rows\", \"tree64\", \"svo_dag\", \"clipmap\"] },\n        { node = \"shadow.kernel\", component = \"*\" },\n    ] },\n    # Holes filled by coverage (as plans/demo-pathtrace-discovery.toml).\n    { graph = \"discover-gpu\", edits = [\n        { add = \"holes\", role = \"holes\", component = \"coverage\" },\n        { node = \"draw\", input = \"faces\", when = { iterate = 2 } },\n        { node = \"holes\", input = \"covered\", from = \"draw\" },\n        { node = \"holes\", input = \"sky\", from = \"draw\" },\n        { node = \"holes\", input = \"sky\", when = \"prev\" },\n        { node = \"visibility\", input = \"where\", from = \"holes\" },\n    ], vary = [{ node = \"draw\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    # Path-traced bounces walking a voxel storage inside the ray-query pass.\n    { graph = \"rayquery-gpu\", edits = [\n        { node = \"shading\", component = \"pathtrace\" },\n        { add = \"walk\", role = \"traversal\", component = \"refloor\" },\n        { add = \"store\", role = \"storage\", component = \"bricks\" },\n        { node = \"store\", input = \"changes\", from = \"world\" },\n        { node = \"walk\", input = \"storage\", from = \"store\" },\n        { node = \"shading\", input = \"bounce\", from = \"walk\" },\n    ], vary = [{ node = \"store\", component = \"*\" }, { node = \"walk\", component = \"*\" }] },\n    { graph = \"splat-gpu\", vary = [{ node = \"storage\", component = \"*\" }, { node = \"kernel\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"columns-gpu\", vary = [{ node = \"shading\", component = \"*\" }] },\n    { graph = \"columns-cpu\", vary = [{ node = \"shading\", component = \"*\" }] },\n]", "run.repeats=1", "run.parallel=false", "output.compare.every=50", "output.dir=\"target/sweep/g10-baseline\""], unset: ["output.save", "output.window"]
+# The main "huge world" workload: a flight over infinite procedural terrain with caves,
+# trees and mountains, in both render modes, compared against the reference.
+name = "terrain-flight"
+
+[scene]
+generator = { type = "terrain", seed = 7 }
+camera = { type = "flythrough", points = [[0, 110, 0], [260, 140, 120], [520, 95, -80], [800, 170, 60], [1100, 120, 300]] }
+lights = [{ type = "scatter", count = 400, seed = 1, center = [550, 80, 100], extent = [600, 80, 300], on_surface = true, intensity = 25.0, radius = 18.0 }]
+events = [{ type = "animate_lights", amplitude = 1.5, period = 90 }]
+
+[run]
+frames = 600
+warmup = 30
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 16
+
+[[renderer]]
+graph = "raycast-gpu"
+
+[[renderer]]
+graph = "raster-gpu"
+
+[[renderer]]
+graph = "raster-cpu"
+
+[[renderer]]
+graph = "rayquery-gpu"
+
+[[renderer]]
+graph = "rayquery-gpu"
+edits = [{ node = "geometry", component = "boxes" }]
+
+[[renderer]]
+graph = "raycast-gpu"
+edits = [{ node = "storage", component = "tree64" }]
+
+[[renderer]]
+graph = "raycast-cpu"
+
+[[renderer]]
+graph = "raycast-gpu"
+edits = [
+    { node = "kernel", component = "sphere" },
+    { node = "storage", component = "distance" },
+]
+
+[output]
+compare = { every = 100 }
+save = { every = 300 }

@@ -1,0 +1,54 @@
+# overrides: ["renderer=[\n    { graph = \"raycast-gpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { any = [[], [{ add = \"prepass\", role = \"prepass\", component = \"beam\" }, { node = \"prepass\", input = \"storage\", from = \"storage\" }, { node = \"visibility\", input = \"start\", from = \"prepass\" }]] },\n        { node = \"kernel\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n        { any = [[], [{ remove = \"meshes\" }]] },\n    ] },\n    { graph = \"raycast-cpu\", vary = [{ node = \"storage\", component = \"*\" }, { node = \"kernel\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"rayquery-gpu\", vary = [{ node = \"geometry\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"raster-gpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { node = \"geometry\", component = \"*\" },\n        { node = \"draw\", component = \"*\" },\n        { node = \"kernel\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n        { any = [[], [{ remove = \"meshes\" }]] },\n    ] },\n    { graph = \"raster-cpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { node = \"geometry\", component = \"*\" },\n        { node = \"draw\", component = \"*\" },\n        { node = \"kernel\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n    ] },\n    { graph = \"discover-gpu\", vary = [{ node = \"storage\", component = \"*\" }, { node = \"draw\", component = \"*\" }, { node = \"kernel\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"discover-cpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { any = [[], [{ node = \"visibility\", component = \"cluster\" }, { node = \"visibility\", device = \"default\" }]] },\n        { node = \"draw\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n    ] },\n    # The shadow walk's storage beside the CPU visibility (the default `bricks` is in the entry above).\n    { graph = \"discover-cpu\", vary = [\n        { node = \"shadow.storage\", component = [\"hier\", \"prefix\", \"distance\", \"rows\", \"tree64\", \"svo_dag\", \"clipmap\"] },\n        { node = \"shadow.kernel\", component = \"*\" },\n    ] },\n    # Holes filled by coverage (as plans/demo-pathtrace-discovery.toml).\n    { graph = \"discover-gpu\", edits = [\n        { add = \"holes\", role = \"holes\", component = \"coverage\" },\n        { node = \"draw\", input = \"faces\", when = { iterate = 2 } },\n        { node = \"holes\", input = \"covered\", from = \"draw\" },\n        { node = \"holes\", input = \"sky\", from = \"draw\" },\n        { node = \"holes\", input = \"sky\", when = \"prev\" },\n        { node = \"visibility\", input = \"where\", from = \"holes\" },\n    ], vary = [{ node = \"draw\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    # Path-traced bounces walking a voxel storage inside the ray-query pass.\n    { graph = \"rayquery-gpu\", edits = [\n        { node = \"shading\", component = \"pathtrace\" },\n        { add = \"walk\", role = \"traversal\", component = \"refloor\" },\n        { add = \"store\", role = \"storage\", component = \"bricks\" },\n        { node = \"store\", input = \"changes\", from = \"world\" },\n        { node = \"walk\", input = \"storage\", from = \"store\" },\n        { node = \"shading\", input = \"bounce\", from = \"walk\" },\n    ], vary = [{ node = \"store\", component = \"*\" }, { node = \"walk\", component = \"*\" }] },\n    { graph = \"splat-gpu\", vary = [{ node = \"storage\", component = \"*\" }, { node = \"kernel\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"columns-gpu\", vary = [{ node = \"shading\", component = \"*\" }] },\n    { graph = \"columns-cpu\", vary = [{ node = \"shading\", component = \"*\" }] },\n]", "run.repeats=1", "run.parallel=false", "output.compare.every=50", "output.dir=\"target/sweep/g10-baseline\""], unset: ["output.save", "output.window"]
+# Texture/UV sanity scene: every block type in a row plus debug-textured cubes.
+name = "showcase"
+
+[scene]
+generator = { type = "showcase" }
+camera = { type = "orbit", center = [20.0, 2.0, 0.0], radius = 26.0, height = 12.0, period = 120 }
+lights = [
+    { type = "point", position = [10.0, 4.0, 3.0], color = [1.0, 0.6, 0.3], intensity = 30.0, radius = 20.0 },
+    { type = "point", position = [30.0, 4.0, -3.0], color = [0.3, 0.6, 1.0], intensity = 30.0, radius = 20.0 },
+]
+
+[run]
+frames = 120
+warmup = 5
+resolution = [960, 540]
+modes = ["unlit", "lit"]
+view_radius = 4
+
+[[renderer]]
+name = "cpu-reference"
+
+[[renderer]]
+graph = "raycast-gpu"
+
+[[renderer]]
+graph = "raster-gpu"
+
+[[renderer]]
+graph = "raster-cpu"
+
+[[renderer]]
+graph = "rayquery-gpu"
+
+[[renderer]]
+graph = "rayquery-gpu"
+edits = [{ node = "geometry", component = "boxes" }]
+
+[[renderer]]
+graph = "raycast-gpu"
+edits = [{ node = "storage", component = "tree64" }]
+
+[[renderer]]
+graph = "raycast-cpu"
+
+[[renderer]]
+graph = "raycast-gpu"
+edits = [
+    { node = "kernel", component = "sphere" },
+    { node = "storage", component = "distance" },
+]
+
+[output]
+save = { every = 30 }
