@@ -421,6 +421,9 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
     let arrived_bytes = arrivals.arrived - lane.arrived;
     lane.arrived = arrivals.arrived;
     lane.report.wire_bytes = arrivals.bytes;
+    if let Some(g) = &arrivals.gate {
+        lane.report.gate = Some(**g);
+    }
     lane.report.arrived_bytes = arrivals.arrived;
     if holes == 0 && lane.report.first_complete.is_none() {
         lane.report.first_complete = Some(FirstComplete { frame: f.frame, ms: start.elapsed().as_secs_f64() * 1e3, clock_s: f.time });

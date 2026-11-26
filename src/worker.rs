@@ -102,6 +102,7 @@ pub fn spawn_renderer(
         stage_times: run.stage_times,
         client: spec.levels(),
         link: spec.link(),
+        gates: spec.world_gates(),
     };
     let w = Worker::spawn(SpawnConfig {
         renderer: spec.entry(),
@@ -231,7 +232,7 @@ impl Worker {
         let format = mr_components::graph::of_init(cfg.renderer, &cfg.params).map_or(PixelFormat::Rgba8, |g| g.tone().format());
         let slot_bytes = format.frame_bytes(cfg.params.width, cfg.params.height) as u64;
         let mut shm = FrameSlots::create(&tag, cfg.slots, slot_bytes)?;
-        tx.send(HostMsg::Init { renderer: cfg.renderer.to_string(), params: cfg.params, shm: shm.spec().clone() })?;
+        tx.send(HostMsg::Init { renderer: cfg.renderer.to_string(), params: Box::new(cfg.params), shm: shm.spec().clone() })?;
         let ready = recv_timeout(&rx, left()).map_err(|e| {
             // A process gone while building says how (a signal names a crash it could not report).
             let closed = e.to_string().starts_with("worker exited");

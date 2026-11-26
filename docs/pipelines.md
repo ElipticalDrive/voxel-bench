@@ -28,6 +28,7 @@ only: gaps not filled yet, and those refused on a kind by their nature (`REFUSED
 | `draw` | hits | the shared face drawer: `raster`, `visbuffer` (face ids) or `gbuffer` (hit records) |
 | `meshes` | surfaces | how triangle meshes join the image (`composite`, `depth`) |
 | `shading` | image | `direct` (the reference lighting model) or `pathtrace` (diffuse path tracing with next-event estimation) |
+| `gate` | what it reads | a gap between two domains on an edge: `net(latency_ms, jitter_ms, bandwidth_mbps, loss, reorder, resend, mtu, seed)` ([Gates](#gates)) |
 | `post` | image | tone mapping: `clamp` (default), `reinhard`, `aces`; `hdr`: a float RGBA16F output (every executor, CPU ones included) in extended sRGB, unlimited, saved as `.hdr` beside the PNG, presented in HDR by `multirenderer view` |
 
 Every place where rays are cast picks its own traversal and storage: primary rays,
@@ -162,6 +163,40 @@ post) are changed by adding them: `{ add = "client", role = "client", component 
 then `{ node = "client", knobs = { radius = 4, max_lod = 2 } }`; a `link` node with component
 `net` and its knobs; a `generator` node (`procedural`) with `device = "cpu"` to make the world
 on the client. The shipped plans (`plans/*.toml`) are written this way.
+
+### Gates
+
+A `gate` node sits on an edge: it reads one node (`in`) and its reader reads it instead, so
+any number of gates go on any edge, several in a row on one. What crosses a gate is
+serialized (`mr_core::gate::Wire`), the bytes cross a modelled network in packets of `mtu`
+bytes (`latency_ms`, `jitter_ms` per packet, `bandwidth_mbps`, `loss` per packet, `reorder`:
+messages overtake each other, else in order) and are deserialized on the far side; each gate
+in a row is a domain of its own (serialized and deserialized again). The serialization's
+cost is part of what it simulates. A lost packet's bytes arrive as zeros, or with `resend`
+after a timeout (twice the latency plus the jitter, at least 10 ms); the data is whatever the
+bytes say, and a message that does not decode is lost (counted). Nothing guards a type
+against loss.
+
+```toml
+edits = [
+  { add = "gap", role = "gate", component = "net" },
+  { node = "gap", input = "in", from = "world" },
+  { node = "gap", knobs = { latency_ms = 30, loss = 0.01, resend = true } },
+  { node = "storage", input = "changes", from = "gap" },
+]
+```
+
+The checked graph keeps gates apart from its nodes (`Checked::gates`, per edge), so every
+executor builds the graph as it would without them; keys and labels name them
+(`| gate bricks.changes (latency_ms=30.0, ...)`), and a graph without gates keeps its key.
+Refused, with the reason: a gate on a storage or ray-query edge (compiled into the caller,
+nothing crosses), on an edge with timing `prev` or `iterate`, on a GPU device, gates no node
+reads. Run so far: gates on the world's changes, by the worker in front of the client (each
+batch the host sends one message; every gated changes edge must carry the same gates);
+reports carry `gate` (messages, bytes, packets, packets lost, messages that failed to decode,
+`encode_ms` / `decode_ms`). Gates on hits and image edges are refused by the executors so far
+(`accept` names the gate and the edge). Serialized forms exist for the world's changes, frames
+(`gate::Frame`) and plain records (`gate::encode_pod`).
 
 **Sweeps** are edits whose values are lists: `vary = [...]` after `graph` and `edits`
 ([plans.md](plans.md#sweeps)).
