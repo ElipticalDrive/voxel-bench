@@ -402,6 +402,39 @@ impl LiveHandle {
     }
 }
 
+#[cfg(test)]
+impl LiveHandle {
+    /// A session with no thread behind it: the GUI draws whatever `shared` holds (tests that
+    /// time the drawing of many lanes without running them).
+    pub fn detached(shared: Shared, control: Control) -> Self {
+        let (cmd, _) = crossbeam_channel::unbounded();
+        Self { control: Arc::new(Mutex::new(control)), shared: Arc::new(Mutex::new(shared)), cmd, thread: None }
+    }
+}
+
+#[cfg(test)]
+impl LaneView {
+    /// A running lane of `spec` as a live one looks after a while: `MAX_SAMPLES` samples,
+    /// stage times, its knobs, probes and a frame.
+    pub fn fake(spec: RendererSpec, params: Vec<(ParamSpec, ParamValue)>, seq: u64) -> Self {
+        let mut v = Self::new(spec);
+        v.status = LaneStatus::Running;
+        v.resolution = [320, 180];
+        v.frame = Some(LiveFrame { width: 320, height: 180, pixels: Arc::new(vec![128; 320 * 180 * 4]), seq });
+        for k in 0..MAX_SAMPLES {
+            v.samples.push_back(Sample { t: k as f64 / 60.0, interval_ms: 16.6, latency_ms: 20.0, cpu_ms: 2.0, gpu_ms: Some(5.0 + (k % 7) as f32), update_ms: 0.1 });
+        }
+        for k in 0..200 {
+            v.quality.push_back(QualitySample { t: k as f64 * 0.3, psnr: 40.0, ssim_db: 20.0, ms_ssim_db: 25.0, bad_pct: 0.1, held: 4, settled: k % 3 == 0 });
+        }
+        v.stages = (0..6).map(|k| mr_core::StageTime { name: format!("stage{k}"), nodes: vec![format!("n{k}")], cpu_ms: Some(0.5), gpu_ms: Some(1.0) }).collect();
+        v.stage_seen = vec![0; 6];
+        v.params = params;
+        v.frames = MAX_SAMPLES as u64;
+        v
+    }
+}
+
 impl Drop for LiveHandle {
     fn drop(&mut self) {
         let _ = self.cmd.send(Cmd::Stop);

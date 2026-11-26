@@ -175,6 +175,13 @@ The benchmark table is made once per report (texts and column widths) and draws 
 in view, under a header that stays put, with a filter by label and mode; the fps chart shows
 the passes in view. A frame costs the same at 60 and 1,600 passes (1.3-1.5 ms in a debug
 build; drawing every row cost 15.6 ms at 1,600): `a_large_report_draws_only_the_rows_in_view`.
+Many live lanes: the Metrics tab lays out only the lane panels in its scrolled view; one out of
+view takes the height it had when last drawn (corrected when it scrolls in), its node faults
+still updated. With lanes as they look after minutes (4,000 samples, probes, stages, knobs) a
+frame in a debug build costs about 3 ms at 1 lane, 3.7 at 4 and 5 at 16 (it cost 10.5 ms at 16
+when every panel was laid out, 1.4 ms a panel); what still grows is small and linear: the
+viewport's tiles (2.2 to 2.7 ms from 1 to 16 lanes, the Keys tab shown) and the plots' lines.
+`many_lanes_lay_out_only_the_panels_in_view` (16 lanes lay out as many panels as 4).
 
 ## Knobs and hot swaps
 

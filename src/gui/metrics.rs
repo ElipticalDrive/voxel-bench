@@ -24,9 +24,17 @@ impl App {
             let now = sh.start.map_or(0.0, |s| s.elapsed().as_secs_f64());
             for (i, l) in sh.lanes.iter().enumerate() {
                 graph::set_faults(&mut self.trials, &format!("{:?}", graph::Of::Lane(i)), &l.spec, l.faults(now));
-                ui.push_id(("lane", i), |ui| {
-                    ui.group(|ui| self.lane_panel(ui, i, l, &mut actions));
-                });
+                // A panel out of the scrolled view takes the height it had when last drawn
+                // and is not laid out: with many lanes only those in view cost a frame.
+                let id = ui.id().with(("lane-height", i));
+                let h = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
+                let size = egui::vec2(ui.available_width(), h);
+                if h > 0.0 && !ui.is_rect_visible(egui::Rect::from_min_size(ui.cursor().min, size)) {
+                    ui.allocate_space(size);
+                    continue;
+                }
+                let r = ui.push_id(("lane", i), |ui| ui.group(|ui| self.lane_panel(ui, i, l, &mut actions)).response).inner;
+                ui.data_mut(|d| d.insert_temp(id, r.rect.height()));
             }
             (
                 sh.lanes.iter().map(|l| (l.spec.label().to_string(), window(&l.samples, self.plot_window).to_vec())).collect(),
@@ -109,6 +117,8 @@ impl App {
     }
 
     fn lane_panel(&mut self, ui: &mut egui::Ui, i: usize, l: &live::LaneView, actions: &mut Vec<LaneAction>) {
+        #[cfg(test)]
+        PANELS_LAID_OUT.with(|c| c.set(c.get() + 1));
         ui.horizontal(|ui| {
             ui.colored_label(lane_color(i), format!("■ {} {}", i + 1, l.spec.label()));
             ui.weak(format!("{}×{}", l.resolution[0], l.resolution[1])).on_hover_text("Current render resolution (after host.render_scale)");
@@ -418,6 +428,12 @@ impl Default for TuneUi {
         let d = tune::TunerConfig::default();
         Self { goal: d.goal, fps: 144.0, psnr: 25.0, metric: d.metric, algorithm: d.algorithm, allow_restart: false, settle: d.settle_s, window: d.window_s, patience: d.patience }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Lane panels laid out (drawn, not just given their height) by this thread.
+    pub(super) static PANELS_LAID_OUT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Samples within the last `secs` seconds of the newest one.
