@@ -34,6 +34,14 @@ A sketch:
 What exists for it: observations with machine, scenario features, pipeline key and per-stage
 times (`observations.jsonl`), sweeps, the catalogue, the tuner.
 
+**Exploration mode** (user, 2026-11-25): the planner as a persistent explorer of the user's
+machine (the target), starting from nothing measured there rather than from the bench machine's
+data. It runs as long as the user lets it, stopped at any moment or on a schedule, and picks
+the order of its tests itself so it does not poke blindly at the space: the measurement that
+teaches most per second of build and run time first (a component measured once informs every
+pipeline it joins; dominated choices dropped). Correctness is a voluntary test, not run on every
+compilation.
+
 ## The bench as a renderer library
 
 A simpler, library-style interface so the project can be used as a renderer: the caller's
@@ -97,3 +105,14 @@ output cannot match what the next one takes (a hit record without a normal, a bu
 device limit, a port fed from a frame late). Would catch what the graph sweep finds by
 rendering, earlier and without a GPU; a build or run that fails anyway stays a defined outcome
 (the lane shows the error and the program lives on). (user, 2026-11-24)
+
+## Gates between domains
+
+(user, 2026-11-25) The served split generalised: a gate can sit on any edge of the graph, in one
+spot or several, and simulates the gap between two domains (latency, jitter, bandwidth, loss,
+reorder) for whatever data crosses it: the world stream, hit records, frames. Today's `link`
+node is fixed between the world and the client and carries only the world stream. Multiple
+renderers need not share a server side. Open design points: what a lost unit means per edge
+resource (a chunk is a hole, a tile is missing pixels, a frame is repeated), a gate on a
+same-device GPU edge forcing a read-back, gates on previous-frame edges and cycles, and whether
+device transfers and the process boundary are gates without loss.
