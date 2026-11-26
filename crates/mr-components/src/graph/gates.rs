@@ -22,10 +22,19 @@ pub struct EdgeGates {
     pub gates: Vec<(String, GateSpec)>,
 }
 
+/// How reports name the edge behind the graph's output (the frame it delivers).
+pub const OUTPUT_PORT: &str = "frame";
+
 impl EdgeGates {
-    /// The edge as reports name it: `reader.port`.
+    /// The edge as reports name it: `reader.port`, or `frame` behind the graph's output.
     pub fn edge(&self) -> String {
-        format!("{}.{}", self.reader, self.port)
+        if self.behind_output() { OUTPUT_PORT.to_string() } else { format!("{}.{}", self.reader, self.port) }
+    }
+
+    /// Whether the gates are behind the graph's output (no node reads them: the frame
+    /// crosses them, in the worker).
+    pub fn behind_output(&self) -> bool {
+        self.reader.is_empty()
     }
 
     pub fn specs(&self) -> Vec<GateSpec> {
@@ -120,9 +129,24 @@ impl Graph {
                 edges.push(EdgeGates { reader: id.clone(), port: p.clone(), source: s.to_string(), data: Data::Image, gates: chain });
             }
         }
+        // A gate no node reads is behind the graph's output: the frame crosses it (checked to
+        // be the output's image in `check`).
         let unread: Vec<&str> = read.iter().filter(|(_, r)| !**r).map(|(k, _)| *k).collect();
-        if !unread.is_empty() {
-            return Err(format!("gates that no node reads: {}", unread.join(", ")));
+        if unread.len() > 1 {
+            return Err(format!("gates that no node reads: {} (one chain of gates may follow the graph's output)", unread.join(", ")));
+        }
+        if let Some(last) = unread.first() {
+            let mut chain: Vec<(String, GateSpec)> = Vec::new();
+            let mut s = *last;
+            while is_gate(s) {
+                if chain.iter().any(|(c, _)| c == s) {
+                    return Err(format!("the gates `{}` read each other in a cycle", chain.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>().join("`, `")));
+                }
+                chain.push((s.to_string(), specs[s]));
+                s = &self.nodes[s].inputs["in"];
+            }
+            chain.reverse();
+            edges.push(EdgeGates { reader: String::new(), port: OUTPUT_PORT.into(), source: s.to_string(), data: Data::Image, gates: chain });
         }
         Ok((g, edges))
     }
@@ -177,6 +201,16 @@ mod tests {
         assert_eq!(hits.gates.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["g.hits1", "g.hits2"]);
         assert_eq!(on("post", "image").data, Data::Image);
         assert_eq!(ck.gates.len(), 3);
+        // Behind the output: the frame, by any chain of gates no node reads.
+        let mut out = g.clone();
+        out.nodes.insert("g.out1".into(), gate("post", "loss = 0.2"));
+        out.nodes.insert("g.out2".into(), gate("g.out1", ""));
+        let ck = out.check().unwrap();
+        let frame = ck.gates.iter().find(|e| e.behind_output()).unwrap();
+        assert_eq!((frame.edge().as_str(), frame.source.as_str(), frame.data), ("frame", "post", Data::Image));
+        assert_eq!(frame.gates.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["g.out1", "g.out2"]);
+        assert!(out.canonical().unwrap().contains("|gate output.frame (loss=0.2) ()"), "{}", out.canonical().unwrap());
+        assert_ne!(out.key().unwrap(), g.key().unwrap());
         assert_ne!(g.key().unwrap(), base.key().unwrap());
         assert_eq!(base.key().unwrap(), plain.graph.key().unwrap());
         assert!(g.canonical().unwrap().contains("|gate "), "{}", g.canonical().unwrap());
@@ -205,9 +239,14 @@ mod tests {
         let mut gpu = gate("visibility", "");
         gpu.device = Some(Device::Gpu(0));
         assert!(with("g", gpu, "shading", "hits").contains("serializes on the cpu"));
+        // A gate no node reads is behind the output: it must read the output.
         let mut g = base.clone();
         g.nodes.insert("g".into(), gate("visibility", ""));
-        assert!(g.check().unwrap_err().contains("no node reads: g"));
+        assert!(g.check().unwrap_err().contains("reads `visibility`, not the output"));
+        let mut g = base.clone();
+        g.nodes.insert("g".into(), gate("visibility", ""));
+        g.nodes.insert("h".into(), gate("shading", ""));
+        assert!(g.check().unwrap_err().contains("one chain of gates may follow"));
         let mut g = base.clone();
         g.nodes.insert("a".into(), gate("b", ""));
         g.nodes.insert("b".into(), gate("a", ""));

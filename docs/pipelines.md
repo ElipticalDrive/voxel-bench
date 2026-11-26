@@ -189,14 +189,27 @@ edits = [
 The checked graph keeps gates apart from its nodes (`Checked::gates`, per edge), so every
 executor builds the graph as it would without them; keys and labels name them
 (`| gate bricks.changes (latency_ms=30.0, ...)`), and a graph without gates keeps its key.
+A chain of gates no node reads sits behind the graph's output: the frame crosses it (it must
+read the output; `| gate output.frame (...)`).
 Refused, with the reason: a gate on a storage or ray-query edge (compiled into the caller,
-nothing crosses), on an edge with timing `prev` or `iterate`, on a GPU device, gates no node
-reads. Run so far: gates on the world's changes, by the worker in front of the client (each
-batch the host sends one message; every gated changes edge must carry the same gates);
-reports carry `gate` (messages, bytes, packets, packets lost, messages that failed to decode,
-`encode_ms` / `decode_ms`). Gates on hits and image edges are refused by the executors so far
-(`accept` names the gate and the edge). Serialized forms exist for the world's changes, frames
-(`gate::Frame`) and plain records (`gate::encode_pod`).
+nothing crosses), on an edge with timing `prev` or `iterate`, on a GPU device, two chains no
+node reads, one behind something other than the output. Where they run:
+
+| edge | run by | message | until it arrives |
+|---|---|---|---|
+| the world's changes | the worker, in front of the client (every gated changes edge must carry the same gates) | each batch the host sends | nothing |
+| hits (`shading.hits`) | the CPU executor, a pass between visibility and shading (`placement = "deferred"`; the ray caster's records and the column marcher's) | each frame's records | the shading reads the last records that arrived at this size (no hit before any has) |
+| the frame (behind the output) | the worker, for every executor (read back even when the host asked for no pixels: a GPU pays that) | each frame's pixels | the host gets the last frame that arrived at this size (black before any has) |
+
+Refused by the executors so far, naming the gate and the edge: hits of the rasteriser and of
+every GPU executor (no serialized form yet), hits with `placement = inline` (they never
+leave the visibility pass), an image into the post (the post is compiled into its shading,
+no image crosses: put the gate after the post), and faces, surfaces, tiles, ray starts and
+generated chunks. Reports carry `gates`, one entry per gate node: `gate` (its id), `edge`
+(`reader.port`, `changes`, `frame`) and `stats` (messages, bytes, packets, packets lost,
+messages that failed to decode, `encode_ms` / `decode_ms`), so a gate's serialization time
+and bytes are its own. Serialized forms: the world's changes, frames (`gate::Frame`), hit
+records (the CPU executor's `Crossing`), plain records (`gate::encode_pod`).
 
 **Sweeps** are edits whose values are lists: `vary = [...]` after `graph` and `edits`
 ([plans.md](plans.md#sweeps)).

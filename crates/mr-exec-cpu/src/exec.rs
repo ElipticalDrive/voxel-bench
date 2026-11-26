@@ -16,6 +16,8 @@ use std::collections::HashMap;
 
 use mr_components::graph::Checked;
 use mr_reference::{Pool, World};
+use mr_components::visibility::record::Record;
+use mr_core::gate::{GateChain, Get, Wire, WireError};
 use mr_core::*;
 
 use crate::Pixel;
@@ -41,6 +43,7 @@ pub(crate) struct Report {
     pub stages: Vec<StageTime>,
     pub counters: Vec<(String, f64)>,
     pub legend: Option<Legend>,
+    pub gates: Vec<mr_core::gate::GateReport>,
 }
 
 /// A node's implementation on the CPU: one pass of the schedule (fused nodes are compiled
@@ -73,6 +76,126 @@ pub(crate) trait Node: Send {
     fn quantities(&self) -> &'static [Quantity] {
         &[]
     }
+    /// A pass carrying its output through the gates `chain` (its serialized form's), if its
+    /// output has one.
+    fn gate(&self, _chain: GateChain, _width: u32, _height: u32) -> Option<Box<dyn Node>> {
+        None
+    }
+}
+
+/// An edge resource's serialized form, for gates inside the pipeline.
+pub(crate) trait Crossing: Clone + Send + Sync + 'static + Sized {
+    fn encode(&self, out: &mut Vec<u8>);
+    fn decode(bytes: &[u8]) -> Result<Self, WireError>;
+    /// What the reader reads before anything has arrived (no hit anywhere, say).
+    fn blank(width: u32, height: u32) -> Self;
+    /// Whether a value that arrived fits a `width` x `height` frame (one sent before a
+    /// resize does not: it is dropped).
+    fn fits(&self, width: u32, height: u32) -> bool;
+}
+
+/// Hit records on the wire: a count, then each record's 8 bytes.
+pub(crate) fn encode_records(records: &[Record], out: &mut Vec<u8>) {
+    out.reserve(4 + records.len() * 8);
+    out.extend_from_slice(&(records.len() as u32).to_le_bytes());
+    records.iter().for_each(|r| out.extend_from_slice(&r.0.to_le_bytes()));
+}
+
+/// What [`encode_records`] wrote.
+pub(crate) fn decode_records(g: &mut Get) -> Result<Vec<Record>, WireError> {
+    let n = g.count(8)?;
+    Ok(g.take(n * 8)?.as_chunks::<8>().0.iter().map(|b| Record(u64::from_le_bytes(*b))).collect())
+}
+
+/// Hit records alone (the column marcher's).
+impl Crossing for Vec<Record> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        encode_records(self, out)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut g = Get(bytes);
+        let r = decode_records(&mut g)?;
+        g.end()?;
+        Ok(r)
+    }
+    fn blank(width: u32, height: u32) -> Self {
+        vec![Record::SKY; (width * height) as usize]
+    }
+    fn fits(&self, width: u32, height: u32) -> bool {
+        self.len() == (width * height) as usize
+    }
+}
+
+/// A [`Crossing`] as gates take it.
+#[derive(Clone)]
+struct OnWire<T>(T);
+
+impl<T: Crossing> Wire for OnWire<T> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.0.encode(out)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        T::decode(bytes).map(OnWire)
+    }
+}
+
+/// The gates on an edge inside the pipeline: each frame its producer's output is serialized
+/// through them (sent at the frame's time); its reader reads the last value that arrived
+/// (the blank one before any has).
+pub(crate) struct GatePass<T> {
+    chain: GateChain,
+    width: u32,
+    height: u32,
+    _t: std::marker::PhantomData<T>,
+}
+
+impl<T: Crossing> GatePass<T> {
+    pub fn boxed(chain: GateChain, width: u32, height: u32) -> Box<dyn Node> {
+        Box::new(Self { chain, width, height, _t: std::marker::PhantomData })
+    }
+}
+
+impl<T: Crossing> Node for GatePass<T> {
+    fn output(&mut self, width: u32, height: u32) -> Res {
+        (self.width, self.height) = (width, height);
+        Box::new(T::blank(width, height))
+    }
+    fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
+        let start = std::time::Instant::now();
+        let sent = ins[0].downcast_ref::<T>().expect("the gated edge's value").clone();
+        let got = self.chain.gates.pass(cx.req.time, Some(OnWire(sent)));
+        if let Some(v) = got.into_iter().rev().find(|v| v.0.fits(self.width, self.height)) {
+            *out.downcast_mut::<T>().expect("the gated edge's value") = v.0;
+        }
+        let nodes: Vec<String> = self.chain.nodes.iter().map(|(id, _)| id.clone()).collect();
+        report.stages.push(StageTime::cpu("gate", &nodes, start.elapsed().as_secs_f32() * 1e3));
+        report.gates.extend(self.chain.reports());
+    }
+    fn resize(&mut self, out: &mut Res, width: u32, height: u32) {
+        (self.width, self.height) = (width, height);
+        *out = Box::new(T::blank(width, height));
+    }
+}
+
+/// Puts a gate pass on every gated edge inside the pipeline (the world's stream and the
+/// frame are the worker's): after the producing pass, its reader reading the gate's output.
+pub(crate) fn gate_edges(g: &Checked, width: u32, height: u32, passes: &mut Vec<Pass>, index: &mut HashMap<String, usize>) -> anyhow::Result<()> {
+    for e in g.gates.iter().filter(|e| e.data != mr_components::graph::Data::Changes && !e.behind_output()) {
+        let at = format!("`{}` on `{}`", e.gates[0].0, e.edge());
+        let (Some(&p), Some(&r)) = (index.get(&e.source), index.get(&e.reader)) else {
+            anyhow::bail!("{at}: `{}` and `{}` run as one pass here, nothing crosses between them", e.source, e.reader);
+        };
+        let node = passes[p].node.gate(GateChain::new(&e.edge(), &e.gates), width, height).ok_or_else(|| anyhow::anyhow!("{at}: `{}` gives its output no serialized form yet", e.source))?;
+        for pass in passes.iter_mut() {
+            pass.ins.iter_mut().filter(|j| **j > p).for_each(|j| *j += 1);
+        }
+        index.values_mut().filter(|j| **j > p).for_each(|j| *j += 1);
+        passes.insert(p + 1, Pass { node, ins: vec![p] });
+        let reader = &mut passes[r + 1];
+        anyhow::ensure!(reader.ins.contains(&p), "{at}: `{}` does not read `{}` as a pass", e.reader, e.source);
+        reader.ins.iter_mut().filter(|j| **j == p).for_each(|j| *j = p + 1);
+    }
+    Ok(())
 }
 
 /// One pass: its node and the passes whose outputs it reads.
@@ -201,7 +324,7 @@ impl<P: Pixel> Renderer for Executor<P> {
             // A pipeline compiled for this machine (observations tell it from the generic build).
             report.counters.push(("compiled_native".into(), 1.0));
         }
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: report.counters, legend: report.legend, stages: report.stages };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters: report.counters, legend: report.legend, stages: report.stages, gates: report.gates };
         sink.complete(CompletedFrame { frame_id: req.frame_id, stats, pixels: Some(bytemuck::cast_slice(self.image())) });
         Ok(())
     }

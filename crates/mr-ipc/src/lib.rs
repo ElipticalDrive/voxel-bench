@@ -16,7 +16,7 @@ pub use interprocess::local_socket::{Listener, Stream};
 use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {
@@ -397,12 +397,13 @@ mod tests {
             counters: vec![("rays".into(), 3.0)],
             legend: None,
             stages: vec![mr_core::StageTime::cpu("geometry", &["geometry".into()], 2.0), mr_core::StageTime { name: "draw".into(), nodes: vec!["draw".into()], cpu_ms: None, gpu_ms: Some(0.25) }],
+            gates: vec![mr_core::gate::GateReport { gate: "h".into(), edge: "shading.hits".into(), stats: Default::default() }],
         };
-        let arrivals = mr_core::link::Arrivals { bytes: 1 << 40, arrived: 1 << 39, holes: 3, gate: Some(Box::new(mr_core::gate::GateStats { messages: 2, encode_ms: 0.5, ..Default::default() })) };
+        let arrivals = mr_core::link::Arrivals { bytes: 1 << 40, arrived: 1 << 39, holes: 3, gates: vec![mr_core::gate::GateReport { gate: "g".into(), edge: "frame".into(), stats: mr_core::gate::GateStats { messages: 2, encode_ms: 0.5, ..Default::default() } }] };
         let msg = WorkerMsg::FrameDone { frame_id: 7, stats: stats.clone(), slot: Some(1), update_ms: 0.125, arrivals: arrivals.clone() };
         let back: WorkerMsg = postcard::from_bytes(&postcard::to_allocvec(&msg).unwrap()).unwrap();
         let WorkerMsg::FrameDone { frame_id: 7, stats: s, slot: Some(1), update_ms, arrivals: a } = back else { panic!("{back:?}") };
-        assert_eq!((s.stages, s.counters, s.gpu_ms, update_ms, a), (stats.stages, stats.counters, stats.gpu_ms, 0.125, arrivals));
+        assert_eq!((s.stages, s.counters, s.gpu_ms, s.gates, update_ms, a), (stats.stages, stats.counters, stats.gpu_ms, stats.gates, 0.125, arrivals));
     }
 
     /// The OS parts carry data intact: large messages over a local socket in both

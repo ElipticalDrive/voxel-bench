@@ -176,6 +176,9 @@ impl<S: Spec, P: Pixel> Node for Visibility<S, P> {
     fn memory(&self, out: &Res) -> u64 {
         (std::mem::size_of_val(&self.cols[..]) + out.downcast_ref::<Vec<Record>>().map_or(0, |r| std::mem::size_of_val(&r[..]))) as u64
     }
+    fn gate(&self, chain: mr_core::gate::GateChain, w: u32, h: u32) -> Option<Box<dyn Node>> {
+        (!self.fused).then(|| exec::GatePass::<Vec<Record>>::boxed(chain, w, h))
+    }
 }
 
 /// The common deferred pass over the hit records; its shadow rays walk the heightmap (the
@@ -236,6 +239,7 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
         index.insert(id.to_string(), passes.len());
         passes.push(Pass { node, ins });
     }
+    exec::gate_edges(g, p.width, p.height, &mut passes, &mut index)?;
     let world = crate::world::<P>(p, g, shading.shadows)?;
     Ok(Box::new(exec::Executor::<P>::new(p, opts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))
 }

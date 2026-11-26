@@ -421,8 +421,12 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
     let arrived_bytes = arrivals.arrived - lane.arrived;
     lane.arrived = arrivals.arrived;
     lane.report.wire_bytes = arrivals.bytes;
-    if let Some(g) = &arrivals.gate {
-        lane.report.gate = Some(**g);
+    // Each gate's figures so far: the worker's (world stream, frame) and the executor's.
+    for g in arrivals.gates.iter().chain(&stats.gates) {
+        match lane.report.gates.iter_mut().find(|r| r.gate == g.gate && r.edge == g.edge) {
+            Some(r) => *r = g.clone(),
+            None => lane.report.gates.push(g.clone()),
+        }
     }
     lane.report.arrived_bytes = arrivals.arrived;
     if holes == 0 && lane.report.first_complete.is_none() {
@@ -628,7 +632,7 @@ pub fn run_pass(
             let slot = if readback { lane.worker.take_slot() } else { None };
             let id = lane.next_id;
             lane.next_id += 1;
-            let req = FrameRequest { frame_id: id, camera: input.camera, mode: input.mode.lighting, meshes: input.mode.meshes, layers, readback: slot.is_some() };
+            let req = FrameRequest { frame_id: id, camera: input.camera, mode: input.mode.lighting, meshes: input.mode.meshes, layers, readback: slot.is_some(), time: input.time };
             let backlog = if streams && !lane.region.generates { server.pending_within(&lane.region.streamed()) as u32 } else { 0 };
             lane.in_flight.push_back(InFlight { id, frame: input.frame, mode: input.mode, sent: Instant::now(), recorded: input.recorded, time: input.time, backlog });
             let r = lane.worker.send(HostMsg::Render { req, slot, time: input.time });

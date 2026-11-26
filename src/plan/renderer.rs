@@ -360,11 +360,18 @@ impl RendererSpec {
 
     /// The gates on the world's stream (its graph's gates on edges of changes, which all
     /// have the same gates), in order from the world.
-    pub fn world_gates(&self) -> Vec<mr_core::gate::GateSpec> {
-        self.pipeline()
-            .and_then(|g| g.check().ok())
-            .and_then(|c| c.gates.iter().find(|e| e.data == mr_components::graph::Data::Changes).map(|e| e.specs()))
-            .unwrap_or_default()
+    pub fn world_gates(&self) -> Vec<mr_core::gate::GateNode> {
+        self.gates_where(|e| e.data == mr_components::graph::Data::Changes)
+    }
+
+    /// The gates behind its graph's output (the frame crosses them), in order from it.
+    pub fn frame_gates(&self) -> Vec<mr_core::gate::GateNode> {
+        self.gates_where(mr_components::graph::EdgeGates::behind_output)
+    }
+
+    /// The gates of the first gated edge `which` picks.
+    fn gates_where(&self, which: impl Fn(&mr_components::graph::EdgeGates) -> bool) -> Vec<mr_core::gate::GateNode> {
+        self.pipeline().and_then(|g| g.check().ok()).and_then(|c| c.gates.into_iter().find(|e| which(e)).map(|e| e.gates)).unwrap_or_default()
     }
 
     pub fn devices(&self, run: &RunSpec) -> mr_core::DeviceConfig {

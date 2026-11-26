@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use anyhow::{Context, bail};
 use mr_core::client::Client;
-use mr_core::gate::{GateStats, Gates};
+use mr_core::gate::{Frame, GateChain};
 use mr_core::link::{Arrivals, Link};
 use mr_core::{CompletedFrame, FrameSink, Renderer, RendererEntry, Waker};
 use mr_ipc::{FrameSlots, HostMsg, MsgWriter, PROTOCOL_VERSION, WorkerMsg};
@@ -49,16 +49,51 @@ pub fn cpu_devices(_: &mr_core::DeviceConfig) -> mr_core::Devices {
 struct Sink<'a> {
     out: &'a mut MsgWriter<WorkerMsg>,
     shm: &'a mut FrameSlots,
-    /// Per frame requested: its readback slot and what had reached the client by then.
-    slots: &'a mut HashMap<u64, (Option<u32>, Arrivals)>,
+    /// Per frame requested: its readback slot, what had reached the client by then and the
+    /// host's clock.
+    slots: &'a mut HashMap<u64, (Option<u32>, Arrivals, f64)>,
     update_ms: &'a mut f32,
+    /// The gates behind the graph's output, if any.
+    frames: &'a mut Option<FrameGates>,
     error: Option<anyhow::Error>,
+}
+
+/// The gates behind the graph's output: every frame is serialized through them; the host
+/// gets the last frame that arrived at the current size (black before any has).
+struct FrameGates {
+    chain: GateChain,
+    width: u32,
+    height: u32,
+    last: Vec<u8>,
+}
+
+impl FrameGates {
+    /// Sends `px`, rendered at `time`; `last` is then the frame delivered.
+    fn pass(&mut self, time: f64, px: &[u8]) {
+        let sent = Frame { width: self.width, height: self.height, pixels: px.to_vec() };
+        let got = self.chain.gates.pass(time, Some(sent));
+        let size = (self.width, self.height);
+        if let Some(f) = got.into_iter().rev().find(|f| f.pixels.len() == px.len() && (f.width, f.height) == size) {
+            self.last = f.pixels;
+        }
+        if self.last.len() != px.len() {
+            self.last = vec![0; px.len()];
+        }
+    }
 }
 
 impl FrameSink for Sink<'_> {
     fn complete(&mut self, mut frame: CompletedFrame<'_>) {
-        let (slot, arrivals) = self.slots.remove(&frame.frame_id).unwrap_or_default();
-        if let (Some(s), Some(px)) = (slot, frame.pixels) {
+        let (slot, mut arrivals, time) = self.slots.remove(&frame.frame_id).unwrap_or_default();
+        let gated = match (self.frames.as_mut(), frame.pixels) {
+            (Some(g), Some(px)) => {
+                g.pass(time, px);
+                arrivals.gates.extend(g.chain.reports());
+                Some(g.last.as_slice())
+            }
+            (_, px) => px,
+        };
+        if let (Some(s), Some(px)) = (slot, gated) {
             let t0 = std::time::Instant::now();
             let dst = self.shm.slot_mut(s);
             if px.len() > dst.len() {
@@ -146,26 +181,11 @@ fn arrived(link: &mut Link, time: f64) -> Vec<mr_core::WorldUpdate> {
 
 /// The world's changes `got` by `time` sent through the gates, and what came out of them by
 /// then (an empty batch sends nothing).
-fn gated(gates: &mut Option<Gates>, time: f64, got: Vec<mr_core::WorldUpdate>) -> Vec<mr_core::WorldUpdate> {
+fn gated(gates: &mut Option<GateChain>, time: f64, got: Vec<mr_core::WorldUpdate>) -> Vec<mr_core::WorldUpdate> {
     match gates {
-        Some(g) => g.pass(time, (!got.is_empty()).then_some(got)).into_iter().flatten().collect(),
+        Some(g) => g.gates.pass(time, (!got.is_empty()).then_some(got)).into_iter().flatten().collect(),
         None => got,
     }
-}
-
-/// Gates' figures summed (what crossed all of them).
-fn sum(stats: &[GateStats]) -> GateStats {
-    stats.iter().fold(GateStats::default(), |a, s| GateStats {
-        messages: a.messages + s.messages,
-        delivered: a.delivered + s.delivered,
-        failed: a.failed + s.failed,
-        bytes: a.bytes + s.bytes,
-        packets: a.packets + s.packets,
-        lost_packets: a.lost_packets + s.lost_packets,
-        lost_bytes: a.lost_bytes + s.lost_bytes,
-        encode_ms: a.encode_ms + s.encode_ms,
-        decode_ms: a.decode_ms + s.decode_ms,
-    })
 }
 
 // Few in flight at a time: boxing `HostMsg` would save no memory worth having.
@@ -200,7 +220,9 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let mut link = (!params.link.free()).then(|| Link::new(params.link));
     // The gates after it on the world's stream (none: the stream as it came): each batch the
     // host sends crosses them as one message.
-    let mut gates = (!params.gates.is_empty()).then(|| Gates::new(&params.gates));
+    let mut gates = (!params.gates.is_empty()).then(|| GateChain::new("changes", &params.gates));
+    // The gates behind its output: each frame crosses them (read back for them).
+    let mut frames = (!params.frame_gates.is_empty()).then(|| FrameGates { chain: GateChain::new("frame", &params.frame_gates), width: params.width, height: params.height, last: vec![] });
     // A fault asked for (tests only: `fault::ENV`), at build or later.
     let fault = fault::Fault::of_options(&params.options_json)?;
     if let Some(f) = fault {
@@ -219,7 +241,7 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let mut free_bytes = 0u64;
     while let Ok(msg) = rx.recv() {
         let mut new_shm = None;
-        let mut sink = Sink { out, shm: &mut shm, slots: &mut slots, update_ms: &mut update_ms, error: None };
+        let mut sink = Sink { out, shm: &mut shm, slots: &mut slots, update_ms: &mut update_ms, frames: &mut frames, error: None };
         let msg = match msg {
             Input::Wake => {
                 renderer.poll(&mut sink)?;
@@ -276,7 +298,7 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 renderer.update_meshes(m)?;
                 *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
             }
-            HostMsg::Render { req, slot, time } => {
+            HostMsg::Render { mut req, slot, time } => {
                 // What arrived by now; the camera may have crossed into chunks the replica holds.
                 let t = Instant::now();
                 let mut ups = vec![];
@@ -301,9 +323,12 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 }
                 let holes = link.as_ref().map_or(0, |l| l.chunks_in_flight()) + generating.as_ref().map_or(0, |g| g.pending());
                 let (bytes, arrived) = link.as_ref().map_or((free_bytes, free_bytes), |l| (l.stats().bytes, l.stats().arrived));
-                let gate = gates.as_ref().map(|g| Box::new(sum(&g.stats())));
-                let arrivals = Arrivals { bytes, arrived, holes: holes as u32, gate };
-                sink.slots.insert(req.frame_id, (slot.filter(|_| req.readback), arrivals));
+                let gates = gates.as_ref().map(GateChain::reports).unwrap_or_default();
+                let arrivals = Arrivals { bytes, arrived, holes: holes as u32, gates };
+                sink.slots.insert(req.frame_id, (slot.filter(|_| req.readback), arrivals, time));
+                // Gates behind the output need the pixels, whether the host asked for them or not.
+                req.readback |= sink.frames.is_some();
+                req.time = time;
                 renderer.render(&req, &mut sink)?;
             }
             HostMsg::Flush => {
@@ -313,6 +338,9 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
             HostMsg::Resize { width, height, shm: spec } => {
                 renderer.flush(&mut sink)?;
                 renderer.resize(width, height)?;
+                if let Some(f) = sink.frames.as_mut() {
+                    (f.width, f.height) = (width, height);
+                }
                 new_shm = Some(spec);
             }
             HostMsg::Edit(edits) => {

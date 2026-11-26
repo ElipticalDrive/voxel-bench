@@ -203,6 +203,7 @@ mod tests {
                 client: Default::default(),
                 link: Default::default(),
                 gates: vec![],
+                frame_gates: vec![],
             };
             let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| create(p).map(drop)));
             match made {

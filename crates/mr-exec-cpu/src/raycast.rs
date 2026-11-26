@@ -1379,10 +1379,32 @@ mod nodes {
     }
 
     /// The hit records.
+    #[derive(Clone)]
     struct Hits {
         records: Vec<Record>,
         /// [`LAYERS`] records per pixel.
         layered: bool,
+    }
+
+    /// On the wire: whether layered, then the records.
+    impl exec::Crossing for Hits {
+        fn encode(&self, out: &mut Vec<u8>) {
+            out.push(self.layered as u8);
+            exec::encode_records(&self.records, out);
+        }
+        fn decode(bytes: &[u8]) -> Result<Self, mr_core::gate::WireError> {
+            let mut g = mr_core::gate::Get(bytes);
+            let layered = g.u8()? != 0;
+            let records = exec::decode_records(&mut g)?;
+            g.end()?;
+            Ok(Hits { records, layered })
+        }
+        fn blank(w: u32, h: u32) -> Self {
+            Hits { records: vec![Record::SKY; (w * h) as usize], layered: false }
+        }
+        fn fits(&self, w: u32, h: u32) -> bool {
+            self.records.len() == (w * h) as usize * if self.layered { LAYERS } else { 1 }
+        }
     }
 
     /// The primary rays' cast; `fused`: shading inline, its output the image.
@@ -1429,6 +1451,9 @@ mod nodes {
         }
         fn memory(&self, out: &Res) -> u64 {
             out.downcast_ref::<Hits>().map_or(0, |h| std::mem::size_of_val(&h.records[..]) as u64)
+        }
+        fn gate(&self, chain: mr_core::gate::GateChain, w: u32, h: u32) -> Option<Box<dyn Node>> {
+            (!self.fused).then(|| exec::GatePass::<Hits>::boxed(chain, w, h))
         }
     }
 
@@ -1487,6 +1512,7 @@ mod nodes {
             index.insert(id.to_string(), passes.len());
             passes.push(Pass { node, ins });
         }
+        exec::gate_edges(g, p.width, p.height, &mut passes, &mut index)?;
         let world = crate::world::<P>(p, g, parts.shadows)?;
         Ok(Box::new(exec::Executor::<P>::new(p, parts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))
     }

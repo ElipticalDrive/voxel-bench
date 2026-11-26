@@ -353,6 +353,10 @@ impl Graph {
         // What crosses each gate: the reader's port's data (its source may have moved in
         // normalising: the world's change log reaches a renderer through its client).
         for e in &mut gates {
+            if e.behind_output() {
+                // The frame: what the graph's output gives (checked to be its image below).
+                continue;
+            }
             let n = &g.nodes[&e.reader];
             let port = inputs(n.role, &n.component).iter().find(|p| p.name == e.port).expect("ports checked");
             e.data = port.data;
@@ -402,6 +406,21 @@ impl Graph {
             ));
         };
         let out = out.to_string();
+        // A gate behind the shading of a graph without a post is behind the post normalising
+        // added (the frame leaves after it).
+        for e in gates.iter_mut().filter(|e| e.behind_output()) {
+            let n = &g.nodes[&out];
+            if n.role == Role::Post && n.inputs.values().any(|s| *s == e.source) {
+                e.source = out.clone();
+            }
+        }
+        if let Some(e) = gates.iter().find(|e| e.behind_output() && e.source != out) {
+            return Err(format!(
+                "`{}`: no node reads it, so it is behind the graph's output and carries the frame; it reads `{}`, not the output `{out}`",
+                e.gates.last().map_or("", |(id, _)| id.as_str()),
+                e.source
+            ));
+        }
         // Every node leads to the image, through edges of any timing.
         let mut reached: HashSet<&str> = HashSet::new();
         let mut stack = vec![out.as_str()];

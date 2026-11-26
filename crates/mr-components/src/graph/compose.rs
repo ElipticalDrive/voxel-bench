@@ -11,6 +11,10 @@ impl Graph {
     /// CPU, by ray queries when its primary rays are ray queries (the kernel's component or
     /// API), else the GPU walk; columns; splats). `None` for a shape no region has.
     pub fn region(&self) -> Option<&'static Builds> {
+        // Gates leave the shape as it is without them.
+        if self.nodes.values().any(|n| n.role == Role::Gate) {
+            return self.ungated().ok()?.0.region();
+        }
         let dev = |n: &Node| {
             n.device
                 .unwrap_or_else(|| default_device(&self.executor, n.role, &n.component))

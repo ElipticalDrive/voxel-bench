@@ -371,6 +371,18 @@ pub struct GateStats {
     pub decode_ms: f64,
 }
 
+/// What crossed one gate node of a graph so far: its id, the edge it sits on (`reader.port`,
+/// or `frame` behind the graph's output) and its figures.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GateReport {
+    pub gate: String,
+    pub edge: String,
+    pub stats: GateStats,
+}
+
+/// A gate node as the graph places it: its id and knobs.
+pub type GateNode = (String, GateSpec);
+
 struct InFlight {
     at: u64,
     seq: u64,
@@ -546,6 +558,25 @@ impl Gates {
 
     pub fn stats(&self) -> Vec<GateStats> {
         self.0.iter().map(Gate::stats).collect()
+    }
+}
+
+/// The gates on one edge, named: what an executor or the worker keeps per gated edge.
+pub struct GateChain {
+    pub edge: String,
+    pub nodes: Vec<GateNode>,
+    pub gates: Gates,
+}
+
+impl GateChain {
+    pub fn new(edge: &str, nodes: &[GateNode]) -> Self {
+        let specs: Vec<GateSpec> = nodes.iter().map(|(_, s)| *s).collect();
+        Self { edge: edge.to_string(), nodes: nodes.to_vec(), gates: Gates::new(&specs) }
+    }
+
+    /// Each gate's figures so far.
+    pub fn reports(&self) -> Vec<GateReport> {
+        self.gates.0.iter().zip(&self.nodes).map(|(g, (id, _))| GateReport { gate: id.clone(), edge: self.edge.clone(), stats: g.stats() }).collect()
     }
 }
 

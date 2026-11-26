@@ -465,6 +465,7 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
         index.insert(id.to_string(), passes.len());
         passes.push(Pass { node, ins });
     }
+    exec::gate_edges(g, p.width, p.height, &mut passes, &mut index)?;
     let world = crate::world::<P>(p, g, shading.shadows)?;
     Ok(Box::new(exec::Executor::<P>::new(p, opts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))
 }

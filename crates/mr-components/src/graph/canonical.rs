@@ -123,7 +123,11 @@ impl Graph {
         gates
             .iter()
             .map(|e| {
-                let reader = name(&e.reader).unwrap_or_else(|| g.nodes.get(&e.reader).map_or(e.reader.clone(), |n| n.role.name().to_string()));
+                let reader = if e.behind_output() {
+                    "output".to_string()
+                } else {
+                    name(&e.reader).unwrap_or_else(|| g.nodes.get(&e.reader).map_or(e.reader.clone(), |n| n.role.name().to_string()))
+                };
                 let each: Vec<String> = e
                     .gates
                     .iter()

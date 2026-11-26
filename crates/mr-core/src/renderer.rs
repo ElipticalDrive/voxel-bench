@@ -61,7 +61,12 @@ pub struct InitParams {
     /// The gates on the world's stream (the graph's gates on edges of changes), in order from
     /// the world: the worker serializes the stream through them in front of its client.
     #[serde(default)]
-    pub gates: Vec<crate::gate::GateSpec>,
+    pub gates: Vec<crate::gate::GateNode>,
+    /// The gates behind the graph's output, in order from it: the worker serializes every
+    /// frame through them (reading it back when the host asked for none) and delivers what
+    /// arrived. Gates on edges inside the pipeline are the executor's (they are in the graph).
+    #[serde(default)]
+    pub frame_gates: Vec<crate::gate::GateNode>,
 }
 
 /// Which devices a renderer runs on (no hardware opinion in the
@@ -153,6 +158,10 @@ pub struct FrameRequest {
     /// Whether the pixels must be delivered to the host. When false the renderer may
     /// skip any read-back entirely.
     pub readback: bool,
+    /// The host's simulated clock at this frame, seconds (what gates inside the pipeline
+    /// time their messages by).
+    #[serde(default)]
+    pub time: f64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -170,6 +179,9 @@ pub struct FrameStats {
     /// GPU stages from timestamps between them (filled in when the frame completes).
     #[serde(default)]
     pub stages: Vec<StageTime>,
+    /// What crossed the gates inside the pipeline so far (one entry per gate node).
+    #[serde(default)]
+    pub gates: Vec<crate::gate::GateReport>,
 }
 
 /// One stage of a frame and the graph nodes it ran: callers only, since fused nodes

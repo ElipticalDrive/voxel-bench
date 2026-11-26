@@ -342,7 +342,7 @@ impl<R: Region> Executor<R> {
         });
         let (counters, legend, stages) = region.stats(core, req);
         let legend = viewed.or(legend);
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages, gates: vec![] };
         region.finish(core, &mut enc, ticket);
         Ok((enc, ticket, stats))
     }

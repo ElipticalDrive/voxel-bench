@@ -509,7 +509,7 @@ impl Runner {
         }
         let id = self.next_id;
         self.next_id += 1;
-        w.send(HostMsg::Render { req: FrameRequest { frame_id: id, camera, mode: mode.lighting, meshes: mode.meshes, layers, readback: slot.is_some() }, slot, time })?;
+        w.send(HostMsg::Render { req: FrameRequest { frame_id: id, camera, mode: mode.lighting, meshes: mode.meshes, layers, readback: slot.is_some(), time }, slot, time })?;
         self.in_flight.push_back(Flight { id, sent: Instant::now(), purpose });
         Ok(true)
     }

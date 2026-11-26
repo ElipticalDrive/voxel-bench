@@ -69,8 +69,9 @@ pub struct Arrivals {
     /// Chunks of its region missing on the client's side: on the link, or not generated
     /// yet (a client generating the world). The server's backlog is the host's to add.
     pub holes: u32,
-    /// What crossed the gates on the world's stream (summed over them; none without gates).
-    pub gate: Option<Box<crate::gate::GateStats>>,
+    /// What crossed the gates the worker runs (the world's stream, the frames behind the
+    /// output) so far, one entry per gate node.
+    pub gates: Vec<crate::gate::GateReport>,
 }
 
 /// What crossed the link so far.

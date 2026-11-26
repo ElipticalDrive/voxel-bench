@@ -103,6 +103,7 @@ pub fn spawn_renderer(
         client: spec.levels(),
         link: spec.link(),
         gates: spec.world_gates(),
+        frame_gates: spec.frame_gates(),
     };
     let w = Worker::spawn(SpawnConfig {
         renderer: spec.entry(),

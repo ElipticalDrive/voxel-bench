@@ -741,15 +741,33 @@ impl Checked {
     /// with the reason.
     pub fn built_by(&self, builds: Builds) -> Result<(), String> {
         let executor = builds.who();
-        // Gates run on the world's stream (in front of the client, in the worker); on other
-        // edges no executor runs them yet.
-        if let Some(e) = self.gates.iter().find(|e| e.data != super::Data::Changes) {
-            return Err(format!(
-                "`{}` on `{}`: {executor} runs gates on the world's stream only so far, not on {} edges",
-                e.gates[0].0,
-                e.edge(),
-                e.data.name()
-            ));
+        // Gates on the world's stream (in front of the client) and behind the output (the
+        // frame) run in the worker, for every executor; gates inside the pipeline are the
+        // executor's, on the edges it gives a serialized form.
+        for e in self.gates.iter().filter(|e| e.data != super::Data::Changes && !e.behind_output()) {
+            let at = format!("`{}` on `{}`", e.gates[0].0, e.edge());
+            match e.data {
+                super::Data::Image if self.graph.nodes.get(&e.reader).is_some_and(|n| n.role == Role::Post) => {
+                    return Err(format!(
+                        "{at}: the post is compiled into its shading, no image crosses that edge; put the gate after the post (on the frame)"
+                    ));
+                }
+                super::Data::Hits if matches!(builds.id, RegionId::CpuRaycast | RegionId::CpuColumns) => {
+                    let placement = self.graph.nodes.get(&e.reader).and_then(|n| n.knobs.get("placement")).and_then(|v| v.as_str());
+                    if self.graph.nodes.get(&e.reader).is_some_and(|n| n.role == Role::Shading) && placement != Some("deferred") {
+                        return Err(format!(
+                            "{at}: with `placement = inline` the hits never leave the visibility pass; set `placement = \"deferred\"` on `{}`",
+                            e.reader
+                        ));
+                    }
+                }
+                super::Data::Hits => {
+                    return Err(format!(
+                        "{at}: {executor} gives its hits no serialized form yet (gates on hits run on the CPU ray caster and column marcher)"
+                    ));
+                }
+                d => return Err(format!("{at}: no executor runs gates on {} edges yet", d.name())),
+            }
         }
         let Builds {
             nodes: builds,
