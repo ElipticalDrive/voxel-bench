@@ -236,6 +236,7 @@ impl CpuWorld {
             "palette" => store::<s::palette::cpu::Palette>(),
             "brickmajor" => store::<s::brickmajor::Cpu>(),
             "morton" => store::<s::morton::Cpu>(),
+            "hashed" => store::<s::hashed::cpu::Hashed>(),
             other => anyhow::bail!("storage `{other}` has no CPU implementation"),
         };
         Ok(Self { store })

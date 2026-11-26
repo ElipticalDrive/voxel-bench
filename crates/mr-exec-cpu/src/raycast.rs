@@ -46,6 +46,7 @@ pub fn storage_type(name: &str) -> Option<&'static str> {
         "palette" => "mr_components::storage::palette::cpu::Palette",
         "brickmajor" => "mr_components::storage::brickmajor::Cpu",
         "morton" => "mr_components::storage::morton::Cpu",
+        "hashed" => "mr_components::storage::hashed::cpu::Hashed",
         _ => return None,
     })
 }
@@ -72,6 +73,7 @@ macro_rules! by_storage {
             "palette" => $f::<Palette $(, $t)*>($($a),*),
             "brickmajor" => $f::<mr_components::storage::brickmajor::Cpu $(, $t)*>($($a),*),
             "morton" => $f::<mr_components::storage::morton::Cpu $(, $t)*>($($a),*),
+            "hashed" => $f::<mr_components::storage::hashed::cpu::Hashed $(, $t)*>($($a),*),
             s => anyhow::bail!("storage `{s}` has no CPU implementation"),
         }
     };

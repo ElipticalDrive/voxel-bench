@@ -142,7 +142,9 @@ every face, so UV and orientation mistakes are obvious.
 `scripts/new.py storage NAME "description"` does step 1 and the hand-kept lists of step 2 for a CPU
 storage (a working copy of `bricks` under its name; `remove storage NAME` undoes it, `try NAME [--sweep]`
 runs what it must pass, `accept-sweep` updates the full-sweep size the host tests state; `sites` lists the
-edits). The steps below are what it automates and what stays yours.
+edits). The steps below are what it automates and what stays yours. The recipe per kind of
+technique (a storage, a shading, ...), with what each touched when it was last done, is
+[adding-a-technique.md](adding-a-technique.md).
 
 New techniques go in as components, not as new renderers:
 

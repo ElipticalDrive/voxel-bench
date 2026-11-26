@@ -119,15 +119,12 @@ impl Default for DrawKnobs {
 #[derive(Deserialize)]
 #[serde(default)]
 struct ShadingKnobs {
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
     shadows: Shadows,
 }
 
 impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self { bounces: 1, spp: 1, accumulate: true, shadows: Shadows::All }
+        Self { shadows: Shadows::All }
     }
 }
 
@@ -286,7 +283,7 @@ impl Meshing {
         }
         walks.set_max_steps(opts.max_steps);
         tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
-        let o = CoreOpts { shading: &shading, draw: &draw, bounces: sk.bounces, spp: sk.spp, accumulate: sk.accumulate, shadows: sk.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
+        let o = CoreOpts { shading: &shading, draw: &draw, shadows: sk.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let meshes = meshes_node != "none";
         let (core, drawing, far) = super::new(
             p,
@@ -831,7 +828,7 @@ mod tests {
             for k in base.choices("kernel") {
                 for g in base.choices("geometry") {
                     for shading in base.choices("shading") {
-                        let bounce = (shading == "pathtrace").then(|| Change::bind("shading", "bounce", "kernel"));
+                        let bounce = mr_components::shading::state::stateful(shading).then(|| Change::bind("shading", "bounce", "kernel"));
                         let edits: Vec<Change> = [("storage", st), ("kernel", k), ("geometry", g), ("shading", shading)].into_iter().map(|(n, c)| Change::component(n, c)).chain(bounce).collect();
                         let mut graphs = vec![base.with_edits(&edits).unwrap()];
                         // Bounces, mesh shadows and the merged faces' lookup through walks and a

@@ -26,7 +26,7 @@ only: gaps not filled yet, and those refused on a kind by their nature (`REFUSED
 | `holes` | tiles | which screen tiles discovery looks at (`coverage`: only where something may have changed) |
 | `draw` | hits | the shared face drawer: `raster`, `visbuffer` (face ids) or `gbuffer` (hit records) |
 | `meshes` | surfaces | how triangle meshes join the image (`composite`, `depth`) |
-| `shading` | image | `direct` (the reference lighting model) or `pathtrace` (diffuse path tracing with next-event estimation) |
+| `shading` | image | `direct` (the reference lighting model), `pathtrace` (diffuse path tracing with next-event estimation) or `ao` (direct light with ray-traced ambient occlusion within `reach` blocks) |
 | `gate` | what it reads | a gap between two domains on an edge: `net(latency_ms, jitter_ms, bandwidth_mbps, loss, reorder, resend, mtu, seed)` ([Gates](#gates)) |
 | `post` | image | tone mapping: `clamp` (default), `reinhard`, `aces`; `hdr`: a float RGBA16F output (every executor, CPU ones included) in extended sRGB, unlimited, saved as `.hdr` beside the PNG, presented in HDR by `multirenderer view` |
 

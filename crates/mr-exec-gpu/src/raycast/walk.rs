@@ -134,14 +134,11 @@ impl Default for PrepassKnobs {
 struct ShadingKnobs {
     placement: String,
     shadows: Shadows,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
 }
 
 impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self { placement: "inline".into(), shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
+        Self { placement: "inline".into(), shadows: Shadows::All }
     }
 }
 
@@ -337,9 +334,6 @@ impl Walk {
                 voxels: false,
                 hits: mr_components::parse_placement(&k.placement)?.then_some(crate::exec::Form::Records),
                 shading: &shading,
-                bounces: k.bounces,
-                spp: k.spp,
-                accumulate: k.accumulate,
                 shadows: k.shadows,
                 max_steps: opts.max_steps,
                 pool_mb: opts.pool_mb,
@@ -663,7 +657,7 @@ mod tests {
                                 edits.push(Change::bind("shadow.kernel", "storage", if ss == "same" { "storage" } else { "shadow.storage" }));
                                 edits.extend([Change::bind("meshes", "shadow", "shadow.kernel"), Change::bind("shading", "shadow", "shadow.kernel")]);
                             }
-                            if shading == "pathtrace" {
+                            if mr_components::shading::state::stateful(shading) {
                                 edits.push(Change::bind("shading", "bounce", if own { "shadow.kernel" } else { "kernel" }));
                             }
                             if prepass == "beam" {

@@ -305,13 +305,20 @@ impl RendererSpec {
     }
 
     /// The lighting model of its frames in a pass of mode `m`: path tracing where its
-    /// shading node path traces a lit frame (with the node's `bounces`), else direct.
+    /// shading node path traces a lit frame (with the node's `bounces`), ambient occlusion
+    /// where it measures that (with its `reach`), else direct.
     pub fn lighting(&self, m: PassMode) -> Lighting {
         use mr_components::graph::Role;
         let traced = || {
             let g = self.worker_graph().ok()??;
-            let n = g.nodes.values().find(|n| n.role == Role::Shading && mr_components::shading::state::stateful(&n.component))?;
-            let default = mr_components::shading::state::params().iter().find(|p| p.name == "bounces").and_then(|p| p.default.as_i64()).unwrap_or(1);
+            use mr_components::shading::state;
+            let n = g.nodes.values().find(|n| n.role == Role::Shading && state::stateful(&n.component))?;
+            let default = |knob: &str| state::params().iter().find(|p| p.name == knob).and_then(|p| p.default.as_i64()).unwrap_or(1);
+            if state::occludes(&n.component) {
+                let reach = n.knobs.get("reach").and_then(|v| v.as_integer()).unwrap_or(default("reach"));
+                return Some(Lighting::Occlusion { reach: reach as u8 });
+            }
+            let default = default("bounces");
             // Without bounces it is the direct model.
             match n.knobs.get("bounces").and_then(|v| v.as_integer()).unwrap_or(default) as u8 {
                 0 => None,

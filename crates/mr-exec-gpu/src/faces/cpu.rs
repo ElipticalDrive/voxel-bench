@@ -184,14 +184,11 @@ impl Default for VisibilityKnobs {
 #[serde(default)]
 struct ShadingKnobs {
     shadows: Shadows,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
 }
 
 impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self { shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
+        Self { shadows: Shadows::All }
     }
 }
 
@@ -335,7 +332,7 @@ impl CpuSampler {
         let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
-        let o = CoreOpts { shading: &shading, draw: &draw, bounces: k.bounces, spp: k.spp, accumulate: k.accumulate, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
+        let o = CoreOpts { shading: &shading, draw: &draw, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let (mut core, drawing, far) = super::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
             wgsl: include_str!("records.wgsl").into(),
             walks,

@@ -50,6 +50,10 @@ pub enum Cap {
     /// Shading: path traces: bounce rays (a `bounce` input), per-pixel state accumulated
     /// over frames, the knobs `bounces`, `spp` and `accumulate`; its reference traces paths.
     Paths,
+    /// Shading (with `Paths`): its secondary rays measure ambient occlusion (the share of
+    /// rays that meet nothing within the knob `reach`) instead of bouncing; its reference
+    /// computes that, not paths.
+    Occlusion,
     /// Geometry: quads in the `mr_mesh` encoding, grouped per face: what a rasteriser draws
     /// as strips and a ray query traces as two triangles each.
     Quads,
@@ -81,6 +85,7 @@ impl Cap {
             Cap::Layers => "layers",
             Cap::Records => "records",
             Cap::Paths => "paths",
+            Cap::Occlusion => "occlusion",
             Cap::Quads => "quads",
             Cap::Cubes => "cubes",
             Cap::Accel => "accel",

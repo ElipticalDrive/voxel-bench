@@ -55,9 +55,6 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
 struct CoreOpts<'a> {
     shading: &'a str,
     draw: &'a str,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
     shadows: Shadows,
     max_steps: u32,
     pool_mb: u32,
@@ -326,9 +323,6 @@ fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, o: &
         voxels: false,
         hits: hits_form(o.draw, draw_only),
         shading: o.shading,
-        bounces: o.bounces,
-        spp: o.spp,
-        accumulate: o.accumulate,
         shadows: o.shadows,
         max_steps: o.max_steps,
         pool_mb: o.pool_mb,
@@ -577,7 +571,7 @@ mod tests {
         assert!(storages.len() > 1, "{storages:?}");
         for st in storages {
             for shading in ["direct", "pathtrace"] {
-                let bounce = (shading == "pathtrace").then(|| Change::bind("shading", "bounce", "shadow.kernel"));
+                let bounce = mr_components::shading::state::stateful(shading).then(|| Change::bind("shading", "bounce", "shadow.kernel"));
                 let edits: Vec<Change> = [Change::component("shadow.storage", st), Change::component("shading", shading)].into_iter().chain(bounce).collect();
                 let ck = base.with_edits(&edits).unwrap().check().unwrap();
                 let mut walks = Walks::of(&ck);

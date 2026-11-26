@@ -52,6 +52,10 @@ pub enum Lighting {
     Paths {
         bounces: u8,
     },
+    /// Ambient occlusion reaching this many blocks (the `ao` shading's model).
+    Occlusion {
+        reach: u8,
+    },
 }
 
 impl Like {
@@ -77,6 +81,7 @@ impl std::fmt::Display for Like {
         match self.lighting {
             Lighting::Direct => Ok(()),
             Lighting::Paths { bounces } => write!(f, ", pathtrace(bounces={bounces})"),
+            Lighting::Occlusion { reach } => write!(f, ", ao(reach={reach})"),
         }?;
         if self.leaves.mesh_rays {
             write!(f, ", no mesh rays")?;
