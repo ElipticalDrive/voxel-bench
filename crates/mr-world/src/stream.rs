@@ -162,6 +162,10 @@ impl Streamer {
                 (k.pos - c).abs().max_element() <= radii[k.lod as usize] && seen.insert(*k)
             });
             self.pending.sort_unstable_by_key(|k| std::cmp::Reverse(dist(k)));
+            // The world caches what it generated; past the streamed region the cache would
+            // grow with the distance flown (edited chunks stay, the rest regenerate if asked).
+            let resident = &self.resident;
+            world.evict(|k| resident.contains_key(&k));
         }
         if self.pending.is_empty() {
             return;
@@ -317,6 +321,26 @@ mod tests {
                 assert!(c == d || cells.into_iter().all(|p| c.get(p) == d.get(p)), "frame {f}: {k:?}");
             }
         }
+    }
+
+    /// The world's cache stays within the streamed region however far the camera flies;
+    /// edited chunks stay wherever they are.
+    #[test]
+    fn the_world_cache_follows_the_stream() {
+        let mut world = World::new(GenSpec::Terrain { seed: 3, caves: false, trees: false }.build());
+        let mut server = Streamer::new(vec![2], None);
+        let edit = [BlockEdit { pos: IVec3::new(5, 300, 5), block: BlockId(1) }];
+        let changed = world.apply_edits(&edit);
+        let mut most = 0;
+        for f in 0..200 {
+            let mut out = vec![];
+            server.edits(&edit, &changed, &mut out);
+            server.update(&mut world, DVec3::new(f as f64 * 32.0, 60.0, 0.0), &mut out);
+            most = most.max(world.cached_chunks());
+        }
+        let region = 5 * 5 * 5 + 1; // radius 2 around the camera, and the edited chunk
+        assert!(most <= region, "the world cached {most} chunks for a region of {region}");
+        assert_eq!(world.block(IVec3::new(5, 300, 5)), BlockId(1), "the edit was evicted");
     }
 
     /// Behind a link that delays, loses and reorders the stream, a client's renderer holds

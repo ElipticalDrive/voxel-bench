@@ -178,7 +178,7 @@ impl StorageData {
                 if self
                     .aux
                     .reserve(gpu, world.pool_slots() as u64 * unit, "`pool_mb`")
-                    .ok_or_else(|| anyhow::anyhow!("the storage's side data does not fit"))?
+                    .ok_or_else(|| anyhow::anyhow!(gpu.failure().get().unwrap_or_else(|| "storage: aux: the side data does not fit".into())))?
                 {
                     self.bind = None;
                 }

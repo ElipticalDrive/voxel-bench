@@ -28,7 +28,7 @@ if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help,
     sys.exit(print(__doc__))
 
 out = os.environ.get("OUT") or f"target/sweep/{time.strftime('%Y%m%d-%H%M')}"
-plans = sys.argv[1:] or "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker meshes".split()
+plans = sys.argv[1:] or "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker meshes big".split()
 sweep = full_sweep()
 args = ["-s", sweep, "-s", "run.repeats=1", "-s", "run.parallel=false", "-s", f"output.compare.every={os.environ.get('EVERY', 50)}", "-s", f'output.dir="{out}"', "-s", "output.resume=true", "-u", "output.save", "-u", "output.window"]
 if os.environ.get("FRAMES"):

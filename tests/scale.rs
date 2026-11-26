@@ -71,6 +71,21 @@ edits = [{ node = "storage", component = "clipmap" }]"#;
     assert!(e.contains("max_texture_dimension_3d") && e.contains("radius of 31 at most"), "{e}");
 }
 
+/// A storage's side data (distance's fields, tree64's nodes) past what the device binds
+/// (128 MiB at the baseline) failed naming `pool_mb` (the knob, though its 2048 MiB asks
+/// more), or with "the storage's side data does not fit" and no limit at all. Now the
+/// device's binding size is named.
+#[test]
+#[ignore]
+fn side_data_past_the_binding_size_names_it() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scale-aux");
+    let distance = r#"graph = "raycast-gpu"
+edits = [{ node = "storage", component = "distance" }]"#;
+    assert_eq!(lane_error(&dir, distance, 16), None);
+    let e = lane_error(&dir, distance, 32).expect("radius 32 rendered");
+    assert!(e.contains("storage: aux") && e.contains("max_storage_buffer_binding_size") && e.contains("below what `pool_mb` asks"), "{e}");
+}
+
 /// Frames are 2D textures: a side past `max_texture_dimension_2d` (8192 at the baseline)
 /// failed with a bare "wgpu error: Validation Error". Now refused naming the limit.
 #[test]
