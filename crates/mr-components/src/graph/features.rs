@@ -165,6 +165,12 @@ impl Checked {
                 && !lacks(from)
             {
                 layers.push(format!("shading `{}` (`{id}`) on {a} lacks layers from {b}: the records crossing between devices carry one surface per pixel", nodes[*id].component));
+            } else if kind(id) == Kind::Gpu
+                && !lacks(from)
+                && let Some(e) = self.gates_on(id, "hits")
+            {
+                // On the CPU the records cross a gate with their layers.
+                layers.push(format!("shading `{}` (`{id}`) lacks layers behind gate `{}`: the GPU's records crossing a gate carry one surface per pixel", nodes[*id].component, e.gates[0].0));
             }
         }
         if !layers.is_empty() {
@@ -461,6 +467,20 @@ mod tests {
             r#"{ node = "shading", knob = "placement", value = "deferred" }"#,
             r#"{ node = "shading", device = "gpu1" }"#,
         ];
+        // A gate on the GPU's hit records: one record per pixel crosses (on the CPU the
+        // records cross with their layers).
+        let gated = [
+            r#"{ remove = "meshes" }"#,
+            r#"{ node = "shading", knob = "placement", value = "deferred" }"#,
+            r#"{ add = "h", role = "gate", component = "net" }"#,
+            r#"{ node = "h", input = "in", from = "visibility" }"#,
+            r#"{ node = "shading", input = "hits", from = "h" }"#,
+        ];
+        let cpu: Vec<Change> = gated[1..].iter().map(|e| toml::from_str::<toml::Table>(&format!("e = {e}")).unwrap()["e"].clone().try_into().unwrap()).collect();
+        let c = shipped("raycast-cpu").unwrap().with_edits(&cpu).unwrap().check().unwrap();
+        let mut f = Features::of(&[Feature::Transparency]);
+        c.narrow_on(&mut f, &|_| None);
+        assert!(f.why_not(Feature::Transparency).is_none_or(|w| !w.contains("gate")), "{:?}", f.why_not(Feature::Transparency));
         // Shadow rays by ray queries stop at the first surface: glass shadows fully.
         let query_shadows = [
             r#"{ add = "geometry", role = "geometry", component = "greedy" }"#,
@@ -481,6 +501,10 @@ mod tests {
             (
                 &far[..],
                 "shading `direct` (`shading`) on gpu1 lacks layers from gpu: the records crossing between devices carry one surface per pixel",
+            ),
+            (
+                &gated[..],
+                "shading `direct` (`shading`) lacks layers behind gate `h`: the GPU's records crossing a gate carry one surface per pixel",
             ),
         ] {
             let changes: Vec<Change> = edits

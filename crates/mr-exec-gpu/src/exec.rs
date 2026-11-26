@@ -276,6 +276,10 @@ pub(crate) trait Region: State {
     /// While a view is chosen, after the frame's passes: its own passes writing the viewed
     /// quantity (`core.view`) where its frame's programs do not.
     fn view(&mut self, _core: &Core, _enc: &mut wgpu::CommandEncoder, _ticket: Ticket) {}
+    /// What crossed the gates it runs inside its frame so far, one entry per gate node.
+    fn gates(&self) -> Vec<mr_core::gate::GateReport> {
+        vec![]
+    }
 }
 
 /// The nodes of `g`'s passes on GPU slot `slot` in frame order, each by its node's role
@@ -359,7 +363,7 @@ impl<R: Region> Executor<R> {
         });
         let (counters, legend, stages) = region.stats(core, req);
         let legend = viewed.or(legend);
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages, gates: vec![] };
+        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages, gates: region.gates() };
         region.finish(core, &mut enc, ticket);
         Ok((enc, ticket, stats))
     }

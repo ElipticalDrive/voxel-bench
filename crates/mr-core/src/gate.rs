@@ -402,8 +402,8 @@ pub struct Arrivals {
     /// included; ungated: [`wire_bytes`]), and the bytes that came out of its gates.
     pub bytes: u64,
     pub arrived: u64,
-    /// Chunks of its region missing on the renderer's side: inside the gates on the world's
-    /// stream, or not generated yet (a client generating the world). The server's backlog is
+    /// Chunks of its region missing on the renderer's side: loaded into the gates on the
+    /// world's side and not out of them (on the way, or lost), or not generated yet (a client generating the world). The server's backlog is
     /// the host's to add.
     pub holes: u32,
     /// What crossed the gates the worker runs (the world's stream, the generated chunks, the
