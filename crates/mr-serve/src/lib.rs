@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use anyhow::{Context, bail};
 use mr_core::client::Client;
+use mr_core::gate::{GateStats, Gates};
 use mr_core::link::{Arrivals, Link};
 use mr_core::{CompletedFrame, FrameSink, Renderer, RendererEntry, Waker};
 use mr_ipc::{FrameSlots, HostMsg, MsgWriter, PROTOCOL_VERSION, WorkerMsg};
@@ -143,6 +144,30 @@ fn arrived(link: &mut Link, time: f64) -> Vec<mr_core::WorldUpdate> {
     v
 }
 
+/// The world's changes `got` by `time` sent through the gates, and what came out of them by
+/// then (an empty batch sends nothing).
+fn gated(gates: &mut Option<Gates>, time: f64, got: Vec<mr_core::WorldUpdate>) -> Vec<mr_core::WorldUpdate> {
+    match gates {
+        Some(g) => g.pass(time, (!got.is_empty()).then_some(got)).into_iter().flatten().collect(),
+        None => got,
+    }
+}
+
+/// Gates' figures summed (what crossed all of them).
+fn sum(stats: &[GateStats]) -> GateStats {
+    stats.iter().fold(GateStats::default(), |a, s| GateStats {
+        messages: a.messages + s.messages,
+        delivered: a.delivered + s.delivered,
+        failed: a.failed + s.failed,
+        bytes: a.bytes + s.bytes,
+        packets: a.packets + s.packets,
+        lost_packets: a.lost_packets + s.lost_packets,
+        lost_bytes: a.lost_bytes + s.lost_bytes,
+        encode_ms: a.encode_ms + s.encode_ms,
+        decode_ms: a.decode_ms + s.decode_ms,
+    })
+}
+
 // Few in flight at a time: boxing `HostMsg` would save no memory worth having.
 #[allow(clippy::large_enum_variant)]
 enum Input {
@@ -173,12 +198,15 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let reach = |c: &Client| mr_core::client::reach(c.radius(), c.max_lod(), levels);
     // The link in front of it: none when free, the stream then as it came.
     let mut link = (!params.link.free()).then(|| Link::new(params.link));
+    // The gates after it on the world's stream (none: the stream as it came): each batch the
+    // host sends crosses them as one message.
+    let mut gates = (!params.gates.is_empty()).then(|| Gates::new(&params.gates));
     // A fault asked for (tests only: `fault::ENV`), at build or later.
     let fault = fault::Fault::of_options(&params.options_json)?;
     if let Some(f) = fault {
         f.trip(fault::At::Build)?;
     }
-    let mut renderer: Box<dyn Renderer> = (entry.create)(params, &devices, waker)?;
+    let mut renderer: Box<dyn Renderer> = (entry.create)(*params, &devices, waker)?;
     if let Some(f) = fault {
         renderer = Box::new(fault::Faulty::new(renderer, f));
     }
@@ -216,6 +244,7 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                     }
                     None => updates,
                 };
+                let got = gated(&mut gates, time, got);
                 match &mut generating {
                     Some(g) => {
                         let mut local = vec![];
@@ -252,6 +281,7 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 let t = Instant::now();
                 let mut ups = vec![];
                 let got = link.as_mut().map(|l| arrived(l, time)).unwrap_or_default();
+                let got = gated(&mut gates, time, got);
                 match &mut generating {
                     Some(g) => {
                         // Generated once per frame: here if no stream ended at a camera.
@@ -271,7 +301,8 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 }
                 let holes = link.as_ref().map_or(0, |l| l.chunks_in_flight()) + generating.as_ref().map_or(0, |g| g.pending());
                 let (bytes, arrived) = link.as_ref().map_or((free_bytes, free_bytes), |l| (l.stats().bytes, l.stats().arrived));
-                let arrivals = Arrivals { bytes, arrived, holes: holes as u32 };
+                let gate = gates.as_ref().map(|g| Box::new(sum(&g.stats())));
+                let arrivals = Arrivals { bytes, arrived, holes: holes as u32, gate };
                 sink.slots.insert(req.frame_id, (slot.filter(|_| req.readback), arrivals));
                 renderer.render(&req, &mut sink)?;
             }

@@ -741,6 +741,16 @@ impl Checked {
     /// with the reason.
     pub fn built_by(&self, builds: Builds) -> Result<(), String> {
         let executor = builds.who();
+        // Gates run on the world's stream (in front of the client, in the worker); on other
+        // edges no executor runs them yet.
+        if let Some(e) = self.gates.iter().find(|e| e.data != super::Data::Changes) {
+            return Err(format!(
+                "`{}` on `{}`: {executor} runs gates on the world's stream only so far, not on {} edges",
+                e.gates[0].0,
+                e.edge(),
+                e.data.name()
+            ));
+        }
         let Builds {
             nodes: builds,
             same,

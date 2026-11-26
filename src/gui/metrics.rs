@@ -227,7 +227,7 @@ impl App {
                     ui.label("streaming").on_hover_text("Chunks sent to this renderer so far, and chunks queued for it (limited per frame)");
                     ui.monospace(format!("{} chunks sent · {} pending", l.chunks_sent, l.pending_chunks));
                     ui.end_row();
-                    let a = l.arrivals;
+                    let a = &l.arrivals;
                     ui.label("arrivals").on_hover_text("What reached this renderer's client: bytes arrived (each message once) and, where more, bytes sent over its link (in flight and resends included); holes = chunks of its region still missing on its side (on the link, or not generated yet), plus the server's backlog");
                     let mb = |b: u64| b as f64 / 1048576.0;
                     let sent = if a.bytes > a.arrived { format!(" of {:.1} MB sent", mb(a.bytes)) } else { String::new() };

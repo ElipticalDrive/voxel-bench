@@ -27,7 +27,7 @@ impl Graph {
     /// shading's image the output), and knobs set to their defaults ([`crate::knobs`]).
     /// `region`: the client's region knobs count (the workload, not the pipeline: the key
     /// leaves them out).
-    fn entries(&self, region: bool) -> Result<Vec<Entry>, String> {
+    fn entries(&self, region: bool) -> Result<(Vec<Entry>, Vec<EdgeGates>), String> {
         let c = self.check()?;
         let g = &c.graph;
         let knobs = |n: &Node| -> toml::Table {
@@ -93,7 +93,7 @@ impl Graph {
                 b.chooses(n.role) && b.api_choice.is_some_and(|ch| ch.default != Some(*a))
             })
         };
-        Ok(order
+        let entries: Vec<Entry> = order
             .into_iter()
             .map(|id| {
                 let n = &g.nodes[&id];
@@ -111,14 +111,37 @@ impl Graph {
                     id,
                 }
             })
-            .collect())
+            .collect();
+        Ok((entries, c.gates))
+    }
+
+    /// The gates as the canonical form and the label write them, after the nodes: per gated
+    /// edge, its reader (`n<i>` by `name`, or the reader's role where it is a node left out:
+    /// one of its role per graph) and port, then each gate's knobs off their defaults. Empty
+    /// for a graph without gates, so their keys are unchanged.
+    fn gates_text(gates: &[EdgeGates], g: &Graph, name: impl Fn(&str) -> Option<String>) -> Vec<String> {
+        gates
+            .iter()
+            .map(|e| {
+                let reader = name(&e.reader).unwrap_or_else(|| g.nodes.get(&e.reader).map_or(e.reader.clone(), |n| n.role.name().to_string()));
+                let each: Vec<String> = e
+                    .gates
+                    .iter()
+                    .map(|(_, s)| {
+                        let k: Vec<String> = gate_knobs(s).iter().map(|(k, v)| format!("{k}={v}")).collect();
+                        format!("({})", k.join(", "))
+                    })
+                    .collect();
+                format!("gate {reader}.{} {}", e.port, each.join(" "))
+            })
+            .collect()
     }
 
     /// The canonical form: nodes renamed in visiting order from the output (inputs by port
     /// name), devices resolved, APIs where set and a choice, knobs sorted; equal for graphs
     /// that differ only in node ids.
     pub fn canonical(&self) -> Result<String, String> {
-        let entries = self.entries(false)?;
+        let (entries, gates) = self.entries(false)?;
         let ids: HashMap<&str, usize> = entries
             .iter()
             .enumerate()
@@ -149,6 +172,9 @@ impl Graph {
                 knobs.join(",")
             );
         }
+        for t in Self::gates_text(&gates, self, |id| ids.get(id).map(|i| format!("n{i}"))) {
+            s += &format!("|{t}");
+        }
         Ok(s)
     }
 
@@ -174,7 +200,7 @@ impl Graph {
     /// `gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct`.
     /// Graphs that differ only in which of two like nodes an input reads share a label.
     pub fn label(&self) -> Result<String, String> {
-        let entries = self.entries(true)?;
+        let (entries, gates) = self.entries(true)?;
         let by: HashMap<&str, &Entry> = entries.iter().map(|e| (e.id.as_str(), e)).collect();
         let on = self.runs_on();
         fn visit<'a>(
@@ -225,7 +251,9 @@ impl Graph {
                 format!("{}{dev}{api}{inner}", e.component)
             })
             .collect();
-        Ok(format!("{on}: {}", parts.join(" + ")))
+        let gates = Self::gates_text(&gates, self, |id| by.get(id).map(|e| e.component.clone()));
+        let gates: String = gates.iter().map(|t| format!(" | {t}")).collect();
+        Ok(format!("{on}: {}{gates}", parts.join(" + ")))
     }
 }
 

@@ -16,7 +16,7 @@ pub use interprocess::local_socket::{Listener, Stream};
 use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {
@@ -28,7 +28,7 @@ pub struct ShmSpec {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum HostMsg {
-    Init { renderer: String, params: InitParams, shm: ShmSpec },
+    Init { renderer: String, params: Box<InitParams>, shm: ShmSpec },
     /// The server's stream (the same for every client), in batches; the
     /// worker's client derives its renderer's updates from it, at camera position `at`
     /// (set on a batch that ends what the server sent for a frame). `time`: when the server
@@ -398,8 +398,8 @@ mod tests {
             legend: None,
             stages: vec![mr_core::StageTime::cpu("geometry", &["geometry".into()], 2.0), mr_core::StageTime { name: "draw".into(), nodes: vec!["draw".into()], cpu_ms: None, gpu_ms: Some(0.25) }],
         };
-        let arrivals = mr_core::link::Arrivals { bytes: 1 << 40, arrived: 1 << 39, holes: 3 };
-        let msg = WorkerMsg::FrameDone { frame_id: 7, stats: stats.clone(), slot: Some(1), update_ms: 0.125, arrivals };
+        let arrivals = mr_core::link::Arrivals { bytes: 1 << 40, arrived: 1 << 39, holes: 3, gate: Some(Box::new(mr_core::gate::GateStats { messages: 2, encode_ms: 0.5, ..Default::default() })) };
+        let msg = WorkerMsg::FrameDone { frame_id: 7, stats: stats.clone(), slot: Some(1), update_ms: 0.125, arrivals: arrivals.clone() };
         let back: WorkerMsg = postcard::from_bytes(&postcard::to_allocvec(&msg).unwrap()).unwrap();
         let WorkerMsg::FrameDone { frame_id: 7, stats: s, slot: Some(1), update_ms, arrivals: a } = back else { panic!("{back:?}") };
         assert_eq!((s.stages, s.counters, s.gpu_ms, update_ms, a), (stats.stages, stats.counters, stats.gpu_ms, 0.125, arrivals));

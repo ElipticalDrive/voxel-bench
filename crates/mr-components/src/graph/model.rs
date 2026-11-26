@@ -38,10 +38,17 @@ pub enum Role {
     /// What turns the shading's linear colour into the output's: a tone
     /// mapper (`crate::post::Tone`), compiled into the shading's output on its device.
     Post,
+    /// A gate between two domains on an edge: what crosses it is serialized, the bytes cross
+    /// a modelled network (`mr_core::gate::GateSpec` as its knobs: latency, jitter,
+    /// bandwidth, loss, reordering, resends), and are deserialized on the far side. It reads
+    /// one node (port `in`) and gives what that node gives; any number of gates per graph,
+    /// on any edge but the fused ones. The checked graph keeps them apart from its nodes
+    /// ([`Checked::gates`]), so every executor builds the graph without them.
+    Gate,
 }
 
 impl Role {
-    pub const ALL: [Role; 14] = [
+    pub const ALL: [Role; 15] = [
         Role::World,
         Role::Generator,
         Role::Link,
@@ -56,6 +63,7 @@ impl Role {
         Role::Shading,
         Role::Meshes,
         Role::Post,
+        Role::Gate,
     ];
 
     pub fn name(self) -> &'static str {
@@ -74,6 +82,7 @@ impl Role {
             Role::Draw => "draw",
             Role::Shading => "shading",
             Role::Meshes => "meshes",
+            Role::Gate => "gate",
         }
     }
 
@@ -82,7 +91,7 @@ impl Role {
     pub fn registered(self) -> bool {
         !matches!(
             self,
-            Role::World | Role::Generator | Role::Link | Role::Client | Role::Post
+            Role::World | Role::Generator | Role::Link | Role::Client | Role::Post | Role::Gate
         )
     }
 }
@@ -346,6 +355,12 @@ const POSTED: &[Port] = &[port(
     true,
     "the shading's linear colour (compiled into its output)",
 )];
+const GATED: &[Port] = &[port(
+    "in",
+    Data::Image,
+    true,
+    "what crosses the gate (any data but storages and ray queries; the type is the source's)",
+)];
 const PATHTRACE: &[Port] = &[
     port("hits", Data::Hits, true, "the visible surface per pixel"),
     port(
@@ -385,6 +400,7 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
         (Role::Shading, _) if crate::caps::declares(role, name, crate::Cap::Paths) => PATHTRACE,
         (Role::Shading, _) => DIRECT,
         (Role::Post, _) => POSTED,
+        (Role::Gate, _) => GATED,
     }
 }
 
@@ -402,6 +418,8 @@ pub fn output(role: Role, name: &str) -> Data {
         (Role::Holes, _) => Data::Tiles,
         (Role::Shading | Role::Post, _) => Data::Image,
         (Role::Meshes, _) => Data::Surfaces,
+        // A gate gives what it reads; a checked graph has no gates left ([`Checked::gates`]).
+        (Role::Gate, _) => Data::Image,
     }
 }
 
@@ -413,6 +431,7 @@ pub fn state(role: Role, name: &str) -> Option<&'static str> {
     Some(match (role, name) {
         (Role::World, _) => "the authoritative chunks and their change log",
         (Role::Link, "net") => "the messages in flight and the line's queue",
+        (Role::Gate, _) => "the messages in flight and the line's queue",
         (Role::Client, _) => "a replica of what arrived and what its renderer holds",
         (Role::Storage, _) => "the representation, patched from the change log",
         (Role::Geometry, _) => "the faces, remeshed per changed chunk",
@@ -516,11 +535,12 @@ pub const HOST_COMPONENTS: &[HostComponent] = &[
     HostComponent { role: Role::Post, name: "reinhard", about: "Reinhard tone mapping of the linear colour, compiled into the shading's output" },
     HostComponent { role: Role::Post, name: "aces", about: "ACES filmic tone mapping of the linear colour, compiled into the shading's output" },
     HostComponent { role: Role::Post, name: "hdr", about: "No limit: a float output for HDR displays" },
+    HostComponent { role: Role::Gate, name: "net", about: "A gap between two domains on an edge: what crosses is serialized, crosses a modelled network (latency, jitter, bandwidth, loss on the bytes, reordering, resends) and is deserialized" },
 ];
 
 /// Whether `role` is a host role (its components in [`HOST_COMPONENTS`], not the registry).
 pub fn is_host_role(role: Role) -> bool {
-    matches!(role, Role::World | Role::Generator | Role::Link | Role::Client | Role::Post)
+    matches!(role, Role::World | Role::Generator | Role::Link | Role::Client | Role::Post | Role::Gate)
 }
 
 /// The names of host role `role`'s components, in the order offered.
@@ -571,7 +591,7 @@ pub(super) fn known(role: Role, name: &str) -> bool {
 pub(super) fn default_device(executor: &str, role: Role, component: &str) -> Device {
     match role {
         Role::World | Role::Generator => return Device::Server,
-        Role::Link | Role::Client => return Device::Cpu,
+        Role::Link | Role::Client | Role::Gate => return Device::Cpu,
         _ => {}
     }
     let want = if executor == "cpu" {
@@ -677,4 +697,6 @@ pub struct Checked {
     pub output: String,
     /// The region its shape names ([`Graph::region`]), which builds it.
     pub region: Option<&'static super::Builds>,
+    /// The gates on its edges, taken out of `graph` (whose readers read what the gates read).
+    pub gates: Vec<super::EdgeGates>,
 }

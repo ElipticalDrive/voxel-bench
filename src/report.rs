@@ -181,6 +181,11 @@ pub struct PassReport {
     /// warm-up included.
     pub wire_bytes: u64,
     pub arrived_bytes: u64,
+    /// What crossed the gates on the world's stream in the pass, warm-up included: messages,
+    /// bytes and packets on the line, packets lost, messages that did not decode, and the
+    /// time spent serializing and deserializing (summed over the gates).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate: Option<mr_core::gate::GateStats>,
     /// Update time per byte arrived (ns), over the recorded frames.
     pub update_ns_per_byte: Option<f64>,
     /// Chunks missing per recorded frame (`FrameRecord::holes`) and the frames with any.

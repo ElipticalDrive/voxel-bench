@@ -235,8 +235,9 @@ impl Graph {
                 self.executor
             ));
         }
-        let region = self.region();
-        let g = self.normalised()?;
+        let (ungated, mut gates) = self.ungated()?;
+        let region = ungated.region();
+        let g = ungated.normalised()?;
         let mut why = Vec::new();
         for (id, n) in &g.nodes {
             if !known(n.role, &n.component) {
@@ -345,6 +346,35 @@ impl Graph {
                     p.description
                 ));
             }
+        }
+        if !why.is_empty() {
+            return Err(why.join("; "));
+        }
+        // What crosses each gate: the reader's port's data (its source may have moved in
+        // normalising: the world's change log reaches a renderer through its client).
+        for e in &mut gates {
+            let n = &g.nodes[&e.reader];
+            let port = inputs(n.role, &n.component).iter().find(|p| p.name == e.port).expect("ports checked");
+            e.data = port.data;
+            e.source = n.inputs[&e.port].clone();
+            if port.data.fused() {
+                why.push(format!(
+                    "`{}`.{}: {} are compiled into their caller, nothing crosses that edge to put a gate on",
+                    e.reader, e.port, port.data.name()
+                ));
+            }
+        }
+        // The world's stream is gated once per renderer, in front of its client: every gated
+        // edge of changes has the same gates.
+        let streams: Vec<&EdgeGates> = gates.iter().filter(|e| e.data == Data::Changes).collect();
+        if let [first, rest @ ..] = streams.as_slice()
+            && let Some(other) = rest.iter().find(|e| e.gates != first.gates)
+        {
+            why.push(format!(
+                "the world's stream crosses its gates once, in front of the client: `{}` and `{}` have different gates",
+                first.edge(),
+                other.edge()
+            ));
         }
         if !why.is_empty() {
             return Err(why.join("; "));
@@ -573,6 +603,7 @@ impl Graph {
             apis,
             output: out,
             region,
+            gates,
         })
     }
 }

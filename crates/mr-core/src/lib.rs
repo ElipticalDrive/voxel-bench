@@ -11,6 +11,7 @@ pub mod chunk;
 pub mod client;
 pub mod face;
 pub mod features;
+pub mod gate;
 pub mod legend;
 pub mod link;
 pub mod lighting;

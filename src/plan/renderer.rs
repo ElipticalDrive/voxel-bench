@@ -358,6 +358,15 @@ impl RendererSpec {
         self.pipeline().and_then(|g| g.link().ok()).unwrap_or_default()
     }
 
+    /// The gates on the world's stream (its graph's gates on edges of changes, which all
+    /// have the same gates), in order from the world.
+    pub fn world_gates(&self) -> Vec<mr_core::gate::GateSpec> {
+        self.pipeline()
+            .and_then(|g| g.check().ok())
+            .and_then(|c| c.gates.iter().find(|e| e.data == mr_components::graph::Data::Changes).map(|e| e.specs()))
+            .unwrap_or_default()
+    }
+
     pub fn devices(&self, run: &RunSpec) -> mr_core::DeviceConfig {
         self.devices.clone().unwrap_or_else(|| run.devices.clone())
     }

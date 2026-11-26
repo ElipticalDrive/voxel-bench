@@ -60,7 +60,7 @@ pub fn wire_bytes(u: &WorldUpdate) -> usize {
 }
 
 /// What reached a client by a frame, reported by its worker with the frame.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Arrivals {
     /// Bytes sent over its link so far (`wire_bytes`, resends included), and of those the
     /// bytes that arrived (each message once).
@@ -69,6 +69,8 @@ pub struct Arrivals {
     /// Chunks of its region missing on the client's side: on the link, or not generated
     /// yet (a client generating the world). The server's backlog is the host's to add.
     pub holes: u32,
+    /// What crossed the gates on the world's stream (summed over them; none without gates).
+    pub gate: Option<Box<crate::gate::GateStats>>,
 }
 
 /// What crossed the link so far.

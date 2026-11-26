@@ -58,6 +58,10 @@ pub struct InitParams {
     /// The link the worker's client receives the stream over (free: none).
     #[serde(default)]
     pub link: crate::link::LinkSpec,
+    /// The gates on the world's stream (the graph's gates on edges of changes), in order from
+    /// the world: the worker serializes the stream through them in front of its client.
+    #[serde(default)]
+    pub gates: Vec<crate::gate::GateSpec>,
 }
 
 /// Which devices a renderer runs on (no hardware opinion in the
