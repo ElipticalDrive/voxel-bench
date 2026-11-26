@@ -1,13 +1,14 @@
-# The link as a modelled network: a 10 s flight (600 frames on the 60 fps
-# simulated clock, ~30 m/s) over terrain, each renderer's client receiving the server's
-# stream over a link with latency, jitter, a bandwidth, losses (resent after a timeout) and,
-# with `reorder`, chunks overtaking each other. Chunks are sent uncompressed (a dense one is
-# 64 KiB): at 200 Mbit/s the first region takes seconds. Renderers draw what has arrived;
-# quality against the reference (which stays on a free link) shows the holes. Time is
-# simulated (`run.clock_fps`), so runs repeat. The link is a graph node (added by an
-# edit, component `net`, knobs as in `mr_core::link::LinkSpec`); without one the link is free.
-# With the generator on the client (a `generator` node on `cpu`) only edits cross the link:
-# the client generates its region from the world's spec.
+# The server-to-client network modelled: a 10 s flight (600 frames on the 60 fps simulated
+# clock, ~30 m/s) over terrain, each renderer's client receiving the server's stream through
+# a gate with latency, jitter, a bandwidth, packet losses (resent after a timeout) and, with
+# `reorder`, chunks overtaking each other (each chunk's own messages stay in order). Chunks
+# are sent uncompressed (a dense one is 64 KiB): at 200 Mbit/s the first region takes
+# seconds. Renderers draw what has arrived; quality against the reference (which stays
+# ungated) shows the holes. Time is simulated (`run.clock_fps`), so runs repeat. The network
+# is a gate node reading the world (component `net`, knobs as in `mr_core::gate::GateSpec`):
+# a gate reading the world carries its whole stream into the client, whichever of the
+# world's readers it is drawn to. With the generator on the client (a `generator` node on
+# `cpu`) only edits cross the gate: the client generates its region from the world's spec.
 name = "link"
 
 [scene]
@@ -28,99 +29,99 @@ label = "free"
 [[renderer]]
 graph = "raycast-gpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 1000.0, latency_ms = 1.0 } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 1000.0, latency_ms = 1.0 } },
 ]
 label = "lan"
 
 [[renderer]]
 graph = "raycast-gpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 label = "home"
 
 [[renderer]]
 graph = "raycast-gpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01 } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, resend = true } },
 ]
 label = "home, in order"
 
 [[renderer]]
 graph = "raycast-gpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 50.0, jitter_ms = 80.0, latency_ms = 150.0, loss = 0.05, reorder = true } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 50.0, jitter_ms = 80.0, latency_ms = 150.0, loss = 0.05, reorder = true, resend = true } },
 ]
 label = "bad"
 
 [[renderer]]
 graph = "raster-gpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 # Every back end behind the home connection.
 
 [[renderer]]
 graph = "discover-gpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 
 [[renderer]]
 graph = "discover-cpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 
 [[renderer]]
 graph = "rayquery-gpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "geometry", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 
 [[renderer]]
 graph = "columns-gpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 
 [[renderer]]
 graph = "splat-gpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 
 [[renderer]]
 graph = "raycast-cpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 
 [[renderer]]
 graph = "raster-cpu"
 edits = [
-    { add = "link", role = "link", component = "net" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 
 [[renderer]]
 graph = "raycast-gpu"
 edits = [
     { add = "client", role = "client", component = "derive" },
-    { add = "link", role = "link", component = "net" },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
     { node = "client", knobs = { max_lod = 2, radius = 4 } },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 label = "home, derive r4+2"
 
@@ -128,9 +129,9 @@ label = "home, derive r4+2"
 graph = "raycast-gpu"
 edits = [
     { add = "generator", role = "generator", component = "procedural" },
-    { add = "link", role = "link", component = "net" },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
     { node = "generator", device = "cpu" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 label = "home, generated"
 
@@ -138,9 +139,9 @@ label = "home, generated"
 graph = "raycast-gpu"
 edits = [
     { add = "generator", role = "generator", component = "procedural" },
-    { add = "link", role = "link", component = "net" },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
     { node = "generator", device = "cpu" },
-    { node = "link", knobs = { bandwidth_mbps = 50.0, jitter_ms = 80.0, latency_ms = 150.0, loss = 0.05, reorder = true } },
+    { node = "net", knobs = { bandwidth_mbps = 50.0, jitter_ms = 80.0, latency_ms = 150.0, loss = 0.05, reorder = true, resend = true } },
 ]
 label = "bad, generated"
 
@@ -149,10 +150,10 @@ graph = "raycast-gpu"
 edits = [
     { add = "client", role = "client", component = "derive" },
     { add = "generator", role = "generator", component = "procedural" },
-    { add = "link", role = "link", component = "net" },
+    { add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" },
     { node = "client", knobs = { max_lod = 2, radius = 4 } },
     { node = "generator", device = "cpu" },
-    { node = "link", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true } },
+    { node = "net", knobs = { bandwidth_mbps = 200.0, jitter_ms = 10.0, latency_ms = 30.0, loss = 0.01, reorder = true, resend = true } },
 ]
 label = "home, derive r4+2, generated"
 

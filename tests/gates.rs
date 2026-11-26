@@ -123,7 +123,7 @@ fn the_world_stream_through_lossy_gates() {
     assert!(r["error"].is_null(), "{}", r["error"]);
     assert!(r["label"].as_str().unwrap().contains("gate"), "{}", r["label"]);
     let gs = gates(&r);
-    assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["far:changes", "near:changes"]);
+    assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["far:client.changes", "near:client.changes"]);
     crossed(&r, true);
     assert!(r["frames"].as_u64().unwrap() > 0);
 }
@@ -136,7 +136,7 @@ fn world_hits_and_frame_through_lossy_gates() {
     let r = run(&dir(), "three", "raycast-cpu", &edits);
     assert!(r["error"].is_null(), "{}", r["error"]);
     let gs = gates(&r);
-    assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["f:frame", "far:changes", "h:shading.hits", "near:changes"]);
+    assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["f:frame", "far:client.changes", "h:shading.hits", "near:client.changes"]);
     crossed(&r, true);
     // One message a frame on the hit records, each the 48 x 32 records of 8 bytes and more.
     let h = &gs["h"].1;
@@ -186,4 +186,53 @@ fn gates_refused_naming_them() {
 ]"#;
     let (_, log) = launch(&dir(), "post", "raycast-cpu", post);
     assert!(log.contains("`g` on `post.image`") && log.contains("after the post"), "{log}");
+}
+
+/// The world's side gated at its three places: a slow lossy network into the client
+/// (resending; what the fixed server-to-client link was), one on the generated chunks (the
+/// generator on the client's cpu) and one on the client's changes into the renderer. Each
+/// reports on its edge; chunks inside the gates are holes the pass counts, and the bytes sent
+/// are the first gate's line.
+#[test]
+fn the_world_side_gated_at_each_place() {
+    let net = r#"
+  { add = "net", role = "gate", component = "net" },
+  { node = "net", input = "in", from = "world" },
+  { node = "net", knobs = { latency_ms = 150, jitter_ms = 80, bandwidth_mbps = 5, loss = 0.05, reorder = true, resend = true, seed = 7 } },
+  { node = "storage", input = "changes", from = "net" },
+"#;
+    let r = run(&dir(), "into-client", "raycast-cpu", &format!("[{net}]"));
+    assert!(r["error"].is_null(), "{}", r["error"]);
+    assert_eq!(gates(&r).iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["net:client.changes"]);
+    crossed(&r, true);
+    assert!(r["world_gated"].as_bool() == Some(true) && r["frames_with_holes"].as_u64().unwrap() > 0, "{r}");
+    assert_eq!(r["wire_bytes"].as_f64(), gates(&r)["net"].1["bytes"].as_f64());
+    let local = r#"
+  { add = "client", role = "client", component = "pick" },
+  { add = "generator", role = "generator", component = "procedural" },
+  { node = "generator", device = "cpu" },
+  { add = "gen", role = "gate", component = "net" },
+  { node = "gen", input = "in", from = "generator" },
+  { node = "gen", knobs = { latency_ms = 20, resend = true, loss = 0.1, seed = 8 } },
+  { node = "client", input = "chunks", from = "gen" },
+  { add = "out", role = "gate", component = "net" },
+  { node = "out", input = "in", from = "client" },
+  { node = "out", knobs = { latency_ms = 10 } },
+  { node = "storage", input = "changes", from = "out" },
+"#;
+    let r = run(&dir(), "client-side", "raycast-cpu", &format!("[{local}]"));
+    assert!(r["error"].is_null(), "{}", r["error"]);
+    assert_eq!(gates(&r).iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["gen:client.chunks", "out:changes"]);
+    crossed(&r, false);
+    assert!(r["frames_with_holes"].as_u64().unwrap() > 0, "{r}");
+    // A gate on the generated chunks with the generator on the server is refused, naming it.
+    let server = r#"[
+  { add = "client", role = "client", component = "pick" },
+  { add = "generator", role = "generator", component = "procedural" },
+  { add = "gen", role = "gate", component = "net" },
+  { node = "gen", input = "in", from = "generator" },
+  { node = "client", input = "chunks", from = "gen" },
+]"#;
+    let (_, log) = launch(&dir(), "server-chunks", "raycast-cpu", server);
+    assert!(log.contains("`gen` on `client.chunks`") && log.contains("on the server"), "{log}");
 }

@@ -343,12 +343,12 @@ mod tests {
         assert_eq!(world.block(IVec3::new(5, 300, 5)), BlockId(1), "the edit was evicted");
     }
 
-    /// Behind a link that delays, loses and reorders the stream, a client's renderer holds
-    /// less while it streams (holes), never an edit of a chunk it does not hold, and once
-    /// everything arrived exactly what a client of the free link holds.
+    /// Behind a gate that delays, loses (resending) and reorders the stream, a client's
+    /// renderer holds less while it streams (holes), never an edit of a chunk it does not
+    /// hold, and once everything arrived exactly what a client of the ungated stream holds.
     #[test]
-    fn client_behind_a_link() {
-        use mr_core::link::{Link, LinkSpec};
+    fn client_behind_a_gate() {
+        use mr_core::gate::{Gates, GateSpec, world_messages};
         let same = |a: &HashMap<ChunkKey, ChunkData>, b: &HashMap<ChunkKey, ChunkData>| {
             a.len() == b.len() && b.iter().all(|(k, d)| a.get(k).is_some_and(|c| c == d || (0..mr_core::CHUNK_VOLUME).map(mr_core::chunk::cell_of_index).all(|p| c.get(p) == d.get(p))))
         };
@@ -356,8 +356,8 @@ mod tests {
         for (levels, reorder) in [(Levels::Pick, false), (Levels::Pick, true), (Levels::Derive, true)] {
             let mut world = World::new(GenSpec::Terrain { seed: 3, caves: true, trees: true }.build());
             let mut server = Streamer::new(mr_core::client::reach(2, 2, levels), Some(40));
-            let spec = LinkSpec { latency_ms: 40.0, jitter_ms: 120.0, bandwidth_mbps: 400.0, loss: 0.2, reorder, seed: 5 };
-            let mut link = Link::new(spec);
+            let spec = GateSpec { latency_ms: 40.0, jitter_ms: 120.0, bandwidth_mbps: 400.0, loss: 0.2, reorder, resend: true, mtu: 1 << 20, seed: 5 };
+            let mut link = Gates::new(&[spec]);
             let (mut free, mut linked) = (Client::new(2, 2, levels), Client::new(2, 2, levels));
             let (mut a, mut b) = (HashMap::new(), HashMap::new());
             let mut holes = 0;
@@ -367,7 +367,7 @@ mod tests {
             let (mut counted, mut complete) = (0, 0);
             // Until everything arrived and the renderer caught up.
             for f in 0..600 {
-                if f > 60 && link.in_flight() == 0 && caught_up(&a, &b) {
+                if f > 60 && link.0[0].in_flight() == 0 && caught_up(&a, &b) {
                     break;
                 }
                 let t = f as f64 / 60.0;
@@ -380,8 +380,7 @@ mod tests {
                 server.update(&mut world, cam, &mut stream);
                 free.receive(&stream, &mut direct);
                 free.update(cam, &mut direct);
-                link.send(t, stream);
-                link.deliver(t, &mut got);
+                got.extend(link.pass_all(t, world_messages(stream)).into_iter().flatten());
                 linked.receive(&got, &mut ups);
                 linked.update(cam, &mut ups);
                 apply(&mut a, &ups);
@@ -396,7 +395,7 @@ mod tests {
                 apply(&mut c, &w);
                 // The holes counted: none only when it holds the whole region.
                 assert_eq!(server.pending_within(&mr_core::client::reach(2, 2, levels)), server.pending());
-                let n = server.pending() + link.chunks_in_flight();
+                let n = server.pending() + link.pieces_in_flight() as usize;
                 if n == 0 {
                     complete += 1;
                     assert!(c.keys().all(|k| a.contains_key(k)), "{levels:?} reorder {reorder} frame {f}: no holes counted, {} of {} chunks held", c.keys().filter(|k| a.contains_key(k)).count(), c.len());
@@ -404,8 +403,8 @@ mod tests {
                 counted += (n > 0) as u32;
             }
             assert!(counted > 5 && complete > 0, "{levels:?} reorder {reorder}: {counted} frames with holes counted, {complete} without");
-            assert_eq!(link.in_flight(), 0, "{levels:?} reorder {reorder}");
-            assert!(holes > 5 && link.stats().resent > 0, "{levels:?} reorder {reorder}: holes {holes}, {:?}", link.stats());
+            assert_eq!(link.0[0].in_flight(), 0, "{levels:?} reorder {reorder}");
+            assert!(holes > 5 && link.stats()[0].lost_packets > 0, "{levels:?} reorder {reorder}: holes {holes}, {:?}", link.stats());
             assert!(same(&a, &b), "{levels:?} reorder {reorder}: {} chunks held against {}", a.len(), b.len());
         }
     }

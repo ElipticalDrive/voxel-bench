@@ -7,10 +7,9 @@ use crate::{Api, caps, component};
 use super::*;
 
 impl Graph {
-    /// The world, the link and the client added if missing, in a chain: the link reads the
-    /// world, the client the link, and every other `changes` input (unbound, or bound to the
-    /// world or the link) the client: the world's change log reaches a renderer only over
-    /// its link, through its client.
+    /// The world and the client added if missing, in a chain: the client reads the world,
+    /// and every other `changes` input (unbound, or bound to the world) the client: the
+    /// world's change log reaches a renderer only through its client.
     pub(super) fn normalised(&self) -> Result<Graph, String> {
         let mut g = self.clone();
         let one = |g: &mut Graph, role: Role, component: &str| -> Result<String, String> {
@@ -39,7 +38,6 @@ impl Graph {
         };
         let world = one(&mut g, Role::World, "world")?;
         let generator = one(&mut g, Role::Generator, identity(Role::Generator).unwrap())?;
-        let link = one(&mut g, Role::Link, identity(Role::Link).unwrap())?;
         let client = one(&mut g, Role::Client, identity(Role::Client).unwrap())?;
         // The generator feeds what runs on its device: the world on the server, else the client.
         let local = g.nodes[&generator]
@@ -50,21 +48,24 @@ impl Graph {
         } else {
             (&world, &client)
         };
-        g.nodes
-            .get_mut(feeds)
-            .unwrap()
-            .inputs
-            .insert("chunks".into(), generator.clone());
-        g.nodes.get_mut(other).unwrap().inputs.remove("chunks");
+        // A gate on the chunks stays where it is (the checked graph, gates taken out, says
+        // whether it is on the side the generator feeds).
+        let gated = |g: &Graph, id: &str| {
+            g.nodes[id].inputs.get("chunks").is_some_and(|s| g.nodes.get(s).is_some_and(|n| n.role == Role::Gate))
+        };
+        if !gated(&g, feeds) {
+            g.nodes
+                .get_mut(feeds)
+                .unwrap()
+                .inputs
+                .insert("chunks".into(), generator.clone());
+        }
+        if !gated(&g, other) {
+            g.nodes.get_mut(other).unwrap().inputs.remove("chunks");
+        }
         for (id, n) in g.nodes.iter_mut() {
             n.timing.retain(|_, w| *w != When::Now);
-            let from = if *id == link {
-                &world
-            } else if *id == client {
-                &link
-            } else {
-                &client
-            };
+            let from = if *id == client { &world } else { &client };
             for p in inputs(n.role, &n.component)
                 .iter()
                 .filter(|p| p.data == Data::Changes)
@@ -73,7 +74,7 @@ impl Graph {
                     .inputs
                     .entry(p.name.into())
                     .or_insert_with(|| from.clone());
-                if *src == world || *src == link {
+                if *src == world {
                     *src = from.clone();
                 }
             }
@@ -254,11 +255,6 @@ impl Graph {
                 continue;
             }
             match n.role {
-                Role::Link => {
-                    if let Err(e) = link_spec(n) {
-                        why.push(format!("`{id}`: {e}"));
-                    }
-                }
                 Role::Client => {
                     for (k, v) in &n.knobs {
                         match (CLIENT_KNOBS.iter().position(|c| c == k), v.as_integer()) {
@@ -360,7 +356,17 @@ impl Graph {
             let n = &g.nodes[&e.reader];
             let port = inputs(n.role, &n.component).iter().find(|p| p.name == e.port).expect("ports checked");
             e.data = port.data;
-            e.source = n.inputs[&e.port].clone();
+            let at = format!("`{}` on `{}`", e.gates[0].0, e.edge());
+            let Some(src) = n.inputs.get(&e.port) else {
+                // Normalising moved the generator's chunks to the other side.
+                why.push(format!("{at}: the generator runs on the server and fills the world there; gate the world's stream into the client (`client.changes`) instead"));
+                continue;
+            };
+            e.into_client = n.role == Role::Client || g.nodes.get(&e.source).is_some_and(|s| s.role == Role::World);
+            e.source = src.clone();
+            if port.data == Data::Chunks && n.role != Role::Client {
+                why.push(format!("{at}: the generator on the server fills the world in the host, nothing crosses that edge; put the generator on the client's cpu, or gate the world's stream into the client (`client.changes`)"));
+            }
             if port.data.fused() {
                 why.push(format!(
                     "`{}`.{}: {} are compiled into their caller, nothing crosses that edge to put a gate on",
@@ -368,17 +374,20 @@ impl Graph {
                 ));
             }
         }
-        // The world's stream is gated once per renderer, in front of its client: every gated
-        // edge of changes has the same gates.
-        let streams: Vec<&EdgeGates> = gates.iter().filter(|e| e.data == Data::Changes).collect();
-        if let [first, rest @ ..] = streams.as_slice()
-            && let Some(other) = rest.iter().find(|e| e.gates != first.gates)
-        {
-            why.push(format!(
-                "the world's stream crosses its gates once, in front of the client: `{}` and `{}` have different gates",
-                first.edge(),
-                other.edge()
-            ));
+        // The world's changes cross gates at two places, each one stream: into the client
+        // (the server's stream) and from the client into the renderer. Every gated edge of
+        // changes at one place has the same gates.
+        for (into, place) in [(true, "the server sends its client one stream"), (false, "the client hands its renderer one stream")] {
+            let streams: Vec<&EdgeGates> = gates.iter().filter(|e| e.data == Data::Changes && e.into_client == into).collect();
+            if let [first, rest @ ..] = streams.as_slice()
+                && let Some(other) = rest.iter().find(|e| e.gates != first.gates)
+            {
+                why.push(format!(
+                    "{place} of changes, so its edges cross the same gates: `{}` and `{}` have different gates",
+                    first.edge(),
+                    other.edge()
+                ));
+            }
         }
         if !why.is_empty() {
             return Err(why.join("; "));
@@ -503,8 +512,6 @@ impl Graph {
                 why.push(format!(
                     "`{id}`: the client runs on the cpu (the renderer's process), not on {d}"
                 ));
-            } else if n.role == Role::Link && d != Device::Cpu {
-                why.push(format!("`{id}`: the link runs on the cpu (the client's process, in front of the client), not on {d}"));
             }
         }
         for (id, n) in &g.nodes {

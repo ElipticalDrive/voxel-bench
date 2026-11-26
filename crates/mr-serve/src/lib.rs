@@ -12,7 +12,7 @@ use std::time::Instant;
 use anyhow::{Context, bail};
 use mr_core::client::Client;
 use mr_core::gate::{Frame, GateChain};
-use mr_core::link::{Arrivals, Link};
+use mr_core::gate::{Arrivals, wire_bytes};
 use mr_core::{CompletedFrame, FrameSink, Renderer, RendererEntry, Waker};
 use mr_ipc::{FrameSlots, HostMsg, MsgWriter, PROTOCOL_VERSION, WorkerMsg};
 use mr_world::stream::Generating;
@@ -172,19 +172,37 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> &str {
     p.downcast_ref::<&str>().copied().or_else(|| p.downcast_ref::<String>().map(String::as_str)).unwrap_or("(no message)")
 }
 
-/// The messages the link delivered by `time`.
-fn arrived(link: &mut Link, time: f64) -> Vec<mr_core::WorldUpdate> {
-    let mut v = vec![];
-    link.deliver(time, &mut v);
-    v
-}
-
-/// The world's changes `got` by `time` sent through the gates, and what came out of them by
-/// then (an empty batch sends nothing).
+/// The world's changes `got` by `time` sent through the gates (one message per change:
+/// `gate::world_messages`), and what came out of them by then.
 fn gated(gates: &mut Option<GateChain>, time: f64, got: Vec<mr_core::WorldUpdate>) -> Vec<mr_core::WorldUpdate> {
     match gates {
-        Some(g) => g.gates.pass(time, (!got.is_empty()).then_some(got)).into_iter().flatten().collect(),
+        Some(g) => g.gates.pass_all(time, mr_core::gate::world_messages(got)).into_iter().flatten().collect(),
         None => got,
+    }
+}
+
+/// The gates on the world's side of a renderer, each chain on its own edge: into the client
+/// (the server-to-client crossing), on the generated chunks (a generator on the client's
+/// cpu) and on the client's changes into the renderer.
+struct WorldGates {
+    stream: Option<GateChain>,
+    chunks: Option<GateChain>,
+    client: Option<GateChain>,
+}
+
+impl WorldGates {
+    fn new(p: &mr_core::InitParams) -> Self {
+        let chain = |edge: &str, nodes: &[mr_core::gate::GateNode]| (!nodes.is_empty()).then(|| GateChain::new(edge, nodes));
+        Self { stream: chain("client.changes", &p.gates), chunks: chain("client.chunks", &p.chunk_gates), client: chain("changes", &p.client_gates) }
+    }
+
+    fn chains(&self) -> impl Iterator<Item = &GateChain> {
+        [&self.stream, &self.chunks, &self.client].into_iter().flatten()
+    }
+
+    /// Chunk loads inside any of them.
+    fn holes(&self) -> u32 {
+        self.chains().map(|c| c.gates.pieces_in_flight()).sum()
     }
 }
 
@@ -216,11 +234,10 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
     let mut generating: Option<Generating> = None;
     let mut generated = false;
     let reach = |c: &Client| mr_core::client::reach(c.radius(), c.max_lod(), levels);
-    // The link in front of it: none when free, the stream then as it came.
-    let mut link = (!params.link.free()).then(|| Link::new(params.link));
-    // The gates after it on the world's stream (none: the stream as it came): each batch the
-    // host sends crosses them as one message.
-    let mut gates = (!params.gates.is_empty()).then(|| GateChain::new("changes", &params.gates));
+    // The gates on its world's side (none: the stream as it came).
+    let mut wg = WorldGates::new(&params);
+    // The host's clock at its last message (what changes made outside a frame cross at).
+    let mut now = 0f64;
     // The gates behind its output: each frame crosses them (read back for them).
     let mut frames = (!params.frame_gates.is_empty()).then(|| FrameGates { chain: GateChain::new("frame", &params.frame_gates), width: params.width, height: params.height, last: vec![] });
     // A fault asked for (tests only: `fault::ENV`), at build or later.
@@ -237,8 +254,8 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
 
     let mut slots = HashMap::new();
     let mut update_ms = 0f32;
-    // Bytes over a free link (a modelled one counts its own).
-    let mut free_bytes = 0u64;
+    // Bytes of the world's stream sent ungated, and that came out of its gates.
+    let (mut free_bytes, mut arrived_bytes) = (0u64, 0u64);
     while let Ok(msg) = rx.recv() {
         let mut new_shm = None;
         let mut sink = Sink { out, shm: &mut shm, slots: &mut slots, update_ms: &mut update_ms, frames: &mut frames, error: None };
@@ -254,19 +271,14 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
         };
         match msg {
             HostMsg::Stream { updates, at, time } => {
-                if link.is_none() {
-                    free_bytes += updates.iter().map(|u| mr_core::link::wire_bytes(u) as u64).sum::<u64>();
+                now = time;
+                if wg.stream.is_none() {
+                    free_bytes += updates.iter().map(|u| wire_bytes(u) as u64).sum::<u64>();
                 }
                 let t = Instant::now();
                 let mut ups = vec![];
-                let got = match &mut link {
-                    Some(l) => {
-                        l.send(time, updates);
-                        arrived(l, time)
-                    }
-                    None => updates,
-                };
-                let got = gated(&mut gates, time, got);
+                let got = gated(&mut wg.stream, time, updates);
+                arrived_bytes += got.iter().map(|u| wire_bytes(u) as u64).sum::<u64>();
                 match &mut generating {
                     Some(g) => {
                         let mut local = vec![];
@@ -275,13 +287,14 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                             g.update(at, &mut local);
                             generated = true;
                         }
-                        client.receive(&local, &mut ups);
+                        client.receive(&gated(&mut wg.chunks, time, local), &mut ups);
                     }
                     None => client.receive(&got, &mut ups),
                 }
                 if let Some(at) = at {
                     client.update(at, &mut ups);
                 }
+                let ups = gated(&mut wg.client, time, ups);
                 if !ups.is_empty() {
                     renderer.update(ups)?;
                 }
@@ -302,8 +315,9 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                 // What arrived by now; the camera may have crossed into chunks the replica holds.
                 let t = Instant::now();
                 let mut ups = vec![];
-                let got = link.as_mut().map(|l| arrived(l, time)).unwrap_or_default();
-                let got = gated(&mut gates, time, got);
+                now = time;
+                let got = gated(&mut wg.stream, time, vec![]);
+                arrived_bytes += got.iter().map(|u| wire_bytes(u) as u64).sum::<u64>();
                 match &mut generating {
                     Some(g) => {
                         // Generated once per frame: here if no stream ended at a camera.
@@ -312,19 +326,20 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                         if !std::mem::take(&mut generated) {
                             g.update(req.camera.position, &mut local);
                         }
-                        client.receive(&local, &mut ups);
+                        client.receive(&gated(&mut wg.chunks, time, local), &mut ups);
                     }
                     None => client.receive(&got, &mut ups),
                 }
                 client.update(req.camera.position, &mut ups);
+                let ups = gated(&mut wg.client, time, ups);
                 if !ups.is_empty() {
                     renderer.update(ups)?;
                     *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
                 }
-                let holes = link.as_ref().map_or(0, |l| l.chunks_in_flight()) + generating.as_ref().map_or(0, |g| g.pending());
-                let (bytes, arrived) = link.as_ref().map_or((free_bytes, free_bytes), |l| (l.stats().bytes, l.stats().arrived));
-                let gates = gates.as_ref().map(GateChain::reports).unwrap_or_default();
-                let arrivals = Arrivals { bytes, arrived, holes: holes as u32, gates };
+                let holes = wg.holes() as usize + generating.as_ref().map_or(0, |g| g.pending());
+                let bytes = wg.stream.as_ref().map_or(free_bytes, |c| c.gates.0[0].stats().bytes);
+                let gates = wg.chains().flat_map(GateChain::reports).collect();
+                let arrivals = Arrivals { bytes, arrived: arrived_bytes, holes: holes as u32, gates };
                 sink.slots.insert(req.frame_id, (slot.filter(|_| req.readback), arrivals, time));
                 // Gates behind the output need the pixels, whether the host asked for them or not.
                 req.readback |= sink.frames.is_some();
@@ -361,7 +376,8 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                     if let (Some(g), "client.radius" | "client.max_lod") = (&mut generating, name.as_str()) {
                         let (mut local, mut ups) = (vec![], vec![]);
                         g.set_radii(&reach(&client), &mut local);
-                        client.receive(&local, &mut ups);
+                        client.receive(&gated(&mut wg.chunks, now, local), &mut ups);
+                        let ups = gated(&mut wg.client, now, ups);
                         if !ups.is_empty() {
                             renderer.update(ups)?;
                         }

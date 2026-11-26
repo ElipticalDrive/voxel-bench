@@ -17,10 +17,6 @@ pub enum Role {
     /// which streams its chunks; or on the client's `cpu`, feeding the client from the
     /// world's spec (a shared seed), the server then sending that client edits only.
     Generator,
-    /// The link the server's stream crosses to a client: `free` (everything
-    /// arrives at once, in order) or `net`, a modelled network (`mr_core::link::LinkSpec`
-    /// as its knobs). Runs in the client's process, in front of the client.
-    Link,
     /// The client of the world's stream: what its renderer holds, derived
     /// on the renderer's side from the one stream the server sends every client. `pick`:
     /// the server's LOD levels, picked by the client's radius and levels.
@@ -48,10 +44,9 @@ pub enum Role {
 }
 
 impl Role {
-    pub const ALL: [Role; 15] = [
+    pub const ALL: [Role; 14] = [
         Role::World,
         Role::Generator,
-        Role::Link,
         Role::Client,
         Role::Storage,
         Role::Geometry,
@@ -70,7 +65,6 @@ impl Role {
         match self {
             Role::World => "world",
             Role::Generator => "generator",
-            Role::Link => "link",
             Role::Client => "client",
             Role::Post => "post",
             Role::Storage => "storage",
@@ -87,11 +81,11 @@ impl Role {
     }
 
     /// Whether the registry ([`crate::COMPONENTS`]) holds this role's components (not the
-    /// world, its generator, the link, the client and the post: their lists are here).
+    /// world, its generator, the client, the post and the gate: their lists are here).
     pub fn registered(self) -> bool {
         !matches!(
             self,
-            Role::World | Role::Generator | Role::Link | Role::Client | Role::Post | Role::Gate
+            Role::World | Role::Generator | Role::Client | Role::Post | Role::Gate
         )
     }
 }
@@ -143,7 +137,7 @@ impl Data {
 }
 
 /// Where a node runs. `gpu` is GPU slot 0 of the run's device configuration; `server` is
-/// the world's machine, reached from the client's devices over the link.
+/// the world's machine, whose stream reaches the client (over a gate, when one models the network).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Device {
@@ -220,18 +214,12 @@ const CHANGES: &[Port] = &[port(
     true,
     "the world's change log",
 )];
-const SENT: &[Port] = &[port(
-    "changes",
-    Data::Changes,
-    true,
-    "the server's stream: the world's change log, the same for every client",
-)];
 const STREAM: &[Port] = &[
     port(
         "changes",
         Data::Changes,
         true,
-        "the server's stream as it arrives over the link",
+        "the server's stream, the world's change log (the same for every client; a gate on this edge is the network between them)",
     ),
     port(
         "chunks",
@@ -382,7 +370,6 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
     match (role, name) {
         (Role::World, _) => GENERATED,
         (Role::Generator, _) => &[],
-        (Role::Link, _) => SENT,
         (Role::Client, _) => STREAM,
         (Role::Storage | Role::Geometry, _) => CHANGES,
         (Role::Meshes, _) => MESHES,
@@ -407,7 +394,7 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
 /// What `role` component `name` outputs.
 pub fn output(role: Role, name: &str) -> Data {
     match (role, name) {
-        (Role::World | Role::Link | Role::Client, _) => Data::Changes,
+        (Role::World | Role::Client, _) => Data::Changes,
         (Role::Generator, _) => Data::Chunks,
         (Role::Storage, _) => Data::Storage,
         (Role::Geometry, _) => Data::Faces,
@@ -430,7 +417,6 @@ pub fn output(role: Role, name: &str) -> Data {
 pub fn state(role: Role, name: &str) -> Option<&'static str> {
     Some(match (role, name) {
         (Role::World, _) => "the authoritative chunks and their change log",
-        (Role::Link, "net") => "the messages in flight and the line's queue",
         (Role::Gate, _) => "the messages in flight and the line's queue",
         (Role::Client, _) => "a replica of what arrived and what its renderer holds",
         (Role::Storage, _) => "the representation, patched from the change log",
@@ -503,14 +489,13 @@ impl mr_core::Choices for When {
 pub fn identity(role: Role) -> Option<&'static str> {
     match role {
         Role::Generator => Some("procedural"),
-        Role::Link => Some("free"),
         Role::Client => Some("pick"),
         Role::Post => Some("clamp"),
         _ => None,
     }
 }
 
-/// A component of a role outside the registry (world, generator, link, client, post): its
+/// A component of a role outside the registry (world, generator, client, post, gate): its
 /// name as graphs spell it and what it does, as the editor shows it. Registry components
 /// carry theirs (`ComponentInfo::description`).
 pub struct HostComponent {
@@ -520,15 +505,13 @@ pub struct HostComponent {
 }
 
 /// Every host role's components, in the order offered; the one list their names, checks and
-/// descriptions come from. The client's are `mr_core::client::Levels`; the link's `net` has
-/// `mr_core::link::LinkSpec`'s fields as its knobs; the generator's `procedural` is the
+/// descriptions come from. The client's are `mr_core::client::Levels`; the gate's `net` has
+/// `mr_core::gate::GateSpec`'s fields as its knobs; the generator's `procedural` is the
 /// world's generator built from its spec (the run's world: terrain, menger, ...); the post's
 /// are the tone mappers (`crate::post::Tone`), `clamp` (no tone mapping) the default.
 pub const HOST_COMPONENTS: &[HostComponent] = &[
     HostComponent { role: Role::World, name: "world", about: "The authoritative world on the server: chunks and their change log" },
     HostComponent { role: Role::Generator, name: "procedural", about: "Generates the world's chunks from its spec (a shared seed): on the server, or on the client's cpu" },
-    HostComponent { role: Role::Link, name: "free", about: "Everything the server sends arrives at once, in order" },
-    HostComponent { role: Role::Link, name: "net", about: "A modelled network: latency, jitter, bandwidth, loss, reordering" },
     HostComponent { role: Role::Client, name: "pick", about: "Holds what arrived: the server's LOD levels, picked by its radius and levels" },
     HostComponent { role: Role::Client, name: "derive", about: "Holds what arrived and derives its coarser LOD levels from LOD 0 itself" },
     HostComponent { role: Role::Post, name: "clamp", about: "Linear colour clamped to the output range" },
@@ -540,7 +523,7 @@ pub const HOST_COMPONENTS: &[HostComponent] = &[
 
 /// Whether `role` is a host role (its components in [`HOST_COMPONENTS`], not the registry).
 pub fn is_host_role(role: Role) -> bool {
-    matches!(role, Role::World | Role::Generator | Role::Link | Role::Client | Role::Post | Role::Gate)
+    matches!(role, Role::World | Role::Generator | Role::Client | Role::Post | Role::Gate)
 }
 
 /// The names of host role `role`'s components, in the order offered.
@@ -585,13 +568,13 @@ pub(super) fn known(role: Role, name: &str) -> bool {
 }
 
 /// Where a node runs unless the graph says otherwise (`executor`: the graph's, `cpu` or
-/// `gpu`, none = `gpu`): the world and its generator on the server, the link and the client on
+/// `gpu`, none = `gpu`): the world and its generator on the server, the client and gates on
 /// the CPU; a component on the executor's device if it has an implementation there (GPU slot
 /// 0), else on the one kind of device it has. Fused nodes follow their callers ([`Graph::check`]).
 pub(super) fn default_device(executor: &str, role: Role, component: &str) -> Device {
     match role {
         Role::World | Role::Generator => return Device::Server,
-        Role::Link | Role::Client | Role::Gate => return Device::Cpu,
+        Role::Client | Role::Gate => return Device::Cpu,
         _ => {}
     }
     let want = if executor == "cpu" {

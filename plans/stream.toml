@@ -1,7 +1,7 @@
-# The served split measured: one pipeline swept over the link, the
+# The served split measured: one pipeline swept over the network to the client (a gate), the
 # generator's placement and how the client gets its LOD levels. Each pass reports the bytes
-# over its link, the update cost per byte, the chunks of its region missing per frame
-# (the server's backlog, on the link, not generated yet) and the first frame with none
+# over its gate, the update cost per byte, the chunks of its region missing per frame
+# (the server's backlog, inside the gate, not generated yet) and the first frame with none
 # missing (frame, simulated clock, wall time); the run prints them as the `stream` table
 # and observations carry them (`stream`). A 10 s flight over terrain with edits around the
 # start (so generating clients get some bytes too); time is simulated, so runs repeat.
@@ -31,14 +31,14 @@ vary = [
         [{ add = "client", role = "client", component = "pick" }, { node = "client", knobs = { radius = 3, max_lod = 2 } }],
         [{ add = "client", role = "client", component = "derive" }, { node = "client", knobs = { radius = 3, max_lod = 2 } }],
     ] },
-    # The generator on the server (chunks streamed) or on the client (only edits cross the link).
+    # The generator on the server (chunks streamed) or on the client (only edits cross the gate).
     { any = [[], [{ add = "generator", role = "generator", component = "procedural" }, { node = "generator", device = "cpu" }]] },
-    # The link: free, a LAN, a home connection, a bad one.
+    # The network into the client: none, a LAN, a home connection, a bad one.
     { any = [
         [],
-        [{ add = "link", role = "link", component = "net" }, { node = "link", knobs = { latency_ms = 1.0, bandwidth_mbps = 1000.0 } }],
-        [{ add = "link", role = "link", component = "net" }, { node = "link", knobs = { latency_ms = 30.0, jitter_ms = 10.0, bandwidth_mbps = 200.0, loss = 0.01, reorder = true } }],
-        [{ add = "link", role = "link", component = "net" }, { node = "link", knobs = { latency_ms = 150.0, jitter_ms = 80.0, bandwidth_mbps = 50.0, loss = 0.05, reorder = true } }],
+        [{ add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" }, { node = "net", knobs = { latency_ms = 1.0, bandwidth_mbps = 1000.0 } }],
+        [{ add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" }, { node = "net", knobs = { latency_ms = 30.0, jitter_ms = 10.0, bandwidth_mbps = 200.0, loss = 0.01, reorder = true, resend = true } }],
+        [{ add = "net", role = "gate", component = "net" }, { node = "net", input = "in", from = "world" }, { node = "storage", input = "changes", from = "net" }, { node = "net", knobs = { latency_ms = 150.0, jitter_ms = 80.0, bandwidth_mbps = 50.0, loss = 0.05, reorder = true, resend = true } }],
     ] },
 ]
 

@@ -310,10 +310,11 @@ pub fn columns(passes: &[Value]) -> Vec<Column> {
     cols
 }
 
-/// Some(()) when the pass's streaming is worth showing: over a link that is not free, with
-/// holes, or complete only after its first recorded frame (or never).
+/// Some(()) when the pass's streaming is worth showing: through gates on the world's side
+/// (older reports: over a link), with holes, or complete only after its first recorded frame
+/// (or never).
 fn stream(p: &Value) -> Option<()> {
-    let link = p.get("link").is_some_and(|l| !l.is_null());
+    let link = p.get("world_gated").and_then(Value::as_bool).unwrap_or(false) || p.get("link").is_some_and(|l| !l.is_null());
     let holes = f(p, &["frames_with_holes"]).unwrap_or(0.0) > 0.0;
     let first = p.get("per_frame").and_then(|v| v.get(0)).and_then(|v| f(v, &["frame"]));
     let late = match p.get("first_complete").filter(|c| !c.is_null()) {

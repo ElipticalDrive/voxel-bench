@@ -76,6 +76,17 @@ impl GateSpec {
 pub trait Wire: Sized {
     fn encode(&self, out: &mut Vec<u8>);
     fn decode(bytes: &[u8]) -> Result<Self, WireError>;
+    /// The ordered stream the message belongs to: with `reorder`, messages of one stream
+    /// still arrive in the order sent, and only different streams overtake each other.
+    /// `None`: a stream of its own (overtakes and is overtaken freely).
+    fn stream(&self) -> Option<u64> {
+        None
+    }
+    /// The pieces of data the message carries that its reader misses while it is on the way
+    /// (a world's chunk loads: holes on the far side).
+    fn pieces(&self) -> u32 {
+        0
+    }
 }
 
 /// Bytes that do not read as the type (the message is lost).
@@ -195,6 +206,26 @@ pub fn decode_pod<T: bytemuck::Pod>(bytes: &[u8]) -> Result<Vec<T>, WireError> {
 
 /// The world's changes: the stream from the world to a client.
 impl Wire for Vec<WorldUpdate> {
+    /// One stream per chunk (its loads, unloads and edits stay in order), one for the lights
+    /// and the environment: what [`world_messages`] splits a batch into.
+    fn stream(&self) -> Option<u64> {
+        let key = |k: &ChunkKey| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            k.hash(&mut h);
+            h.finish() | 1
+        };
+        Some(match self.first() {
+            Some(WorldUpdate::ChunkLoad { key: k, .. } | WorldUpdate::ChunkUnload { key: k }) => key(k),
+            Some(WorldUpdate::SetBlocks(e)) if !e.is_empty() => key(&ChunkKey::of_block(e[0].pos)),
+            _ => 0,
+        })
+    }
+
+    fn pieces(&self) -> u32 {
+        self.iter().filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. })).count() as u32
+    }
+
     fn encode(&self, out: &mut Vec<u8>) {
         let mut p = Put(out);
         p.u32(self.len() as u32);
@@ -325,6 +356,61 @@ impl Wire for Vec<WorldUpdate> {
     }
 }
 
+/// The world's changes as the messages that cross a gate: one per change, edits split per
+/// chunk, so each chunk's data arrives at its own time and in order with the rest of its
+/// chunk ([`Wire::stream`]).
+pub fn world_messages(updates: Vec<WorldUpdate>) -> Vec<Vec<WorldUpdate>> {
+    let mut out = Vec::with_capacity(updates.len());
+    for u in updates {
+        match u {
+            WorldUpdate::SetBlocks(edits) => {
+                let mut by: Vec<(ChunkKey, Vec<BlockEdit>)> = vec![];
+                for e in edits {
+                    let k = ChunkKey::of_block(e.pos);
+                    match by.iter_mut().find(|(c, _)| *c == k) {
+                        Some((_, v)) => v.push(e),
+                        None => by.push((k, vec![e])),
+                    }
+                }
+                out.extend(by.into_iter().map(|(_, v)| vec![WorldUpdate::SetBlocks(v)]));
+            }
+            u => out.push(vec![u]),
+        }
+    }
+    out
+}
+
+/// A change's size as the world's stream counts it, uncompressed (keys, cells, edits, lights
+/// as stored): what an ungated stream sends and what arrives out of the gates.
+pub fn wire_bytes(u: &WorldUpdate) -> usize {
+    const KEY: usize = 13;
+    match u {
+        WorldUpdate::ChunkLoad { data: ChunkData::Uniform(_), .. } => 1 + KEY + 1 + size_of::<BlockId>(),
+        WorldUpdate::ChunkLoad { data: ChunkData::Dense(_), .. } => 1 + KEY + 1 + CHUNK_VOLUME * size_of::<BlockId>(),
+        WorldUpdate::ChunkUnload { .. } => 1 + KEY,
+        WorldUpdate::SetBlocks(e) => 5 + e.len() * size_of::<BlockEdit>(),
+        WorldUpdate::LightUpsert(l) => 5 + l.len() * size_of::<Light>(),
+        WorldUpdate::LightRemove(l) => 5 + l.len() * 4,
+        WorldUpdate::SetEnvironment(_) => 1 + size_of::<Environment>(),
+    }
+}
+
+/// What reached a client by a frame, reported by its worker with the frame.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Arrivals {
+    /// Bytes of the world's stream sent to it so far (on its first gate's line, resends
+    /// included; ungated: [`wire_bytes`]), and the bytes that came out of its gates.
+    pub bytes: u64,
+    pub arrived: u64,
+    /// Chunks of its region missing on the renderer's side: inside the gates on the world's
+    /// stream, or not generated yet (a client generating the world). The server's backlog is
+    /// the host's to add.
+    pub holes: u32,
+    /// What crossed the gates the worker runs (the world's stream, the generated chunks, the
+    /// frames behind the output) so far, one entry per gate node.
+    pub gates: Vec<GateReport>,
+}
+
 /// An image: its size and pixels (any format: the bytes per pixel follow from the size).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
@@ -387,6 +473,7 @@ struct InFlight {
     at: u64,
     seq: u64,
     bytes: Vec<u8>,
+    pieces: u32,
 }
 
 impl PartialEq for InFlight {
@@ -413,7 +500,9 @@ pub struct Gate {
     spec: GateSpec,
     rng: u64,
     line: f64,
+    /// The latest delivery scheduled: of everything (in order), or per stream (`reorder`).
     last: u64,
+    streams: std::collections::HashMap<u64, u64>,
     seq: u64,
     queue: BinaryHeap<Reverse<InFlight>>,
     stats: GateStats,
@@ -421,7 +510,7 @@ pub struct Gate {
 
 impl Gate {
     pub fn new(spec: GateSpec) -> Self {
-        Self { spec, rng: spec.seed ^ 0x6a09_e667_f3bc_c908, line: 0.0, last: 0, seq: 0, queue: BinaryHeap::new(), stats: GateStats::default() }
+        Self { spec, rng: spec.seed ^ 0x6a09_e667_f3bc_c908, line: 0.0, last: 0, streams: Default::default(), seq: 0, queue: BinaryHeap::new(), stats: GateStats::default() }
     }
 
     pub fn spec(&self) -> GateSpec {
@@ -442,6 +531,11 @@ impl Gate {
         self.queue.len()
     }
 
+    /// The pieces ([`Wire::pieces`]) of the messages still on the way.
+    pub fn pieces_in_flight(&self) -> u32 {
+        self.queue.iter().map(|m| m.0.pieces).sum()
+    }
+
     /// Uniform in [0, 1) (splitmix64).
     fn uniform(&mut self) -> f64 {
         self.rng = self.rng.wrapping_add(0x9e37_79b9_7f4a_7c15);
@@ -451,8 +545,14 @@ impl Gate {
         (z ^ (z >> 31)) as f64 / (u64::MAX as f64 + 1.0)
     }
 
-    /// Sends a message's bytes at time `now`.
-    pub fn send(&mut self, now: f64, mut bytes: Vec<u8>) {
+    /// Sends a message's bytes at time `now`, a stream of its own.
+    pub fn send(&mut self, now: f64, bytes: Vec<u8>) {
+        self.send_on(now, bytes, None, 0);
+    }
+
+    /// Sends a message's bytes at time `now` on `stream` ([`Wire::stream`]), carrying
+    /// `pieces` ([`Wire::pieces`]).
+    pub fn send_on(&mut self, now: f64, mut bytes: Vec<u8>, stream: Option<u64>, pieces: u32) {
         let s = self.spec;
         let rate = |n: usize| if s.bandwidth_mbps > 0.0 { n as f64 * 8.0 / (s.bandwidth_mbps * 1e6) } else { 0.0 };
         let timeout = (2.0 * s.latency_ms + s.jitter_ms).max(10.0) * 1e-3;
@@ -488,8 +588,12 @@ impl Gate {
         if !s.reorder {
             at = at.max(self.last);
             self.last = at;
+        } else if let Some(k) = stream {
+            let last = self.streams.entry(k).or_insert(0);
+            at = at.max(*last);
+            *last = at;
         }
-        self.queue.push(Reverse(InFlight { at, seq: self.seq, bytes }));
+        self.queue.push(Reverse(InFlight { at, seq: self.seq, bytes, pieces }));
         self.seq += 1;
     }
 
@@ -500,6 +604,12 @@ impl Gate {
             let m = self.queue.pop().unwrap().0;
             out.push((m.at as f64 * 1e-9, m.bytes));
             self.stats.delivered += 1;
+        }
+        if self.queue.is_empty() {
+            self.streams.clear();
+        } else if self.streams.len() > 4 * self.queue.len() + 64 {
+            // Streams with nothing on the way hold nothing back.
+            self.streams.retain(|_, t| *t > now);
         }
     }
 
@@ -512,7 +622,7 @@ impl Gate {
             let mut bytes = Vec::new();
             v.encode(&mut bytes);
             self.stats.encode_ms += t.elapsed().as_secs_f64() * 1e3;
-            self.send(sent, bytes);
+            self.send_on(sent, bytes, v.stream(), v.pieces());
         }
         let mut got = Vec::new();
         self.deliver(now, &mut got);
@@ -545,7 +655,12 @@ impl Gates {
     /// What `value` sent at `now` (if any) and the values sent before it come to on the far
     /// side by `now`, in arrival order.
     pub fn pass<T: Wire>(&mut self, now: f64, value: Option<T>) -> Vec<T> {
-        let mut vals: Vec<(f64, T)> = value.map(|v| (now, v)).into_iter().collect();
+        self.pass_all(now, value.into_iter().collect())
+    }
+
+    /// As [`Self::pass`] with several values sent at `now`, in order.
+    pub fn pass_all<T: Wire>(&mut self, now: f64, values: Vec<T>) -> Vec<T> {
+        let mut vals: Vec<(f64, T)> = values.into_iter().map(|v| (now, v)).collect();
         for g in &mut self.0 {
             let mut next = g.pass::<T>(now, None, now);
             for (at, v) in &vals {
@@ -558,6 +673,11 @@ impl Gates {
 
     pub fn stats(&self) -> Vec<GateStats> {
         self.0.iter().map(Gate::stats).collect()
+    }
+
+    /// The pieces still inside any of the gates.
+    pub fn pieces_in_flight(&self) -> u32 {
+        self.0.iter().map(Gate::pieces_in_flight).sum()
     }
 }
 

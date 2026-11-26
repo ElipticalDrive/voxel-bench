@@ -55,13 +55,19 @@ pub struct InitParams {
     /// node's component).
     #[serde(default)]
     pub client: crate::client::Levels,
-    /// The link the worker's client receives the stream over (free: none).
-    #[serde(default)]
-    pub link: crate::link::LinkSpec,
-    /// The gates on the world's stream (the graph's gates on edges of changes), in order from
-    /// the world: the worker serializes the stream through them in front of its client.
+    /// The gates on the world's stream into the client (the graph's gates on the client's
+    /// `changes`), in order from the world: the server-to-client crossing. The worker
+    /// serializes the stream through them in front of its client.
     #[serde(default)]
     pub gates: Vec<crate::gate::GateNode>,
+    /// The gates on the client's changes into the renderer (the graph's gates on the
+    /// renderer's edges of changes, which all have the same): the worker serializes what its
+    /// client hands on through them in front of the renderer.
+    #[serde(default)]
+    pub client_gates: Vec<crate::gate::GateNode>,
+    /// The gates on the generated chunks into the client (a generator on the client's cpu).
+    #[serde(default)]
+    pub chunk_gates: Vec<crate::gate::GateNode>,
     /// The gates behind the graph's output, in order from it: the worker serializes every
     /// frame through them (reading it back when the host asked for none) and delivers what
     /// arrived. Gates on edges inside the pipeline are the executor's (they are in the graph).

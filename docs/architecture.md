@@ -4,7 +4,7 @@
 
 ```
 multirenderer (host: the server)            worker process (one per renderer: a client)
-├─ plan.rs      plans, -s overrides          ├─ mr-serve: IPC loop; link, client, generator
+├─ plan.rs      plans, -s overrides          ├─ mr-serve: IPC loop; gates, client, generator
 ├─ session.rs   frame loop, pacing, outputs  │    └─ an executor (cpu, gpu) running the graph
 ├─ worker.rs    spawn, handshake, logs       │
 ├─ (mr-world)   world store, one stream ─────┼─▶ local socket: Init / Stream / Render / ...
@@ -75,13 +75,14 @@ multirenderer (host: the server)            worker process (one per renderer: a 
   its own (`kwin_wayland --virtual`, through its Xwayland).
 - **Server and clients.** The host is the server. It owns the authoritative world and sends
   every worker one stream of `WorldUpdate`s: chunk loads and unloads, block edits, lights and
-  the environment. In the worker, the graph's `link` node delays, reorders or drops that
-  stream as a modelled network would, and its `client` node keeps what has arrived and
-  derives what its renderer holds (its radius and LOD levels). A `generator` node on the
-  client's CPU makes the chunks there, so that only edits cross the link.
+  the environment. In the worker, a gate on that stream (a `gate` node reading the world)
+  serializes it, delays, reorders or loses its packets as a modelled network would and
+  deserializes what arrives, and its `client` node keeps what has arrived and derives what
+  its renderer holds (its radius and LOD levels). A `generator` node on the client's CPU
+  makes the chunks there, so that only edits cross that gate.
 - **The renderer owns its data.** It receives the client's updates and builds whatever
   structures it likes. Updates always arrive before the frame request they precede, so runs
-  are deterministic. Scripted runs keep a simulated clock (`run.clock_fps`), so link delays
+  are deterministic. Scripted runs keep a simulated clock (`run.clock_fps`), so gate delays
   repeat too.
 - **Asynchronous frames.** A renderer may return from `render` before the frame is done. Up
   to `run.in_flight` frames are outstanding at once. GPU renderers wake the worker through a
@@ -120,7 +121,7 @@ every face, so UV and orientation mistakes are obvious.
 | Path | What |
 |---|---|
 | `src/` | the host: plans, sessions, reports, comparison, the catalogue, the tuner, the GUI (`src/gui/`; the pipeline editor in `src/gui/graph/`) |
-| `crates/mr-core` | shared vocabulary: camera, chunks, faces and UVs, lighting, knobs, the `Renderer` trait, the client and the link |
+| `crates/mr-core` | shared vocabulary: camera, chunks, faces and UVs, lighting, knobs, the `Renderer` trait, the client and the gates |
 | `crates/mr-world` | generators, textures, the authoritative world store, the stream, scripted scenes (renderers never depend on it) |
 | `crates/mr-ipc` | the protocol: messages, framing (Unix socket or Windows named pipe), shared-memory frame slots |
 | `crates/mr-serve`, `mr-worker` | the worker side: one renderer driven over the protocol; the worker with its three entries: the `cpu` and `gpu` executors (each runs the region its graph picks) and the reference |

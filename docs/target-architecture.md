@@ -107,7 +107,7 @@ There are no per-strategy executors.
   implementation per kind of device serves every visibility strategy, and surface sources
   (meshes) write into the same record.
 - **Isolation is unchanged.** One worker process per renderer; the host streams the world to
-  it; the worker's link and client nodes shape that stream. These are graph nodes already.
+  it; the worker's gates and client node shape that stream. These are graph nodes already.
 
 ## Native speed
 
@@ -206,7 +206,7 @@ Decided for the GPU rows (2026-11-23):
 
 What already matches: typed ports, free edges, per-node device and API, `prev`/`iterate`
 timings, the schedule, shader-module composition, the shared hit record, isolation and the
-stream/link/client nodes, the canonical graph key, on-demand compiled builds with pixel
+stream/gate/client nodes, the canonical graph key, on-demand compiled builds with pixel
 verification, the A/B tooling, one executor per device, executors reading their nodes' knobs
 and plans and labels read off the graph.
 

@@ -247,7 +247,7 @@ fn node_knobs<'a>(g: &Graph, id: Option<&str>, knobs: &'a [(ParamSpec, ParamValu
         .collect()
 }
 
-/// Node `id`'s knobs as one grid: the executor's knobs it owns, then (client and link) its
+/// Node `id`'s knobs as one grid: the executor's knobs it owns, then (client and gates) its
 /// graph knobs, which run as a hot swap. `lock` adds the tuner's column.
 fn node_grid<'l>(ui: &mut Ui, salt: &str, g: &Graph, id: Option<&str>, knobs: &[(ParamSpec, ParamValue)], marks: bool, lock: Option<&mut (dyn FnMut(&mut Ui, &ParamSpec) + 'l)>, run: &RunSpec, trial: &mut Trial, infos: &[RendererInfo]) -> Vec<Edit> {
     let mut vals = node_knobs(g, id, knobs);
@@ -325,7 +325,6 @@ pub fn summary<'l>(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamS
         let plain = match n.role {
             Role::World => true,
             Role::Generator => n.device.is_none_or(|d| d == Device::Server),
-            Role::Link => n.component == "free",
             _ => false,
         };
         if plain {
@@ -355,7 +354,7 @@ pub fn summary<'l>(ui: &mut Ui, key: &str, spec: &RendererSpec, knobs: &[(ParamS
             if let Some(s) = choices(ui, (key, &id, "comp"), &n.component, &description(n.role, &n.component), component_options(&g, &id), trial, infos) {
                 edits.push(Edit::Spec(s));
             }
-            if !fused && !matches!(n.role, Role::Client | Role::Link) {
+            if !fused && !matches!(n.role, Role::Client | Role::Gate) {
                 ui.weak(dev);
             }
         });
@@ -572,7 +571,7 @@ fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, Para
         ui.label("device");
         if fused {
             ui.weak(format!("with its callers ({})", devs.get(&id).map_or("-".into(), |d| d.to_string()))).on_hover_text("Storages and kernels are compiled into what calls them and run there; give each device its own instance");
-        } else if matches!(n.role, Role::World | Role::Link | Role::Client) {
+        } else if matches!(n.role, Role::World | Role::Client | Role::Gate) {
             ui.weak(devs.get(&id).map_or("-".into(), |d| d.to_string()));
         } else {
             let cur = n.device.map_or_else(|| format!("default ({})", devs.get(&id).map_or("-".into(), |d| d.to_string())), |d| d.to_string());
@@ -629,7 +628,7 @@ fn inspector(ui: &mut Ui, win: &mut Window, g: &Graph, knobs: &[(ParamSpec, Para
         });
     }
     let own = node_knobs(g, Some(&id), knobs);
-    let world = matches!(n.role, Role::Client | Role::Link) && !model::world_knobs(n.role, &n.component, run, None).is_empty();
+    let world = matches!(n.role, Role::Client | Role::Gate) && !model::world_knobs(n.role, &n.component, run, None).is_empty();
     if !own.is_empty() || world {
         ui.add_space(6.0);
         ui.label(RichText::new("Knobs").strong());

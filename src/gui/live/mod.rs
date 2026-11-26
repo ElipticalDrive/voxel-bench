@@ -163,8 +163,8 @@ pub struct LaneView {
     pub frames: u64,
     pub chunks_sent: u64,
     pub pending_chunks: usize,
-    /// What reached the lane's client by its latest frame (bytes over its link, holes).
-    pub arrivals: mr_core::link::Arrivals,
+    /// What reached the lane's client by its latest frame (bytes through the gates on its world's stream, holes).
+    pub arrivals: mr_core::gate::Arrivals,
     /// Knobs (host first, then renderer) with current values.
     pub params: Vec<(ParamSpec, ParamValue)>,
     pub quality: VecDeque<QualitySample>,
@@ -481,7 +481,7 @@ struct Runner {
     own: Option<Streamer>,
     /// The server's stream not yet sent.
     pending: Vec<WorldUpdate>,
-    /// Chunks sent to it over the link.
+    /// Chunks sent to it.
     chunks_sent: u64,
     /// Mesh mode: geometry and instance updates not yet sent.
     pending_meshes: Vec<MeshUpdate>,

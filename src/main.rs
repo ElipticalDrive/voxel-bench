@@ -422,7 +422,7 @@ impl Ctx<'_> {
             options: spec.options.clone(),
             compiled: spec.compiled(run).map(|c| c.name().to_string()),
             view_radius: spec.view_radius(run),
-            link: spec.link(),
+            world_gated: spec.gated_world(),
             mode,
             resolution: run.resolution,
             ..Default::default()

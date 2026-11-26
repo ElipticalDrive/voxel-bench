@@ -2,26 +2,6 @@
 
 use super::*;
 
-/// The link node `n` models (its knobs read as a `LinkSpec`; `free`: the free link).
-pub(super) fn link_spec(n: &Node) -> Result<mr_core::link::LinkSpec, String> {
-    match n.component.as_str() {
-        "free" if n.knobs.is_empty() => Ok(Default::default()),
-        "free" => Err("the free link has no knobs (`net` has them)".into()),
-        _ => toml::Value::Table(n.knobs.clone())
-            .try_into()
-            .map_err(|e: toml::de::Error| format!("link `net`: {}", e.message())),
-    }
-}
-
-/// A link's knobs as the canonical form writes them: the `LinkSpec` read back, its fields
-/// off their defaults, so `latency_ms = 30` and `30.0` are one network.
-pub(super) fn link_knobs(spec: &mr_core::link::LinkSpec) -> toml::Table {
-    let mut t = toml::Table::try_from(spec).expect("a LinkSpec is a table");
-    let none = toml::Table::try_from(mr_core::link::LinkSpec::default()).unwrap();
-    t.retain(|k, v| none.get(k) != Some(v));
-    t
-}
-
 /// Whether `p` is a site: a ray-casting port, or discovery's exposure tests (their storage).
 fn is_site(p: &Port) -> bool {
     p.casts || p.name == "exposure"
@@ -63,7 +43,7 @@ impl Graph {
             keep.contains(k)
                 || matches!(
                     n.role,
-                    Role::World | Role::Generator | Role::Link | Role::Client
+                    Role::World | Role::Generator | Role::Client
                 )
         });
         self
@@ -141,13 +121,5 @@ impl Graph {
             .find(|n| n.role == Role::Post)
             .and_then(|n| crate::post::Tone::parse(&n.component))
             .unwrap_or_default()
-    }
-
-    /// The network the link node models (free when the graph has none).
-    pub fn link(&self) -> Result<mr_core::link::LinkSpec, String> {
-        self.nodes
-            .values()
-            .find(|n| n.role == Role::Link)
-            .map_or(Ok(Default::default()), link_spec)
     }
 }

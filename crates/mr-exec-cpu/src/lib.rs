@@ -201,7 +201,8 @@ mod tests {
                 devices: DeviceConfig { gpus: vec![], cpu_threads: 1 },
                 stage_times: false,
                 client: Default::default(),
-                link: Default::default(),
+                client_gates: vec![],
+                chunk_gates: vec![],
                 gates: vec![],
                 frame_gates: vec![],
             };

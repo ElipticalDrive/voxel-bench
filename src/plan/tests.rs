@@ -82,7 +82,7 @@ fn graph_files_and_edits() {
     }
 }
 
-/// The region and the link are the graph's client and link nodes; the run's
+/// The region is the graph's client node, the network into it a gate; the run's
 /// `view_radius` and `max_lod` are the defaults of clients without their own.
 /// Options that are node knobs reach the worker on their nodes, where the executors
 /// read them; the preset's own (`threads`) stay options.
@@ -102,26 +102,27 @@ fn node_knobs_reach_the_worker_graph() {
 fn region_lives_in_nodes() {
     let scene = "[scene]\ngenerator = { type = \"terrain\", seed = 1 }\ncamera = { type = \"line\", from = [0, 150, 0], to = [300, 150, 75] }\n";
     let r = "[[renderer]]\ngraph = \"raycast-gpu\"\n";
-    let link = |knobs: &str| format!("{{ add = \"link\", role = \"link\", component = \"net\" }}, {{ node = \"link\", knobs = {{ {knobs} }} }}");
+    let link = |knobs: &str| format!("{{ add = \"net\", role = \"gate\", component = \"net\" }}, {{ node = \"net\", input = \"in\", from = \"world\" }}, {{ node = \"net\", knobs = {{ {knobs} }} }}, {{ node = \"storage\", input = \"changes\", from = \"net\" }}");
     let home = link("latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01, reorder = true");
     let fast = link("latency_ms = 1, bandwidth_mbps = 1000");
     let new = format!(
         "{scene}[run]\nview_radius = 8\n\
          {r}\n{r}edits = [{fast}]\n{r}edits = [{home}]\n{r}edits = [{home}, {{ add = \"client\", role = \"client\", component = \"derive\" }}, {{ node = \"client\", knobs = {{ radius = 4, max_lod = 2 }} }}]\n\
          [[renderer]]\ngraph = {{ executor = \"gpu\", nodes = {{ s = {{ role = \"shading\", component = \"direct\", inputs = {{ hits = \"v\" }} }}, v = {{ role = \"visibility\", component = \"raycast\", inputs = {{ primary = \"k\" }} }}, k = {{ role = \"traversal\", component = \"refloor\", inputs = {{ storage = \"b\" }} }}, b = {{ role = \"storage\", component = \"bricks\" }}, \
-         net = {{ role = \"link\", component = \"net\", knobs = {{ latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01, reorder = true }} }}, c = {{ role = \"client\", component = \"pick\", inputs = {{ changes = \"net\" }}, knobs = {{ radius = 6 }} }} }} }}\n\
+         w = {{ role = \"world\", component = \"world\" }}, net = {{ role = \"gate\", component = \"net\", inputs = {{ in = \"w\" }}, knobs = {{ latency_ms = 30, jitter_ms = 10, bandwidth_mbps = 200, loss = 0.01, reorder = true }} }}, c = {{ role = \"client\", component = \"pick\", inputs = {{ changes = \"net\" }}, knobs = {{ radius = 6 }} }} }} }}\n\
          [[renderer]]\nname = \"cpu-reference\"\n"
     );
     let new = Plan::parse(&new, &[]).unwrap();
     assert_eq!((new.renderers[0].view_radius(&new.run), new.renderers[4].view_radius(&new.run)), (8, 6));
     assert_eq!(new.renderers[3].max_lod(&new.run, 8), 2);
-    assert_eq!(new.renderers[2].link(), new.renderers[4].link());
+    assert_eq!(new.renderers[2].world_gates(), new.renderers[4].world_gates());
+    assert_eq!(new.renderers[2].world_gates()[0].1.latency_ms, 30.0);
     // The fields of the region and link outside the graph are gone.
     for old in [format!("{scene}[run]\nlink = {{ latency_ms = 30 }}\n{r}"), format!("{scene}{r}view_radius = 4\n"), format!("{scene}{r}link = {{ latency_ms = 1 }}\n")] {
         assert!(Plan::parse(&old, &[]).is_err(), "{old}");
     }
     let free = &new.renderers[0];
-    assert!(free.link().free() && free.client_knob("radius").is_none());
+    assert!(free.world_gates().is_empty() && free.client_knob("radius").is_none());
     assert_eq!(new.renderers[3].view_radius(&new.run), 4);
     assert_ne!(new.renderers[1].pipeline().unwrap().key(), free.pipeline().unwrap().key(), "each network its own key");
     let mut far = new.renderers[2].clone();
@@ -130,11 +131,11 @@ fn region_lives_in_nodes() {
     // Written back as it was read.
     let again = Plan::parse(&toml::to_string(&new).unwrap(), &[]).unwrap();
     for (a, b) in again.renderers.iter().zip(&new.renderers) {
-        assert_eq!((a.label(), a.pipeline().map(|g| g.key().unwrap()), a.link(), a.view_radius(&again.run)), (b.label(), b.pipeline().map(|g| g.key().unwrap()), b.link(), b.view_radius(&new.run)));
+        assert_eq!((a.label(), a.pipeline().map(|g| g.key().unwrap()), a.world_gates(), a.view_radius(&again.run)), (b.label(), b.pipeline().map(|g| g.key().unwrap()), b.world_gates(), b.view_radius(&new.run)));
     }
     // The CLI: commas inside an edit's braces are its own.
-    let cli = RendererSpec::from_cli("raycast-gpu,+link=link:net,{node=\"link\",knobs={latency_ms=30,jitter_ms=10,bandwidth_mbps=200,loss=0.01,reorder=true}},+client=client:pick,client.radius=4").unwrap();
-    assert_eq!((cli.link(), cli.view_radius(&new.run)), (new.renderers[2].link(), 4));
+    let cli = RendererSpec::from_cli("raycast-gpu,+net=gate:net,{node=\"net\",input=\"in\",from=\"world\"},{node=\"net\",knobs={latency_ms=30,jitter_ms=10,bandwidth_mbps=200,loss=0.01,reorder=true}},{node=\"storage\",input=\"changes\",from=\"net\"},+client=client:pick,client.radius=4").unwrap();
+    assert_eq!((cli.world_gates(), cli.view_radius(&new.run)), (new.renderers[2].world_gates(), 4));
     // The GUI's knob setter, both ways.
     let mut s = new.renderers[0].clone();
     s.set_client_knob("max_lod", Some(2)).unwrap();
@@ -240,7 +241,7 @@ fn component_knobs_are_the_graphs() {
     let knobs = r.component_knobs();
     let storage = knobs.iter().find(|k| k.name == "storage.component").expect("a storage choice");
     assert!(!storage.live && storage.default.as_str() == Some("prefix") && matches!(&storage.kind, mr_core::ParamKind::Choice(c) if c.iter().any(|x| x == "tree64") && c.len() > 4), "{:?}", storage.kind);
-    assert!(knobs.iter().all(|k| component_knob(&k.name).is_some_and(|id| !matches!(id, "world" | "client" | "link" | "post"))), "{:?}", knobs.iter().map(|k| &k.name).collect::<Vec<_>>());
+    assert!(knobs.iter().all(|k| component_knob(&k.name).is_some_and(|id| !matches!(id, "world" | "client" | "post"))), "{:?}", knobs.iter().map(|k| &k.name).collect::<Vec<_>>());
     assert!(crate::pipelines::executor_of(&r.pipeline().unwrap()).unwrap().1.iter().all(|k| knobs.iter().all(|c| c.name != k.name)), "no knob twice");
     assert!(r.options.get("storage").is_none() && r.knob_values().get("storage.component").and_then(|v| v.as_str()) == Some("prefix"));
     // Setting one is the graph edit; every listed choice is one the graph takes, and a
@@ -521,7 +522,7 @@ fn varied_sweeps() {
     let base = "[scene]\ngenerator = { type = \"flat\" }\ncamera = { type = \"static\" }\n";
     let plan = |r: &str| Plan::parse(&format!("{base}[[renderer]]\n{r}\n"), &[]);
     // What a renderer is to a run: its pipeline, its region, its link, where its world is made.
-    let set = |p: &Plan| p.renderers.iter().map(|r| (key(r), r.label().to_string(), r.view_radius(&p.run), r.max_lod(&p.run, 8), format!("{:?}", r.link()), r.generates())).collect::<BTreeSet<_>>();
+    let set = |p: &Plan| p.renderers.iter().map(|r| (key(r), r.label().to_string(), r.view_radius(&p.run), r.max_lod(&p.run, 8), format!("{:?}", r.world_gates()), r.generates())).collect::<BTreeSet<_>>();
     let each_once = |p: &Plan, n: usize, what: &str| {
         assert_eq!((p.renderers.len(), set(p).len()), (n, n), "{what}");
         assert!(p.renderers.iter().all(|r| r.swept && r.pipeline().unwrap().accept().is_ok()), "{what}");
@@ -561,11 +562,12 @@ fn varied_sweeps() {
     );
     assert_eq!(mr_components::graph::REGIONS.iter().map(|b| n(b.id)).sum::<usize>(), all.renderers.len(), "every one a region's");
     assert!(mr_components::graph::REGIONS.iter().all(|b| n(b.id) > 0), "every region swept");
-    // `plans/stream.toml`: four links, the generator's two places, three clients.
+    // `plans/stream.toml`: four networks (none and three gates), the generator's two places,
+    // three clients.
     let stream = Plan::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/plans/stream.toml")), &[]).unwrap();
     each_once(&stream, 4 * 2 * 3, "stream");
     assert_eq!(stream.renderers.iter().map(|r| (r.view_radius(&stream.run), r.max_lod(&stream.run, 8), r.levels() == mr_core::client::Levels::Derive)).collect::<BTreeSet<_>>().len(), 3, "three client regions");
-    assert_eq!((stream.renderers.iter().filter(|r| r.link().free()).count(), stream.renderers.iter().filter(|r| r.generates()).count()), (6, 12));
+    assert_eq!((stream.renderers.iter().filter(|r| r.world_gates().is_empty()).count(), stream.renderers.iter().filter(|r| r.generates()).count()), (6, 12));
     // The post's tone mappers, each its own key (a CPU pipeline takes all four too).
     for file in ["raycast-gpu", "raycast-cpu"] {
         let p = plan(&format!("graph = \"{file}\"\nedits = [{{ add = \"post\", role = \"post\", component = \"clamp\" }}, {{ node = \"post\", input = \"image\", from = \"shading\" }}]\nvary = [{{ node = \"post\", component = \"*\" }}]")).unwrap();

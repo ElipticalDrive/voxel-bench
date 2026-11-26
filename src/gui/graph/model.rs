@@ -13,7 +13,7 @@ use crate::plan::RendererSpec;
 
 /// The roles of the world's side: one node each, kept whatever reads them.
 pub fn world_side(role: Role) -> bool {
-    matches!(role, Role::World | Role::Generator | Role::Link | Role::Client)
+    matches!(role, Role::World | Role::Generator | Role::Client)
 }
 
 /// The renderer `base` running graph `g`, as a plan would load it (its options pruned to
@@ -133,7 +133,7 @@ pub fn readers(g: &Graph, id: &str) -> Vec<(String, String)> {
     v
 }
 
-/// The client's and the link's knobs (they are graph knobs, not the executor's parameters).
+/// The client's and a gate's knobs (they are graph knobs, not the executor's parameters).
 /// The client's `max_lod` offers the levels the pipeline holds (`features` of its graph;
 /// `None`: not known, every level).
 pub fn world_knobs(role: Role, component: &str, run: &crate::plan::RunSpec, features: Option<&mr_core::Features>) -> Vec<mr_core::ParamSpec> {
@@ -146,14 +146,19 @@ pub fn world_knobs(role: Role, component: &str, run: &crate::plan::RunSpec, feat
                 ParamSpec::int("max_lod", &format!("Coarsest LOD level it holds (default: the run's max_lod, capped by what it supports){why}"), 0, max as i64, (run.max_lod.min(max)) as i64, false),
             ]
         }
-        (Role::Link, "net") => vec![
-            ParamSpec::float("latency_ms", "One-way delay of every message", 0.0, 1000.0, false, 0.0, false),
-            ParamSpec::float("jitter_ms", "Extra delay per message, uniform in [0, jitter]", 0.0, 500.0, false, 0.0, false),
-            ParamSpec::float("bandwidth_mbps", "The line's rate, megabits per second (0: unlimited)", 0.0, 10000.0, false, 0.0, false),
-            ParamSpec::float("loss", "Fraction of messages lost (each loss delays its message by a timeout)", 0.0, 0.99, false, 0.0, false),
-            ParamSpec::bool("reorder", "One ordered stream per chunk instead of one for everything", false, false),
-            ParamSpec::int("seed", "Seed of the jitter and the losses", 0, 1 << 30, 0, false),
-        ],
+        (Role::Gate, "net") => {
+            let d = mr_core::gate::GateSpec::default();
+            vec![
+                ParamSpec::float("latency_ms", "One-way delay of every packet", 0.0, 1000.0, false, d.latency_ms, false),
+                ParamSpec::float("jitter_ms", "Extra delay per packet, uniform in [0, jitter]", 0.0, 500.0, false, d.jitter_ms, false),
+                ParamSpec::float("bandwidth_mbps", "The line's rate, megabits per second (0: unlimited)", 0.0, 10000.0, false, d.bandwidth_mbps, false),
+                ParamSpec::float("loss", "Fraction of packets lost (their bytes arrive as zeros, or late with resend)", 0.0, 0.99, false, d.loss, false),
+                ParamSpec::bool("reorder", "Messages overtake each other as each completes (the world's stream: each chunk's messages stay in order); off: in the order sent", d.reorder, false),
+                ParamSpec::bool("resend", "A lost packet is sent again after a timeout until it arrives; off: its bytes arrive as zeros", d.resend, false),
+                ParamSpec::int("mtu", "Bytes per packet", 1, 1 << 20, d.mtu as i64, false),
+                ParamSpec::int("seed", "Seed of the jitter and the losses", 0, 1 << 30, d.seed as i64, false),
+            ]
+        }
         _ => vec![],
     }
 }

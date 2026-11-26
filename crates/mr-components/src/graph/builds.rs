@@ -712,7 +712,6 @@ pub const GPU_COLUMNS: Builds = Builds {
 const AROUND: &[Role] = &[
     Role::World,
     Role::Generator,
-    Role::Link,
     Role::Client,
     Role::Post,
 ];
@@ -741,10 +740,11 @@ impl Checked {
     /// with the reason.
     pub fn built_by(&self, builds: Builds) -> Result<(), String> {
         let executor = builds.who();
-        // Gates on the world's stream (in front of the client) and behind the output (the
-        // frame) run in the worker, for every executor; gates inside the pipeline are the
-        // executor's, on the edges it gives a serialized form.
-        for e in self.gates.iter().filter(|e| e.data != super::Data::Changes && !e.behind_output()) {
+        // Gates on the world's side (its changes into and out of the client, a client
+        // generator's chunks) and behind the output (the frame) run in the worker, for every
+        // executor; gates inside the pipeline are the executor's, on the edges it gives a
+        // serialized form.
+        for e in self.gates.iter().filter(|e| !e.in_worker()) {
             let at = format!("`{}` on `{}`", e.gates[0].0, e.edge());
             match e.data {
                 super::Data::Image if self.graph.nodes.get(&e.reader).is_some_and(|n| n.role == Role::Post) => {
