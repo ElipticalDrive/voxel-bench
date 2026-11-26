@@ -3,6 +3,7 @@
 
 mod bayes;
 mod compare;
+mod conditions;
 #[cfg(test)]
 mod contract;
 mod features;

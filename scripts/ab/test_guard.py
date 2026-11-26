@@ -59,6 +59,11 @@ class Guard(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn('slower beyond noise: 1', out)
 
+    def test_slower_pass_names_changed_conditions(self):
+        code, out = guard([v7(record(), gpu_ms=2.0, gpu_sm_mhz=2100.0, on_ac=1.0)], [v7(record(), gpu_ms=4.0, gpu_sm_mhz=1050.0, on_ac=1.0)])
+        self.assertEqual(code, 1, out)
+        self.assertIn('[GPU MHz 2100 -> 1050]', out)
+
     def test_unknown_metric_is_read_and_named(self):
         code, out = guard([v7(record(), test_metric=1.0)], [v7(record(), test_metric=(9.0, 3))])
         self.assertEqual(code, 0, out)

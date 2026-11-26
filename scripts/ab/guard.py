@@ -31,7 +31,9 @@ Metrics are an open map with a method version each (`multirenderer metrics`): a 
 where both sides measured it the same way; a changed method is printed as such ("measured another way"),
 never as slower or faster. Every other metric with a better direction is compared by its median ratio
 over the common passes and listed when it moves more than --shift %; metrics the binary does not know
-are named, not compared.
+are named, not compared. A pass slower or faster beyond noise shows the machine's conditions
+that differ by more than 10 % between the sides (GPU clock, performance state, power, mains, CPU
+clock; recorded per pass since observation version 7), what could explain the jump.
 
 The baseline is the newest `baselines/sweep-*` unless --base names one. Exit 0 when nothing
 regressed, 1 when something did, 2 when nothing could be compared. Records are read by
@@ -81,6 +83,18 @@ def same_method(b, n, field):
     """Both sides measured the metric, the same way: comparable."""
     mb, mn = method(b, field), method(n, field)
     return bool(mb) and mb == mn
+
+
+CONDITIONS = (('gpu_sm_mhz', 'GPU MHz'), ('gpu_pstate', 'P'), ('gpu_power_w', 'W'), ('on_ac', 'mains'), ('cpu_mhz', 'CPU MHz'))
+
+
+def conditions(b, n):
+    """The machine's conditions that differ between the sides' last records (clocks, power state,
+    power source): what could explain a speed change. Empty when neither recorded them."""
+    mb, mn = b[-1]['metrics'], n[-1]['metrics']
+    diff = [f'{label} {mb[f]:g} -> {mn[f]:g}' for f, label in CONDITIONS
+            if mb.get(f) is not None and mn.get(f) is not None and abs(mn[f] - mb[f]) > 0.1 * max(abs(mb[f]), 1)]
+    return f'  [{"; ".join(diff)}]' if diff else ''
 
 
 def components(o):
@@ -168,7 +182,7 @@ def main():
         if rows:
             print(f'{title}: {len(rows)}')
             for r, k, what, vb, vn in sorted(rows, reverse=(title.startswith('slower'))):
-                print(f'  {100 * (r - 1):+6.1f}%  {what} {vb:.3f} -> {vn:.3f}  {name(k)}')
+                print(f'  {100 * (r - 1):+6.1f}%  {what} {vb:.3f} -> {vn:.3f}  {name(k)}{conditions(base[k], new[k])}')
 
     def pixels(rows, title):
         if rows:

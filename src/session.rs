@@ -636,9 +636,15 @@ pub fn run_pass(
     for lane in live(lanes) {
         let r = flush_lane(lane, out, start).and_then(|()| if lane.in_flight.is_empty() { Ok(()) } else { Err(anyhow::anyhow!("flush returned with frames in flight")) });
         settle(lane, r);
+    }
+    // Sampled once the frames are in (outside the measured time), while the GPU is still
+    // clocked for them.
+    let conditions = crate::conditions::Conditions::sample();
+    for lane in live(lanes) {
         if lane.report.error.is_some() {
             continue;
         }
+        lane.report.conditions = Some(conditions.clone());
         let ms = measure_start.unwrap_or(start);
         let ms_off = ms.duration_since(start).as_secs_f64() * 1e3;
         lane.report.wall_s = lane.completions.last().map(|&c| (c - ms_off) / 1e3).unwrap_or(0.0);

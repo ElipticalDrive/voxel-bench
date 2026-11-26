@@ -103,6 +103,10 @@ pub struct Observation {
     pub metrics: BTreeMap<String, f64>,
     #[serde(default)]
     pub methods: BTreeMap<String, u32>,
+    /// The machine's conditions when its frames ended (clocks, power state, power source; the
+    /// numbers are metrics too).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<crate::conditions::Conditions>,
     /// What it is given of the world when less than the reference (its LOD region): the
     /// `*_like` metrics are scored against a reference given the same.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -169,6 +173,7 @@ impl Observation {
             not_supported: r.not_supported.clone(),
             metrics,
             methods,
+            conditions: r.conditions.clone(),
             like: r.like.clone(),
             late: r.late.clone(),
             counters: sums.into_iter().map(|(k, (s, n))| (k, s / n.max(1) as f64)).collect(),

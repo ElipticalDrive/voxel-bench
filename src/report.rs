@@ -185,6 +185,10 @@ pub struct PassReport {
     pub first_complete: Option<FirstComplete>,
     pub peak_rss_mb: Option<f64>,
     pub memory: MemoryReport,
+    /// The machine's conditions when its frames ended (clocks, power state, power source),
+    /// what could explain a timing that jumped between runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<crate::conditions::Conditions>,
     /// Against the full-resolution reference: how far the frames are from the truth.
     pub quality: Option<QualitySummary>,
     /// What the pipeline is given of the world when that is less than the reference's (its

@@ -93,6 +93,13 @@ pub const METRICS: &[Metric] = &[
     m("frames_with_holes", "frames", Lower, &["frames_with_holes"], "stream.frames_with_holes", 0, "Frames requested with any of their region missing"),
     m("first_complete_frame", "frame", Lower, &["first_complete", "frame"], "stream.first_complete_frame", 0, "The first frame requested with nothing of its region missing"),
     m("first_complete_ms", "ms", Lower, &["first_complete", "ms"], "stream.first_complete_ms", 0, "Wall time from the pass's start to its first complete frame"),
+    m("gpu_sm_mhz", "MHz", Neither, &["conditions", "gpu_sm_mhz"], "", 0, "The GPU's shader clock when the pass's frames ended (a condition: what could explain a jump)"),
+    m("gpu_mem_mhz", "MHz", Neither, &["conditions", "gpu_mem_mhz"], "", 0, "The GPU's memory clock when the pass's frames ended"),
+    m("gpu_pstate", "P", Neither, &["conditions", "gpu_pstate"], "", 0, "The GPU's performance state when the pass's frames ended (0 the highest)"),
+    m("gpu_power_w", "W", Neither, &["conditions", "gpu_power_w"], "", 1, "The GPU's power draw when the pass's frames ended"),
+    m("gpu_temp_c", "°C", Neither, &["conditions", "gpu_temp_c"], "", 0, "The GPU's temperature when the pass's frames ended"),
+    m("on_ac", "1 = mains", Neither, &["conditions", "on_ac"], "", 0, "On mains (1) or battery (0) when the pass's frames ended"),
+    m("cpu_mhz", "MHz", Neither, &["conditions", "cpu_mhz"], "", 0, "The CPU cores' mean clock when the pass's frames ended"),
 ];
 
 /// The metric named `name`, if this build knows it.
