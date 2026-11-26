@@ -42,7 +42,6 @@ pub use edit::*;
 pub use gates::*;
 pub use model::*;
 pub use schedule::*;
-use sites::{link_knobs, link_spec};
 
 #[cfg(test)]
 mod tests {
@@ -873,98 +872,64 @@ mod tests {
         assert!(client("fetch").check().unwrap_err().contains("fetch"));
     }
 
-    /// The link as a node: the free link and the client's region leave the key alone, each
-    /// network has its own.
+    /// The client's region leaves the key alone; the network between server and client is
+    /// a gate on the client's `changes`, keyed by its knobs (order and 30 / 30.0 alike), and
+    /// the chain stays world -> client -> the renderer's readers.
     #[test]
-    fn link_and_client_knobs() {
+    fn client_knobs_and_the_stream_gate() {
         let pick = file("raycast-gpu");
         let key = |g: &Graph| g.key().unwrap();
         let knobs = |s: &str| -> toml::Table { toml::from_str(s).unwrap() };
-        let link = |c: &str, k: &str| {
-            world_side(&pick, "link", &|n| {
-                (n.component, n.knobs) = (c.into(), knobs(k))
-            })
-        };
         let client = |k: &str| world_side(&pick, "client", &|n| n.knobs = knobs(k));
-        assert_eq!(key(&link("free", "")), key(&pick));
-        assert_eq!(
-            key(&client("radius = 4\nmax_lod = 3")),
-            key(&pick),
-            "the region is not in the key"
-        );
-        let home = link(
-            "net",
-            "latency_ms = 30\njitter_ms = 10\nloss = 0.01\nreorder = true",
-        );
+        assert_eq!(key(&client("radius = 4\nmax_lod = 3")), key(&pick), "the region is not in the key");
+        let gated = |k: &str| {
+            let mut g = pick.normalised().unwrap();
+            let mut n = Node::new(Role::Gate, "net");
+            n.inputs.insert("in".into(), "world".into());
+            n.knobs = knobs(k);
+            g.nodes.insert("net".into(), n);
+            g.nodes.get_mut("client").unwrap().inputs.insert("changes".into(), "net".into());
+            g
+        };
+        let home = gated("latency_ms = 30\njitter_ms = 10\nloss = 0.01\nreorder = true");
         assert_ne!(key(&home), key(&pick));
-        assert_eq!(
-            key(&link(
-                "net",
-                "reorder = true\nlatency_ms = 30.0\nloss = 0.01\njitter_ms = 10"
-            )),
-            key(&home),
-            "knob order and 30 / 30.0"
-        );
-        assert_ne!(
-            key(&link(
-                "net",
-                "latency_ms = 31\njitter_ms = 10\nloss = 0.01\nreorder = true"
-            )),
-            key(&home)
-        );
-        assert_eq!(
-            home.link().unwrap(),
-            mr_core::link::LinkSpec {
-                latency_ms: 30.0,
-                jitter_ms: 10.0,
-                loss: 0.01,
-                reorder: true,
-                ..Default::default()
-            }
-        );
-        let region = world_side(&link("net", "latency_ms = 1"), "client", &|n| {
-            (n.component, n.knobs) = ("derive".into(), knobs("radius = 4"))
-        });
-        assert_eq!(
-            (
-                region.client(),
-                region.client_knob("radius"),
-                region.client_knob("max_lod")
-            ),
-            ("derive", Some(4), None)
-        );
-        assert_eq!(
-            region.label().unwrap(),
-            "gpu: net(latency_ms=1.0) + derive(radius=4) + bricks + refloor + composite + raycast + direct"
-        );
-        // The chain: world -> link -> client -> the renderer's readers.
+        assert_eq!(key(&gated("reorder = true\nlatency_ms = 30.0\nloss = 0.01\njitter_ms = 10")), key(&home), "knob order and 30 / 30.0");
+        assert_ne!(key(&gated("latency_ms = 31\njitter_ms = 10\nloss = 0.01\nreorder = true")), key(&home));
         let ck = home.check().unwrap();
+        let e = ck.gates_on("client", "changes").unwrap();
+        assert!(e.into_client && e.data == Data::Changes && e.source == "world");
+        assert_eq!(e.gates[0].1.latency_ms, 30.0);
         let reads = |id: &str| ck.graph.nodes[id].inputs["changes"].as_str();
-        assert_eq!((reads("link"), reads("client")), ("world", "link"));
-        assert_eq!(ck.devices["link"], Device::Cpu);
-        for (c, k, why) in [
-            ("net", "latency = 3", "unknown field"),
-            ("free", "latency_ms = 3", "no knobs"),
-            ("udp", "", "udp"),
-        ] {
-            assert!(link(c, k).check().unwrap_err().contains(why), "{c} {k}");
-        }
+        assert_eq!((reads("client"), reads("storage")), ("world", "client"));
+        assert!(gated("latency = 3").check().unwrap_err().contains("unknown field"));
         for bad in ["radius = 0", "levels = 2", "max_lod = 99"] {
             assert!(client(bad).check().is_err(), "{bad}");
         }
-        // An old graph with the client reading the world gets the link in between.
-        let mut old = pick.normalised().unwrap();
-        old.nodes.remove("link");
-        old.nodes
-            .get_mut("client")
-            .unwrap()
-            .inputs
-            .insert("changes".into(), "world".into());
-        assert_eq!(
-            old.normalised().unwrap().nodes["client"].inputs["changes"],
-            "link"
-        );
-        assert_eq!(key(&old), key(&pick));
+        let region = world_side(&pick, "client", &|n| (n.component, n.knobs) = ("derive".into(), knobs("radius = 4")));
+        assert_eq!((region.client(), region.client_knob("radius"), region.client_knob("max_lod")), ("derive", Some(4), None));
+        assert_eq!(region.label().unwrap(), "gpu: derive(radius=4) + bricks + refloor + composite + raycast + direct");
+    }
+
+    /// Gates on the generated chunks: on the client's cpu they cross into the client; with
+    /// the generator on the server the edge is the host's, refused naming the gate.
+    #[test]
+    fn gates_on_the_generated_chunks() {
+        let pick = file("raycast-gpu");
+        let gated = |device: Option<Device>| {
+            let mut g = pick.normalised().unwrap();
+            g.nodes.get_mut("generator").unwrap().device = device;
+            let mut n = Node::new(Role::Gate, "net");
+            n.inputs.insert("in".into(), "generator".into());
+            g.nodes.insert("g".into(), n);
+            g.nodes.get_mut("world").unwrap().inputs.remove("chunks");
+            g.nodes.get_mut("client").unwrap().inputs.insert("chunks".into(), "g".into());
+            g
+        };
+        let ck = gated(Some(Device::Cpu)).check().unwrap();
+        let e = ck.gates_on("client", "chunks").unwrap();
+        assert!(e.into_client && e.data == Data::Chunks, "{e:?}");
+        let why = gated(None).check().unwrap_err();
+        assert!(why.contains("`g` on `client.chunks`") && why.contains("on the server"), "{why}");
     }
 
     /// The post after the shading, its tone mapper a choice; `clamp` keeps the key.
@@ -1472,14 +1437,13 @@ mod tests {
             Some((Device::Cpu, Device::Gpu(0), When::Prev)),
             "{sched}"
         );
-        // The link: the server's stream into the link (in the client's process), the
-        // client's messages to the GPU.
+        // The server's stream into the client (in the client's process), the client's
+        // messages to the GPU.
         assert_eq!(
-            crosses(&sched, "world", "link"),
+            crosses(&sched, "world", "client"),
             Some((Device::Server, Device::Cpu, When::Now)),
             "{sched}"
         );
-        assert_eq!(crosses(&sched, "link", "client"), None, "{sched}");
         assert_eq!(
             crosses(&sched, "client", "shadow.storage"),
             Some((Device::Cpu, Device::Gpu(0), When::Now)),

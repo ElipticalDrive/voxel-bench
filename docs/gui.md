@@ -24,7 +24,7 @@ The renderers' viewport fills the middle; every other pane is a tab in one of th
   under its label for a few seconds; the Metrics tab keeps the full list.
 - **Metrics (right).** Live fps, frame interval, latency, and CPU, GPU and update time (mean
   and p99); renderer counters, process memory, GPU memory and streaming progress, and what
-  reached the renderer's client (bytes arrived and sent over its link, holes), with plots.
+  reached the renderer's client (bytes arrived and sent through the gates on its world's stream, holes), with plots.
   Each renderer has its pipeline and knobs here, ↻ to restart it with the editor's settings,
   and ✖ to remove it.
 - **Compare (right).** Renders the exact current view on every renderer and on the reference,
@@ -129,7 +129,7 @@ What a renderer, a pass and the registry report, and where the GUI shows it.
 | the settled score: the last probe taken with the view held still, nothing new sent, for the renders its pipeline needs (late edges: `compare.settle`; accumulating: `compare.converge` paths per pixel), and how long ago; before one, how many renders to hold still. Not shown for a pipeline whose every frame is settled | panel, `settled (last)` |
 | memory: RSS; GPU the renderer counts, now (peak since it started); device peak, measured from the GPU allocators | panel, `memory` |
 | build: start-up ms, of it shader modules and pipelines (ms, count) | panel, `build` |
-| chunks sent and pending, bytes arrived and sent over its link, holes | panel, `streaming` / `arrivals` |
+| chunks sent and pending, bytes arrived and sent through its world's gates, holes | panel, `streaming` / `arrivals` |
 | what the view asks that its pipeline leaves out (meshes, LOD levels, transparency, knobs) | tile |
 | events (started, edits, refusals, hot swaps) of the last seconds | tile |
 | a failure: the error, a dead worker's exit status or signal, the watchdog's verdict on a hung one | tile (first line) and panel (whole) |
@@ -144,7 +144,7 @@ and CPU ms, latency, PSNR, the settled PSNR, bad pixels, start-up ms and its sha
 the columns only some passes fill, shown when a pass that ran reports them: the like score
 (against a reference given the pass's LOD region; its `like` on hover), the converged paths
 per pixel, update ms (ns per byte arrived on hover), missed deadlines (a paced pass), and,
-where a pass streamed over a link that is not free, had holes or was complete only after its
+where a pass streamed through gates on its world's side, had holes or was complete only after its
 first frame, wire MB (arrived bytes and chunks on hover), holes (mean / max; frames with any
 on hover) and the first complete frame (or never). Each header says on hover what it is. A
 failed pass reads FAILED with its reason on hover; ⚠ beside a label lists, on hover, what the
@@ -152,7 +152,7 @@ pass left out, a fault while its worker stopped, and lanes that failed beside it
 
 **Choices.** The editor's components per node come from the registry and the graph model
 (`role_components`, tried with `accept` before they are offered); their descriptions from the
-registry (`ComponentInfo::description`) or, for the roles outside it (world, generator, link,
+registry (`ComponentInfo::description`) or, for the roles outside it (world, generator,
 client, post), from the one table `graph::HOST_COMPONENTS` (role, name, what it does), which
 the graph check, the post's knobs and the editor read. Knobs are the components' declarations; views are
 the quantities the graph's nodes write. The world's generators, their descriptions and their
@@ -189,7 +189,7 @@ Each component declares its knobs: name, type, range, and whether the knob can c
 Each lane also has host knobs: `host.render_scale` (the render resolution relative to the
 plan's, applied as a live resize) and `host.in_flight` (how many frames the host lets the
 renderer queue). How far a renderer loads is its **client node's** knobs (the loader behind
-the link: `pick` or `derive`): `radius` (chunks held around the camera) and `max_lod`. A
+the world's stream: `pick` or `derive`): `radius` (chunks held around the camera) and `max_lod`. A
 live lane shows them under its client as `host.view_radius` (applied without a restart) and
 `host.max_lod`; the plan's `run.view_radius` and `run.max_lod` are only their defaults.
 

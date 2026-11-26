@@ -101,8 +101,9 @@ pub fn spawn_renderer(
         devices: spec.devices(run),
         stage_times: run.stage_times,
         client: spec.levels(),
-        link: spec.link(),
         gates: spec.world_gates(),
+        client_gates: spec.client_gates(),
+        chunk_gates: spec.chunk_gates(),
         frame_gates: spec.frame_gates(),
     };
     let w = Worker::spawn(SpawnConfig {

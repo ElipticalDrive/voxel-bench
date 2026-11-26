@@ -35,7 +35,7 @@ pub struct FrameInput {
     /// A render of the previous frame again, held still: the stream does not advance either,
     /// so the world it shows is the one the reference was given at that frame.
     pub held: bool,
-    /// The frame's time in seconds (the link's clock): simulated in
+    /// The frame's time in seconds (the gates' clock): simulated in
     /// scripted runs, the wall clock in interactive ones.
     pub time: f64,
 }
@@ -225,7 +225,7 @@ pub struct Lane {
     in_flight: VecDeque<InFlight>,
     next_id: u64,
     completions: Vec<f64>,
-    /// Bytes arrived over its link by the previous frame.
+    /// Bytes of the world's stream arrived by the previous frame.
     arrived: u64,
     last_ui: Option<Instant>,
     /// Comparisons still running off the frame loop: (index into `per_frame`, result).
@@ -416,7 +416,7 @@ fn on_msg(lane: &mut Lane, out: &mut Outputs, start: Instant, m: WorkerMsg) -> a
         }
         None => None,
     };
-    // What its client lacked and what crossed its link.
+    // What its client lacked and what crossed its world's gates.
     let holes = arrivals.holes + f.backlog;
     let arrived_bytes = arrivals.arrived - lane.arrived;
     lane.arrived = arrivals.arrived;
@@ -565,7 +565,7 @@ pub fn run_pass(
             edit_stream.push(WorldUpdate::SetBlocks(edits));
         }
         edit_stream.extend(tail);
-        // What crossed the link to each client.
+        // What crossed to each client.
         let loads = stream.iter().filter(|u| matches!(u, WorldUpdate::ChunkLoad { .. })).count() as u64;
         for lane in live(lanes) {
             let stream = if lane.region.generates { &edit_stream } else { &stream };

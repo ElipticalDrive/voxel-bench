@@ -16,7 +16,7 @@ pub use interprocess::local_socket::{Listener, Stream};
 use mr_core::{FrameRequest, FrameStats, InitParams, MemoryReport, MeshUpdate, ParamValue, RendererInfo, WorldUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShmSpec {
@@ -68,7 +68,7 @@ pub enum WorkerMsg {
     Ready { info: RendererInfo, init_ms: f32, shaders: mr_core::shader_clock::ShaderTime },
     /// `update_ms` is time spent applying world updates since the previous frame;
     /// `arrivals` what had reached its client when the frame was requested.
-    FrameDone { frame_id: u64, stats: FrameStats, slot: Option<u32>, update_ms: f32, arrivals: mr_core::link::Arrivals },
+    FrameDone { frame_id: u64, stats: FrameStats, slot: Option<u32>, update_ms: f32, arrivals: mr_core::gate::Arrivals },
     Flushed,
     Memory(MemoryReport),
     /// A parameter change was rejected (non-fatal).
@@ -399,7 +399,7 @@ mod tests {
             stages: vec![mr_core::StageTime::cpu("geometry", &["geometry".into()], 2.0), mr_core::StageTime { name: "draw".into(), nodes: vec!["draw".into()], cpu_ms: None, gpu_ms: Some(0.25) }],
             gates: vec![mr_core::gate::GateReport { gate: "h".into(), edge: "shading.hits".into(), stats: Default::default() }],
         };
-        let arrivals = mr_core::link::Arrivals { bytes: 1 << 40, arrived: 1 << 39, holes: 3, gates: vec![mr_core::gate::GateReport { gate: "g".into(), edge: "frame".into(), stats: mr_core::gate::GateStats { messages: 2, encode_ms: 0.5, ..Default::default() } }] };
+        let arrivals = mr_core::gate::Arrivals { bytes: 1 << 40, arrived: 1 << 39, holes: 3, gates: vec![mr_core::gate::GateReport { gate: "g".into(), edge: "frame".into(), stats: mr_core::gate::GateStats { messages: 2, encode_ms: 0.5, ..Default::default() } }] };
         let msg = WorkerMsg::FrameDone { frame_id: 7, stats: stats.clone(), slot: Some(1), update_ms: 0.125, arrivals: arrivals.clone() };
         let back: WorkerMsg = postcard::from_bytes(&postcard::to_allocvec(&msg).unwrap()).unwrap();
         let WorkerMsg::FrameDone { frame_id: 7, stats: s, slot: Some(1), update_ms, arrivals: a } = back else { panic!("{back:?}") };

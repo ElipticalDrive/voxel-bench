@@ -22,7 +22,7 @@ struct Entry {
 impl Graph {
     /// The nodes that say something, in visiting order from the output (inputs by port
     /// name). Left out: the nodes that are their role's [`identity`] and set nothing else
-    /// (the link `free` and client `pick`, whose readers are written as reading what they
+    /// (the client `pick`, whose readers are written as reading what they
     /// read; the generator on the server, read by no one then; the post `clamp`, the
     /// shading's image the output), and knobs set to their defaults ([`crate::knobs`]).
     /// `region`: the client's region knobs count (the workload, not the pipeline: the key
@@ -38,7 +38,6 @@ impl Graph {
                     .filter(|(k, _)| !CLIENT_KNOBS.contains(&k.as_str()))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                Role::Link => link_spec(n).map(|l| link_knobs(&l)).unwrap_or_default(),
                 _ => n
                     .knobs
                     .iter()
@@ -197,8 +196,8 @@ impl Graph {
     /// something (those of `entries`, the client's region counted; the world is every
     /// graph's), each after the nodes it reads (inputs in the order its component declares
     /// them, so the main path comes first), written as its
-    /// component, with `@device` where it runs elsewhere than on the executor's (the link
-    /// and the client are always on the client's CPU), `:api` where that is a choice off the
+    /// component, with `@device` where it runs elsewhere than on the executor's (the client
+    /// is always on the client's CPU), `:api` where that is a choice off the
     /// default, and in parentheses its inputs that arrive late and its knobs:
     /// `gpu: bricks + refloor + composite + raycast + direct`,
     /// `gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct`.
@@ -233,7 +232,7 @@ impl Graph {
             .filter(|e| e.role != Role::World)
             .map(|e| {
                 let dev =
-                    if matches!(e.role, Role::Link | Role::Client) || e.device.to_string() == on {
+                    if e.role == Role::Client || e.device.to_string() == on {
                         String::new()
                     } else {
                         format!("@{}", e.device)

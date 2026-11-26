@@ -17,7 +17,6 @@ only: gaps not filled yet, and those refused on a kind by their nature (`REFUSED
 |---|---|---|
 | `generator` | chunks | makes chunks from the world's spec: on the server (default) or on the client's CPU, which then receives only edits |
 | `world` | changes | the authoritative chunk store and its change log (the server) |
-| `link` | changes | what the stream crosses: `free`, or `net(latency_ms, jitter_ms, bandwidth_mbps, loss, reorder, seed)`, a modelled network |
 | `client` | changes | what the renderer holds: `pick` (the server's LOD levels) or `derive` (coarse levels built on the client), with `radius` and `max_lod` |
 | `storage` | storage | a representation answering storage queries (`bricks`, `prefix`, `tree64`, ...) |
 | `geometry` | faces | faces made from chunks (`greedy`, `naive`, `cubes`, `boxes`, `points`) |
@@ -148,11 +147,11 @@ where that is a choice off the default, and in parentheses its late inputs and i
 gpu: bricks + refloor + composite + raycast + direct                 # pipelines/raycast-gpu.toml
 gpu: greedy@cpu + faces + bricks + refloor + depth + raster + direct # pipelines/raster-gpu.toml
 gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct
-gpu: net(latency_ms=30.0) + derive(radius=4) + bricks + refloor + raycast + direct + aces
+gpu: derive(radius=4) + bricks + refloor + raycast + direct + aces
 ```
 
-Left out are the nodes that say nothing: the world, the generator on the server, a `free`
-link, a `pick` client without knobs, a `clamp` post. Options are not in the label (reports
+Left out are the nodes that say nothing: the world, the generator on the server, a `pick`
+client without knobs, a `clamp` post (gates follow the label: `| gate ...`). Options are not in the label (reports
 show them beside it); two graphs that differ only in which of two like nodes an input reads
 share a label (their keys differ: give one a `label`). Labels are for reading, not for
 writing a pipeline: reports of older runs keep the labels they were written with
@@ -161,11 +160,11 @@ writing a pipeline: reports of older runs keep the labels they were written with
 The flat form of older plans (`compose`, `sites`, a pipeline by `name`) is no longer read: a
 pipeline is `graph` (and `edits`); `name` is for standalone renderers (`cpu-reference`).
 
-The nodes every pipeline has without writing them (the client, the link, the generator, the
-post) are changed by adding them: `{ add = "client", role = "client", component = "pick" }`
-then `{ node = "client", knobs = { radius = 4, max_lod = 2 } }`; a `link` node with component
-`net` and its knobs; a `generator` node (`procedural`) with `device = "cpu"` to make the world
-on the client. The shipped plans (`plans/*.toml`) are written this way.
+The nodes every pipeline has without writing them (the client, the generator, the post) are
+changed by adding them: `{ add = "client", role = "client", component = "pick" }` then
+`{ node = "client", knobs = { radius = 4, max_lod = 2 } }`; a `generator` node
+(`procedural`) with `device = "cpu"` to make the world on the client. The network between
+server and client is a gate reading the world ([Gates](#gates)). The shipped plans (`plans/*.toml`) are written this way.
 
 ### Gates
 
@@ -200,7 +199,9 @@ node reads, one behind something other than the output. Where they run:
 
 | edge | run by | message | until it arrives |
 |---|---|---|---|
-| the world's changes | the worker, in front of the client (every gated changes edge must carry the same gates) | each batch the host sends | nothing |
+| the world's changes into the client (gates reading the world, whoever reads them: the world's changes reach a renderer only through its client; the server-to-client network) | the worker, in front of the client (every such edge carries the same gates: one stream) | each change (edits split per chunk); with `reorder` chunks overtake each other, each chunk's own changes (and the lights and environment) stay in order | the client does not know it: chunks inside are holes |
+| the generated chunks into the client (`client.chunks`, the generator on the client's cpu; on the server the edge is the host's, refused) | the worker, between its generator and its client (with the edits it merged) | each change | holes, as above |
+| the client's changes into the renderer (gates reading the client) | the worker, between its client and its renderer (every such edge the same gates: the renderer takes one stream) | each change | the renderer does not hold it yet: holes |
 | hits (`shading.hits`) | the CPU executor, a pass between visibility and shading (`placement = "deferred"`; the ray caster's records and the column marcher's) | each frame's records | the shading reads the last records that arrived at this size (no hit before any has) |
 | hits (`shading.hits`) on a GPU | the GPU executor, as a split at the hit records (the shading's own executor, on the same GPU or another, with its own copy of the storages its rays walk): read back, through the gates on the host, written to the shading's edge (`placement = "deferred"`, a drawer writing records, or splats; no meshes node) | each frame's records, with its frame id and size | the shading reads the last records that arrived at this size (sky before any has), with the camera of the frame they were cast in (its own frame's when the id was lost) |
 | the frame (behind the output) | the worker, for every executor (read back even when the host asked for no pixels: a GPU pays that) | each frame's pixels | the host gets the last frame that arrived at this size (black before any has) |
@@ -210,9 +211,10 @@ message whose ids do not index its quads fails to decode). Refused by the execut
 naming the gate and the edge: hits of the GPU column marcher (no serialized form yet), hits
 with `placement = inline` or of a forward drawer (they never leave the pass that finds them),
 hits beside mesh surfaces on a GPU (the shading past the gate has not their triangles), an image into the post (the post is compiled into its shading,
-no image crosses: put the gate after the post), and faces, surfaces, tiles, ray starts and
-generated chunks. Reports carry `gates`, one entry per gate node: `gate` (its id), `edge`
-(`reader.port`, `changes`, `frame`) and `stats` (messages, bytes, packets, packets lost,
+no image crosses: put the gate after the post), and faces, surfaces, tiles and ray starts.
+Reports carry `gates`, one entry per gate node: `gate` (its id), `edge`
+(`reader.port`; the world's side: `client.changes` into the client, `client.chunks`,
+`changes` from the client into the renderer; `frame`) and `stats` (messages, bytes, packets, packets lost,
 messages that failed to decode, `encode_ms` / `decode_ms`), so a gate's serialization time
 and bytes are its own. Serialized forms: the world's changes, frames (`gate::Frame`), hit
 records (the CPU executor's `Crossing`; the GPU's `transfer::Records`), plain records
@@ -250,8 +252,8 @@ nodes that are fused into each pass and the transfers between devices.
 The canonical form writes only what makes a pipeline differ, so keys stay comparable as the
 bench grows: a knob a node sets to its default (`crates/mr-components/src/knobs.rs`, kept equal
 to the executors' knobs by a test) is dropped, and so is a node that is its role's identity
-(`graph::identity`: the link `free`, the client `pick`, the generator `procedural` on the
-server, the post `clamp`) and sets nothing else. A component or a knob (with a default) added
+(`graph::identity`: the client `pick`, the generator `procedural` on the server, the post
+`clamp`) and sets nothing else. A component or a knob (with a default) added
 later leaves every existing key alone (`src/contract.rs` probes it).
 
 ## Capabilities and adapters

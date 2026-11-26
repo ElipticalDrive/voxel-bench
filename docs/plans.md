@@ -255,7 +255,7 @@ plan's renderers, sweeps expanded, and per mode how many passes it would run.
 
 The full sweep the scripts run (`sweep.py`, `ab/wgsl.py`) is `scripts/full-sweep.toml`: every
 shipped graph with each node given every component it takes and its optional nodes present
-and absent. `plans/stream.toml` sweeps the link, the generator's place and the client.
+and absent. `plans/stream.toml` sweeps the network into the client (a gate), the generator's place and the client.
 
 A component is never an option: `options` holds knobs only. In each pass, of the swept
 pipelines the pass cannot tell apart the first runs (unlit: the shading's component and the

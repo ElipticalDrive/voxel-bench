@@ -152,9 +152,10 @@ pub struct PassReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compiled: Option<String>,
     pub view_radius: u32,
-    /// The link its client received the stream over, when not free.
-    #[serde(skip_serializing_if = "mr_core::link::LinkSpec::free")]
-    pub link: mr_core::link::LinkSpec,
+    /// Whether gates crossed the world's side of its graph (the network between server and
+    /// client, or inside the client's side): its client may then hold less than the world.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub world_gated: bool,
     pub mode: Option<PassMode>,
     pub tags: Vec<String>,
     pub resolution: [u32; 2],
@@ -337,7 +338,7 @@ pub fn table(reports: &[PassReport]) -> String {
 pub fn stream_table(reports: &[PassReport]) -> Option<String> {
     let ok: Vec<&PassReport> = reports.iter().filter(|r| r.error.is_none()).collect();
     let first_at_once = |r: &PassReport| r.first_complete.is_some_and(|c| r.per_frame.first().is_none_or(|f| c.frame <= f.frame));
-    if ok.iter().all(|r| r.link.free() && r.frames_with_holes == 0 && first_at_once(r)) {
+    if ok.iter().all(|r| !r.world_gated && r.frames_with_holes == 0 && first_at_once(r)) {
         return None;
     }
     let mut s = String::new();

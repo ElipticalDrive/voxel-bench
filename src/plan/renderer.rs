@@ -123,7 +123,7 @@ impl RendererSpec {
         use mr_components::graph::Role;
         let Some(g) = &self.graph else { return vec![] };
         let mut v = vec![];
-        for (id, n) in g.nodes.iter().filter(|(_, n)| !matches!(n.role, Role::World | Role::Generator | Role::Link | Role::Client | Role::Post)) {
+        for (id, n) in g.nodes.iter().filter(|(_, n)| !matches!(n.role, Role::World | Role::Generator | Role::Client | Role::Post)) {
             let choices = g.choices(id);
             if choices.len() > 1 {
                 v.push(mr_core::ParamSpec::choice(&format!("{id}{COMPONENT_KNOB}"), &format!("The component of node `{id}` ({}): an edit of the graph (restart where its executor cannot replace the node while running)", n.role.name()), &choices, &n.component, false));
@@ -359,20 +359,32 @@ impl RendererSpec {
         Ok(())
     }
 
-    /// The link its client receives the stream over (its graph's link node).
-    pub fn link(&self) -> mr_core::link::LinkSpec {
-        self.pipeline().and_then(|g| g.link().ok()).unwrap_or_default()
+    /// The gates on the world's stream into its client (the server-to-client crossing), in
+    /// order from the world.
+    pub fn world_gates(&self) -> Vec<mr_core::gate::GateNode> {
+        self.gates_where(|e| e.data == mr_components::graph::Data::Changes && e.into_client)
     }
 
-    /// The gates on the world's stream (its graph's gates on edges of changes, which all
-    /// have the same gates), in order from the world.
-    pub fn world_gates(&self) -> Vec<mr_core::gate::GateNode> {
-        self.gates_where(|e| e.data == mr_components::graph::Data::Changes)
+    /// The gates on its client's changes into the renderer (its graph's gates on the
+    /// renderer's edges of changes, which all have the same gates), in order from the client.
+    pub fn client_gates(&self) -> Vec<mr_core::gate::GateNode> {
+        self.gates_where(|e| e.data == mr_components::graph::Data::Changes && !e.into_client)
+    }
+
+    /// The gates on the chunks its client's generator gives it.
+    pub fn chunk_gates(&self) -> Vec<mr_core::gate::GateNode> {
+        self.gates_where(|e| e.data == mr_components::graph::Data::Chunks)
+    }
+
+    /// Whether any gate crosses the world's side of its graph (its client then may hold less
+    /// than the world: holes).
+    pub fn gated_world(&self) -> bool {
+        !(self.world_gates().is_empty() && self.client_gates().is_empty() && self.chunk_gates().is_empty())
     }
 
     /// The gates behind its graph's output (the frame crosses them), in order from it.
     pub fn frame_gates(&self) -> Vec<mr_core::gate::GateNode> {
-        self.gates_where(mr_components::graph::EdgeGates::behind_output)
+        self.gates_where(|e| e.behind_output())
     }
 
     /// The gates of the first gated edge `which` picks.

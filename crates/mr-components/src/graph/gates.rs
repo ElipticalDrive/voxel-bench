@@ -20,6 +20,11 @@ pub struct EdgeGates {
     pub data: Data,
     /// The gate nodes' ids and knobs.
     pub gates: Vec<(String, GateSpec)>,
+    /// Whether they carry the world's side into the client: the server's stream (gates
+    /// reading the world, whoever reads them: the world's changes reach a renderer only
+    /// through its client) or a client generator's chunks. Other gates on changes are on
+    /// the client's changes into the renderer.
+    pub into_client: bool,
 }
 
 /// How reports name the edge behind the graph's output (the frame it delivers).
@@ -35,6 +40,13 @@ impl EdgeGates {
     /// crosses them, in the worker).
     pub fn behind_output(&self) -> bool {
         self.reader.is_empty()
+    }
+
+    /// Whether the worker runs them, for every executor: on the world's side (its changes
+    /// into and out of the client, a client generator's chunks) and behind the output (the
+    /// frame). The rest are inside the pipeline, the executor's.
+    pub fn in_worker(&self) -> bool {
+        self.behind_output() || matches!(self.data, Data::Changes | Data::Chunks)
     }
 
     pub fn specs(&self) -> Vec<GateSpec> {
@@ -126,7 +138,7 @@ impl Graph {
                 }
                 chain.reverse();
                 g.nodes.get_mut(id).unwrap().inputs.insert(p.clone(), s.to_string());
-                edges.push(EdgeGates { reader: id.clone(), port: p.clone(), source: s.to_string(), data: Data::Image, gates: chain });
+                edges.push(EdgeGates { reader: id.clone(), port: p.clone(), source: s.to_string(), data: Data::Image, gates: chain, into_client: false });
             }
         }
         // A gate no node reads is behind the graph's output: the frame crosses it (checked to
@@ -146,7 +158,7 @@ impl Graph {
                 s = &self.nodes[s].inputs["in"];
             }
             chain.reverse();
-            edges.push(EdgeGates { reader: String::new(), port: OUTPUT_PORT.into(), source: s.to_string(), data: Data::Image, gates: chain });
+            edges.push(EdgeGates { reader: String::new(), port: OUTPUT_PORT.into(), source: s.to_string(), data: Data::Image, gates: chain, into_client: false });
         }
         Ok((g, edges))
     }

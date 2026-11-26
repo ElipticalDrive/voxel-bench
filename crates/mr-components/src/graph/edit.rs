@@ -33,7 +33,7 @@ pub enum Target {
 /// { node = "kernel", api = "rayquery" }                        # or "default"
 /// { node = "draw", input = "faces", when = "prev" }            # "now", { iterate = 2 }
 /// { node = "shading", knob = "bounces", value = 2 }            # no value: unset
-/// { node = "link", knobs = { latency_ms = 30, loss = 0.01 } }  # all its knobs: these
+/// { node = "net", knobs = { latency_ms = 30, loss = 0.01 } }   # all its knobs: these
 /// { add = "far", role = "storage", component = "tree64" }
 /// { remove = "prepass" }
 /// ```
@@ -1014,7 +1014,7 @@ mod tests {
             assert!(!c.about.is_empty(), "{} `{}` has no description", c.role.name(), c.name);
             assert_eq!(HOST_COMPONENTS.iter().filter(|o| o.role == c.role && o.name == c.name).count(), 1, "`{}` listed twice", c.name);
         }
-        for role in [Role::Generator, Role::Link, Role::Client, Role::Post] {
+        for role in [Role::Generator, Role::Client, Role::Post] {
             assert_eq!(role_components(role), host_components(role));
             assert!(crate::graph::identity(role).is_some_and(|i| host_components(role).contains(&i)), "{}'s identity is listed", role.name());
         }
@@ -1092,7 +1092,7 @@ mod tests {
             r#"{ node = "draw", input = "faces", when = { iterate = 2 } }"#,
             r#"{ node = "shading", knob = "bounces", value = 2 }"#,
             r#"{ node = "shading", knob = "bounces" }"#,
-            r#"{ node = "link", knobs = { latency_ms = 30, loss = 0.01 } }"#,
+            r#"{ node = "net", knobs = { latency_ms = 30, loss = 0.01 } }"#,
             r#"{ add = "far", role = "storage", component = "tree64" }"#,
             r#"{ remove = "prepass" }"#,
         ];

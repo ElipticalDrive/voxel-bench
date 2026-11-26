@@ -177,10 +177,10 @@ impl<T: Crossing> Node for GatePass<T> {
     }
 }
 
-/// Puts a gate pass on every gated edge inside the pipeline (the world's stream and the
-/// frame are the worker's): after the producing pass, its reader reading the gate's output.
+/// Puts a gate pass on every gated edge inside the pipeline (the world's side and the frame
+/// are the worker's: `EdgeGates::in_worker`): after the producing pass, its reader reading the gate's output.
 pub(crate) fn gate_edges(g: &Checked, width: u32, height: u32, passes: &mut Vec<Pass>, index: &mut HashMap<String, usize>) -> anyhow::Result<()> {
-    for e in g.gates.iter().filter(|e| e.data != mr_components::graph::Data::Changes && !e.behind_output()) {
+    for e in g.gates.iter().filter(|e| !e.in_worker()) {
         let at = format!("`{}` on `{}`", e.gates[0].0, e.edge());
         let (Some(&p), Some(&r)) = (index.get(&e.source), index.get(&e.reader)) else {
             anyhow::bail!("{at}: `{}` and `{}` run as one pass here, nothing crosses between them", e.source, e.reader);
