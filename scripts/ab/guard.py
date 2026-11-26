@@ -23,7 +23,9 @@ shows there, not in one pipeline). The robust check is per component: the median
 of the passes whose pipeline has it, against the median over all; a component moving more
 than --shift % (default 2) is listed, with the median of the passes without it (a feature that
 costs pipelines without it moves those). Also the components most common among the slowed
-pipelines. Passes in only one side are counted and, with --all, listed.
+pipelines. Passes in only one side are counted and, with --all, listed. Performance data is background
+work (the idle queue), so a pass may lack speed or a score on a side: it is still compared on
+what both sides have, and the passes left uncompared are counted.
 
 The baseline is the newest `baselines/sweep-*` unless --base names one. Exit 0 when nothing
 regressed, 1 when something did, 2 when nothing could be compared. Records are read by
@@ -92,7 +94,7 @@ def main():
         print('nothing in common to compare')
         return 2
     slow, fast, worse, better, failed, fixed, ratios = [], [], [], [], [], [], []
-    label = {}
+    label, unmeasured = {}, collections.Counter()
     for k in common:
         b, n = base[k], new[k]
         label[k] = n[-1]['label']
@@ -101,22 +103,27 @@ def main():
         if be and not ne: fixed.append((k, ''))
         if be or ne: continue
         gb, gn = mean(b, 'gpu_ms'), mean(n, 'gpu_ms')
+        fb, fn = mean(b, 'fps'), mean(n, 'fps')
+        r = None
         if gb and gn:
             r, rel, what = gn / gb, a.speed / 100, 'GPU ms'
             noise = max(rel, a.abs_ms / gb, 3 * max(spread(b, 'gpu_ms') or 0, spread(n, 'gpu_ms') or 0))
             vb, vn = gb, gn
-        else:
-            fb, fn = mean(b, 'fps'), mean(n, 'fps')
-            if not (fb and fn): continue
+        elif fb and fn:
             r, what = fb / fn, 'fps'  # as a time ratio: above 1 is slower
             noise = max(a.fps / 100, 3 * max(spread(b, 'fps') or 0, spread(n, 'fps') or 0))
             vb, vn = fb, fn
-        ratios.append((r, k))
-        if r > 1 + noise: slow.append((r, k, what, vb, vn))
-        elif r < 1 / (1 + noise): fast.append((r, k, what, vb, vn))
+        else:
+            unmeasured['speed'] += 1  # performance data is background work: a side may lack it
+        if r is not None:
+            ratios.append((r, k))
+            if r > 1 + noise: slow.append((r, k, what, vb, vn))
+            elif r < 1 / (1 + noise): fast.append((r, k, what, vb, vn))
         s, sb, bb = score(b[-1])
         _, sn, bn = score(n[-1])
-        if sb is not None and sn is not None:
+        if sb is None or sn is None:
+            unmeasured['pixels'] += 1
+        else:
             d = sn - sb
             crossed = sb >= a.floor > sn
             grew = bb is not None and bn is not None and bn - bb > 1.0
@@ -176,6 +183,9 @@ def main():
         top = sorted(hit, key=lambda c: (-hit[c] / len(slow), c))[:8]
         print('components of the slowed pipelines (slowed with it / pipelines with it):',
               ', '.join(f'{c} {hit[c]}/{have[c]}' for c in top))
+    if unmeasured:
+        print('not compared (measured on one side only or neither): '
+              + ', '.join(f'{what} {n_} passes' for what, n_ in sorted(unmeasured.items())))
     regressions = len(slow) + len(worse) + len(failed)
     print(f'regressions {regressions} (slower {len(slow)}, pixels {len(worse)}, failing {len(failed)}); '
           f'improvements {len(fast) + len(better) + len(fixed)}')

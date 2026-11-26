@@ -46,7 +46,7 @@ idle = ROOT / ".agent" / "bin" / "idle"
 if not os.environ.get("MR_IDLE_JOB") and idle.exists():
     busy = subprocess.run([str(idle), "busy"], capture_output=True, text=True)
     if busy.returncode == 0:
-        print(f"warning: {busy.stdout.strip()}; building now disturbs it", flush=True)
+        print(f"warning: {busy.stdout.strip()}; it holds while this builds (background work yields)", flush=True)
 
 
 def cargo(args, log):
