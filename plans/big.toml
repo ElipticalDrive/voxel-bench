@@ -1,0 +1,27 @@
+# The terrain flight at the largest view radius every pipeline renders (docs/limits.md: 32
+# chunks, 65² chunk columns; the GPU voxel pools fill at 64), so the sweep and the regression
+# guard watch the pipelines at scale, not only at the scenario plans' sizes.
+name = "terrain-big"
+
+[scene]
+generator = { type = "terrain", seed = 7 }
+camera = { type = "flythrough", points = [[0, 110, 0], [260, 140, 120], [520, 95, -80], [800, 170, 60], [1100, 120, 300]] }
+
+[run]
+frames = 300
+warmup = 30
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 32
+
+[[renderer]]
+graph = "raycast-gpu"
+
+[[renderer]]
+graph = "raster-gpu"
+
+[[renderer]]
+graph = "raycast-cpu"
+
+[output]
+compare = { every = 100 }

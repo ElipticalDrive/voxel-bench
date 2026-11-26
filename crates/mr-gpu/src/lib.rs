@@ -292,6 +292,11 @@ impl Gpu {
 pub struct Failure(Arc<std::sync::Mutex<Option<String>>>);
 
 impl Failure {
+    /// The first failure, if the device has failed.
+    pub fn get(&self) -> Option<String> {
+        self.0.lock().unwrap().clone()
+    }
+
     pub fn set(&self, why: String) {
         let mut first = self.0.lock().unwrap();
         if first.is_none() {
@@ -910,16 +915,21 @@ pub struct GrowableBuffer {
     label: &'static str,
     usage: wgpu::BufferUsages,
     max: u64,
+    /// The device's binding or buffer size set `max`, below what the caller asked: that limit
+    /// is the one a failure names, not the caller's knob.
+    device_bound: bool,
 }
 
 impl GrowableBuffer {
     pub fn new(gpu: &Gpu, label: &'static str, initial: u64, max: u64, usage: wgpu::BufferUsages) -> Self {
         let limits = gpu.device.limits();
         // A multiple of 16 (sizes are rounded up to one), so no size exceeds what the device binds.
-        let max = (max.min(limits.max_buffer_size).min(limits.max_storage_buffer_binding_size) & !15).max(256);
+        let device = limits.max_buffer_size.min(limits.max_storage_buffer_binding_size);
+        let device_bound = device < max;
+        let max = (max.min(device) & !15).max(256);
         let usage = usage | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
         let size = initial.clamp(256, max).next_multiple_of(16);
-        Self { buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false }), label, usage, max }
+        Self { buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false }), label, usage, max, device_bound }
     }
 
     /// A buffer of `size` bytes from the start, never grown (a [`PagedBuffer`]'s later pages:
@@ -951,9 +961,16 @@ impl GrowableBuffer {
     pub fn reserve(&mut self, gpu: &Gpu, bytes: u64, limit: &str) -> Option<bool> {
         let r = self.grow_to(gpu, bytes);
         if r.is_none() {
-            gpu.fail(format!("{}: more than {} MiB needed; the limit is {}; frames would miss data", self.label, self.max >> 20, named_limit(gpu, limit)));
+            gpu.fail(self.over(gpu, limit));
         }
         r
+    }
+
+    /// What a request past the maximum fails with: the size, and the limit that set it (the
+    /// device's, when it bounded `limit`'s asked size).
+    fn over(&self, gpu: &Gpu, limit: &str) -> String {
+        let limit = if self.device_bound && limit != DEVICE_BOUND { format!("{} (below what {limit} asks)", named_limit(gpu, DEVICE_BOUND)) } else { named_limit(gpu, limit) };
+        format!("{}: more than {} MiB needed; the limit is {limit}; frames would miss data", self.label, self.max >> 20)
     }
 
     /// [`Self::reserve`] without failing the device: `None` if `bytes` exceeds the maximum.
@@ -989,7 +1006,7 @@ impl GrowableBuffer {
     pub fn alloc(&mut self, gpu: &Gpu, alloc: &mut RangeAlloc, n: u32, unit: u64, limit: &str) -> Option<(u32, bool)> {
         let r = self.alloc_within(gpu, alloc, n, unit);
         if r.is_none() {
-            gpu.fail(format!("{}: more than {} MiB needed; the limit is {}; frames would miss data", self.label, self.max >> 20, named_limit(gpu, limit)));
+            gpu.fail(self.over(gpu, limit));
         }
         r
     }

@@ -4,11 +4,14 @@ generator), the view radius doubles step by step; every pipeline still standing 
 frames at each radius, and the first radius at which it fails (or is refused) is recorded with
 the reason. Pass / fail only, no timing (it needs no idle machine).
 
-  scripts/scale.py [--plans terrain,city] [--radii 8,16,32,64] [--lod N] [--mem 24G] [--only TEXT] [--no-build]
-  scripts/scale.py --table [--lod N]   # the table so far (Markdown), from the journal
+  scripts/scale.py [--plans terrain,city] [--radii 8,16,32,64] [--lod N] [--lavapipe] [--mem 24G] [--only TEXT] [--no-build]
+  scripts/scale.py --table [--lod N] [--lavapipe]   # the table so far (Markdown), from the journal
 
 `--lod N` sets `run.max_lod` (default 0): the view then reaches radius x 2^N chunks, coarser
-further out; each level is its own set of results (journal rows carry `lod`).
+further out; each level is its own set of results (journal rows carry `lod`). `--lavapipe` runs
+the GPU pipelines on Mesa's software Vulkan (its limits are WebGPU's baseline sizes) with
+`LP_NUM_THREADS` threads (default 4, so the machine stays usable), its own set of results
+(journal rows carry `"gpu": "lavapipe"`; the CPU pipelines are left out).
 
 Pipelines: every shipped graph as it is, every storage on raycast-gpu and raycast-cpu, every
 geometry on rayquery-gpu and raster-gpu (`--only TEXT` keeps those whose label contains TEXT).
@@ -17,6 +20,7 @@ memory is a recorded failure, not a frozen machine. Each step's result is journa
 target/scale/results.jsonl as it ends; the same command again skips the steps journaled
 (delete the file to start over). Runs and logs: target/scale/<plan>-r<radius>/."""
 import json
+import os
 import re
 import subprocess
 import sys
@@ -59,9 +63,17 @@ def reason(err):
     return line[:240]
 
 
-def step(plan, radius, todo, mem, lod=0):
+def lavapipe_env():
+    """The environment that makes wgpu pick Mesa's software Vulkan only."""
+    icd = next((p for p in ("/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", "/usr/share/vulkan/icd.d/lvp_icd.json") if os.path.exists(p)), None)
+    if icd is None:
+        sys.exit("lavapipe: no lvp_icd json under /usr/share/vulkan/icd.d (package mesa-vulkan-drivers)")
+    return {**os.environ, "VK_DRIVER_FILES": icd, "VK_ICD_FILENAMES": icd, "LP_NUM_THREADS": os.environ.get("LP_NUM_THREADS", "4")}
+
+
+def step(plan, radius, todo, mem, lod=0, gpu=None):
     """Runs `todo` (name -> spec) on `plan` at `radius`; name -> error (None = rendered)."""
-    out = fresh(OUT / (f"{plan}-r{radius}" + (f"-lod{lod}" if lod else "")))
+    out = fresh(OUT / (f"{plan}-r{radius}" + (f"-lod{lod}" if lod else "") + (f"-{gpu}" if gpu else "")))
     names = list(todo)
     spec = "[" + ",".join(todo[n].rstrip("}") + f',label="{n}"}}' for n in names) + "]"
     log = out / "run.log"
@@ -69,7 +81,7 @@ def step(plan, radius, todo, mem, lod=0):
            str(release()), "run", f"plans/{plan}.toml", *ARGS, "-s", f"run.view_radius={radius}", "-s", f"run.max_lod={lod}",
            "-s", f"renderer={spec}", "-s", f'output.dir="{out.as_posix()}"']
     with open(log, "w") as f:
-        code = subprocess.run(cmd, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT).returncode
+        code = subprocess.run(cmd, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT, env=lavapipe_env() if gpu == "lavapipe" else None).returncode
     reports = list(out.rglob("report.json"))
     passes, culprit, lacks = {}, None, {}
     if reports:
@@ -109,9 +121,9 @@ def step(plan, radius, todo, mem, lod=0):
 LEFT_OUT = "left out: "  # an error text so marked: the pipeline does not do the step (not a stop)
 
 
-def table(rows, lod=0):
-    """Markdown: pipeline x plan -> the largest radius rendered and where / why it stopped, at `lod`."""
-    rows = [r for r in rows if r.get("lod", 0) == lod]
+def table(rows, lod=0, gpu=None):
+    """Markdown: pipeline x plan -> the largest radius rendered and where / why it stopped, at `lod` (on `gpu`)."""
+    rows = [r for r in rows if r.get("lod", 0) == lod and r.get("gpu") == gpu]
     plans = sorted({r["plan"] for r in rows})
     names = list(pipelines())
     cell = {}
@@ -150,8 +162,9 @@ def table(rows, lod=0):
 def main():
     argv = sys.argv[1:]
     opt = lambda k, d: argv[argv.index(k) + 1] if k in argv else d
+    gpu = "lavapipe" if "--lavapipe" in argv else None
     if "--table" in argv:
-        print(table(journal(), int(opt("--lod", "0"))))
+        print(table(journal(), int(opt("--lod", "0")), gpu))
         return
     plans = opt("--plans", "terrain,city,lattice,islands").split(",")
     radii = [int(r) for r in opt("--radii", "8,16,32,64").split(",")]
@@ -161,27 +174,28 @@ def main():
     if "--no-build" not in argv and not build_release():
         sys.exit("build failed")
     OUT.mkdir(parents=True, exist_ok=True)
-    done = [r for r in journal() if r.get("lod", 0) == lod]
+    mine = lambda rows: [r for r in rows if r.get("lod", 0) == lod and r.get("gpu") == gpu]
+    done = mine(journal())
     for plan in plans:
         dead = {r["name"] for r in done if r["plan"] == plan and r["error"] is not None}
         for radius in radii:
             while True:  # again while a run that died left passes untried
-                todo = {n: s for n, s in pipelines().items() if only in n and n not in dead
+                todo = {n: s for n, s in pipelines().items() if only in n and n not in dead and not (gpu and n.split()[0].endswith("-cpu"))
                         and not any(r["plan"] == plan and r["radius"] == radius and r["name"] == n for r in done)}
                 if not todo:
                     break
-                res = step(plan, radius, todo, mem, lod)
+                res = step(plan, radius, todo, mem, lod, gpu)
                 with open(JOURNAL, "a") as f:
                     for n, e in res.items():
-                        f.write(json.dumps({"plan": plan, "radius": radius, "lod": lod, "name": n, "error": e}) + "\n")
-                done = [r for r in journal() if r.get("lod", 0) == lod]
+                        f.write(json.dumps({"plan": plan, "radius": radius, "lod": lod, "name": n, "error": e} | ({"gpu": gpu} if gpu else {})) + "\n")
+                done = mine(journal())
                 bad = {n: e for n, e in res.items() if e and not e.startswith(LEFT_OUT)}
                 left = [n for n, e in res.items() if e and e.startswith(LEFT_OUT)]
                 dead |= set(bad) | set(left)
                 print(f"{plan} r{radius}: {len(res) - len(bad) - len(left)} rendered, {len(bad)} stopped, {len(left)} left out", flush=True)
                 for n, e in bad.items():
                     print(f"  {n}: {e}", flush=True)
-    print(table(journal(), lod))
+    print(table(journal(), lod, gpu))
 
 
 if __name__ == "__main__":
