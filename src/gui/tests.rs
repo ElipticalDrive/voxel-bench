@@ -601,3 +601,78 @@ fn a_large_report_draws_only_the_rows_in_view() {
     assert!(some > 10 && some < 60, "a screenful of rows, not all 60: {some}");
     assert_eq!(some, many, "1600 passes draw as many rows as 60");
 }
+
+/// The GUI with many live lanes: a frame lays out only the lane panels in the Metrics tab's
+/// view (the same number at 4 and 16 lanes), so its cost does not grow with lanes out of view.
+/// Lanes as they look after a while (full sample history, probes, stages, knobs), no renderer
+/// behind them. `MANY_LANES_PRINT=1` prints the time a frame takes (viewport and Metrics tab,
+/// or viewport and the Keys tab).
+#[test]
+fn many_lanes_lay_out_only_the_panels_in_view() {
+    let specs = Plan::parse(
+        r#"
+        [scene]
+        generator = { type = "showcase" }
+        camera = { type = "orbit", center = [20, 2, 0], radius = 26, height = 12, period = 120 }
+        [[renderer]]
+        graph = "raycast-gpu"
+        [[renderer]]
+        graph = "raster-gpu"
+        [[renderer]]
+        graph = "raycast-cpu"
+        [[renderer]]
+        graph = "splat-gpu"
+        "#,
+        &[],
+    )
+    .unwrap();
+    // (ms a frame, lane panels laid out in the last one)
+    let run = |n: usize, pane: dock::Pane| {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx, None);
+        app.plan = specs.clone();
+        let lanes = (0..n)
+            .map(|i| {
+                let spec = specs.renderers[i % specs.renderers.len()].clone();
+                let mut params: Vec<_> = tune::host_params(4)
+                    .into_iter()
+                    .chain(spec.info(&app.plan.run, &app.infos).map(|i| i.params).unwrap_or_default())
+                    .chain(spec.component_knobs())
+                    .map(|s| {
+                        let d = s.default.clone();
+                        (s, d)
+                    })
+                    .collect();
+                params.dedup_by(|a, b| a.0.name == b.0.name);
+                live::LaneView::fake(spec, params, 1)
+            })
+            .collect();
+        app.live = Some(live::LiveHandle::detached(live::Shared { lanes, status: "running".into(), start: Some(std::time::Instant::now()), ..Default::default() }, app.control()));
+        app.docks.show(&ctx, pane);
+        let mut t = 0.0;
+        for _ in 0..3 {
+            frame(&ctx, &mut app, &[], &mut t);
+        }
+        let k = 10;
+        let start = std::time::Instant::now();
+        let mut panels = 0;
+        for _ in 0..k {
+            t += 1.0 / 60.0;
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1700.0, 1000.0))), time: Some(t), ..Default::default() };
+            metrics::PANELS_LAID_OUT.with(|c| c.set(0));
+            ctx.run_ui(input, |ui| app.draw(ui)).textures_delta.clear();
+            panels = metrics::PANELS_LAID_OUT.with(|c| c.get());
+        }
+        app.live = None;
+        (start.elapsed().as_secs_f64() * 1e3 / k as f64, panels)
+    };
+    let m: Vec<_> = [1, 4, 16].iter().map(|&n| run(n, dock::Pane::Metrics)).collect();
+    if std::env::var("MANY_LANES_PRINT").is_ok() {
+        let k: Vec<_> = [1, 4, 16].iter().map(|&n| run(n, dock::Pane::Keys).0).collect();
+        println!("Metrics: 1 lane {:.2} ms, 4 lanes {:.2} ms, 16 lanes {:.2} ms a frame; panels laid out {} {} {}", m[0].0, m[1].0, m[2].0, m[0].1, m[1].1, m[2].1);
+        println!("Keys: 1 lane {:.2} ms, 4 lanes {:.2} ms, 16 lanes {:.2} ms a frame", k[0], k[1], k[2]);
+    }
+    assert_eq!(m[0].1, 1, "one lane, one panel");
+    assert!(m[1].1 < 4, "a screenful of the 4 panels, not all: {}", m[1].1);
+    assert_eq!(m[1].1, m[2].1, "16 lanes lay out as many panels as 4");
+}

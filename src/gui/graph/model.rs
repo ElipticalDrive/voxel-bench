@@ -171,8 +171,8 @@ pub fn knob_owner(g: &Graph, slot: &str, component: &str) -> Option<String> {
 /// component (`clipmap: ...`, the convention of build, device-limit and memory errors: a
 /// component's error starts with its name), by its role when the code at fault serves the
 /// role whatever its component (`storage: the voxel pool is full`), or by its id in
-/// backticks, alone or before a port (`` `shading`.hits prev: ... ``, as `accept` words its
-/// refusals); each `: `-separated
+/// backticks, alone, before a port or in a list (`` `shading`.hits prev: ... ``, `` nodes that
+/// lead to no image: `a`, `b` ``, as `accept` words its refusals); each `: `-separated
 /// part of the message is tried, so the host's prefixes (`failed: worker error: `) do not
 /// matter. A component used by several nodes marks each. A refused knob marks the node that
 /// owns it. What names no node stays the lane's (its tile and panel show every failure).
@@ -182,7 +182,10 @@ pub fn faults(g: &Graph, failure: Option<&str>, refused: &[(String, String)], pa
         let parts: Vec<&str> = e.lines().next().unwrap_or("").split(": ").map(str::trim).collect();
         for (id, n) in &g.nodes {
             let tick = format!("`{id}`");
-            let by_id = |p: &str| p.strip_prefix(tick.as_str()).is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', ' ']));
+            // Alone, before a port, or in a list (`` (have: `a`, `b`) ``, `` `a` and `b` ``).
+            let by_id = |p: &str| {
+                p.split(", ").flat_map(|q| q.split(" and ")).any(|q| q.strip_prefix(tick.as_str()).is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', ' ', ')'])))
+            };
             let named = |p: &&str| *p == n.component || (n.role.registered() && *p == n.role.name()) || by_id(p);
             if !n.component.is_empty() && parts.iter().any(named) {
                 out.entry(id.clone()).or_default().push(e.to_string());

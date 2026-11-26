@@ -786,6 +786,14 @@ mod tests {
         assert_eq!(f.keys().collect::<Vec<_>>(), [&storage], "{f:?}");
         assert!(model::faults(&g, Some("failed: worker error: the device is lost"), &[], &params).is_empty());
         assert!(model::faults(&g, Some("worker exited (signal 11)"), &[], &params).is_empty());
+        // Node ids in backticks, in a list too, as `accept` names them (a draft's reason).
+        let ids: Vec<&String> = g.nodes.keys().take(3).collect();
+        let f = model::faults(&g, Some(&format!("nodes that lead to no image: `{}`, `{}`", ids[0], ids[1])), &[], &params);
+        assert_eq!(f.keys().collect::<Vec<_>>(), ids[..2], "{f:?}");
+        let f = model::faults(&g, Some(&format!("one world per graph (have: `{}`, `{}`)", ids[1], ids[2])), &[], &params);
+        assert_eq!(f.keys().collect::<Vec<_>>(), ids[1..], "{f:?}");
+        let f = model::faults(&g, Some(&format!("gpu reads a and b as one node (here: `{}` and `{}`)", ids[0], ids[2])), &[], &params);
+        assert_eq!(f.keys().collect::<Vec<_>>(), [ids[0], ids[2]], "{f:?}");
         // A refused knob: its owner, as the editor files the knob under that node.
         let (knob, owner) = params
             .iter()

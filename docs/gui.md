@@ -134,7 +134,7 @@ What a renderer, a pass and the registry report, and where the GUI shows it.
 | events (started, edits, refusals, hot swaps) of the last seconds | tile |
 | a failure: the error, a dead worker's exit status or signal, the watchdog's verdict on a hung one | tile (first line) and panel (whole) |
 | the node a failure or a refused knob is about: a failure names its component (`clipmap: ...`, the convention of build, device-limit and memory errors), its role when the code serves the role whatever its component (`storage: the voxel pool is full`), or a node id in backticks; a refusal, the knob's owner | that node, red with ⚠, in the panel's pipeline rows and on the editor's canvas, the message on hover (a refusal as long as the tile shows it; what names no node stays the lane's) |
-| the node a draft's reason names (`accept` names nodes in backticks, `` `draw` (draw `raster`): input `faces` ... is not bound``) | that node, red with ⚠, on the editor's canvas and in the pipeline rows, the reason on hover beside the lane's own faults |
+| the nodes a draft's reason names (`accept` names nodes in backticks, `` `draw` (draw `raster`): input `faces` ... is not bound``, lists too: `` nodes that lead to no image: `a`, `b` ``) | that node, red with ⚠, on the editor's canvas and in the pipeline rows, the reason on hover beside the lane's own faults |
 | a plan's renderer that does not run as given (`accept` refuses its graph, no executor builds its shape, a knob set twice), before any lane runs it | the plan editor, under the renderer's name (⚠ does not run: the reason), the node it names marked in its rows; device limits are the device's to say, at build, and come from the lane (row above) |
 | a hot swap in progress | panel |
 
@@ -175,6 +175,13 @@ The benchmark table is made once per report (texts and column widths) and draws 
 in view, under a header that stays put, with a filter by label and mode; the fps chart shows
 the passes in view. A frame costs the same at 60 and 1,600 passes (1.3-1.5 ms in a debug
 build; drawing every row cost 15.6 ms at 1,600): `a_large_report_draws_only_the_rows_in_view`.
+Many live lanes: the Metrics tab lays out only the lane panels in its scrolled view; one out of
+view takes the height it had when last drawn (corrected when it scrolls in), its node faults
+still updated. With lanes as they look after minutes (4,000 samples, probes, stages, knobs) a
+frame in a debug build costs about 3 ms at 1 lane, 3.7 at 4 and 5 at 16 (it cost 10.5 ms at 16
+when every panel was laid out, 1.4 ms a panel); what still grows is small and linear: the
+viewport's tiles (2.2 to 2.7 ms from 1 to 16 lanes, the Keys tab shown) and the plots' lines.
+`many_lanes_lay_out_only_the_panels_in_view` (16 lanes lay out as many panels as 4).
 
 ## Knobs and hot swaps
 
