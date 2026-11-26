@@ -481,8 +481,10 @@ impl Ctx<'_> {
         spec.label = Some(match like {
             Some(l) => {
                 spec.options.insert("lod".into(), true.into());
-                if let plan::Lighting::Paths { bounces } = l.lighting {
-                    spec.options.insert("bounces".into(), (bounces as i64).into());
+                match l.lighting {
+                    plan::Lighting::Paths { bounces } => _ = spec.options.insert("bounces".into(), (bounces as i64).into()),
+                    plan::Lighting::Occlusion { reach } => _ = spec.options.insert("occlusion".into(), (reach as f64).into()),
+                    plan::Lighting::Direct => {}
                 }
                 if l.leaves.mesh_rays {
                     spec.options.insert("mesh_rays".into(), false.into());

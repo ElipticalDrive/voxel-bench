@@ -1,5 +1,5 @@
 //! The per-pixel state a GPU shading component keeps across frames (`pathtrace`'s
-//! progressive accumulation), owned by the back end but declared, bound and advanced the
+//! progressive accumulation, `ao`'s), owned by the back end but declared, bound and advanced the
 //! same way on every back end: the back end reserves two bindings in one of its groups,
 //! puts [`ShadeState::wgsl`] into its shader and [`ShadeState::layout_entries`] /
 //! [`ShadeState::bind_entries`] into its layouts, and calls [`ShadeState::begin`] once per
@@ -10,7 +10,7 @@ use bytemuck::{Pod, Zeroable};
 use mr_core::{Camera, ParamSpec, ParamValue, RenderMode};
 use mr_gpu::Gpu;
 
-/// What `pathtrace` reads (`sp` in WGSL).
+/// What the stateful shadings read (`sp` in WGSL).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct Params {
@@ -20,16 +20,24 @@ struct Params {
     prev_count: u32,
     bounces: u32,
     spp: u32,
-    _pad: [u32; 3],
+    /// Ambient occlusion's reach in blocks.
+    reach: f32,
+    _pad: [u32; 2],
 }
 
-/// The shading knobs that configure the state (owned by the path-tracing components:
-/// `pathtrace`).
+/// The shading knobs that configure the state, each owned by the components declaring what
+/// it configures: `spp` and `accumulate` every stateful shading ([`crate::Cap::Paths`]),
+/// `bounces` the path tracers, `reach` ambient occlusion ([`crate::Cap::Occlusion`]).
 pub fn params() -> Vec<ParamSpec> {
-    let owners: Vec<&str> = crate::components(crate::Role::Shading)
-        .filter(|c| stateful(c.name))
-        .map(|c| c.name)
-        .collect();
+    let owners_by = |f: &dyn Fn(&str) -> bool| -> Vec<&'static str> {
+        crate::components(crate::Role::Shading)
+            .filter(|c| f(c.name))
+            .map(|c| c.name)
+            .collect()
+    };
+    let owners = owners_by(&|c| stateful(c));
+    let tracers = owners_by(&|c| stateful(c) && !occludes(c));
+    let occluders = owners_by(&occludes);
     vec![
         ParamSpec::int(
             "bounces",
@@ -39,8 +47,17 @@ pub fn params() -> Vec<ParamSpec> {
             1,
             true,
         )
-        .of("shading", &owners)
+        .of("shading", &tracers)
         .baked(true),
+        ParamSpec::int(
+            "reach",
+            "ao shading: how far (blocks) a surface's occlusion rays look (lit)",
+            1,
+            64,
+            4,
+            true,
+        )
+        .of("shading", &occluders),
         ParamSpec::int(
             "spp",
             "pathtrace shading: paths per pixel per frame (lit)",
@@ -60,9 +77,14 @@ pub fn params() -> Vec<ParamSpec> {
     ]
 }
 
-/// Whether shading component `name` keeps per-pixel state (it path traces).
+/// Whether shading component `name` keeps per-pixel state (it traces secondary rays).
 pub fn stateful(name: &str) -> bool {
     crate::caps::declares(crate::Role::Shading, name, crate::Cap::Paths)
+}
+
+/// Whether shading component `name` computes ambient occlusion instead of bounces.
+pub fn occludes(name: &str) -> bool {
+    crate::caps::declares(crate::Role::Shading, name, crate::Cap::Occlusion)
 }
 
 /// The device feature stateful shading needs when it runs in a fragment shader.
@@ -110,6 +132,7 @@ pub struct ShadeState {
     pub accumulate: bool,
     pub bounces: u32,
     pub spp: u32,
+    pub reach: u32,
 }
 
 impl ShadeState {
@@ -118,9 +141,7 @@ impl ShadeState {
         width: u32,
         height: u32,
         shading: &str,
-        bounces: u32,
-        spp: u32,
-        accumulate: bool,
+        knobs: Option<&toml::Table>,
     ) -> Self {
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("shade state"),
@@ -129,7 +150,7 @@ impl ShadeState {
             mapped_at_creation: false,
         });
         let accum = Self::accum_buffer(gpu, width, height, shading);
-        Self {
+        let mut s = Self {
             uniform,
             accum,
             shading: shading.into(),
@@ -138,10 +159,21 @@ impl ShadeState {
             count: 0,
             frame: 0,
             last: None,
-            accumulate,
-            bounces: bounces.min(8),
-            spp: spp.clamp(1, 64),
+            accumulate: true,
+            bounces: 1,
+            spp: 1,
+            reach: 4,
+        };
+        // The shading node's knobs, those of [`params`].
+        for (name, v) in knobs.into_iter().flatten() {
+            let value = match v {
+                toml::Value::Boolean(b) => ParamValue::Bool(*b),
+                toml::Value::Integer(i) => ParamValue::Int(*i),
+                _ => continue,
+            };
+            s.set_param(name, &value);
         }
+        s
     }
 
     /// Full size only for shading that accumulates (a placeholder otherwise).
@@ -159,7 +191,7 @@ impl ShadeState {
     /// WGSL declarations at `group`, bindings `binding` and `binding + 1`.
     pub fn wgsl(group: u32, binding: u32) -> String {
         format!(
-            "struct ShadeParams {{ width: u32, frame: u32, prev_count: u32, bounces: u32, spp: u32, _pa: u32, _pb: u32, _pc: u32 }}\n\
+            "struct ShadeParams {{ width: u32, frame: u32, prev_count: u32, bounces: u32, spp: u32, reach: f32, _pb: u32, _pc: u32 }}\n\
              @group({group}) @binding({binding}) var<uniform> sp: ShadeParams;\n\
              @group({group}) @binding({}) var<storage, read_write> accum: array<vec4<u32>>;\n",
             binding + 1
@@ -244,7 +276,8 @@ impl ShadeState {
             prev_count: self.count,
             bounces: self.bounces,
             spp: self.spp,
-            _pad: [0; 3],
+            reach: self.reach as f32,
+            _pad: [0; 2],
         };
         gpu.queue
             .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&p));
@@ -265,6 +298,7 @@ impl ShadeState {
             }
             "spp" => (self.spp, self.count) = (value.as_i64().unwrap_or(1).clamp(1, 64) as u32, 0),
             "accumulate" => self.accumulate = value.as_bool().unwrap_or(true),
+            "reach" => (self.reach, self.count) = (value.as_i64().unwrap_or(4).clamp(1, 64) as u32, 0),
             _ => return None,
         }
         Some(())

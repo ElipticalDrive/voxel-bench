@@ -32,7 +32,8 @@ pub const SHADE_MESH_WGSL: &str = include_str!("mesh.wgsl");
 pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
     Some(match name {
         "direct" => include_str!("direct/gpu.wgsl"),
-        "pathtrace" => include_str!("pathtrace/gpu.wgsl"),
+        "pathtrace" => concat!(include_str!("sampling.wgsl"), include_str!("pathtrace/gpu.wgsl")),
+        "ao" => concat!(include_str!("sampling.wgsl"), include_str!("ao/gpu.wgsl")),
         _ => return None,
     })
 }

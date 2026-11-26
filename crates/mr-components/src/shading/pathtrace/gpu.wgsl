@@ -6,30 +6,6 @@
 // shading state (`shading::state`), bound by the back end. `bounces = 0` reproduces
 // `direct`'s lit image.
 
-var<private> pt_rng: u32;
-
-fn pt_pcg(v: u32) -> u32 {
-    let s = v * 747796405u + 2891336453u;
-    let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
-    return (w >> 22u) ^ w;
-}
-
-fn pt_rand() -> f32 {
-    pt_rng = pt_pcg(pt_rng);
-    return f32(pt_rng >> 8u) * (1.0 / 16777216.0);
-}
-
-fn pt_cosine_dir(n: vec3<f32>) -> vec3<f32> {
-    let u1 = pt_rand();
-    let u2 = pt_rand();
-    let r = sqrt(u1);
-    let phi = 6.2831853 * u2;
-    let a = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(n.x) > 0.5);
-    let t = normalize(cross(n, a));
-    let b = cross(n, t);
-    return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(0.0, 1.0 - u1)));
-}
-
 fn pt_linear(c: vec4<f32>) -> vec3<f32> {
     return vec3<f32>(srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b));
 }
@@ -52,7 +28,7 @@ fn pt_path(albedo0: vec3<f32>, p0: vec3<f32>, n0: vec3<f32>) -> vec3<f32> {
         if (depth < sp.bounces) { light -= vp.ambient; }
         radiance += thr * light;
         if (depth == sp.bounces) { break; }
-        let d = pt_cosine_dir(n);
+        let d = rng_cosine_dir(n);
         let s = btrace(po, d, vp.max_dist);
         if (!s.hit) {
             radiance += thr * vp.ambient;
@@ -65,20 +41,10 @@ fn pt_path(albedo0: vec3<f32>, p0: vec3<f32>, n0: vec3<f32>) -> vec3<f32> {
     return radiance;
 }
 
-const PT_COUNT_MASK: u32 = 0xfffu;
-const PT_SIG_MASK: u32 = 0xfffff000u;
-
-// The primary surface of a pixel, hashed: the cell behind the point and the normal.
-fn pt_surface_sig(p: vec3<f32>, n: vec3<f32>) -> u32 {
-    let c = bitcast<vec3<u32>>(vec3<i32>(floor(p - n * 0.5)));
-    let q = bitcast<vec3<u32>>(vec3<i32>(round(n * 8.0)));
-    return pt_pcg(c.x ^ pt_pcg(c.y ^ pt_pcg(c.z ^ pt_pcg(q.x ^ (q.y << 8u) ^ (q.z << 16u))))) & PT_SIG_MASK;
-}
-
 fn shade_point(albedo: vec4<f32>, p: vec3<f32>, n: vec3<f32>, d: vec3<f32>, lit: bool, px: vec2<u32>) -> vec4<f32> {
     if (!lit) { return albedo; }
     let idx = px.y * sp.width + px.x;
-    pt_rng = pt_pcg(idx ^ pt_pcg(sp.frame * 0x9E3779B9u + 1u));
+    rng_state = rng_pcg(idx ^ rng_pcg(sp.frame * 0x9E3779B9u + 1u));
     let a = pt_linear(albedo);
     var sum = vec3<f32>(0.0);
     for (var i = 0u; i < sp.spp; i++) { sum += pt_path(a, p, n); }
@@ -86,15 +52,15 @@ fn shade_point(albedo: vec4<f32>, p: vec3<f32>, n: vec3<f32>, d: vec3<f32>, lit:
     // signature (high bits) with the pixel's own sample count (low bits). A pixel whose
     // surface changed (a face set that changed under a still camera) starts again alone;
     // `prev_count == 0` (view, mode or world changed) restarts every pixel.
-    let sig = pt_surface_sig(p, n);
+    let sig = surface_sig(p, n);
     let old = accum[idx];
     var count = 0u;
-    if (sp.prev_count > 0u && (old.w & PT_SIG_MASK) == sig) { count = old.w & PT_COUNT_MASK; }
+    if (sp.prev_count > 0u && (old.w & ACC_SIG_MASK) == sig) { count = old.w & ACC_COUNT_MASK; }
     var mean = sum / f32(sp.spp);
     if (count > 0u) {
         mean = (bitcast<vec3<f32>>(old.xyz) * f32(count) + sum) / f32(count + sp.spp);
     }
-    accum[idx] = vec4<u32>(bitcast<vec3<u32>>(mean), sig | min(count + sp.spp, PT_COUNT_MASK));
+    accum[idx] = vec4<u32>(bitcast<vec3<u32>>(mean), sig | min(count + sp.spp, ACC_COUNT_MASK));
     return display(mean * vp.exposure);
 }
 

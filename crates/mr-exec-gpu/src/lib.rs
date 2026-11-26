@@ -222,9 +222,6 @@ struct CoreSpec<'a> {
     /// shading is fused into the pass that finds them: the executor allocates their edge.
     hits: Option<exec::Form>,
     shading: &'a str,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
     shadows: Shadows,
     /// The walks' step limit (the region sets it on its `Walks`; the second GPU's from here).
     max_steps: u32,
@@ -328,7 +325,7 @@ impl Core {
         let fif = s.frames_in_flight.max(1);
         Ok(Self {
             graph: g.graph.clone(),
-            accum: ShadeState::new(&gpu, p.width, p.height, s.shading, s.bounces, s.spp, s.accumulate),
+            accum: ShadeState::new(&gpu, p.width, p.height, s.shading, g.graph.nodes.values().find(|n| n.role == Role::Shading && n.component == s.shading).map(|n| &n.knobs)),
             camera_buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("camera"), size: size_of::<CameraUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
             edges: exec::Edges::of(&gpu, g, p.width, p.height, s.hits)?,
             output: mr_gpu::output_texture(&gpu, p.width, p.height, s.walks.post.format()),

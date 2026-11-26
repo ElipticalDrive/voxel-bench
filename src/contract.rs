@@ -99,6 +99,15 @@ static SHADING: [ComponentInfo; 1] = [ComponentInfo {
     needs: &[],
 }];
 
+/// Ambient occlusion on the GPU (as `ao`): secondary rays and state, another lighting model.
+static OCCLUSION: [ComponentInfo; 1] = [ComponentInfo {
+    role: Role::Shading,
+    name: PROBE,
+    description: "An occlusion shading only a test registers.",
+    impls: &[Impl { kind: Kind::Gpu, apis: SHADER, provides: &[Cap::Paths, Cap::Occlusion] }],
+    needs: &[],
+}];
+
 /// A drawer writing hit records on the GPU (as `gbuffer`).
 static DRAWER: [ComponentInfo; 1] = [ComponentInfo {
     role: Role::Draw,
@@ -365,6 +374,17 @@ fn a_registered_shading_is_offered_everywhere() {
         registered: &SHADING,
         node: "shading",
         files: &[("raycast-gpu", "pathtrace"), ("raster-gpu", "pathtrace"), ("rayquery-gpu", "pathtrace"), ("splat-gpu", "pathtrace")],
+        added: none,
+        debt: &[],
+    });
+}
+
+#[test]
+fn a_registered_occlusion_shading_is_offered_everywhere() {
+    offered_everywhere(&Probe {
+        registered: &OCCLUSION,
+        node: "shading",
+        files: &[("raycast-gpu", "ao"), ("raster-gpu", "ao"), ("rayquery-gpu", "ao"), ("splat-gpu", "ao")],
         added: none,
         debt: &[],
     });

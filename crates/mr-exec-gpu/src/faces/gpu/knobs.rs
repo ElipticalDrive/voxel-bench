@@ -141,14 +141,11 @@ impl Default for DrawKnobs {
 #[serde(default)]
 pub(super) struct ShadingKnobs {
     pub(super) shadows: Shadows,
-    pub(super) bounces: u32,
-    pub(super) spp: u32,
-    pub(super) accumulate: bool,
 }
 
 impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self { shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
+        Self { shadows: Shadows::All }
     }
 }
 

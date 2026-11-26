@@ -86,6 +86,8 @@ quality at 120 fps.
   scripts.
 - [docs/architecture.md](docs/architecture.md): processes, streaming, measurement, the
   conventions renderers follow, the code layout, and how to add a component.
+- [docs/adding-a-technique.md](docs/adding-a-technique.md): the recipe per kind of technique
+  (storage, shading, ...): what to write, what is derived, what to run.
 - [docs/limits.md](docs/limits.md): how large a world each pipeline renders, and what stops it.
 - [docs/design.md](docs/design.md): the requirements behind the architecture and how each is
   met: pipelines as graphs, composition at no cost, a device per node, compiling on demand.

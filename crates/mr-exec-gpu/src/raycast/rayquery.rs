@@ -109,14 +109,11 @@ impl Default for GeometryKnobs {
 struct ShadingKnobs {
     placement: String,
     shadows: Shadows,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
 }
 
 impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self { placement: "inline".into(), shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
+        Self { placement: "inline".into(), shadows: Shadows::All }
     }
 }
 
@@ -167,9 +164,6 @@ impl RayQuery {
                 voxels: false,
                 hits: mr_components::parse_placement(&k.placement)?.then_some(crate::exec::Form::Records),
                 shading: &shading,
-                bounces: k.bounces,
-                spp: k.spp,
-                accumulate: k.accumulate,
                 shadows: k.shadows,
                 // Walks at the shading's sites (ray queries need no step limit).
                 max_steps: 2048,
@@ -289,7 +283,7 @@ mod tests {
         for geometry in geometries {
             for &shading in &shadings {
                 for deferred in [false, true] {
-                    let bounce = (shading == "pathtrace").then(|| Change::bind("shading", "bounce", "kernel"));
+                    let bounce = mr_components::shading::state::stateful(shading).then(|| Change::bind("shading", "bounce", "kernel"));
                     let edits: Vec<Change> = [Change::component("geometry", geometry), Change::component("shading", shading)].into_iter().chain(bounce).collect();
                     let ck = base.with_edits(&edits).unwrap().check().unwrap();
                     let mut walks = Walks::of(&ck);

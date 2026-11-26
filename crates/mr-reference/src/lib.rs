@@ -107,6 +107,9 @@ struct Options {
     bounces: Option<u32>,
     /// Paths per pixel when path tracing.
     paths: Option<u32>,
+    /// Lit frames with ambient occlusion of this reach in blocks (the `ao` shading's model,
+    /// converged: `paths` rays per pixel) instead of direct lighting.
+    occlusion: Option<f32>,
     /// Off: shading rays (shadows, bounces) see the voxels only, the meshes are surfaces
     /// alone: the reference of a pipeline that declares no mesh rays.
     mesh_rays: Option<bool>,
@@ -127,6 +130,8 @@ const PATHS: u32 = 256;
 struct Paths {
     bounces: u32,
     paths: u32,
+    /// Ambient occlusion of this reach instead of bounces.
+    reach: Option<f32>,
 }
 
 /// Random numbers of one pixel's paths (PCG; the same frame gives the same image).
@@ -495,7 +500,11 @@ impl CpuReference {
         } else {
             Chunks::default()
         };
-        let paths = opts.bounces.map(|bounces| Paths { bounces, paths: opts.paths.unwrap_or(PATHS).max(1) });
+        let rays = opts.paths.unwrap_or(PATHS).max(1);
+        let paths = match (opts.occlusion, opts.bounces) {
+            (Some(reach), _) => Some(Paths { bounces: 1, paths: rays, reach: Some(reach) }),
+            (None, bounces) => bounces.map(|bounces| Paths { bounces, paths: rays, reach: None }),
+        };
         Ok(Self { width: p.width, height: p.height, pixels: vec![0; p.width as usize * p.height as usize * 4], world, chunks, meshes: Default::default(), pool: Pool::new(p.devices.cpu_threads(opts.threads))?, paths, mesh_rays: opts.mesh_rays.unwrap_or(true), transparency: opts.transparency.unwrap_or(true) })
     }
 }
@@ -906,7 +915,7 @@ impl VoxelScene<'_> {
         let (tone, exposure) = (self.world.tone, self.world.env.exposure);
         let lit = |albedo: Vec3, p: DVec3, n: Vec3, rng: &mut Rng| match (mode, paths) {
             (RenderMode::Unlit, _) => albedo,
-            (_, Some(k)) => albedo * self.light_by_paths(p, n, k.bounces, k.paths, rng) * exposure,
+            (_, Some(k)) => albedo * self.light_of(p, n, k, rng) * exposure,
             (_, None) => albedo * self.light_at(p, n) * exposure,
         };
         // An entry face covering fully (an exit face's normal is not its face's).
@@ -994,6 +1003,25 @@ impl VoxelScene<'_> {
         let uv = hit.face.uv(Self::local(o, d, hit));
         let texel = self.world.blocks.texture_of(hit.block, hit.face).texel(texel_coord(uv.x), texel_coord(uv.y));
         Vec3::new(srgb_to_linear(texel[0]), srgb_to_linear(texel[1]), srgb_to_linear(texel[2]))
+    }
+
+    /// Incoming light (linear) at `p` with normal `n` by the lighting model `k`.
+    fn light_of(&self, p: DVec3, n: Vec3, k: Paths, rng: &mut Rng) -> Vec3 {
+        match k.reach {
+            Some(reach) => self.light_by_occlusion(p, n, reach as f64, k.paths, rng),
+            None => self.light_by_paths(p, n, k.bounces, k.paths, rng),
+        }
+    }
+
+    /// Incoming light (linear) at surface point `p` with normal `n` with ambient occlusion:
+    /// the sun and point lights as [`Self::light_at`], the ambient term scaled by the share of
+    /// `rays` cosine-weighted rays that meet no surface (voxels and meshes) within `reach`:
+    /// the `ao` shading's model.
+    pub fn light_by_occlusion(&self, p: DVec3, n: Vec3, reach: f64, rays: u32, rng: &mut Rng) -> Vec3 {
+        let ambient = self.world.env.ambient;
+        let o = p + n.as_dvec3() * 1e-4;
+        let open = (0..rays).filter(|_| self.surface(o, rng.cosine(n.as_dvec3()), reach, rng).is_none()).count();
+        self.light_at(p, n) - ambient + ambient * (open as f32 / rays as f32)
     }
 
     /// Incoming light (linear) at surface point `p` with normal `n` by diffuse path tracing,
@@ -1102,7 +1130,7 @@ impl Renderer for CpuReference {
         // Path-traced lit frames: the light at the primary point from its paths.
         let paths = self.paths.filter(|_| req.mode == RenderMode::Lit);
         let (tone, exposure) = (self.world.tone, self.world.env.exposure);
-        let lit = |albedo: Vec3, p: DVec3, n: Vec3, k: Paths, rng: &mut Rng| -> [u8; 4] { tone.encode(albedo * this.light_by_paths(p, n, k.bounces, k.paths, rng) * exposure) };
+        let lit = |albedo: Vec3, p: DVec3, n: Vec3, k: Paths, rng: &mut Rng| -> [u8; 4] { tone.encode(albedo * this.light_of(p, n, k, rng) * exposure) };
         let mut pixels = std::mem::take(&mut self.pixels);
         self.pool.install(|| pixels.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
             for x in 0..w {
@@ -1287,6 +1315,14 @@ mod tests {
                 assert!((light - ambient).abs().max_element() < 1e-5, "{light}");
             }
         }
+        // Ambient occlusion: a ceiling 4 blocks up darkens the ambient term only when it is
+        // within reach, more the nearer it is, and never the direct light.
+        let ceiling = square(4.0, 1e4, 255, DVec3::ZERO);
+        let s = VoxelScene { world: &world, chunks: &chunks, meshes: Some(&ceiling), layered: false, mesh_rays: true };
+        assert_eq!(s.light_by_occlusion(at, up, 2.0, 256, &mut Rng::new(1)), s.light_at(at, up));
+        let far = s.light_by_occlusion(at, up, 8.0, 256, &mut Rng::new(1));
+        let near = s.light_by_occlusion(at, up, 1e3, 256, &mut Rng::new(1));
+        assert!(near.max_element() < 1e-6 && far.max_element() > near.max_element() && far.max_element() < ambient.max_element(), "{far} {near}");
     }
 
     /// Chunks of one LOD-0 chunk at the origin holding these cells.

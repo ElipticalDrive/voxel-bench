@@ -89,6 +89,17 @@ pub const DEFAULTS: &[(Role, &str, &[(&str, Value)])] = &[
         &[("view", S("image")), ("view_max", I(256))],
     ),
     (Role::Prepass, "beam", &[("tile", I(8))]),
+    (
+        Role::Shading,
+        "ao",
+        &[
+            ("accumulate", B(true)),
+            ("placement", S("inline")),
+            ("reach", I(4)),
+            ("shadows", S("all")),
+            ("spp", I(1)),
+        ],
+    ),
     (Role::Shading, "direct", &[("shadows", S("all"))]),
     (
         Role::Shading,

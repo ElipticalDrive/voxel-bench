@@ -78,14 +78,11 @@ impl Default for VisibilityKnobs {
 #[serde(default)]
 struct ShadingKnobs {
     shadows: Shadows,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
 }
 
 impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self { shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
+        Self { shadows: Shadows::All }
     }
 }
 
@@ -156,9 +153,6 @@ impl Splat {
                 voxels: false,
                 hits: Some(if draw_only { exec::Form::Records } else { exec::Form::Ids }),
                 shading,
-                bounces: k.bounces,
-                spp: k.spp,
-                accumulate: k.accumulate,
                 shadows: k.shadows,
                 max_steps: 2048,
                 pool_mb: opts.pool_mb,
@@ -386,7 +380,7 @@ mod tests {
         for st in base.choices("storage") {
             for k in base.choices("kernel") {
                 for shading in base.choices("shading") {
-                    let bounce = (shading == "pathtrace").then(|| Change::bind("shading", "bounce", "kernel"));
+                    let bounce = mr_components::shading::state::stateful(shading).then(|| Change::bind("shading", "bounce", "kernel"));
                     let flat: Vec<Change> = [("storage", st), ("kernel", k), ("shading", shading)].into_iter().map(|(n, c)| Change::component(n, c)).chain(bounce).collect();
                     let Ok(gr) = base.with_edits(&flat) else { continue };
                     if gr.validate().is_err() {

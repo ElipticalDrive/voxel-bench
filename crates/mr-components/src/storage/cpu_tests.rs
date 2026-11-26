@@ -176,6 +176,7 @@ mod tests {
             check_occupied::<Palette>(&d);
             check_occupied::<crate::storage::brickmajor::Cpu>(&d);
             check_occupied::<crate::storage::morton::Cpu>(&d);
+            check_occupied::<crate::storage::hashed::cpu::Hashed>(&d);
         }
     }
 
@@ -198,6 +199,7 @@ mod tests {
             check::<Palette>(&d);
             check::<crate::storage::brickmajor::Cpu>(&d);
             check::<crate::storage::morton::Cpu>(&d);
+            check::<crate::storage::hashed::cpu::Hashed>(&d);
             if distinct < 255 {
                 check::<U8>(&d);
             }

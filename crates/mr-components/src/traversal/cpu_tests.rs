@@ -163,6 +163,7 @@ mod tests {
             agree::<crate::storage::morton::Cpu, true, 0b111111>(seed);
             agree::<Hier, true, 0b111111>(seed);
             agree::<Prefix, true, 0b111111>(seed);
+            agree::<crate::storage::hashed::cpu::Hashed, false, 0b111111>(seed);
             // Level subsets (the `skip*` knobs).
             agree::<Prefix, true, 0b101101>(seed);
             agree::<Prefix, true, 0b100001>(seed);

@@ -256,6 +256,17 @@ pub const COMPONENTS: &[ComponentInfo] = &[
         }],
         needs: &[],
     },
+    ComponentInfo {
+        role: Role::Storage,
+        name: "hashed",
+        description: "Voxel hashing (Niessner et al. 2013) inside a chunk: only non-empty 4^3 bricks are kept (64 u16 ids each), found through an open-addressed hash table keyed by brick coordinate; empty space costs no memory, every probe pays a hash lookup.",
+        impls: &[Impl {
+            kind: Kind::Cpu,
+            apis: ISAS,
+            provides: <storage::hashed::cpu::Hashed as Repr>::CAPS,
+        }],
+        needs: &[],
+    },
     // Visibility.
     ComponentInfo {
         role: Role::Visibility,
@@ -596,6 +607,17 @@ pub const COMPONENTS: &[ComponentInfo] = &[
             kind: Kind::Gpu,
             apis: SHADER,
             provides: &[Cap::Paths],
+        }],
+        needs: &[],
+    },
+    ComponentInfo {
+        role: Role::Shading,
+        name: "ao",
+        description: "Ambient occlusion (Zhukov et al. 1998; ray-traced, as in Crytek's and Minecraft's later variants): direct sun and point lights with shadow rays, the ambient term scaled by the share of cosine-weighted rays through the composed walk that meet nothing within `reach` blocks; accumulated while the view is still. Knobs: reach, spp, accumulate.",
+        impls: &[Impl {
+            kind: Kind::Gpu,
+            apis: SHADER,
+            provides: &[Cap::Paths, Cap::Occlusion],
         }],
         needs: &[],
     },

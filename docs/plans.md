@@ -90,7 +90,8 @@ the same bounces, converged (256 paths per pixel; `compare.reference_options = {
 changes it), labelled `cpu-reference as pick(radius=16), pathtrace(bounces=1) (ref)`. What is
 left in that score is the pipeline's noise (and any error): it rises about 3 dB with every
 doubling of `spp` when the pipeline computes the same model. Such a reference takes seconds
-per compared frame.
+per compared frame. Ambient occlusion (`ao`) is scored the same way against the reference's
+occlusion of the same `reach` (`... ao(reach=4) (ref)`; reference option `occlusion`).
 
 And for what a pipeline declares it leaves out of a pass (its `not_supported`) while its
 frames still show the rest: mesh rays (lit `+meshes` frames whose shadows and bounces see only

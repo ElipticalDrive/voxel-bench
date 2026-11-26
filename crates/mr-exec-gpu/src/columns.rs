@@ -61,14 +61,11 @@ impl Default for Options {
 struct ShadingKnobs {
     placement: String,
     shadows: Shadows,
-    bounces: u32,
-    spp: u32,
-    accumulate: bool,
 }
 
 impl Default for ShadingKnobs {
     fn default() -> Self {
-        Self { placement: "inline".into(), shadows: Shadows::All, bounces: 1, spp: 1, accumulate: true }
+        Self { placement: "inline".into(), shadows: Shadows::All }
     }
 }
 
@@ -133,9 +130,6 @@ impl Columns {
                 voxels: false,
                 hits: deferred.then_some(exec::Form::Records),
                 shading,
-                bounces: k.bounces,
-                spp: k.spp,
-                accumulate: k.accumulate,
                 shadows: k.shadows,
                 max_steps: 1,
                 pool_mb: 64,
