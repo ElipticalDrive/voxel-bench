@@ -290,6 +290,14 @@ impl Graph {
                         }
                     }
                 }
+                Role::World | Role::Generator => {
+                    for k in n.knobs.keys() {
+                        why.push(format!(
+                            "`{id}`: the {} has no knobs (not `{k}`)",
+                            n.role.name()
+                        ));
+                    }
+                }
                 _ => {}
             }
             let ports = inputs(n.role, &n.component);

@@ -73,6 +73,12 @@ impl RendererSpec {
         g.accept().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))?;
         g.region().context("renderer graph: no executor builds a graph of this shape")?;
         let params = crate::pipelines::executor_of(g).map(|(_, p)| p).unwrap_or_default();
+        if let Ok(c) = g.check() {
+            let unowned = c.knobs_unowned(&params);
+            if !unowned.is_empty() {
+                bail!("renderer graph: {}", unowned.join("; "));
+            }
+        }
         for (k, v) in g.preset_options().map_err(|e| anyhow::anyhow!("renderer graph: {e}"))? {
             let default = params.iter().find(|p| p.name == k).and_then(|p| toml::Value::try_from(p.default.to_json()).ok());
             if default.as_ref() == Some(&v) {

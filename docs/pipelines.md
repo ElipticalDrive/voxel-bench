@@ -103,7 +103,10 @@ The edits are the pipeline editor's own changes, made in order, each exactly as 
 | `{ remove = "<id>" }` | the node gone, the inputs reading it unbound |
 
 An edit naming a node or an input the graph does not have is refused with its place in the
-list; whether the edited graph is a pipeline is decided as for any graph. A renderer read
+list; whether the edited graph is a pipeline is decided as for any graph. A knob is set on
+the node that owns it: one its executor does not declare for that node's role and component
+(an unknown name, another node's knob, a pipeline knob that belongs in `options`) is refused
+naming node and knob, with the node's own knobs; the world and the generator have none. A renderer read
 this way is saved this way while its graph is still what the file and the edits give
 (after a change in the editor it is saved by what it is). `edits` also follow an inline
 `graph`.

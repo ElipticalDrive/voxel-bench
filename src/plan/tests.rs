@@ -735,3 +735,18 @@ fn shipped_plans_load() {
     }
     assert!(n >= 10);
 }
+
+/// A knob set on a node is one its executor declares for that node's role and component:
+/// an unknown name, a knob of another node and a knob of the pipeline's are refused, each
+/// naming node and knob; the world and generator have none.
+#[test]
+fn unowned_knobs_are_refused() {
+    let with = |edit: &str| renderer(&format!("graph = \"raster-cpu\"\nedits = [{edit}]")).and_then(|mut r| r.resolve().map(|_| r));
+    with(r#"{ node = "draw", knobs = { tile_width = 32 } }"#).unwrap();
+    let e = with(r#"{ node = "draw", knobs = { bogus = 1 } }"#).unwrap_err().to_string();
+    assert!(e.contains("`draw` (draw `raster`): no knob `bogus`") && e.contains("`tile_width`"), "{e}");
+    let e = with(r#"{ node = "storage", knobs = { tile_width = 32 } }"#).unwrap_err().to_string();
+    assert!(e.contains("`storage` (storage `bricks`): knob `tile_width` belongs to a draw node of `raster`"), "{e}");
+    let e = with(r#"{ node = "world", knobs = { radius = 3 } }"#).unwrap_err().to_string();
+    assert!(e.contains("`world`: the world has no knobs (not `radius`)"), "{e}");
+}

@@ -206,6 +206,53 @@ impl Checked {
         out
     }
 
+    /// The knobs set on this graph's component nodes that no knob of its executor (`params`)
+    /// belongs to, each naming node and knob: a name the executor does not have, or one whose
+    /// owner is another role or component (a knob is set on the node that owns it). The host's
+    /// roles check their own knobs ([`super::Graph::check`]).
+    pub fn knobs_unowned(&self, params: &[mr_core::ParamSpec]) -> Vec<String> {
+        let mut ids: Vec<&String> = self.graph.nodes.keys().collect();
+        ids.sort();
+        let mut out = vec![];
+        for id in ids {
+            let n = &self.graph.nodes[id];
+            if super::is_host_role(n.role) {
+                continue;
+            }
+            for k in n.knobs.keys() {
+                let named: Vec<&mr_core::ParamSpec> = params.iter().filter(|p| p.name == *k).collect();
+                let owns = |p: &&mr_core::ParamSpec| {
+                    p.owner.as_ref().is_some_and(|(role, comps)| {
+                        role == n.role.name() && comps.contains(&n.component)
+                    })
+                };
+                if named.iter().any(owns) {
+                    continue;
+                }
+                let what = format!("`{id}` ({} `{}`)", n.role.name(), n.component);
+                let mut own: Vec<String> = params
+                    .iter()
+                    .filter(|p| owns(p))
+                    .map(|p| format!("`{}`", p.name))
+                    .collect();
+                own.sort();
+                own.dedup();
+                let has = if own.is_empty() { "none".to_string() } else { own.join(", ") };
+                out.push(match named.iter().find_map(|p| p.owner.as_ref()) {
+                    Some((role, comps)) => format!(
+                        "{what}: knob `{k}` belongs to a {role} node of {}, not to this one (its knobs: {has})",
+                        names(comps)
+                    ),
+                    None if !named.is_empty() => format!(
+                        "{what}: knob `{k}` is the pipeline's, not a node's: set it in `options` (its knobs: {has})"
+                    ),
+                    None => format!("{what}: no knob `{k}` (its knobs: {has})"),
+                });
+            }
+        }
+        out
+    }
+
     /// Knob `p` as far as this graph takes it (what a tuner may vary): `None` without a node
     /// to take it, a choice without the values it leaves out (none left: `None`).
     pub fn taken(&self, p: &mr_core::ParamSpec) -> Option<mr_core::ParamSpec> {
