@@ -26,7 +26,8 @@ const STORAGE_GROUPS: &[u32] = &[2, 3, 4, 5];
 /// walks, on the same GPU or another.
 pub(crate) fn far_slot(g: &graph::Checked) -> Option<usize> {
     let near = g.input(Role::Shading, "hits").map(|id| g.devices[id]);
-    let gated = g.gates_on(g.shading(), "hits").is_some();
+    // Regions that cannot split hold gated hits between their own passes ([`crate::cross`]).
+    let gated = g.gates_on(g.shading(), "hits").is_some() && g.region.is_some_and(|r| r.split);
     match (near, g.find(Role::Shading).map(|id| g.devices[id])) {
         (Some(near), Some(Device::Gpu(far))) if near != Device::Gpu(far) || gated => Some(far as usize),
         _ => None,
@@ -113,7 +114,8 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
         shadow,
         bounce,
     };
-    Ok(Some(Executor::new(core, region, passes)))
+    // The hits' gates are the transfer's.
+    Ok(Some(Executor::new(core, region, passes, true)))
 }
 
 impl Shade {

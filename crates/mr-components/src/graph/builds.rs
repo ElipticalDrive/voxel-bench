@@ -204,6 +204,10 @@ pub struct Builds {
     pub timing_knobs: &'static [(&'static str, Role, &'static str, When, When)],
     /// Whether it runs over two GPUs, split at the hit records (the shading on the second).
     pub split: bool,
+    /// The edges (the reader's role and port) whose data it holds in GPU resources between
+    /// two passes, so a gate on the edge reads them back, sends them through and writes the
+    /// last that arrived for the reader's pass.
+    pub crossings: &'static [(Role, &'static str)],
     /// The choice of API it offers, if any (the CPU ray caster: `isa`, its one hot loop; the
     /// GPU walk: `dispatch`, in a compute or fragment shader).
     pub api_choice: Option<ApiChoice>,
@@ -223,6 +227,7 @@ impl Builds {
             free: &[],
             timing_knobs: &[],
             split: false,
+            crossings: &[],
             api_choice: None,
             live: &[],
         }
@@ -478,6 +483,7 @@ pub const GPU_WALK: Builds = Builds {
     only: &[],
     free: HITS_LATE,
     split: true,
+    crossings: &[(Role::Visibility, "start")],
     api_choice: Some(ApiChoice {
         knob: "dispatch",
         roles: CAST_ROLES,
@@ -618,6 +624,7 @@ pub const GPU_SAMPLER: Builds = Builds {
         Live::of(Role::Draw),
     ],
     split: true,
+    crossings: &[(Role::Visibility, "where"), (Role::Draw, "faces")],
     ..Builds::plain(RegionId::GpuSampler)
 };
 
@@ -704,6 +711,7 @@ pub const GPU_COLUMNS: Builds = Builds {
     ],
     same: &[],
     only: &[],
+    crossings: &[(Role::Shading, "hits")],
     ..Builds::plain(RegionId::GpuColumns)
 };
 
@@ -809,6 +817,17 @@ impl Checked {
                         ));
                     }
                 }
+                // Held between two passes of one GPU executor: read back before the reader's
+                // pass, through the gates, the last that arrived written in their place.
+                d if self.graph.nodes.get(&e.reader).is_some_and(|n| builds.crossings.contains(&(n.role, e.port.as_str()))) => {
+                    let placement = self.graph.nodes.get(&e.reader).and_then(|n| n.knobs.get("placement")).and_then(|v| v.as_str());
+                    if d == super::Data::Hits && placement != Some("deferred") {
+                        return Err(format!(
+                            "{at}: with `placement = inline` the hits never leave the march; set `placement = \"deferred\"` on `{}`",
+                            e.reader
+                        ));
+                    }
+                }
                 // On a GPU the hits cross as the records a split's second GPU shades: read
                 // back, through the gates, written to the shading's own copy of the edge.
                 super::Data::Hits if builds.split => {
@@ -823,13 +842,28 @@ impl Checked {
                 super::Data::Faces if builds.id == RegionId::CpuSampler => {}
                 super::Data::Hits => {
                     return Err(format!(
-                        "{at}: {executor} gives its hits no serialized form yet (gates on hits run where the hit records can be split off: the CPU ray caster, rasteriser and column marcher, GPU ray casting, face drawers and splats)"
+                        "{at}: {executor} gives its hits no serialized form yet (gates on hits run where the hit records can be split off: the CPU ray caster, rasteriser and column marcher, GPU ray casting, the GPU column marcher, face drawers and splats)"
+                    ));
+                }
+                super::Data::Faces if self.graph.nodes.get(&e.source).is_some_and(|n| matches!(n.role, Role::Geometry)) && builds.executor() == "gpu" => {
+                    return Err(format!(
+                        "{at}: the geometry is built on the CPU and uploaded into the GPU's buffers as chunks change, not sent whole each frame; no serialized form at that upload yet (gates on faces run in the CPU rasteriser and between the GPU's face visibility and drawer)"
+                    ));
+                }
+                super::Data::Faces if matches!(builds.id, RegionId::GpuMeshing) => {
+                    return Err(format!(
+                        "{at}: the visibility runs on the CPU (culling) and its draws reach the GPU as an upload each frame; no serialized form at that upload yet (gates on faces run in the CPU rasteriser, the CPU discoverer and between GPU discovery and its drawer)"
                     ));
                 }
                 super::Data::Faces => {
-                    return Err(format!("{at}: {executor} gives its faces no serialized form yet (gates on faces run in the CPU rasteriser and the CPU discoverer)"));
+                    return Err(format!("{at}: {executor} gives its faces no serialized form yet (gates on faces run in the CPU rasteriser, the CPU discoverer and between GPU discovery and its drawer)"));
                 }
-                d => return Err(format!("{at}: no executor runs gates on {} edges yet", d.name())),
+                super::Data::Surfaces if builds.executor() == "gpu" => {
+                    return Err(format!(
+                        "{at}: mesh surfaces are rasterised into the drawer's own pass (drawers) or into a depth target the rays read (ray casting), and a depth target cannot be written back on a GPU (WebGPU copies nothing into Depth32Float)"
+                    ));
+                }
+                d => return Err(format!("{at}: {executor} runs no gates on {} edges yet", d.name())),
             }
         }
         let Builds {

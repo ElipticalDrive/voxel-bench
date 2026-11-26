@@ -152,7 +152,8 @@ pub(super) fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
             })
             .create_view(&Default::default()),
         // Tiles are at least 2 px, so the lattice has at most (lat_w/2) x (lat_h/2) tiles.
-        need: storage(gpu, "tile needs", 4 * tiles_max(lat_w, lat_h) as u64 * 4, none, res),
+        // Read back by a gate on the discovery's tiles.
+        need: storage(gpu, "tile needs", 4 * tiles_max(lat_w, lat_h) as u64 * 4, wgpu::BufferUsages::COPY_SRC, res),
         need_off: tiles_max(lat_w, lat_h),
         changed_tiles: storage(gpu, "changed tiles", tiles_max(lat_w, lat_h) as u64 * 4, none, res),
         sky: [0, 1].map(|_| storage(gpu, "sky mask", w as u64 * h as u64 * 4, none, res)),

@@ -34,6 +34,7 @@ use mr_gpu::{FrameRing, Gpu, GpuNeeds, wgpu};
 
 mod accel;
 mod columns;
+mod cross;
 mod exec;
 mod faces;
 mod raycast;
@@ -247,6 +248,12 @@ pub(crate) struct Core {
     /// Shading state (pathtrace's accumulation).
     accum: ShadeState,
     camera_buf: wgpu::Buffer,
+    /// What `camera_buf` was last given (a gate on a viewed edge keeps it per frame sent and
+    /// gives the passes after it the camera of what arrived).
+    camera: std::cell::Cell<CameraUniform>,
+    /// The gates on edges inside the pipeline (the world's side and the frame's are the
+    /// worker's).
+    gates: Vec<graph::EdgeGates>,
     /// The resources of the edges between passes (the shading's hits, unless fused).
     edges: exec::Edges,
     output: wgpu::Texture,
@@ -330,6 +337,8 @@ impl Core {
             graph: g.graph.clone(),
             accum: ShadeState::new(&gpu, p.width, p.height, s.shading, s.bounces, s.spp, s.accumulate),
             camera_buf: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("camera"), size: size_of::<CameraUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
+            camera: std::cell::Cell::new(CameraUniform::zeroed()),
+            gates: g.gates.iter().filter(|e| !e.in_worker()).cloned().collect(),
             edges: exec::Edges::of(&gpu, g, p.width, p.height, s.hits)?,
             output: mr_gpu::output_texture(&gpu, p.width, p.height, s.walks.post.format()),
             stages: s.stages,
@@ -484,6 +493,12 @@ impl Core {
             view_proj: (c.projection(aspect) * c.view_rotation()).to_cols_array_2d(),
             anchor: [anchor.x, anchor.y, anchor.z, 0],
         };
+        self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
+        self.camera.set(cam);
+    }
+
+    /// The camera uniform `cam` (one written earlier) for the passes encoded from now on.
+    fn rewrite_camera(&self, cam: CameraUniform) {
         self.gpu.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam));
     }
 

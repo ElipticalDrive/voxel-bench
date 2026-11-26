@@ -358,6 +358,17 @@ impl Region for GpuSampler {
             st.buf.map_async(wgpu::MapMode::Read, .., move |r| flag.store(if r.is_ok() { 2 } else { 3 }, Ordering::SeqCst));
         }
     }
+
+    /// The discovery's tiles (hole detection's needs) and the drawer's faces (the list it
+    /// draws with its indirect arguments).
+    fn crossing(&self, _core: &Core, reader: Role, port: &str, _data: mr_components::graph::Data) -> Option<Vec<crate::cross::Part>> {
+        use crate::cross::Part;
+        match (reader, port) {
+            (Role::Visibility, "where") => Some(vec![Part::Buffer(self.sized.need.clone())]),
+            (Role::Draw, "faces") => Some(vec![Part::Buffer(self.drawn().1.clone()), Part::Buffer(self.args.clone())]),
+            _ => None,
+        }
+    }
 }
 
 /// Screen rectangle, in level-0 tiles, of the world box `[min, min + size)`: `Some(None)`

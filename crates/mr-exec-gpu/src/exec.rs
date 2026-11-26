@@ -13,6 +13,7 @@ use mr_core::*;
 use mr_gpu::{Gpu, Ticket, wgpu};
 
 use crate::Core;
+use crate::cross::{EdgeGate, Part};
 use crate::transfer::Transfer;
 
 /// The resources of the graph's edges that cross between passes on one GPU: allocated by the
@@ -133,8 +134,8 @@ impl Hits {
     fn resource_on(gpu: &Gpu, form: Form, width: u32, height: u32, layers: u32) -> Resource {
         match form {
             Form::Records | Form::Ids => {
-                // The records are copied out and written by the transfers between GPUs.
-                let usage = if form == Form::Records { wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::STORAGE };
+                // Copied out and written by the transfers between GPUs and by gates.
+                let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
                 let label = if form == Form::Records { "hit records" } else { "hit ids" };
                 Resource::Buffer(gpu.storage(label, form.bytes(width, height) * layers as u64, usage, || format!("the resolution ({width}x{height}, {layers} layer(s))")))
             }
@@ -146,8 +147,8 @@ impl Hits {
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format,
-                    // Copied out by the transfer between GPUs.
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                    // Copied out by the transfer between GPUs, read back and written by gates.
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
                     view_formats: &[],
                 });
                 Resource::Image(texture.create_view(&Default::default()), texture)
@@ -177,6 +178,14 @@ impl Hits {
         match &self.resource {
             Resource::Image(_, t) => Some(t),
             Resource::Buffer(_) => None,
+        }
+    }
+
+    /// The edge's resource, as a gate between passes reads it back and writes it.
+    pub fn part(&self) -> Part {
+        match &self.resource {
+            Resource::Buffer(b) => Part::Buffer(b.clone()),
+            Resource::Image(_, t) => Part::Texture(t.clone()),
         }
     }
 
@@ -280,30 +289,39 @@ pub(crate) trait Region: State {
     fn gates(&self) -> Vec<mr_core::gate::GateReport> {
         vec![]
     }
+    /// The resources holding what the node of role `reader` reads at `port` (`data`) when its
+    /// pass starts, written by the passes before it: what a gate on that edge reads back and
+    /// writes ([`crate::cross`]); `None`: the region gives it none this frame. The executor's
+    /// hits edge is the executor's own (asked only for other edges).
+    fn crossing(&self, _core: &Core, _reader: Role, _port: &str, _data: graph::Data) -> Option<Vec<Part>> {
+        None
+    }
 }
+
+/// A pass of the frame: its node's id and implementation.
+pub(crate) type Pass<R> = (String, Box<dyn Node<R>>);
 
 /// The nodes of `g`'s passes on GPU slot `slot` in frame order, each by its node's role
 /// (`node`; a role without one has no pass of its own here).
 /// The shading is the second executor's when it is split off ([`crate::remote::far_slot`]),
 /// on another GPU or, behind gates, on the same.
-pub(crate) fn passes<R>(g: &graph::Checked, slot: usize, node: impl Fn(Role) -> Option<Box<dyn Node<R>>>) -> anyhow::Result<Vec<Box<dyn Node<R>>>> {
+pub(crate) fn passes<R>(g: &graph::Checked, slot: usize, node: impl Fn(Role) -> Option<Box<dyn Node<R>>>) -> anyhow::Result<Vec<Pass<R>>> {
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
     let split = crate::remote::far_slot(g).is_some();
     Ok(schedule
         .passes()
         .filter(|p| matches!(p.device, graph::Device::Gpu(i) if i as usize == slot))
-        .map(|p| g.node(&p.node).role)
-        .filter(|&r| !(split && r == Role::Shading))
-        .filter_map(node)
+        .filter(|p| !(split && g.node(&p.node).role == Role::Shading))
+        .filter_map(|p| Some((p.node.clone(), node(g.node(&p.node).role)?)))
         .collect())
 }
 
 /// The passes of the executor the shading is split off to, on GPU slot `slot`: its node's
 /// role's (`node`) for every node there (what the near executor also runs there, when both
 /// are one GPU's, it runs on its own copy).
-pub(crate) fn far_passes<R>(g: &graph::Checked, slot: usize, node: impl Fn(Role) -> Option<Box<dyn Node<R>>>) -> anyhow::Result<Vec<Box<dyn Node<R>>>> {
+pub(crate) fn far_passes<R>(g: &graph::Checked, slot: usize, node: impl Fn(Role) -> Option<Box<dyn Node<R>>>) -> anyhow::Result<Vec<Pass<R>>> {
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
-    Ok(schedule.passes().filter(|p| matches!(p.device, graph::Device::Gpu(i) if i as usize == slot)).filter_map(|p| node(g.node(&p.node).role)).collect())
+    Ok(schedule.passes().filter(|p| matches!(p.device, graph::Device::Gpu(i) if i as usize == slot)).filter_map(|p| Some((p.node.clone(), node(g.node(&p.node).role)?))).collect())
 }
 
 /// One GPU slot's executor: its core, a region and its nodes' passes in frame order (static
@@ -311,29 +329,34 @@ pub(crate) fn far_passes<R>(g: &graph::Checked, slot: usize, node: impl Fn(Role)
 pub(crate) struct Executor<R> {
     core: Core,
     region: R,
-    passes: Vec<Box<dyn Node<R>>>,
+    passes: Vec<Pass<R>>,
+    /// The gates on edges between its passes.
+    gates: Vec<EdgeGate>,
     /// The mesh instances last given: accumulated shading starts over when they move.
     instances: Vec<mr_core::MeshInstance>,
 }
 
 /// The renderer running `region`'s `passes` over `core`.
-pub(crate) fn run<R: Region + 'static>(core: Core, region: R, passes: Vec<Box<dyn Node<R>>>) -> anyhow::Result<Box<dyn Renderer>> {
+pub(crate) fn run<R: Region + 'static>(core: Core, region: R, passes: Vec<Pass<R>>) -> anyhow::Result<Box<dyn Renderer>> {
     core.gpu.save_cache();
-    Ok(Box::new(Executor::new(core, region, passes)))
+    Ok(Box::new(Executor::new(core, region, passes, false)))
 }
 
 /// The renderer of a region's GPU, alone or (the shading on another GPU, `far`) split with
 /// that GPU's executor.
-pub(crate) fn run_or_split<R: Region + 'static>((core, region, far): (Core, R, Option<crate::remote::Far>), g: &graph::Checked, passes: Vec<Box<dyn Node<R>>>) -> anyhow::Result<Box<dyn Renderer>> {
+pub(crate) fn run_or_split<R: Region + 'static>((core, region, far): (Core, R, Option<crate::remote::Far>), g: &graph::Checked, passes: Vec<Pass<R>>) -> anyhow::Result<Box<dyn Renderer>> {
     match far {
-        Some(far) => split(g, Executor::new(core, region, passes), far),
+        Some(far) => split(g, Executor::new(core, region, passes, true), far),
         None => run(core, region, passes),
     }
 }
 
 impl<R: Region> Executor<R> {
-    pub fn new(core: Core, region: R, passes: Vec<Box<dyn Node<R>>>) -> Self {
-        Self { core, region, passes, instances: vec![] }
+    /// `split`: the shading's hits cross to another executor (their gates are the transfer's).
+    pub fn new(core: Core, region: R, passes: Vec<Pass<R>>, split: bool) -> Self {
+        let ids: Vec<String> = passes.iter().map(|(id, _)| id.clone()).collect();
+        let gates = crate::cross::gates(&core, &ids, split);
+        Self { core, region, passes, gates, instances: vec![] }
     }
 
     /// The frame's commands on this GPU, before their submission: its ticket on the ring
@@ -348,9 +371,22 @@ impl<R: Region> Executor<R> {
         if let Some(v) = &core.view {
             v.clear(&mut enc);
         }
-        let mut cx = Cx { core, region, enc: &mut enc, ticket, req };
-        for pass in &mut self.passes {
-            pass.run(&mut cx);
+        let mut gate_ms = 0.0;
+        for (i, (_, pass)) in self.passes.iter_mut().enumerate() {
+            for gate in self.gates.iter_mut().filter(|g| g.before == i) {
+                let reader = core.graph.nodes.get(&gate.reader).map(|n| n.role).expect("the reader is a node of the graph");
+                let data = core.gates.iter().find(|e| e.reader == gate.reader && e.port == gate.port).expect("the gate's edge").data;
+                let parts = match core.edges.hits().filter(|_| gate.port == "hits") {
+                    Some(h) => Some(vec![h.part()]),
+                    None => region.crossing(core, reader, &gate.port, data),
+                };
+                let parts = parts.ok_or_else(|| anyhow::anyhow!("`{}`.{}: nothing crosses between the passes this frame to put through its gates", gate.reader, gate.port))?;
+                gate_ms += gate.cross(core, parts, &mut enc, req)?;
+            }
+            pass.run(&mut Cx { core, region, enc: &mut enc, ticket, req });
+            for gate in self.gates.iter().filter(|g| g.before == i) {
+                gate.restore(&mut enc);
+            }
         }
         // The post's view over the passes' image (its legend for the region's).
         if core.view.is_some() {
@@ -363,7 +399,12 @@ impl<R: Region> Executor<R> {
         });
         let (counters, legend, stages) = region.stats(core, req);
         let legend = viewed.or(legend);
-        let stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages, gates: region.gates() };
+        let mut stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages, gates: region.gates() };
+        if !self.gates.is_empty() {
+            let ids: Vec<String> = self.gates.iter().flat_map(EdgeGate::nodes).collect();
+            stats.stages.push(StageTime::cpu("gate", &ids, gate_ms));
+            stats.gates.extend(self.gates.iter().flat_map(EdgeGate::reports));
+        }
         region.finish(core, &mut enc, ticket);
         Ok((enc, ticket, stats))
     }
@@ -478,12 +519,14 @@ impl<R: Region> Renderer for Executor<R> {
         mr_gpu::check_resolution(&self.core.gpu, width, height)?;
         self.core.resize(width, height);
         self.region.resize(&self.core);
+        self.gates.iter_mut().for_each(EdgeGate::resize);
         Ok(())
     }
 
     fn memory(&self) -> MemoryReport {
         let (cpu, gpu) = self.region.memory(&self.core);
-        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu, gpu_device_bytes: self.core.gpu.peak_allocated_bytes() }
+        let gates: u64 = self.gates.iter().map(EdgeGate::memory_bytes).sum();
+        MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu + gates, gpu_device_bytes: self.core.gpu.peak_allocated_bytes() }
     }
 }
 
