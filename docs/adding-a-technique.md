@@ -98,7 +98,29 @@ nodes, and `graph::REGIONS`; the contract's visibility probe states what a regio
 
 ## A world generator
 
-Not rehearsed yet. Expect: one entry in `mr_world::generators::GENERATORS`.
+Rehearsed with `mandelbulb` (~20 minutes; 2 code files, 3 docs, 1 script line).
+
+1. In `crates/mr-world/src/generators.rs`: a `GenSpec` variant (its fields are the knobs;
+   sizes and counts take `deserialize_with = "within_world"`, so past 2^30 is refused by name),
+   its entry in `GENERATORS` (name, description, default, each field's help and slider range),
+   its arm in `GenSpec::build` (clamp what would make a block cost unbounded work or overflow),
+   and the generator: `WorldGen` (`block`, `chunk_y_range`, a `spawn` in air; a `chunk` fast
+   path returning `ChunkData::Uniform(AIR)` outside its bounds; `asks` if it places see-through
+   blocks).
+2. What is derived from the `GENERATORS` entry: the GUI's world choices and fields, plan
+   parsing, and the generator tests (`every_generator_is_listed`, `generators_chunks_match_block`:
+   chunks agree with `block` around spawn and origin, spawn in air, something solid;
+   `generators_ask_for_the_blocks_they_place`; `generator_sizes_hold_out_to_the_worlds_reach`:
+   every integer field at +-2^30 and 0, built and sampled with overflow checks). Add a test of
+   the generator's own shape.
+3. A plan in `plans/NAME.toml` (copy one of the stress worlds' plans, aim the camera) and the
+   name in `SCENARIOS` in `scripts/mr.py`, which sweep.py, turn-sweep.py and suite.py run. Adding
+   it re-deals the turn sweep's pairs among the plans (a plan's part is its place in the list).
+4. Check: `cargo test -p mr-world --lib generators`, then the plan's pipelines against the
+   reference: `scripts/run1.py '[...the plan's renderers...]' NAME -s run.frames=60 -s
+   output.compare.every=30`.
+5. Docs: the generator table in `docs/plans.md` (and the comment listing generators there),
+   the README's plan list.
 
 ## Friction found
 
@@ -111,6 +133,10 @@ Fixed while rehearsing:
   path tracers, `reach` by `Cap::Occlusion`).
 - The GPU composition tests bound a `bounce` input only for a shading named `pathtrace`;
   now for every stateful shading.
+- The generator test that compared chunks with `block` listed the stress worlds by hand (a new
+  generator went untested unless added); it now takes every `GENERATORS` entry.
+- The scenario plans were three hand-kept lists (sweep.py, turn-sweep.py, suite.py, which had
+  drifted apart); now one, `SCENARIOS` in `scripts/mr.py`.
 
 Open:
 
@@ -123,3 +149,5 @@ Open:
   it takes minutes (the size could be printed by `multirenderer` from the plan instead).
 - The full sweep grows by the product of the choices it varies together; with S adding many
   components it needs pairwise coverage as the turn sweep has, or it stops being runnable.
+- `glass` has a plan but is in no sweep's scenarios (it was in none of the three old lists);
+  whether transparency worlds join the sweeps is open.

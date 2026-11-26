@@ -9,7 +9,7 @@ name = "my-test"
 [scene]
 fov_deg = 70
 generator = { type = "terrain", seed = 7 }   # terrain | flat | menger | room | random | showcase | empty
-                                             # stress worlds: city | islands | lattice | gyroid | checker | glass
+                                             # stress worlds: city | islands | lattice | gyroid | checker | mandelbulb | glass
 camera = { type = "flythrough", points = [[0,110,0],[260,140,120]] }
                                              # static | orbit | line | flythrough | spin
 environment = { no_sun = true, ambient = [0.02,0.02,0.03], sky = [0,0,0], exposure = 1.0 }
@@ -178,6 +178,7 @@ something different:
 | `islands` | seed, spacing, height, fill | mostly empty 3D space: many chunks streaming in, small objects far away |
 | `lattice` | period, thickness, height | thin beams everywhere: long rays past many near misses (ray casters 4× slower, rasterisers 10× faster than them), thin features at LOD |
 | `gyroid` | period, thickness, height | curved cave walls: staircases greedy meshing cannot merge (CPU rasterising), short rays |
+| `mandelbulb` | size, power, iterations | an organic fractal surface with detail at every scale (greedy meshing merges little, rays graze near misses) around a solid interior nothing sees; the costliest block function, so chunk generation shows |
 | `checker` | size, cell | every block shows six faces (worst for meshing/raster), yet perfectly regular (best for a DAG) |
 | `glass` | size, panes | see-through blocks: parallel glass panes (a ray through all crosses `2 * panes` surfaces), a glass cube and a grate (cutout) cube around opaque blocks, partial shadows; pipelines without transparency draw them opaque |
 | `showcase` | | one of every block, for textures |

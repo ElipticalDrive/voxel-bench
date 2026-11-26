@@ -1,0 +1,47 @@
+# Mandelbulb (power 8, 192^3): an organic fractal surface with detail at every scale around a
+# solid interior nothing sees; the costliest block function (generation time shows).
+# Curved, noisy surfaces: greedy meshing merges little, rays graze many near-misses.
+name = "mandelbulb"
+
+[scene]
+generator = { type = "mandelbulb" }
+camera = { type = "orbit", center = [96, 96, 96], radius = 180, height = 60, period = 600 }
+
+[run]
+frames = 300
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 10
+
+[[renderer]]
+graph = "raycast-gpu"
+
+[[renderer]]
+graph = "raster-gpu"
+
+[[renderer]]
+graph = "raster-cpu"
+
+[[renderer]]
+graph = "rayquery-gpu"
+
+[[renderer]]
+graph = "rayquery-gpu"
+edits = [{ node = "geometry", component = "boxes" }]
+
+[[renderer]]
+graph = "raycast-gpu"
+edits = [{ node = "storage", component = "tree64" }]
+
+[[renderer]]
+graph = "raycast-cpu"
+
+[[renderer]]
+graph = "raycast-gpu"
+edits = [
+    { node = "kernel", component = "sphere" },
+    { node = "storage", component = "distance" },
+]
+
+[output]
+compare = { every = 100 }

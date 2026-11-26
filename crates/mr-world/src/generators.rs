@@ -153,6 +153,17 @@ pub enum GenSpec {
         #[serde(default = "default_one", deserialize_with = "within_world")]
         cell: i32,
     },
+    /// Mandelbulb (the 3D Mandelbrot set of the given `power`) voxelised into a cube of side
+    /// `size` from the origin: an organic fractal surface with detail at every scale, a solid
+    /// interior nothing sees, and a costly block function (`iterations` per block).
+    Mandelbulb {
+        #[serde(default = "default_mandelbulb_size", deserialize_with = "within_world")]
+        size: i32,
+        #[serde(default = "default_mandelbulb_power")]
+        power: f32,
+        #[serde(default = "default_mandelbulb_iterations", deserialize_with = "within_world")]
+        iterations: i32,
+    },
     /// See-through blocks in a `size`-block yard: `panes` parallel walls of clear and stained
     /// glass one block thick (a ray through all of them crosses `2 * panes` surfaces), a
     /// hollow glass cube around a glowing block, a grate (cutout) cube around a red one,
@@ -187,6 +198,16 @@ fn menger_level<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error>
         )));
     }
     Ok(v)
+}
+
+fn default_mandelbulb_size() -> i32 {
+    192
+}
+fn default_mandelbulb_power() -> f32 {
+    8.0
+}
+fn default_mandelbulb_iterations() -> i32 {
+    8
 }
 
 fn default_glass_size() -> i32 {
@@ -348,6 +369,16 @@ pub const GENERATORS: &[GenInfo] = &[
         fields: &[field("size", "Edge length of the cube in blocks"), field("cell", "Checker cell size in blocks (1 = every other block)")],
     },
     GenInfo {
+        name: "mandelbulb",
+        description: "Mandelbulb fractal: organic surface detail at every scale around a hidden solid interior",
+        default: || GenSpec::Mandelbulb { size: default_mandelbulb_size(), power: default_mandelbulb_power(), iterations: default_mandelbulb_iterations() },
+        fields: &[
+            field("size", "Edge length of the cube holding the bulb, in blocks"),
+            ranged("power", "Exponent of the iteration z -> z^power + c (8 is the classic bulb; 2 a lumpy one)", 2.0, 16.0),
+            ranged("iterations", "Iterations per block: more give finer surface detail and cost more to generate", 1.0, 30.0),
+        ],
+    },
+    GenInfo {
         name: "glass",
         description: "Glass panes, a glass cube and a grate: see-through blocks, several surfaces per pixel",
         default: || GenSpec::Glass { size: default_glass_size(), panes: default_glass_panes() },
@@ -389,6 +420,9 @@ impl GenSpec {
             }
             GenSpec::Gyroid { period, thickness, height } => Arc::new(GyroidGen { period: period.max(4), thickness, height: height.max(1) }),
             GenSpec::Checker { size, cell } => Arc::new(CheckerGen { size: size.max(1), cell: cell.max(1) }),
+            GenSpec::Mandelbulb { size, power, iterations } => {
+                Arc::new(MandelbulbGen { size: size.max(8), power: (power as f64).clamp(2.0, 32.0), iterations: iterations.clamp(1, MANDELBULB_MAX_ITERATIONS) })
+            }
             GenSpec::Glass { size, panes } => {
                 let size = size.max(32);
                 Arc::new(GlassGen { size, panes: panes.clamp(0, (size - 26) / 3) })
@@ -450,6 +484,66 @@ impl WorldGen for FlatGen {
 
 pub struct MengerGen {
     size: i32,
+}
+
+/// Iterations are capped: a block inside the set never escapes, so each costs all of them.
+const MANDELBULB_MAX_ITERATIONS: i32 = 64;
+
+pub struct MandelbulbGen {
+    size: i32,
+    power: f64,
+    iterations: i32,
+}
+
+impl MandelbulbGen {
+    /// The set's `c` for block `p`: the cube's centre at 0, its faces at +-1.25 (the classic
+    /// bulb reaches about 1.2; lower powers are clipped by the cube).
+    fn c(&self, p: IVec3) -> DVec3 {
+        ((p.as_dvec3() + 0.5) / self.size as f64 * 2.0 - 1.0) * 1.25
+    }
+
+    /// `None` if `c` escapes, else the smallest |z| its orbit came to (the orbit trap that
+    /// picks the material).
+    fn orbit(&self, c: DVec3) -> Option<f64> {
+        let (mut z, mut trap) = (c, f64::MAX);
+        for _ in 0..self.iterations {
+            let r = z.length();
+            if r > 2.0 {
+                return None;
+            }
+            trap = trap.min(r);
+            // White and Nylander's spherical power.
+            let (theta, phi) = ((z.z / r.max(1e-12)).clamp(-1.0, 1.0).acos() * self.power, z.y.atan2(z.x) * self.power);
+            z = r.powf(self.power) * DVec3::new(theta.sin() * phi.cos(), theta.sin() * phi.sin(), theta.cos()) + c;
+        }
+        (z.length() <= 2.0).then_some(trap)
+    }
+}
+
+impl WorldGen for MandelbulbGen {
+    fn block(&self, p: IVec3) -> BlockId {
+        if p.cmplt(IVec3::ZERO).any() || p.cmpge(IVec3::splat(self.size)).any() {
+            return AIR;
+        }
+        match self.orbit(self.c(p)) {
+            None => AIR,
+            Some(trap) => [STONE, COBBLE, BRICKS, SAND, PLANKS, SNOW][((trap * 6.0) as usize).min(5)],
+        }
+    }
+    fn chunk_y_range(&self) -> (i32, i32) {
+        (0, (self.size + CHUNK_SIZE - 1) / CHUNK_SIZE)
+    }
+    fn spawn(&self) -> DVec3 {
+        let s = self.size as f64;
+        DVec3::new(s * 1.45, s * 0.85, s * 1.6)
+    }
+    fn chunk(&self, key: ChunkKey) -> ChunkData {
+        let o = key.origin();
+        if o.cmpge(IVec3::splat(self.size)).any() || (o + key.extent()).cmple(IVec3::ZERO).any() {
+            return ChunkData::Uniform(AIR);
+        }
+        sample_chunk(key, |p| self.block(p))
+    }
 }
 
 impl WorldGen for MengerGen {
@@ -1175,18 +1269,12 @@ mod tests {
         }
     }
 
-    /// The stress worlds: chunks (fast paths included) agree with `block` around the spawn,
+    /// Every generator: chunks (fast paths included) agree with `block` around the spawn,
     /// the spawn is in air, and something is solid.
     #[test]
-    fn stress_worlds_chunks_match_block() {
-        let specs = [
-            GenSpec::City { seed: 1, block: 48, max_height: 240 },
-            GenSpec::Islands { seed: 2, spacing: 96, height: 512, fill: 0.35 },
-            GenSpec::Lattice { period: 24, thickness: 1, height: 160 },
-            GenSpec::Gyroid { period: 48, thickness: 0.3, height: 192 },
-            GenSpec::Checker { size: 96, cell: 1 },
-            GenSpec::Glass { size: 48, panes: 6 },
-        ];
+    fn generators_chunks_match_block() {
+        // Every generator the editor offers (a new one is covered by being listed), but `Empty`.
+        let specs = GENERATORS.iter().map(|g| (g.default)()).filter(|g| !matches!(g, GenSpec::Empty));
         for spec in specs {
             let g = spec.build();
             let spawn = g.spawn();
@@ -1270,6 +1358,24 @@ mod tests {
             }
         }
         assert_eq!(asking, 1, "the glass world asks");
+    }
+
+    /// The bulb: solid at its centre, air at the cube's corners, mirror-symmetric in y (the
+    /// power map takes the angle about z to `power` times it, so y -> -y commutes with it; a
+    /// quarter turn does not), and more iterations carve more.
+    #[test]
+    fn mandelbulb_shape() {
+        let g = |iterations| MandelbulbGen { size: 64, power: 8.0, iterations };
+        let b = g(8);
+        assert!(b.block(IVec3::splat(32)).is_solid());
+        assert!(b.block(IVec3::ZERO).is_air() && b.block(IVec3::splat(63)).is_air());
+        let solid = |g: &MandelbulbGen| (0..64 * 64).map(|i| IVec3::new(i % 64, i / 64, 21)).filter(|&p| g.block(p).is_solid()).count();
+        let (coarse, fine) = (solid(&g(2)), solid(&b));
+        assert!(fine > 0 && fine < coarse, "{fine} solid at 8 iterations, {coarse} at 2");
+        for i in 0..64 * 64 {
+            let p = IVec3::new(i % 64, i / 64, 40);
+            assert_eq!(b.block(p).is_solid(), b.block(IVec3::new(p.x, 63 - p.y, 40)).is_solid(), "{p}");
+        }
     }
 
     #[test]

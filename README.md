@@ -54,7 +54,7 @@ multirenderer diff a.png b.png --out diff.png
 
 `plans/` holds example run plans: terrain, menger, room, edits, many lights, meshes,
 streaming, modelled networks (gates on any edge), two GPUs, stress worlds (city, floating islands, a
-lattice of thin beams, gyroid caves, a 3D checkerboard) and others.
+lattice of thin beams, gyroid caves, a 3D checkerboard, a Mandelbulb) and others.
 
 ## The GUI
 

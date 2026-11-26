@@ -72,6 +72,11 @@ def fresh(d):
     return d
 
 
+# The scenario plans the sweeps run (sweep.py, turn-sweep.py, suite.py), in this order: a
+# plan's place is its part of the turn sweep's pairs. A new world's plan is added here once.
+SCENARIOS = "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker meshes mandelbulb".split()
+
+
 def full_sweep():
     """The `-s` override that replaces a plan's renderers by the full sweep (`scripts/full-sweep.toml`)."""
     return "renderer=" + (ROOT / "scripts" / "full-sweep.toml").read_text().split("renderer = ", 1)[1].strip()

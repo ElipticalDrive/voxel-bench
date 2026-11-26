@@ -3,7 +3,7 @@
 (`[sweep] cover = "pairs"`) instead of as their product: every component of every swept node
 on every scenario plan, and of any two swept choices every pair of values some pipeline takes
 together, the pairs spread over the plans (`sweep.part` of `sweep.parts`: scenario plan i of
-the list below takes part i, the same part each time). A fraction of the full sweep (sweep.py,
+`mr.SCENARIOS` takes part i, the same part each time). A fraction of the full sweep (sweep.py,
 the overnight run), for a baseline per change and the regression guard. The same records as
 sweep.py's, so `multirenderer catalogue` and `ab/guard.py` read it; against a full baseline
 the guard compares the passes both have.
@@ -28,12 +28,12 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from mr import ROOT, build_release, finished, full_sweep, plan_log, release, run_logged
+from mr import ROOT, SCENARIOS, build_release, finished, full_sweep, plan_log, release, run_logged
 if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
     sys.exit(print(__doc__))
 
-# sweep.py's scenario plans, in its order; a plan's place here is its part of the pairs.
-PLANS = "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker meshes".split()
+# A plan's place in mr.SCENARIOS is its part of the pairs.
+PLANS = SCENARIOS
 
 argv = sys.argv[1:]
 listing, whole = "--list" in argv, "--whole" in argv
