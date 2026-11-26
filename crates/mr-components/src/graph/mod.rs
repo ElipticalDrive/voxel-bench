@@ -315,7 +315,7 @@ mod tests {
             g.nodes
                 .insert("extra".into(), Node::new(Role::Storage, "rows"));
         });
-        assert!(e.contains("lead to no image: extra"), "{e}");
+        assert!(e.contains("lead to no image: `extra`"), "{e}");
         let e = err(&|g| {
             g.nodes.get_mut("kernel").unwrap().device = Some(Device::Cpu);
         });

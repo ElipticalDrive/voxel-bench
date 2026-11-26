@@ -33,7 +33,7 @@ impl Graph {
                 _ => Err(format!(
                     "one {} per graph (have: {})",
                     role.name(),
-                    ids.join(", ")
+                    ids.iter().map(|i| format!("`{i}`")).collect::<Vec<_>>().join(", ")
                 )),
             }
         };
@@ -395,7 +395,7 @@ impl Graph {
                     "none".into()
                 } else {
                     outs.iter()
-                        .map(|s| s.as_str())
+                        .map(|s| format!("`{s}`"))
                         .collect::<Vec<_>>()
                         .join(", ")
                 }
@@ -419,7 +419,7 @@ impl Graph {
         if !dangling.is_empty() {
             return Err(format!(
                 "nodes that lead to no image: {}",
-                dangling.join(", ")
+                dangling.iter().map(|d| format!("`{d}`")).collect::<Vec<_>>().join(", ")
             ));
         }
         let order = g.frame_order(&out)?;
